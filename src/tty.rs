@@ -651,7 +651,8 @@ fn command_loop(
         // paints once at the end.
         if !queue.input_pending() {
             let mut state = shared_state.borrow_mut();
-            redraw(interpreter, env, &mut state).map_err(|error| error.to_string())?;
+            redraw_at_command_boundary(interpreter, env, &mut state)
+                .map_err(|error| error.to_string())?;
         }
         // GNU fires ripe timers while the loop waits for input
         // (keyboard.c's timer_check): isearch's lazy highlight and every
@@ -1459,11 +1460,38 @@ fn displayed_line_with_map(
     let mut map = Vec::with_capacity(raw.chars().count() + 1);
     let mut col = 0usize;
     let mut changed = false;
+    // A string-valued `display' property shows the string once for the
+    // whole run carrying the same value, in place of the covered text
+    // (handle_single_display_spec; grep's --null separator renders as
+    // ":" this way).
+    let mut string_run: Option<String> = None;
     for (offset, ch) in raw.chars().enumerate() {
         map.push(expanded_chars);
-        let target = buffer
-            .text_property_at(line_begin + offset, "display")
-            .and_then(|value| space_align_to_target(&value));
+        let display = buffer.text_property_at(line_begin + offset, "display");
+        let replacement = match display {
+            Some(Value::String(ref text)) => Some(text.to_string()),
+            Some(Value::StringObject(ref state)) => {
+                Some(std::cell::RefCell::borrow(state).text.clone())
+            }
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            changed = true;
+            let same_run = string_run
+                .as_deref()
+                .is_some_and(|previous| previous == replacement);
+            if !same_run {
+                for c in replacement.chars() {
+                    expanded.push(c);
+                    expanded_chars += 1;
+                    col += 1;
+                }
+            }
+            string_run = Some(replacement);
+            continue;
+        }
+        string_run = None;
+        let target = display.and_then(|value| space_align_to_target(&value));
         if let Some(target) = target {
             changed = true;
             let pad = target.saturating_sub(col);
@@ -1707,16 +1735,20 @@ fn fontify_window_ranges(
     env: &mut Env,
     layout: &[crate::lisp::primitives::WindowRenderInfo],
 ) {
-    if interpreter
-        .lookup_var("fontification-functions", env)
-        .is_none_or(|value| value.is_nil())
-    {
-        return;
-    }
     let saved_buffer = interpreter.current_buffer_id();
     for info in layout {
         if interpreter.current_buffer_id() != info.buffer_id
             && interpreter.set_current_buffer_id(info.buffer_id).is_err()
+        {
+            continue;
+        }
+        // The variable is buffer-local where jit-lock registered it:
+        // GNU's handle_fontified_prop reads it with the window's buffer
+        // current, so a window whose buffer fontifies must not be
+        // skipped because the selected buffer does not.
+        if interpreter
+            .lookup_var("fontification-functions", env)
+            .is_none_or(|value| value.is_nil())
         {
             continue;
         }
@@ -1835,6 +1867,26 @@ fn run_fontification_functions(
 }
 
 fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) -> io::Result<()> {
+    redraw_with_echo_policy(interpreter, env, state, false)
+}
+
+/// The command loop's redraw: keyboard.c calls resize_echo_area_exactly
+/// between commands, so a displayed message shrinks the mini window
+/// back to the rows it needs (grow-only holds only within a command).
+fn redraw_at_command_boundary(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    state: &mut TtyState,
+) -> io::Result<()> {
+    redraw_with_echo_policy(interpreter, env, state, true)
+}
+
+fn redraw_with_echo_policy(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    state: &mut TtyState,
+    exact_echo: bool,
+) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let cols = cols.max(10) as usize;
     let rows = rows.max(4) as usize;
@@ -1862,6 +1914,12 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
     let previous_echo_rows = state.echo_rows;
     state.echo_rows = if echo_empty {
         1
+    } else if exact_echo && !echo_from_minibuffer {
+        // resize_echo_area_exactly: at a command boundary a displayed
+        // message sizes the mini window to exactly its rows; an active
+        // minibuffer keeps its grown size (echo_area_buffer[0] is nil
+        // there, so keyboard.c never resizes it exactly).
+        echo_paint.len().min(max_mini.max(1))
     } else {
         state.echo_rows.max(echo_paint.len()).min(max_mini.max(1))
     };

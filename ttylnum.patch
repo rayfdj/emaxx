@@ -1,0 +1,867 @@
+diff --git a/src/lisp/primitives.rs b/src/lisp/primitives.rs
+index af1277c..c61b9c1 100644
+--- a/src/lisp/primitives.rs
++++ b/src/lisp/primitives.rs
+@@ -234,9 +234,10 @@ pub(crate) use dispatch::{
+     string_face_spans,
+ };
+ pub(crate) use dispatch::{
+-    TtyFaceAttrs, WindowRenderInfo, render_window_header_line, render_window_mode_line,
+-    resolve_tty_face_attrs,
+-    store_window_hscroll_state, window_face_spans, window_hscroll_state, window_render_layout,
++    LineNumberLayout, LineNumberMode, TtyFaceAttrs, WindowRenderInfo,
++    render_window_header_line, render_window_mode_line, resolve_tty_face_attrs,
++    store_window_hscroll_state, window_face_spans, window_hscroll_state,
++    window_line_number_layout, window_render_layout,
+ };
+ pub use dispatch::{call, is_builtin};
+ 
+diff --git a/src/lisp/primitives/dispatch.rs b/src/lisp/primitives/dispatch.rs
+index 922ee4d..47018d8 100644
+--- a/src/lisp/primitives/dispatch.rs
++++ b/src/lisp/primitives/dispatch.rs
+@@ -24,10 +24,10 @@ pub(crate) use display::echo_area_message_with_spans;
+ #[cfg(test)]
+ pub(crate) use display::render_mode_line_glass;
+ pub(crate) use display::{
+-    EchoSpans, TtyFaceAttrs, WindowRenderInfo, render_window_header_line, render_window_mode_line,
+-    resolve_tty_face_attrs,
++    EchoSpans, LineNumberLayout, LineNumberMode, TtyFaceAttrs, WindowRenderInfo,
++    render_window_header_line, render_window_mode_line, resolve_tty_face_attrs,
+     store_window_hscroll_state, string_face_spans, window_face_spans, window_hscroll_state,
+-    window_render_layout,
++    window_line_number_layout, window_render_layout,
+ };
+ pub(crate) use display::{
+     echo_area_message, echo_area_message_tick, echo_area_print, echo_display_message,
+diff --git a/src/lisp/primitives/dispatch/buffer_edit.rs b/src/lisp/primitives/dispatch/buffer_edit.rs
+index 619c016..bb440ec 100644
+--- a/src/lisp/primitives/dispatch/buffer_edit.rs
++++ b/src/lisp/primitives/dispatch/buffer_edit.rs
+@@ -2517,6 +2517,42 @@ pub(crate) fn visual_char_widths(
+ /// Screen-line segment start positions of the logical line [bol, eol),
+ /// modeling GNU's batch display: continuation at frame-width (reserving the
+ /// continuation column unless word-wrapping) minus prefix widths.
++/// The columns a `display-line-numbers' column occupies during
++/// screen-line motion: Fvertical_motion primes its iterator's
++/// lnum_width from line_number_display_width — the width redisplay
++/// computes at the window's start — so wrapped lines break that many
++/// columns earlier.
++fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize {
++    let buffer_id = interp.current_buffer_id();
++    let enabled = interp
++        .buffer_local_value(buffer_id, "display-line-numbers")
++        .or_else(|| interp.lookup_var("display-line-numbers", &Vec::new()))
++        .unwrap_or(Value::Nil);
++    if enabled.is_nil() {
++        return 0;
++    }
++    let text_rows = super::call(interp, "window-body-height", &[], env)
++        .ok()
++        .and_then(|value| value.as_integer().ok())
++        .unwrap_or(0)
++        .max(1) as usize;
++    let start = interp
++        .selected_window_start()
++        .clamp(interp.buffer.point_min(), interp.buffer.point_max());
++    let top_line = interp.buffer.line_number_at_pos(start);
++    let point_line = interp.buffer.line_number_at_pos(interp.buffer.point());
++    let begv_line = interp.buffer.line_number_at_pos(interp.buffer.point_min());
++    crate::lisp::primitives::window_line_number_layout(
++        interp,
++        buffer_id,
++        top_line,
++        point_line,
++        begv_line,
++        text_rows,
++    )
++    .map_or(0, |layout| layout.cols)
++}
++
+ pub(crate) fn visual_segment_starts(
+     interp: &mut Interpreter,
+     env: &mut Env,
+@@ -2532,7 +2568,12 @@ pub(crate) fn visual_segment_starts(
+     }
+     // GNU's batch display wraps mid-word at frame-width minus the
+     // continuation column, even under `word-wrap' (vmotion in indent.c).
+-    let frame_width = interp.frame_width().max(2) as usize;
++    // A line-number column narrows the text area on every row.
++    let frame_width = interp
++        .frame_width()
++        .max(2)
++        .saturating_sub(motion_line_number_columns(interp, env) as i64)
++        .max(2) as usize;
+     let reserve = 1;
+     let line_prefix_width = {
+         let prop = interp.buffer.text_property_at(bol, "line-prefix");
+diff --git a/src/lisp/primitives/dispatch/display.rs b/src/lisp/primitives/dispatch/display.rs
+index 4381ed5..6f125a0 100644
+--- a/src/lisp/primitives/dispatch/display.rs
++++ b/src/lisp/primitives/dispatch/display.rs
+@@ -1626,6 +1626,111 @@ pub(crate) fn store_window_hscroll_state(
+     );
+ }
+ 
++/// Which numbers `display-line-numbers' asks for (xdisp.c's
++/// Vdisplay_line_numbers): absolute buffer lines, distances from the
++/// line showing point, or distances in screen lines.
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(crate) enum LineNumberMode {
++    Absolute,
++    Relative,
++    Visual,
++}
++
++/// The line-number column a window reserves this redisplay, resolved
++/// from the buffer's `display-line-numbers' family of variables the way
++/// maybe_produce_line_number does.  `width' is the digit field
++/// (it->lnum_width); the column costs `width + 2' screen columns — the
++/// number right-justified in a width+1 field plus a blank separator
++/// (pint2str with lnum_width + 1, then the appended space).
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(crate) struct LineNumberLayout {
++    pub(crate) mode: LineNumberMode,
++    pub(crate) width: usize,
++    pub(crate) cols: usize,
++    pub(crate) current_absolute: bool,
++    pub(crate) offset: i64,
++    pub(crate) widen: bool,
++    pub(crate) major_tick: i64,
++    pub(crate) minor_tick: i64,
++}
++
++/// maybe_produce_line_number's width computation for one window.
++/// TOP_LINE and POINT_LINE are 1-based absolute buffer lines,
++/// BEGV_LINE the absolute line where the accessible region begins:
++/// numbers count from there unless the layout widens.  TEXT_ROWS is
++/// the window's body height.  The maximal number a window row can show
++/// is the one belonging to its last row — a 0-based this_line at vpos
++/// 0 plus the matrix rows: this_line + nrows - 1 with nrows =
++/// text_rows + 1.
++pub(crate) fn window_line_number_layout(
++    interp: &Interpreter,
++    buffer_id: u64,
++    top_line: usize,
++    point_line: usize,
++    begv_line: usize,
++    text_rows: usize,
++) -> Option<LineNumberLayout> {
++    let buffer_local = |name: &str| {
++        interp
++            .buffer_local_value(buffer_id, name)
++            .or_else(|| interp.lookup_var(name, &Vec::new()))
++            .unwrap_or(Value::Nil)
++    };
++    let mode = match buffer_local("display-line-numbers") {
++        Value::Nil => return None,
++        Value::Symbol(ref name) if name == "relative" => LineNumberMode::Relative,
++        Value::Symbol(ref name) if name == "visual" => LineNumberMode::Visual,
++        _ => LineNumberMode::Absolute,
++    };
++    let current_absolute = buffer_local("display-line-numbers-current-absolute").is_truthy();
++    let offset = match mode {
++        LineNumberMode::Absolute => buffer_local("display-line-numbers-offset")
++            .as_integer()
++            .unwrap_or(0),
++        _ => 0,
++    };
++    // A non-zero offset forces counting from the buffer's beginning, as
++    // if display-line-numbers-widen were non-nil.
++    let widen = buffer_local("display-line-numbers-widen").is_truthy() || offset != 0;
++    let displayed = |line: usize| {
++        if widen {
++            line
++        } else {
++            line.saturating_sub(begv_line) + 1
++        }
++    };
++    let max_lnum = match mode {
++        LineNumberMode::Relative | LineNumberMode::Visual if !current_absolute => {
++            text_rows.saturating_sub(1)
++        }
++        LineNumberMode::Visual => displayed(point_line).saturating_add(text_rows) - 1,
++        _ => displayed(top_line).saturating_add(text_rows) - 1,
++    };
++    let needed = max_lnum.max(1).to_string().len();
++    let explicit = buffer_local("display-line-numbers-width")
++        .as_integer()
++        .ok()
++        .filter(|width| *width >= 0)
++        .unwrap_or(0) as usize;
++    let width = needed.max(explicit);
++    let tick = |name: &str| {
++        interp
++            .lookup_var(name, &Vec::new())
++            .and_then(|value| value.as_integer().ok())
++            .unwrap_or(0)
++    };
++    Some(LineNumberLayout {
++        mode,
++        width,
++        cols: width + 2,
++        current_absolute,
++        offset,
++        widen,
++        major_tick: tick("display-line-numbers-major-tick"),
++        minor_tick: tick("display-line-numbers-minor-tick"),
++    })
++}
++
+ fn set_window_hscroll_value(
+     interp: &mut Interpreter,
+     window_id: u64,
+diff --git a/src/tty.rs b/src/tty.rs
+index 87e5e6c..e931b43 100644
+--- a/src/tty.rs
++++ b/src/tty.rs
+@@ -1144,6 +1144,11 @@ struct RenderGeometry {
+     /// (xdisp.c hscrolling_current_line_p).
+     current_line_only: bool,
+     min_hscroll: usize,
++    /// The `display-line-numbers' column this window reserves, if any:
++    /// its glyphs precede the text on every row, so the text area
++    /// shrinks by `cols' and hscroll_window_tree counts them in the
++    /// cursor's x (the x_offset loop over charpos < 0 glyphs).
++    lnum: Option<crate::lisp::primitives::LineNumberLayout>,
+ }
+ 
+ /// init_iterator's wrap decision plus hscroll_window_tree, for one
+@@ -1163,7 +1168,9 @@ fn window_render_geometry(
+     info: &crate::lisp::primitives::WindowRenderInfo,
+     body_width: usize,
+     frame_cols: usize,
++    lnum: Option<crate::lisp::primitives::LineNumberLayout>,
+ ) -> RenderGeometry {
++    let lnum_cols = lnum.map_or(0, |layout| layout.cols);
+     let buffer_local = |interpreter: &Interpreter, name: &str| {
+         interpreter
+             .buffer_local_value(info.buffer_id, name)
+@@ -1207,6 +1214,7 @@ fn window_render_geometry(
+                 hscroll: hscroll.max(0) as usize,
+                 current_line_only: false,
+                 min_hscroll: state.min_hscroll.max(0) as usize,
++                lnum,
+             };
+         };
+         let point_pos = info.point.clamp(buffer.point_min(), buffer.point_max());
+@@ -1222,37 +1230,50 @@ fn window_render_geometry(
+             .unwrap_or(5)
+             .clamp(0, 1_000_000);
+         let cursor_x = point_dcol - hscroll;
+-        // On a tty the left truncation glyph occupies a text column;
+-        // hscroll_window_tree discounts it from the margin.
+-        let x_offset: i64 = if hscroll > 0 { -1 } else { 0 };
+-        let row_truncated_right = truncated_on_right(line_w, hscroll.max(0) as usize, body_width);
++        // A line-number column's glyphs count into the cursor's x
++        // (hscroll_window_tree's x_offset loop); on a tty the left
++        // truncation glyph then replaces the column's first glyph, so
++        // the margin loses one column back.
++        let x_offset: i64 = lnum_cols as i64 + if hscroll > 0 { -1 } else { 0 };
++        // In the trigger, the column offset appears on both sides of
++        // the left-margin comparison and cancels; the right margin and
++        // the truncation test see the narrowed text area.
++        let text_w = w - lnum_cols as i64;
++        let row_truncated_right = truncated_on_right(
++            line_w,
++            hscroll.max(0) as usize,
++            body_width.saturating_sub(lnum_cols),
++        );
+         // The third hscroll_window_tree trigger: when only the current
+         // line hscrolls and point moved to a line that does not need
+         // it, the recomputation brings hscroll back toward min_hscroll.
+-        let trigger = (hscroll > 0 && cursor_x <= margin + x_offset)
+-            || (row_truncated_right && cursor_x >= w - margin)
++        let trigger = (hscroll > 0 && cursor_x <= margin + x_offset - lnum_cols as i64)
++            || (row_truncated_right && cursor_x >= text_w - margin)
+             || (current_line_only && hscroll != state.min_hscroll && hscroll > 0);
+         if trigger {
+             let at_eol = point_dcol >= line_w as i64;
++            // hscroll_window_tree's iterator runs with the line-number
++            // glyphs produced, so its current_x carries their columns.
++            let current_x = point_dcol + lnum_cols as i64;
+             let step = interpreter.lookup_var("hscroll-step", env);
+             let new_hscroll = match step {
+                 Some(Value::Float(relative)) if relative >= 0.0 => {
+-                    let wanted = if cursor_x >= w - margin {
++                    let wanted = if cursor_x >= text_w - margin {
+                         (w as f64) * (1.0 - relative) - margin as f64
+                     } else {
+                         (w as f64) * relative + (margin + x_offset) as f64
+                     };
+-                    (point_dcol - wanted as i64).max(0)
++                    (current_x - wanted as i64).max(0)
+                 }
+                 Some(Value::Integer(step)) if step > 0 => {
+-                    let wanted = if cursor_x >= w - margin {
++                    let wanted = if cursor_x >= text_w - margin {
+                         w - step - margin
+                     } else {
+                         step + margin + x_offset
+                     };
+-                    (point_dcol - wanted).max(0)
++                    (current_x - wanted).max(0)
+                 }
+-                _ => (point_dcol - if at_eol { w - 4 } else { w / 2 }).max(0),
++                _ => (current_x - if at_eol { w - 4 } else { w / 2 }).max(0),
+             };
+             hscroll = new_hscroll.max(state.min_hscroll);
+         }
+@@ -1269,6 +1290,7 @@ fn window_render_geometry(
+         hscroll: hscroll.max(0) as usize,
+         current_line_only,
+         min_hscroll: state.min_hscroll.max(0) as usize,
++        lnum,
+     }
+ }
+ 
+@@ -1491,6 +1513,10 @@ fn plan_window_text(
+     selected: bool,
+ ) -> WindowPlan {
+     let hscroll = geometry.hscroll;
++    // A line-number column's glyphs precede the text on every row, so
++    // the text lays out in the remaining columns.
++    let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
++    let body_width = body_width.saturating_sub(lnum_cols).max(1);
+     let usable = body_width.saturating_sub(1).max(1);
+     let segs_of = |line: &str| {
+         if truncate {
+@@ -1622,7 +1648,11 @@ fn plan_window_text(
+             geometry.min_hscroll
+         };
+         let segments = if truncate {
+-            vec![truncate_row_hscrolled(&visual.text, body_width, row_hscroll)]
++            vec![if lnum_cols > 0 {
++                truncate_row_from(&visual.text, body_width, row_hscroll)
++            } else {
++                truncate_row_hscrolled(&visual.text, body_width, row_hscroll)
++            }]
+         } else {
+             wrap_segments(&visual.text, body_width)
+         };
+@@ -1963,7 +1993,9 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
+         buffer_id: u64,
+         selected: bool,
+         top: usize,
++        /// Left edge of the text area (past any line-number column).
+         left: usize,
++        lnum_cols: usize,
+         body_width: usize,
+         usable: usize,
+         start: usize,
+@@ -1971,8 +2003,25 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
+         rows: Vec<(usize, usize, usize, usize)>,
+     }
+     let mut text_face_jobs: Vec<TextFaceJob> = Vec::new();
++    // A window with `display-line-numbers' paints its number column
++    // after the text lands, exactly like the face spans: resolving the
++    // line-number faces evaluates Lisp.
++    struct LineNumberJob {
++        buffer_id: u64,
++        layout: crate::lisp::primitives::LineNumberLayout,
++        top: usize,
++        left: usize,
++        text_rows: usize,
++        truncate: bool,
++        text_width: usize,
++        point: usize,
++        window_end: usize,
++        cursor_row: Option<usize>,
++        rows: Vec<(usize, usize, usize, usize)>,
++    }
++    let mut line_number_jobs: Vec<LineNumberJob> = Vec::new();
+ 
+-    for info in &layout {
++    'windows: for info in &layout {
+         // A window not flush with the frame's right edge spends its last
+         // column on the vertical border; the mode line spans the body.
+         let body_width = if info.left + info.width < cols {
+@@ -1987,38 +2036,105 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
+         let header_rows = usize::from(has_header_line && info.height > 2);
+         let text_top = info.top + header_rows;
+         let text_rows = info.height - 1 - header_rows;
+-        let geometry = window_render_geometry(interpreter, env, info, body_width, cols);
+-        let view = state.views.entry(info.window_id).or_default();
+-        let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
+-            Some(&interpreter.buffer)
+-        } else {
+-            interpreter.get_buffer_by_id(info.buffer_id)
+-        }) else {
+-            continue;
++        // `display-line-numbers': the column's width follows the
++        // window's start line, which planning itself may move
++        // (recentering); iterate until the width the plan was laid out
++        // with matches the width its final top line asks for.
++        let lnum_for = |interpreter: &Interpreter, top_line: usize| {
++            let buffer = if info.buffer_id == interpreter.current_buffer_id() {
++                Some(&interpreter.buffer)
++            } else {
++                interpreter.get_buffer_by_id(info.buffer_id)
++            }?;
++            let begv_line = buffer.line_number_at_pos(buffer.point_min());
++            let point = info.point.clamp(buffer.point_min(), buffer.point_max());
++            let point_line = buffer.line_number_at_pos(point);
++            crate::lisp::primitives::window_line_number_layout(
++                interpreter,
++                info.buffer_id,
++                top_line.max(begv_line),
++                point_line,
++                begv_line,
++                text_rows,
++            )
+         };
+-        let invisibility = resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
+-        let plan = plan_window_text(
+-            buffer,
+-            &invisibility,
+-            view,
+-            info.start,
+-            info.point,
+-            text_rows,
+-            body_width,
+-            geometry.truncate,
+-            &geometry,
+-            info.selected,
++        let mut lnum = lnum_for(
++            interpreter,
++            state
++                .views
++                .get(&info.window_id)
++                .map(|view| view.top_line)
++                .unwrap_or(0),
+         );
++        let (geometry, plan) = loop {
++            let geometry = window_render_geometry(interpreter, env, info, body_width, cols, lnum);
++            let view = state.views.entry(info.window_id).or_default();
++            let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
++                Some(&interpreter.buffer)
++            } else {
++                interpreter.get_buffer_by_id(info.buffer_id)
++            }) else {
++                continue 'windows;
++            };
++            let invisibility = resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
++            let plan = plan_window_text(
++                buffer,
++                &invisibility,
++                view,
++                info.start,
++                info.point,
++                text_rows,
++                body_width,
++                geometry.truncate,
++                &geometry,
++                info.selected,
++            );
++            let top_line = view.top_line;
++            let settled = lnum_for(interpreter, top_line);
++            if settled.map(|layout| layout.cols) == lnum.map(|layout| layout.cols) {
++                break (geometry, plan);
++            }
++            lnum = settled;
++        };
++        let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
++        let text_left = info.left + lnum_cols;
+         for (row, (rendered, _, _, _, _)) in plan.rendered.iter().enumerate() {
+-            frame[text_top + row].blit(info.left, rendered, CellAttrs::default());
++            frame[text_top + row].blit(text_left, rendered, CellAttrs::default());
++        }
++        if let Some(layout) = geometry.lnum {
++            line_number_jobs.push(LineNumberJob {
++                buffer_id: info.buffer_id,
++                layout,
++                top: text_top,
++                left: info.left,
++                text_rows,
++                truncate: geometry.truncate,
++                text_width: body_width.saturating_sub(lnum_cols).max(1),
++                point: info.point,
++                window_end: plan.window_end,
++                cursor_row: if info.selected {
++                    plan.cursor.map(|(row, _)| row)
++                } else {
++                    None
++                },
++                rows: plan
++                    .rendered
++                    .iter()
++                    .map(|(_, line, seg, start, row_hscroll)| (*line, *seg, *start, *row_hscroll))
++                    .collect(),
++            });
+         }
+         text_face_jobs.push(TextFaceJob {
+             buffer_id: info.buffer_id,
+             selected: info.selected,
+             top: text_top,
+-            left: info.left,
+-            body_width,
+-            usable: body_width.saturating_sub(1).max(1),
++            left: text_left,
++            lnum_cols,
++            body_width: body_width.saturating_sub(lnum_cols).max(1),
++            usable: body_width
++                .saturating_sub(lnum_cols)
++                .saturating_sub(1)
++                .max(1),
+             start: plan.top_pos,
+             window_end: plan.window_end,
+             rows: plan
+@@ -2039,11 +2155,15 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
+         if info.selected {
+             if let Some((row, col)) = plan.cursor {
+                 cursor_position = (
+-                    (info.left + col).min(cols - 1) as u16,
++                    (text_left + col).min(cols - 1) as u16,
+                     (text_top + row).min(frame_rows - 1) as u16,
+                 );
+             }
+-            view.synced_start = plan.top_pos;
++            state
++                .views
++                .entry(info.window_id)
++                .or_default()
++                .synced_start = plan.top_pos;
+             selected_sync = Some((plan.top_pos, metrics));
+         }
+         mode_line_jobs.push(ModeLineJob {
+@@ -2150,14 +2270,16 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
+                 {
+                     continue;
+                 }
++                // With a line-number column the left `$' replaces the
++                // column's first glyph, so text column HSCROLL itself is
++                // visible at text column zero; without one, the `$' owns
++                // column zero and text resumes from column one.
++                let hscroll_floor = if job.lnum_cols > 0 { 0 } else { 1 };
+                 let col_of = |pos: usize| {
+                     let offset = display_index_of(pos);
+                     let column = display_column(&line_text, offset);
+                     if *row_hscroll > 0 {
+-                        // The `$' glyph owns column zero, replacing the
+-                        // character at column HSCROLL itself; visible
+-                        // text maps to column - HSCROLL from column one.
+-                        (column as i64 - *row_hscroll as i64).max(1) as usize
++                        (column as i64 - *row_hscroll as i64).max(hscroll_floor) as usize
+                     } else {
+                         column.saturating_sub(seg * job.usable)
+                     }
+@@ -2188,7 +2310,7 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
+                 let mut column = display_column(&line_text, ellipsis_index);
+                 if *row_hscroll > 0 {
+                     let shifted = column as i64 - *row_hscroll as i64;
+-                    if shifted < 1 {
++                    if shifted < i64::from(job.lnum_cols == 0) {
+                         continue;
+                     }
+                     column = shifted as usize;
+@@ -2210,6 +2332,183 @@ fn redraw(interpreter: &mut Interpreter, env: &mut Env, state: &mut TtyState) ->
+         }
+     }
+ 
++    // The `display-line-numbers' columns (maybe_produce_line_number):
++    // a number on each row that begins a buffer line, a blank prefix on
++    // continuation rows and on every row at or past ZV, all in the
++    // line-number faces; under hscroll the left `$' replaces the
++    // column's first cell in the default face.
++    for job in &line_number_jobs {
++        use crate::lisp::primitives::LineNumberMode as LnMode;
++        let layout = job.layout;
++        let mut resolve = |name: &str| -> CellAttrs {
++            *state.face_cache.entry(name.to_string()).or_insert_with(|| {
++                crate::lisp::primitives::resolve_tty_face_attrs(
++                    interpreter,
++                    env,
++                    &Value::Symbol(name.into()),
++                )
++            })
++        };
++        let number_attrs = resolve("line-number");
++        let current_attrs = resolve("line-number-current-line");
++        let major_attrs = (layout.major_tick > 0).then(|| resolve("line-number-major-tick"));
++        let minor_attrs = (layout.minor_tick > 0).then(|| resolve("line-number-minor-tick"));
++        let Some(buffer) = (if job.buffer_id == interpreter.current_buffer_id() {
++            Some(&interpreter.buffer)
++        } else {
++            interpreter.get_buffer_by_id(job.buffer_id)
++        }) else {
++            continue;
++        };
++        let spec = resolve_buffer_invisibility(interpreter, buffer, job.buffer_id);
++        let point = job.point.clamp(buffer.point_min(), buffer.point_max());
++        let point_line_abs = buffer.line_number_at_pos(point);
++        let begv_line = buffer.line_number_at_pos(buffer.point_min());
++        let displayed = |line: usize| {
++            if layout.widen {
++                line as i64
++            } else {
++                line as i64 - begv_line as i64 + 1
++            }
++        };
++        let point_max = buffer.point_max();
++        let usable = job.text_width.saturating_sub(1).max(1);
++        let segs_of = |text: &str| {
++            if job.truncate {
++                1
++            } else {
++                segment_count(display_width(text), usable)
++            }
++        };
++        // Visual mode: the window-relative screen row showing point,
++        // extrapolated in screen lines when point is off-screen
++        // (display_count_lines_visually counts glyph rows).
++        let point_row: i64 = if layout.mode == LnMode::Visual {
++            let contains_point = |index: usize| {
++                let (_, _, row_start, _) = job.rows[index];
++                if row_start == usize::MAX || point < row_start {
++                    return false;
++                }
++                let row_end = job
++                    .rows
++                    .get(index + 1)
++                    .map(|(_, _, next, _)| *next)
++                    .filter(|next| *next != usize::MAX)
++                    .unwrap_or(job.window_end);
++                point < row_end || row_end <= row_start
++            };
++            let rows_between = |from: (usize, usize), to: (usize, usize)| -> i64 {
++                let mut rows: i64 = 0;
++                let mut line = from.0;
++                let mut first_seg = from.1 as i64;
++                while line < to.0 {
++                    let visual = visual_line_at(buffer, &spec, line);
++                    rows += segs_of(&visual.text) as i64 - first_seg;
++                    first_seg = 0;
++                    line += visual.lines_spanned.max(1);
++                }
++                rows + to.1 as i64 - first_seg
++            };
++            if let Some(row) = job.cursor_row {
++                row as i64
++            } else if let Some(index) = (0..job.rows.len()).find(|&index| contains_point(index)) {
++                index as i64
++            } else {
++                let point_vline = visual_line_first_line(buffer, &spec, point_line_abs);
++                let point_seg = if job.truncate {
++                    0
++                } else {
++                    let visual = visual_line_at(buffer, &spec, point_vline);
++                    let offset = point.saturating_sub(buffer.line_start_of(point_vline));
++                    let index = visual
++                        .map
++                        .get(offset)
++                        .copied()
++                        .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
++                    display_column(&visual.text, index) / usable
++                };
++                let first = job
++                    .rows
++                    .iter()
++                    .find(|(_, _, row_start, _)| *row_start != usize::MAX)
++                    .map(|(line, seg, _, _)| (*line, *seg));
++                match first {
++                    Some((line, seg)) if (point_vline, point_seg) < (line, seg) => {
++                        -rows_between((point_vline, point_seg), (line, seg))
++                    }
++                    Some((line, seg)) => rows_between((line, seg), (point_vline, point_seg)),
++                    None => 0,
++                }
++            }
++        } else {
++            0
++        };
++        for row_index in 0..job.text_rows {
++            let (line, seg, row_start, row_hscroll) = job
++                .rows
++                .get(row_index)
++                .copied()
++                .unwrap_or((0, 0, usize::MAX, 0));
++            let beyond = row_start == usize::MAX || row_start >= point_max;
++            let value: i64 = if beyond {
++                0
++            } else {
++                match layout.mode {
++                    LnMode::Absolute => (displayed(line) + layout.offset).abs(),
++                    LnMode::Relative => {
++                        let distance = (displayed(line) - displayed(point_line_abs)).abs();
++                        if distance == 0 && layout.current_absolute {
++                            displayed(point_line_abs)
++                        } else {
++                            distance
++                        }
++                    }
++                    LnMode::Visual => {
++                        let distance = (row_index as i64 - point_row).abs();
++                        if distance == 0 && layout.current_absolute {
++                            displayed(point_line_abs)
++                        } else {
++                            distance
++                        }
++                    }
++                }
++            };
++            let blank = beyond || (layout.mode != LnMode::Visual && seg > 0);
++            let text = if blank {
++                " ".repeat(layout.cols)
++            } else {
++                format!("{:>width$} ", value, width = layout.width + 1)
++            };
++            let is_current = !beyond
++                && number_attrs != current_attrs
++                && match layout.mode {
++                    LnMode::Visual => row_index as i64 == point_row,
++                    _ => line == point_line_abs,
++                };
++            let tick_attrs = if beyond {
++                None
++            } else if major_attrs.is_some() && value % layout.major_tick.max(1) == 0 {
++                major_attrs
++            } else if minor_attrs.is_some() && value % layout.minor_tick.max(1) == 0 {
++                minor_attrs
++            } else {
++                None
++            };
++            let attrs = if is_current {
++                current_attrs
++            } else {
++                tick_attrs.unwrap_or(number_attrs)
++            };
++            frame[job.top + row_index].blit(job.left, &text, attrs);
++            if !beyond
++                && row_hscroll > 0
++                && display_width(&visual_line_at(buffer, &spec, line).text) > 0
++            {
++                frame[job.top + row_index].blit(job.left, "$", CellAttrs::default());
++            }
++        }
++    }
++
+     // Mode lines: each window's real `mode-line-format', rendered by the
+     // interpreter's engine in that window's context and painted in the
+     // realized mode-line face.
+@@ -2639,6 +2938,20 @@ fn truncate_row(line: &str, width: usize) -> String {
+ /// has any character scrolled off (an empty line shows nothing), the
+ /// visible text follows from column HSCROLL of the expanded line, and a
+ /// tail that still does not fit ends in the `$' right-truncation glyph.
++/// An hscrolled row when a line-number column precedes the text: the
++/// left `$' replaces the column's own first glyph (produce_special_glyphs
++/// overwrites the row's first glyph, which is now a line-number cell),
++/// so the text area simply shows the line from column HSCROLL onward,
++/// truncated on the right as usual.
++fn truncate_row_from(line: &str, width: usize, hscroll: usize) -> String {
++    if hscroll == 0 {
++        return truncate_row(line, width);
++    }
++    let expanded = expand_tabs(line);
++    let visible: String = expanded.chars().skip(hscroll).collect();
++    truncate_row(&visible, width)
++}
++
+ fn truncate_row_hscrolled(line: &str, width: usize, hscroll: usize) -> String {
+     if hscroll == 0 {
+         return truncate_row(line, width);
+@@ -3025,6 +3338,7 @@ mod tests {
+                 hscroll: 0,
+                 current_line_only: false,
+                 min_hscroll: 0,
++                lnum: None,
+             },
+             false,
+         );
+@@ -3064,6 +3378,7 @@ mod tests {
+                 hscroll: 0,
+                 current_line_only: false,
+                 min_hscroll: 0,
++                lnum: None,
+             },
+             true,
+         );
+@@ -3097,6 +3412,7 @@ mod tests {
+                 hscroll: 0,
+                 current_line_only: false,
+                 min_hscroll: 0,
++                lnum: None,
+             },
+             true,
+         );
+diff --git a/tools/ttydiff.py b/tools/ttydiff.py
+index af26b14..653f358 100755
+--- a/tools/ttydiff.py
++++ b/tools/ttydiff.py
+@@ -1100,6 +1100,77 @@ SCENARIOS = [
+         "".join(f"line {n:02} alpha beta gamma\n" for n in range(1, 25)),
+         [b"\x1bxxterm-mouse-mode\r", b"\x1b[<18;10;5M", b"\x1b[<18;10;5m"],
+     ),
++    # display-line-numbers t: the number column's width follows the
++    # window (digits of first line + body rows - 1), numbers sit
++    # right-justified before a blank separator in the line-number face,
++    # and every row at or past ZV keeps a blank prefix in that face.
++    (
++        "lnum-basic",
++        "".join(f"L{n}\n" for n in range(1, 13)),
++        [b"\x1b:(setq display-line-numbers t)\r"],
++    ),
++    # Three-digit numbers at the end of a 200-line buffer; the width
++    # grows with the window's first line as M-> scrolls.
++    (
++        "lnum-3digit",
++        "".join(f"line {n}\n" for n in range(1, 201)),
++        [b"\x1b:(setq display-line-numbers t)\r", b"\x1b>"],
++    ),
++    # A wrapped line: continuation rows show a blank prefix, and the
++    # text wraps at the narrowed width (the column eats text area).
++    ("lnum-wrap", WIDE_SAMPLE, [b"\x1b:(setq display-line-numbers t)\r", b"\x05\x05"]),
++    # display-line-numbers-mode, the user-facing wrapper, through M-x.
++    (
++        "lnum-mode",
++        "".join(f"L{n}\n" for n in range(1, 13)),
++        [b"\x1bxdisplay-line-numbers-mode\r", b"\x0e\x0e"],
++    ),
++    # Truncation plus auto-hscroll with the column present: the left `$'
++    # replaces the column's first cell, the numbers stay put while the
++    # text hscrolls, and the recentering step counts the column's width.
++    (
++        "lnum-hscroll",
++        WIDE_SAMPLE,
++        [b"\x1b:(setq truncate-lines t display-line-numbers t)\r", b"\x05"],
++    ),
++    # `relative': distances from point's line, the absolute number on
++    # the current line (display-line-numbers-current-absolute t).
++    (
++        "lnum-relative",
++        "".join(f"L{n}\n" for n in range(1, 13)),
++        [b"\x1b:(setq display-line-numbers (quote relative))\r",
++         b"\x1b:(forward-line 4)\r"],
++    ),
++    # `visual': screen-line distances — continuation rows count and get
++    # numbers of their own.
++    (
++        "lnum-visual",
++        WIDE_SAMPLE,
++        [b"\x1b:(setq display-line-numbers (quote visual))\r",
++         b"\x1b:(forward-line 2)\r"],
++    ),
++    # An explicit display-line-numbers-width wider than needed.
++    (
++        "lnum-width",
++        "".join(f"L{n}\n" for n in range(1, 13)),
++        [b"\x1b:(setq display-line-numbers-width 5 display-line-numbers t)\r"],
++    ),
++    # Screen-line motion under the narrowed text area: C-n through a
++    # wrapped line must land on the same visual row and column as GNU's
++    # iterator, whose lnum_width is primed before the walk.
++    (
++        "lnum-motion",
++        WIDE_SAMPLE,
++        [b"\x1b:(setq display-line-numbers t)\r", b"\x0e", b"\x0e", b"\x06\x06\x06"],
++    ),
++    # Folded org with line numbers: hidden lines keep their numbers, so
++    # the rows after a fold jump exactly as GNU's counter does.
++    (
++        "lnum-org-fold",
++        ORG_SAMPLE,
++        [b"\x1b:(setq display-line-numbers t)\r", b"\x1bxorg-cycle\r", b"\x0e\x0e"],
++        ".org",
++    ),
+ ]
+ 
+ 

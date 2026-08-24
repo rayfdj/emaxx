@@ -1,0 +1,43 @@
+Round 30: display-line-numbers on the tty glass
+
+The `display-line-numbers' column renders as maybe_produce_line_number
+produces it:
+
+- The width follows the window, not the buffer: the digits of the
+  number the window's last row could show (the 0-based this_line at
+  vpos 0 plus the matrix rows), floored by an explicit
+  `display-line-numbers-width'.  Each number sits right-justified in
+  a width+1 field before a blank separator, in the `line-number'
+  face -- and every row at or past ZV keeps a blank prefix in that
+  face down to the window's bottom, exactly as GNU paints it.
+
+- Continuation rows and a window starting mid-line show the blank
+  prefix.  `relative' shows distances, with point's absolute number
+  on its own line per `display-line-numbers-current-absolute';
+  `visual' numbers screen rows, so wrapped rows count and each gets a
+  number.  The major/minor tick faces, the current-line face when it
+  resolves differently, `display-line-numbers-offset' (which forces
+  widened counting), and `display-line-numbers-widen' follow the C
+  ordering, and numbers count from the accessible region's beginning
+  under narrowing.
+
+- The column narrows the text area: wrapping, truncation, and the
+  cursor shift by its width.  hscroll_window_tree counts the column's
+  glyphs in the cursor's x (its x_offset loop over the charpos < 0
+  glyphs), which moves the right-margin trigger and the step formulas
+  by the column; the tty's left `$' then replaces the column's first
+  cell rather than a text cell, so the text area shows the line from
+  column HSCROLL itself.
+
+- Screen-line motion walks the same narrowed area: Fvertical_motion
+  primes its iterator's lnum_width with the width redisplay computed
+  at the window's start, so C-n through a wrapped line lands where
+  GNU's iterator lands (visual_segment_starts subtracts the column).
+
+The width and the plan fix each other's point -- the width follows
+the window's start line, which recentering may move -- so planning
+iterates until the width it laid out with matches its final top line.
+
+The battery gains lnum-basic, lnum-3digit, lnum-wrap, lnum-mode,
+lnum-hscroll, lnum-relative, lnum-visual, lnum-width, lnum-motion,
+and lnum-org-fold (109 scenarios).

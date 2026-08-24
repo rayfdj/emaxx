@@ -591,6 +591,14 @@ define_dispatch!(
                     .buffer
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
+                // replace_range grafts NEWSTRING's text properties into
+                // the buffer.  A backslash substitution rebuilds the text
+                // through build_string and loses them, so the graft holds
+                // exactly when the inserted text keeps NEWSTRING's length
+                // (literal replacements, case conversion included).
+                let source_spans = string_like(&args[0])
+                    .map(|source| (source.text.chars().count(), source.props))
+                    .unwrap_or((0, Vec::new()));
                 let mut replacement =
                     regexp::expand_replace_match(interp, &replacement, &match_data, literal)?;
                 if !fixedcase && let Some(action) = replacement_case_action(interp, &matched, env) {
@@ -613,6 +621,18 @@ define_dispatch!(
                     .map_err(|e| LispError::Signal(e.to_string()))?;
                 interp.buffer.goto_char(start);
                 interp.insert_current_buffer(&replacement);
+                let (source_len, spans) = source_spans;
+                if !spans.is_empty() && source_len == replacement_len {
+                    interp.apply_text_property_change_shared(&|buffer| {
+                        for span in &spans {
+                            buffer.set_text_properties(
+                                start + span.start,
+                                start + span.end,
+                                &span.props,
+                            );
+                        }
+                    });
+                }
                 let removed_len = end.saturating_sub(start);
                 for (marker_id, original) in saved_markers {
                     let Some(original_pos) = original else {
