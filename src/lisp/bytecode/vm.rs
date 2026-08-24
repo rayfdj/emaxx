@@ -1452,9 +1452,17 @@ fn run_with_stack(
                     }
                 }
                 if !handled {
-                    if trace_errors {
+                    // Trace only genuine errors, and render them bounded: a
+                    // `throw' unwinding to an outer catch is control flow
+                    // (seq-some's `seq--break' fires constantly), and the
+                    // derived Debug rendering recursed without limit -- a
+                    // cyclic widget graph in the payload overflowed the
+                    // stack after gigabytes of trace (custom-tests.el under
+                    // the harness), killing the child with no report.
+                    if trace_errors && !matches!(error, LispError::Throw(_, _)) {
                         eprintln!(
-                            "bytecode operation {op:?} failed at byte offset {offset}: {error:?}"
+                            "bytecode operation {op:?} failed at byte offset {offset}: {}",
+                            crate::lisp::types::bounded_error_debug(&error)
                         );
                     }
                     break 'run Err(error);

@@ -2619,7 +2619,17 @@ fn load_or_synthesize_report(
             }
         )
     } else {
-        "process terminated without a status code".to_string()
+        // Killed by a signal: the child's stderr is the only evidence
+        // (Rust's stack-overflow handler, abort messages), so carry it.
+        let detail = if process.stderr.trim().is_empty() {
+            process.stdout.trim()
+        } else {
+            process.stderr.trim()
+        };
+        format!(
+            "process terminated without a status code: {}",
+            if detail.is_empty() { "no output" } else { detail }
+        )
     };
     let report = BatchReport::load_error(runner, relative_file, selector, message);
     // A synthesized timeout/crash report is part of the immutable run
