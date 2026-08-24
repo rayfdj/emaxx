@@ -2078,6 +2078,13 @@ fn redraw_with_echo_policy(
         rows: Vec<(usize, usize, usize, usize)>,
     }
     let mut line_number_jobs: Vec<LineNumberJob> = Vec::new();
+    // GNU's overlay arrow on a tty: a variable in
+    // `overlay-arrow-variable-list' holding a marker overlays its
+    // string ("=>", or the symbol's `overlay-arrow-string' property)
+    // over the first cells of the row starting the marker's line —
+    // after the face spans land, since the arrow glyphs carry the
+    // default face over whatever the text properties painted.
+    let mut overlay_arrow_jobs: Vec<(usize, usize, String)> = Vec::new();
 
     'windows: for info in &layout {
         // A window not flush with the frame's right edge spends its last
@@ -2158,6 +2165,60 @@ fn redraw_with_echo_policy(
         let text_left = info.left + lnum_cols;
         for (row, (rendered, _, _, _, _)) in plan.rendered.iter().enumerate() {
             frame[text_top + row].blit(text_left, rendered, CellAttrs::default());
+        }
+        {
+            let mut variables = interpreter
+                .lookup_var("overlay-arrow-variable-list", &Vec::new())
+                .unwrap_or(Value::Nil);
+            while let Value::Cons(_) = variables {
+                let Ok(symbol_value) = variables.car() else {
+                    break;
+                };
+                variables = variables.cdr().unwrap_or(Value::Nil);
+                let Ok(symbol) = symbol_value.as_symbol() else {
+                    continue;
+                };
+                let Some(Value::Marker(marker)) =
+                    interpreter.lookup_var(symbol, &Vec::new())
+                else {
+                    continue;
+                };
+                if interpreter.marker_buffer_id(marker) != Some(info.buffer_id) {
+                    continue;
+                }
+                let Some(position) = interpreter.marker_position(marker) else {
+                    continue;
+                };
+                let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
+                    Some(&interpreter.buffer)
+                } else {
+                    interpreter.get_buffer_by_id(info.buffer_id)
+                }) else {
+                    continue;
+                };
+                let line_start = buffer
+                    .line_start_at(position.clamp(buffer.point_min(), buffer.point_max()));
+                let Some(row) = plan
+                    .rendered
+                    .iter()
+                    .position(|(_, _, seg, start, _)| {
+                        *seg == 0 && *start != usize::MAX && *start == line_start
+                    })
+                else {
+                    continue;
+                };
+                let arrow = interpreter
+                    .get_symbol_property(symbol, "overlay-arrow-string")
+                    .filter(|value| value.is_string())
+                    .or_else(|| interpreter.lookup_var("overlay-arrow-string", &Vec::new()))
+                    .and_then(|value| value.as_string().map(str::to_string).ok())
+                    .unwrap_or_else(|| "=>".to_string());
+                let arrow: String = arrow
+                    .chars()
+                    .take(body_width.saturating_sub(lnum_cols))
+                    .collect();
+                overlay_arrow_jobs.push((text_top + row, text_left, arrow));
+            }
         }
         if let Some(layout) = geometry.lnum {
             line_number_jobs.push(LineNumberJob {
@@ -2388,6 +2449,10 @@ fn redraw_with_echo_policy(
                 }
             }
         }
+    }
+
+    for (row, left, arrow) in &overlay_arrow_jobs {
+        frame[*row].blit(*left, arrow, CellAttrs::default());
     }
 
     // The `display-line-numbers' columns (maybe_produce_line_number):

@@ -1297,22 +1297,6 @@ pub(crate) fn string_identity_for_coding(
     true
 }
 
-pub(crate) fn preferred_ascii_detection_base(interp: &Interpreter) -> String {
-    let priorities = interp.coding_system_priority_list();
-    if priorities
-        .first()
-        .is_some_and(|coding| coding == "utf-8-auto")
-    {
-        "__eol__".into()
-    } else if priorities
-        .iter()
-        .any(|coding| interp.coding_system_base_name(coding).as_deref() == Some("prefer-utf-8"))
-    {
-        "prefer-utf-8".into()
-    } else {
-        "__eol__".into()
-    }
-}
 
 pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
     let actual_eol = detect_eol_type(bytes);
@@ -1356,17 +1340,12 @@ pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String,
     if std::str::from_utf8(bomless).is_ok() {
         let text = decode_utf8_bytes(bomless);
         if ascii_only_text(&text) {
-            let base = preferred_ascii_detection_base(interp);
-            if base == "__eol__" {
-                let base = match actual_eol {
-                    1 => "dos",
-                    2 => "mac",
-                    _ => "unix",
-                };
-                return (base.into(), normalized);
-            }
+            // Pure-ASCII text decides nothing: GNU records `undecided'
+            // with the detected eol, whatever the coding priorities say
+            // (prefer-utf-8 cannot even be preferred, and a preferred
+            // utf-8-auto still answers undecided-unix).
             return (
-                coding_variant_name(interp, &base, Some(actual_eol)),
+                coding_variant_name(interp, "undecided", Some(actual_eol)),
                 normalized,
             );
         }

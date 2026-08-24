@@ -1,0 +1,51 @@
+Round 31: compile, grep, and next-error -- and what they shook loose
+
+M-x compile, the file:line parse with its faces, M-x next-error and
+C-x ` hopping loci, M-x grep with its match highlights, and comint's
+TAB filename completion now render cell-for-cell as GNU does.  The
+compilation and grep modes themselves were already plain Lisp running
+on round 26's process layer; getting their glass identical fixed four
+mechanisms underneath:
+
+- The renderer's handle_fontified_prop pass read
+  `fontification-functions' once, in the selected window's buffer.
+  The variable lives buffer-locally where jit-lock registered it, and
+  GNU reads it with each window's buffer current -- so a fundamental
+  -mode file in the selected window starved every other window of
+  fontification, which is why *compilation*'s sentinel annotation
+  ("Compilation finished") never took the compilation-info face.  The
+  check now runs per window, after the buffer switch.
+
+- keyboard.c calls resize_echo_area_exactly between commands: a
+  displayed message re-fits the mini window to exactly the rows it
+  needs.  Round 29's grow-only model never shrank until the echo
+  emptied, so a wrapped minibuffer prompt left the mini window tall
+  for the rest of the session -- and the window tree above it
+  permanently short.  The command-boundary redraw now resizes
+  exactly, while an active minibuffer keeps its grown rows
+  (echo_area_buffer[0] is nil there, so GNU never exact-resizes it).
+
+- search.c's Freplace_match hands NEWSTRING to replace_range, which
+  grafts the string's text-property intervals into the buffer.  Ours
+  inserted bare text, so grep-filter's propertized match replacement
+  -- the SGR escapes swapped for text carrying grep's match face --
+  lost the face and the highlight never painted.  The graft now
+  applies whenever the inserted text keeps NEWSTRING's length; a
+  backslash substitution rebuilds the text through build_string in
+  GNU and loses the properties there too.
+
+- A string-valued `display' text property shows its string in place
+  of the covered text, once per run carrying the same value
+  (handle_single_display_spec).  grep's --null output separates the
+  file name with a NUL that grep-mode covers with a display ":", and
+  the renderer painted the NUL raw.
+
+Wall-clock text ("Compilation started at ...", the duration) can
+never agree between two live processes, so the compile scenarios pin
+`current-time-string' and `float-time' through identical defaliases
+in both editors and compare the pinned text strictly.
+suggest-key-bindings goes off in scenarios where its 2-second
+suggestion timer races the capture window.
+
+The battery gains compile-run, compile-parse, compile-next-error,
+grep-null, grep-next-error, and shell-tab-complete (115 scenarios).

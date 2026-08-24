@@ -484,6 +484,8 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
 
 WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird line\n"
 
+SEARCH_SAMPLE = "alpha beta gamma\nbeta delta beta\ngamma alpha beta\nlast line here\n"
+
 # Compilation timestamps can never agree between two processes; both
 # editors run the same defaliases, so the pinned text compares strictly.
 # suggest-key-bindings goes off because its 2-second suggestion timer
@@ -1233,6 +1235,44 @@ SCENARIOS = [
         "shell-tab-complete",
         "sample\n",
         [b"\x1bxshell\r", b"cat " + FIXTURE_PATH.encode()[:-7], b"\t", b"\r", b"\x0c"],
+    ),
+    # Repeating C-s past the last match fails, and one more C-s wraps:
+    # the echo walks I-search -> Failing -> Wrapped with the overwrapped
+    # highlight states.
+    (
+        "isearch-fail-wrap",
+        SEARCH_SAMPLE,
+        [b"\x13beta", b"\x13\x13\x13\x13", b"\x13"],
+    ),
+    # M-s w toggles word search inside isearch.
+    ("isearch-word", SEARCH_SAMPLE, [b"\x1bsw", b"beta", b"\x13"]),
+    # RET ends the search storing it on the ring; a later bare C-s C-s
+    # resumes the ring's head from point.
+    ("isearch-ring", SEARCH_SAMPLE, [b"\x13beta\r", b"\x1b<", b"\x13\x13"]),
+    # query-replace through the y/n/! answers: two spot replacements,
+    # one skip, then replace-all, with the summary message.
+    (
+        "query-replace",
+        SEARCH_SAMPLE,
+        [b"\x1b%beta\rBETA\r", b"y", b"n", b"y", b"!"],
+    ),
+    # M-s o from isearch: the pending search becomes an occur, its
+    # prefix column in the shadow face (face-differs-from-default-p
+    # gates it through tty_supports_face_attributes_p), the match face
+    # on each hit, and the copied coding system's mode-line mnemonic.
+    ("occur-isearch", SEARCH_SAMPLE, [b"\x13beta", b"\x1bso"]),
+    # occur-mode-goto-occurrence: RET on an entry jumps to the buffer
+    # locus and the tty overlay arrow (=>) marks the entry row.
+    (
+        "occur-goto",
+        SEARCH_SAMPLE,
+        [b"\x1bsobeta\r", b"\x18o", b"\x0e\x0e", b"\r"],
+    ),
+    # replace-string end to end, with its echo summary.
+    (
+        "replace-string",
+        SEARCH_SAMPLE,
+        [b"\x1bxreplace-string\rbeta\rBETA\r"],
     ),
 ]
 
