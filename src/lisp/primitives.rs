@@ -146,7 +146,11 @@ thread_local! {
 }
 
 fn signal_condition(condition: &str) -> LispError {
-    LispError::SignalValue(Value::list([Value::Symbol(condition.into()), Value::Nil]))
+    // (signal CONDITION nil): the error object is (CONDITION), not
+    // (CONDITION nil) — a nil DATA must not surface as a ": nil" tail
+    // in the echoed error message ("End of buffer", not
+    // "End of buffer: nil").
+    LispError::SignalValue(Value::list([Value::Symbol(condition.into())]))
 }
 
 fn beginning_of_line_at(interp: &mut Interpreter, pos: usize) -> usize {
@@ -178,27 +182,6 @@ fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
         .chars()
         .filter(|ch| *ch == '\n')
         .count()
-}
-
-fn line_distance_in_buffer(
-    interp: &Interpreter,
-    buffer_id: u64,
-    start: usize,
-    target: usize,
-) -> usize {
-    if target <= start {
-        return 0;
-    }
-    let text = if buffer_id == interp.current_buffer_id() {
-        interp.buffer.buffer_substring(start, target)
-    } else {
-        interp
-            .get_buffer_by_id(buffer_id)
-            .map(|buffer| buffer.buffer_substring(start, target))
-            .unwrap_or_else(|| interp.buffer.buffer_substring(start, target))
-    }
-    .unwrap_or_default();
-    text.chars().filter(|ch| *ch == '\n').count()
 }
 
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
