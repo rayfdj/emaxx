@@ -1374,7 +1374,10 @@ impl Interpreter {
                 )?;
             }
             _ => {
-                return Err(LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone()));
+                return Err(LispError::WrongTypeArgument(
+                    "integer-or-marker-p".into(),
+                    value.clone(),
+                ));
             }
         }
         self.set_marker_insertion_type(marker_id, insertion_type);
@@ -1569,6 +1572,32 @@ impl Interpreter {
                     && cache.char_table_generation == self.char_table_mutation_generation
             })
             .map(|cache| cache.rendered.clone())
+    }
+
+    pub(crate) fn cached_syntax_segments(
+        &self,
+        table_id: u64,
+    ) -> Option<std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>> {
+        self.syntax_segment_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| {
+                cache.table_id == table_id
+                    && cache.char_table_generation == self.char_table_mutation_generation
+            })
+            .map(|cache| cache.segments.clone())
+    }
+
+    pub(crate) fn cache_syntax_segments(
+        &self,
+        table_id: u64,
+        segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
+    ) {
+        *self.syntax_segment_cache.borrow_mut() = Some(crate::lisp::eval::SyntaxSegmentCache {
+            table_id,
+            char_table_generation: self.char_table_mutation_generation,
+            segments,
+        });
     }
 
     pub(crate) fn cache_regexp_syntax_classes(&self, table_id: u64, rendered: [String; 16]) {

@@ -161,15 +161,8 @@ pub(crate) struct CasingContext {
 
 impl CasingContext {
     /// Mirror of casefiddle.c:70-85, including which tables each action nils.
-    pub(crate) fn prepare(
-        interp: &mut Interpreter,
-        action: CaseAction,
-        env: &mut Env,
-    ) -> Self {
-        let capitalizing = matches!(
-            action,
-            CaseAction::Capitalize | CaseAction::UpcaseInitials
-        );
+    pub(crate) fn prepare(interp: &mut Interpreter, action: CaseAction, env: &mut Env) -> Self {
+        let capitalizing = matches!(action, CaseAction::Capitalize | CaseAction::UpcaseInitials);
         let table = |interp: &mut Interpreter, property: &str, env: &mut Env| {
             crate::lisp::primitives::dispatch::strings::uniprop_table_id(interp, property, env)
         };
@@ -388,13 +381,9 @@ pub(crate) fn casify_string(
         } else {
             match action {
                 CaseAction::Up => full_upcase_string(interp, &context, up_table, ch),
-                CaseAction::Down => full_downcase_string(
-                    interp,
-                    &context,
-                    down_table,
-                    ch,
-                    in_word && !next_is_word,
-                ),
+                CaseAction::Down => {
+                    full_downcase_string(interp, &context, down_table, ch, in_word && !next_is_word)
+                }
                 CaseAction::Capitalize => {
                     if is_word && !in_word {
                         full_titlecase_string(interp, &context, up_table, ch)

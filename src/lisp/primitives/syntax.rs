@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SyntaxClass {
+pub(crate) enum SyntaxClass {
     Whitespace = 0,
     Punctuation = 1,
     Word = 2,
@@ -791,8 +791,7 @@ fn skip_comment_with_status(
     match start.kind {
         CommentKind::Single { line } => {
             while cursor < chars.len() {
-                let entry =
-                    scan.entry_at(interp, chars[cursor], cursor + 1);
+                let entry = scan.entry_at(interp, chars[cursor], cursor + 1);
                 if entry.class == SyntaxClass::CommentEnd
                     && scan_comment_style(&entry, None) == start.style
                 {
@@ -812,8 +811,7 @@ fn skip_comment_with_status(
         }
         CommentKind::Fence => {
             while cursor < chars.len() {
-                let entry =
-                    scan.entry_at(interp, chars[cursor], cursor + 1);
+                let entry = scan.entry_at(interp, chars[cursor], cursor + 1);
                 if entry.class == SyntaxClass::GenericCommentDelimiter {
                     return (cursor + 1, true);
                 }
@@ -1506,8 +1504,7 @@ fn back_comment_gnu(
                     && comstyle == gnu_comment_style(&last, Some(&entry))
                     && (last.nested || entry.nested) == comnested
             });
-        let mut com2end =
-            entry.end_first && last_entry.is_some_and(|last| last.end_second);
+        let mut com2end = entry.end_first && last_entry.is_some_and(|last| last.end_second);
         let comstart = com2start || code == SyntaxClass::CommentStart;
 
         // Overlapping two-char sequences (snmp-mode's --, C's |*|): don't
@@ -1601,16 +1598,15 @@ fn back_comment_gnu(
                     comment_lossage = true;
                 }
             }
-            SyntaxClass::OpenParen => {
+            SyntaxClass::OpenParen
                 if open_paren_defun_start_enabled(interp)
                     && !comment_use_syntax_ppss_enabled(interp)
-                    && (from == stop || chars[from - 2] == '\n')
-                {
-                    // A defun-start is assumed to be outside of strings.
-                    defun_start = from;
-                    from = stop;
-                    continue;
-                }
+                    && (from == stop || chars[from - 2] == '\n') =>
+            {
+                // A defun-start is assumed to be outside of strings.
+                defun_start = from;
+                from = stop;
+                continue;
             }
             _ => {}
         }
@@ -2199,8 +2195,7 @@ pub(super) fn parse_forward(
         if let Some(comment) = state.comment {
             match comment.kind {
                 CommentKind::Single { line } => {
-                    let entry =
-                        scan.entry_at(interp, chars[idx], idx + 1);
+                    let entry = scan.entry_at(interp, chars[idx], idx + 1);
                     if entry.class == SyntaxClass::CommentEnd
                         && scan_comment_style(&entry, None) == comment.style
                     {
@@ -2224,8 +2219,7 @@ pub(super) fn parse_forward(
                     continue;
                 }
                 CommentKind::Fence => {
-                    let entry =
-                        scan.entry_at(interp, chars[idx], idx + 1);
+                    let entry = scan.entry_at(interp, chars[idx], idx + 1);
                     if entry.class == SyntaxClass::GenericCommentDelimiter {
                         idx += 1;
                         state.comment = None;
@@ -2265,8 +2259,7 @@ pub(super) fn parse_forward(
                         && chars[idx] == end_first
                         && chars[idx + 1] == end_second
                     {
-                        let first =
-                            scan.entry_at(interp, chars[idx], idx + 1);
+                        let first = scan.entry_at(interp, chars[idx], idx + 1);
                         let second = scan.entry_at(interp, chars[idx + 1], idx + 2);
                         if scan_comment_style(&first, Some(&second)) != comment.style {
                             idx += 1;
@@ -2499,7 +2492,6 @@ pub(super) fn syntax_class_at_buffer_position_matches(
     syntax_entry_class_matches(entry, class)
 }
 
-
 // Scan-holding form of the pair above for per-character loops (the
 // regexp haystack encoder): the plain-table class comes from the scan's
 // ASCII memo, the effective class through its interval state.
@@ -2698,8 +2690,7 @@ pub(super) fn forward_comment_impl(
             if from > minimum && entry.end_second {
                 let first_pos = from - 1;
                 let first_c = chars[first_pos - 1];
-                let first_entry =
-                    scan.entry_at(interp, first_c, first_pos);
+                let first_entry = scan.entry_at(interp, first_c, first_pos);
                 if first_entry.end_first
                     && !scan_char_quoted(
                         interp,
@@ -2724,16 +2715,9 @@ pub(super) fn forward_comment_impl(
                 while from > minimum {
                     from -= 1;
                     let fence_c = chars[from - 1];
-                    let fence_entry =
-                        scan.entry_at(interp, fence_c, from);
+                    let fence_entry = scan.entry_at(interp, fence_c, from);
                     if fence_entry.class == SyntaxClass::GenericCommentDelimiter
-                        && !scan_char_quoted(
-                            interp,
-                            &mut scan,
-                            &chars,
-                            from as i64,
-                            minimum as i64,
-                        )
+                        && !scan_char_quoted(interp, &mut scan, &chars, from as i64, minimum as i64)
                     {
                         fence_found = true;
                         break;

@@ -147,7 +147,10 @@ impl Interpreter {
         for name in names {
             if let Some(canonical) = self.charset_canonical_name(name)
                 && !new_head.iter().any(|existing| existing == &canonical)
-                && self.charset_priority.iter().any(|existing| existing == &canonical)
+                && self
+                    .charset_priority
+                    .iter()
+                    .any(|existing| existing == &canonical)
             {
                 new_head.push(canonical);
             }

@@ -480,11 +480,7 @@ pub(crate) fn render_prin1_list(
                         tortoise_countdown = tortoise_period;
                         tortoise = tail.clone();
                     } else if same_cons_cell(&tail, &tortoise) {
-                        return Ok(format!(
-                            "({} . #{})",
-                            rendered.join(" "),
-                            tortoise_index
-                        ));
+                        return Ok(format!("({} . #{})", rendered.join(" "), tortoise_index));
                     }
                 }
                 let Some((next_car, next_cdr)) = tail.cons_values() else {
@@ -946,9 +942,7 @@ pub(crate) fn render_prin1_body(
         }
         Value::String(text) if !context.options.escape => Ok(text.to_string()),
         Value::String(text) => Ok(render_prin1_string(interp, text, env)),
-        Value::StringObject(state) if !context.options.escape => {
-            Ok(state.borrow().text.clone())
-        }
+        Value::StringObject(state) if !context.options.escape => Ok(state.borrow().text.clone()),
         Value::StringObject(state) => {
             let (text, props) = {
                 let state = state.borrow();
@@ -1190,11 +1184,10 @@ pub(crate) fn render_prin1_body(
                     }
                     // print.c:2087.
                     crate::lisp::eval::RecordKind::Obarray => {
-                        let count = crate::lisp::primitives::completion::obarray_symbols(
-                            interp, value,
-                        )
-                        .map(|symbols| symbols.len())
-                        .unwrap_or(0);
+                        let count =
+                            crate::lisp::primitives::completion::obarray_symbols(interp, value)
+                                .map(|symbols| symbols.len())
+                                .unwrap_or(0);
                         format!("#<obarray n={count}>")
                     }
                     _ => {
@@ -1574,7 +1567,10 @@ pub(crate) fn read_from_callable_source(
             Value::Integer(code) => Some(code),
             Value::Nil => None,
             other => {
-                return Err(LispError::WrongTypeArgument("integerp".into(), other.clone()));
+                return Err(LispError::WrongTypeArgument(
+                    "integerp".into(),
+                    other.clone(),
+                ));
             }
         }) else {
             break;

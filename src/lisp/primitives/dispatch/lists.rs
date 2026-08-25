@@ -268,13 +268,6 @@ fn finish_kbd_macro_command_cycle(
     Ok(())
 }
 
-
-
-
-
-
-
-
 fn active_minibuffer_text(interp: &mut Interpreter, env: &mut Env) -> Result<String, LispError> {
     let contents = super::call(interp, "minibuffer-contents-no-properties", &[], env)?;
     string_text(&contents)
@@ -386,8 +379,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
             interp.pop_catch_tag();
             match dispatch {
                 Ok(()) => {}
-                Err(LispError::Throw(tag, _))
-                    if matches!(&tag, Value::Symbol(name) if name == "exit") =>
+                Err(LispError::Throw(tag, _)) if matches!(&tag, Value::Symbol(name) if name == "exit") =>
                 {
                     // The exiting command leaves the recursive loop before
                     // its post-command phase.  The prompting command
@@ -620,7 +612,6 @@ fn advance_kbd_macro_index(interp: &mut Interpreter, count: usize, env: &mut Env
         );
     }
 }
-
 
 // Dispatch commands from the innermost keyboard macro until its events run
 // out.  `recursive-edit` re-enters this loop on the same shared cursor, so a
@@ -1794,7 +1785,9 @@ define_dispatch!(
                 )?;
                 let path = PathBuf::from(
                     string_like(&expanded)
-                        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?
+                        .ok_or_else(|| {
+                            LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                        })?
                         .text,
                 );
                 if path.exists() {
@@ -1820,7 +1813,10 @@ define_dispatch!(
                     && !stuff_string.is_nil()
                     && string_like(stuff_string).is_none()
                 {
-                    return Err(LispError::WrongTypeArgument("stringp".into(), stuff_string.clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "stringp".into(),
+                        stuff_string.clone(),
+                    ));
                 }
                 run_named_hooks(interp, "suspend-hook", env, None)?;
                 // Emaxx currently exposes a headless batch terminal.  There is no
@@ -1900,8 +1896,9 @@ define_dispatch!(
             }
             "set--this-command-keys" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 let keys = string
                     .text
                     .chars()

@@ -872,7 +872,10 @@ fn serialize_hash_table(
 ) -> Result<String, LispError> {
     let depth = json_nested_depth(depth)?;
     let Some((_, entries)) = hash_table_entries(interp, value) else {
-        return Err(LispError::WrongTypeArgument("hash-table-p".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "hash-table-p".into(),
+            value.clone(),
+        ));
     };
     serialize_object_entries(
         interp,
@@ -1040,7 +1043,10 @@ fn hash_table_key_string(value: &Value) -> Result<String, LispError> {
         .chars()
         .any(|ch| ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some())
     {
-        return Err(LispError::WrongTypeArgument("stringp".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "stringp".into(),
+            value.clone(),
+        ));
     }
     Ok(string.text)
 }

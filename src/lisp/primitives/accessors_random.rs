@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(crate) fn normalize_random_seed(seed: u64) -> u64 {
     if seed == 0 {
         0x1234_5678_9abc_def0

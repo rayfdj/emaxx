@@ -510,7 +510,10 @@ pub(crate) fn reverse_sequence_value(
             items.reverse();
             Ok(Value::list(items))
         }
-        _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "sequencep".into(),
+            value.clone(),
+        )),
     }
 }
 
@@ -540,7 +543,10 @@ pub(crate) fn nreverse_sequence_value(
             Ok(value.clone())
         }
         Value::Nil | Value::Cons(_) => nreverse_list_cells(value),
-        _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "sequencep".into(),
+            value.clone(),
+        )),
     }
 }
 
@@ -951,7 +957,10 @@ where
         if matches!(value, Value::String(_)) {
             return Ok(());
         }
-        return Err(LispError::WrongTypeArgument("stringp".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "stringp".into(),
+            value.clone(),
+        ));
     };
     let mut state = state.borrow_mut();
     let len = state.text.chars().count();

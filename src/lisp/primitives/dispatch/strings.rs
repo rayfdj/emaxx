@@ -290,8 +290,9 @@ define_dispatch!(
                     ));
                 }
                 // editfns.c Fsubstring's check is CHECK_ARRAY: `arrayp'.
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("arrayp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("arrayp".into(), args[0].clone())
+                })?;
                 let chars: Vec<char> = string.text.chars().collect();
                 let len = chars.len() as i64;
                 let from = normalize_string_index(args.get(1), 0, len)? as usize;
@@ -314,8 +315,9 @@ define_dispatch!(
             }
             "string-to-unibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 if !string.multibyte {
                     return Ok(string_like_value_with_multibyte(
                         string.text,
@@ -337,8 +339,9 @@ define_dispatch!(
             }
             "string-to-multibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 Ok(make_shared_string_value_with_multibyte(
                     string.text,
                     string.props,
@@ -347,8 +350,9 @@ define_dispatch!(
             }
             "string-make-multibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 let bytes = encode_raw_text_bytes(&string.text)?;
                 let text = decode_latin_bytes(&bytes);
                 let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
@@ -364,8 +368,9 @@ define_dispatch!(
             }
             "string-as-multibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 let bytes = encode_raw_text_bytes(&string.text)?;
                 let text = bytes
                     .into_iter()
@@ -386,15 +391,17 @@ define_dispatch!(
             }
             "string-make-unibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 let bytes = encode_raw_text_bytes(&string.text)?;
                 Ok(bytes_to_shared_unibyte_value(&bytes))
             }
             "string-as-unibyte" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 let bytes = encode_raw_text_bytes(&string.text)?;
                 Ok(bytes_to_unibyte_value(&bytes))
             }
@@ -789,8 +796,9 @@ define_dispatch!(
             }
             "string-to-char" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 Ok(string
                     .text
                     .chars()
@@ -868,8 +876,9 @@ define_dispatch!(
             }
             "string-bytes" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
+                let string = string_like(&args[0]).ok_or_else(|| {
+                    LispError::WrongTypeArgument("stringp".into(), args[0].clone())
+                })?;
                 Ok(Value::Integer(string.byte_len()? as i64))
             }
             "multibyte-string-p" => {
@@ -917,7 +926,10 @@ define_dispatch!(
             "get-unicode-property-internal" => {
                 need_args(name, args, 2)?;
                 let Value::CharTable(table_id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "char-table-p".into(),
+                        args[0].clone(),
+                    ));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
@@ -931,7 +943,10 @@ define_dispatch!(
             "put-unicode-property-internal" => {
                 need_args(name, args, 3)?;
                 let Value::CharTable(table_id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "char-table-p".into(),
+                        args[0].clone(),
+                    ));
                 };
                 if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
                     return Err(LispError::Signal("Invalid Unicode property table".into()));
@@ -968,11 +983,7 @@ pub(crate) fn uniprop_table_id(
 
 /// CHAR_TABLE_REF over a Unicode property table, decoding the compressed
 /// representation the generated `uni-*.el' tables use.
-pub(crate) fn uniprop_table_ref(
-    interp: &Interpreter,
-    table_id: u64,
-    code: u32,
-) -> Option<Value> {
+pub(crate) fn uniprop_table_ref(interp: &Interpreter, table_id: u64, code: u32) -> Option<Value> {
     let raw = interp.char_table_get(table_id, code)?;
     let decoded = decode_unicode_property_value(interp, table_id, raw).ok()?;
     (!decoded.is_nil()).then_some(decoded)

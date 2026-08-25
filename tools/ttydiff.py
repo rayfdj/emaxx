@@ -468,6 +468,17 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
                 # its launch and later navigation so the sentinel's summary
                 # and parsed hits exist before they are compared or visited.
                 settle, quiet = 4.0, 2.5
+            elif scenario == "org-fold-motion" and final:
+                # A cold Org redisplay can pause after accepting the final
+                # self-insert but before painting it.  A 200 ms quiet window
+                # occasionally captured GNU's preceding C-n frame instead.
+                settle, quiet = 3.0, 1.0
+            elif scenario == "mx-shell":
+                # Shell startup, the pty echo, command output, and the next
+                # prompt are separate process events.  Wait for the initial
+                # prompt before typing too, and do not let a gap between
+                # later events masquerade as a stable final screen.
+                settle, quiet = 4.0, 1.5
             else:
                 settle, quiet = 1.0, 0.2
             gnu.send(chunk, settle=settle, quiet=quiet)

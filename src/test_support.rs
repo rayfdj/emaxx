@@ -258,7 +258,11 @@ pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
             }
         }
         let started = std::time::Instant::now();
-        let mut clone = slot.as_ref().expect("image template built").0.deep_clone_image();
+        let mut clone = slot
+            .as_ref()
+            .expect("image template built")
+            .0
+            .deep_clone_image();
         if std::env::var("EMAXX_DEBUG_TEMPLATE").is_ok() {
             eprintln!("TEMPLATE clone {:?}", started.elapsed());
         }

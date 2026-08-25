@@ -112,11 +112,7 @@ pub(crate) fn invisible_value_class(spec: &InvisibilitySpec, value: &Value) -> u
 /// The `invisible' value governing POS, get-char-property's answer: the
 /// covering overlay with the highest priority wins over the text
 /// property.
-pub(crate) fn invisible_class_at(
-    buffer: &Buffer,
-    spec: &InvisibilitySpec,
-    pos: usize,
-) -> u8 {
+pub(crate) fn invisible_class_at(buffer: &Buffer, spec: &InvisibilitySpec, pos: usize) -> u8 {
     let mut best: Option<(i64, u8)> = None;
     for overlay in &buffer.overlays {
         if overlay.is_dead() || pos < overlay.beg || pos >= overlay.end {
@@ -171,7 +167,6 @@ pub(crate) fn invisible_run_at(
     Some((end, class == 2))
 }
 
-
 /// The first raw line of the display line containing LINE: while the
 /// newline ending the previous raw line is inside an invisible run, the
 /// display line began earlier.
@@ -192,4 +187,3 @@ pub(crate) fn visual_line_first_line(
     }
     line
 }
-

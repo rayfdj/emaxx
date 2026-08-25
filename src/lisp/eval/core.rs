@@ -337,7 +337,7 @@ impl Interpreter {
         // SIGABRT with no report).  Mirror GNU's contract directly: when
         // the running thread's stack headroom falls below the margin,
         // signal `excessive-lisp-nesting' instead of crashing.
-        if self.lisp_eval_depth % 64 == 0 && !Self::stack_headroom_remains() {
+        if self.lisp_eval_depth.is_multiple_of(64) && !Self::stack_headroom_remains() {
             self.lisp_eval_depth -= 1;
             return Err(LispError::Signal(
                 "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
@@ -1148,21 +1148,8 @@ impl Interpreter {
         }
     }
 
-
     // ── Special forms ──
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod eval_value_buffer_tests {

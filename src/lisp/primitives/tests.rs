@@ -8826,11 +8826,11 @@ fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describer
 
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    let mut form = Reader::new(bare_program)
+    let form = Reader::new(bare_program)
         .read()
         .expect("vector description contract should parse")
         .expect("vector description contract should contain a form");
-    interp.intern_symbols_in_value(&mut form);
+    interp.intern_symbols_in_value(&form);
     assert_eq!(
         interp
             .eval(&form, &mut env)
@@ -11398,7 +11398,8 @@ fn combine_change_calls_coalesces_hooks_and_tracks_the_updated_end() {
     let expected = r#"(body-result ((before 1 1 "") (after 1 3 0 "ab")) "ab")"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
+    let mut interp =
+        crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -11891,7 +11892,8 @@ fn native_headless_window_geometry_and_hscroll_match_gnu_c_contracts() {
     let expected_printed = "((73 73 73 23 23) (left-margin left-margin (0 . 0) (72 . 0) right-margin right-margin mode-line) (0 5 8 4 0 71 0) (nil nil) t (t t t t nil nil) (tab-line header-line (0 . 2) 21))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
+    let mut interp =
+        crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -11971,7 +11973,8 @@ fn native_indent_c_motion_and_line_number_width_family_matches_gnu() {
     let expected_printed = "(((12 1 3 4 t) (5 0 1 4 t) (8 0 2 2 nil) (7 2 1 1 nil) (5 0 1 4 t) (6 1 1 1 nil) (12 4 1 4 nil)) (999 23 4 6 6.0 (7 9) (0 0 0.0)))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
+    let mut interp =
+        crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -14261,10 +14264,7 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
         (vec![Value::Symbol("down".into())], "next-line"),
         (vec![Value::Symbol("left".into())], "left-char"),
         (vec![Value::Symbol("right".into())], "right-char"),
-        (
-            vec![Value::Symbol("home".into())],
-            "move-beginning-of-line",
-        ),
+        (vec![Value::Symbol("home".into())], "move-beginning-of-line"),
         (vec![Value::Symbol("end".into())], "move-end-of-line"),
         (
             vec![Value::Symbol("deletechar".into())],

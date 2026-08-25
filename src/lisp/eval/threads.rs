@@ -1710,7 +1710,7 @@ impl Interpreter {
     pub(crate) fn note_stepped_yield(&mut self) {
         self.fruitless_stepped_yields = self.fruitless_stepped_yields.saturating_add(1);
         if std::env::var_os("EMAXX_DEBUG_YIELD").is_some()
-            && self.fruitless_stepped_yields % 10_000 == 0
+            && self.fruitless_stepped_yields.is_multiple_of(10_000)
         {
             eprintln!("YIELD-GUARD count={}", self.fruitless_stepped_yields);
         }
@@ -2495,8 +2495,7 @@ impl Interpreter {
             .thread_states
             .iter()
             .filter(|thread| {
-                thread.record_id != self.main_thread_id
-                    && thread.record_id != self.active_thread_id
+                thread.record_id != self.main_thread_id && thread.record_id != self.active_thread_id
             })
             .map(|thread| thread.record_id)
             .collect::<Vec<_>>();
@@ -2731,7 +2730,6 @@ impl Interpreter {
         }
     }
 
-
     pub(super) fn unlock_mutex(&mut self, thread_id: u64, mutex_id: u64) {
         let Some(mutex) = self.find_mutex_state_mut(mutex_id) else {
             return;
@@ -2763,8 +2761,6 @@ impl Interpreter {
         self.unlock_processes_for_thread(record_id);
         self.last_thread_error = Some(value);
     }
-
-
 
     pub(super) fn deliver_signal_to_main_thread(
         &mut self,
