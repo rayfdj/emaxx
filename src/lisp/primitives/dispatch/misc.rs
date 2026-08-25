@@ -1824,7 +1824,6 @@ thread_local! {
 /// have no lambda body to read a docstring from, yet their docstrings are not in
 /// the `DOC` file either — they live inline in the byte-compiled sources.  We
 /// scan the `.el` sources once and cache a name → first-docstring map.
-
 pub(crate) fn fallback_function_documentation(
     interp: &Interpreter,
     function: &str,
@@ -1834,13 +1833,6 @@ pub(crate) fn fallback_function_documentation(
     // natively implemented names.
     builtin_doc_from_doc_file(interp, function)
 }
-
-
-
-
-
-
-
 
 /// Parse a GNU Emacs `DOC` file into a map from function name to docstring.
 ///

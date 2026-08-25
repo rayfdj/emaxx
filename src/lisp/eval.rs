@@ -1114,6 +1114,16 @@ struct RegexpSyntaxClassCache {
     rendered: [String; 16],
 }
 
+/// Range segments of the syntax table, resolved once for the scanners that
+/// cannot hold an interpreter borrow (`skip-chars-forward' and friends).
+/// Keyed like the rendered-class cache so a table mutation invalidates it.
+#[derive(Clone)]
+pub(crate) struct SyntaxSegmentCache {
+    table_id: u64,
+    char_table_generation: u64,
+    pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
+}
+
 impl CharTableState {
     pub(crate) fn new(id: u64, subtype: Option<String>, default: Value) -> Self {
         Self::with_entries(id, subtype, default, None, Vec::new())
@@ -1802,38 +1812,38 @@ impl Clone for ProcessState {
             panic!("image-template clone with a live process runtime");
         }
         Self {
-            record_id: self.record_id.clone(),
-            kind: self.kind.clone(),
-            buffer_id: self.buffer_id.clone(),
-            mark_marker_id: self.mark_marker_id.clone(),
+            record_id: self.record_id,
+            kind: self.kind,
+            buffer_id: self.buffer_id,
+            mark_marker_id: self.mark_marker_id,
             status: self.status.clone(),
             filter: self.filter.clone(),
             sentinel: self.sentinel.clone(),
-            sentinel_notified: self.sentinel_notified.clone(),
+            sentinel_notified: self.sentinel_notified,
             log: self.log.clone(),
             name: self.name.clone(),
-            thread_id: self.thread_id.clone(),
-            query_on_exit_flag: self.query_on_exit_flag.clone(),
-            traffic_stopped: self.traffic_stopped.clone(),
-            inherit_coding_system_flag: self.inherit_coding_system_flag.clone(),
+            thread_id: self.thread_id,
+            query_on_exit_flag: self.query_on_exit_flag,
+            traffic_stopped: self.traffic_stopped,
+            inherit_coding_system_flag: self.inherit_coding_system_flag,
             decoding: self.decoding.clone(),
             encoding: self.encoding.clone(),
             program: self.program.clone(),
             argv: self.argv.clone(),
-            stderr_process_id: self.stderr_process_id.clone(),
-            exit_code: self.exit_code.clone(),
-            exit_signal: self.exit_signal.clone(),
-            os_pid: self.os_pid.clone(),
+            stderr_process_id: self.stderr_process_id,
+            exit_code: self.exit_code,
+            exit_signal: self.exit_signal,
+            os_pid: self.os_pid,
             runtime: None,
             network: None,
             serial: None,
             contact_host: self.contact_host.clone(),
-            contact_service: self.contact_service.clone(),
+            contact_service: self.contact_service,
             remote: self.remote.clone(),
-            parent_server_id: self.parent_server_id.clone(),
+            parent_server_id: self.parent_server_id,
             pending_stdout: self.pending_stdout.clone(),
             pending_stderr: self.pending_stderr.clone(),
-            output_delivery_count: self.output_delivery_count.clone(),
+            output_delivery_count: self.output_delivery_count,
             plist: self.plist.clone(),
             gnutls: self.gnutls.clone(),
             contact: self.contact.clone(),
@@ -2104,7 +2114,6 @@ pub(crate) struct MinibufferRuntimeState {
 
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
-
 /// Issue #11: a graph-preserving deep copy of every Lisp value reachable
 /// from an image-template interpreter.  `Interpreter::clone' copies the
 /// host-side tables but SHARES the Rc value graphs, so interior mutation
@@ -2262,8 +2271,7 @@ impl ImageGraphCopier {
     fn copy_cons_chain(&mut self, head: &Value) -> Value {
         let mut spine = Vec::new();
         let mut cursor = head.clone();
-        loop {
-            let Value::Cons(cell) = &cursor else { break };
+        while let Value::Cons(cell) = &cursor {
             let key = crate::lisp::types::ConsCell::identity(cell);
             if self.cons.contains_key(&key) {
                 break;
@@ -2574,6 +2582,7 @@ impl Interpreter {
         clone.bytecode_program_cache.clear();
         clone.keymap_bindings_cache.get_mut().clear();
         *clone.regexp_syntax_class_cache.get_mut() = None;
+        *clone.syntax_segment_cache.get_mut() = None;
         clone.vm_stack_pool.clear();
         clone.backtrace_args_pool.clear();
 
@@ -2582,9 +2591,7 @@ impl Interpreter {
         // copy never reached is unreachable from the clone -- drop it.
         let remap_cons_identity = |copier: &ImageGraphCopier, identity: usize| -> Option<usize> {
             match copier.cons.get(&identity) {
-                Some(Value::Cons(cell)) => {
-                    Some(crate::lisp::types::ConsCell::identity(cell))
-                }
+                Some(Value::Cons(cell)) => Some(crate::lisp::types::ConsCell::identity(cell)),
                 _ => None,
             }
         };
@@ -2625,21 +2632,21 @@ impl Interpreter {
                 .filter_map(|weak| remap_weak(&copier, &weak))
                 .collect();
         }
-        clone.captured_lexical_frames.retain(|_, owners| !owners.is_empty());
+        clone
+            .captured_lexical_frames
+            .retain(|_, owners| !owners.is_empty());
         clone.registered_captured_envs = clone
             .registered_captured_envs
             .drain()
             .filter_map(|(_, weak)| {
-                remap_weak(&copier, &weak)
-                    .map(|weak| (weak.as_ptr() as usize, weak))
+                remap_weak(&copier, &weak).map(|weak| (weak.as_ptr() as usize, weak))
             })
             .collect();
         clone.closure_eval_contexts = clone
             .closure_eval_contexts
             .drain()
             .filter_map(|(_, (weak, lexical))| {
-                remap_weak(&copier, &weak)
-                    .map(|weak| (weak.as_ptr() as usize, (weak, lexical)))
+                remap_weak(&copier, &weak).map(|weak| (weak.as_ptr() as usize, (weak, lexical)))
             })
             .collect();
 
@@ -2654,9 +2661,8 @@ impl Interpreter {
                 crate::lisp::primitives::FnvBuildHasher,
             > = HashMap::default();
             for (index, (key, _)) in table.entries.iter().enumerate() {
-                let bucket = crate::lisp::primitives::runtime_hash_bucket_key(
-                    &clone, table.test, key,
-                );
+                let bucket =
+                    crate::lisp::primitives::runtime_hash_bucket_key(&clone, table.test, key);
                 key_index.entry(bucket).or_default().push(index);
             }
             table.key_index = key_index;
@@ -2852,6 +2858,7 @@ pub struct Interpreter {
     /// Lisp entry objects whose in-place changes bypass the table mutation
     /// door.
     regexp_syntax_class_cache: RefCell<Option<RegexpSyntaxClassCache>>,
+    syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
@@ -3227,7 +3234,6 @@ struct LambdaSourceBodyCacheEntry {
     source: WeakConsSlot,
     body: Weak<Vec<Value>>,
 }
-
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
     let map = primitives::make_runtime_keymap(interp, Some("visual-line-mode-map"));
@@ -3655,6 +3661,7 @@ impl Interpreter {
             ],
             char_table_mutation_generation: 0,
             regexp_syntax_class_cache: RefCell::new(None),
+            syntax_segment_cache: RefCell::new(None),
             equal_hash_tables: HashMap::default(),
             charset_aliases: Vec::new(),
             charset_ids: vec![
@@ -4013,7 +4020,10 @@ impl Interpreter {
             ("comp-ctxt", Value::Nil),
             ("comp-file-preloaded-p", Value::Nil),
             ("comp-sanitizer-active", Value::Nil),
-            ("compose-chars-after-function", Value::symbol("compose-chars-after")),
+            (
+                "compose-chars-after-function",
+                Value::symbol("compose-chars-after"),
+            ),
             // The *-consed counters are live allocation telemetry; Emaxx does
             // not count allocations, so they start at zero rather than at a
             // frozen snapshot of the oracle's own counters (which the first
@@ -4037,7 +4047,10 @@ impl Interpreter {
             ("display-pixels-per-inch", Value::Float(72.0)),
             ("dynamic-library-alist", Value::Nil),
             ("echo-area-clear-hook", Value::Nil),
-            ("emacs-copyright", Value::String("Copyright (C) 2025 Free Software Foundation, Inc.".into())),
+            (
+                "emacs-copyright",
+                Value::String("Copyright (C) 2025 Free Software Foundation, Inc.".into()),
+            ),
             ("emulation-mode-map-alists", Value::Nil),
             ("enable-disabled-menus-and-buttons", Value::Nil),
             ("extra-keyboard-modifiers", Value::Integer(0)),
@@ -4067,16 +4080,28 @@ impl Interpreter {
             ("input-pending-p-filter-events", Value::T),
             ("integer-width", Value::Integer(65536)),
             ("internal--text-quoting-flag", Value::T),
-            ("internal--top-level-message", Value::String("Back to top level".into())),
-            ("internal-make-interpreted-closure-function", Value::symbol("cconv-make-interpreted-closure")),
+            (
+                "internal--top-level-message",
+                Value::String("Back to top level".into()),
+            ),
+            (
+                "internal-make-interpreted-closure-function",
+                Value::symbol("cconv-make-interpreted-closure"),
+            ),
             ("internal-when-entered-debugger", Value::Integer(-1)),
             ("intervals-consed", Value::Integer(0)),
             ("large-hscroll-threshold", Value::Integer(10000)),
             ("last-command-event", Value::Nil),
             ("line-prefix", Value::Nil),
             ("lisp-eval-depth-reserve", Value::Integer(200)),
-            ("long-line-optimizations-bol-search-limit", Value::Integer(128)),
-            ("long-line-optimizations-region-size", Value::Integer(500000)),
+            (
+                "long-line-optimizations-bol-search-limit",
+                Value::Integer(128),
+            ),
+            (
+                "long-line-optimizations-region-size",
+                Value::Integer(500000),
+            ),
             ("long-line-threshold", Value::Integer(50000)),
             ("make-window-start-visible", Value::Nil),
             ("max-redisplay-ticks", Value::Integer(0)),
@@ -4116,7 +4141,10 @@ impl Interpreter {
             ("redisplay-dont-pause", Value::T),
             ("redisplay-skip-fontification-on-input", Value::Nil),
             ("redisplay-skip-initial-frame", Value::T),
-            ("report-emacs-bug-address", Value::String("bug-gnu-emacs@gnu.org".into())),
+            (
+                "report-emacs-bug-address",
+                Value::String("bug-gnu-emacs@gnu.org".into()),
+            ),
             ("resume-tty-functions", Value::Nil),
             ("scroll-bar-adjust-thumb-portion", Value::T),
             ("shared-game-score-directory", Value::Nil),
@@ -4154,18 +4182,72 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
 
-
         // Portable list-valued DEFVARs from the same completeness sweep;
         // the native-comp comp-*-h tables, comp-subr-list, terminal-frame
         // and the redisplay cause tables stay void -- they carry the NS
         // build's own filesystem paths and live object state, a disclosed
         // build divergence, not seedable data.
         for (name, value) in [
-            ("coding-category-list", Value::list([Value::symbol("coding-category-utf-8"), Value::symbol("coding-category-iso-7"), Value::symbol("coding-category-charset"), Value::symbol("coding-category-iso-7-else"), Value::symbol("coding-category-iso-8-else"), Value::symbol("coding-category-emacs-mule"), Value::symbol("coding-category-raw-text"), Value::symbol("coding-category-iso-7-tight"), Value::symbol("coding-category-iso-8-1"), Value::symbol("coding-category-iso-8-2"), Value::symbol("coding-category-utf-8-auto"), Value::symbol("coding-category-utf-8-sig"), Value::symbol("coding-category-utf-16-auto"), Value::symbol("coding-category-utf-16-be"), Value::symbol("coding-category-utf-16-le"), Value::symbol("coding-category-utf-16-be-nosig"), Value::symbol("coding-category-utf-16-le-nosig"), Value::symbol("coding-category-sjis"), Value::symbol("coding-category-big5"), Value::symbol("coding-category-ccl"), Value::symbol("coding-category-undecided")])),
-            ("frame-inhibit-implied-resize", Value::list([Value::symbol("tab-bar-lines")])),
-            ("selection-inhibit-update-commands", Value::list([Value::symbol("handle-switch-frame"), Value::symbol("handle-select-window")])),
-            ("while-no-input-ignore-events", Value::list([Value::symbol("thread-event"), Value::symbol("file-notify"), Value::symbol("select-window"), Value::symbol("help-echo"), Value::symbol("move-frame"), Value::symbol("iconify-frame"), Value::symbol("make-frame-visible"), Value::symbol("focus-in"), Value::symbol("focus-out"), Value::symbol("config-changed-event"), Value::symbol("selection-request")])),
-            ("fontset-alias-alist", Value::list([Value::cons(Value::String("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default".into()), Value::String("fontset-default".into()))])),
+            (
+                "coding-category-list",
+                Value::list([
+                    Value::symbol("coding-category-utf-8"),
+                    Value::symbol("coding-category-iso-7"),
+                    Value::symbol("coding-category-charset"),
+                    Value::symbol("coding-category-iso-7-else"),
+                    Value::symbol("coding-category-iso-8-else"),
+                    Value::symbol("coding-category-emacs-mule"),
+                    Value::symbol("coding-category-raw-text"),
+                    Value::symbol("coding-category-iso-7-tight"),
+                    Value::symbol("coding-category-iso-8-1"),
+                    Value::symbol("coding-category-iso-8-2"),
+                    Value::symbol("coding-category-utf-8-auto"),
+                    Value::symbol("coding-category-utf-8-sig"),
+                    Value::symbol("coding-category-utf-16-auto"),
+                    Value::symbol("coding-category-utf-16-be"),
+                    Value::symbol("coding-category-utf-16-le"),
+                    Value::symbol("coding-category-utf-16-be-nosig"),
+                    Value::symbol("coding-category-utf-16-le-nosig"),
+                    Value::symbol("coding-category-sjis"),
+                    Value::symbol("coding-category-big5"),
+                    Value::symbol("coding-category-ccl"),
+                    Value::symbol("coding-category-undecided"),
+                ]),
+            ),
+            (
+                "frame-inhibit-implied-resize",
+                Value::list([Value::symbol("tab-bar-lines")]),
+            ),
+            (
+                "selection-inhibit-update-commands",
+                Value::list([
+                    Value::symbol("handle-switch-frame"),
+                    Value::symbol("handle-select-window"),
+                ]),
+            ),
+            (
+                "while-no-input-ignore-events",
+                Value::list([
+                    Value::symbol("thread-event"),
+                    Value::symbol("file-notify"),
+                    Value::symbol("select-window"),
+                    Value::symbol("help-echo"),
+                    Value::symbol("move-frame"),
+                    Value::symbol("iconify-frame"),
+                    Value::symbol("make-frame-visible"),
+                    Value::symbol("focus-in"),
+                    Value::symbol("focus-out"),
+                    Value::symbol("config-changed-event"),
+                    Value::symbol("selection-request"),
+                ]),
+            ),
+            (
+                "fontset-alias-alist",
+                Value::list([Value::cons(
+                    Value::String("-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default".into()),
+                    Value::String("fontset-default".into()),
+                )]),
+            ),
         ] {
             interp.define_special_variable(name, value);
         }
@@ -5547,11 +5629,17 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
                 return function_name_from_binding_form(&items[1]);
             }
             let other = unquote(value);
-            Err(LispError::WrongTypeArgument("symbolp".into(), other.clone()))
+            Err(LispError::WrongTypeArgument(
+                "symbolp".into(),
+                other.clone(),
+            ))
         }
         _ => match unquote(value) {
             Value::Symbol(name) => Ok(name.to_string()),
-            other => Err(LispError::WrongTypeArgument("symbolp".into(), other.clone())),
+            other => Err(LispError::WrongTypeArgument(
+                "symbolp".into(),
+                other.clone(),
+            )),
         },
     }
 }
@@ -5561,7 +5649,10 @@ fn assignment_target_name(value: &Value) -> Result<String, LispError> {
         Value::Symbol(name) => Ok(name.to_string()),
         Value::Nil => Ok("nil".into()),
         Value::T => Ok("t".into()),
-        other => Err(LispError::WrongTypeArgument("symbolp".into(), other.clone())),
+        other => Err(LispError::WrongTypeArgument(
+            "symbolp".into(),
+            other.clone(),
+        )),
     }
 }
 
@@ -5821,13 +5912,6 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
 
     Ok(())
 }
-
-
-
-
-
-
-
 
 // GNU pcase--funcall for `app' patterns: a call form may name the object
 // with `_'; without a placeholder the object becomes the last argument.

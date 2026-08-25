@@ -77,7 +77,10 @@ fn resolve_ccl_program(
     program: &Value,
 ) -> Result<Option<Vec<i32>>, LispError> {
     if !is_vector_value(program) {
-        return Err(LispError::WrongTypeArgument("vectorp".into(), program.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "vectorp".into(),
+            program.clone(),
+        ));
     }
     let items = vector_items(program)?;
     if items.len() <= CCL_HEADER_MAIN {
@@ -241,7 +244,10 @@ fn register_code_conversion_map(
 
 fn initial_registers(value: &Value, length: usize) -> Result<[i32; 8], LispError> {
     if !is_vector_value(value) {
-        return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "vectorp".into(),
+            value.clone(),
+        ));
     }
     let items = vector_items(value)?;
     if items.len() != length {

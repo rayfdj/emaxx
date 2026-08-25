@@ -1987,7 +1987,10 @@ fn buffer_size_ignores_narrowing_like_emacs() {
 
 #[test]
 fn buffer_auto_revert_by_notification_defaults_to_nil() {
-    assert_eq!(eval_str_with_upstream_batch("buffer-auto-revert-by-notification"), Value::Nil);
+    assert_eq!(
+        eval_str_with_upstream_batch("buffer-auto-revert-by-notification"),
+        Value::Nil
+    );
 }
 
 #[test]
@@ -2116,9 +2119,14 @@ fn tab_bar_new_tab_choice_has_preloaded_custom_type() {
 
 #[test]
 fn chinese_gb18030_is_accepted_for_decode_coding_string() {
-    assert_eq!(eval_str_with_upstream_batch(r#"(coding-system-p 'chinese-gb18030)"#), Value::T);
     assert_eq!(
-        eval_str_with_upstream_batch(r#"(stringp (decode-coding-string "\xE3\x32\x9A\x36" 'chinese-gb18030))"#),
+        eval_str_with_upstream_batch(r#"(coding-system-p 'chinese-gb18030)"#),
+        Value::T
+    );
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(stringp (decode-coding-string "\xE3\x32\x9A\x36" 'chinese-gb18030))"#
+        ),
         Value::T
     );
 }
@@ -5354,7 +5362,10 @@ fn inhibited_interaction_is_dynamic_across_separately_defined_prompt_helpers() {
 #[test]
 fn native_comp_capability_probes_are_honest() {
     assert_eq!(eval_str_with_upstream_batch("(featurep 'emacs)"), Value::T);
-    assert_eq!(eval_str_with_upstream_batch("(native-comp-available-p)"), Value::Nil);
+    assert_eq!(
+        eval_str_with_upstream_batch("(native-comp-available-p)"),
+        Value::Nil
+    );
     // Emaxx models a build without native compilation, so comp.c registers
     // nothing: `native-comp-available-p' and `(featurep 'native-compile)' are
     // both nil and must agree.  Claiming the feature while denying the

@@ -506,7 +506,14 @@ fn nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics() {
         .expect("keymap nth forms should evaluate");
     assert_eq!(
         result,
-        Value::list(vec![Value::T, Value::T, Value::T, Value::T, Value::T, Value::Nil])
+        Value::list(vec![
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::Nil
+        ])
     );
 }
 
@@ -1240,7 +1247,6 @@ fn collation_functions_fall_back_to_lexicographic_comparison() {
         Value::T
     );
 }
-
 
 #[test]
 fn file_writable_p_is_true_for_creatable_missing_files() {

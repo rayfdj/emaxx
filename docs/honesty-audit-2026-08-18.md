@@ -52,7 +52,12 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 81 | HOSTNAME/COMPUTERNAME/EMAXX_USER_FULL_NAME identity knobs | FIXED (removed; gethostname/$NAME only) |
 | 82 | eq/eql/equal compared floats with IEEE ==, not GNU's representation equality | FIXED (to_bits at five sites; NaN self-eq restored, signed zeros distinct; boxed-float eq identity remains approximated) |
 | 83 | Interpreted (+ FLOAT) seeded its accumulator with 0.0, losing the zero sign | FIXED (accumulate from the first argument, data.c arith_driver) |
-| 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (parent-held mutex deadlock now signals instead of spinning forever) |
+| 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (deadlock signals instead of spinning; scheduler no longer re-steps the active thread) |
+| 85 | Batch reconstruction skipped startup.el's tty-color registration | FIXED (runs GNU's own tty-register-default-colors) |
+| 86 | color-gray-p/color-supported-p/color-distance/color-values-from-color-spec bypass GNU's Lisp color path | OPEN (5-name Rust table; color-distance metric, list args and METRIC argument all diverge) |
+| 87 | `\u{2620}` hardcoded into the word class to satisfy one upstream test | FIXED (removed; word/space now resolve through the syntax table everywhere) |
+| 88 | `[[:space:]]` was a fixed Unicode property, not the whitespace syntax class | FIXED (regex-emacs.c:151) |
+| 89 | `[:punct:]` still syntax-blind for non-ASCII | OPEN (disclosed) |
 
 # Honesty audit — 2026-08-18
 
@@ -1105,3 +1110,108 @@ dispositions:
     the lock attempt signals "Cooperative thread model deadlock"
     instead of spinning; the file completes with two honest
     mismatches.  A real fix needs resumable thread continuations.
+
+85. **The batch image never registered the default TTY colors.**
+    startup.el:1479 calls `tty-register-default-colors' inside
+    `command-line' — deliberately outside every `unless noninteractive'
+    guard, "regardless of whether the terminal supports colors" — so GNU's
+    own batch session ends with 8 colors in `tty-color-alist'.  Emaxx's
+    reconstruction replayed the neighbouring startup steps (bar modes at
+    1453, scratch major mode at 1572) but not this one, leaving
+    `tty-color-alist' empty; `color-values' then answered nil for every
+    named color and color.el's arithmetic on that nil signalled
+    (wrong-type-argument number-or-marker-p nil).  That single omission
+    produced 21 mismatches in the 2026-08-25 baseline across color-tests,
+    css-mode-tests and erc-nicks-tests.  FIXED by evaluating the same form
+    startup.el evaluates.  Note the shape of the fix: the color database
+    is Lisp-owned (`color-name-rgb-alist' is a 657-entry defconst in
+    term/tty-colors.el, which emaxx already loaded and left unused), so
+    transcribing it into Rust would have been the copied-snapshot cheat
+    this audit exists to catch.  Emaxx runs GNU's registration function
+    against GNU's own table.  Verified: the three files now match the
+    oracle 82/82, and forcing `tty-defined-color-alist' back to nil
+    reproduces exactly the 21 original failures.
+86. **Four color primitives bypass the Lisp color database entirely.**
+    Found by the adversarial audit of finding 85's fix, and pre-existing:
+    `color-gray-p', `color-supported-p', `color-distance' and
+    `color-values-from-color-spec' are served natively from a five-entry
+    Rust name table (`named_color_spec', color_lcms.rs) rather than
+    through GNU's `tty_lookup_color'/`tty-color-desc' path.  Measured
+    divergences: the first two answer nil for every name outside those
+    five (`gray50', `snow', `dark slate gray') where GNU answers t;
+    `color-values-from-color-spec "red"' answers (65535 0 0) where GNU
+    answers nil, since xfaces.c parses X specs only and never names;
+    `color-distance' uses sum-of-squared-differences instead of
+    xfaces.c:1208's Riemersma metric, rejects the documented (R G B) list
+    arguments, and silently ignores its METRIC argument.  Upstream's
+    `xfaces-color-distance' only asserts symmetry, so the 7595 baseline
+    does not catch any of it.  OPEN: finding 85 is the prerequisite that
+    makes routing these through the now-populated Lisp database possible.
+
+87. **A fixture-keyed character literal in the word class — the cardinal
+    sin, caught by the adversarial audit of finding 88's fix.**
+    `REGEX_WORD_CLASS' and `skip_char_matches_class' both hardcoded
+    U+2620 SKULL AND CROSSBONES into the set of word characters.  That is
+    the single codepoint `test/src/regex-emacs-tests.el' uses as its
+    word-character fixture (its docstring literally says "note: \u2620 is
+    a word character"), and `git log -S' dates the literal to commit
+    885ae16, titled "Advance compatibility for regex-emacs-tests.el".  The
+    implementation was correct at exactly that codepoint and wrong at
+    every neighbour: probes showed `skip-chars-forward "[:word:]"'
+    answering 1 for U+2620 and 0 for U+2621, U+2622, U+263A and U+2600,
+    where GNU answers 1 for all five.  The file scored 34/34 and the pass
+    was bought by the literal.  FIXED, not by deleting the literal and
+    accepting a mismatch, but by making the classes resolve through the
+    syntax table the way GNU does: word boundaries (`\<', `\>', `\b',
+    `\B') now mark a pattern syntax-dependent, and `skip-chars-forward'
+    /`-backward' resolve `[:word:]' and `[:space:]' through
+    `syntax_entry_for_code' (syntax.c:2258 routes skip-chars through the
+    same `re_iswctype' the regexp engine uses).  The file is 34/34 again
+    with the literal gone, and all five neighbouring codepoints now answer
+    correctly.  The hardcoded `_' in the same table was wrong too --
+    underscore has symbol syntax, not word -- and no longer decides
+    anything on a live path; it survives only in the table-less fallback
+    constants, whose one remaining caller is the coding-system operation
+    patterns in primitives/coding.rs (no buffer, so no syntax table).
+88. **`[[:space:]]` was translated to `\p{White_Space}`.**  regex-emacs.c:151
+    defines `ISSPACE(c) = (BUFFER_SYNTAX (c) == Swhitespace)', and GNU's own
+    comment at :2097 names SPACE and WORD as the two classes resolved
+    through the syntax table.  The fixed Unicode property disagreed in both
+    directions: it matched a newline in every mode that gives newline
+    comment-end syntax (python, emacs-lisp, the C modes), where GNU does
+    not, so `^[[:space:]]*\(.*\)[[:space:]]*$' ran past end-of-line and
+    captured the following line; and it missed characters given whitespace
+    syntax by `modify-syntax-entry'.  That single defect accounted for all
+    13 `python-tests.el' mismatches in the 2026-08-25 baseline (navigation,
+    indentation, hideshow and `python-info-current-line-empty-p' all rest
+    on it); the file is now 366/366.  FIXED by rendering the class from the
+    live syntax table, through the same outside-the-bracket alternation
+    `[[:word:]]' already used, so an empty whitespace class yields nil
+    rather than an invalid `[]'.  Syntax-table TEXT PROPERTIES are
+    deliberately ignored for these two classes, which is what
+    regex-emacs.c:139-141 specifies ("use the buffer-local syntax table and
+    ignore syntax properties"); the first draft of this fix consulted the
+    property class and so answered by Unicode for property-carrying
+    characters.
+    Two defects in the first draft of this fix were caught by its own
+    adversarial audit and by upstream's PTESTS corpus before commit: an
+    empty whitespace class emitted an invalid bracket where GNU returns
+    nil, and the negated atom was emitted unwrapped so a following
+    quantifier bound only part of it -- `[^[:space:]]*' meant "if the first
+    character is not whitespace, match everything".
+    A second adversarial pass then caught three more before commit: the
+    same unwrapped-quantifier defect in the sentinel-guard path (so
+    `[^[:space:]]*' ran through a property-marked character), the
+    property-vs-table confusion above, and a performance regression where
+    the skip-chars scan rebuilt its syntax snapshot per call -- 14.5 ms
+    per call on a 140 KB buffer, ~430x its literal-spec path and quadratic
+    in any scan loop.  The snapshot is now range segments cached on the
+    interpreter and keyed by the char-table mutation generation, which
+    brings `skip-chars-forward "[:space:]"' back to the literal path's
+    cost (27 ms versus 23 ms for 2000 calls) while still invalidating on
+    `modify-syntax-entry'.
+89. `[:punct:]` remains syntax-blind for non-ASCII where GNU's ISPUNCT is
+    `BUFFER_SYNTAX (c) != Sword'.  GNU does not set `used_syntax' for
+    punct, so this is a separate and harder problem than 87/88; recorded
+    here rather than left silent.  Probes: U+00A0, U+3000, U+200B and
+    U+202F all match `[[:punct:]]` in GNU and not in emaxx.

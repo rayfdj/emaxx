@@ -814,9 +814,7 @@ define_dispatch!(
                 let arity = builtin_arity_value(symbol)
                     .or_else(|| special_form_arity_value(symbol))
                     .ok_or_else(|| {
-                        LispError::Signal(format!(
-                            "emaxx: no GNU-derived arity for subr {symbol}"
-                        ))
+                        LispError::Signal(format!("emaxx: no GNU-derived arity for subr {symbol}"))
                     })?;
                 Ok(Value::String(
                     format!("{symbol}{}", render_prin1(interp, &arity, env)?).into(),

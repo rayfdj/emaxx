@@ -318,7 +318,10 @@ pub(crate) fn direct_sort_abs_value(value: &Value) -> Result<Value, LispError> {
         },
         Value::BigInteger(number) => Ok(normalize_bigint_value(number.abs())),
         Value::Float(number) => Ok(Value::Float(number.abs())),
-        _ => Err(LispError::WrongTypeArgument("numberp".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "numberp".into(),
+            value.clone(),
+        )),
     }
 }
 

@@ -731,7 +731,10 @@ fn expand_file_name_uses_dynamic_default_directory() {
 
 #[test]
 fn custom_current_group_alist_defaults_to_nil() {
-    assert_eq!(eval_str_with_upstream_batch("custom-current-group-alist"), Value::Nil);
+    assert_eq!(
+        eval_str_with_upstream_batch("custom-current-group-alist"),
+        Value::Nil
+    );
 }
 
 #[test]
@@ -6940,7 +6943,10 @@ fn sentence_end_defaults_to_nil_in_batch() {
 
 #[test]
 fn sentence_end_double_space_defaults_to_t() {
-    assert_eq!(eval_str_with_upstream_batch("sentence-end-double-space"), Value::T);
+    assert_eq!(
+        eval_str_with_upstream_batch("sentence-end-double-space"),
+        Value::T
+    );
 }
 
 #[test]
@@ -6972,7 +6978,10 @@ fn page_delimiter_has_standard_default() {
 #[test]
 fn adaptive_fill_defaults_are_bound() {
     assert_eq!(eval_str_with_upstream_batch("adaptive-fill-mode"), Value::T);
-    assert_eq!(eval_str_with_upstream_batch("use-hard-newlines"), Value::Nil);
+    assert_eq!(
+        eval_str_with_upstream_batch("use-hard-newlines"),
+        Value::Nil
+    );
     assert_eq!(
         eval_str_with_upstream_batch("adaptive-fill-regexp"),
         Value::String("[-–!|#%;>*·•‣⁃◦ \t]*".into())
@@ -6999,7 +7008,10 @@ fn exec_suffixes_matches_unix_batch_default() {
 #[test]
 fn debug_on_error_defaults_to_nil_in_batch() {
     assert_eq!(eval_str_with_upstream_batch("debug-on-error"), Value::Nil);
-    assert_eq!(eval_str_with_upstream_batch("eval-expression-debug-on-error"), Value::T);
+    assert_eq!(
+        eval_str_with_upstream_batch("eval-expression-debug-on-error"),
+        Value::T
+    );
 }
 
 #[test]

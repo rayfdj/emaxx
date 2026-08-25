@@ -7295,7 +7295,10 @@ fn upstream_script_modes_own_their_derived_mode_contracts() {
 
 #[test]
 fn treesit_language_available_defaults_to_nil() {
-    assert_eq!(eval_str_with_upstream_batch("(treesit-language-available-p 'json)"), Value::Nil);
+    assert_eq!(
+        eval_str_with_upstream_batch("(treesit-language-available-p 'json)"),
+        Value::Nil
+    );
 }
 
 #[test]

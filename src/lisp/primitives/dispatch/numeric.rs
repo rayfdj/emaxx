@@ -319,7 +319,12 @@ define_dispatch!(
                     Value::Integer(_) | Value::BigInteger(_) => {
                         return Ok(Value::Nil);
                     }
-                    _ => return Err(LispError::WrongTypeArgument("number-or-marker-p".into(), args[0].clone())),
+                    _ => {
+                        return Err(LispError::WrongTypeArgument(
+                            "number-or-marker-p".into(),
+                            args[0].clone(),
+                        ));
+                    }
                 };
                 Ok(if value.is_nan() { Value::T } else { Value::Nil })
             }

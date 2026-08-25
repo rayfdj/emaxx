@@ -390,7 +390,6 @@ fn glyph_string(chars: &[char], font: Value, compose_cluster: bool) -> Value {
     vector_value(body)
 }
 
-
 fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
     let string = &args[2];
     let position = position_from_value(interp, &args[0])?;

@@ -157,7 +157,7 @@ pub(crate) fn spawn_persistent_process(
             command.stdin(Stdio::piped());
             if output_pty {
                 let (master, slave, slave_name) = open_emacs_pty()?;
-            pty_slave_name = slave_name;
+                pty_slave_name = slave_name;
                 pty_slave_guard = Some(
                     slave
                         .try_clone()
@@ -314,7 +314,11 @@ fn open_emacs_pty() -> Result<(fs::File, fs::File, Option<String>), LispError> {
             None
         } else {
             // SAFETY: ttyname returned a valid NUL-terminated string.
-            Some(unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned())
+            Some(
+                unsafe { std::ffi::CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         }
     };
     Ok((master, slave, slave_name))
@@ -860,8 +864,7 @@ pub(crate) fn deliver_process_streams(
     }
     if !stderr.is_empty() {
         let stderr_process_id = interp.process_stderr(process_id).unwrap_or(process_id);
-        let (output, multibyte) =
-            decode_process_output_bytes(interp, stderr_process_id, stderr);
+        let (output, multibyte) = decode_process_output_bytes(interp, stderr_process_id, stderr);
         deliver_process_output_decoded(interp, stderr_process_id, &output, multibyte, env)?;
         delivered = true;
     }

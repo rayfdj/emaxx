@@ -1736,9 +1736,7 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 if !interp.is_network_process(process_id) {
-                    return Err(LispError::Signal(
-                        "Process is not a network process".into(),
-                    ));
+                    return Err(LispError::Signal("Process is not a network process".into()));
                 }
                 Ok(Value::T)
             }
@@ -2081,7 +2079,10 @@ define_dispatch!(
                     && !base_url.is_nil()
                     && string_like(base_url).is_none()
                 {
-                    return Err(LispError::WrongTypeArgument("stringp".into(), base_url.clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "stringp".into(),
+                        base_url.clone(),
+                    ));
                 }
                 let source = interp
                     .buffer
