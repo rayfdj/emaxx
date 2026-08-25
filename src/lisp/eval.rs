@@ -1114,6 +1114,16 @@ struct RegexpSyntaxClassCache {
     rendered: [String; 16],
 }
 
+/// Range segments of the syntax table, resolved once for the scanners that
+/// cannot hold an interpreter borrow (`skip-chars-forward' and friends).
+/// Keyed like the rendered-class cache so a table mutation invalidates it.
+#[derive(Clone)]
+pub(crate) struct SyntaxSegmentCache {
+    table_id: u64,
+    char_table_generation: u64,
+    pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
+}
+
 impl CharTableState {
     pub(crate) fn new(id: u64, subtype: Option<String>, default: Value) -> Self {
         Self::with_entries(id, subtype, default, None, Vec::new())
@@ -2574,6 +2584,7 @@ impl Interpreter {
         clone.bytecode_program_cache.clear();
         clone.keymap_bindings_cache.get_mut().clear();
         *clone.regexp_syntax_class_cache.get_mut() = None;
+        *clone.syntax_segment_cache.get_mut() = None;
         clone.vm_stack_pool.clear();
         clone.backtrace_args_pool.clear();
 
@@ -2852,6 +2863,7 @@ pub struct Interpreter {
     /// Lisp entry objects whose in-place changes bypass the table mutation
     /// door.
     regexp_syntax_class_cache: RefCell<Option<RegexpSyntaxClassCache>>,
+    syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
@@ -3655,6 +3667,7 @@ impl Interpreter {
             ],
             char_table_mutation_generation: 0,
             regexp_syntax_class_cache: RefCell::new(None),
+            syntax_segment_cache: RefCell::new(None),
             equal_hash_tables: HashMap::default(),
             charset_aliases: Vec::new(),
             charset_ids: vec![

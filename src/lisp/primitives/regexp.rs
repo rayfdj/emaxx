@@ -1,9 +1,15 @@
 use super::*;
 
-const REGEX_WORD_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\x{2620}]";
-const REGEX_NON_WORD_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\x{2620}]";
-const REGEX_SYMBOL_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\-\x{2620}]";
-const REGEX_NON_SYMBOL_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\-\x{2620}]";
+// Table-less fallbacks, used only where no interpreter (and therefore no
+// syntax table) is reachable; every live path resolves these classes through
+// the current syntax table.  These previously also listed U+2620, the single
+// codepoint test/src/regex-emacs-tests.el uses as its word-character
+// fixture -- correct at exactly that character and wrong at every
+// neighbouring one.  Honesty audit finding 87.
+const REGEX_WORD_CLASS: &str = r"[\p{Alphabetic}\p{Number}_]";
+const REGEX_NON_WORD_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_]";
+const REGEX_SYMBOL_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\-]";
+const REGEX_NON_SYMBOL_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\-]";
 const REGEX_WHITESPACE_CLASS: &str = r"[\p{White_Space}]";
 const REGEX_NON_WHITESPACE_CLASS: &str = r"[^\p{White_Space}]";
 // A syntax/category opcode always has a one-character consuming shape even
@@ -798,6 +804,12 @@ pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
     if pattern.contains("[:word:]") {
         return true;
     }
+    // regex-emacs.c:151: `[[:space:]]' is the whitespace SYNTAX class, the
+    // same current-table predicate as `\s-', so a pattern naming it depends
+    // on the syntax table exactly as `[:word:]' does.
+    if pattern.contains("[:space:]") {
+        return true;
+    }
     let mut chars = pattern.chars();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
@@ -808,6 +820,11 @@ pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
             // another regexp escape.
             Some('\\') => {}
             Some('w' | 'W') => return true,
+            // Word boundaries are the word SYNTAX class too (regex-emacs.c's
+            // `at_word_boundary' consults SYNTAX), so `\<', `\>', `\b' and
+            // `\B' depend on the table exactly as `\w' does.  Without this
+            // they fell back to a fixed Unicode word class.
+            Some('<' | '>' | 'b' | 'B') => return true,
             Some('_') if matches!(chars.next(), Some('<' | '>')) => return true,
             Some('s' | 'S') if chars.next().is_some() => return true,
             Some(_) | None => {}
@@ -1121,7 +1138,7 @@ fn regex_posix_class_fragment(name: &str) -> Option<&'static str> {
         "space" => Some(r"\p{White_Space}"),
         "unibyte" => Some(r"\x00-\x7F\x{E080}-\x{E0FF}"),
         "upper" => Some(r"\p{Uppercase}"),
-        "word" => Some(r"\p{Alphabetic}\p{Number}_\x{2620}"),
+        "word" => Some(r"\p{Alphabetic}\p{Number}_"),
         "xdigit" => Some("0-9A-Fa-f"),
         _ => None,
     }
@@ -1173,7 +1190,7 @@ fn translate_bracket_expression(
     let mut saw_atom = false;
     let mut emitted_atom = false;
     let mut emitted_delegate_atom = false;
-    let mut has_table_word_class = false;
+    let mut table_syntax_class_atoms: Vec<super::syntax::SyntaxClass> = Vec::new();
     let mut negated = false;
     let mut sentinel_original_members = encoding
         .map(|encoding| vec![false; encoding.sentinels.len()])
@@ -1194,7 +1211,7 @@ fn translate_bracket_expression(
                     "(?!)".into()
                 };
             }
-            let translated = if has_table_word_class {
+            let translated = if !table_syntax_class_atoms.is_empty() {
                 let ordinary = if emitted_delegate_atom {
                     if negated {
                         translated.remove(1);
@@ -1204,35 +1221,32 @@ fn translate_bracket_expression(
                 } else {
                     None
                 };
+                let class_fragment = |class: super::syntax::SyntaxClass| {
+                    rendered_syntax_classes.map_or_else(
+                        || match class {
+                            super::syntax::SyntaxClass::Word => REGEX_WORD_CLASS.to_string(),
+                            _ => regex_posix_class_fragment("space")
+                                .map(|members| format!("[{members}]"))
+                                .unwrap_or_else(|| NEVER_MATCH_ONE_CHAR.to_string()),
+                        },
+                        |rendered| table_syntax_class_fragment(rendered, class, false),
+                    )
+                };
+                let classes = table_syntax_class_atoms
+                    .iter()
+                    .map(|class| class_fragment(*class))
+                    .collect::<Vec<_>>()
+                    .join("|");
                 let positive = ordinary.map_or_else(
-                    || {
-                        rendered_syntax_classes.map_or_else(
-                            || REGEX_WORD_CLASS.to_string(),
-                            |rendered| {
-                                table_syntax_class_fragment(
-                                    rendered,
-                                    super::syntax::SyntaxClass::Word,
-                                    false,
-                                )
-                            },
-                        )
-                    },
-                    |ordinary| {
-                        let word = rendered_syntax_classes.map_or_else(
-                            || REGEX_WORD_CLASS.to_string(),
-                            |rendered| {
-                                table_syntax_class_fragment(
-                                    rendered,
-                                    super::syntax::SyntaxClass::Word,
-                                    false,
-                                )
-                            },
-                        );
-                        format!("(?:{ordinary}|{word})")
-                    },
+                    || format!("(?:{classes})"),
+                    |ordinary| format!("(?:{ordinary}|{classes})"),
                 );
                 if negated {
-                    format!("(?!{positive})[\\s\\S]")
+                    // Must be one group: a following quantifier has to bind
+                    // the whole negated atom, not just the `[\\s\\S]'.
+                    // Unwrapped, `[^[:space:]]*' became "if the first
+                    // character is not whitespace, match everything".
+                    format!("(?:(?!{positive})[\\s\\S])")
                 } else {
                     positive
                 }
@@ -1310,8 +1324,22 @@ fn translate_bracket_expression(
             saw_atom = true;
             continue;
         }
-        if matches!(&atom, RegexClassAtom::Posix(name) if name == "word") && interp.is_some() {
-            has_table_word_class = true;
+        // regex-emacs.c:2097-2101 -- SPACE and WORD are the two POSIX classes
+        // GNU resolves through the buffer's syntax table (`used_syntax').
+        // Both are rendered OUTSIDE the bracket as an alternation, because a
+        // syntax class can be empty (an empty `[]' is not a valid pattern)
+        // and because sentinel-guarded fragments cannot nest in a bracket.
+        if let RegexClassAtom::Posix(name) = &atom
+            && let Some(class) = match name.as_str() {
+                "word" => Some(super::syntax::SyntaxClass::Word),
+                "space" => Some(super::syntax::SyntaxClass::Whitespace),
+                _ => None,
+            }
+            && interp.is_some()
+        {
+            if !table_syntax_class_atoms.contains(&class) {
+                table_syntax_class_atoms.push(class);
+            }
             record_sentinel_atom_members(
                 &atom,
                 encoding,
@@ -1359,22 +1387,36 @@ fn record_sentinel_atom_members(
                 chars_equal_for_regexp(entry.original, *ch, case_fold) || entry.sentinel == *ch
             }
             RegexClassAtom::Posix(class) => {
-                (if class == "word" && interp.is_some() {
-                    entry.class == 'w'
-                } else {
-                    skip_char_matches_class(entry.original, class)
-                }) || (case_fold
-                    && entry
-                        .original
-                        .to_lowercase()
-                        .chain(entry.original.to_uppercase())
-                        .any(|candidate| {
-                            if class == "word" && interp.is_some() {
-                                entry.class == 'w'
-                            } else {
-                                skip_char_matches_class(candidate, class)
-                            }
-                        }))
+                // regex-emacs.c:139-141: these predicates "use the
+                // buffer-local syntax table and IGNORE syntax properties",
+                // so resolve `word'/`space' from the table even for a
+                // character that carries a `syntax-table' property -- using
+                // the property class here made `[[:space:]]' answer by
+                // Unicode for exactly those characters.
+                let table_class = |ch: char| {
+                    interp.map(|interp| {
+                        super::syntax::syntax_entry_for_code(
+                            interp,
+                            interp.current_syntax_table_id(),
+                            ch as u32,
+                        )
+                        .class
+                    })
+                };
+                let posix_matches = |ch: char| match (class.as_str(), table_class(ch)) {
+                    ("word", Some(resolved)) => resolved == super::syntax::SyntaxClass::Word,
+                    ("space", Some(resolved)) => {
+                        resolved == super::syntax::SyntaxClass::Whitespace
+                    }
+                    _ => skip_char_matches_class(ch, class),
+                };
+                posix_matches(entry.original)
+                    || (case_fold
+                        && entry
+                            .original
+                            .to_lowercase()
+                            .chain(entry.original.to_uppercase())
+                            .any(posix_matches))
             }
         };
         *member |= matches;
@@ -1449,7 +1491,11 @@ fn preserve_bracket_membership_for_sentinels(
         .zip(original_members)
         .filter_map(|(entry, member)| (*member != negated).then_some(entry.sentinel))
         .collect::<Vec<_>>();
-    let guarded = format!("(?![{}]){translated}", sentinel_class(&all));
+    // One group either way: a following quantifier must bind the guard as
+    // well as the atom, or the sentinel check happens once instead of per
+    // repetition (`[^[:space:]]*' then ran straight through a
+    // property-marked character).
+    let guarded = format!("(?:(?![{}]){translated})", sentinel_class(&all));
     if matching.is_empty() {
         guarded
     } else {
@@ -2611,6 +2657,93 @@ struct SkipCharsSpec {
     classes: Vec<String>,
 }
 
+/// The `space' and `word' POSIX classes are syntax-table predicates in GNU:
+/// syntax.c:2258 routes `skip-chars-forward' through the same
+/// `re_iswctype' used by the regexp engine, so ISSPACE/ISWORD
+/// (regex-emacs.c:151-153) decide membership.  The scan borrows the buffer,
+/// so resolve the two classes into a lookup before the loop starts.
+struct SkipSyntaxSnapshot {
+    /// Sorted, non-overlapping (start, end, class) segments covering the
+    /// scalar range.  Resolved once from the syntax table so the scan --
+    /// which holds a mutable borrow of the buffer -- needs no interpreter,
+    /// and so the cost is O(table entries) per call rather than O(buffer).
+    segments: std::rc::Rc<Vec<(u32, u32, super::syntax::SyntaxClass)>>,
+}
+
+impl SkipSyntaxSnapshot {
+    fn capture(interp: &Interpreter, spec: &SkipCharsSpec) -> Option<Self> {
+        if !spec
+            .classes
+            .iter()
+            .any(|class| class == "space" || class == "word")
+        {
+            return None;
+        }
+        const SCALAR_END: u32 = char::MAX as u32 + 1;
+        let table_id = interp.current_syntax_table_id();
+        // Keyed on the table plus its mutation generation, like the rendered
+        // class cache: resolving the segments per call made skip-chars
+        // hundreds of times slower than its literal-spec path.
+        if let Some(segments) = interp.cached_syntax_segments(table_id) {
+            return Some(Self { segments });
+        }
+        // Surrogates are not scalars; keep the same boundary seeds the class
+        // renderer uses so segment starts are always valid characters.
+        let mut boundaries = vec![0u32, 0xd800, 0xe000];
+        let mut current = Some(table_id);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some(table) = interp.find_char_table(id) else {
+                break;
+            };
+            for entry in &table.entries {
+                if entry.start < SCALAR_END {
+                    boundaries.push(entry.start);
+                }
+                if entry.end.saturating_add(1) < SCALAR_END {
+                    boundaries.push(entry.end.saturating_add(1));
+                }
+            }
+            current = table.parent;
+        }
+        boundaries.push(SCALAR_END);
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        let mut segments: Vec<(u32, u32, super::syntax::SyntaxClass)> = Vec::new();
+        for window in boundaries.windows(2) {
+            let (start, end) = (window[0], window[1] - 1);
+            if char::from_u32(start).is_none() {
+                continue;
+            }
+            let class = super::syntax::syntax_entry_for_code(interp, table_id, start).class;
+            if let Some((_, previous_end, previous_class)) = segments.last_mut()
+                && *previous_class == class
+                && previous_end.saturating_add(1) == start
+            {
+                *previous_end = end;
+            } else {
+                segments.push((start, end, class));
+            }
+        }
+        let segments = std::rc::Rc::new(segments);
+        interp.cache_syntax_segments(table_id, segments.clone());
+        Some(Self { segments })
+    }
+
+    fn class_of(&self, ch: char) -> Option<super::syntax::SyntaxClass> {
+        let code = ch as u32;
+        let index = self
+            .segments
+            .partition_point(|(start, _, _)| *start <= code)
+            .checked_sub(1)?;
+        let (_, end, class) = self.segments[index];
+        (code <= end).then_some(class)
+    }
+}
+
 fn parse_skip_chars_spec(spec: &str) -> SkipCharsSpec {
     let mut chars = spec.chars().peekable();
     let negate = if chars.peek() == Some(&'^') {
@@ -2657,6 +2790,25 @@ fn parse_skip_chars_spec(spec: &str) -> SkipCharsSpec {
     }
 }
 
+fn skip_char_matches_class_with_syntax(
+    ch: char,
+    class: &str,
+    syntax: Option<super::syntax::SyntaxClass>,
+) -> bool {
+    match (class, syntax) {
+        // GNU shares one predicate between the regexp engine and
+        // `skip-chars-forward'; both consult the syntax table for exactly
+        // these two classes.  The previous fixed tables here disagreed with
+        // the regexp path, and the `word' table additionally hardcoded
+        // U+2620 -- the single codepoint test/src/regex-emacs-tests.el uses
+        // as its word-character fixture, which made that one test pass while
+        // every neighbouring codepoint answered wrongly.
+        ("space", Some(resolved)) => resolved == super::syntax::SyntaxClass::Whitespace,
+        ("word", Some(resolved)) => resolved == super::syntax::SyntaxClass::Word,
+        _ => skip_char_matches_class(ch, class),
+    }
+}
+
 fn skip_char_matches_class(ch: char, class: &str) -> bool {
     let code = raw_byte_from_regex_char(ch)
         .map(u32::from)
@@ -2680,13 +2832,19 @@ fn skip_char_matches_class(ch: char, class: &str) -> bool {
         "space" => ch.is_whitespace(),
         "unibyte" => code <= 0xFF,
         "upper" => ch.is_uppercase(),
-        "word" => ch.is_alphanumeric() || ch == '_' || ch == '\u{2620}',
+        // Table-less fallback only (no interpreter available); the live
+        // path above resolves `word' through the syntax table.
+        "word" => ch.is_alphanumeric() || ch == '_',
         "xdigit" => ch.is_ascii_hexdigit(),
         _ => false,
     }
 }
 
-fn skip_char_matches_spec(ch: char, spec: &SkipCharsSpec) -> bool {
+fn skip_char_matches_spec_with_syntax(
+    ch: char,
+    spec: &SkipCharsSpec,
+    syntax: Option<super::syntax::SyntaxClass>,
+) -> bool {
     let literal_match = spec.literals.contains(&ch);
     let range_match = spec
         .ranges
@@ -2695,10 +2853,10 @@ fn skip_char_matches_spec(ch: char, spec: &SkipCharsSpec) -> bool {
     let class_match = spec
         .classes
         .iter()
-        .any(|class| skip_char_matches_class(ch, class));
-    let matched = literal_match || range_match || class_match;
-    if spec.negate { !matched } else { matched }
+        .any(|class| skip_char_matches_class_with_syntax(ch, class, syntax));
+    (literal_match || range_match || class_match) != spec.negate
 }
+
 
 pub(super) fn skip_chars_forward_impl(
     interp: &mut Interpreter,
@@ -2715,9 +2873,17 @@ pub(super) fn skip_chars_forward_impl(
     } else {
         interp.buffer.point_max()
     };
-    let skipped = interp
-        .buffer
-        .skip_forward_while(limit, |ch| skip_char_matches_spec(ch, &spec));
+    // Resolve the syntax table into range segments before the scan: the
+    // closure below holds a mutable borrow of the buffer, so it cannot reach
+    // back into the interpreter.
+    let snapshot = SkipSyntaxSnapshot::capture(interp, &spec);
+    let skipped = interp.buffer.skip_forward_while(limit, |ch| {
+        skip_char_matches_spec_with_syntax(
+            ch,
+            &spec,
+            snapshot.as_ref().and_then(|snapshot| snapshot.class_of(ch)),
+        )
+    });
     Ok(Value::Integer(skipped as i64))
 }
 
@@ -2736,9 +2902,17 @@ pub(super) fn skip_chars_backward_impl(
     } else {
         interp.buffer.point_min()
     };
-    let skipped = interp
-        .buffer
-        .skip_backward_while(limit, |ch| skip_char_matches_spec(ch, &spec));
+    // Resolve the syntax table into range segments before the scan: the
+    // closure below holds a mutable borrow of the buffer, so it cannot reach
+    // back into the interpreter.
+    let snapshot = SkipSyntaxSnapshot::capture(interp, &spec);
+    let skipped = interp.buffer.skip_backward_while(limit, |ch| {
+        skip_char_matches_spec_with_syntax(
+            ch,
+            &spec,
+            snapshot.as_ref().and_then(|snapshot| snapshot.class_of(ch)),
+        )
+    });
     Ok(Value::Integer(-(skipped as i64)))
 }
 
