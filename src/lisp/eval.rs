@@ -1573,6 +1573,11 @@ pub(crate) struct RunningProcess {
     /// bytes when the final slave closes, so keep one slave alive until the
     /// child has exited and its output has been drained.
     pub(crate) pty_slave_guard: Option<fs::File>,
+    /// The pty slave's device path ("/dev/ttysNNN"), when this process runs
+    /// on a pseudo-terminal.  `process-tty-name' reports it; python.el's
+    /// send path branches on it to route long lines through a temp file
+    /// instead of overflowing the canonical 1024-byte line buffer.
+    pub(crate) pty_slave_name: Option<String>,
 }
 
 impl std::fmt::Debug for RunningProcess {
@@ -2713,6 +2718,12 @@ pub struct Interpreter {
     /// same-named lexical argument (bug#47552 semantics).
     pub(crate) special_scan_floor: usize,
     pub(crate) lisp_eval_depth: usize,
+    /// Consecutive `thread-yield's from a stepped (non-main) thread during
+    /// which drive_threads ran nothing else.  The parent that could change
+    /// this thread's loop condition is suspended up-stack until the step
+    /// returns, so past a threshold the yield loop can never progress and
+    /// signals the cooperative-model deadlock (finding 84's class).
+    pub(crate) fruitless_stepped_yields: u32,
     pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
     pub(crate) kbd_macro_definition: Vec<Value>,
     pub(crate) kbd_macro_committed_len: usize,
@@ -3429,6 +3440,7 @@ impl Interpreter {
             dlet_active_names: HashMap::new(),
             special_scan_floor: 0,
             lisp_eval_depth: 0,
+            fruitless_stepped_yields: 0,
             kbd_macro_executions: Vec::new(),
             kbd_macro_definition: Vec::new(),
             kbd_macro_committed_len: 0,

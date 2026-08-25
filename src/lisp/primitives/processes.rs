@@ -113,11 +113,13 @@ pub(crate) fn spawn_persistent_process(
     let mut pty_input = None;
     let mut pty_output = None;
     let mut pty_slave_guard = None;
+    let mut pty_slave_name: Option<String> = None;
 
     #[cfg(unix)]
     {
         if input_pty && output_pty {
-            let (master, slave) = open_emacs_pty()?;
+            let (master, slave, slave_name) = open_emacs_pty()?;
+            pty_slave_name = slave_name;
             pty_slave_guard = Some(
                 slave
                     .try_clone()
@@ -145,7 +147,8 @@ pub(crate) fn spawn_persistent_process(
             );
             pty_output = Some(master);
         } else if input_pty {
-            let (master, slave) = open_emacs_pty()?;
+            let (master, slave, slave_name) = open_emacs_pty()?;
+            pty_slave_name = slave_name;
             command.stdin(Stdio::from(slave));
             command.stdout(Stdio::piped());
             command.stderr(Stdio::piped());
@@ -153,7 +156,8 @@ pub(crate) fn spawn_persistent_process(
         } else {
             command.stdin(Stdio::piped());
             if output_pty {
-                let (master, slave) = open_emacs_pty()?;
+                let (master, slave, slave_name) = open_emacs_pty()?;
+            pty_slave_name = slave_name;
                 pty_slave_guard = Some(
                     slave
                         .try_clone()
@@ -207,6 +211,7 @@ pub(crate) fn spawn_persistent_process(
         pty_input,
         pty_output,
         pty_slave_guard,
+        pty_slave_name,
     })
 }
 
@@ -242,7 +247,7 @@ fn process_connection_endpoint_uses_pty(
 }
 
 #[cfg(unix)]
-fn open_emacs_pty() -> Result<(fs::File, fs::File), LispError> {
+fn open_emacs_pty() -> Result<(fs::File, fs::File, Option<String>), LispError> {
     let mut master = -1;
     let mut slave = -1;
     // SAFETY: `openpty' initializes both file descriptors; the optional
@@ -300,7 +305,19 @@ fn open_emacs_pty() -> Result<(fs::File, fs::File), LispError> {
             ));
         }
     }
-    Ok((master, slave))
+    // ttyname on the slave names the pty device; GNU stores the same
+    // string in the process's tty_name.
+    let slave_name = {
+        // SAFETY: `slave' is a live terminal descriptor.
+        let name = unsafe { libc::ttyname(slave.as_raw_fd()) };
+        if name.is_null() {
+            None
+        } else {
+            // SAFETY: ttyname returned a valid NUL-terminated string.
+            Some(unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned())
+        }
+    };
+    Ok((master, slave, slave_name))
 }
 
 #[cfg(unix)]

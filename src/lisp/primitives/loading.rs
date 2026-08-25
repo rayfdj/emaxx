@@ -481,6 +481,22 @@ fn call_internal_macroexpand_for_load(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let owner = interp.lookup_function("internal-macroexpand-for-load", env)?;
+    if std::env::var_os("EMAXX_DEBUG_EAGER_MACROEXPAND").is_some() {
+        let head = match form {
+            Value::Cons(cell) => format!("{}", cell.car.borrow().clone()),
+            other => format!("{other}"),
+        };
+        let second = if let Value::Cons(cell) = form {
+            if let Value::Cons(inner) = &cell.cdr.borrow().clone() {
+                format!(" {}", inner.car.borrow().clone())
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        eprintln!("EAGER-EXPAND: ({head}{second} ...)");
+    }
     interp.call_function_value(
         owner,
         Some("internal-macroexpand-for-load"),
