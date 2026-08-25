@@ -1607,7 +1607,9 @@ fn values_equal_recursive(
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
             BigInt::from(*a) == **b
         }
-        (Value::Float(a), Value::Float(b)) => a == b,
+        // fns.c internal_equal via same_float: representation equality
+        // (NaN equals NaN; 0.0 differs from -0.0).
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::StringObject(a), Value::StringObject(b)) => {
             let a = RefCell::borrow(a.as_ref());
