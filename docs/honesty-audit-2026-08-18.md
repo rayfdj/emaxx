@@ -66,7 +66,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 95 | default_to_grave_quoting_style's standard-display-table branch unimplemented | OPEN (disclosed) |
 | 96 | no DEFVAR_BOOL coercion: bool-typed variables read back the raw value | OPEN (disclosed) |
 | 97 | commandp returns t where GNU signals on an interactive-form property | OPEN (disclosed) |
-| 98 | the 7595 denominator excludes 3 files dropped by a 20s inventory timeout the real run does not impose | OPEN (needs a decision) |
+| 98 | the 7595 denominator excluded 3 files dropped by a 20s inventory cap 9x tighter than the run's own 180s default | FIXED 2026-08-26 - regenerated to 7883 |
 | 99 | make-thread body classifier pattern-matches three lambda shapes instead of running the body | OPEN |
 | 100 | GnuTLS digest catalogue transcribed from the oracle while cipher/mac lists are queried live | OPEN |
 | 101 | operating-system-release hardcodes this host's uname -r | OPEN |
@@ -82,6 +82,8 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 111 | network-interface-info is a bare nil beside a real network-interface-list | OPEN |
 | 112 | intern-soft guesses interned-ness from value/function/plist cells | OPEN |
 | 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
+| 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
+| 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
 
 # Honesty audit — 2026-08-18
 
@@ -1394,11 +1396,41 @@ reported and still need confirmation.
     `load-error process timed out during test': `test/lisp/net/tramp-tests.el'
     (4798), `test/lisp/progmodes/eglot-tests.el' (4993) and
     `test/src/comp-tests.el' (7276).  The inventory that produced that file
-    was generated with `EMACS_TEST_TIMEOUT=20' (oracle_tests_all.md:6), while
-    `compat.rs:386 resolve_timeout' defaults to `None' -- the frozen run
-    imposes NO timeout at all.  So three files the oracle runs fine were
-    dropped from the denominator by a 20-second cap that the measurement
-    itself never applies.  The sweep re-measured them at 24.5 s / 52 outcomes
+    was generated with `EMACS_TEST_TIMEOUT=20' (oracle_tests_all.md:6),
+    while the frozen run allows 180 s per phase.  So three files the oracle
+    runs fine were dropped from the denominator by a 20-second cap NINE TIMES
+    tighter than the one the measurement itself applies.
+    CORRECTED 2026-08-26: an earlier version of this entry said the frozen run
+    "imposes NO timeout at all", citing `compat.rs:386 resolve_timeout'
+    returning `None' by default.  That read only half the path --
+    `resolve_run_timeout' (compat-harness.rs:2208 after this commit's edits)
+    wraps it as
+    `resolve_timeout()?.or(Some(DEFAULT_TIMEOUT_SECONDS))' with
+    `DEFAULT_TIMEOUT_SECONDS = 180' (compat-harness.rs:36), so 180 s is the
+    real default.  The conclusion is unchanged: all three files finish inside
+    180 s.
+    CORRECTED AGAIN 2026-08-26, and the first correction's risk analysis was
+    itself misdirected.  The frozen procedure is invoked with
+    `--timeout-seconds 3600' (docs/handover-2026-08-24.md:98), and the
+    recorded baseline confirms it ran that way (provenance timeout_seconds
+    3600), so the 180 s default governs nothing in practice -- it was already
+    inadequate for the PRE-EXISTING manifest: edebug-tests.el spends 239.5 s in
+    its TEST phase alone.  (Two exhibits originally cited here, ruby-mode-tests
+    .el at 189 s and semantic-utest-ia.el at 178 s, were withdrawn on audit --
+    those are TOTAL wall times whose largest single phase is 177.6 s and
+    166.4 s, under the cap.  Citing them committed the very per-phase/total
+    confusion the next sentence condemns.)  The "~36 s of headroom" figure was also wrong twice over: it
+    subtracted total wall time from a PER-PHASE cap, when setup and test each
+    get the full budget, so tramp's binding phase (~124 s of body) has closer
+    to a minute even against the unused 180 s default.  The honest statement
+    is that the operator's 3600 s covers every file in the manifest, old and
+    new, so no timeout risk is introduced ON THE ORACLE SIDE.  That
+    qualification is deliberate: every timing quoted for these three files is
+    ORACLE time.  Emaxx has never run any of them, and comp-tests.el is 177
+    `:nativecomp' outcomes it has no native compiler for, so the Emaxx-side
+    cost is genuinely unknown until the first re-baseline.  An earlier draft
+    said the change "does not move the timeout risk at all", which claimed
+    more than the evidence supports.  The sweep re-measured them at 24.5 s / 52 outcomes
     (eglot), 153 s / 59 (tramp) and 177/177 passing (comp-tests) -- 288
     outcomes, an honest denominator of 7883.
     RE-VERIFIED INDEPENDENTLY 2026-08-25, running the oracle directly under
@@ -1406,7 +1438,7 @@ reported and still need confirmation.
     30.2 s (39 expected, 6 unexpected, 7 skipped) with `clangd' present and
     connecting, and tramp-tests.el ran 59 tests in 143.5 s with 52 expected,
     ZERO unexpected and 7 skipped -- it passes outright.  Neither hangs, and
-    both finish far inside the frozen run's (absent) budget.  The documented
+    both finish inside the frozen run's 180 s budget.  The documented
     rationale is false: eglot's LSP server (clangd) is installed and connects,
     and tramp's default method is local.  comp-tests.el ran 177 tests in
     132.0 s with 177 results as expected and ZERO unexpected -- it passes GNU
@@ -1417,9 +1449,14 @@ reported and still need confirmation.
     This is not a scoring cheat -- nothing is counted that should not be --
     but the denominator is smaller than the project claims it is, and the
     documented rationale for the exclusions ("tramp needs remote access,
-    eglot needs LSP servers") does not match the recorded reason.  Changing
-    the denominator changes the project's touchstone number, so this is left
-    OPEN for the owner's decision rather than silently regenerated.
+    eglot needs LSP servers") does not match the recorded reason.
+    RESOLVED 2026-08-26 with the owner's approval: the inventory was
+    regenerated without the cap and the manifest is now 518 files / 7,883
+    outcomes / 1 load error, with every pinned constant and the sha bumped
+    deliberately.  An auditor independently re-derived the whole manifest from
+    the live pinned oracle and its sha matched byte-for-byte, which is the
+    strongest evidence available that the contents came from the oracle rather
+    than from an editor -- the gap finding 115 describes.
 99. `thread_program_from_lambda' (eval/threads.rs:2878-2918) does not run an
     anonymous thread body at all: it pattern-matches three syntactic shapes
     -- a lone `sleep-for' call, exactly `(while t (thread-yield))', and a lone
@@ -1553,3 +1590,47 @@ the tree it lands on.  It is not wrong about the run it describes; it simply
 no longer describes HEAD.  Re-baselining is deliberately deferred until the
 denominator question in finding 98 is settled, so the measurement is redone
 once rather than twice.
+
+114. **Timed-out runs could earn credit they had not established.**
+     `invalidate_timed_out_comparison' (compat-harness.rs:1808) marked a
+     timed-out comparison `matches = false' and attached an issue, but left
+     `matching_outcomes' intact -- and `run_compat_files' accumulates that
+     field into the headline numerator AFTER invalidation.  A child killed at
+     the phase boundary AFTER its report file reached disk therefore passed
+     the bilateral coverage gate (the file exists, so the real report is
+     loaded rather than a synthesized load error), contributed every matching
+     outcome to the score, and was demoted only at FILE level.  A run could
+     print "7883/7883 matching" beside a non-zero mismatching-file count.
+     Pre-existing, but made newly reachable by finding 98's re-inclusion of
+     `tramp-tests.el' -- the very file whose mock shells keep a process tree
+     alive past the report write, as the `run_command' comment already noted.
+     Up to 59 outcomes of unearned credit.  FIXED: the outcomes are folded
+     onto the mismatching side, idempotently, and pinned by
+     `a_timed_out_runner_earns_no_matching_outcomes'.  The pre-existing test
+     could not have caught this -- it started from zero outcomes.
+     Found by the adversarial audit of the denominator change, not by me.
+     Disclosed side effect: `comparison.json' is written AFTER invalidation,
+     so per-file artifacts for a timed-out file now record
+     `matching_outcomes: 0' where older artifact directories recorded N.
+     Nothing reads that field back -- `compare-subjects' works from
+     summary.json and the batch reports -- but old and new artifact trees are
+     now semantically different with no version marker on them.
+115. `anti_cheat::enforce_all' gates the GNU C manifest and the builtin
+     arities table against fresh regeneration, but has no equivalent for the
+     frozen compatibility manifest.  The sha256 pin catches an UNANNOUNCED
+     edit; it cannot verify that the manifest's contents actually came from
+     the pinned oracle, because regenerating legitimately means bumping the
+     sha.  The 2026-08-26 regeneration was closed empirically instead -- an
+     auditor re-derived all 288 added outcomes from the oracle, in the
+     harness's own emission order -- but the asymmetry remains.  OPEN.
+
+**Open question on the recorded timings.**  While re-checking finding 98's
+per-phase evidence, `test/lisp/eshell/em-cmpl-tests.el` in the 2026-08-25
+baseline reports `emaxx_test_duration_ms` 1,441,725 against an
+`emaxx_duration_ms` of 45,034 -- a test phase thirty-two times longer than the
+run it belongs to, which cannot be right.  Either the phase split or the total
+is wrong for that row, and any argument resting on per-phase timings from this
+artifact should be treated as unreliable until it is explained.  Not
+investigated; recorded so the next reader does not build on it.  This is why
+finding 98's corrected evidence now rests on `edebug-tests.el' alone, whose
+239,452 ms test phase sits coherently inside a 251,765 ms total.

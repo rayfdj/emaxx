@@ -24,8 +24,11 @@ in the abstract:
   test expectations carry NS-build details (documented as they arise in
   `docs/honesty-audit-2026-08-18.md`; e.g. `utf-8-hfs`, the `<home>`
   rebinds from `term/ns-win.el`).
-- The frozen compatibility manifest's 7,595 outcomes were produced by this
-  build; its sha256 is pinned in the harness.
+- The frozen compatibility manifest's 7,883 outcomes were produced by this
+  build; its sha256 is pinned in the harness.  (It was 7,595 before the
+  2026-08-26 regeneration and 7,080 before that; the count moves whenever the
+  inventory is regenerated, so prefer the constants in the harness over any
+  number quoted in prose.)
 
 ## What this means in practice
 

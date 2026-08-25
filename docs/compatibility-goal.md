@@ -14,11 +14,12 @@ The canonical ordered manifest is:
 - `compat/oracle_tests_all.txt`
 - `compat/oracle_tests_all.md`
 
-The denominator is 7595 selected tests (regenerated 2026-08-18; previously
-7080 before five timed-out files recovered under the same 20-second limit).
-Do not use source-tree `ert-deftest` counts as the progress denominator.
-Historical log entries below that cite 7080 refer to the pre-regeneration
-manifest.
+The denominator is 7883 selected tests across 518 files (regenerated
+2026-08-26, dropping the `EMACS_TEST_TIMEOUT=20` cap that had excluded
+tramp-tests, eglot-tests and comp-tests for reasons honesty finding 98 shows
+were false; previously 7595, and 7080 before that).  Do not use source-tree
+`ert-deftest` counts as the progress denominator.  Historical log entries
+below that cite 7595 or 7080 refer to earlier manifests.
 
 Record GNU Emacs and `emaxx` timing throughout compatibility work.  During the
 march to 7,080, stop for performance when comparable post-bootstrap Emaxx work
