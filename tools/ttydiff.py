@@ -30,6 +30,7 @@ import struct
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import fcntl
 import termios
@@ -40,6 +41,7 @@ FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
 # the ambiguous prefix the *Completions* scenarios TAB on.
 COMPLETIONS_DIR_NAME = "emaxxffcomp"
 COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
+FIELDNOTES_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fieldnotes.org"
 
 
 # (fg, bg, bold, underline, reverse): fg/bg are ANSI indexes or None for
@@ -460,6 +462,12 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
                 settle, quiet = 4.0, 2.5
             elif scenario == "completions-dismiss" and final:
                 settle, quiet = 3.0, 1.0
+            elif scenario in {"grep-null", "grep-next-error"} and index >= 1:
+                # The grep child can have a quiet process-startup interval
+                # longer than the ordinary key-settle window.  Wait through
+                # its launch and later navigation so the sentinel's summary
+                # and parsed hits exist before they are compared or visited.
+                settle, quiet = 4.0, 2.5
             else:
                 settle, quiet = 1.0, 0.2
             gnu.send(chunk, settle=settle, quiet=quiet)
@@ -554,18 +562,17 @@ WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird lin
 
 SEARCH_SAMPLE = "alpha beta gamma\nbeta delta beta\ngamma alpha beta\nlast line here\n"
 
-# A real-usage org shape: #+STARTUP folding, sections long enough that
-# raw line counts and display row counts disagree, a full-width tagged
-# headline that truncates, and a DONE entry for the done-headline face.
-FOLD_SAMPLE = (
-    "#+TITLE: Notes\n#+STARTUP: overview\n\n* Alpha section\n"
-    + "alpha body line with some words in it\n" * 28
-    + "** Alpha child\nchild body\n"
-    + "* Beta section, whose headline runs wide enough to truncate"
-    + " on the glass          :tagone:beta:\n"
-    + "beta body\n" * 28
-    + "* DONE Finished chores                                       :home:\n"
-    + "done body text\n* Gamma\ngamma body\n"
+# The checked-in real-usage Org fixture from round 33: #+STARTUP folding,
+# sections long enough that raw and display row counts disagree, tables,
+# source blocks, tagged headlines, and TODO/DONE faces.
+FOLD_SAMPLE = FIELDNOTES_FIXTURE_PATH.read_text(encoding="utf-8")
+
+FIELDNOTES_SCENARIO_NAMES = (
+    "org-overview-open",
+    "org-backtab-cycle",
+    "org-tab-children",
+    "org-done-face",
+    "org-occur-wraps",
 )
 
 # Compilation timestamps can never agree between two processes; both
@@ -780,7 +787,7 @@ SCENARIOS = [
     ),
     # Paging past the end signals; the screen keeps its last good state.
     (
-        "page-past-end",
+        "page-past-end-preserves-screen",
         "".join(f"line {n:03}\n" for n in range(30)),
         [b"\x16", b"\x16", b"Z"],
     ),
@@ -833,7 +840,7 @@ SCENARIOS = [
     ),
     # C-x C-x swaps point and mark and reactivates the region.
     (
-        "exchange-point-mark",
+        "exchange-point-mark-motion",
         "alpha one\nbeta two\ngamma three\n",
         [b"\x0e", b"\x00", b"\x0e", b"\x06\x06", b"\x18\x18"],
     ),
@@ -1062,7 +1069,7 @@ SCENARIOS = [
     ),
     # C-x C-x re-activates the region and swaps point with mark.
     (
-        "exchange-point-mark",
+        "exchange-point-mark-reactivate",
         "alpha one\nbeta two\ngamma three\n",
         [b"\x00", b"\x0e\x0e", b"\x18\x18"],
     ),
@@ -1379,7 +1386,7 @@ SCENARIOS = [
     ("org-occur-wraps", FOLD_SAMPLE, [b"\x1bsosection\r"], ".org"),
     # Paging past the end: scroll-up signals (end-of-buffer) with nil
     # DATA, so the echo reads "End of buffer" with no ": nil" tail.
-    ("page-past-end", "only\nthree\nlines\n", [b"\x16", b"\x16"]),
+    ("page-past-end-error-echo", "only\nthree\nlines\n", [b"\x16", b"\x16"]),
 ]
 
 
@@ -1404,10 +1411,18 @@ def main():
     emaxx_binary, gnu_binary, lisp_dir = sys.argv[1:4]
     for path, label in [(emaxx_binary, "emaxx"), (gnu_binary, "GNU emacs")]:
         if not os.path.exists(path):
-            print(f"SKIP: no {label} binary at {path}")
+            message = f"no {label} binary at {path}"
+            if os.environ.get("EMAXX_TTYDIFF_REQUIRE") == "1":
+                print(f"ERROR: {message}", file=sys.stderr)
+                sys.exit(2)
+            print(f"SKIP: {message}")
             return
     if not os.path.isdir(lisp_dir):
-        print(f"SKIP: no GNU lisp tree at {lisp_dir}")
+        message = f"no GNU lisp tree at {lisp_dir}"
+        if os.environ.get("EMAXX_TTYDIFF_REQUIRE") == "1":
+            print(f"ERROR: {message}", file=sys.stderr)
+            sys.exit(2)
+        print(f"SKIP: {message}")
         return
     load_path = os.pathsep.join(
         [lisp_dir] + sorted(e.path for e in os.scandir(lisp_dir) if e.is_dir())
