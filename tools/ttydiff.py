@@ -13,14 +13,16 @@ The contract is identical buffer content, cursor row/column, scrolling,
 mode-line rendering, and echo-area rendering.
 
 Usage:
-    tools/ttydiff.py EMAXX_BINARY GNU_BINARY GNU_LISP_DIR [SCRIPT...]
+    tools/ttydiff.py EMAXX_BINARY GNU_BINARY GNU_LISP_DIR [SCENARIO...]
 
-With no SCRIPT arguments the built-in scenarios run.  Exits nonzero on any
-text-area divergence; missing binaries skip with exit 0 so unconfigured
-environments stay green.
+With no SCENARIO arguments all built-in scenarios run.  Otherwise each
+argument names one built-in scenario to run.  Exits nonzero on any screen
+divergence; missing binaries skip with exit 0 so unconfigured environments
+stay green.
 """
 
 import codecs
+import json
 import os
 import pty
 import select
@@ -329,9 +331,7 @@ def describe_attr_row(attrs):
 
 class Session:
     def __init__(self, argv, env_extra):
-        env = dict(os.environ)
-        env.update(env_extra)
-        env["TERM"] = "xterm"
+        env = terminal_environment(env_extra)
         pid, fd = pty.fork()
         if pid == 0:
             os.environ.clear()
@@ -341,15 +341,18 @@ class Session:
         self.pid, self.fd = pid, fd
         self.screen = Vt100Screen()
 
-    def drain(self, timeout):
+    def drain(self, timeout, quiet=0.2):
         deadline = time.time() + timeout
+        quiet_deadline = time.time() + quiet
         while True:
             remaining = deadline - time.time()
-            if remaining <= 0:
+            quiet_remaining = quiet_deadline - time.time()
+            if remaining <= 0 or quiet_remaining <= 0:
                 return
-            ready, _, _ = select.select([self.fd], [], [], min(remaining, 0.2))
+            ready, _, _ = select.select([self.fd], [], [], min(remaining, quiet_remaining))
             if not ready:
-                # A quiet gap after output means the redraw settled.
+                # The requested quiet interval elapsed after the last chunk
+                # this call observed, so the redraw has had its settle time.
                 return
             try:
                 chunk = os.read(self.fd, 65536)
@@ -358,6 +361,7 @@ class Session:
             if not chunk:
                 return
             self.screen.feed(chunk)
+            quiet_deadline = time.time() + quiet
 
     def wait_boot(self, timeout):
         """Block until the editor takes the terminal (alternate screen) and
@@ -379,17 +383,56 @@ class Session:
             self.screen.feed(chunk)
         self.drain(2.0)
 
-    def send(self, data, settle=0.5):
+    def send(self, data, settle=1.0, quiet=0.2):
         os.write(self.fd, data)
-        self.drain(settle)
+        self.drain(settle, quiet)
 
     def close(self):
         try:
             os.kill(self.pid, 9)
-            os.waitpid(self.pid, 0)
-        except (ProcessLookupError, ChildProcessError):
+        except ProcessLookupError:
             pass
-        os.close(self.fd)
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            try:
+                child, _ = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if child == self.pid:
+                break
+            time.sleep(0.01)
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+def terminal_environment(env_extra):
+    """Build the deterministic 8-color xterm environment under test."""
+    env = dict(os.environ)
+    env.update(env_extra)
+    env["TERM"] = "xterm"
+    # GNU consults COLORTERM even when TERM names an 8-color terminal and
+    # emits 24-bit SGR in a truecolor parent shell.  Emaxx intentionally
+    # models TERM's terminfo class, and the VT decoder's face contract is
+    # likewise ANSI-indexed.  Do not let the invoking terminal silently
+    # change the oracle both editors are meant to share.
+    for name in ("COLORTERM", "TERM_PROGRAM", "COLORFGBG"):
+        env.pop(name, None)
+    return env
+
+
+def gnu_no_window_setup(lisp_dir):
+    """Normalize an NS-built GNU oracle to Emaxx's no-window-system model."""
+    menu_bar = json.dumps(os.path.abspath(os.path.join(lisp_dir, "menu-bar.el")))
+    return (
+        "(progn "
+        "(setq features (delq 'ns features)) "
+        "(define-key global-map [?\\s-c] nil) "
+        "(define-key global-map [?\\s-u] nil) "
+        "(makunbound 'menu-bar-edit-menu) "
+        f"(load {menu_bar} nil t t))"
+    )
 
 
 def find_mode_line(lines):
@@ -406,9 +449,21 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
     try:
         gnu.wait_boot(boot_wait)
         emaxx.wait_boot(boot_wait)
-        for chunk in keys:
-            gnu.send(chunk)
-            emaxx.send(chunk)
+        # Keep multi-key gestures close together: mouse press/release pairs
+        # must stay a click, and the second completion TAB must reach the
+        # first TAB's `sit-for'.  Only the final action needs a long quiet
+        # window: popup capture waits past minibuffer-message's two-second
+        # transient, while dismissal waits for its post-RET frame redraw.
+        for index, chunk in enumerate(keys):
+            final = index + 1 == len(keys)
+            if scenario == "completions-pop-up" and final:
+                settle, quiet = 4.0, 2.5
+            elif scenario == "completions-dismiss" and final:
+                settle, quiet = 3.0, 1.0
+            else:
+                settle, quiet = 1.0, 0.2
+            gnu.send(chunk, settle=settle, quiet=quiet)
+            emaxx.send(chunk, settle=settle, quiet=quiet)
         gnu.drain(1.0)
         emaxx.drain(1.0)
 
@@ -465,6 +520,19 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
                     "echo (attrs)",
                     describe_attr_row(gnu_attrs[len(gnu_lines) - 1]),
                     describe_attr_row(emaxx_attrs[len(emaxx_lines) - 1]),
+                )
+            )
+        # Cursor placement is observable terminal state too.  A screen can
+        # have identical cells while point, minibuffer input, or redisplay
+        # leaves the hardware cursor on a different row or column.
+        gnu_cursor = (gnu.screen.row, gnu.screen.col)
+        emaxx_cursor = (emaxx.screen.row, emaxx.screen.col)
+        if gnu_cursor != emaxx_cursor:
+            divergences.append(
+                (
+                    "cursor",
+                    f"{gnu_cursor} on {gnu_lines[gnu_cursor[0]]!r}",
+                    f"{emaxx_cursor} on {emaxx_lines[emaxx_cursor[0]]!r}",
                 )
             )
 
@@ -1315,6 +1383,20 @@ SCENARIOS = [
 ]
 
 
+def select_scenarios(names):
+    """Return all scenarios, or the named subset in command-line order."""
+    if not names:
+        return SCENARIOS
+    by_name = {entry[0]: entry for entry in SCENARIOS}
+    unknown = [name for name in names if name not in by_name]
+    if unknown:
+        available = ", ".join(by_name)
+        raise ValueError(
+            f"unknown scenario(s): {', '.join(unknown)}; available: {available}"
+        )
+    return [by_name[name] for name in names]
+
+
 def main():
     if len(sys.argv) < 4:
         print(__doc__)
@@ -1330,6 +1412,7 @@ def main():
     load_path = os.pathsep.join(
         [lisp_dir] + sorted(e.path for e in os.scandir(lisp_dir) if e.is_dir())
     )
+    gnu_setup = gnu_no_window_setup(lisp_dir)
 
     with open(FIXTURE_PATH, "w") as fixture:
         fixture.write("fixture line one\nfixture line two\n")
@@ -1339,8 +1422,14 @@ def main():
     for name in ("ambig1.dat", "ambig2.dat"):
         with open(os.path.join(COMPLETIONS_DIR, name), "w"):
             pass
+    try:
+        scenarios = select_scenarios(sys.argv[4:])
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(2)
+
     failures = 0
-    for entry in SCENARIOS:
+    for entry in scenarios:
         name, contents, keys = entry[0], entry[1], entry[2]
         # A scenario may carry a file suffix; `.el' engages lisp-mode and
         # font-lock through the ordinary auto-mode-alist path.
@@ -1352,7 +1441,7 @@ def main():
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", path],
+                [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, path],
                 [emaxx_binary, path],
                 {},
                 {"EMACSLOADPATH": load_path},

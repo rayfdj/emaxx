@@ -109,11 +109,15 @@ def main():
         deadline = time.time() + 10.0
         status = None
         while time.time() < deadline:
+            # Keep consuming the terminal stream while the child shuts down.
+            # A pseudo-terminal has a small output buffer; if the parent only
+            # polls waitpid here, the editor can block flushing its final
+            # redisplay/alternate-screen teardown and never reach exit.
+            drain(0.1)
             done, wait_status = os.waitpid(pid, os.WNOHANG)
             if done:
                 status = wait_status
                 break
-            time.sleep(0.2)
         if status is None:
             fail("C-x C-c did not exit the session")
         if os.waitstatus_to_exitcode(status) != 0:

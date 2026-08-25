@@ -516,6 +516,56 @@ fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRo
     rows
 }
 
+/// Map a character boundary in the unbounded echo paint to the mini-window
+/// row and column produced by `wrap_echo_paint'.  The continuation marker
+/// occupies the last column, so wrapped content advances in COLS-1 chunks.
+fn wrapped_echo_cursor(
+    long: &PaintRow,
+    position: usize,
+    cols: usize,
+    max_rows: usize,
+) -> (usize, usize) {
+    let used = long
+        .text
+        .iter()
+        .rposition(|c| *c != ' ')
+        .map(|last| last + 1)
+        .unwrap_or(0);
+    let extent = used.max(position.min(long.text.len()));
+    if extent <= cols && !long.text[..extent].contains(&'\n') {
+        return (0, position.min(cols.saturating_sub(1)));
+    }
+    let usable = cols.saturating_sub(1).max(1);
+    let mut row = 0usize;
+    let mut col = 0usize;
+    for index in 0..position.min(extent) {
+        if long.text[index] == '\n' {
+            if row + 1 >= max_rows {
+                break;
+            }
+            row += 1;
+            col = 0;
+        } else {
+            if col == usable {
+                if row + 1 >= max_rows {
+                    break;
+                }
+                row += 1;
+                col = 0;
+            }
+            col += 1;
+        }
+    }
+    if col == usable && position < extent && row + 1 < max_rows {
+        row += 1;
+        col = 0;
+    }
+    (
+        row.min(max_rows.saturating_sub(1)),
+        col.min(cols.saturating_sub(1)),
+    )
+}
+
 /// The mini window's height ceiling, GNU's `max-mini-window-height'
 /// (default 0.25 of the frame).
 fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
@@ -549,7 +599,7 @@ fn draw_echo_row_composed(
     let frontend_echo = state.echo.clone();
     let cols = cols.max(10) as usize;
     let max_rows = state.echo_max_rows.max(1);
-    let (long, _) = compose_echo_row(
+    let (long, _, _) = compose_echo_row(
         interpreter,
         env,
         &frontend_echo,
@@ -572,6 +622,20 @@ fn draw_echo_row_composed(
     let mut out = io::stdout();
     for (index, echo_row) in echo_paint.iter().enumerate() {
         let _ = paint_row(&mut out, base + index, echo_row);
+    }
+    if interpreter
+        .lookup_var("cursor-in-echo-area", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        let (row, col) = wrapped_echo_cursor(&long, frontend_echo.chars().count(), cols, mini_rows);
+        let _ = queue!(
+            out,
+            cursor::MoveTo(
+                col.min(cols.saturating_sub(1)) as u16,
+                (base + row).min(rows.saturating_sub(1) as usize) as u16,
+            ),
+            cursor::Show,
+        );
     }
     let _ = out.flush();
     state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
@@ -636,6 +700,17 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
     let mut out = io::stdout();
     for (index, echo_row) in echo_paint.iter().enumerate() {
         let _ = paint_row(&mut out, base + index, echo_row);
+    }
+    if crate::lisp::primitives::tty_cursor_in_echo_area() {
+        let (row, col) = wrapped_echo_cursor(&long, text.chars().count(), cols, mini_rows);
+        let _ = queue!(
+            out,
+            cursor::MoveTo(
+                col.min(cols.saturating_sub(1)) as u16,
+                (base + row).min(rows.saturating_sub(1) as usize) as u16,
+            ),
+            cursor::Show,
+        );
     }
     let _ = out.flush();
 }
@@ -1919,7 +1994,7 @@ fn redraw_with_echo_policy(
     let max_mini = max_mini_window_rows(interpreter, rows);
     state.echo_max_rows = max_mini.max(1);
     let frontend_echo_early = state.echo.clone();
-    let (echo_long, echo_from_minibuffer) = compose_echo_row(
+    let (echo_long, echo_from_minibuffer, echo_cursor) = compose_echo_row(
         interpreter,
         env,
         &frontend_echo_early,
@@ -2923,6 +2998,28 @@ fn redraw_with_echo_policy(
         }
         state.painted_echo = echo_paint;
     }
+    if echo_from_minibuffer && let Some(position) = echo_cursor {
+        let (row, col) = wrapped_echo_cursor(&echo_long, position, cols, state.echo_rows);
+        cursor_position = (
+            col as u16,
+            (frame_rows + row).min(rows.saturating_sub(1)) as u16,
+        );
+    } else if interpreter
+        .lookup_var("cursor-in-echo-area", env)
+        .is_some_and(|value| value.is_truthy())
+        && !frontend_echo_early.is_empty()
+    {
+        let (row, col) = wrapped_echo_cursor(
+            &echo_long,
+            frontend_echo_early.chars().count(),
+            cols,
+            state.echo_rows,
+        );
+        cursor_position = (
+            col as u16,
+            (frame_rows + row).min(rows.saturating_sub(1)) as u16,
+        );
+    }
     queue!(
         out,
         cursor::MoveTo(cursor_position.0, cursor_position.1),
@@ -2941,7 +3038,7 @@ fn compose_echo_row(
     frontend_echo: &str,
     cols: usize,
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
-) -> (PaintRow, bool) {
+) -> (PaintRow, bool, Option<usize>) {
     let mut row = PaintRow::blank(cols);
     let minibuffer_id = if frontend_echo.is_empty() {
         interpreter
@@ -2963,7 +3060,7 @@ fn compose_echo_row(
             text: String,
             spans: crate::lisp::primitives::EchoSpans,
         }
-        let (text, point_min, mut strings) = {
+        let (text, point_min, point, mut strings) = {
             let buffer = if buffer_id == interpreter.current_buffer_id() {
                 &interpreter.buffer
             } else if let Some(buffer) = interpreter.get_buffer_by_id(buffer_id) {
@@ -2992,7 +3089,12 @@ fn compose_echo_row(
                     });
                 }
             }
-            (buffer.buffer_string(), buffer.point_min(), strings)
+            (
+                buffer.buffer_string(),
+                buffer.point_min(),
+                buffer.point(),
+                strings,
+            )
         };
         strings.sort_by_key(|string| (string.position, string.after, string.id));
         let face_spans = crate::lisp::primitives::window_face_spans(
@@ -3008,6 +3110,7 @@ fn compose_echo_row(
         let mut col = 0usize;
         let mut column_of = std::collections::HashMap::new();
         let mut chars = text.chars();
+        let mut cursor = None;
         let splice = |row: &mut PaintRow,
                       col: &mut usize,
                       string: &OverlayString,
@@ -3027,7 +3130,29 @@ fn compose_echo_row(
         };
         let mut index = 0usize;
         for position in point_min..=point_min + text.chars().count() {
-            while index < strings.len() && strings[index].position <= position {
+            // Before-strings at this position precede the buffer insertion
+            // point; after-strings begin after it.  Capture the hardware
+            // cursor between those two classes so minibuffer-message's
+            // trailing " [No match]" can wrap without moving point onto
+            // the continuation row.
+            while index < strings.len()
+                && (strings[index].position < position
+                    || (strings[index].position == position && !strings[index].after))
+            {
+                splice(
+                    &mut row,
+                    &mut col,
+                    &strings[index],
+                    face_cache,
+                    interpreter,
+                    env,
+                );
+                index += 1;
+            }
+            if position == point {
+                cursor = Some(col);
+            }
+            while index < strings.len() && strings[index].position == position {
                 splice(
                     &mut row,
                     &mut col,
@@ -3055,7 +3180,7 @@ fn compose_echo_row(
                 }
             }
         }
-        return (row, true);
+        return (row, true, cursor);
     }
     let (mut echo, spans) = if frontend_echo.is_empty() {
         crate::lisp::primitives::echo_display_message().unwrap_or_default()
@@ -3071,7 +3196,7 @@ fn compose_echo_row(
         });
         row.overlay(from.min(cols), to.min(cols), attrs);
     }
-    (row, false)
+    (row, false, None)
 }
 
 /// The SGR sequence selecting ATTRS from a reset state.
@@ -3488,6 +3613,26 @@ mod tests {
             wrap_segments(&of(200), 80),
             vec![of(79) + "\\", of(79) + "\\", of(42)]
         );
+    }
+
+    #[test]
+    fn minibuffer_cursor_follows_echo_wrapping() {
+        let mut short = PaintRow::blank(160);
+        short.blit(0, "Find file: /tmp/example", CellAttrs::default());
+        assert_eq!(wrapped_echo_cursor(&short, 16, 80, 6), (0, 16));
+
+        let mut wrapped = PaintRow::blank(200);
+        wrapped.blit(0, &"x".repeat(100), CellAttrs::default());
+        assert_eq!(wrapped_echo_cursor(&wrapped, 79, 80, 6), (1, 0));
+        assert_eq!(wrapped_echo_cursor(&wrapped, 80, 80, 6), (1, 1));
+
+        let mut multiline = PaintRow::blank(160);
+        multiline.blit(0, "Prompt:\nanswer", CellAttrs::default());
+        assert_eq!(wrapped_echo_cursor(&multiline, 8, 80, 6), (1, 0));
+
+        let mut trailing = PaintRow::blank(160);
+        trailing.blit(0, &format!("{}): ", "x".repeat(79)), CellAttrs::default());
+        assert_eq!(wrapped_echo_cursor(&trailing, 82, 80, 2), (1, 3));
     }
 
     #[test]
@@ -4095,6 +4240,26 @@ fn make_menu_executor(
                     let _ = paint_row(&mut out, row, &cell);
                     state.painted_rows[row] = cell;
                 }
+                let _ = queue!(
+                    out,
+                    cursor::MoveTo(
+                        left.min(cols.saturating_sub(1)) as u16,
+                        (y0 + selected_row).min(rows.saturating_sub(1)) as u16,
+                    ),
+                    cursor::Show,
+                );
+                let _ = out.flush();
+            };
+            let place_cursor = |selected_row: usize| {
+                let mut out = io::stdout();
+                let _ = queue!(
+                    out,
+                    cursor::MoveTo(
+                        left.min(cols.saturating_sub(1)) as u16,
+                        (y0 + selected_row).min(rows.saturating_sub(1)) as u16,
+                    ),
+                    cursor::Show,
+                );
                 let _ = out.flush();
             };
 
@@ -4123,6 +4288,7 @@ fn make_menu_executor(
                         .is_ok_and(|state| state.painted_message_tick != emitted)
                     {
                         draw_echo_row_composed(interpreter, env, &state);
+                        place_cursor(selected_row);
                     }
                     // A sequence still pending while this menu blocks
                     // echoes after the shared idle window expires
@@ -4145,6 +4311,7 @@ fn make_menu_executor(
                                         text, spans,
                                     );
                                     draw_echo_row_composed(interpreter, env, &state);
+                                    place_cursor(selected_row);
                                     break 'timed Err(());
                                 }
                                 let _ = event::poll(
