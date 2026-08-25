@@ -7,6 +7,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 from ttydiff import (
+    COLS,
+    FIELDNOTES_FIXTURE_PATH,
+    FIELDNOTES_SCENARIO_NAMES,
     SCENARIOS,
     Vt100Screen,
     gnu_no_window_setup,
@@ -48,12 +51,43 @@ class Vt100ScreenTests(unittest.TestCase):
         self.assertIs(select_scenarios([]), SCENARIOS)
 
     def test_scenario_selection_preserves_requested_order(self) -> None:
-        selected = select_scenarios(["page-past-end", "type-one-line"])
-        self.assertEqual([entry[0] for entry in selected], ["page-past-end", "type-one-line"])
+        selected = select_scenarios(["page-past-end-error-echo", "type-one-line"])
+        self.assertEqual(
+            [entry[0] for entry in selected],
+            ["page-past-end-error-echo", "type-one-line"],
+        )
+
+    def test_scenario_names_are_unique(self) -> None:
+        names = [entry[0] for entry in SCENARIOS]
+        self.assertEqual(len(names), len(set(names)))
 
     def test_scenario_selection_rejects_unknown_names(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown scenario.*not-a-scenario"):
             select_scenarios(["not-a-scenario"])
+
+    def test_fieldnotes_regressions_stay_in_default_gate(self) -> None:
+        expected_names = (
+            "org-overview-open",
+            "org-backtab-cycle",
+            "org-tab-children",
+            "org-done-face",
+            "org-occur-wraps",
+        )
+        self.assertEqual(FIELDNOTES_SCENARIO_NAMES, expected_names)
+
+        fixture = FIELDNOTES_FIXTURE_PATH.read_text(encoding="utf-8")
+        self.assertIn("#+STARTUP: overview", fixture)
+        self.assertIn("* DONE ", fixture)
+        # The 79-column tagged heading exceeds the usable text body once
+        # GNU reserves its continuation/truncation cell on an 80-column tty.
+        self.assertGreaterEqual(max(map(len, fixture.splitlines())), COLS - 1)
+        self.assertGreaterEqual(len(fixture.splitlines()), 60)
+
+        scenarios = {entry[0]: entry for entry in SCENARIOS}
+        for name in expected_names:
+            self.assertIn(name, scenarios)
+            self.assertEqual(scenarios[name][1], fixture)
+            self.assertEqual(scenarios[name][3], ".org")
 
     def test_terminal_environment_has_one_deterministic_color_contract(self) -> None:
         env = terminal_environment(

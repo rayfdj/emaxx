@@ -1,0 +1,614 @@
+#+TITLE: Field Notes
+#+AUTHOR: Ray
+#+STARTUP: overview
+
+* Projects
+** TODO [#A] Rebuild the workshop shelving                          :home:wood:
+DEADLINE: <2026-09-14 Mon>
+The old pine boards are sagging under the paint cans.  Plan is three
+bays, 40cm deep, with the middle bay split for small-parts bins.
+*** DONE Measure the wall and draw the cut list
+CLOSED: [2026-08-19 Wed 21:04]
+*** TODO Buy timber
+- [ ] 4x plank 240x20x2.5
+- [ ] 2x upright 200x5x5
+- [X] wood screws 5x80 (had a box already)
+- [ ] wall anchors, the heavy kind
+*** TODO Cut, sand, oil
+Remember the orbital sander needs new 120-grit discs.
+** TODO [#B] Learn enough Rust to be dangerous                      :code:
+*** DONE Read the ownership chapters of the book
+CLOSED: [2026-07-30 Thu 22:41]
+*** TODO Port the photo-renamer script from Python
+The tricky part is the EXIF crate choosing lifetimes for the reader.
+Current attempt lives in ~/code/photorename-rs and compiles but
+renames everything to the epoch, which is worse than not working
+because it looks like it worked.
+*** TODO Actually understand why clone() everywhere feels wrong
+** DONE [#C] Fix the drip irrigation timer                          :garden:
+CLOSED: [2026-08-02 Sun 09:15]
+Battery corrosion on the contacts.  Vinegar, cotton swab, done.
+Zone 2 now waters at 06:30 for 12 minutes.
+** TODO Plan the autumn hiking trip                                 :travel:
+*** Route candidates
+1. The coastal path, three days, huts available
+2. The ridge traverse, harder, needs a tent and better knees
+3. The forest loop we did in 2023 but clockwise this time
+*** TODO Check hut availability for the last week of October
+*** TODO Re-waterproof the boots before deciding anything
+
+* Reading
+** Currently reading
+*** The Making of the Atomic Bomb -- Richard Rhodes
+Dense but astonishing.  The first two hundred pages are a complete
+history of early 20th century physics disguised as biography.
+Page 412 of 886.
+*** Structure and Interpretation of Computer Programs
+Doing the exercises this time, honestly, mostly, in order.
+Stuck on 2.42 (the eight-queens puzzle) for a week now and refusing
+to look at solutions out of pure stubbornness.
+** Finished this year
+| Title                          | Author           | Verdict | Month |
+|--------------------------------+------------------+---------+-------|
+| Piranesi                       | Susanna Clarke   | *****   | Jan   |
+| The Dispossessed               | Ursula K. Le Guin| *****   | Feb   |
+| Working in Public              | Nadia Eghbal     | ****    | Mar   |
+| A Philosophy of Software Design| John Ousterhout  | ****    | Apr   |
+| The Sea Around Us              | Rachel Carson    | ****    | May   |
+| Moonbound                      | Robin Sloan      | ***     | Jun   |
+| The Soul of a New Machine      | Tracy Kidder     | *****   | Jul   |
+** To read (the eternally growing pile)
+- [ ] Gödel, Escher, Bach (attempt number four)
+- [ ] The Timeless Way of Building
+- [ ] Crafting Interpreters (relevant to the day job lately)
+- [ ] Seeing Like a State
+- [ ] The Wager
+- [ ] Annals of the Former World
+- [ ] The Idea Factory
+
+* Cooking
+** Recipes that actually worked
+*** Weeknight dal
+Red lentils, one cup, rinsed until the water runs clear.  Onion,
+cumin seeds bloomed in ghee, garlic, ginger, one chopped tomato,
+turmeric, salt.  Simmer twenty minutes, finish with a second tadka
+of ghee, mustard seeds and dried chili poured over the top at the
+table because the sizzle is the whole point.
+*** Saturday focaccia
+500g flour, 400g water, 10g salt, 4g yeast.  Mix, four folds over
+two hours, overnight in the fridge.  Dimple with more olive oil
+than seems reasonable, then a little more.  230C for 25 minutes.
+The rosemary goes on before the bake, the flaky salt after.
+** Experiments log
+*** FAILED Sourdough rye attempt #3
+Dense enough to use as a doorstop.  Starter was sluggish; the
+kitchen has been cold.  Next time: proof in the oven with the
+light on, and stop being impatient about the bulk fermentation.
+*** DONE Preserved lemons
+CLOSED: [2026-08-10 Mon]
+Ready in a month.  Label says 2026-09-10.  Do not open early.
+Do not open early.  You opened the last batch early.
+
+* Notes
+** On keeping this file
+The rule that makes this work: everything lands in the journal
+first, and only gets promoted to a project or a note when it has
+survived two weeks of being looked at.  A todo that cannot survive
+two weeks of being looked at was a mood, not a task, and moods do
+not need scheduling, they need coffee or a walk or admitting that
+the thing is not actually important to you no matter how important
+it feels at eleven at night after reading someone else's blog.
+** Terminal emulators and fonts, an opinion nobody asked for
+After trying six of them the conclusion is that they are all fine
+and the differences that matter are (a) whether the font renders
+the box-drawing characters at exactly cell height and (b) input
+latency you can only barely perceive but your hands somehow know
+about anyway.  Everything else is a theme picker with a venture
+round.  The font situation is simpler: you use the one you used
+last year, because your eyes have learned it, and switching costs
+two weeks of mild irritation to save zero measurable minutes.
+** Half-formed idea: a garden log as a time series
+Soil temperature, watering minutes, harvest weight per bed.  A
+season of data and then actual decisions next spring instead of
+vibes.  The sensors are cheap; the discipline is not.
+
+* Snippets
+** Elisp: what was that buffer-local again
+#+begin_src emacs-lisp
+(defun my/show-major-modes ()
+  "List every live buffer with its major mode."
+  (interactive)
+  (with-current-buffer (get-buffer-create "*modes*")
+    (erase-buffer)
+    (dolist (b (buffer-list))
+      (insert (format "%-30s %s\n"
+                      (buffer-name b)
+                      (buffer-local-value 'major-mode b))))
+    (display-buffer (current-buffer))))
+#+end_src
+** Shell: the find incantation I always forget
+#+begin_src sh
+find . -name '*.org' -newermt '1 week ago' -exec grep -l TODO {} +
+#+end_src
+** Python: quick histogram of line lengths
+#+begin_src python
+from collections import Counter
+import sys
+counts = Counter(len(line.rstrip()) // 10 * 10 for line in sys.stdin)
+for bucket in sorted(counts):
+    print(f"{bucket:4}-{bucket+9:3}: {'#' * counts[bucket]}")
+#+end_src
+
+* Journal
+** [2026-01-05 Mon]
+Cold snap; the workshop is a fridge with opinions.
+Worked on SICP exercises, honestly this time.
+** [2026-01-07 Wed]
+Long call with M., the kind that reorders a week.
+Worked on the shelving cut list.
+** [2026-01-10 Sat]
+Slept badly, worked well anyway, suspicious.
+Worked on absolutely nothing, gloriously.
+Found the missing 13mm socket inside a boot.
+** [2026-01-12 Mon]
+Cold snap; the workshop is a fridge with opinions.
+Worked on pruning the fig, nervously.
+** [2026-01-14 Wed]
+Clear-headed morning, fog by three.
+Worked on absolutely nothing, gloriously.
+** [2026-01-17 Sat]
+Too many tabs open, in the browser and in the head.
+Worked on the shelving cut list.
+Found the missing 13mm socket inside a boot.
+- [ ] carried over: return the library books
+** [2026-01-19 Mon]
+Long call with M., the kind that reorders a week.
+Worked on the Rust photo renamer.
+** [2026-01-21 Wed]
+Too many tabs open, in the browser and in the head.
+Worked on the Rust photo renamer.
+** [2026-01-24 Sat]
+First properly warm day; worked with the door open.
+Worked on seed trays and labels.
+Fixed a squeaky hinge with the good oil.
+** [2026-01-26 Mon]
+Grey and windless, a day for the archive.
+Worked on the Rust photo renamer.
+** [2026-01-28 Wed]
+Too many tabs open, in the browser and in the head.
+Worked on pruning the fig, nervously.
+** [2026-01-31 Sat]
+Clear-headed morning, fog by three.
+Worked on pruning the fig, nervously.
+Swept the workshop and found the floor.
+- [ ] carried over: call the timber yard
+** [2026-02-02 Mon]
+Too many tabs open, in the browser and in the head.
+Worked on the shelving cut list.
+** [2026-02-04 Wed]
+First properly warm day; worked with the door open.
+Worked on SICP exercises, honestly this time.
+** [2026-02-07 Sat]
+Short walk fixed what coffee could not.
+Worked on seed trays and labels.
+The fig by the fence is budding early.
+** [2026-02-09 Mon]
+First properly warm day; worked with the door open.
+Worked on the Rust photo renamer.
+** [2026-02-11 Wed]
+Grey and windless, a day for the archive.
+Worked on the hiking route spreadsheet.
+** [2026-02-14 Sat]
+First properly warm day; worked with the door open.
+Worked on SICP exercises, honestly this time.
+Found the missing 13mm socket inside a boot.
+- [ ] carried over: patch the bike tube
+** [2026-02-16 Mon]
+Grey and windless, a day for the archive.
+Worked on cleaning the garage, badly.
+** [2026-02-18 Wed]
+Cold snap; the workshop is a fridge with opinions.
+Worked on the Rust photo renamer.
+** [2026-02-21 Sat]
+First properly warm day; worked with the door open.
+Worked on the Rust photo renamer.
+Fixed a squeaky hinge with the good oil.
+** [2026-02-23 Mon]
+Grey and windless, a day for the archive.
+Worked on cleaning the garage, badly.
+** [2026-02-25 Wed]
+Everything took ninety minutes longer than planned.
+Worked on absolutely nothing, gloriously.
+** [2026-02-28 Sat]
+Long call with M., the kind that reorders a week.
+Worked on reading on the porch.
+Watered zone 2 by hand; the timer gets a day off.
+- [ ] carried over: patch the bike tube
+** [2026-03-02 Mon]
+Everything took ninety minutes longer than planned.
+Worked on reading on the porch.
+** [2026-03-04 Wed]
+Short walk fixed what coffee could not.
+Worked on cleaning the garage, badly.
+** [2026-03-07 Sat]
+Rain all day and the good kind of quiet.
+Worked on cleaning the garage, badly.
+Found the missing 13mm socket inside a boot.
+** [2026-03-09 Mon]
+Grey and windless, a day for the archive.
+Worked on the hiking route spreadsheet.
+** [2026-03-11 Wed]
+First properly warm day; worked with the door open.
+Worked on the recipe collection.
+** [2026-03-14 Sat]
+Cold snap; the workshop is a fridge with opinions.
+Worked on the recipe collection.
+Backed up the photo archive, both drives, checked the checksums.
+- [ ] carried over: patch the bike tube
+** [2026-03-16 Mon]
+Slept badly, worked well anyway, suspicious.
+Worked on the Rust photo renamer.
+** [2026-03-18 Wed]
+First properly warm day; worked with the door open.
+Worked on seed trays and labels.
+** [2026-03-21 Sat]
+Rain all day and the good kind of quiet.
+Worked on reading on the porch.
+The fig by the fence is budding early.
+** [2026-03-23 Mon]
+Everything took ninety minutes longer than planned.
+Worked on seed trays and labels.
+** [2026-03-25 Wed]
+Clear-headed morning, fog by three.
+Worked on the Rust photo renamer.
+** [2026-03-28 Sat]
+First properly warm day; worked with the door open.
+Worked on pruning the fig, nervously.
+Sharpened the kitchen knives; immediate quality of life upgrade.
+- [ ] carried over: descale the kettle
+** [2026-03-30 Mon]
+Cold snap; the workshop is a fridge with opinions.
+Worked on pruning the fig, nervously.
+** [2026-04-01 Wed]
+Everything took ninety minutes longer than planned.
+Worked on pruning the fig, nervously.
+** [2026-04-04 Sat]
+Everything took ninety minutes longer than planned.
+Worked on the Rust photo renamer.
+Found the missing 13mm socket inside a boot.
+** [2026-04-06 Mon]
+Short walk fixed what coffee could not.
+Worked on the recipe collection.
+** [2026-04-08 Wed]
+Slept badly, worked well anyway, suspicious.
+Worked on the shelving cut list.
+** [2026-04-11 Sat]
+Short walk fixed what coffee could not.
+Worked on pruning the fig, nervously.
+Watered zone 2 by hand; the timer gets a day off.
+- [ ] carried over: descale the kettle
+** [2026-04-13 Mon]
+Long call with M., the kind that reorders a week.
+Worked on reading on the porch.
+** [2026-04-15 Wed]
+Clear-headed morning, fog by three.
+Worked on the recipe collection.
+** [2026-04-18 Sat]
+Cold snap; the workshop is a fridge with opinions.
+Worked on SICP exercises, honestly this time.
+Found the missing 13mm socket inside a boot.
+** [2026-04-20 Mon]
+Everything took ninety minutes longer than planned.
+Worked on the shelving cut list.
+** [2026-04-22 Wed]
+Too many tabs open, in the browser and in the head.
+Worked on the hiking route spreadsheet.
+** [2026-04-25 Sat]
+Rain all day and the good kind of quiet.
+Worked on cleaning the garage, badly.
+Swept the workshop and found the floor.
+- [ ] carried over: return the library books
+** [2026-04-27 Mon]
+Everything took ninety minutes longer than planned.
+Worked on the Rust photo renamer.
+** [2026-04-29 Wed]
+Rain all day and the good kind of quiet.
+Worked on the recipe collection.
+** [2026-05-02 Sat]
+Long call with M., the kind that reorders a week.
+Worked on absolutely nothing, gloriously.
+Backed up the photo archive, both drives, checked the checksums.
+** [2026-05-04 Mon]
+Slept badly, worked well anyway, suspicious.
+Worked on the shelving cut list.
+** [2026-05-06 Wed]
+Short walk fixed what coffee could not.
+Worked on cleaning the garage, badly.
+** [2026-05-08 Fri]
+Too many tabs open, in the browser and in the head.
+Worked on SICP exercise 2.42, still.
+Found the missing 13mm socket inside a boot.
+** [2026-05-10 Sun]
+Slept badly, worked well anyway, suspicious.
+Worked on the dal, doubled for the freezer.
+** [2026-05-11 Mon]
+Clear-headed morning, fog by three.
+Worked on the shelving cut list.
+** [2026-05-13 Wed]
+Slept badly, worked well anyway, suspicious.
+Worked on cleaning the garage, badly.
+Neighbor's cat has decided the workshop is hers now.
+** [2026-05-15 Fri]
+Clear-headed morning, fog by three.
+Worked on cleaning the garage, badly.
+- [ ] carried over: patch the bike tube
+** [2026-05-17 Sun]
+Long call with M., the kind that reorders a week.
+Worked on cleaning the garage, badly.
+** [2026-05-18 Mon]
+Everything took ninety minutes longer than planned.
+Worked on the hiking route spreadsheet.
+Fixed a squeaky hinge with the good oil.
+** [2026-05-20 Wed]
+Rain all day and the good kind of quiet.
+Worked on the dal, doubled for the freezer.
+** [2026-05-22 Fri]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on the hiking route spreadsheet.
+** [2026-05-24 Sun]
+Rain all day and the good kind of quiet.
+Worked on cleaning the garage, badly.
+Sharpened the kitchen knives; immediate quality of life upgrade.
+** [2026-05-25 Mon]
+Slept badly, worked well anyway, suspicious.
+Worked on the Rust photo renamer.
+** [2026-05-27 Wed]
+Long call with M., the kind that reorders a week.
+Worked on the Rust photo renamer.
+- [ ] carried over: descale the kettle
+** [2026-05-29 Fri]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on the hiking route spreadsheet.
+Fixed a squeaky hinge with the good oil.
+** [2026-05-31 Sun]
+Everything took ninety minutes longer than planned.
+Worked on the Rust photo renamer.
+** [2026-06-01 Mon]
+Long call with M., the kind that reorders a week.
+Worked on the Rust photo renamer.
+** [2026-06-03 Wed]
+Short walk fixed what coffee could not.
+Worked on reading Rhodes on the porch.
+Neighbor's cat has decided the workshop is hers now.
+** [2026-06-05 Fri]
+Slept badly, worked well anyway, suspicious.
+Worked on the shelving cut list.
+** [2026-06-07 Sun]
+Too many tabs open, in the browser and in the head.
+Worked on the hiking route spreadsheet.
+** [2026-06-08 Mon]
+Slept badly, worked well anyway, suspicious.
+Worked on cleaning the garage, badly.
+Found the missing 13mm socket inside a boot.
+- [ ] carried over: return the library books
+** [2026-06-10 Wed]
+Short walk fixed what coffee could not.
+Worked on absolutely nothing, gloriously.
+** [2026-06-12 Fri]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on SICP exercise 2.42, still.
+** [2026-06-14 Sun]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on reading Rhodes on the porch.
+Neighbor's cat has decided the workshop is hers now.
+** [2026-06-15 Mon]
+Short walk fixed what coffee could not.
+Worked on the Rust photo renamer.
+** [2026-06-17 Wed]
+Rain all day and the good kind of quiet.
+Worked on cleaning the garage, badly.
+** [2026-06-19 Fri]
+Rain all day and the good kind of quiet.
+Worked on absolutely nothing, gloriously.
+The library had the Kidder book on the returns cart. Fate.
+** [2026-06-21 Sun]
+Short walk fixed what coffee could not.
+Worked on cleaning the garage, badly.
+- [ ] carried over: descale the kettle
+** [2026-06-22 Mon]
+Clear-headed morning, fog by three.
+Worked on cleaning the garage, badly.
+** [2026-06-24 Wed]
+Clear-headed morning, fog by three.
+Worked on reading Rhodes on the porch.
+The library had the Kidder book on the returns cart. Fate.
+** [2026-06-26 Fri]
+Short walk fixed what coffee could not.
+Worked on the Rust photo renamer.
+** [2026-06-28 Sun]
+Too many tabs open, in the browser and in the head.
+Worked on reading Rhodes on the porch.
+** [2026-06-29 Mon]
+Too many tabs open, in the browser and in the head.
+Worked on absolutely nothing, gloriously.
+The library had the Kidder book on the returns cart. Fate.
+** [2026-07-01 Wed]
+Everything took ninety minutes longer than planned.
+Worked on SICP exercise 2.42, still.
+** [2026-07-03 Fri]
+Short walk fixed what coffee could not.
+Worked on SICP exercise 2.42, still.
+- [ ] carried over: renew the passport
+** [2026-07-05 Sun]
+Short walk fixed what coffee could not.
+Worked on the dal, doubled for the freezer.
+The library had the Kidder book on the returns cart. Fate.
+** [2026-07-06 Mon]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on cleaning the garage, badly.
+** [2026-07-08 Wed]
+Rain all day and the good kind of quiet.
+Worked on absolutely nothing, gloriously.
+** [2026-07-10 Fri]
+Slept badly, worked well anyway, suspicious.
+Worked on the shelving cut list.
+Found the missing 13mm socket inside a boot.
+** [2026-07-12 Sun]
+Rain all day and the good kind of quiet.
+Worked on SICP exercise 2.42, still.
+** [2026-07-13 Mon]
+Long call with M., the kind that reorders a week.
+Worked on the Rust photo renamer.
+** [2026-07-15 Wed]
+Long call with M., the kind that reorders a week.
+Worked on the dal, doubled for the freezer.
+Watered zone 2 by hand; the timer gets a day off.
+- [ ] carried over: patch the bike tube
+** [2026-07-17 Fri]
+Short walk fixed what coffee could not.
+Worked on the shelving cut list.
+** [2026-07-19 Sun]
+Slept badly, worked well anyway, suspicious.
+Worked on the hiking route spreadsheet.
+** [2026-07-20 Mon]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on the Rust photo renamer.
+Backed up the photo archive, both drives, checked the checksums.
+** [2026-07-22 Wed]
+Long call with M., the kind that reorders a week.
+Worked on SICP exercise 2.42, still.
+** [2026-07-24 Fri]
+Everything took ninety minutes longer than planned.
+Worked on the shelving cut list.
+** [2026-07-26 Sun]
+Short walk fixed what coffee could not.
+Worked on SICP exercise 2.42, still.
+Found the missing 13mm socket inside a boot.
+** [2026-07-27 Mon]
+Short walk fixed what coffee could not.
+Worked on cleaning the garage, badly.
+- [ ] carried over: renew the passport
+** [2026-07-29 Wed]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on SICP exercise 2.42, still.
+** [2026-07-31 Fri]
+Clear-headed morning, fog by three.
+Worked on reading Rhodes on the porch.
+Watered zone 2 by hand; the timer gets a day off.
+** [2026-08-02 Sun]
+Clear-headed morning, fog by three.
+Worked on the Rust photo renamer.
+** [2026-08-03 Mon]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on the hiking route spreadsheet.
+** [2026-08-05 Wed]
+Too many tabs open, in the browser and in the head.
+Worked on the shelving cut list.
+Neighbor's cat has decided the workshop is hers now.
+** [2026-08-07 Fri]
+Slept badly, worked well anyway, suspicious.
+Worked on the Rust photo renamer.
+** [2026-08-09 Sun]
+Everything took ninety minutes longer than planned.
+Worked on the Rust photo renamer.
+- [ ] carried over: patch the bike tube
+** [2026-08-10 Mon]
+Rain all day and the good kind of quiet.
+Worked on SICP exercise 2.42, still.
+Watered zone 2 by hand; the timer gets a day off.
+** [2026-08-12 Wed]
+Rain all day and the good kind of quiet.
+Worked on the hiking route spreadsheet.
+** [2026-08-14 Fri]
+Long call with M., the kind that reorders a week.
+Worked on cleaning the garage, badly.
+** [2026-08-16 Sun]
+Too many tabs open, in the browser and in the head.
+Worked on the hiking route spreadsheet.
+The library had the Kidder book on the returns cart. Fate.
+** [2026-08-17 Mon]
+Wind knocked the tomatoes over; staked them properly this time.
+Worked on absolutely nothing, gloriously.
+** [2026-08-19 Wed]
+Everything took ninety minutes longer than planned.
+Worked on the Rust photo renamer.
+** [2026-08-21 Fri]
+Too many tabs open, in the browser and in the head.
+Worked on cleaning the garage, badly.
+Found the missing 13mm socket inside a boot.
+- [ ] carried over: descale the kettle
+** [2026-08-23 Sun]
+Clear-headed morning, fog by three.
+Worked on cleaning the garage, badly.
+
+* Media log
+** The Third Man
+Watched 2026-01-03.  Rewatch, still perfect, the zither is a character.
+** Spirited Away
+Watched 2026-02-05.  The bathhouse economy deserves a dissertation.
+** Local Hero
+Watched 2026-03-07.  The phone box, the sky, the ending.
+** The Taste of Things
+Watched 2026-04-09.  Cooking as attention; got hungry twice.
+** Perfect Days
+Watched 2026-05-11.  A film about routines that made mine feel richer.
+** Playtime
+Watched 2026-06-13.  Watched for the sets, stayed for the choreography.
+** The Straight Story
+Watched 2026-07-15.  Slowest road movie ever, would not cut a minute.
+** Kes
+Watched 2026-08-17.  Brutal and tender in the same frame.
+** After Life (1998)
+Watched 2026-01-19.  Which memory would i pick? still deciding.
+** O Brother, Where Art Thou?
+Watched 2026-02-21.  The soundtrack carried the whole month.
+
+* Training log
+| Week | Runs | Longest | Notes                          |
+|------+------+---------+--------------------------------|
+|    1 |    3 |    10k | slow and fine                  |
+|    2 |    3 |    14k | new shoes                      |
+|    3 |    3 |    14k | new shoes                      |
+|    4 |    3 |     8k | easy week                      |
+|    5 |    3 |     8k | knee behaving                  |
+|    6 |    3 |     6k | new shoes                      |
+|    7 |    3 |     8k | hills, regret                  |
+|    8 |    2 |     8k | new shoes                      |
+|    9 |    3 |    12k | cut short, rain                |
+|   10 |    3 |     8k | felt strong                    |
+|   11 |    2 |    10k | slow and fine                  |
+|   12 |    4 |    10k | new shoes                      |
+|   13 |    4 |     6k | new shoes                      |
+|   14 |    4 |     6k | knee behaving                  |
+|   15 |    2 |     8k | new shoes                      |
+|   16 |    3 |     6k | hills, regret                  |
+|   17 |    2 |     6k | easy week                      |
+|   18 |    3 |    12k | easy week                      |
+|   19 |    3 |    12k | easy week                      |
+|   20 |    2 |     8k | cut short, rain                |
+|   21 |    4 |     8k | felt strong                    |
+|   22 |    3 |     8k | cut short, rain                |
+|   23 |    3 |    10k | easy week                      |
+|   24 |    2 |    10k | new shoes                      |
+|   25 |    4 |    10k | hills, regret                  |
+|   26 |    2 |     8k | easy week                      |
+|   27 |    3 |    14k | hills, regret                  |
+|   28 |    4 |    14k | knee behaving                  |
+|   29 |    2 |     8k | cut short, rain                |
+|   30 |    3 |     8k | felt strong                    |
+
+* Someday / Maybe
+** Learn to sharpen the hand plane properly instead of around it
+** A tiny static site for the recipe collection
+** Cycle the coast road end to end in one summer
+** Build a one-valve tube amp from a kit and pretend to understand it
+** Reread everything by Le Guin in publication order
+** The garden time-series thing, if the discipline shows up
+
+* Archive :ARCHIVE:
+** DONE Replace the bathroom fan                                     :home:
+CLOSED: [2026-04-12 Sun]
+** DONE Taxes
+CLOSED: [2026-03-28 Sat]
+Every year this section exists so that future me remembers: it took
+four hours, not four days, and the dread was the expensive part.

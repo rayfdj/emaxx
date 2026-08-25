@@ -4103,6 +4103,27 @@ fn tty_smoke_end_to_end() {
     assert!(status.success(), "tty smoke test failed");
 }
 
+/// Complete GNU-vs-Emaxx pty differential gate, including every checked-in
+/// real-workflow regression.  It is opt-in because it needs both release
+/// binaries and the sibling GNU source tree:
+/// `cargo test --release tty_differential_end_to_end -- --ignored --nocapture`
+/// after `cargo build --release`.
+#[test]
+#[ignore = "requires target/release/emaxx and ../emacs/{src/emacs,lisp}"]
+fn tty_differential_end_to_end() {
+    let status = std::process::Command::new("python3")
+        .arg("tools/ttydiff.py")
+        .arg("target/release/emaxx")
+        .arg("../emacs/src/emacs")
+        .arg("../emacs/lisp")
+        // An explicitly requested gate must fail, rather than silently skip,
+        // when its oracle inputs are not configured.
+        .env("EMAXX_TTYDIFF_REQUIRE", "1")
+        .status()
+        .expect("run tools/ttydiff.py");
+    assert!(status.success(), "TTY differential gate failed");
+}
+
 /// term.c's tty_menu_activate: draw the dropdown over the glass, run a
 /// modal key loop under tty-menu-navigation-map (bound by the caller),
 /// and restore the screen behind on exit.  Keyboard navigation drives a
