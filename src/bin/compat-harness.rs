@@ -23,14 +23,14 @@ use emaxx::compat::{
 const ADVANCE_COMPAT_PREFIX: &str = "Advance compatibility for ";
 const COMPAT_REGRESSION_MANIFEST_PATH: &str = "compat/compat_regressions.json";
 const FROZEN_COMPAT_MANIFEST_PATH: &str = "compat/oracle_tests_all.txt";
-const FROZEN_COMPAT_FILE_COUNT: usize = 515;
-const FROZEN_COMPAT_LOAD_ERROR_COUNT: usize = 4;
-const FROZEN_COMPAT_OUTCOME_COUNT: usize = 7_595;
+const FROZEN_COMPAT_FILE_COUNT: usize = 518;
+const FROZEN_COMPAT_LOAD_ERROR_COUNT: usize = 1;
+const FROZEN_COMPAT_OUTCOME_COUNT: usize = 7_883;
 /// sha256 of compat/oracle_tests_all.txt.  The three counts above cannot
 /// detect a same-count substitution of test names, so the manifest's contents
 /// are pinned too; regenerating it is a deliberate constant bump.
 const FROZEN_COMPAT_MANIFEST_SHA256: &str =
-    "bc1070ec0f4256c929ebf7f7254290ee88049fd1b6495252ee7849cecd7f7758";
+    "724913b78150495a73afb852a943f843a17245a96f3bda30f72c490889634353";
 const TARGET_OWNER_FILE: &str = ".emaxx-source-root";
 const SUBJECT_LOCK_FILE: &str = ".emaxx-compat.lock";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 180;
@@ -62,7 +62,7 @@ enum Commands {
     Selectors,
     List(ListArgs),
     Run(RunArgs),
-    /// Replay exactly the pinned 7,595-outcome compatibility manifest.
+    /// Replay exactly the pinned compatibility manifest.
     Frozen(FrozenArgs),
     Landed(LandedArgs),
     Regressions(RegressionArgs),
@@ -1062,15 +1062,18 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
     let selector = compat::resolve_selector(&context.lock, "default")?;
     let files = manifest.executable_files(&context.local.emacs_repo)?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
-    let artifact_root = make_artifact_root("frozen-7595")?;
+    // Label the mode by what it IS, not by a denominator that moves: the
+    // manifest was 7,080, then 7,595, now 7,883, and a stamped-in number
+    // becomes a lie in machine-readable provenance the moment it changes.
+    let artifact_root = make_artifact_root("frozen")?;
     let subject = ensure_emaxx_binary(args.subject_root.as_deref())?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     run_compat_files(
         &context,
         CompatRunPlan {
-            mode: "frozen-7595",
-            scope: "Frozen7595".into(),
+            mode: "frozen",
+            scope: "Frozen".into(),
             selector: &selector,
             files,
             name_filter: None,
@@ -1811,6 +1814,18 @@ fn invalidate_timed_out_comparison(
         return;
     };
     comparison.matches = false;
+    // A timed-out phase means the result is INCOMPLETE, so none of its
+    // outcomes are evidence of agreement -- not even the ones whose report
+    // reached disk before the child was killed.  Without this, a runner that
+    // writes its report and is then killed at the phase boundary (Tramp's
+    // mock shells keep the process tree alive past that point, see the
+    // `run_command' comment below) still contributes every matching outcome
+    // to the headline numerator while being demoted only at FILE level --
+    // printing "7883/7883 matching" beside a mismatching file.  Fold them
+    // onto the mismatching side instead.  Calling this twice is safe: the
+    // second call adds zero.
+    comparison.mismatching_outcomes += comparison.matching_outcomes;
+    comparison.matching_outcomes = 0;
     comparison.issues.push(compat::ComparisonIssue {
         kind: "timeout".into(),
         detail: format!(
@@ -3120,7 +3135,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn checked_in_frozen_manifest_is_exactly_7595_outcomes() {
+    fn checked_in_frozen_manifest_matches_the_pinned_counts() {
         let manifest = FrozenCompatibilityManifest::load().expect("load frozen manifest");
 
         assert_eq!(manifest.entries.len(), FROZEN_COMPAT_FILE_COUNT);
@@ -3138,7 +3153,14 @@ mod tests {
                 .values()
                 .filter(|names| !names.is_empty())
                 .count(),
-            458
+            // Not FILE_COUNT - LOAD_ERROR_COUNT: load errors are held
+            // separately from `entries', and 57 of the 518 entries load
+            // cleanly but select nothing under the pinned selector: 53 hold
+            // only :expensive-test/:unstable tests, and 4 define no tests at
+            // all (eshell-tests-helpers, gnus-tests, so-long-tests-helpers,
+            // spelling-tests).
+            // 518 - 57 = 461.
+            461
         );
     }
 
@@ -3309,6 +3331,42 @@ mod tests {
         let boundary = compare_runner_timings("boundary.el", &oracle, &boundary_subject);
         assert_eq!(boundary.emaxx_over_gnu_milli, Some(2_000));
         assert!(boundary.emaxx_at_least_twice_as_slow);
+    }
+
+    #[test]
+    fn a_timed_out_runner_earns_no_matching_outcomes() {
+        // The report file can reach disk BEFORE the child is killed at the
+        // phase boundary -- Tramp's mock shells keep the process tree alive
+        // past that point -- so `load_or_synthesize_report' returns a real
+        // report and coverage passes.  Those outcomes are still incomplete
+        // evidence and must not reach the headline numerator, or the run can
+        // print "N/N matching" beside a mismatching file.
+        let mut comparison = compat::ComparisonReport {
+            file: "tramp-tests.el".into(),
+            matches: true,
+            issues: Vec::new(),
+            matching_outcomes: 59,
+            mismatching_outcomes: 0,
+        };
+        let clean = process_result(Duration::from_secs(2), Duration::from_secs(2), true, None);
+        let timed_out = process_result(
+            Duration::from_secs(2),
+            Duration::from_secs(180),
+            true,
+            Some(TimeoutPhase::Test),
+        );
+        invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &clean);
+        assert_eq!(comparison.matching_outcomes, 59, "no timeout, no change");
+
+        invalidate_timed_out_comparison(&mut comparison, "Emaxx", &timed_out);
+        assert!(!comparison.matches);
+        assert_eq!(comparison.matching_outcomes, 0);
+        assert_eq!(comparison.mismatching_outcomes, 59);
+
+        // Idempotent: a second timed-out runner adds zero rather than
+        // double-counting the same outcomes.
+        invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &timed_out);
+        assert_eq!(comparison.mismatching_outcomes, 59);
     }
 
     #[test]

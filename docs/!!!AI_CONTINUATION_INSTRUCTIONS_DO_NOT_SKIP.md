@@ -13,9 +13,9 @@ The canonical ordered manifest is:
 - `compat/oracle_tests_all.txt`
 - `compat/oracle_tests_all.md`
 
-The denominator is 7595 selected tests (regenerated 2026-08-18; older
-checkpoints below cite the stale 7080 figure). Do not use source-tree
-`ert-deftest` counts as the progress denominator.
+The denominator is 7883 selected tests across 518 files (regenerated
+2026-08-26; older checkpoints below cite the stale 7595 and 7080 figures).
+Do not use source-tree `ert-deftest` counts as the progress denominator.
 
 The authoritative Rust publication/correctness gate runs serially with
 `--test-threads=1`.  Parallel execution may be used only as a non-authoritative
@@ -138,6 +138,11 @@ parallel-only noise.
   frozen-manifest constants and its unit test now assert 515/4/7595
   ("frozen-7595" mode); `compat/oracle_tests_all.md` and this file
   record the new denominator.
+  SUPERSEDED 2026-08-26: the "environment-bound" rationale above was
+  wrong (honesty finding 98).  tramp, eglot and comp-tests all run
+  against the pinned oracle -- 59, 52 and 177 outcomes -- and were
+  excluded only by the 20-second inventory cap.  The manifest is now
+  518/1/7883 and the mode label is plain "frozen".
 
   Phase 5 disguise/displacement removals this round: the preloaded-Lisp
   docstring scraper (builtin_doc_from_lisp_sources and its parser
