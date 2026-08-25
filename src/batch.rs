@@ -379,6 +379,7 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
         }
         initialize_batch_scratch_major_mode(interpreter)?;
         initialize_batch_bar_modes(interpreter)?;
+        initialize_batch_tty_default_colors(interpreter)?;
         initialize_batch_locale_environment(interpreter)
     })(&mut interpreter);
     // Restore before propagating: a failed reconstruction must not leave the
@@ -475,6 +476,44 @@ fn initialize_batch_bar_modes(interpreter: &mut Interpreter) -> Result<(), Strin
     interpreter
         .eval(&form, &mut Vec::new())
         .map_err(|error| format!("initialize batch bar modes: {error}"))?;
+    Ok(())
+}
+
+fn initialize_batch_tty_default_colors(interpreter: &mut Interpreter) -> Result<(), String> {
+    // startup.el:1479 in `command-line', run for batch sessions too: the
+    // default TTY color set is registered regardless of whether the terminal
+    // supports color, "since users can connect to color-capable terminals".
+    // Without it `tty-color-alist' stays empty, so `color-values' answers nil
+    // for every named color and color.el's arithmetic on that nil signals
+    // (wrong-type-argument number-or-marker-p nil) -- 21 mismatches across
+    // color-tests, css-mode-tests and erc-nicks-tests in the 7595 baseline.
+    // The whole color database is Lisp-owned (`color-name-rgb-alist' is a
+    // defconst in term/tty-colors.el), so this runs GNU's own registration
+    // function rather than transcribing any table.
+    //
+    // `initialize_batch_interpreter' is also the embedding boundary used by
+    // small tests with an intentionally empty load path; that runtime has no
+    // term/tty-colors.el owner to invoke, so stay quiet there exactly as the
+    // locale and frame-face steps do.
+    if interpreter
+        .lookup_function("tty-register-default-colors", &Vec::new())
+        .is_err()
+    {
+        return if has_configured_lisp_tree(interpreter) {
+            Err("GNU term/tty-colors.el did not define tty-register-default-colors".into())
+        } else {
+            Ok(())
+        };
+    }
+    let source = "(or (eq initial-window-system 'pc)
+                     (tty-register-default-colors))";
+    let form = Reader::new(source)
+        .read_all()
+        .map_err(|error| format!("read startup tty-color form: {error}"))?
+        .remove(0);
+    interpreter
+        .eval(&form, &mut Vec::new())
+        .map_err(|error| format!("register batch tty default colors: {error}"))?;
     Ok(())
 }
 
@@ -2626,6 +2665,63 @@ mod tests {
                     Value::Symbol("S-mouse-2".into()),
                     Value::cons(Value::Integer(184), Value::Integer(95)),
                     Value::Nil,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_reconstruction_registers_the_default_tty_colors() {
+        // startup.el:1479 runs `tty-register-default-colors' for batch
+        // sessions too.  Without it `tty-color-alist' is empty, so
+        // `color-values' answers nil for every named color and color.el's
+        // arithmetic on that nil signals wrong-type-argument -- the shape
+        // that produced 21 mismatches in the 2026-08-25 frozen baseline.
+        // Pin the registered set and one end-to-end color lookup so a
+        // loadup or reconstruction reorder cannot silently undo it.
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (length (tty-color-alist))\
+                       (mapcar #'car (tty-color-alist))\
+                       (color-values \"red\")\
+                       (color-defined-p \"red\")\
+                       (color-name-to-rgb \"red\"))",
+            )
+            .read_all()
+            .expect("read tty color probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate tty color probe"),
+                Value::list([
+                    Value::Integer(8),
+                    Value::list([
+                        Value::String("black".into()),
+                        Value::String("red".into()),
+                        Value::String("green".into()),
+                        Value::String("yellow".into()),
+                        Value::String("blue".into()),
+                        Value::String("magenta".into()),
+                        Value::String("cyan".into()),
+                        Value::String("white".into()),
+                    ]),
+                    Value::list([
+                        Value::Integer(65535),
+                        Value::Integer(0),
+                        Value::Integer(0),
+                    ]),
+                    Value::T,
+                    Value::list([Value::Float(1.0), Value::Float(0.0), Value::Float(0.0)]),
                 ])
             );
         });
