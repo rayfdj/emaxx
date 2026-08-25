@@ -52,7 +52,9 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 81 | HOSTNAME/COMPUTERNAME/EMAXX_USER_FULL_NAME identity knobs | FIXED (removed; gethostname/$NAME only) |
 | 82 | eq/eql/equal compared floats with IEEE ==, not GNU's representation equality | FIXED (to_bits at five sites; NaN self-eq restored, signed zeros distinct; boxed-float eq identity remains approximated) |
 | 83 | Interpreted (+ FLOAT) seeded its accumulator with 0.0, losing the zero sign | FIXED (accumulate from the first argument, data.c arith_driver) |
-| 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (parent-held mutex deadlock now signals instead of spinning forever) |
+| 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (deadlock signals instead of spinning; scheduler no longer re-steps the active thread) |
+| 85 | Batch reconstruction skipped startup.el's tty-color registration | FIXED (runs GNU's own tty-register-default-colors) |
+| 86 | color-gray-p/color-supported-p/color-distance/color-values-from-color-spec bypass GNU's Lisp color path | OPEN (5-name Rust table; color-distance metric, list args and METRIC argument all diverge) |
 
 # Honesty audit — 2026-08-18
 
@@ -1105,3 +1107,40 @@ dispositions:
     the lock attempt signals "Cooperative thread model deadlock"
     instead of spinning; the file completes with two honest
     mismatches.  A real fix needs resumable thread continuations.
+
+85. **The batch image never registered the default TTY colors.**
+    startup.el:1479 calls `tty-register-default-colors' inside
+    `command-line' — deliberately outside every `unless noninteractive'
+    guard, "regardless of whether the terminal supports colors" — so GNU's
+    own batch session ends with 8 colors in `tty-color-alist'.  Emaxx's
+    reconstruction replayed the neighbouring startup steps (bar modes at
+    1453, scratch major mode at 1572) but not this one, leaving
+    `tty-color-alist' empty; `color-values' then answered nil for every
+    named color and color.el's arithmetic on that nil signalled
+    (wrong-type-argument number-or-marker-p nil).  That single omission
+    produced 21 mismatches in the 2026-08-25 baseline across color-tests,
+    css-mode-tests and erc-nicks-tests.  FIXED by evaluating the same form
+    startup.el evaluates.  Note the shape of the fix: the color database
+    is Lisp-owned (`color-name-rgb-alist' is a 657-entry defconst in
+    term/tty-colors.el, which emaxx already loaded and left unused), so
+    transcribing it into Rust would have been the copied-snapshot cheat
+    this audit exists to catch.  Emaxx runs GNU's registration function
+    against GNU's own table.  Verified: the three files now match the
+    oracle 82/82, and forcing `tty-defined-color-alist' back to nil
+    reproduces exactly the 21 original failures.
+86. **Four color primitives bypass the Lisp color database entirely.**
+    Found by the adversarial audit of finding 85's fix, and pre-existing:
+    `color-gray-p', `color-supported-p', `color-distance' and
+    `color-values-from-color-spec' are served natively from a five-entry
+    Rust name table (`named_color_spec', color_lcms.rs) rather than
+    through GNU's `tty_lookup_color'/`tty-color-desc' path.  Measured
+    divergences: the first two answer nil for every name outside those
+    five (`gray50', `snow', `dark slate gray') where GNU answers t;
+    `color-values-from-color-spec "red"' answers (65535 0 0) where GNU
+    answers nil, since xfaces.c parses X specs only and never names;
+    `color-distance' uses sum-of-squared-differences instead of
+    xfaces.c:1208's Riemersma metric, rejects the documented (R G B) list
+    arguments, and silently ignores its METRIC argument.  Upstream's
+    `xfaces-color-distance' only asserts symmetry, so the 7595 baseline
+    does not catch any of it.  OPEN: finding 85 is the prerequisite that
+    makes routing these through the now-populated Lisp database possible.
