@@ -4106,7 +4106,17 @@ impl Interpreter {
             ("native-comp-jit-compilation", Value::T),
             ("nobreak-char-ascii-display", Value::Nil),
             ("nobreak-char-display", Value::T),
-            ("operating-system-release", Value::String("25.6.0".into())),
+            // editfns.c:140 fills this from `uname'.  It was transcribed as
+            // this host's own `uname -r' output (audit finding 101), which is
+            // copied build identity rather than a computed value.
+            (
+                "operating-system-release",
+                crate::lisp::primitives::uname_field(
+                    crate::lisp::primitives::UnameField::Release,
+                )
+                .map(|release| Value::String(release.into()))
+                .unwrap_or(Value::Nil),
+            ),
             ("overriding-local-map-menu-flag", Value::Nil),
             // pdumper.c documents `pdumper-fingerprint' as "unique to each
             // build of Emacs"; the value is computed lazily from THIS
