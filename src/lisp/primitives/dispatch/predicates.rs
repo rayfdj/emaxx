@@ -411,8 +411,8 @@ define_dispatch!(
                 }
                 // OClosures may get their interactive form from the
                 // `oclosure-interactive-form' generic (like GNU's commandp).
-                if super::misc_keymaps::oclosure_type_of(&value).is_some()
-                    && interp.has_lisp_function("oclosure-interactive-form")
+                if interp.has_lisp_function("oclosure-interactive-form")
+                    && super::misc_keymaps::value_is_oclosure(interp, &value, env)
                     && interp
                         .call_function_value(
                             Value::Symbol("oclosure-interactive-form".into()),

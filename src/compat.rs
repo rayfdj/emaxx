@@ -23,7 +23,7 @@ pub const SUPPORTED_ENV_VARS: [&str; 4] = [
     "EMACS_TEST_JUNIT_REPORT",
     "TEST_BACKTRACE_LINE_LENGTH",
 ];
-pub const UNSET_ENV_VARS: [&str; 7] = [
+pub const UNSET_ENV_VARS: [&str; 9] = [
     "EMACSDATA",
     "EMACSDOC",
     "EMACSLOADPATH",
@@ -34,6 +34,13 @@ pub const UNSET_ENV_VARS: [&str; 7] = [
     "EMACSNATIVELOADPATH",
     "EMACSPATH",
     "GREP_OPTIONS",
+    // POSIX gives LC_ALL precedence over LANG, and LC_CTYPE overrides LANG
+    // for the character-type category specifically.  An operator with either
+    // exported would give both binaries a UTF-8 LC_CTYPE despite the LANG=C
+    // we set, silently retiring the grave-quoting path from the measurement
+    // (2026-08-25 audit, finding 94).
+    "LC_ALL",
+    "LC_CTYPE",
     "XDG_CONFIG_HOME",
 ];
 

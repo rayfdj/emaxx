@@ -5363,10 +5363,15 @@ fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     eval_str_with(&mut interp, "(require 'cl-macs)");
     let mut env: Env = Vec::new();
-    let form = Reader::new("(cl-case 'zip (otherwise 'fallback) (zip 'hit))")
-        .read()
-        .unwrap()
-        .unwrap();
+    let form = Reader::new(
+        // The flag binding pins the quoting style: nil means grave outside a
+        // UTF-8 locale, so the assertion below would depend on LANG.
+        "(let ((internal--text-quoting-flag t))
+           (cl-case 'zip (otherwise 'fallback) (zip 'hit)))",
+    )
+    .read()
+    .unwrap()
+    .unwrap();
     let error = interp.eval(&form, &mut env).unwrap_err();
     assert_eq!(error.condition_type(), "error");
     // This diagnostic is emitted by GNU cl-macs.el and retains GNU's curly

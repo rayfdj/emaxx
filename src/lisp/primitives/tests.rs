@@ -22,8 +22,9 @@ fn call_via_lisp(
 fn assert_upstream_primitive_contract(program: &str, expected: &str) {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
+    let program = crate::test_support::oracle_program_ascii(program);
     let output = std::process::Command::new(&binary)
-        .args(["--batch", "-Q", "--eval", program])
+        .args(["--batch", "-Q", "--eval", &program])
         .output()
         .unwrap_or_else(|error| {
             panic!(
@@ -42,8 +43,9 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
 fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, expected: &str) {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
+    let program = crate::test_support::oracle_program_ascii(program);
     let mut child = std::process::Command::new(&binary)
-        .args(["--batch", "-Q", "--eval", program])
+        .args(["--batch", "-Q", "--eval", &program])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -8461,9 +8463,21 @@ fn native_invocation_queries_copy_host_values_and_daemon_finalization_rejects_ba
 
 #[test]
 fn native_syntax_description_decodes_the_shared_descriptor_bits() {
+    // Note: this contract is checked by handing the program to the oracle
+    // through `--eval', and GNU decodes command-line arguments with the
+    // locale's coding system -- so a literal curved quote in the program
+    // text would not survive a non-UTF-8 locale.  The two quotes in the
+    // expected description are therefore spelled as `\u' escapes, keeping
+    // the argument pure ASCII, and the style binding below pins how
+    // `internal-describe-syntax-value' renders them.
     let program = r#"
-        (let
-            ((results
+        (let*
+            (;; Pin the quoting style: a nil `text-quoting-style' means
+             ;; grave outside a UTF-8 locale, so the curved quotes in the
+             ;; expected description below would otherwise depend on the
+             ;; ambient LANG.
+             (text-quoting-style 'curve)
+             (results
               (mapcar
                (lambda (case)
                  (with-temp-buffer
@@ -8487,7 +8501,7 @@ fn native_syntax_description_decodes_the_shared_descriptor_bits() {
 	  is the second character of a comment-start sequence,
 	  is the first character of a comment-end sequence,
 	  is the second character of a comment-end sequence (comment style b) (comment style c) (nestable),
-	  is a prefix character for ‘backward-prefix-chars’")))))
+	  is a prefix character for \u2018backward-prefix-chars\u2019")))))
           (list results
                 (subrp
                  (symbol-function 'internal-describe-syntax-value))
@@ -8541,11 +8555,142 @@ fn canonical_combining_classes_come_from_complete_unicode_data_inner() {
 }
 
 #[test]
+fn text_quoting_default_is_derived_from_the_process_locale() {
+    // The rest of the quoting tests pin `internal--text-quoting-flag' so they
+    // do not inherit the ambient LANG.  That leaves the derivation itself --
+    // emacs.c:1665 `text_quoting_flag = using_utf8 ()' -- untested, which is
+    // the whole premise of the change.  Pin it here instead: with NO bindings
+    // at all the answer must track the locale probe, and the variable must be
+    // a real global (GNU's DEFVAR_BOOL answers t to `default-boundp').
+    let utf8 = crate::lisp::primitives::values::locale_uses_utf8();
+
+    // Pin the probe itself against the environment, not just the wiring that
+    // reads it.  POSIX precedence: LC_ALL, then LC_CTYPE, then LANG.
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()));
+    match locale.as_deref() {
+        Some(name) if name.to_ascii_uppercase().contains("UTF-8") => assert!(
+            utf8,
+            "locale {name} names UTF-8 but the mbrtowc probe disagreed"
+        ),
+        Some("C" | "POSIX") => assert!(
+            !utf8,
+            "locale {locale:?} is the C locale but the mbrtowc probe claimed UTF-8"
+        ),
+        // Any other named locale, or none at all, is not decidable from the
+        // name alone -- leave the probe unchallenged rather than guess.
+        _ => {}
+    }
+
+    let expected_flag = if utf8 { "t" } else { "nil" };
+    let expected_style = if utf8 { "curve" } else { "grave" };
+    let expected = format!("({expected_flag} {expected_style} t t)");
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(
+        "(list internal--text-quoting-flag
+               (text-quoting-style)
+               (default-boundp 'internal--text-quoting-flag)
+               (special-variable-p 'internal--text-quoting-flag))",
+    )
+    .read_all()
+    .expect("read locale-derived quoting program")
+    .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate locale-derived quoting program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn interactive_form_prefers_the_property_over_advice_and_walks_aliases() {
+    // data.c:1141-1151 consults an `interactive-form' property FIRST, walking
+    // the symbol-function alias chain, before inspecting the function object.
+    // Widening the OClosure test to compiled advice objects made that ordering
+    // observable for every advised function, so pin it.  `commandp' is asked
+    // only about symbols WITHOUT the property: eval.c:2282-2291 signals
+    // outright when one is present, which is a separate divergence.
+    let program = r#"
+        (progn
+          (defun emaxx-adv-cmd (x) (interactive "p") x)
+          (defun emaxx-adv-plain (x) x)
+          (advice-add 'emaxx-adv-cmd :around (lambda (orig &rest a) (apply orig a)))
+          (advice-add 'emaxx-adv-plain :around (lambda (orig &rest a) (apply orig a)))
+          (defun emaxx-adv-target (x) x)
+          (put 'emaxx-adv-target 'interactive-form '(interactive "M"))
+          (defalias 'emaxx-adv-alias 'emaxx-adv-target)
+          (defun emaxx-adv-both (x) (interactive "p") x)
+          (advice-add 'emaxx-adv-both :around (lambda (orig &rest a) (apply orig a)))
+          (put 'emaxx-adv-both 'interactive-form '(interactive "P"))
+          (list (interactive-form 'emaxx-adv-cmd)
+                (commandp 'emaxx-adv-cmd)
+                (interactive-form 'emaxx-adv-plain)
+                (commandp 'emaxx-adv-plain)
+                (interactive-form 'emaxx-adv-alias)
+                (interactive-form 'emaxx-adv-both)
+                (interactive-form 'emaxx-adv-nosuch)))"#;
+    let expected = concat!(
+        "((interactive \"p\") t nil nil (interactive \"M\") ",
+        "(interactive \"P\") nil)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read advice interactive-form program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate advice interactive-form program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn text_quoting_style_follows_the_locale_flag_only_for_a_nil_setting() {
+    // doc.c:679: NIL consults `default_to_grave_quoting_style' (whose first
+    // test is the locale-derived `internal--text-quoting-flag', emacs.c:1665
+    // `text_quoting_flag = using_utf8 ()'), `grave' and `straight' are
+    // returned as-is, and "any other value is treated as `curve'".  Routing
+    // unmatched values through the flag made a bogus style answer grave in a
+    // non-UTF-8 locale, which is how the compatibility harness runs.
+    let program = r#"
+        (mapcar
+         (lambda (case)
+           (let ((internal--text-quoting-flag (car case))
+                 (text-quoting-style (cadr case)))
+             (list (text-quoting-style) (format-message "`a'"))))
+         '((t nil) (nil nil) (t grave) (nil curve) (t straight)
+           (nil foo) (t foo) (nil 42)))"#;
+    let expected = concat!(
+        "((curve \"\u{2018}a\u{2019}\") (grave \"`a'\") (grave \"`a'\") ",
+        "(curve \"\u{2018}a\u{2019}\") (straight \"'a'\") ",
+        "(curve \"\u{2018}a\u{2019}\") (curve \"\u{2018}a\u{2019}\") ",
+        "(curve \"\u{2018}a\u{2019}\"))"
+    );
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read text-quoting policy program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate text-quoting policy program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn text_quoting_policy_is_shared_by_the_query_and_substitution_primitives() {
+    // Pin `internal--text-quoting-flag': a nil `text-quoting-style' means
+    // grave in a non-UTF-8 locale (doc.c:653 via emacs.c's using_utf8), so
+    // without this the nil row would depend on the ambient LANG.  GNU
+    // exposes the same variable and honours a binding of it.
     let program = r#"
         (mapcar
          (lambda (style)
-           (let ((text-quoting-style style))
+           (let ((internal--text-quoting-flag t)
+                 (text-quoting-style style))
              (list style
                    (text-quoting-style)
                    (substitute-command-keys "`foo'"))))
@@ -8593,10 +8738,13 @@ fn text_quoting_policy_is_shared_by_the_query_and_substitution_primitives() {
 
 #[test]
 fn format_message_quotes_only_format_literals_with_the_effective_text_style() {
+    // See the note in the sibling test: pin the locale-derived flag so the
+    // nil row is deterministic.
     let program = r#"
         (mapcar
          (lambda (style)
-           (let ((text-quoting-style style))
+           (let ((internal--text-quoting-flag t)
+                 (text-quoting-style style))
              (list style
                    (format-message "`%s'" "`arg'")
                    (format "`%s'" "`arg'"))))
@@ -11210,7 +11358,11 @@ fn native_record_and_pseudovector_type_names_match_gnu_data_c() {
 
 #[test]
 fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
-    let validation = r#"(let* ((mutex (make-mutex "m"))
+    let validation = r#"(let* (;; thread.c:499,558 spell the apostrophe ASCII and `error'
+                               ;; requotes it per the effective style, so pin the
+                               ;; style rather than inherit the ambient LANG.
+                               (internal--text-quoting-flag t)
+                               (mutex (make-mutex "m"))
                                (condition
                                 (make-condition-variable mutex "c")))
                           (list
@@ -11223,7 +11375,8 @@ fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
     let validation_expected = "((\"Condition variable’s mutex is not held by current thread\") (\"Condition variable’s mutex is not held by current thread\"))";
     assert_upstream_primitive_contract(&format!("(prin1 {validation})"), validation_expected);
 
-    let synchronization = r#"(let* ((mutex (make-mutex "m"))
+    let synchronization = r#"(let* ((internal--text-quoting-flag t)
+                                    (mutex (make-mutex "m"))
                                     (condition
                                      (make-condition-variable mutex "c"))
                                     (flag nil)
@@ -11251,7 +11404,7 @@ fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
                                      (condition-case error
                                          (condition-notify condition)
                                        (error (cdr error)))
-                                     '("Condition variable’s mutex is not held by current thread"))))))"#;
+                                     '("Condition variable\u2019s mutex is not held by current thread"))))))"#;
     let synchronization_expected = "(t t t t)";
     assert_upstream_primitive_contract(
         &format!("(prin1 {synchronization})"),
