@@ -688,8 +688,13 @@ fn require_with_explicit_target_requires_provided_feature() {
     let path_text = path.to_string_lossy();
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();
+    // Pin the quoting style rather than inheriting the locale's: a nil
+    // `text-quoting-style' means grave in a non-UTF-8 locale (which is how
+    // the compatibility harness runs its children), so asserting curved
+    // quotes literally would make this test depend on the developer's LANG.
     let form = Reader::new(&format!(
-        r#"(require 'sample-missing-feature "{path_text}")"#
+        r#"(let ((text-quoting-style 'curve))
+             (require 'sample-missing-feature "{path_text}"))"#
     ))
     .read_all()
     .expect("read require")
@@ -698,7 +703,22 @@ fn require_with_explicit_target_requires_provided_feature() {
     assert!(
         error
             .to_string()
-            .contains("failed to provide feature \u{2018}sample-missing-feature\u{2019}")
+            .contains("failed to provide feature \u{2018}sample-missing-feature\u{2019}"),
+        "unexpected require error: {error}"
+    );
+    let grave_form = Reader::new(&format!(
+        r#"(let ((text-quoting-style 'grave))
+             (require 'sample-missing-feature "{path_text}"))"#
+    ))
+    .read_all()
+    .expect("read require")
+    .remove(0);
+    let grave_error = interp.eval(&grave_form, &mut env).unwrap_err();
+    assert!(
+        grave_error
+            .to_string()
+            .contains("failed to provide feature `sample-missing-feature'"),
+        "unexpected require error: {grave_error}"
     );
     let _ = fs::remove_file(path);
 }
@@ -856,13 +876,30 @@ fn require_bounds_recursive_cycles_and_restores_nesting_after_error() {
             .read_all()
             .expect("read recursive require")
             .remove(0);
-        let error = interp
-            .eval(&form, &mut env)
-            .expect_err("unbounded require must fail");
-        assert_eq!(
-            error.to_string(),
-            "Recursive `require' for feature `emaxx-recursive-require'"
-        );
+        // fns.c:3762 signals through `error', so the quotes follow the
+        // effective `text-quoting-style' rather than being fixed.  Pin the
+        // style both ways so the assertion cannot inherit the ambient LANG.
+        for (style, expected) in [
+            (
+                "grave",
+                "Recursive `require' for feature `emaxx-recursive-require'",
+            ),
+            (
+                "curve",
+                "Recursive \u{2018}require\u{2019} for feature \u{2018}emaxx-recursive-require\u{2019}",
+            ),
+        ] {
+            let styled = Reader::new(&format!(
+                "(let ((text-quoting-style '{style})) (require 'emaxx-recursive-require))"
+            ))
+            .read_all()
+            .expect("read styled recursive require")
+            .remove(0);
+            let error = interp
+                .eval(&styled, &mut env)
+                .expect_err("unbounded require must fail");
+            assert_eq!(error.to_string(), expected, "style {style}");
+        }
 
         fs::write(&path, "(provide 'emaxx-recursive-require)\n").expect("repair recursive require");
         assert_eq!(
@@ -2127,7 +2164,14 @@ fn chinese_gb18030_is_accepted_for_decode_coding_string() {
 fn select_safe_coding_system_uses_default_candidates() {
     assert_eq!(
         eval_str_with_upstream_batch(
-            "(select-safe-coding-system (point-min) (point-max) (list t 'utf-8-emacs))"
+            // The `-unix' suffix comes from `buffer-file-coding-system', which
+            // `set-locale-environment' leaves nil under LANG=C -- the oracle
+            // answers `utf-8-emacs' there and `utf-8-emacs-unix' in a UTF-8
+            // locale.  Pin the input so the EOL variant is not the ambient
+            // locale's choice.
+            "(let ((buffer-file-coding-system 'utf-8-unix))
+                   (select-safe-coding-system (point-min) (point-max)
+                                              (list t 'utf-8-emacs)))"
         ),
         Value::Symbol("utf-8-emacs-unix".into())
     );

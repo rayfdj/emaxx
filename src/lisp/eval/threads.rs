@@ -2603,7 +2603,17 @@ impl Interpreter {
             .map(|mutex| mutex.recursion_depth)
             .filter(|depth| *depth > 0)
             .ok_or_else(|| {
-                LispError::Signal("Condition variable’s mutex is not held by current thread".into())
+                // thread.c:499 spells this with an ASCII apostrophe; the
+                // curl is applied only when the effective quoting style is
+                // `curve'.
+                LispError::Signal(format!(
+                    "Condition variable{}s mutex is not held by current thread",
+                    if crate::lisp::primitives::values::effective_text_quoting_style(self, env) == "curve" {
+                    '\u{2019}'
+                } else {
+                    '\''
+                }
+                ))
             })?;
         if let Some(mutex) = self.find_mutex_state_mut(mutex_id) {
             mutex.owner = None;
@@ -2664,6 +2674,7 @@ impl Interpreter {
         &mut self,
         condvar_id: u64,
         notify_all: bool,
+        env: &Env,
     ) -> Result<(), LispError> {
         let mutex_id = self
             .condition_variable_mutex_id(condvar_id)
@@ -2675,9 +2686,15 @@ impl Interpreter {
                 && mutex.owner == Some(self.active_thread_id)
                 && mutex.recursion_depth > 0
         }) {
-            return Err(LispError::Signal(
-                "Condition variable’s mutex is not held by current thread".into(),
-            ));
+            // thread.c:558, as above.
+            return Err(LispError::Signal(format!(
+                "Condition variable{}s mutex is not held by current thread",
+                if crate::lisp::primitives::values::effective_text_quoting_style(self, env) == "curve" {
+                    '\u{2019}'
+                } else {
+                    '\''
+                }
+            )));
         }
         for thread in self.thread_states.iter_mut() {
             if !matches!(

@@ -4988,12 +4988,21 @@ fn truncate_string_to_width_uses_display_columns() {
     // `truncate-string-to-width', in its dumped image.
     assert_eq!(
         eval_str_with_upstream_batch(
-            "(list (truncate-string-to-width \"abcdef\" 3)
+            // mule-util.el's `truncate-string-ellipsis' falls back to "..."
+            // when U+2026 is not displayable, which is the case under LANG=C
+            // -- verified against the oracle, which returns "hun2..." there
+            // and "h\u{2026}" in a UTF-8 locale.  Pinning the variable makes
+            // the answer "h\u{2026}" in BOTH locales, which is the contract
+            // asserted below.  NOTE (finding 113): Emaxx does not yet honour
+            // the binding, so this test is still red under LANG=C -- the pin
+            // is a correct spec, not a fix.
+            "(let ((truncate-string-ellipsis \"\u{2026}\"))
+                   (list (truncate-string-to-width \"abcdef\" 3)
                        (truncate-string-to-width \"界a\" 2)
                        (truncate-string-to-width \"a\" 3 0 ?.)
                        (truncate-string-to-width \"abcdef\" 4 2)
                        (truncate-string-to-width \"hun2\" 2 0 nil t)
-                       (truncate-string-to-width \"hi\" 2 0 nil t))"
+                       (truncate-string-to-width \"hi\" 2 0 nil t)))"
         ),
         Value::list([
             Value::String("abc".into()),

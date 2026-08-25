@@ -2936,6 +2936,9 @@ mod tests {
                                     (keyboard-coding-system)
                                     (char-displayable-p ?‘))";
             let oracle_form = format!("(prin1 {expression})");
+            // `?\u{2018}' in the program is destroyed by `--eval' argument
+            // decoding under LANG=C; escape it so the argument stays ASCII.
+            let oracle_form = crate::test_support::oracle_program_ascii(&oracle_form);
             let output = std::process::Command::new(&oracle)
                 .args(["--batch", "-Q", "--eval", &oracle_form])
                 .output()
