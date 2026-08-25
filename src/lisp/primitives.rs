@@ -71,7 +71,7 @@ mod processes;
 mod regexp;
 mod sequences;
 mod strings;
-mod syntax;
+pub(crate) mod syntax;
 mod system;
 mod text;
 mod values;

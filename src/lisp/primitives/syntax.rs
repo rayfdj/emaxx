@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SyntaxClass {
+pub(crate) enum SyntaxClass {
     Whitespace = 0,
     Punctuation = 1,
     Word = 2,
