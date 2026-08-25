@@ -69,14 +69,14 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 98 | the 7595 denominator excluded 3 files dropped by a 20s inventory cap 9x tighter than the run's own 180s default | FIXED 2026-08-26 - regenerated to 7883 |
 | 99 | make-thread body classifier pattern-matches three lambda shapes instead of running the body | OPEN |
 | 100 | GnuTLS digest catalogue transcribed from the oracle while cipher/mac lists are queried live | OPEN |
-| 101 | operating-system-release hardcodes this host's uname -r | OPEN |
+| 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | OPEN |
-| 103 | set-network-process-option fabricates success and never reads the option | OPEN |
+| 103 | set-network-process-option fabricated success and never read the option | FIXED 2026-08-26 - real setsockopt, 20 cases oracle-matched |
 | 104 | get-unused-iso-final-char returns a constant and swallows validation | OPEN |
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | OPEN |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
-| 108 | file-name-case-insensitive-p constant nil makes a self-comparing test pass trivially | OPEN |
+| 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
 | 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | OPEN |
 | 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | OPEN |
 | 111 | network-interface-info is a bare nil beside a real network-interface-list | OPEN |
@@ -84,6 +84,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
+| 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
 
 # Honesty audit — 2026-08-18
 
@@ -1634,3 +1635,117 @@ artifact should be treated as unreliable until it is explained.  Not
 investigated; recorded so the next reader does not build on it.  This is why
 finding 98's corrected evidence now rests on `edebug-tests.el' alone, whose
 239,452 ms test phase sits coherently inside a 251,765 ms total.
+
+## 2026-08-26 mechanical cheat fixes (findings 101, 103, 108)
+
+The first tranche of finding 99-112 repairs -- the ones where the honest
+implementation was small enough to land without a design.  All three were
+probed against the pinned oracle before and after.  (None of the three has
+locale-dependent output, so unlike findings 90-113 there is nothing here for a
+second locale to exercise; claiming otherwise, as an earlier draft did, dressed
+up a run that proved nothing.)
+
+- **101 FIXED.**  `operating-system-release' now comes from the `uname'
+  SYSCALL (editfns.c:136-141), not the literal "25.6.0" it had been
+  transcribed to, and not from forking `uname(1)' -- an intermediate draft did
+  fork, once per `Interpreter::new()', and answered nil under an empty PATH
+  where GNU always answers a string.
+  HONEST LIMIT OF THE TEST, corrected after an audit called the original
+  claim here false: NO on-host test can distinguish a transcription of this
+  host's release from a computed one.  The oracle says "25.6.0", `uname' says
+  "25.6.0", and so did the literal.  The test pins the WIRING and would not
+  fail if the literal were reintroduced today.  That this cheat is gone rests
+  on code inspection, not on an assertion.  The earlier wording -- that
+  asserting against the syscall was stronger than an oracle contract -- was
+  wrong in exactly the way the cheat itself was.
+- **108 FIXED.**  `file-name-case-insensitive-p' asks the filesystem through
+  `pathconf(_PC_CASE_SENSITIVE)' and walks up the tree as fileio.c:2711-2722
+  does -- though NOT fileio.c:2700's `Fexpand_file_name' first, so an
+  unresolved ".." with a missing intermediate component still diverges
+  ("/tmp/foo/../" is t in GNU, nil here); that is a pre-existing property of
+  the shared path helper, shared with `file-exists-p' and ~30 other
+  primitives, not of this change.  Including the detail that makes a missing path answer
+  nil rather than inheriting the root's answer -- `file-name-directory' of
+  "/nope/deep/" is itself, so the walk terminates on the second hop.  Eighteen
+  cases byte-identical to GNU: the committed test pins
+  four rows, five more were probed by hand, and auditors independently checked
+  nine further paths
+  (relative, empty, trailing-slash, "//", a non-string, and a bare missing
+  directory whose parent IS reachable, which answers t where the deeper one
+  answers nil).  The test also pins that an existing path and a missing one
+  must DIFFER, so no future constant can satisfy it -- guarded to macOS, since
+  on a case-sensitive volume or on Linux every answer is legitimately nil and
+  the assertion would fail against a CORRECT implementation.
+- **103 FIXED.**  `set-network-process-option' now reads the option: it looks
+  it up in process.c:2839's table, applies it with `setsockopt' on the real
+  descriptor behind the process, records an accepted option on the contact
+  plist (process.c:2990), and signals "Unknown or unsupported option" -- or
+  returns nil under NO-ERROR -- for anything else.  Its arity is GNU's 3-4
+  rather than the 2-4 it had.  Twenty cases byte-identical to GNU across two probe sets -- including
+  an over-long device name, an empty one, t/nil/0/negative/float/huge
+  `:linger' values, an uninterned keyword, a foreign-obarray keyword, and
+  the `wrong-number-of-arguments' and `wrong-type-argument' condition
+  types.
+  CORRECTED after an audit: an earlier draft of this entry claimed
+  SO_BINDTODEVICE was "absent because GNU itself compiles it out on this
+  platform".  That was false, and the oracle refutes it in one command --
+  macOS sys/socket.h:190 defines SO_BINDTODEVICE as 0x1134 and GNU accepts
+  `:bindtodevice', returning t and recording the device on the contact plist.
+  The first draft of this FIX therefore REGRESSED that option: it signalled
+  "Unknown or unsupported option" where the old cheat had returned t and
+  matched GNU by accident.  A cheat that was accidentally right was replaced
+  by an implementation that was deliberately wrong.  `:bindtodevice' is now
+  implemented per process.c:2913-2925 -- zeroed IFNAMSIZ+1 buffer, at most
+  IFNAMSIZ bytes copied, always IFNAMSIZ handed to the kernel so unbinding
+  works -- with GNU's distinct "Bad option value for %s" for a non-string
+  non-nil.  Only SO_PRIORITY is genuinely unavailable here; on Linux it would
+  need adding.
+  Three further defects in that first draft, all audit-found: the option was
+  matched against Emaxx's RAW symbol name, so an uninterned or foreign-obarray
+  `:broadcast' -- which GNU accepts, since process.c:2881 compares by name --
+  would silently have become "Unknown or unsupported option"; a setsockopt
+  failure raised a plain `error' where GNU raises a `file-error' carrying the
+  option and value as DATA (process.c:2940 `report_file_errno'); and an
+  out-of-int-range `:linger' was truncated into the kernel where GNU ignores
+  it.
+
+116. `system-configuration' is a BUILD-TIME constant in GNU: emacs.c:3625 sets
+     it from `EMACS_CONFIGURATION', the triple autoconf recorded when that
+     binary was configured.  The pinned oracle was built under macOS 25.5.0
+     and reports "aarch64-apple-darwin25.5.0" forever; Emaxx computes the
+     triple at runtime and reports "aarch64-apple-darwin25.6.0" on the same
+     machine, because the host OS updated underneath it.
+     This is NOT a cheat and must not be "fixed" by copying the oracle's
+     string -- that is finding 77's family, transcribed build identity.  Emaxx
+     is not configured by autoconf, so computing is the honest answer.  But
+     the two WILL disagree for any GNU test comparing `system-configuration'
+     against the oracle's value, and the gap widens every time the host OS
+     updates while the pinned build stays put.  Recorded so a mismatch in that
+     shape is recognised as environmental rather than chased as a defect.
+     Pre-existing: the runtime computation predates the uname(2) change.
+     OPEN (disclosed).
+
+**Correction to the 103 fix, found by my own re-verification after the
+scheduled audit stalled without reporting.**  The repair matched the option
+name correctly but stored a RECONSTRUCTED symbol on the contact plist.  GNU's
+`plist_put' compares with EQ and stores the caller's own symbol, so a
+foreign-obarray `:keepalive' sets the socket option yet stays invisible to a
+later `(plist-get (process-contact p t) :keepalive)' -- the interned keyword
+is not EQ to it.  Emaxx answered t where GNU answers nil.  Fixed: the caller's
+symbol is stored verbatim and existing entries match by raw-name identity,
+deliberately NOT by the visible name used for the option-table lookup, because
+GNU uses two different comparisons (strcmp for the table at process.c:2881, EQ
+for the plist at :2990).
+
+**Process note.**  The three ledger corrections above were written once
+before, reported as landed, and silently lost: the editing script verified
+each substitution but wrote the file only at the end, so one failed assertion
+discarded all of them.  An intermediate LOCAL commit was then made still
+carrying the false SO_BINDTODEVICE claim, while the summary reported that
+claim as corrected.  Nothing was pushed -- that commit was amended before it
+left the machine, so `git log' shows the string only inside this refutation.
+Calling it "published" would overstate the harm: the defect was the false
+report, not a publication.  Ledger edits are now applied and re-read from disk
+one at a time.  The irony is exact: an honesty ledger asserted a fix that had not
+happened, which is the same defect finding 113 recorded about
+`truncate-string-to-width'.

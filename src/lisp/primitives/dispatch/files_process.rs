@@ -445,7 +445,32 @@ define_dispatch!(
             }
             "file-name-case-insensitive-p" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Nil)
+                // fileio.c:2689.  CHECK_STRING, expand, then walk up the tree
+                // until `file_name_case_insensitive_err' is conclusive: it
+                // returns negative for case-insensitive, 0 for sensitive, and
+                // a positive errno for "could not tell", in which case GNU
+                // retries on the parent.  The walk stops when the parent stops
+                // changing -- which is why a missing path answers nil rather
+                // than inheriting the root's answer: `file-name-directory' of
+                // "/nope/deep/" is itself, so the second hop already matches.
+                //
+                // The constant nil this replaces made
+                // files-tests-file-name-non-special-file-name-case-insensitive-p
+                // pass trivially, because that test compares the predicate's
+                // handler and non-handler answers against each other and any
+                // constant satisfies it (audit finding 108).
+                let mut path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                validate_file_name(&path)?;
+                loop {
+                    let err = super::super::system::file_name_case_insensitive_err(&path);
+                    if err <= 0 {
+                        return Ok(if err < 0 { Value::T } else { Value::Nil });
+                    }
+                    match super::super::system::file_name_directory(&path) {
+                        Some(parent) if parent != path => path = parent,
+                        _ => return Ok(Value::Nil),
+                    }
+                }
             }
             "file-name-concat" => Ok(Value::String(
                 file_name_concat(
@@ -1729,18 +1754,42 @@ define_dispatch!(
             "make-serial-process" => make_serial_process(interp, args, env),
             "serial-process-configure" => serial_process_configure(interp, args),
             "set-network-process-option" => {
-                // process.c Fset_network_process_option: a non-process
-                // signals processp; a non-network process errors.  The
-                // previous arm returned t unconditionally -- fabricated
-                // success (2026-08-23 audit finding 79).
-                need_arg_range(name, args, 2, 4)?;
+                // process.c:2962.  Finding 79 fixed the processp/network
+                // half; the option itself was still never read, so every
+                // call returned t whether or not anything was set -- and
+                // GNU's arity is 3, not 2 (audit finding 103).
+                need_arg_range(name, args, 3, 4)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 if !interp.is_network_process(process_id) {
                     return Err(LispError::Signal(
                         "Process is not a network process".into(),
                     ));
                 }
-                Ok(Value::T)
+                // process.c:2984-2986: a closed socket is "not running".
+                let Some(fd) = interp.network_socket_fd(process_id) else {
+                    return Err(LispError::Signal("Process is not running".into()));
+                };
+                // process.c:2881 CHECK_SYMBOL (opt).
+                // process.c:2881 matches by SYMBOL NAME (strcmp), not by eq,
+                // so an uninterned or foreign-obarray symbol works in GNU.
+                // Emaxx stores those with internal markers in the raw name, so
+                // matching the raw name would silently turn a supported option
+                // into "Unknown or unsupported option".
+                let raw = args[1]
+                    .as_symbol()
+                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+                let option = crate::lisp::types::visible_symbol_name(&raw).to_string();
+                if set_socket_option(fd, &option, &args[2])? {
+                    // process.c:2990 records the accepted option on the
+                    // process's contact plist, which `process-contact' reads.
+                    interp.put_process_contact_option(process_id, &args[1], args[2].clone());
+                    return Ok(Value::T);
+                }
+                // process.c:2994-2997.
+                match args.get(3) {
+                    Some(value) if !value.is_nil() => Ok(Value::Nil),
+                    _ => Err(LispError::Signal("Unknown or unsupported option".into())),
+                }
             }
             "network-interface-list" => network_interface_list(args),
             "network-interface-info" => Ok(Value::Nil),
@@ -2701,3 +2750,140 @@ fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
     }
     rendered
 }
+
+/// process.c:2877 `set_socket_option'.  Returns whether the option was
+/// recognised AND applied; the caller turns a false into GNU's
+/// "Unknown or unsupported option" (or nil under NO-ERROR).
+///
+/// The table mirrors process.c:2839.  SO_PRIORITY is the only entry GNU
+/// compiles out on this platform, so asking for it is genuinely unsupported
+/// rather than unimplemented; SO_BINDTODEVICE IS defined here (macOS
+/// sys/socket.h:190, 0x1134) and GNU accepts it, so omitting it would be a
+/// regression -- verified against the oracle, which returns t and records
+/// "lo0" on the contact plist.
+fn set_socket_option(
+    fd: std::os::fd::RawFd,
+    option: &str,
+    value: &Value,
+) -> Result<bool, LispError> {
+    use std::ffi::c_void;
+
+    enum Kind {
+        Bool,
+        Linger,
+        IfName,
+    }
+    let entry = match option {
+        ":broadcast" => Some((libc::SO_BROADCAST, Kind::Bool)),
+        ":dontroute" => Some((libc::SO_DONTROUTE, Kind::Bool)),
+        ":keepalive" => Some((libc::SO_KEEPALIVE, Kind::Bool)),
+        ":oobinline" => Some((libc::SO_OOBINLINE, Kind::Bool)),
+        ":reuseaddr" => Some((libc::SO_REUSEADDR, Kind::Bool)),
+        ":linger" => Some((libc::SO_LINGER, Kind::Linger)),
+        ":bindtodevice" => Some((SO_BINDTODEVICE, Kind::IfName)),
+        _ => None,
+    };
+    let Some((optnum, kind)) = entry else {
+        return Ok(false);
+    };
+
+    // process.c:2921 rejects a non-string, non-nil device name BEFORE the
+    // syscall, with a distinct message from the unknown-option one.
+    let device = if let Kind::IfName = kind {
+        match value {
+            Value::Nil => None,
+            // process.c:2920 gates on STRINGP.  Emaxx has two string
+            // representations (`String' and the shared `StringObject'), so
+            // test through `string_text' rather than one variant.
+            _ => match string_text(value) {
+                Ok(text) => Some(text),
+                Err(_) => {
+                    return Err(LispError::Signal(format!(
+                        "Bad option value for {option}"
+                    )));
+                }
+            },
+        }
+    } else {
+        None
+    };
+
+    // SAFETY: `fd' is a live descriptor owned by the process record, and each
+    // arm passes a pointer to a correctly sized local of the type the option
+    // expects.
+    let applied = unsafe {
+        match kind {
+            Kind::Bool => {
+                let optval: libc::c_int = if value.is_nil() { 0 } else { 1 };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    optnum,
+                    std::ptr::addr_of!(optval).cast::<c_void>(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            }
+            Kind::Linger => {
+                // process.c:2931.  Only an int-ranged fixnum sets l_linger;
+                // anything else (float, string, bignum, t) leaves it 0 and
+                // just toggles l_onoff.  Truncating an out-of-range integer
+                // would put a value in the kernel that GNU never would.
+                let seconds = match value {
+                    Value::Integer(count) => i32::try_from(*count).ok(),
+                    _ => None,
+                };
+                let linger = libc::linger {
+                    l_onoff: match seconds {
+                        Some(_) => 1,
+                        None if value.is_nil() => 0,
+                        None => 1,
+                    },
+                    l_linger: seconds.unwrap_or(0),
+                };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    optnum,
+                    std::ptr::addr_of!(linger).cast::<c_void>(),
+                    std::mem::size_of::<libc::linger>() as libc::socklen_t,
+                )
+            }
+            Kind::IfName => {
+                // process.c:2913-2925: a zeroed IFNAMSIZ+1 buffer, at most
+                // IFNAMSIZ bytes copied in, and always IFNAMSIZ handed to the
+                // kernel -- unbinding needs the zeroed buffer, not a short one.
+                let mut devname = [0u8; libc::IFNAMSIZ + 1];
+                if let Some(text) = device.as_deref() {
+                    let bytes = text.as_bytes();
+                    let length = bytes.len().min(libc::IFNAMSIZ);
+                    devname[..length].copy_from_slice(&bytes[..length]);
+                }
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    optnum,
+                    devname.as_ptr().cast::<c_void>(),
+                    libc::IFNAMSIZ as libc::socklen_t,
+                )
+            }
+        }
+    };
+    if applied < 0 {
+        // process.c:2940 `report_file_errno ("Cannot set network option",
+        // list2 (opt, val), errno)' -- a file-error carrying the option and
+        // value as data, not an `error' with them folded into the message.
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("file-error"),
+            Value::string("Cannot set network option"),
+            Value::string(&super::super::processes::network_io_error_detail(
+                &std::io::Error::last_os_error(),
+            )),
+            Value::Symbol(option.to_string().into()),
+            value.clone(),
+        ])));
+    }
+    Ok(true)
+}
+
+/// macOS sys/socket.h:190.  The libc crate does not expose this for Darwin.
+const SO_BINDTODEVICE: libc::c_int = 0x1134;

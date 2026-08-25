@@ -834,6 +834,22 @@ impl Interpreter {
             .is_some_and(|process| process.kind == ProcessKind::Network)
     }
 
+    /// The live socket descriptor behind a network process, or None when the
+    /// process has no runtime left.  process.c:2984 reads `p->infd' here and
+    /// signals "Process is not running" when it is negative.
+    pub fn network_socket_fd(&self, record_id: u64) -> Option<std::os::fd::RawFd> {
+        use std::os::fd::AsRawFd;
+        match self.find_process_state(record_id)?.network.as_ref()? {
+            crate::lisp::eval::NetworkRuntime::Listener(listener) => Some(listener.as_raw_fd()),
+            crate::lisp::eval::NetworkRuntime::Stream(stream) => Some(stream.as_raw_fd()),
+            crate::lisp::eval::NetworkRuntime::Datagram { socket, .. } => Some(socket.as_raw_fd()),
+            crate::lisp::eval::NetworkRuntime::UnixListener(listener) => {
+                Some(listener.as_raw_fd())
+            }
+            crate::lisp::eval::NetworkRuntime::UnixStream(stream) => Some(stream.as_raw_fd()),
+        }
+    }
+
     pub fn is_serial_process(&self, record_id: u64) -> bool {
         self.find_process_state(record_id)
             .is_some_and(|process| process.kind == ProcessKind::Serial)
@@ -849,6 +865,42 @@ impl Interpreter {
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
         process.contact = contact;
         Ok(())
+    }
+
+    /// process.c:2990 `pset_childp (p, plist_put (p->childp, option, value))'
+    /// -- an accepted socket option becomes visible through `process-contact'.
+    pub fn put_process_contact_option(&mut self, record_id: u64, option: &Value, value: Value) {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return;
+        };
+        // plist_put walks with CONSP guards and never discards; using
+        // unwrap_or_default() here would replace a dotted or improper contact
+        // plist with just this one pair.
+        let Ok(mut items) = process.contact.to_vec() else {
+            return;
+        };
+        // plist_put compares with EQ, not by name: a symbol from another
+        // obarray is a DIFFERENT key even when it prints the same, so it
+        // appends rather than replacing.  Emaxx encodes that identity in the
+        // raw symbol name, so compare raw names here -- deliberately NOT the
+        // visible name used for the option-table lookup.
+        let key_name = option.as_symbol().ok();
+        let mut index = 0;
+        while index + 1 < items.len() {
+            if items[index].as_symbol().ok() == key_name {
+                items[index + 1] = value;
+                process.contact = Value::list(items);
+                return;
+            }
+            index += 2;
+        }
+        // plist_put appends when the key is absent, storing the CALLER's
+        // symbol -- so `(process-contact p t)' followed by `plist-get' with
+        // the interned keyword legitimately misses a foreign-obarray key,
+        // exactly as it does in GNU.
+        items.push(option.clone());
+        items.push(value);
+        process.contact = Value::list(items);
     }
 
     #[cfg(unix)]

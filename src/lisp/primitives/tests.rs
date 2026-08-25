@@ -8555,6 +8555,152 @@ fn canonical_combining_classes_come_from_complete_unicode_data_inner() {
 }
 
 #[test]
+fn set_network_process_option_applies_the_option_or_refuses() {
+    // process.c:2962.  The arm this replaces resolved the process, confirmed
+    // it was a network process, and returned t WITHOUT EVER READING THE
+    // OPTION (audit finding 103) -- so an unsupported option reported success
+    // and nothing was set.  It also accepted 2 arguments where GNU needs 3.
+    //
+    // The `:unknown' row is the one that discriminates: fabricated success
+    // returns t there where GNU signals.
+    let program = r#"
+        (let ((server (make-network-process
+                       :name "emaxx-sockopt" :server t :host 'local
+                       :service t :family 'ipv4)))
+          (prog1
+              (list (set-network-process-option server :broadcast t)
+                    (plist-get (process-contact server t) :broadcast)
+                    (condition-case error
+                        (set-network-process-option server :nosuchopt t)
+                      (error (cadr error)))
+                    (set-network-process-option server :nosuchopt t t)
+                    (condition-case error
+                        (set-network-process-option server :broadcast)
+                      (error (car error)))
+                    (condition-case error
+                        (set-network-process-option server 42 t)
+                      (error (car error)))
+                    ;; process.c:2881 matches by NAME, so an uninterned
+                    ;; keyword is still :broadcast.  Matching Emaxx's raw
+                    ;; symbol name would answer "Unknown" here.
+                    (set-network-process-option
+                     server (make-symbol ":broadcast") t)
+                    ;; SO_BINDTODEVICE is defined on this platform and GNU
+                    ;; accepts it; omitting it regressed the option to an
+                    ;; error, which the old cheat had matched by accident.
+                    (set-network-process-option server :bindtodevice "lo0")
+                    (plist-get (process-contact server t) :bindtodevice)
+                    (condition-case error
+                        (set-network-process-option server :bindtodevice 42)
+                      (error (cadr error)))
+                    ;; process.c:2940 raises a file-error carrying the option
+                    ;; and value as DATA, not an error with them in the text.
+                    (condition-case error
+                        (set-network-process-option
+                         server :bindtodevice "nosuchdev0")
+                      (error error))
+                    ;; Out-of-int-range linger: GNU ignores it rather than
+                    ;; truncating it into the kernel.
+                    (set-network-process-option server :linger 3000000000)
+                    ;; process.c:2990 stores the CALLER's symbol and plist_put
+                    ;; compares with EQ, so a foreign-obarray keyword sets the
+                    ;; option yet stays invisible to a plist-get with the
+                    ;; interned one.  Storing a reconstructed symbol answered t
+                    ;; here where GNU answers nil.
+                    (let ((elsewhere (obarray-make)))
+                      (set-network-process-option
+                       server (intern ":keepalive" elsewhere) t))
+                    (plist-get (process-contact server t) :keepalive))
+            (delete-process server)))"#;
+    let expected = concat!(
+        "(t t \"Unknown or unsupported option\" nil ",
+        "wrong-number-of-arguments wrong-type-argument t t \"lo0\" ",
+        "\"Bad option value for :bindtodevice\" ",
+        "(file-error \"Cannot set network option\" \"Device not configured\" ",
+        ":bindtodevice \"nosuchdev0\") t t nil)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read socket-option program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate socket-option program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn file_name_case_insensitivity_is_asked_of_the_filesystem() {
+    // fileio.c:2689 walks up the tree until pathconf answers.  A constant --
+    // which is what this returned before audit finding 108 -- satisfies
+    // files-tests-file-name-non-special-file-name-case-insensitive-p
+    // trivially, because that test compares the predicate against itself.
+    // Every row below discriminates: on a case-insensitive volume /tmp is t,
+    // so constant nil fails, and a missing path is nil, so constant t fails.
+    let program = r#"
+        (list (file-name-case-insensitive-p "/tmp")
+              (file-name-case-insensitive-p "/")
+              (file-name-case-insensitive-p "/nonexistent-zzz/deep/file")
+              (condition-case error
+                  (file-name-case-insensitive-p 42)
+                (error (car error))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read case-insensitivity program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate case-insensitivity program");
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), &result.to_string());
+
+    // Pin the discrimination itself, so the contract cannot be satisfied by a
+    // constant even if the oracle and Emaxx ever agreed on one.  Only on a
+    // case-INsensitive volume: on a case-sensitive APFS volume (a supported
+    // macOS setup) or on Linux, every answer is legitimately nil and this
+    // would fail against a CORRECT implementation.
+    #[cfg(target_os = "macos")]
+    if crate::lisp::primitives::file_name_case_insensitive_err("/tmp") < 0 {
+        let answers = result.to_vec().expect("case-insensitivity list");
+        assert_ne!(
+            answers[0], answers[2],
+            "an existing path and a missing one must not answer alike"
+        );
+    }
+}
+
+#[test]
+fn operating_system_release_is_wired_to_the_uname_syscall() {
+    // editfns.c:136-141 fills this from the `uname' syscall.  It used to be
+    // the literal "25.6.0" -- this host's own release (audit finding 101).
+    //
+    // BE CLEAR ABOUT WHAT THIS CAN AND CANNOT SHOW.  No on-host test can
+    // distinguish a transcription of THIS machine's release from a computed
+    // one: the oracle says "25.6.0", `uname' says "25.6.0", and so did the
+    // hardcoded literal.  This test pins the WIRING -- that the binding
+    // answers whatever `uname_field' answers -- and would catch the value
+    // drifting away from the syscall or the binding being dropped.  It would
+    // NOT fail if someone reintroduced the literal today.  That the cheat is
+    // gone rests on reading eval.rs, not on this assertion.
+    let expected = crate::lisp::primitives::uname_field(
+        crate::lisp::primitives::UnameField::Release,
+    )
+    .expect("uname(2) should answer on a supported host");
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new("operating-system-release")
+        .read_all()
+        .expect("read operating-system-release")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate operating-system-release");
+    assert_eq!(result, Value::String(expected.into()));
+}
+
+#[test]
 fn text_quoting_default_is_derived_from_the_process_locale() {
     // The rest of the quoting tests pin `internal--text-quoting-flag' so they
     // do not inherit the ambient LANG.  That leaves the derivation itself --
