@@ -385,7 +385,8 @@ pub(crate) fn gnu_default_makefile_mode() -> &'static str {
 }
 
 pub(crate) fn default_system_configuration() -> String {
-    let machine = uname_value("-m").unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    let machine =
+        uname_field(UnameField::Machine).unwrap_or_else(|| std::env::consts::ARCH.to_string());
     // config.guess spells Darwin's arm64 as aarch64; GNU's triple comes
     // from autoconf, so use the same convention for the same hardware.
     let machine = if machine == "arm64" {
@@ -395,7 +396,7 @@ pub(crate) fn default_system_configuration() -> String {
     };
     match std::env::consts::OS {
         "macos" => {
-            let release = uname_value("-r").unwrap_or_else(|| "0".into());
+            let release = uname_field(UnameField::Release).unwrap_or_else(|| "0".into());
             format!("{machine}-apple-darwin{release}")
         }
         "linux" => format!("{machine}-unknown-linux-gnu"),
@@ -405,14 +406,77 @@ pub(crate) fn default_system_configuration() -> String {
     }
 }
 
-pub(crate) fn uname_value(flag: &str) -> Option<String> {
-    let output = Command::new("uname").arg(flag).output().ok()?;
-    if !output.status.success() {
-        return None;
+/// GNU `fileio.c:2648 file_name_case_insensitive_err'.  Negative means the
+/// filesystem is case-INsensitive, 0 means case-sensitive, and a positive
+/// value means the question could not be answered for this path (the caller
+/// retries on the parent).
+///
+/// macOS is the only platform that exposes `_PC_CASE_SENSITIVE', so that is
+/// the runtime test here; GNU's fallthrough for platforms with neither flag
+/// returns 0, i.e. case-sensitive, which is also what this returns when
+/// `pathconf' reports EINVAL.
+pub(crate) fn file_name_case_insensitive_err(path: &str) -> i32 {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(encoded) = std::ffi::CString::new(path) else {
+            return 0;
+        };
+        // SAFETY: `encoded' is a NUL-terminated C string that outlives the
+        // call, and _PC_CASE_SENSITIVE is a valid pathconf name on macOS.
+        let result = unsafe {
+            *libc::__error() = 0;
+            libc::pathconf(encoded.as_ptr(), libc::_PC_CASE_SENSITIVE)
+        };
+        if result >= 0 {
+            // fileio.c:2676 `return - (res == 0)': a filesystem that reports
+            // "not case-sensitive" is the case-INsensitive one.
+            return if result == 0 { -1 } else { 0 };
+        }
+        let errno = unsafe { *libc::__error() };
+        if errno != libc::EINVAL {
+            return 1;
+        }
+        0
     }
-    let value = String::from_utf8(output.stdout).ok()?;
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        0
+    }
+}
+
+/// editfns.c:136-141 reads `struct utsname' from the `uname' SYSCALL.  Going
+/// through the `uname(1)' BINARY instead would fork once per interpreter and
+/// would answer nil under a hostile or empty PATH, where GNU always answers a
+/// string.  Cached because the value cannot change within a process.
+pub(crate) fn uname_field(field: UnameField) -> Option<String> {
+    static FIELDS: std::sync::OnceLock<Option<(String, String)>> = std::sync::OnceLock::new();
+    let cached = FIELDS.get_or_init(|| {
+        // SAFETY: `utsname' is written entirely by the kernel and is only read
+        // back through CStr on NUL-terminated fields.
+        unsafe {
+            let mut uts: libc::utsname = std::mem::zeroed();
+            if libc::uname(&mut uts) != 0 {
+                return None;
+            }
+            let read = |raw: &[libc::c_char]| {
+                std::ffi::CStr::from_ptr(raw.as_ptr())
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            Some((read(&uts.release), read(&uts.machine)))
+        }
+    });
+    cached.as_ref().map(|(release, machine)| match field {
+        UnameField::Release => release.clone(),
+        UnameField::Machine => machine.clone(),
+    })
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum UnameField {
+    Release,
+    Machine,
 }
 
 pub(crate) fn compat_repo_root_from_test_directory(test_directory: &str) -> Option<PathBuf> {

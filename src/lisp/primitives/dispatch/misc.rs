@@ -852,13 +852,39 @@ define_dispatch!(
                 let Ok(mut value) = resolve_callable(interp, &args[0], env) else {
                     return Ok(Value::Nil);
                 };
-                // GNU's C interactive_form consults `oclosure-interactive-form'
-                // for OClosures (nadvice's advice objects compose their spec);
-                // it outranks the defun-recorded property for advised symbols,
-                // but an (interactive ...) form IN THE BODY outranks the
-                // generic (oclosure-lambda bodies may carry their own spec).
-                if super::misc_keymaps::oclosure_type_of(&value).is_some()
-                    && interp.has_lisp_function("oclosure-interactive-form")
+                // data.c:1141-1151 consults an `interactive-form' property
+                // FIRST -- unconditionally, and walking the symbol-function
+                // alias chain -- before any subr/closure/oclosure inspection.
+                // The `indirect_function' nil check above already ran, which is
+                // why an unbound symbol never reaches this walk.
+                // Unbounded, exactly as data.c:1144 is: `defalias' signals
+                // `cyclic-function-indirection' in both binaries, so no cyclic
+                // chain can reach here.  A defensive cap was measured to
+                // diverge from GNU at the 64th link, and the sibling
+                // `command-modes' walk is likewise uncapped.
+                let mut probe = args[0].clone();
+                while let Ok(symbol) = probe.as_symbol() {
+                    let symbol = symbol.to_string();
+                    if let Some(form) = interp.get_symbol_property(&symbol, "interactive-form")
+                        && !matches!(form, Value::Nil)
+                    {
+                        return Ok(form);
+                    }
+                    match interp.logical_function_binding(&symbol, env) {
+                        Some(next) => probe = next,
+                        None => break,
+                    }
+                }
+                // GNU's C interactive_form then consults
+                // `oclosure-interactive-form' for OClosures (nadvice's advice
+                // objects compose their spec), but an (interactive ...) form
+                // IN THE BODY outranks the generic (oclosure-lambda bodies may
+                // carry their own spec).
+                // Cheap guard first: GNU compares a function pointer here,
+                // so do not pay an `oclosure-type' Lisp call when the generic
+                // it feeds is not even loaded.
+                if interp.has_lisp_function("oclosure-interactive-form")
+                    && super::misc_keymaps::value_is_oclosure(interp, &value, env)
                 {
                     if let Some(items) = callable_interactive_form_items(interp, &value) {
                         return Ok(Value::list(items));
@@ -869,11 +895,6 @@ define_dispatch!(
                         std::slice::from_ref(&value),
                         env,
                     );
-                }
-                if let Ok(symbol) = args[0].as_symbol()
-                    && let Some(form) = interp.get_symbol_property(symbol, "interactive-form")
-                {
-                    return Ok(form);
                 }
                 if let (Some(symbol), Some((file, _, _))) =
                     (args[0].as_symbol().ok(), autoload_parts(&value))

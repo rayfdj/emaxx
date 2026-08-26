@@ -198,6 +198,19 @@ impl Interpreter {
         }
     }
 
+    /// The final chars claimed through `declare-equiv-charset' for this
+    /// DIMENSION and CHARS bucket.  charset.c:1440 writes those straight into
+    /// ISO_CHARSET_TABLE, which is the same table
+    /// `get-unused-iso-final-char' reads (charset.c:1421), so a scan that
+    /// only walks charset plists misses them.
+    pub fn iso_charset_finals(&self, dimension: i64, chars_96: bool) -> Vec<i64> {
+        self.iso_charsets
+            .iter()
+            .filter(|(d, c, _, _)| *d == dimension && (*c == 96) == chars_96)
+            .map(|(_, _, final_char, _)| i64::from(*final_char))
+            .collect()
+    }
+
     pub fn iso_charset(&self, dimension: i64, chars: i64, final_char: u32) -> Option<String> {
         self.iso_charsets
             .iter()

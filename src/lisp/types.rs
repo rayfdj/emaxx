@@ -1413,8 +1413,25 @@ impl Value {
 
     // Accessors
 
+    /// GNU's `CHECK_FIXNUM', which names `fixnump' -- NOT `integerp'.
+    ///
+    /// `as_integer' below is the `CHECK_INTEGER' analogue and names
+    /// `integerp'; the two are genuinely different predicates and GNU picks
+    /// deliberately.  `(nth 'a '(1))' signals `integerp' while
+    /// `(get-unused-iso-final-char 'a 94)' signals `fixnump', so a primitive
+    /// mirroring CHECK_FIXNUM must use this one.
+    pub fn as_fixnum(&self) -> Result<i64, LispError> {
+        match self {
+            Value::Integer(n) => Ok(*n),
+            // A bignum is an integer but not a fixnum, which is exactly what
+            // CHECK_FIXNUM rejects.
+            _ => Err(LispError::WrongTypeArgument("fixnump".into(), self.clone())),
+        }
+    }
+
     pub fn as_integer(&self) -> Result<i64, LispError> {
-        // GNU's CHECK_FIXNUM names `integerp' ((nth 'a ...) => (integerp a)).
+        // GNU's CHECK_INTEGER names `integerp'; CHECK_FIXNUM names `fixnump'
+        // and is spelled `as_fixnum' above.
         match self {
             Value::Integer(n) => Ok(*n),
             Value::BigInteger(n) => n

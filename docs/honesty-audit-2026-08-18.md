@@ -58,6 +58,40 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 87 | `\u{2620}` hardcoded into the word class to satisfy one upstream test | FIXED (removed; word/space now resolve through the syntax table everywhere) |
 | 88 | `[[:space:]]` was a fixed Unicode property, not the whitespace syntax class | FIXED (regex-emacs.c:151) |
 | 89 | `[:punct:]` still syntax-blind for non-ASCII | OPEN (disclosed) |
+| 90 | text-quoting-style ignored the locale, so every quoted message diverged under the harness's LANG=C | FIXED |
+| 91 | interactive-form/commandp missed compiled OClosures (advised functions) | FIXED |
+| 92 | message, void-function/void-variable messages ignore text-quoting-style | OPEN (disclosed) |
+| 93 | require's load-path branch names the feature where GNU names the resolved file | OPEN (disclosed) |
+| 94 | harness let LC_ALL/LC_CTYPE override its own LANG=C, retiring the grave path from measurement | FIXED |
+| 95 | default_to_grave_quoting_style's standard-display-table branch unimplemented | OPEN (disclosed) |
+| 96 | no DEFVAR_BOOL coercion: bool-typed variables read back the raw value | OPEN (disclosed) |
+| 97 | commandp returns t where GNU signals on an interactive-form property | OPEN (disclosed) |
+| 98 | the 7595 denominator excluded 3 files dropped by a 20s inventory cap 9x tighter than the run's own 180s default | FIXED 2026-08-26 - regenerated to 7883 |
+| 99 | make-thread body classifier pattern-matches three lambda shapes instead of running the body | OPEN |
+| 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
+| 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
+| 102 | data-directory family derived from EMACS_TEST_DIRECTORY | OPEN |
+| 103 | set-network-process-option fabricated success and never read the option | FIXED 2026-08-26 - real setsockopt, 20 cases oracle-matched |
+| 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
+| 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
+| 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
+| 123 | EMACS_TEST_DIRECTORY shadows 5 core libraries, putting 324 measured outcomes (4.1%) at risk | OPEN (cost measured) |
+| 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
+| 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
+| 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
+| 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | OPEN |
+| 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | OPEN |
+| 111 | network-interface-info was a bare nil beside a real network-interface-list | FIXED (macOS) 2026-08-26 - real ioctls; still nil on other platforms |
+| 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | OPEN (measured) |
+| 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
+| 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
+| 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | OPEN (measured) |
+| 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
+| 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
+| 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
+| 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
+| 117 | the gate contains an intermittent test that fails up to 75% of runs under load, so "green" has always been partly luck | OPEN (rate revised UP) |
+| 118 | network-interface-list omits most interfaces: 3 where GNU reports 11 on the same host | OPEN |
 
 # Honesty audit — 2026-08-18
 
@@ -1215,3 +1249,1043 @@ dispositions:
     punct, so this is a separate and harder problem than 87/88; recorded
     here rather than left silent.  Probes: U+00A0, U+3000, U+200B and
     U+202F all match `[[:punct:]]` in GNU and not in emaxx.
+
+90. **Every quoted message diverged in the environment that is actually
+    measured.**  GNU sets `text_quoting_flag = using_utf8 ()' at startup
+    (emacs.c:1665, the test being `mbrtowc' on the two bytes of U+0100), and
+    doc.c:653/679 make a nil `text-quoting-style' mean grave quotes when
+    that flag is false.  The compatibility harness runs every child under
+    LANG=C, so GNU writes `like this' there while Emaxx -- which hardcoded
+    the flag to t -- wrote curved quotes for every message carrying a
+    quoted name.  FIXED: the flag is computed by replicating GNU's own
+    libc test, `internal--text-quoting-flag' is a computed binding marked
+    special so a `let' behaves like GNU's DEFVAR_BOOL, and
+    `effective_text_quoting_style' consults it for a nil setting only.
+    This also invalidated an earlier repair: step 6 changed `require's
+    failed-to-provide message to curly quotes and verified it against the
+    oracle WITHOUT LANG=C -- a probe run in the wrong environment, which
+    reported a false match.  That message now derives its quotes from the
+    effective style and agrees with the oracle in both locales, and the
+    tests that asserted curved quotes literally now pin the style instead
+    of inheriting the developer's LANG.
+    Two defects in this change were caught by its own adversarial audit:
+    routing every unmatched `text-quoting-style' value through the locale
+    flag (doc.c treats any non-nil, non-grave, non-straight value as
+    `curve', so a bogus style wrongly answered grave under LANG=C), and a
+    second hardcoded U+2019 in the condition-variable mutex error --
+    thread.c:499,558 spell it with an ASCII apostrophe and curl it only
+    under `curve'.  Both fixed and probed.
+    Disclosed approximations: on macOS GNU runs `ns_init_locale' before the
+    test, synthesizing LANG from NSLocale when it is unset and falling back
+    to en_US.UTF-8 when `setlocale' rejects it; Emaxx replicates the libc
+    test but not that preprocessing, so the two differ when LANG is unset
+    or names an unusable locale.  The harness always sets LANG=C, where
+    they agree.  The decision is cached for the process, which matches GNU
+    (its flag is set once in `main' and no later locale change moves it --
+    verified: after `set-locale-environment' the oracle still reports the
+    startup answer).
+91. `interactive-form' and `commandp' recognised only interpreted lambdas as
+    OClosures, so a COMPILED advice object -- what nadvice produces for an
+    advised function -- was missed and `interactive-form' answered nil where
+    GNU composes the advice's spec with the advised function's.  FIXED by
+    falling back to the real Lisp `oclosure-type' owner, the idiom the
+    autoload path already used.  27 advice shapes probed against the oracle.
+    Disclosed: GNU inspects the docstring slot natively and never calls
+    `oclosure-type', so advice or side effects on that function would be
+    observable in Emaxx and not in GNU.
+92. `message' and the `void-function'/`void-variable' diagnostics ignore
+    `text-quoting-style' entirely.  They happen to agree with GNU under the
+    harness's LANG=C (both grave) and diverge only under an explicit
+    `curve' setting or a UTF-8 locale.  OPEN.
+93. `require's load-path branch interpolates the FEATURE name where GNU
+    names the resolved file ("Loading file qnp failed" against GNU's
+    "Loading file /tmp/qlp/qnp.el failed").  Found while probing 90.  OPEN.
+
+94. **The harness's own LANG=C was overridable, which would have quietly
+    retired finding 90 from the measurement.**  `configure_upstream_like_env`
+    sets `LANG=C` but stripped only the EMACS*/GREP/XDG variables.  POSIX
+    gives `LC_ALL` precedence over `LANG', and `LC_CTYPE' overrides it for
+    the character-type category specifically, so any operator with either
+    exported -- ssh, iTerm, a `LC_ALL=C.UTF-8' container -- would hand both
+    binaries a UTF-8 `LC_CTYPE' despite the `LANG=C'.  Probed: `LANG=C
+    LC_CTYPE=en_US.UTF-8' yields `(t curve)' where `LANG=C' alone yields
+    `(nil grave)'.  This never produced a false PASS, because both binaries
+    move together -- but it meant the grave path, the entire subject of
+    finding 90, could silently stop being exercised.  FIXED: `LC_ALL' and
+    `LC_CTYPE' join `UNSET_ENV_VARS'.
+    Still true of the unit-test oracle helper
+    `assert_upstream_primitive_contract', which spawns the oracle with no
+    environment control at all; the tests it backs are instead pinned
+    individually (see 90).  Every test this change touches was run under
+    both `LANG=C' and a UTF-8 locale; see finding 113 for why the GATE itself
+    could not yet be green under `LANG=C'.
+95. `default_to_grave_quoting_style' (doc.c:653-662) has a SECOND test after
+    the locale flag: it reads the Lisp variable `standard-display-table' and
+    answers grave when U+2018 is displayed as a one-element vector holding
+    ?`.  That is a plain variable read, not a terminal capability, so it is
+    observable in batch, and it is the branch a non-batch GNU session
+    actually relies on -- startup.el:1466 forces the flag to t there, making
+    the display table the only remaining route to grave.  Emaxx answers from
+    the flag alone.  A comment in values.rs previously claimed this branch
+    "cannot change the answer"; that was false and has been corrected.  OPEN.
+96. GNU's `DEFVAR_BOOL' coerces on store (`store_symval_forwarding'): after
+    `(setq internal--text-quoting-flag 42)' the variable reads back as `t',
+    and `(let ((internal--text-quoting-flag 'foo)) ...)' binds `t'.  Emaxx
+    has no such coercion for any bool-typed variable, so it reads back the
+    raw value.  The effective quoting style is unaffected (both sides test
+    truthiness), so this is currently cosmetic, but it is a whole missing
+    mechanism rather than one variable.  OPEN.
+    Related and also open, CORRECTED 2026-08-25 after an audit showed the
+    original claim here was false.  `makunbound' on `text-quoting-style' does
+    NOT make GNU's `(text-quoting-style)' signal: doc.c reads the C variable
+    `Vtext_quoting_style' directly, never the symbol, so the function still
+    answers grave/curve and Emaxx agrees with it exactly.  The real, separate
+    divergence is in the VARIABLE: after `makunbound', GNU reports
+    `(boundp 'text-quoting-style)' as nil and signals `void-variable' on a
+    read, while Emaxx reports t and reads nil.  Probed in both locales.
+97. `commandp' on a symbol carrying an `interactive-form' property SIGNALS in
+    GNU (eval.c:2282-2291, "Found an 'interactive-form' property!"); Emaxx
+    returns t.  Pre-existing, found while auditing 91.  OPEN.
+
+**Correction to 91 (second).**  The property walk added below was landed with
+a defensive 64-hop cap on the symbol-function alias chain, justified in a
+comment as avoiding a hang.  That justification was false -- `defalias' signals
+`cyclic-function-indirection' in both binaries, so no cyclic chain can reach
+the walk -- and the cap was a measurable divergence: on a 99-link alias chain
+carrying the property on its tail, GNU answers the property at every link
+while Emaxx returned nil from the 64th onward.  The sibling `command-modes'
+walk was already uncapped, so the tree contradicted itself.  The cap is
+removed; the walk is now unbounded exactly as data.c:1144 is.
+
+**Correction to 91.**  The widening described there was landed with an
+ordering defect, caught by its own adversarial audit: `interactive-form'
+consulted the OClosure path BEFORE the `interactive-form' property, where
+data.c:1141-1151 consults the property first, unconditionally, walking the
+symbol-function alias chain.  Before the widening the defect was unreachable
+(a compiled advice object was not recognised as an OClosure at all), so the
+change made a pre-existing inversion observable for every advised function.
+Probed against the oracle: an advised symbol carrying the property returns
+the property in GNU.  FIXED, and now pinned by
+`interactive_form_prefers_the_property_over_advice_and_walks_aliases', which
+checks seven shapes against the oracle.  The note that 91 rested on probes
+alone was accurate when written and no longer is.
+
+**Correction to 90.**  Two further defects in that change were caught by the
+same audit round.  The tests for it were themselves LANG-dependent in two
+ways: a condition-variable expectation still spelled a literal U+2019 with no
+style pinned, and two test programs carried literal curved quotes INSIDE the
+Lisp source handed to the oracle through `--eval', which GNU decodes with the
+locale's coding system -- so the program text itself was corrupted under
+`LANG=C'.  Both are fixed: the affected programs pin
+`internal--text-quoting-flag' and spell non-ASCII as `\N{U+XXXX}' escapes, and
+every touched test was re-run under both `LANG=C' and a UTF-8 locale.  A
+comment claiming "GNU's own tests bind it" was also false -- GNU's Lisp
+touches the flag in exactly one place, `setq' at startup.el:1466 -- and has
+been corrected.  Finally, making the flag a `builtin_var_value' fallback
+rather than a real binding regressed `default-boundp' to nil where GNU
+answers t, which is precisely the hazard finding 37 warned about; it is now a
+real global whose VALUE is still computed, never asserted.
+
+## 2026-08-25 whole-tree sweep (findings 98-112)
+
+A third adversarial sweep, commissioned to cover everything the 7595 run
+touches rather than just the current diff.  It cleared large areas -- the ERT
+assertion machinery is entirely GNU's, the scoring arithmetic closes exactly
+(7144 mutual passes + 232 same-reason mutual skips + 47 same-message mutual
+failures = 7423; 138 + 8 + 6 + 20 = 172), the manifest is sha256-pinned, no
+`catch_unwind' exists in production code, no oracle paths appear in `src/',
+and the two historical batch-input cheats are genuinely dead -- and returned
+the following.  Items marked VERIFIED were re-checked directly against the
+source or the oracle before being written here; the rest are recorded as
+reported and still need confirmation.
+
+98. **The headline denominator is an artifact of a tooling timeout.**
+    VERIFIED.  `compat/oracle_tests_all.txt' marks three files
+    `load-error process timed out during test': `test/lisp/net/tramp-tests.el'
+    (4798), `test/lisp/progmodes/eglot-tests.el' (4993) and
+    `test/src/comp-tests.el' (7276).  The inventory that produced that file
+    was generated with `EMACS_TEST_TIMEOUT=20' (oracle_tests_all.md:6),
+    while the frozen run allows 180 s per phase.  So three files the oracle
+    runs fine were dropped from the denominator by a 20-second cap NINE TIMES
+    tighter than the one the measurement itself applies.
+    CORRECTED 2026-08-26: an earlier version of this entry said the frozen run
+    "imposes NO timeout at all", citing `compat.rs:386 resolve_timeout'
+    returning `None' by default.  That read only half the path --
+    `resolve_run_timeout' (compat-harness.rs:2208 after this commit's edits)
+    wraps it as
+    `resolve_timeout()?.or(Some(DEFAULT_TIMEOUT_SECONDS))' with
+    `DEFAULT_TIMEOUT_SECONDS = 180' (compat-harness.rs:36), so 180 s is the
+    real default.  The conclusion is unchanged: all three files finish inside
+    180 s.
+    CORRECTED AGAIN 2026-08-26, and the first correction's risk analysis was
+    itself misdirected.  The frozen procedure is invoked with
+    `--timeout-seconds 3600' (docs/handover-2026-08-24.md:98), and the
+    recorded baseline confirms it ran that way (provenance timeout_seconds
+    3600), so the 180 s default governs nothing in practice -- it was already
+    inadequate for the PRE-EXISTING manifest: edebug-tests.el spends 239.5 s in
+    its TEST phase alone.  (Two exhibits originally cited here, ruby-mode-tests
+    .el at 189 s and semantic-utest-ia.el at 178 s, were withdrawn on audit --
+    those are TOTAL wall times whose largest single phase is 177.6 s and
+    166.4 s, under the cap.  Citing them committed the very per-phase/total
+    confusion the next sentence condemns.)  The "~36 s of headroom" figure was also wrong twice over: it
+    subtracted total wall time from a PER-PHASE cap, when setup and test each
+    get the full budget, so tramp's binding phase (~124 s of body) has closer
+    to a minute even against the unused 180 s default.  The honest statement
+    is that the operator's 3600 s covers every file in the manifest, old and
+    new, so no timeout risk is introduced ON THE ORACLE SIDE.  That
+    qualification is deliberate: every timing quoted for these three files is
+    ORACLE time.  Emaxx has never run any of them, and comp-tests.el is 177
+    `:nativecomp' outcomes it has no native compiler for, so the Emaxx-side
+    cost is genuinely unknown until the first re-baseline.  An earlier draft
+    said the change "does not move the timeout risk at all", which claimed
+    more than the evidence supports.  The sweep re-measured them at 24.5 s / 52 outcomes
+    (eglot), 153 s / 59 (tramp) and 177/177 passing (comp-tests) -- 288
+    outcomes, an honest denominator of 7883.
+    RE-VERIFIED INDEPENDENTLY 2026-08-25, running the oracle directly under
+    the harness's own selector and LANG=C: eglot-tests.el ran 52 tests in
+    30.2 s (39 expected, 6 unexpected, 7 skipped) with `clangd' present and
+    connecting, and tramp-tests.el ran 59 tests in 143.5 s with 52 expected,
+    ZERO unexpected and 7 skipped -- it passes outright.  Neither hangs, and
+    both finish inside the frozen run's 180 s budget.  The documented
+    rationale is false: eglot's LSP server (clangd) is installed and connects,
+    and tramp's default method is local.  comp-tests.el ran 177 tests in
+    132.0 s with 177 results as expected and ZERO unexpected -- it passes GNU
+    outright.  All three exclusions are therefore re-verified as unjustified,
+    288 outcomes in total.  A related consequence IS verified: zero
+    `:nativecomp'-tagged outcomes survive in the 7595 even though the oracle
+    lock sets `native_compilation: true' specifically to include them.
+    This is not a scoring cheat -- nothing is counted that should not be --
+    but the denominator is smaller than the project claims it is, and the
+    documented rationale for the exclusions ("tramp needs remote access,
+    eglot needs LSP servers") does not match the recorded reason.
+    RESOLVED 2026-08-26 with the owner's approval: the inventory was
+    regenerated without the cap and the manifest is now 518 files / 7,883
+    outcomes / 1 load error, with every pinned constant and the sha bumped
+    deliberately.  An auditor independently re-derived the whole manifest from
+    the live pinned oracle and its sha matched byte-for-byte, which is the
+    strongest evidence available that the contents came from the oracle rather
+    than from an editor -- the gap finding 115 describes.
+99. `thread_program_from_lambda' (eval/threads.rs:2878-2918) does not run an
+    anonymous thread body at all: it pattern-matches three syntactic shapes
+    -- a lone `sleep-for' call, exactly `(while t (thread-yield))', and a lone
+    `thread-signal' call -- and signals "Unsupported anonymous thread entry
+    point" for anything else.  VERIFIED by reading the function.  The middle
+    shape appears nowhere in GNU outside thread-tests.el:319.  This is the
+    machinery behind part of finding 84's disclosed cooperative model, but
+    shape-matching specific test bodies goes beyond that disclosure.
+100. dispatch/gnutls.rs:388-446 carries a 9-entry digest catalogue in the
+     oracle's exact order, while the same file dlopens `gnutls_cipher_list'
+     and `gnutls_mac_list' for its neighbours.  Reported; ~3 outcomes.
+101. `("operating-system-release", "25.6.0")' at eval.rs:4109 is this host's
+     `uname -r'.  VERIFIED (uname -r == 25.6.0).  `uname_value("-r")' already
+     exists in-tree, so this is a transcription where a computation was
+     available.  GNU computes it at editfns.c:140.
+102. `data-directory', `doc-directory', `installation-directory' and
+     `emacsclient-program-name' are derived from `EMACS_TEST_DIRECTORY'
+     (system.rs:419-452 via bindings.rs:499,552,647), contradicting the rule
+     stated in that same file at bindings.rs:489-492.  Reported.
+103. `set-network-process-option' (files_process.rs:1731-1744) resolves the
+     process, confirms it is a network process, and returns t without ever
+     reading the option argument; GNU validates it and signals "Unknown or
+     unsupported option".  It also accepts 2 arguments where GNU requires 3.
+     The in-code comment credits finding 79 with repairing this arm; only the
+     `processp' half was repaired.  Reported.
+104. `get-unused-iso-final-char' (buffer_meta.rs:1124) returns the constant
+     ?0 with its arguments unread.  Oracle: `(get-unused-iso-final-char 1 94)'
+     is 54, `(... 2 94)' is 50, and an invalid CHARS signals.  Reported.
+105. `max-lisp-eval-depth' is effectively ignored: eval/core.rs:244,324-330,
+     378-388 reads the global only (a `let' is invisible), multiplies by 384,
+     applies a 307200 floor, hardcodes `stack_headroom_remains()' to true, and
+     signals a plain `error' though `excessive-lisp-nesting' is defined at
+     eval.rs:732 and never raised.  Reported.
+106. `decode-coding-string' (coding.rs:1204,1206) routes `euc-jp' to raw text
+     and makes every unimplemented multibyte system an identity function via
+     a `_' arm.  The encode direction signals honestly, which is the tell.
+     Currently DEFLATING the score rather than inflating it.  Reported.
+107. `decode-sjis-char'/`encode-sjis-char' (buffer_meta.rs:1368-1387)
+     implement exactly the single pair 0x82A0 <-> U+3042 and signal
+     otherwise.  Reported.
+108. `file-name-case-insensitive-p' (files_process.rs:446-449) is a constant
+     nil where GNU answers t on this APFS host.  The GNU test compares the
+     handler and non-handler results OF THAT SAME PREDICATE, so a constant
+     makes both sides agree and the test passes trivially -- one outcome
+     currently INFLATING.  Reported.
+109. Native keymap dispatch (values.rs:4057-4077) suppresses local and minor
+     maps unless `add-keymap-witness' is present -- a symbol private to
+     ../emacs/lisp/subr.el:6551 that GNU's keymap.c never consults.
+     Reported.
+110. `garbage-collect' (misc_keymaps.rs:1404-1425) returns a correctly shaped
+     alist with every count fabricated as 0, while its neighbour
+     `memory-use-counts' signals honestly.  Six GNU test files call it for
+     effect only, so the shape is what keeps them green.  Reported.
+111. `network-interface-info' (files_process.rs:1746) is a bare nil beside a
+     genuinely implemented `network-interface-list'.  Reported.
+112. `intern-soft' (completion.rs:402-424) infers interned-ness from the
+     value, function, builtin and plist cells where GNU performs a pure
+     `oblookup'.  Reported.
+
+Lower-impact items the same sweep recorded without ranking: the
+`locate-file'/`load-file-name' prefix remap under
+`EMAXX_DUMP_SOURCE_DIRECTORY'; `case.rs:127' downcasing U+0130 where the
+oracle leaves it unchanged; `script_contains' as seven hand-written ranges
+against GNU's `char-script-table'; `current-cpu-time' returning wall-clock
+nanoseconds in a one-element list rather than `(TICKS . HZ)'; `gap-size'
+constant 0; `lock-file' writing a regular file where GNU writes a dangling
+symlink; simulated kqueue watches; dead write-only `current_ert_test_name'
+state; and the `landed'/`regression-add'/`regression-audit' modes writing a
+summary.json without the anti-cheat gates that frozen mode enforces.
+
+113. **The unit gate had never been run in the environment the project
+     measures.**  Every gate to date inherited the developer's UTF-8 shell,
+     while the compatibility harness runs its children under LANG=C.  Running
+     the gate under LANG=C for the first time (v34) turned up nine failures
+     out of 2211, none of which any previous green gate had shown.  (2211 is
+     the whole serial gate -- the `cargo test --lib' suite plus the binary and
+     integration stages; `--lib' alone currently lists 2150.)
+
+     FOUR were defects in the tests themselves and are fixed here:
+       - `select-safe-coding-system' had the UTF-8 answer hardcoded: GNU drops
+         the `-unix' suffix under LANG=C because `set-locale-environment'
+         leaves `buffer-file-coding-system' nil.  The test now pins that input.
+       - three could not even be PARSED by the oracle.  The contract helpers
+         hand programs to GNU through `--eval', and GNU decodes argv with the
+         locale's coding system, so literal non-ASCII became
+         `Invalid read syntax: "?"'.  The helpers now rewrite non-ASCII as
+         `\N{U+XXXX}' escapes, and refuse -- loudly -- to escape a character
+         sitting anywhere the escape would change the program's meaning (a
+         symbol name, or after a backslash inside a string), so a future
+         author cannot silently ask the oracle a different question.
+         Loading from a file was tried first and REJECTED: `-l FILE' leaves
+         `last-coding-system-used' as `prefer-utf-8-unix' where `--eval'
+         leaves it `no-conversion' under LANG=C, which coding-sensitive
+         contracts observe -- it would have fixed the decoding by silently
+         changing what was measured.
+
+     FIVE remain red under LANG=C and are NOT fixed here.  An audit corrected
+     an earlier version of this entry which claimed `truncate-string-to-width'
+     was among the fixed and double-counted it into both buckets; the true
+     split is 4 + 5 = 9.  Of the five:
+       - `truncate-string-to-width' ignores a bound `truncate-string-ellipsis'.
+         Its expectation WAS repinned, and the pin is a correct spec (the
+         oracle answers "h\u{2026}" under both locales with the variable
+         bound), but Emaxx does not honour the binding, so the test is still
+         red and the pin changed nothing about pass/fail.
+       - `keyboard-coding-system' answers nil where GNU answers
+         `no-conversion'.
+       - two composite/font/mule contracts disagree on coding-system identity.
+       - `native_composite_c_family_and_text_property_identity_match_gnu' is
+         NOT an Emaxx divergence and was misclassified as one here.  It fails
+         at the helper's own assertion, which compares the ORACLE's stdout to
+         a hardcoded expectation: the oracle answers `[us-ascii 101 769]'
+         under LANG=C against a stored `[utf-8-unix 101 769]'.  Emaxx's answer
+         is never reached.  It belongs to the hardcoded-expectation class
+         above and simply has not been repinned yet.
+     All five pass under a UTF-8 locale, which is why they were invisible, and
+     all are PRE-EXISTING: the same nine tests were run under both locales
+     before and after this change.
+     This matters beyond the unit suite: the harness measures under LANG=C,
+     so these divergences are plausibly already inside the 172 mismatches.
+     The gate for this commit was therefore run under UTF-8, the standard the
+     tree currently meets, with every touched test additionally verified under
+     both locales.  Making LANG=C the gate standard is tracked work.  OPEN.
+
+**Note on the baseline's currency.**  `docs/baselines/frozen-7595-2026-08-25`
+records `subject_git_head 3f59bbff`, and its arithmetic closes for that tree
+(7423 + 172 = 7595).  The commit carrying findings 90-113 changes two
+behaviours the GNU suite exercises -- `require's message quoting and
+`interactive-form's property ordering -- so the 97.74% headline is STALE for
+the tree it lands on.  It is not wrong about the run it describes; it simply
+no longer describes HEAD.  Re-baselining is deliberately deferred until the
+denominator question in finding 98 is settled, so the measurement is redone
+once rather than twice.
+
+114. **Timed-out runs could earn credit they had not established.**
+     `invalidate_timed_out_comparison' (compat-harness.rs:1808) marked a
+     timed-out comparison `matches = false' and attached an issue, but left
+     `matching_outcomes' intact -- and `run_compat_files' accumulates that
+     field into the headline numerator AFTER invalidation.  A child killed at
+     the phase boundary AFTER its report file reached disk therefore passed
+     the bilateral coverage gate (the file exists, so the real report is
+     loaded rather than a synthesized load error), contributed every matching
+     outcome to the score, and was demoted only at FILE level.  A run could
+     print "7883/7883 matching" beside a non-zero mismatching-file count.
+     Pre-existing, but made newly reachable by finding 98's re-inclusion of
+     `tramp-tests.el' -- the very file whose mock shells keep a process tree
+     alive past the report write, as the `run_command' comment already noted.
+     Up to 59 outcomes of unearned credit.  FIXED: the outcomes are folded
+     onto the mismatching side, idempotently, and pinned by
+     `a_timed_out_runner_earns_no_matching_outcomes'.  The pre-existing test
+     could not have caught this -- it started from zero outcomes.
+     Found by the adversarial audit of the denominator change, not by me.
+     Disclosed side effect: `comparison.json' is written AFTER invalidation,
+     so per-file artifacts for a timed-out file now record
+     `matching_outcomes: 0' where older artifact directories recorded N.
+     Nothing reads that field back -- `compare-subjects' works from
+     summary.json and the batch reports -- but old and new artifact trees are
+     now semantically different with no version marker on them.
+115. `anti_cheat::enforce_all' gates the GNU C manifest and the builtin
+     arities table against fresh regeneration, but has no equivalent for the
+     frozen compatibility manifest.  The sha256 pin catches an UNANNOUNCED
+     edit; it cannot verify that the manifest's contents actually came from
+     the pinned oracle, because regenerating legitimately means bumping the
+     sha.  The 2026-08-26 regeneration was closed empirically instead -- an
+     auditor re-derived all 288 added outcomes from the oracle, in the
+     harness's own emission order -- but the asymmetry remains.  OPEN.
+
+**Open question on the recorded timings.**  While re-checking finding 98's
+per-phase evidence, `test/lisp/eshell/em-cmpl-tests.el` in the 2026-08-25
+baseline reports `emaxx_test_duration_ms` 1,441,725 against an
+`emaxx_duration_ms` of 45,034 -- a test phase thirty-two times longer than the
+run it belongs to, which cannot be right.  Either the phase split or the total
+is wrong for that row, and any argument resting on per-phase timings from this
+artifact should be treated as unreliable until it is explained.  Not
+investigated; recorded so the next reader does not build on it.  This is why
+finding 98's corrected evidence now rests on `edebug-tests.el' alone, whose
+239,452 ms test phase sits coherently inside a 251,765 ms total.
+
+## 2026-08-26 mechanical cheat fixes (findings 101, 103, 108)
+
+The first tranche of finding 99-112 repairs -- the ones where the honest
+implementation was small enough to land without a design.  All three were
+probed against the pinned oracle before and after.  (None of the three has
+locale-dependent output, so unlike findings 90-113 there is nothing here for a
+second locale to exercise; claiming otherwise, as an earlier draft did, dressed
+up a run that proved nothing.)
+
+- **101 FIXED.**  `operating-system-release' now comes from the `uname'
+  SYSCALL (editfns.c:136-141), not the literal "25.6.0" it had been
+  transcribed to, and not from forking `uname(1)' -- an intermediate draft did
+  fork, once per `Interpreter::new()', and answered nil under an empty PATH
+  where GNU always answers a string.
+  HONEST LIMIT OF THE TEST, corrected after an audit called the original
+  claim here false: NO on-host test can distinguish a transcription of this
+  host's release from a computed one.  The oracle says "25.6.0", `uname' says
+  "25.6.0", and so did the literal.  The test pins the WIRING and would not
+  fail if the literal were reintroduced today.  That this cheat is gone rests
+  on code inspection, not on an assertion.  The earlier wording -- that
+  asserting against the syscall was stronger than an oracle contract -- was
+  wrong in exactly the way the cheat itself was.
+- **108 FIXED.**  `file-name-case-insensitive-p' asks the filesystem through
+  `pathconf(_PC_CASE_SENSITIVE)' and walks up the tree as fileio.c:2711-2722
+  does -- though NOT fileio.c:2700's `Fexpand_file_name' first, so an
+  unresolved ".." with a missing intermediate component still diverges
+  ("/tmp/foo/../" is t in GNU, nil here); that is a pre-existing property of
+  the shared path helper, shared with `file-exists-p' and ~30 other
+  primitives, not of this change.  Including the detail that makes a missing path answer
+  nil rather than inheriting the root's answer -- `file-name-directory' of
+  "/nope/deep/" is itself, so the walk terminates on the second hop.  Eighteen
+  cases byte-identical to GNU: the committed test pins
+  four rows, five more were probed by hand, and auditors independently checked
+  nine further paths
+  (relative, empty, trailing-slash, "//", a non-string, and a bare missing
+  directory whose parent IS reachable, which answers t where the deeper one
+  answers nil).  The test also pins that an existing path and a missing one
+  must DIFFER, so no future constant can satisfy it -- guarded to macOS, since
+  on a case-sensitive volume or on Linux every answer is legitimately nil and
+  the assertion would fail against a CORRECT implementation.
+- **103 FIXED.**  `set-network-process-option' now reads the option: it looks
+  it up in process.c:2839's table, applies it with `setsockopt' on the real
+  descriptor behind the process, records an accepted option on the contact
+  plist (process.c:2990), and signals "Unknown or unsupported option" -- or
+  returns nil under NO-ERROR -- for anything else.  Its arity is GNU's 3-4
+  rather than the 2-4 it had.  Twenty cases byte-identical to GNU across two probe sets -- including
+  an over-long device name, an empty one, t/nil/0/negative/float/huge
+  `:linger' values, an uninterned keyword, a foreign-obarray keyword, and
+  the `wrong-number-of-arguments' and `wrong-type-argument' condition
+  types.
+  CORRECTED after an audit: an earlier draft of this entry claimed
+  SO_BINDTODEVICE was "absent because GNU itself compiles it out on this
+  platform".  That was false, and the oracle refutes it in one command --
+  macOS sys/socket.h:190 defines SO_BINDTODEVICE as 0x1134 and GNU accepts
+  `:bindtodevice', returning t and recording the device on the contact plist.
+  The first draft of this FIX therefore REGRESSED that option: it signalled
+  "Unknown or unsupported option" where the old cheat had returned t and
+  matched GNU by accident.  A cheat that was accidentally right was replaced
+  by an implementation that was deliberately wrong.  `:bindtodevice' is now
+  implemented per process.c:2913-2925 -- zeroed IFNAMSIZ+1 buffer, at most
+  IFNAMSIZ bytes copied, always IFNAMSIZ handed to the kernel so unbinding
+  works -- with GNU's distinct "Bad option value for %s" for a non-string
+  non-nil.  Only SO_PRIORITY is genuinely unavailable here; on Linux it would
+  need adding.
+  Three further defects in that first draft, all audit-found: the option was
+  matched against Emaxx's RAW symbol name, so an uninterned or foreign-obarray
+  `:broadcast' -- which GNU accepts, since process.c:2881 compares by name --
+  would silently have become "Unknown or unsupported option"; a setsockopt
+  failure raised a plain `error' where GNU raises a `file-error' carrying the
+  option and value as DATA (process.c:2940 `report_file_errno'); and an
+  out-of-int-range `:linger' was truncated into the kernel where GNU ignores
+  it.
+
+116. `system-configuration' is a BUILD-TIME constant in GNU: emacs.c:3625 sets
+     it from `EMACS_CONFIGURATION', the triple autoconf recorded when that
+     binary was configured.  The pinned oracle was built under macOS 25.5.0
+     and reports "aarch64-apple-darwin25.5.0" forever; Emaxx computes the
+     triple at runtime and reports "aarch64-apple-darwin25.6.0" on the same
+     machine, because the host OS updated underneath it.
+     This is NOT a cheat and must not be "fixed" by copying the oracle's
+     string -- that is finding 77's family, transcribed build identity.  Emaxx
+     is not configured by autoconf, so computing is the honest answer.  But
+     the two WILL disagree for any GNU test comparing `system-configuration'
+     against the oracle's value, and the gap widens every time the host OS
+     updates while the pinned build stays put.  Recorded so a mismatch in that
+     shape is recognised as environmental rather than chased as a defect.
+     Pre-existing: the runtime computation predates the uname(2) change.
+     OPEN (disclosed).
+
+**Correction to the 103 fix, found by my own re-verification after the
+scheduled audit stalled without reporting.**  The repair matched the option
+name correctly but stored a RECONSTRUCTED symbol on the contact plist.  GNU's
+`plist_put' compares with EQ and stores the caller's own symbol, so a
+foreign-obarray `:keepalive' sets the socket option yet stays invisible to a
+later `(plist-get (process-contact p t) :keepalive)' -- the interned keyword
+is not EQ to it.  Emaxx answered t where GNU answers nil.  Fixed: the caller's
+symbol is stored verbatim and existing entries match by raw-name identity,
+deliberately NOT by the visible name used for the option-table lookup, because
+GNU uses two different comparisons (strcmp for the table at process.c:2881, EQ
+for the plist at :2990).
+A FOURTH round of review then found the same identity bug surviving on the
+ERROR path: `report_file_errno' (process.c:2954) puts `list2 (opt, val)' in
+the file-error data, again the caller's symbol, and Emaxx was rebuilding it
+there too -- so `(eq (nth 3 err) key)' answered nil where GNU answers t.  The
+fix on the plist path had simply not been carried the few lines across to the
+error path.  Both now pass the caller's symbol through, pinned by a test row
+that asserts `eq' succeeds against the caller's keyword AND fails against the
+interned one, which is what distinguishes a stored symbol from a rebuilt one.
+The same round found `std::io::Error::last_os_error()' being read after two
+allocating calls; process.c:2953 saves errno on the line after the syscall and
+fileio.c:293 warns explicitly that building a Lisp string can clobber it.
+Errno is now captured immediately.
+
+**Process note.**  The three ledger corrections above were written once
+before, reported as landed, and silently lost: the editing script verified
+each substitution but wrote the file only at the end, so one failed assertion
+discarded all of them.  An intermediate LOCAL commit was then made still
+carrying the false SO_BINDTODEVICE claim, while the summary reported that
+claim as corrected.  Nothing was pushed -- that commit was amended before it
+left the machine, so `git log' shows the string only inside this refutation.
+Calling it "published" would overstate the harm: the defect was the false
+report, not a publication.  Ledger edits are now applied and re-read from disk
+one at a time.  The irony is exact: an honesty ledger asserted a fix that had not
+happened, which is the same defect finding 113 recorded about
+`truncate-string-to-width'.
+
+117. **The gate has been partly luck and nobody noticed.**
+     `upstream_eshell_script_regressions_stay_green' (eval_05.rs:7779) wraps
+     GNU's `em-script-test/source-script/background'
+     (test/lisp/eshell/em-script-tests.el:70), which sources a script in the
+     BACKGROUND and then compares the buffer.  When the check wins the race
+     the buffer holds "hi\n" instead of "hi\nbye\n" and the test fails.
+     Measured, not guessed: five consecutive runs of the identical binary gave
+     four passes and one failure, and a sweep of every gate log kept this
+     session shows the same test failing in v22, v23, v30 and v42 while
+     passing in thirteen others -- roughly one run in five, stable across
+     weeks and unrelated to whatever change was under test.
+     The consequence is uncomfortable and worth stating plainly: every "gate
+     is green" in this project's history carried about a 20% chance of this
+     test failing instead, and a green gate was therefore never quite the
+     proof it was presented as.  It also means a red gate can be noise, which
+     is the more dangerous half -- it trains the reader to retry rather than
+     investigate.
+     Not caused by, and cannot be caused by, the socket-option work committed
+     alongside this note: that code is reachable only from
+     `set-network-process-option', which eshell scripts never call.
+     The fix is not to retry until green.  Either the upstream test needs a
+     deterministic wait for the background job before it reads the buffer, or
+     Emaxx's background-source path completes later than GNU's and the race is
+     an Emaxx defect wearing a flake's clothing -- which has NOT been
+     determined.  Until it is, gate results should be read as "green modulo a
+     known 1-in-5 flake in this one test".  OPEN.
+
+**111 FIXED (2026-08-26).**  `network-interface-info' was `Ok(Value::Nil)' --
+a bare constant sitting beside a genuinely implemented
+`network-interface-list' in the same match.  It now mirrors process.c:4459:
+a socket used purely as an ioctl handle, SIOCGIFFLAGS / SIOCGIFNETMASK /
+SIOCGIFBRDADDR / SIOCGIFADDR for the four IPv4 components, and a `getifaddrs'
+walk for the link-layer address, since macOS has no SIOCGIFHWADDR
+(process.c:4532).  Six cases byte-identical to the oracle -- `lo0' (nil broadcast, nil hardware
+address), `en0' and `bridge0' (both with real MACs), a nonexistent device
+answering nil, "interface name too long", and `wrong-type-argument' for a
+non-string.  All six are in the committed test, not merely hand-probed: an
+earlier draft of this entry claimed "five cases including en0" when the test
+contained four and `en0' was not among them, which is the finding-111 species
+of defect reappearing inside finding 111's own repair.
+Details worth recording because each is a place a plausible implementation
+would have diverged:
+  - The flag list is built by CONSING in process.c:4498, so it emerges in
+    REVERSE table order -- `lo0' reads (multicast running loopback up), not
+    (up loopback running multicast).
+  - On a Cocoa build GNU spells IFF_NOTRAILERS "smart", not "notrailers"
+    (process.c:4412), and the oracle is such a build.
+  - process.c:4494 widens `ifr_flags' as UNSIGNED before testing bits,
+    because IFF_MULTICAST can set the sign bit of a short.
+  - `any' is set only by the ioctl branches; the getifaddrs hardware-address
+    branch deliberately does NOT set it, so an interface that yields only a
+    MAC still answers nil overall.  Mirrored rather than "improved".
+  - The SIOCGIF* request numbers are NOT exposed by the libc crate on macOS.
+    They are COMPUTED here from the `_IOWR' encoding in sys/ioccom.h -- group
+    letter, ordinal, and payload size -- rather than transcribed as
+    0xc0206911 and friends, which would be magic constants valid for exactly
+    one struct layout on one platform, and would be the same species of
+    defect as finding 101.
+Disclosed: IPv6 is out of scope here exactly as it is in GNU, whose docstring
+directs callers to `network-interface-list' for it.
+
+**Correction to 111, found by adversarial audit before the commit landed.**
+The first implementation PANICKED -- a hard crash, not a wrong answer -- on
+any interface whose name is 7 bytes or longer and which has a 6-byte MAC.
+`bridge0' exists on this very host and reproduced it immediately: GNU returns
+`(nil nil nil (18 . [54 126 46 241 3 64]) (simplex multicast smart running
+broadcast up))', Emaxx aborted with "index out of bounds: the len is 12 but
+the index is 12".  The cause is that the kernel's `sockaddr_dl' is
+VARIABLE-LENGTH: process.c:4548 reads the address through `LLADDR(sdl)', which
+is pointer arithmetic `sdl_data + sdl_nlen' into a tail that extends past the
+declared array, while Emaxx indexed the libc-declared `[c_char; 12]'.  A
+7-byte name needs indices 7..=12 of a 12-long array.  Now read through a raw
+pointer, and the struct itself is read with `read_unaligned' rather than by
+forming a reference, since an entry shorter than the declared struct would
+make a reference invalid.
+The crash survived my own five-case probe because `lo0' has no hardware
+address (its AF_LINK entry has `sdl_alen' 0, so the walk returns early) and
+`en0' has a 3-byte name.  The ~35 lines of `getifaddrs' unsafe were reached by
+NO test.  The committed test now names `bridge0' explicitly and asserts that
+at least one named interface reports a hardware address, so the path cannot go
+unexercised again.
+Two smaller defects from the same audit: the flag table carried an
+`IFF_ALTPHYS' -> "altphys" row that does NOT exist in GNU's table
+(process.c:4386), under a comment claiming the table was GNU's in GNU's order
+-- harmless, because on macOS IFF_ALTPHYS and IFF_LINK2 are the same bit and
+the earlier row consumes it, but the fidelity claim was false, so the row is
+deleted.  And the non-macOS arm's comment claimed GNU "compiles the whole body
+out" on other platforms, which is the opposite of the truth: GNU/Linux defines
+all five SIOCGIF* requests and returns full data including the hardware
+address via `ifr_hwaddr' (process.c:4518).  Finding 111 is fixed for macOS
+ONLY; the ledger row now says so, and the non-macOS arm is labelled as the
+cheat it still is.
+
+118. `network-interface-list' reports far fewer interfaces than GNU on the
+     same host: 3 against 11, verified side by side.
+     CORRECTED before this entry was committed: the first draft named the
+     wrong cause and asserted something about GNU that is FALSE.  It claimed
+     GNU "enumerates link-layer-only entries"; process.c:4344 is `else
+     continue' -- GNU skips every address that is not AF_INET or AF_INET6,
+     and the AF_LINK-only devices on this host (gif0, stf0, anpi0/1, en1-en4,
+     bridge0, ap1) appear in NEITHER list.  It also blamed `if_addrs' for
+     yielding "only interfaces carrying an IP address", which is not what that
+     crate does.
+     The real cause is a disabled cargo feature: if-addrs 0.15.0
+     (`src/sockaddr.rs:45-49`) discards every fe80:: link-local address unless
+     its `link-local' feature is on, and `Cargo.toml:67' pins
+     `if-addrs = "=0.15.0"' without features.  All eight missing rows are
+     fe80:: addresses -- lo0's fe80::1, en0's link-local, awdl0, llw0 and
+     utun0-3 -- on interfaces that DO carry IP addresses.
+     Enabling that feature is NOT the whole fix, though an earlier draft of
+     this entry implied it was.  The list is ALSO built in the opposite order
+     from GNU: Emaxx maps forward over the crate's iterator
+     (files_process.rs:419) while GNU conses each row onto the front
+     (process.c:4350ff), so the three rows the two currently share appear
+     reversed.  Enabling the feature alone would yield eleven rows in the
+     wrong order.  Both halves need doing, and the result checked against
+     GNU's list element by element rather than by count.
+     Found while writing the test for finding 111: driving that test by
+     enumerating interfaces compared two different sets and failed loudly.
+     Not a fabricated value, so not the same species as 111, but the list is
+     materially incomplete and any GNU test that counts interfaces or looks
+     for a specific device will diverge.  OPEN.
+
+**Second correction to 111, from the verification round.**  The audit that
+confirmed the LLADDR crash fix also found the repair had left two weaknesses
+and one divergence.
+The divergence: `need_args' checks only a MINIMUM, so
+`(network-interface-info "lo0" "x")' returned data where GNU signals
+`wrong-number-of-arguments'.  The generated arity table already recorded
+(1, 1) and the sibling `network-interface-list', whose dispatch arm sits directly
+beside this one, already used the bounded helper; only this call site
+disagreed.  Now `need_arg_range(1, 1)',
+and probed identical.  (Over-arity tolerance is systemic in Emaxx --
+`(car '(1) 2)' also returns 1 rather than signalling -- so this is one instance
+of a wider gap, not the whole of it.)
+The weaknesses were both in the test written to prove the crash was fixed.
+It asserted that SOME named interface reported a hardware address, which `en0'
+satisfies -- and `en0' has a 3-byte name, so it never reaches the offsets that
+overflowed.  The assertion would have passed on a host without `bridge0' while
+the LLADDR arithmetic went unexercised, which is exactly how the crash shipped
+the first time.  It now requires the 7-byte-named interface specifically and
+fails loudly rather than testing less.  The test was also not `cfg'-gated to
+macOS, so on GNU/Linux -- where the Emaxx arm is still the acknowledged cheat
+and these devices do not exist -- it would have failed against a tree behaving
+exactly as documented.
+Independently confirmed by that round: all 18 interfaces on this host, plus
+three nonexistent names and eight edge cases including an embedded-NUL name
+and the 15/16-byte boundary, are byte-identical to the oracle.
+
+**100 FIXED (2026-08-26).**  The `gnutls-digests' catalogue was a 9-entry
+constant table in the oracle's exact order, in a file whose cipher and mac
+catalogues were already queried live through dlopen -- the transcription sat
+twenty lines from the machinery that would have replaced it.  It now loads
+`gnutls_digest_list', `gnutls_digest_get_name' and `gnutls_hash_get_len'
+alongside its neighbours (gnutls.c:402,403,434) and builds the plists exactly
+as gnutls.c:2713 does, including the reversal that GNU's consing produces.
+Byte-identical to the oracle, nine digests.  The remaining constant table is
+NOT the catalogue: it maps a GnuTLS digest name to the internal hash
+implementation `gnutls-hash-digest' uses, which has no library equivalent and
+must live somewhere; its transcribed `length' field, now redundant, is gone.
+Two honest limits.  The retained table still carries the oracle's `id' values
+and its SET of nine names, used by `gnutls-hash-digest' -- so a host whose
+GnuTLS listed a tenth digest would have `gnutls-digests' report it and
+`gnutls-hash-digest' reject it.  And the test for this pins CORRECTNESS, not
+liveness: the constant table was built from this host's GnuTLS, so restoring
+it would leave the test green.  That the query is live rests on code
+inspection, exactly as with finding 101.
+Also disclosed: the digest symbols are loaded with the fallible loader, so a
+GnuTLS older than 3.2.2 -- which lacks `gnutls_digest_list' -- would fail the
+whole library load and take `gnutls-available-p' with it, where GNU falls back
+to `gnutls_mac_list' (gnutls.c:2327-2333).  Pre-existing in kind: the cipher
+tag/IV size symbols, gated at the same versions, already load fallibly.
+
+**104 FIXED (2026-08-26).**  `get-unused-iso-final-char' returned the constant
+?0 with both arguments unread, so it answered "0" even where that slot was
+taken and never signalled for a bad DIMENSION or CHARS.  It now validates in
+GNU's order -- DIMENSION first, and its real range is 1..=3 even though the
+docstring says "1 or 2" -- and scans `0'..`?' against the charsets actually
+registered, reading `:iso-final-char' from the same plists `charset-plist'
+exposes and asking Lisp for each charset's dimension and chars, PLUS the
+equivalence declarations `declare-equiv-charset' writes straight into the same
+table (charset.c:1440) -- an earlier version derived a parallel table from
+plists alone and diverged from Emaxx's own `iso_charsets' after any runtime
+declaration: GNU went 54 -> 55 on a fresh declaration where Emaxx stayed 54.
+Eleven cases byte-identical: all six dimension/chars pairs, both range errors,
+three type errors, and the equivalence-declaration round trip.
+One subtlety cost a wrong answer before it was found by comparing against the
+oracle rather than by reasoning -- and a second, found by audit, was that
+charset.c:1387 is CHECK_FIXNUM, which names `fixnump', while the obvious
+`as_integer' helper names `integerp' (its own comment claimed otherwise).
+Six type-error inputs signalled the wrong predicate, and the test compared
+only `(car error)', which cannot see the difference.  A `as_fixnum' helper now
+mirrors CHECK_FIXNUM and the test compares whole error objects.
+The first subtlety: charset.c:1395 reduces CHARS to the BOOLEAN
+`chars == 96', and ISO_CHARSET_TABLE is indexed by that flag rather than by
+the number, so every charset whose `charset-chars' is not 96 shares the 94
+bucket.  `arabic-digit' has a chars of 9 and claims final char ?2 there.
+Comparing the numbers for equality skipped it and reported (1 94) as ?2 where
+GNU answers ?6.  Emaxx's charset registry agrees with GNU on the charsets that matter here --
+every charset whose final char falls in the scanned `0'..`?' range -- and only
+the bucketing rule was wrong.  An earlier draft claimed agreement on "all 203
+charsets and their final chars", which is FALSE: six differ, `ascii' most
+clearly, with final char ?B in GNU and none recorded in Emaxx.  All six sit
+outside the scanned range so the answers match anyway, but the sweeping claim
+was untrue and is withdrawn.  Those six also lack `:dimension', so
+`(charset-chars 'ascii)' signals in Emaxx where GNU answers 128 -- recorded
+here rather than left for someone to rediscover.
+
+**112 STAYS OPEN.  An attempted fix was measured, found to be a NET
+REGRESSION, and reverted -- and the entry that announced it was wrong twice.**
+
+The finding said `intern-soft' "infers interned-ness from the value, function,
+builtin and plist cells where GNU performs a pure `oblookup'".  Across ten
+symbol shapes, nine already agreed: a never-mentioned name, a name appearing
+only inside a string, a read-quoted symbol, an explicit `intern', a `setq', a
+`defun', a `put', an uninterned symbol's name, and an `unintern' round trip.
+The inference is not arbitrary -- in GNU you cannot give a symbol a value,
+function or property without interning it first.  An auditor later reproduced
+that agreement across a further dozen shapes (plist-only, `makunbound',
+`fmakunbound', nil-valued `defvar', `defalias', `##', `::', NUL and non-ASCII
+names, 5000-character names, shorthands, symbols-with-position).
+
+Exactly one shape diverges: a KEYWORD is bound to itself without being
+interned, so the value-cell clause calls every conceivable keyword interned
+and `(intern-soft ":never-mentioned")' answers the keyword where GNU answers
+nil.
+
+I tightened keywords to a real membership test.  THAT WAS WRONG, and the
+number is the reason: GNU's preloaded obarray holds 429 keywords; Emaxx's
+holds 141 (an earlier draft of this entry said 146, which was not reproducible
+and did not even reconcile with the 288 below -- 429 - 141 = 288 does).  Feeding GNU's own 429 keyword names back as runtime strings,
+Emaxx answered nil for 288 of them -- `:key', `:buffer', `:error', `:host'
+and so on.  The permissive clause is accidentally RIGHT for every keyword GNU
+actually preloads; requiring real membership traded one rare false positive
+for 288 common false negatives.  Reverted.
+The honest fix is to seed the missing keywords into Emaxx's obarray first --
+generated from the oracle the way the arity tables are -- and only then
+tighten this clause.  Until that happens 112 stays OPEN with the divergence
+stated precisely: never-mentioned keywords, and only those.
+
+**Correction to the entry that claimed 112 was fixed.**  It also asserted that
+the failing test which prompted the change was "a TEST artifact" because
+"loading a file or evaluating `--eval' runs `intern_symbols_in_value' over the
+form afterwards".  The two citations given are the FILE LOADER and
+`eval-region'.  Neither is `--eval', and `--eval' did not run the walk at all,
+so that justification was false and the product was genuinely wrong on that
+path -- see finding 119.  The half of the claim that held is that `-l FILE'
+does intern, which is why the oracle probes agreed.
+
+119. `--eval' did not intern the symbols it read.  GNU's reader interns as it
+     reads, so `emacs --batch --eval "(progn 'foo (intern-soft \"foo\"))"'
+     answers foo; Emaxx answered nil, for ordinary symbols as much as
+     keywords, because `batch.rs' evaluated the reader's output without the
+     `intern_symbols_in_value' walk that lisp/mod.rs:947 and loading.rs:401
+     perform for files and `eval-region'.  `eval-buffer' with a custom
+     `load-read-function' (loading.rs:546) LOOKED like the same asymmetry and
+     was also given the walk -- which was wrong, and an audit caught it before
+     this landed.  GNU interns nothing extra when reading is delegated to
+     Lisp: the form's symbols are whatever that function produced.  Walking it
+     resurrected a deliberately `unintern'-ed symbol that GNU leaves dead,
+     regressing a case that had agreed.  That walk is reverted; only `--eval'
+     changed.  A CLI test pins the fix end to end through the real binary,
+     because the in-process harness (eval/tests.rs:61,85) already interns per
+     form and is exactly what masked this bug.
+     Disclosed: `intern_symbols_in_value' walks conses, symbols and string
+     properties but NOT record or hash-table payloads, so symbols inside
+     `#s(...)' are interned on no path at all -- pre-existing and unchanged
+     here, but now inherited by `--eval' along with the rest.
+     FIXED.  Found by an audit that was checking a different claim -- the one
+     corrected above -- which is the second time this session that a false
+     justification turned out to be concealing a real defect.
+
+120. `eval-region' with a custom `load-read-function' runs
+     `intern_symbols_in_value' over whatever that Lisp function returned
+     (loading.rs:401).  GNU does not: when reading is delegated, it interns
+     nothing beyond what the function itself interned.  A reader returning a
+     deliberately `unintern'-ed symbol therefore has that symbol resurrected
+     in Emaxx and left dead in GNU -- `(intern-soft "gone")' answers the
+     symbol here and nil there.
+     Found because I nearly copied it.  Fixing finding 119 I added the same
+     walk to the `eval-buffer' twin "for symmetry", which regressed a case
+     that had been agreeing; the audit caught it, that walk is reverted, and
+     the remaining instance is recorded here rather than propagated.  The
+     honest fix is to run the walk only when the built-in reader produced the
+     form.  Narrow -- it needs a custom read function AND a deliberately
+     unintern'd symbol -- but real.  OPEN.
+
+121. **The obarray is thousands of symbols short, and finding 112 is a symptom
+     of it rather than a defect of its own.**
+     Chasing 112's remaining keyword gap led to the real shape of the problem.
+     Measured by dumping GNU's own symbol names and feeding them back as
+     RUNTIME STRINGS (a probe that lists them literally interns them by being
+     read, which is how an earlier measurement was contaminated):
+       - keywords: GNU 429, Emaxx 141, missing 288
+       - symbols with NO value, function or property cell: GNU 4,238,
+         Emaxx missing 2,340
+     A symbol reaches GNU's obarray merely by being MENTIONED in preloaded
+     Lisp -- `:key' comes from epg.el, `:host' from auth-source.el.  Emaxx's
+     startup does not put those names in its obarray, so roughly 4,400 symbols
+     GNU knows are absent.
+     `intern-soft' hides this for the common cases by inferring membership
+     from a value, function or property cell, which is why the suite never
+     noticed: symbols that MATTER usually have a cell.  It is exactly the
+     symbols with no cell -- names merely mentioned -- where the inference has
+     nothing to go on and the gap shows.  That is also why tightening the
+     keyword clause (see 112) collapsed: it removed the paper over a hole
+     without filling the hole.
+     This reframes 112.  Seeding a keyword list from the oracle would treat
+     the visible symptom and transcribe oracle data to do it.  The honest fix
+     is for Emaxx's preload to intern the names its Lisp mentions, the way
+     GNU's reader does -- computed, not copied.  Until then `intern-soft'
+     keeps its inference and 112 stays OPEN, now with the real cause attached.
+     OPEN.
+
+**105 FIXED (2026-08-27).**  `max-lisp-eval-depth' was read from the GLOBAL
+cell, so `(let ((max-lisp-eval-depth 100)) ...)' was invisible and a runaway
+recursion under a deliberately small binding ran to completion.  The value was
+then multiplied by 384 and floored at 307,200, so the variable could not lower
+the limit at all, and exceeding it raised a plain `error' where GNU raises
+`excessive-lisp-nesting' -- a condition this tree already defined
+(eval.rs:732) and had never once signalled.
+It now mirrors eval.c:2504-2509: read the DYNAMIC binding, raise a sub-100
+limit to 100 rather than rejecting it, and signal
+`(excessive-lisp-nesting DEPTH)'.  The 384x scale is deleted.
+The finding was WRONG about one clause and it is worth saying so: it claimed
+`stack_headroom_remains()' is "hardcoded true".  On this platform it is a real
+`pthread_get_stackaddr_np' probe; the `true' body is only the non-macOS arm.
+That function is untouched -- but the guard beside it DID raise the same plain
+`error' the finding describes, while its own comment claimed it signalled
+`excessive-lisp-nesting'.  Now it signals what the comment always said.
+The risk this change carried was that the 384x scale existed to let honest
+deep recursion succeed, so removing it might make Emaxx signal where GNU
+succeeds, or crash where it previously signalled.  An audit measured both and
+neither happened.  Exact thresholds on the same recursion: GNU last succeeds
+at 792 and signals `(excessive-lisp-nesting 1601)' at 793; Emaxx succeeds to
+794 and signals the identical object at 795 -- two frames MORE permissive.
+Roughly sixty programs matched byte-for-byte, including `cl-labels' 1000 deep,
+`macroexpand-all' 400 deep, `cl-loop' to 20,000 and a 200,000-level nested
+print.  Deliberate stack-overflow attempts (a million-deep non-tail `cons'
+recursion under a 1e8 limit) produced no panic: with the scale gone the
+counter trips at 1,601 instead of 614,400, so the native stack is reached
+~384x LATER.  Removing the scale reduced crash risk rather than raising it.
+Also fixed here, both found by that audit: a NEGATIVE limit became the 1600
+default instead of flooring to 100, because the `usize' conversion ran before
+the clamp -- making the limit larger than requested where GNU makes it
+smaller; and a truncated comment left behind by the deletion, which ended
+mid-sentence and asserted that this evaluator "nests several times deeper"
+than GNU, a claim the threshold measurement above disproves.
+
+122. Emaxx increments `lisp_eval_depth' at ONE site (core.rs, `eval'); GNU
+     increments at TWO -- `eval_sub' (eval.c:2504) and `Ffuncall'
+     (eval.c:3078).  Measured: a direct call costs 2 units per level in both,
+     but a `funcall'/`apply' chain costs 3 in GNU and 2 here, so those paths
+     trip at roughly 795 levels where GNU trips at 529.
+     The divergence is in the SAFE direction -- Emaxx tolerates more, so no
+     honest program fails that GNU accepts -- but `max-lisp-eval-depth' means
+     something slightly different on those paths, and a GNU test that pins the
+     depth at which a funcall chain fails would disagree.  Recorded rather
+     than folded into finding 105, whose comment now states the gap instead of
+     claiming eval.c is mirrored "exactly".  OPEN.
+
+**Correction to 117: the failure rate is much worse than recorded, and it is
+load-dependent.**  The entry says "roughly one run in five", from five
+consecutive runs giving four passes and one failure, corroborated by four
+failures across seventeen gate logs (~24%).  Re-measured on 2026-08-27 while
+checking whether an evaluator change had worsened it:
+
+    previous evaluator (HEAD~1 core.rs)   2 pass / 6 fail
+    current evaluator                     4 pass / 4 fail
+
+Eight runs each, back to back, same machine, load average ~5.  So the real
+rate is somewhere between half and three quarters of runs when the machine is
+busy, not one in five -- the original figure was taken on an idle machine and
+generalised.  A "green gate" is therefore a much weaker statement than this
+ledger has been treating it as, and every green gate reported during this
+session should be read with that in mind.
+The A/B also answers the question it was run for: the flake is NOT caused by
+the `max-lisp-eval-depth' change (finding 105).  The older evaluator fails it
+MORE often, so if anything the change helps; eight samples a side cannot
+distinguish that from noise, but they comfortably exclude "the change made it
+worse".
+This strengthens the case that 117 is a genuine Emaxx defect rather than an
+upstream test needing a wait, since a pure test-side race would not care which
+evaluator is underneath.  Still OPEN, still not to be resolved by retrying
+until green.
+
+**117 DIAGNOSED (2026-08-27): a genuine Emaxx defect, not an upstream test
+needing a wait.  The open question is answered.**
+The entry left two possibilities open -- either GNU's test races and needs a
+deterministic wait, or Emaxx's background path finishes later than GNU's.
+Measured, running the single ERT test directly against each binary:
+
+    GNU oracle          12 pass / 0 fail
+    Emaxx (this tree)   ~4 pass / 4 fail, and 2/8 on the previous evaluator
+
+GNU does not race at all.  (A first attempt at this measurement reported GNU
+failing 10/10, which was my invocation: a relative path from the wrong
+directory, so the test file never loaded.  Worth recording because a 10/10
+failure looked like a dramatic result and was pure operator error.)
+The test is NOT missing a wait.  It calls `(eshell-wait-for-subprocess t)',
+and that helper (test/lisp/eshell/eshell-tests-helpers.el:106) waits until
+`eshell-process-list' is EMPTY.  So the defect is an ordering one: Emaxx lets
+a process leave `eshell-process-list' before its output has been delivered to
+the redirection target, and the buffer is then read as "hi\n" instead of
+"hi\nbye\n".  GNU flushes the output before the process is removed.
+The script is `*echo hi' followed by `if {[ foo = foo ]} {*echo bye}' -- two
+external commands, the second spawned from inside a conditional, which is
+probably why the second one is the one lost.
+That the rate MOVES when the evaluator changes (6/8 before finding 105's fix,
+4/8 after) is consistent with this: anything altering the timing of Lisp
+evaluation shifts the window, which a pure test-side race would not do.
+Still OPEN, now with a mechanism rather than a shrug, and still not to be
+resolved by retrying until green.
+
+**117: one hypothesis tried and DISPROVED (2026-08-27).**
+The diagnosis above said Emaxx lets a process leave `eshell-process-list'
+before its output reaches the target, so the obvious fix was GNU's ordering:
+`status_notify' delivers whatever is readable BEFORE running the sentinel,
+while `pump_external_process_output' drained only the processes that were live
+when it snapshotted them, then ran sentinels.  A process exiting between its
+own poll and the sentinel loop would therefore be reported finished with
+output still in the pipe.
+That reasoning is sound and the fix was implemented -- poll and deliver
+immediately before each sentinel.  It did NOT help: twelve runs gave 4 pass /
+8 fail against 4/4 before, i.e. no improvement and possibly worse.  The change
+was REVERTED rather than kept as a plausible-sounding improvement that fixes
+nothing; unverified complexity is how a codebase acquires the sort of thing
+this ledger records.
+What that rules out: the loss is not simply unread pipe bytes at sentinel
+time.
+Next hypothesis, untested: the wait may return during a GAP.
+`eshell-wait-for-subprocess t' waits for `eshell-process-list' to become
+EMPTY, and the script runs two external commands in sequence -- `*echo hi',
+then `*echo bye' from inside an `if' body.  If Emaxx removes the first process
+before spawning the second, the list is momentarily empty, the wait returns,
+and the buffer is read before "bye" is ever written.  That would explain why
+the missing text is always the SECOND command's, and why flushing at sentinel
+time changes nothing.  Testing it needs a way to observe `eshell-process-list'
+over time; a first attempt at that instrumentation did not survive batch mode.
+
+123. **`EMACS_TEST_DIRECTORY' corrupts the load-path ORDER, and the
+     compatibility harness sets it for every child it measures.**
+     Found while trying to reproduce finding 117 outside the gate: a probe
+     that worked standalone failed with "Loading file debug failed to provide
+     feature `debug'" as soon as the harness's environment was replicated.
+     Measured, same machine, same probe:
+
+         GNU     without EMACS_TEST_DIRECTORY   load-path 25 entries
+         GNU     WITH    EMACS_TEST_DIRECTORY   load-path 25 entries
+         Emaxx   without EMACS_TEST_DIRECTORY   load-path 25 entries
+         Emaxx   WITH    EMACS_TEST_DIRECTORY   load-path 102 entries
+
+     GNU's load-path does not respond to that variable at all.  Emaxx's
+     `effective_batch_load_path' (batch.rs:670) appends every repo-local elisp
+     directory when it is set, and the resulting ORDER differs from GNU's
+     dumped one, so subdirectory libraries shadow core ones:
+
+         (locate-library "debug")
+           GNU    /Users/.../lisp/emacs-lisp/debug.elc
+           Emaxx  /Users/.../lisp/cedet/semantic/debug.elc
+
+     `semantic/debug.el' provides `semantic/debug', not `debug', so
+     `(require 'ert)' -- which requires `debug' -- FAILS in Emaxx under the
+     harness environment and succeeds without it.  A core library is
+     unreachable purely because of a test-harness variable.
+     `compat.rs:438' sets `EMACS_TEST_DIRECTORY' on every child, so every one
+     of the 7,883 measured outcomes runs with this load-path.  How much it
+     costs is unmeasured -- the harness passes `-l ert' on the command line,
+     which evidently still works -- but any test whose Lisp `require's a name
+     that collides with a subdirectory library resolves to the wrong file.
+     This is adjacent to finding 102 (data-directory derived from the same
+     variable) and worse in kind: 102 produces a wrong string, 123 loads the
+     wrong CODE.
+     The fix is to reproduce GNU's load-path order rather than appending
+     discovered directories, and to stop letting a harness variable alter
+     library resolution at all.  OPEN.
+
+**123: the cost is no longer unmeasured, and it is large.**
+The entry said "how much it costs is unmeasured".  Swept `locate-library'
+over all 397 core library names under the harness environment, GNU against
+Emaxx: FIVE resolve to the wrong file, all of them shadowed by CEDET
+subdirectories.
+
+    chart    emacs-lisp/chart.elc    ->  cedet/semantic/chart.elc
+    comp     emacs-lisp/comp.elc     ->  cedet/semantic/wisent/comp.elc
+    debug    emacs-lisp/debug.elc    ->  cedet/semantic/debug.elc
+    generic  emacs-lisp/generic.elc  ->  cedet/ede/generic.elc
+    map      emacs-lisp/map.elc      ->  cedet/srecode/map.elc
+
+Requiring any of them FAILS in Emaxx under the harness environment and
+succeeds without it; all four tested succeed in GNU with the same environment:
+
+    (require 'map)      "Loading file map failed to provide feature `map'"
+    (require 'comp)     "Loading file comp failed to provide feature `comp'"
+    (require 'chart)    "Recursive `require' for feature `chart'"
+    (require 'generic)  "Loading file generic failed to provide feature ..."
+
+Five files in the frozen manifest require a shadowed library, and they are not
+small:
+
+    test/src/comp-tests.el              177 outcomes   (require 'comp)
+    test/lisp/emacs-lisp/map-tests.el    62             (require 'map)
+    test/lisp/json-tests.el              59             (require 'map)
+    test/src/json-tests.el               23             (require 'map)
+    test/lisp/emacs-lisp/comp-tests.el    3             (require 'comp)
+                                        ---
+                                        324 outcomes = 4.1% of 7,883
+
+The 177 are the ones finding 98 restored to the denominator two commits ago.
+They were re-included because the oracle runs them fine -- which it does -- but
+Emaxx cannot even load that file in the environment it is measured in.  So the
+denominator correction and this defect interact: the honest denominator grew,
+and a self-inflicted harness artifact is positioned to fail most of what was
+added.
+This makes 123 the highest-value open item by a wide margin.  It is not a
+scoring cheat -- nothing is counted that should not be -- but up to 324
+outcomes may be failing for a reason that has nothing to do with Emaxx's
+actual Lisp behaviour, and fixing it is honest work that could move the score
+substantially.  Whether all 324 actually fail is still unverified; that needs
+a frozen run, and this note should not be cited as if it were measured.

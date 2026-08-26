@@ -4079,7 +4079,6 @@ impl Interpreter {
             ("input-method-previous-message", Value::Nil),
             ("input-pending-p-filter-events", Value::T),
             ("integer-width", Value::Integer(65536)),
-            ("internal--text-quoting-flag", Value::T),
             (
                 "internal--top-level-message",
                 Value::String("Back to top level".into()),
@@ -4119,7 +4118,15 @@ impl Interpreter {
             ("native-comp-jit-compilation", Value::T),
             ("nobreak-char-ascii-display", Value::Nil),
             ("nobreak-char-display", Value::T),
-            ("operating-system-release", Value::String("25.6.0".into())),
+            // editfns.c:140 fills this from `uname'.  It was transcribed as
+            // this host's own `uname -r' output (audit finding 101), which is
+            // copied build identity rather than a computed value.
+            (
+                "operating-system-release",
+                crate::lisp::primitives::uname_field(crate::lisp::primitives::UnameField::Release)
+                    .map(|release| Value::String(release.into()))
+                    .unwrap_or(Value::Nil),
+            ),
             ("overriding-local-map-menu-flag", Value::Nil),
             // pdumper.c documents `pdumper-fingerprint' as "unique to each
             // build of Emacs"; the value is computed lazily from THIS
@@ -4478,6 +4485,26 @@ impl Interpreter {
         // policy calls the C accessor from separately defined Lisp, so a
         // lexical caller's `let' must establish a dynamic binding.
         interp.mark_special_variable("text-quoting-style");
+        // doc.c:733 defines this alongside it as a DEFVAR_BOOL, so a `let'
+        // on it must establish a dynamic binding too.  GNU's own Lisp only
+        // ever `setq's it (startup.el:1466 forces it to t in a non-batch
+        // session, where the grave fallback then comes from the
+        // standard-display-table branch instead).
+        //
+        // This must be a REAL binding rather than a `builtin_var_value'
+        // fallback: `default-boundp' answers from the globals map, and GNU
+        // reports t for it.  The VALUE is still computed, never asserted --
+        // emacs.c:1665 sets it from `using_utf8 ()' at startup, and the
+        // OnceLock behind `locale_uses_utf8' gives the same once-per-process
+        // semantics.
+        interp.define_special_variable(
+            "internal--text-quoting-flag",
+            if crate::lisp::primitives::values::locale_uses_utf8() {
+                Value::T
+            } else {
+                Value::Nil
+            },
+        );
         // simple.el is dumped by GNU.  Gnus, Ibuffer, Dired, and Tramp read
         // this shell-command state without requiring simple.el, so keep the
         // adjacent public defaults together instead of discovering them one

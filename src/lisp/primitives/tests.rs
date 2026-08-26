@@ -22,8 +22,9 @@ fn call_via_lisp(
 fn assert_upstream_primitive_contract(program: &str, expected: &str) {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
+    let program = crate::test_support::oracle_program_ascii(program);
     let output = std::process::Command::new(&binary)
-        .args(["--batch", "-Q", "--eval", program])
+        .args(["--batch", "-Q", "--eval", &program])
         .output()
         .unwrap_or_else(|error| {
             panic!(
@@ -36,14 +37,19 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
         "primitive-contract oracle failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected,
+        "oracle disagreed; program sent was:\n{program}"
+    );
 }
 
 fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, expected: &str) {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
+    let program = crate::test_support::oracle_program_ascii(program);
     let mut child = std::process::Command::new(&binary)
-        .args(["--batch", "-Q", "--eval", program])
+        .args(["--batch", "-Q", "--eval", &program])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -8461,9 +8467,21 @@ fn native_invocation_queries_copy_host_values_and_daemon_finalization_rejects_ba
 
 #[test]
 fn native_syntax_description_decodes_the_shared_descriptor_bits() {
+    // Note: this contract is checked by handing the program to the oracle
+    // through `--eval', and GNU decodes command-line arguments with the
+    // locale's coding system -- so a literal curved quote in the program
+    // text would not survive a non-UTF-8 locale.  The two quotes in the
+    // expected description are therefore spelled as `\u' escapes, keeping
+    // the argument pure ASCII, and the style binding below pins how
+    // `internal-describe-syntax-value' renders them.
     let program = r#"
-        (let
-            ((results
+        (let*
+            (;; Pin the quoting style: a nil `text-quoting-style' means
+             ;; grave outside a UTF-8 locale, so the curved quotes in the
+             ;; expected description below would otherwise depend on the
+             ;; ambient LANG.
+             (text-quoting-style 'curve)
+             (results
               (mapcar
                (lambda (case)
                  (with-temp-buffer
@@ -8487,7 +8505,7 @@ fn native_syntax_description_decodes_the_shared_descriptor_bits() {
 	  is the second character of a comment-start sequence,
 	  is the first character of a comment-end sequence,
 	  is the second character of a comment-end sequence (comment style b) (comment style c) (nestable),
-	  is a prefix character for ‘backward-prefix-chars’")))))
+	  is a prefix character for \u2018backward-prefix-chars\u2019")))))
           (list results
                 (subrp
                  (symbol-function 'internal-describe-syntax-value))
@@ -8540,12 +8558,519 @@ fn canonical_combining_classes_come_from_complete_unicode_data_inner() {
     }
 }
 
+// macOS only, matching the `#[cfg]` on the code it covers: on GNU/Linux the
+// Emaxx arm is still the acknowledged bare-nil cheat and these interface names
+// do not exist, so the assertions below would fail against a tree that is
+// behaving exactly as documented.
+#[cfg(target_os = "macos")]
+#[test]
+fn network_interface_info_reports_the_real_interface() {
+    // process.c:4459 returns (ADDR BCAST NETMASK HWADDR FLAGS), IPv4 only,
+    // and nil for an interface that answers no query.  The arm this replaces
+    // was a bare nil beside a genuinely implemented `network-interface-list'
+    // (audit finding 111).
+    //
+    // The interfaces are NAMED rather than enumerated: `network-interface-list'
+    // itself disagrees with GNU about which interfaces exist (finding 118), so
+    // driving the sweep from it would compare two different sets.  A name that
+    // does not exist on some host answers nil on BOTH sides, so this stays
+    // correct off this machine -- it just tests less there.
+    //
+    // `bridge0' is not decoration.  Its 7-character name is what makes
+    // LLADDR's pointer arithmetic differ from indexing the libc-declared
+    // 12-byte sdl_data, and the first version of this code PANICKED on it.
+    // The first version of this test named only lo0, which has no MAC at all,
+    // so the entire hardware-address path went unexecuted and the crash shipped
+    // to the gate unnoticed.
+    let program = r#"
+        (prin1-to-string
+         (list (network-interface-info "lo0")
+               (network-interface-info "en0")
+               (network-interface-info "bridge0")
+               (network-interface-info "nosuchdev0")
+               (condition-case error
+                   (network-interface-info "averyveryverylongname0123456789")
+                 (error (cadr error)))
+               (condition-case error
+                   (network-interface-info 42)
+                 (error (car error)))))"#;
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read interface-info program")
+        .remove(0);
+    let rendered = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate interface-info program");
+    let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
+
+    // Compare Lisp-rendered text on both sides.  Rust's `Display' for a cons
+    // whose CDR is a vector flattens it -- `(18 vector-literal 74 ...)' -- while
+    // `prin1' correctly writes `(18 . [74 ...])'; only the Lisp printer is the
+    // contract, and only it is what GNU is being compared against.
+    assert_upstream_primitive_contract(&format!("(princ {program})"), &rendered);
+
+    let rows = Reader::new(&rendered)
+        .read()
+        .expect("re-read rendered result")
+        .expect("rendered result exists")
+        .to_vec()
+        .expect("interface-info list");
+    assert!(
+        !rows[0].is_nil(),
+        "lo0 must report real data, not the constant nil this replaced"
+    );
+    assert!(rows[3].is_nil(), "a nonexistent interface answers nil");
+    // The panic needed BOTH a hardware address and a name of 7+ bytes, since
+    // it was an overrun past the libc-declared 12-byte sdl_data at offset
+    // sdl_nlen.  Asserting merely that "some interface has a MAC" is satisfied
+    // by en0, whose 3-byte name never reaches the overflowing offsets -- which
+    // is how the crash shipped in the first place.  Require the long-named one
+    // specifically, and fail loudly rather than silently testing less if this
+    // host has no such device.
+    let long_named_with_mac = rows[2]
+        .to_vec()
+        .is_ok_and(|parts| parts.get(3).is_some_and(|hw| !hw.is_nil()));
+    assert!(
+        long_named_with_mac,
+        "bridge0 (a 7-byte name with a MAC) reported none, so the LLADDR \
+         pointer arithmetic that once panicked went unexercised"
+    );
+}
+
+#[test]
+fn max_lisp_eval_depth_is_honoured_dynamically() {
+    // eval.c:2504-2509.  The limit came from the GLOBAL cell, so a `let' was
+    // invisible; it was then multiplied by 384 and floored at 307200, so the
+    // variable could not lower it at all; and exceeding it raised a plain
+    // `error' rather than `excessive-lisp-nesting' (audit finding 105).
+    //
+    // The first row is the discriminating one: under a deliberately small
+    // binding a runaway recursion ran to completion and returned `done'.
+    // The second pins eval.c:2506's floor -- a limit below 100 is RAISED to
+    // 100, not rejected -- and the third pins that ordinary recursion under
+    // the default limit still succeeds, which is what the old scaling was
+    // there to protect.
+    let program = r#"
+        (progn
+          (defun zz-depth-rec (n) (if (> n 0) (zz-depth-rec (1- n)) 'done))
+          (list (condition-case error
+                    (let ((max-lisp-eval-depth 100)) (zz-depth-rec 500))
+                  (error (car error)))
+                (condition-case error
+                    (let ((max-lisp-eval-depth 5)) (zz-depth-rec 50))
+                  (error (car error)))
+                (condition-case error (zz-depth-rec 200) (error (car error)))
+                ;; A NEGATIVE limit floors to 100 like any sub-100 value.
+                ;; Converting before clamping turned it into the 1600 default
+                ;; -- larger than requested, where GNU makes it smaller.
+                (condition-case error
+                    (let ((max-lisp-eval-depth -5)) (zz-depth-rec 500))
+                  (error (car error)))
+                (get 'excessive-lisp-nesting 'error-conditions)))"#;
+    let expected = concat!(
+        "(excessive-lisp-nesting excessive-lisp-nesting done ",
+        "excessive-lisp-nesting (excessive-lisp-nesting recursion-error error))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read depth program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate depth program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn get_unused_iso_final_char_scans_the_registered_charsets() {
+    // charset.c:1406 scans `0'..`?' for a final char no charset of this
+    // DIMENSION and CHARS has claimed.  This returned the constant ?0 with
+    // both arguments unread (audit finding 104).
+    //
+    // The (1 94) row is the discriminating one twice over: it answers ?6, so
+    // a constant ?0 fails, AND getting there requires GNU's actual bucketing
+    // rule -- charset.c:1395 reduces CHARS to the BOOLEAN `chars == 96', so
+    // `arabic-digit', whose charset-chars is 9, shares the 94 bucket and
+    // claims ?2.  Comparing the numbers for equality answers ?2 here instead.
+    let program = r#"
+        (list (get-unused-iso-final-char 1 94)
+              (get-unused-iso-final-char 1 96)
+              (get-unused-iso-final-char 2 94)
+              (get-unused-iso-final-char 2 96)
+              (get-unused-iso-final-char 3 94)
+              (get-unused-iso-final-char 3 96)
+              (condition-case error (get-unused-iso-final-char 1 ?0)
+                (error (cadr error)))
+              (condition-case error (get-unused-iso-final-char 9 94)
+                (error (cadr error)))
+              ;; The WHOLE error object, not just its car: charset.c:1387 is
+              ;; CHECK_FIXNUM, which names `fixnump', and comparing only the
+              ;; condition symbol let `integerp' pass here undetected.
+              (condition-case error (get-unused-iso-final-char "x" 94)
+                (error error))
+              (condition-case error (get-unused-iso-final-char 1 "x")
+                (error error))
+              (condition-case error (get-unused-iso-final-char 1.0 94)
+                (error error))
+              ;; charset.c:1440 writes equivalence declarations into the same
+              ;; table this primitive reads, so declaring one must consume the
+              ;; slot it names.
+              (progn (declare-equiv-charset 1 94 ?6 'ascii)
+                     (get-unused-iso-final-char 1 94)))"#;
+    let expected = concat!(
+        "(54 51 50 48 48 48 \"Invalid CHARS 48, it should be 94 or 96\" ",
+        "\"Invalid DIMENSION 9, it should be 1, 2, or 3\" ",
+        "(wrong-type-argument fixnump \"x\") ",
+        "(wrong-type-argument fixnump \"x\") ",
+        "(wrong-type-argument fixnump 1.0) 55)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read iso-final-char program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate iso-final-char program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn gnutls_digests_are_queried_from_the_library() {
+    // gnutls.c:2713 walks `gnutls_digest_list' and asks the library for each
+    // algorithm's name and hash length.  Emaxx carried a transcribed 9-entry
+    // table in the oracle's exact order while its cipher and mac neighbours
+    // in the same file were queried live through dlopen (audit finding 100).
+    //
+    // Compared against the live oracle rather than a literal: the catalogue is
+    // a property of the host's GnuTLS, so a hardcoded expectation here would
+    // just be the same transcription in a different file.
+    //
+    // HONEST LIMIT: this pins CORRECTNESS, not liveness.  The table it
+    // replaced happened to match this host's GnuTLS exactly -- that is how it
+    // was built -- so restoring the constant would leave this test green.
+    // Only a host whose GnuTLS lists a different set would tell them apart.
+    // That the query is live rests on reading the code, as with finding 101.
+    let program = "(prin1-to-string (gnutls-digests))";
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read gnutls-digests program")
+        .remove(0);
+    let rendered = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate gnutls-digests program");
+    let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
+    assert_upstream_primitive_contract(&format!("(princ {program})"), &rendered);
+
+    // A catalogue that came from the library has entries; an empty answer
+    // would satisfy an oracle comparison only if GnuTLS were missing, and
+    // this host has it.
+    assert!(
+        rendered.starts_with("((") && rendered.contains(":digest-algorithm-length"),
+        "expected a populated digest catalogue, got {rendered}"
+    );
+}
+
+#[test]
+fn set_network_process_option_applies_the_option_or_refuses() {
+    // process.c:2962.  The arm this replaces resolved the process, confirmed
+    // it was a network process, and returned t WITHOUT EVER READING THE
+    // OPTION (audit finding 103) -- so an unsupported option reported success
+    // and nothing was set.  It also accepted 2 arguments where GNU needs 3.
+    //
+    // The `:unknown' row is the one that discriminates: fabricated success
+    // returns t there where GNU signals.
+    let program = r#"
+        (let ((server (make-network-process
+                       :name "emaxx-sockopt" :server t :host 'local
+                       :service t :family 'ipv4)))
+          (prog1
+              (list (set-network-process-option server :broadcast t)
+                    (plist-get (process-contact server t) :broadcast)
+                    (condition-case error
+                        (set-network-process-option server :nosuchopt t)
+                      (error (cadr error)))
+                    (set-network-process-option server :nosuchopt t t)
+                    (condition-case error
+                        (set-network-process-option server :broadcast)
+                      (error (car error)))
+                    (condition-case error
+                        (set-network-process-option server 42 t)
+                      (error (car error)))
+                    ;; process.c:2881 matches by NAME, so an uninterned
+                    ;; keyword is still :broadcast.  Matching Emaxx's raw
+                    ;; symbol name would answer "Unknown" here.
+                    (set-network-process-option
+                     server (make-symbol ":broadcast") t)
+                    ;; SO_BINDTODEVICE is defined on this platform and GNU
+                    ;; accepts it; omitting it regressed the option to an
+                    ;; error, which the old cheat had matched by accident.
+                    (set-network-process-option server :bindtodevice "lo0")
+                    (plist-get (process-contact server t) :bindtodevice)
+                    (condition-case error
+                        (set-network-process-option server :bindtodevice 42)
+                      (error (cadr error)))
+                    ;; process.c:2940 raises a file-error carrying the option
+                    ;; and value as DATA, not an error with them in the text.
+                    (condition-case error
+                        (set-network-process-option
+                         server :bindtodevice "nosuchdev0")
+                      (error error))
+                    ;; Out-of-int-range linger: GNU ignores it rather than
+                    ;; truncating it into the kernel.
+                    (set-network-process-option server :linger 3000000000)
+                    ;; process.c:2990 stores the CALLER's symbol and plist_put
+                    ;; compares with EQ, so a foreign-obarray keyword sets the
+                    ;; option yet stays invisible to a plist-get with the
+                    ;; interned one.  Storing a reconstructed symbol answered t
+                    ;; here where GNU answers nil.
+                    (let ((elsewhere (obarray-make)))
+                      (set-network-process-option
+                       server (intern ":keepalive" elsewhere) t))
+                    (plist-get (process-contact server t) :keepalive)
+                    ;; process.c:2954 `list2 (opt, val)' carries the CALLER's
+                    ;; symbol, so `eq' against it succeeds and `eq' against the
+                    ;; interned keyword fails.  Rebuilding the symbol in the
+                    ;; error data inverted both.
+                    (let* ((elsewhere (obarray-make))
+                           (key (intern ":bindtodevice" elsewhere)))
+                      (condition-case error
+                          (set-network-process-option server key "nosuchdev0")
+                        (file-error (list (eq (nth 3 error) key)
+                                          (eq (nth 3 error) :bindtodevice))))))
+            (delete-process server)))"#;
+    let expected = concat!(
+        "(t t \"Unknown or unsupported option\" nil ",
+        "wrong-number-of-arguments wrong-type-argument t t \"lo0\" ",
+        "\"Bad option value for :bindtodevice\" ",
+        "(file-error \"Cannot set network option\" \"Device not configured\" ",
+        ":bindtodevice \"nosuchdev0\") t t nil (t nil))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read socket-option program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate socket-option program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn file_name_case_insensitivity_is_asked_of_the_filesystem() {
+    // fileio.c:2689 walks up the tree until pathconf answers.  A constant --
+    // which is what this returned before audit finding 108 -- satisfies
+    // files-tests-file-name-non-special-file-name-case-insensitive-p
+    // trivially, because that test compares the predicate against itself.
+    // Every row below discriminates: on a case-insensitive volume /tmp is t,
+    // so constant nil fails, and a missing path is nil, so constant t fails.
+    let program = r#"
+        (list (file-name-case-insensitive-p "/tmp")
+              (file-name-case-insensitive-p "/")
+              (file-name-case-insensitive-p "/nonexistent-zzz/deep/file")
+              (condition-case error
+                  (file-name-case-insensitive-p 42)
+                (error (car error))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read case-insensitivity program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate case-insensitivity program");
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), &result.to_string());
+
+    // Pin the discrimination itself, so the contract cannot be satisfied by a
+    // constant even if the oracle and Emaxx ever agreed on one.  Only on a
+    // case-INsensitive volume: on a case-sensitive APFS volume (a supported
+    // macOS setup) or on Linux, every answer is legitimately nil and this
+    // would fail against a CORRECT implementation.
+    #[cfg(target_os = "macos")]
+    if crate::lisp::primitives::file_name_case_insensitive_err("/tmp") < 0 {
+        let answers = result.to_vec().expect("case-insensitivity list");
+        assert_ne!(
+            answers[0], answers[2],
+            "an existing path and a missing one must not answer alike"
+        );
+    }
+}
+
+#[test]
+fn operating_system_release_is_wired_to_the_uname_syscall() {
+    // editfns.c:136-141 fills this from the `uname' syscall.  It used to be
+    // the literal "25.6.0" -- this host's own release (audit finding 101).
+    //
+    // BE CLEAR ABOUT WHAT THIS CAN AND CANNOT SHOW.  No on-host test can
+    // distinguish a transcription of THIS machine's release from a computed
+    // one: the oracle says "25.6.0", `uname' says "25.6.0", and so did the
+    // hardcoded literal.  This test pins the WIRING -- that the binding
+    // answers whatever `uname_field' answers -- and would catch the value
+    // drifting away from the syscall or the binding being dropped.  It would
+    // NOT fail if someone reintroduced the literal today.  That the cheat is
+    // gone rests on reading eval.rs, not on this assertion.
+    let expected =
+        crate::lisp::primitives::uname_field(crate::lisp::primitives::UnameField::Release)
+            .expect("uname(2) should answer on a supported host");
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new("operating-system-release")
+        .read_all()
+        .expect("read operating-system-release")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate operating-system-release");
+    assert_eq!(result, Value::String(expected.into()));
+}
+
+#[test]
+fn text_quoting_default_is_derived_from_the_process_locale() {
+    // The rest of the quoting tests pin `internal--text-quoting-flag' so they
+    // do not inherit the ambient LANG.  That leaves the derivation itself --
+    // emacs.c:1665 `text_quoting_flag = using_utf8 ()' -- untested, which is
+    // the whole premise of the change.  Pin it here instead: with NO bindings
+    // at all the answer must track the locale probe, and the variable must be
+    // a real global (GNU's DEFVAR_BOOL answers t to `default-boundp').
+    let utf8 = crate::lisp::primitives::values::locale_uses_utf8();
+
+    // Pin the probe itself against the environment, not just the wiring that
+    // reads it.  POSIX precedence: LC_ALL, then LC_CTYPE, then LANG.
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()));
+    match locale.as_deref() {
+        Some(name) if name.to_ascii_uppercase().contains("UTF-8") => assert!(
+            utf8,
+            "locale {name} names UTF-8 but the mbrtowc probe disagreed"
+        ),
+        Some("C" | "POSIX") => assert!(
+            !utf8,
+            "locale {locale:?} is the C locale but the mbrtowc probe claimed UTF-8"
+        ),
+        // Any other named locale, or none at all, is not decidable from the
+        // name alone -- leave the probe unchallenged rather than guess.
+        _ => {}
+    }
+
+    let expected_flag = if utf8 { "t" } else { "nil" };
+    let expected_style = if utf8 { "curve" } else { "grave" };
+    let expected = format!("({expected_flag} {expected_style} t t)");
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(
+        "(list internal--text-quoting-flag
+               (text-quoting-style)
+               (default-boundp 'internal--text-quoting-flag)
+               (special-variable-p 'internal--text-quoting-flag))",
+    )
+    .read_all()
+    .expect("read locale-derived quoting program")
+    .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate locale-derived quoting program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn interactive_form_prefers_the_property_over_advice_and_walks_aliases() {
+    // data.c:1141-1151 consults an `interactive-form' property FIRST, walking
+    // the symbol-function alias chain, before inspecting the function object.
+    // Widening the OClosure test to compiled advice objects made that ordering
+    // observable for every advised function, so pin it.  `commandp' is asked
+    // only about symbols WITHOUT the property: eval.c:2282-2291 signals
+    // outright when one is present, which is a separate divergence.
+    let program = r#"
+        (progn
+          (defun emaxx-adv-cmd (x) (interactive "p") x)
+          (defun emaxx-adv-plain (x) x)
+          (advice-add 'emaxx-adv-cmd :around (lambda (orig &rest a) (apply orig a)))
+          (advice-add 'emaxx-adv-plain :around (lambda (orig &rest a) (apply orig a)))
+          (defun emaxx-adv-target (x) x)
+          (put 'emaxx-adv-target 'interactive-form '(interactive "M"))
+          (defalias 'emaxx-adv-alias 'emaxx-adv-target)
+          (defun emaxx-adv-both (x) (interactive "p") x)
+          (advice-add 'emaxx-adv-both :around (lambda (orig &rest a) (apply orig a)))
+          (put 'emaxx-adv-both 'interactive-form '(interactive "P"))
+          (list (interactive-form 'emaxx-adv-cmd)
+                (commandp 'emaxx-adv-cmd)
+                (interactive-form 'emaxx-adv-plain)
+                (commandp 'emaxx-adv-plain)
+                (interactive-form 'emaxx-adv-alias)
+                (interactive-form 'emaxx-adv-both)
+                (interactive-form 'emaxx-adv-nosuch)))"#;
+    let expected = concat!(
+        "((interactive \"p\") t nil nil (interactive \"M\") ",
+        "(interactive \"P\") nil)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read advice interactive-form program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate advice interactive-form program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn text_quoting_style_follows_the_locale_flag_only_for_a_nil_setting() {
+    // doc.c:679: NIL consults `default_to_grave_quoting_style' (whose first
+    // test is the locale-derived `internal--text-quoting-flag', emacs.c:1665
+    // `text_quoting_flag = using_utf8 ()'), `grave' and `straight' are
+    // returned as-is, and "any other value is treated as `curve'".  Routing
+    // unmatched values through the flag made a bogus style answer grave in a
+    // non-UTF-8 locale, which is how the compatibility harness runs.
+    let program = r#"
+        (mapcar
+         (lambda (case)
+           (let ((internal--text-quoting-flag (car case))
+                 (text-quoting-style (cadr case)))
+             (list (text-quoting-style) (format-message "`a'"))))
+         '((t nil) (nil nil) (t grave) (nil curve) (t straight)
+           (nil foo) (t foo) (nil 42)))"#;
+    let expected = concat!(
+        "((curve \"\u{2018}a\u{2019}\") (grave \"`a'\") (grave \"`a'\") ",
+        "(curve \"\u{2018}a\u{2019}\") (straight \"'a'\") ",
+        "(curve \"\u{2018}a\u{2019}\") (curve \"\u{2018}a\u{2019}\") ",
+        "(curve \"\u{2018}a\u{2019}\"))"
+    );
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read text-quoting policy program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate text-quoting policy program");
+    assert_eq!(result.to_string(), expected);
+}
+
 #[test]
 fn text_quoting_policy_is_shared_by_the_query_and_substitution_primitives() {
+    // Pin `internal--text-quoting-flag': a nil `text-quoting-style' means
+    // grave in a non-UTF-8 locale (doc.c:653 via emacs.c's using_utf8), so
+    // without this the nil row would depend on the ambient LANG.  GNU
+    // exposes the same variable and honours a binding of it.
     let program = r#"
         (mapcar
          (lambda (style)
-           (let ((text-quoting-style style))
+           (let ((internal--text-quoting-flag t)
+                 (text-quoting-style style))
              (list style
                    (text-quoting-style)
                    (substitute-command-keys "`foo'"))))
@@ -8593,10 +9118,13 @@ fn text_quoting_policy_is_shared_by_the_query_and_substitution_primitives() {
 
 #[test]
 fn format_message_quotes_only_format_literals_with_the_effective_text_style() {
+    // See the note in the sibling test: pin the locale-derived flag so the
+    // nil row is deterministic.
     let program = r#"
         (mapcar
          (lambda (style)
-           (let ((text-quoting-style style))
+           (let ((internal--text-quoting-flag t)
+                 (text-quoting-style style))
              (list style
                    (format-message "`%s'" "`arg'")
                    (format "`%s'" "`arg'"))))
@@ -11210,7 +11738,11 @@ fn native_record_and_pseudovector_type_names_match_gnu_data_c() {
 
 #[test]
 fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
-    let validation = r#"(let* ((mutex (make-mutex "m"))
+    let validation = r#"(let* (;; thread.c:499,558 spell the apostrophe ASCII and `error'
+                               ;; requotes it per the effective style, so pin the
+                               ;; style rather than inherit the ambient LANG.
+                               (internal--text-quoting-flag t)
+                               (mutex (make-mutex "m"))
                                (condition
                                 (make-condition-variable mutex "c")))
                           (list
@@ -11223,7 +11755,8 @@ fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
     let validation_expected = "((\"Condition variable’s mutex is not held by current thread\") (\"Condition variable’s mutex is not held by current thread\"))";
     assert_upstream_primitive_contract(&format!("(prin1 {validation})"), validation_expected);
 
-    let synchronization = r#"(let* ((mutex (make-mutex "m"))
+    let synchronization = r#"(let* ((internal--text-quoting-flag t)
+                                    (mutex (make-mutex "m"))
                                     (condition
                                      (make-condition-variable mutex "c"))
                                     (flag nil)
@@ -11251,7 +11784,7 @@ fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
                                      (condition-case error
                                          (condition-notify condition)
                                        (error (cdr error)))
-                                     '("Condition variable’s mutex is not held by current thread"))))))"#;
+                                     '("Condition variable\u2019s mutex is not held by current thread"))))))"#;
     let synchronization_expected = "(t t t t)";
     assert_upstream_primitive_contract(
         &format!("(prin1 {synchronization})"),

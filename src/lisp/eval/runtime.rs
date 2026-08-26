@@ -217,9 +217,20 @@ impl Interpreter {
         Ok(Value::T)
     }
 
+    /// The quote characters `error' will requote a message with, per the
+    /// effective `text-quoting-style' (doc.c:679, doprnt.c:490).
+    fn effective_quote_pair(&self, env: &Env) -> (char, char) {
+        match crate::lisp::primitives::values::effective_text_quoting_style(self, env) {
+            "curve" => ('\u{2018}', '\u{2019}'),
+            "straight" => ('\'', '\''),
+            _ => ('`', '\''),
+        }
+    }
+
     fn with_require_nesting<T>(
         &mut self,
         feature: &str,
+        quotes: (char, char),
         load: impl FnOnce(&mut Self) -> Result<T, LispError>,
     ) -> Result<T, LispError> {
         // GNU permits the same feature to re-enter four active `require'
@@ -232,8 +243,11 @@ impl Interpreter {
             .filter(|nested| nested.as_str() == feature)
             .count();
         if nesting > 3 {
+            // fns.c:3762 signals through `error' too, so this message is
+            // requoted by the same rule as the one below.
+            let (open, close) = quotes;
             return Err(LispError::Signal(format!(
-                "Recursive `require' for feature `{feature}'"
+                "Recursive {open}require{close} for feature {open}{feature}{close}"
             )));
         }
 
@@ -258,7 +272,8 @@ impl Interpreter {
             return Ok(Value::Symbol(feature.to_string().into()));
         }
         let load_target = target.unwrap_or(feature);
-        self.with_require_nesting(feature, |interp| {
+        let (open, close) = self.effective_quote_pair(env);
+        self.with_require_nesting(feature, (open, close), |interp| {
             let Some(path) =
                 crate::lisp::primitives::resolve_load_target_in_env(interp, load_target, env)
             else {
@@ -267,9 +282,13 @@ impl Interpreter {
             interp.load_resolved_path(&path, env, true)?;
             Ok(())
         })?;
+        // fns.c Frequire signals through `error', whose format string is
+        // processed with `format-message' semantics: the quotes follow the
+        // effective `text-quoting-style', which is grave in a non-UTF-8
+        // locale (the compatibility harness runs LANG=C).
         if !self.has_feature(feature) && target.is_some() {
             return Err(LispError::Signal(format!(
-                "Loading file {load_target} failed to provide feature \u{2018}{feature}\u{2019}"
+                "Loading file {load_target} failed to provide feature {open}{feature}{close}"
             )));
         }
         if !self.has_feature(feature) {
@@ -277,7 +296,7 @@ impl Interpreter {
             // file did not provide FEATURE; self-providing here fabricated
             // success and a bogus load-history provide entry.
             return Err(LispError::Signal(format!(
-                "Loading file {load_target} failed to provide feature \u{2018}{feature}\u{2019}"
+                "Loading file {load_target} failed to provide feature {open}{feature}{close}"
             )));
         }
         Ok(Value::Symbol(feature.to_string().into()))

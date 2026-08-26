@@ -5553,9 +5553,13 @@ fn pcase_dolist_matches_or_and_let_nil_patterns() {
 fn version_lte_rejects_invalid_version_strings() {
     assert_eq!(
         eval_str(
-            r#"(condition-case err
-                   (version<= "foo" "1.0")
-                 (error err))"#,
+            // Pin the locale-derived quoting flag: a nil `text-quoting-style'
+            // means grave outside a UTF-8 locale, so the curved quotes below
+            // would otherwise depend on the ambient LANG.
+            r#"(let ((internal--text-quoting-flag t))
+                 (condition-case err
+                     (version<= "foo" "1.0")
+                   (error err)))"#,
         ),
         Value::list([
             Value::symbol("error"),

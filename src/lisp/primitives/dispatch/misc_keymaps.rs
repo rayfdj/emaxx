@@ -1392,6 +1392,7 @@ define_dispatch!(
                 interp.notify_condition_variable(
                     interp.resolve_condition_variable_id(&args[0])?,
                     args.get(1).is_some_and(Value::is_truthy),
+                    env,
                 )?;
                 Ok(Value::Nil)
             }
@@ -1572,6 +1573,34 @@ define_dispatch!(
         }
     }
 );
+
+/// Whether VALUE is an OClosure, by GNU's rule: data.c's `interactive_form'
+/// treats a closure whose docstring slot is not a valid docstring as one, and
+/// then dispatches to the Lisp `oclosure-type'/`oclosure-interactive-form'
+/// owners.  The native shape probe below only recognises interpreted
+/// lambdas; a COMPILED OClosure -- which is what nadvice produces for an
+/// advised function -- is a closure record, so fall back to asking the real
+/// `oclosure-type' owner, exactly as the autoload path already does.
+pub(crate) fn value_is_oclosure(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut crate::lisp::types::Env,
+) -> bool {
+    if oclosure_type_of(value).is_some() {
+        return true;
+    }
+    matches!(value, Value::Record(_) | Value::Lambda(_))
+        && interp.has_lisp_function("oclosure-type")
+        && interp
+            .call_function_value(
+                Value::Symbol("oclosure-type".into()),
+                Some("oclosure-type"),
+                std::slice::from_ref(value),
+                env,
+            )
+            .map(|resolved| resolved.is_truthy())
+            .unwrap_or(false)
+}
 
 pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
     let Value::Lambda(lambda) = value else {
