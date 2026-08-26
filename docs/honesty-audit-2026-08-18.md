@@ -75,6 +75,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
 | 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
+| 123 | EMACS_TEST_DIRECTORY balloons load-path 25 -> 102 and shadows core libraries; the harness sets it for every child | OPEN (measured) |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
@@ -2207,3 +2208,40 @@ and the buffer is read before "bye" is ever written.  That would explain why
 the missing text is always the SECOND command's, and why flushing at sentinel
 time changes nothing.  Testing it needs a way to observe `eshell-process-list'
 over time; a first attempt at that instrumentation did not survive batch mode.
+
+123. **`EMACS_TEST_DIRECTORY' corrupts the load-path ORDER, and the
+     compatibility harness sets it for every child it measures.**
+     Found while trying to reproduce finding 117 outside the gate: a probe
+     that worked standalone failed with "Loading file debug failed to provide
+     feature `debug'" as soon as the harness's environment was replicated.
+     Measured, same machine, same probe:
+
+         GNU     without EMACS_TEST_DIRECTORY   load-path 25 entries
+         GNU     WITH    EMACS_TEST_DIRECTORY   load-path 25 entries
+         Emaxx   without EMACS_TEST_DIRECTORY   load-path 25 entries
+         Emaxx   WITH    EMACS_TEST_DIRECTORY   load-path 102 entries
+
+     GNU's load-path does not respond to that variable at all.  Emaxx's
+     `effective_batch_load_path' (batch.rs:670) appends every repo-local elisp
+     directory when it is set, and the resulting ORDER differs from GNU's
+     dumped one, so subdirectory libraries shadow core ones:
+
+         (locate-library "debug")
+           GNU    /Users/.../lisp/emacs-lisp/debug.elc
+           Emaxx  /Users/.../lisp/cedet/semantic/debug.elc
+
+     `semantic/debug.el' provides `semantic/debug', not `debug', so
+     `(require 'ert)' -- which requires `debug' -- FAILS in Emaxx under the
+     harness environment and succeeds without it.  A core library is
+     unreachable purely because of a test-harness variable.
+     `compat.rs:438' sets `EMACS_TEST_DIRECTORY' on every child, so every one
+     of the 7,883 measured outcomes runs with this load-path.  How much it
+     costs is unmeasured -- the harness passes `-l ert' on the command line,
+     which evidently still works -- but any test whose Lisp `require's a name
+     that collides with a subdirectory library resolves to the wrong file.
+     This is adjacent to finding 102 (data-directory derived from the same
+     variable) and worse in kind: 102 produces a wrong string, 123 loads the
+     wrong CODE.
+     The fix is to reproduce GNU's load-path order rather than appending
+     discovered directories, and to stop letting a harness variable alter
+     library resolution at all.  OPEN.
