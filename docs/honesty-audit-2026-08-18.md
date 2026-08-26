@@ -75,7 +75,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
 | 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
-| 123 | EMACS_TEST_DIRECTORY balloons load-path 25 -> 102 and shadows core libraries; the harness sets it for every child | OPEN (measured) |
+| 123 | EMACS_TEST_DIRECTORY shadows 5 core libraries, putting 324 measured outcomes (4.1%) at risk | OPEN (cost measured) |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
@@ -2245,3 +2245,47 @@ over time; a first attempt at that instrumentation did not survive batch mode.
      The fix is to reproduce GNU's load-path order rather than appending
      discovered directories, and to stop letting a harness variable alter
      library resolution at all.  OPEN.
+
+**123: the cost is no longer unmeasured, and it is large.**
+The entry said "how much it costs is unmeasured".  Swept `locate-library'
+over all 397 core library names under the harness environment, GNU against
+Emaxx: FIVE resolve to the wrong file, all of them shadowed by CEDET
+subdirectories.
+
+    chart    emacs-lisp/chart.elc    ->  cedet/semantic/chart.elc
+    comp     emacs-lisp/comp.elc     ->  cedet/semantic/wisent/comp.elc
+    debug    emacs-lisp/debug.elc    ->  cedet/semantic/debug.elc
+    generic  emacs-lisp/generic.elc  ->  cedet/ede/generic.elc
+    map      emacs-lisp/map.elc      ->  cedet/srecode/map.elc
+
+Requiring any of them FAILS in Emaxx under the harness environment and
+succeeds without it; all four tested succeed in GNU with the same environment:
+
+    (require 'map)      "Loading file map failed to provide feature `map'"
+    (require 'comp)     "Loading file comp failed to provide feature `comp'"
+    (require 'chart)    "Recursive `require' for feature `chart'"
+    (require 'generic)  "Loading file generic failed to provide feature ..."
+
+Five files in the frozen manifest require a shadowed library, and they are not
+small:
+
+    test/src/comp-tests.el              177 outcomes   (require 'comp)
+    test/lisp/emacs-lisp/map-tests.el    62             (require 'map)
+    test/lisp/json-tests.el              59             (require 'map)
+    test/src/json-tests.el               23             (require 'map)
+    test/lisp/emacs-lisp/comp-tests.el    3             (require 'comp)
+                                        ---
+                                        324 outcomes = 4.1% of 7,883
+
+The 177 are the ones finding 98 restored to the denominator two commits ago.
+They were re-included because the oracle runs them fine -- which it does -- but
+Emaxx cannot even load that file in the environment it is measured in.  So the
+denominator correction and this defect interact: the honest denominator grew,
+and a self-inflicted harness artifact is positioned to fail most of what was
+added.
+This makes 123 the highest-value open item by a wide margin.  It is not a
+scoring cheat -- nothing is counted that should not be -- but up to 324
+outcomes may be failing for a reason that has nothing to do with Emaxx's
+actual Lisp behaviour, and fixing it is honest work that could move the score
+substantially.  Whether all 324 actually fail is still unverified; that needs
+a frozen run, and this note should not be cited as if it were measured.
