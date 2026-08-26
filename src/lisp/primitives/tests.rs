@@ -14498,6 +14498,44 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
     assert_eq!(format!("{pieces}"), "\"2|All|*scratch*\"");
 }
 
+#[test]
+fn mode_line_line_number_is_relative_to_the_accessible_region() {
+    let mut interp = crate::batch::initialize_interactive_interpreter()
+        .expect("interactive interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("one\ntwo\nthree\n".into())],
+        &mut env,
+    )
+    .expect("insert narrowed mode-line sample");
+    let point_max = interp.buffer.point_max();
+    call(
+        &mut interp,
+        "narrow-to-region",
+        &[Value::Integer(5), Value::Integer(point_max as i64)],
+        &mut env,
+    )
+    .expect("narrow to the second line");
+    call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env)
+        .expect("move to accessible start");
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: point_max,
+    }));
+    let line = call(
+        &mut interp,
+        "format-mode-line",
+        &[Value::String("%l".into())],
+        &mut env,
+    )
+    .expect("render narrowed line number");
+    set_interactive_window_metrics(None);
+    assert_eq!(line, Value::String("1".into()));
+}
+
 // ── Scroll, recenter, and mode-line contracts (round: paging + mode line) ──
 
 /// Evaluate PROGRAM in an initialized emaxx interpreter and return the

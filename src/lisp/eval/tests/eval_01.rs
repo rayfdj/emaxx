@@ -6165,6 +6165,56 @@ fn window_face_spans_layer_text_properties_region_and_overlays() {
 }
 
 #[test]
+fn window_face_spans_resolve_faces_inherited_from_text_categories() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"button text\")
+           (put 'sample-button-category 'face 'link)
+           (put-text-property 1 7 'category 'sample-button-category))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    let spans =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 12, true);
+    assert_eq!(
+        spans,
+        vec![(1, 7, Value::Symbol("link".into()))],
+        "redisplay inherits the face from a text button's category plist"
+    );
+}
+
+#[test]
+fn header_line_glass_honors_propertized_align_to_columns() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (list-buffers)
+           (set-window-buffer (selected-window) \"*Buffer List*\"))",
+    );
+    let mut env: Env = Vec::new();
+    let window_id = interp.selected_window_id();
+    let text = crate::lisp::primitives::render_window_header_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        crate::lisp::primitives::InteractiveWindowMetrics {
+            text_height: 10,
+            window_end: 1,
+        },
+    )
+    .expect("Buffer Menu header renders")
+    .0;
+    assert!(
+        text.starts_with("CRM Buffer                 Size Mode             File"),
+        "tabulated-list display properties align the header, got {text:?}"
+    );
+}
+
+#[test]
 fn propertized_messages_carry_face_spans_to_the_echo_area() {
     let mut interp = Interpreter::new();
     eval_str_with(

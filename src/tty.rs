@@ -69,6 +69,19 @@ struct WindowView {
     /// window model; a differing value there means a command (recenter,
     /// scroll) moved the window and the frontend adopts it.
     synced_start: usize,
+    /// Redisplay state from the preceding frame.  GNU can leave point-based
+    /// mode-line constructs on their preceding value after point moves inside
+    /// invisible text, until the next input invalidates that incremental
+    /// display state.  These fields identify that narrow transition without
+    /// caching unrelated mode-line state.
+    last_buffer_id: Option<u64>,
+    last_point: Option<usize>,
+    last_cursor: Option<(usize, usize)>,
+    last_top_pos: Option<usize>,
+    last_chars_modiff: Option<crate::buffer::ModCount>,
+    /// The point GNU's incremental mode-line matrix keeps displaying until
+    /// the next input event after a folded same-row motion.
+    deferred_mode_line_point: Option<usize>,
 }
 
 /// The terminal's color capability, GNU's terminfo Co# in miniature:
@@ -212,12 +225,19 @@ impl TtyState {
             painted_message_tick: 0,
         }
     }
+
+    fn note_input(&mut self) {
+        for view in self.views.values_mut() {
+            view.deferred_mode_line_point = None;
+        }
+    }
 }
 
 pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     let mut interpreter = batch::initialize_interactive_interpreter()?;
     let mut env: Env = Vec::new();
     interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+    initialize_session_buffers(&mut interpreter, &mut env)?;
     if let Some(path) = initial_file {
         let path = path.display().to_string();
         let find_file = call(
@@ -273,8 +293,18 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
             draw_echo_row(&state);
             match queue.try_next_event() {
                 Err(()) => None,
-                Ok(Some(QueuedInput::Mouse(_))) => Some(None),
-                Ok(Some(QueuedInput::Lisp(event))) => Some(Some(event)),
+                Ok(Some(QueuedInput::Mouse(_))) => {
+                    if let Ok(mut state) = state.try_borrow_mut() {
+                        state.note_input();
+                    }
+                    Some(None)
+                }
+                Ok(Some(QueuedInput::Lisp(event))) => {
+                    if let Ok(mut state) = state.try_borrow_mut() {
+                        state.note_input();
+                    }
+                    Some(Some(event))
+                }
                 Ok(None) => {
                     let _ = event::poll(std::time::Duration::from_millis(50));
                     Some(None)
@@ -312,21 +342,27 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     // startup.el's display-startup-echo-area-message: the startup hint
     // sits in the echo area until the first command replaces it (F10's
     // menu leaves it visible, as GNU does).
-    if let Ok(message) = interpreter.call_function_value(
-        Value::Symbol("substitute-command-keys".into()),
-        None,
-        &[Value::String(
-            "For information about GNU Emacs and the GNU system, type \\[about-emacs].".into(),
-        )],
+    let message = interpreter
+        .call_function_value(
+            Value::Symbol("substitute-command-keys".into()),
+            None,
+            &[Value::String(
+                "For information about GNU Emacs and the GNU system, type \\[about-emacs].".into(),
+            )],
+            &mut env,
+        )
+        .map_err(|error| format!("build startup echo message: {error}"))?;
+    // `message' both paints the propertized key binding and appends the
+    // startup hint to *Messages*.  Calling the GNU Lisp owner matters:
+    // directly setting the echo row left Buffer Menu with a reconstruction
+    // diagnostic in a Fundamental-mode *Messages* buffer instead.
+    call(
+        &mut interpreter,
         &mut env,
-    ) && let Ok(text) = crate::lisp::primitives::string_text(&message)
-    {
-        // The substituted key carries help-key-binding face (help.el's
-        // substitute-command-keys propertizes it); the echo row paints
-        // the span like GNU's startup echo.
-        let spans = crate::lisp::primitives::string_face_spans(&message);
-        crate::lisp::primitives::set_echo_area_message_with_spans(text, spans);
-    }
+        "message",
+        &[Value::String("%s".into()), message],
+    )
+    .map_err(|error| format!("publish startup echo message: {error}"))?;
     let code = command_loop(&mut interpreter, &mut env, &queue, &state);
     crate::lisp::primitives::set_tty_frame_redraw(None);
     crate::lisp::primitives::set_tty_event_reader(None);
@@ -336,6 +372,37 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
     code
+}
+
+fn initialize_session_buffers(interpreter: &mut Interpreter, env: &mut Env) -> Result<(), String> {
+    // startup.el's normal-top-level first turns the dump-created Messages
+    // buffer into its real major mode.  Emaxx's source reconstruction can
+    // emit load diagnostics that GNU's already-built dump never carries, so
+    // the live session begins from the same empty buffer before the startup
+    // echo is logged below.
+    //
+    // Later in command-line, GNU inserts `initial-scratch-message' into the
+    // still-empty *scratch* buffer even when a command-line file will become
+    // selected.  Buffer switching and Buffer Menu therefore see the normal
+    // four-line scratch buffer rather than an invented blank one.
+    let source = "(progn
+      (with-current-buffer \"*Messages*\"
+        (let ((inhibit-read-only t)) (erase-buffer))
+        (messages-buffer-mode))
+      (and initial-scratch-message
+           (get-buffer \"*scratch*\")
+           (with-current-buffer \"*scratch*\"
+             (when (zerop (buffer-size))
+               (insert (substitute-command-keys initial-scratch-message))
+               (set-buffer-modified-p nil)))))";
+    let form = crate::lisp::reader::Reader::new(source)
+        .read()
+        .map_err(|error| format!("read interactive startup buffer form: {error}"))?
+        .ok_or_else(|| "interactive startup buffer form is empty".to_string())?;
+    interpreter
+        .eval(&form, env)
+        .map_err(|error| format!("initialize interactive startup buffers: {error}"))?;
+    Ok(())
 }
 
 /// The session's single event stream, shared between the command loop and
@@ -459,6 +526,9 @@ fn make_event_reader(
                 break event;
             }
         };
+        if let Ok(mut state) = state.try_borrow_mut() {
+            state.note_input();
+        }
         if event == Value::Integer(7) {
             return None;
         }
@@ -789,6 +859,7 @@ fn command_loop(
         };
         // Input arrived: the idle period is over (timer_stop_idle).
         crate::lisp::primitives::tty_note_idle_end();
+        shared_state.borrow_mut().note_input();
         // Typed mouse input becomes GNU's click event now that the frame
         // state is in reach; motion and wheel produce nothing.
         let event = match event {
@@ -1459,13 +1530,16 @@ fn visual_line_at(
     let mut col = 0usize;
     let mut lines_spanned = 1usize;
     let mut ellipses: Vec<usize> = Vec::new();
+    let mut string_run: Option<String> = None;
     let mut pos = line_begin;
     while pos < end {
         if let Some((run_end, ellipsis)) = invisible_run_at(buffer, spec, pos) {
+            string_run = None;
             lines_spanned += buffer
                 .buffer_substring(pos, run_end)
                 .map(|hidden| hidden.matches('\n').count())
                 .unwrap_or(0);
+            let ellipsis_start = display_chars;
             if ellipsis {
                 ellipses.push(display_chars);
                 for _ in 0..3 {
@@ -1475,11 +1549,17 @@ fn visual_line_at(
                     col += 1;
                 }
             }
-            // Hidden positions land past the ellipsis: a face span over
-            // folded text collapses to nothing instead of painting the
-            // dots (GNU gives the ellipsis the preceding text's face).
-            for _ in pos..run_end {
-                map.push(display_chars);
+            // Point exactly at the start of the hidden run sits before the
+            // ellipsis; positions inside the hidden text land after it.
+            // This is visible after isearch stops at the end of a folded Org
+            // heading.  Face spans over the hidden interior still collapse
+            // past the dots (GNU gives the ellipsis the preceding face).
+            for hidden in pos..run_end {
+                map.push(if hidden == pos {
+                    ellipsis_start
+                } else {
+                    display_chars
+                });
             }
             pos = run_end;
             continue;
@@ -1491,10 +1571,32 @@ fn visual_line_at(
             break;
         }
         let offset = pos - line_begin;
+        let display = has_display_prop
+            .then(|| buffer.text_property_at(pos, "display"))
+            .flatten();
+        let replacement = display
+            .as_ref()
+            .and_then(|value| crate::lisp::primitives::string_text(value).ok());
+        if let Some(replacement) = replacement {
+            map.push(display_chars);
+            let same_run = string_run
+                .as_deref()
+                .is_some_and(|previous| previous == replacement);
+            if !same_run {
+                for character in replacement.chars() {
+                    text.push(character);
+                    raw_of_display.push(offset);
+                    display_chars += 1;
+                    col += if character == '\t' { 8 - (col % 8) } else { 1 };
+                }
+            }
+            string_run = Some(replacement);
+            pos += 1;
+            continue;
+        }
+        string_run = None;
         let align_target = if has_display_prop {
-            buffer
-                .text_property_at(pos, "display")
-                .and_then(|value| space_align_to_target(&value))
+            display.and_then(|value| space_align_to_target(&value))
         } else {
             None
         };
@@ -1559,13 +1661,14 @@ fn displayed_line_with_map(
     for (offset, ch) in raw.chars().enumerate() {
         map.push(expanded_chars);
         let display = buffer.text_property_at(line_begin + offset, "display");
-        let replacement = match display {
-            Some(Value::String(ref text)) => Some(text.to_string()),
-            Some(Value::StringObject(ref state)) => {
-                Some(std::cell::RefCell::borrow(state).text.clone())
-            }
-            _ => None,
-        };
+        // Lisp often builds the replacement with `concat' or
+        // `substitute-command-keys', so it can itself be a propertized
+        // string represented by a vector-literal value.  It is still a
+        // string for display purposes; matching only the two direct Rust
+        // string variants dropped Dired's free-space suffix.
+        let replacement = display
+            .as_ref()
+            .and_then(|value| crate::lisp::primitives::string_text(value).ok());
         if let Some(replacement) = replacement {
             changed = true;
             let same_run = string_run
@@ -1817,6 +1920,36 @@ fn plan_window_text(
         top_pos,
         window_end,
         cursor: selected.then_some((point_row, cursor_col)),
+    }
+}
+
+/// Point to use while rendering this frame's mode/header line.
+///
+/// GNU's redisplay matrix keeps the previous point-dependent mode-line cells
+/// after motion within one folded display row, until a subsequent input event
+/// invalidates that state.  Preserve only the point argument, and only when
+/// buffer text, cursor row, and window start are unchanged; every other
+/// mode-line input is still evaluated from current state.
+#[allow(clippy::too_many_arguments)]
+fn mode_line_display_point(
+    previous: WindowView,
+    buffer_id: u64,
+    point: usize,
+    cursor: Option<(usize, usize)>,
+    top_pos: usize,
+    chars_modiff: crate::buffer::ModCount,
+    invisibility_active: bool,
+) -> usize {
+    if invisibility_active
+        && previous.last_buffer_id == Some(buffer_id)
+        && previous.last_point.is_some_and(|old| old != point)
+        && previous.last_cursor.map(|(row, _)| row) == cursor.map(|(row, _)| row)
+        && previous.last_top_pos == Some(top_pos)
+        && previous.last_chars_modiff == Some(chars_modiff)
+    {
+        previous.last_point.unwrap_or(point)
+    } else {
+        point
     }
 }
 
@@ -2206,7 +2339,7 @@ fn redraw_with_echo_policy(
         };
         let has_header_line = interpreter
             .buffer_local_value(info.buffer_id, "header-line-format")
-            .or_else(|| interpreter.lookup_var("header-line-format", env))
+            .or_else(|| interpreter.default_value("header-line-format"))
             .is_some_and(|format| format.is_truthy());
         let header_rows = usize::from(has_header_line && info.height > 2);
         let text_top = info.top + header_rows;
@@ -2241,7 +2374,12 @@ fn redraw_with_echo_policy(
                 .map(|view| view.top_line)
                 .unwrap_or(0),
         );
-        let (geometry, plan) = loop {
+        let previous_view = state
+            .views
+            .get(&info.window_id)
+            .copied()
+            .unwrap_or_default();
+        let (geometry, plan, invisibility_active, chars_modiff) = loop {
             let geometry = window_render_geometry(interpreter, env, info, body_width, cols, lnum);
             let view = state.views.entry(info.window_id).or_default();
             let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
@@ -2267,10 +2405,31 @@ fn redraw_with_echo_policy(
             let top_line = view.top_line;
             let settled = lnum_for(interpreter, top_line);
             if settled.map(|layout| layout.cols) == lnum.map(|layout| layout.cols) {
-                break (geometry, plan);
+                break (
+                    geometry,
+                    plan,
+                    invisibility.active,
+                    buffer.chars_modified_tick(),
+                );
             }
             lnum = settled;
         };
+        let newly_deferred_point = mode_line_display_point(
+            previous_view,
+            info.buffer_id,
+            info.point,
+            plan.cursor,
+            plan.top_pos,
+            chars_modiff,
+            invisibility_active,
+        );
+        let existing_deferred_point = previous_view.deferred_mode_line_point.filter(|_| {
+            invisibility_active
+                && previous_view.last_buffer_id == Some(info.buffer_id)
+                && previous_view.last_top_pos == Some(plan.top_pos)
+                && previous_view.last_chars_modiff == Some(chars_modiff)
+        });
+        let mode_line_point = existing_deferred_point.unwrap_or(newly_deferred_point);
         // The pre-pass fontified a cell-count estimate of the window;
         // the plan knows the real end, which invisible text (org's
         // folds) can push thousands of characters past the estimate.
@@ -2451,9 +2610,19 @@ fn redraw_with_echo_policy(
             state.views.entry(info.window_id).or_default().synced_start = plan.top_pos;
             selected_sync = Some((plan.top_pos, metrics));
         }
+        {
+            let view = state.views.entry(info.window_id).or_default();
+            view.last_buffer_id = Some(info.buffer_id);
+            view.last_point = Some(info.point);
+            view.last_cursor = plan.cursor;
+            view.last_top_pos = Some(plan.top_pos);
+            view.last_chars_modiff = Some(chars_modiff);
+            view.deferred_mode_line_point =
+                (mode_line_point != info.point).then_some(mode_line_point);
+        }
         mode_line_jobs.push(ModeLineJob {
             window_id: info.window_id,
-            point: info.point,
+            point: mode_line_point,
             row: info.top + info.height - 1,
             left: info.left,
             body_width,
@@ -2462,7 +2631,7 @@ fn redraw_with_echo_policy(
         if header_rows > 0 {
             header_line_jobs.push(ModeLineJob {
                 window_id: info.window_id,
-                point: info.point,
+                point: mode_line_point,
                 row: info.top,
                 left: info.left,
                 body_width,
@@ -3453,6 +3622,58 @@ mod tests {
     }
 
     #[test]
+    fn invisible_same_row_motion_defers_mode_line_point_until_input() {
+        let previous = WindowView {
+            last_buffer_id: Some(7),
+            last_point: Some(11),
+            last_cursor: Some((3, 4)),
+            last_top_pos: Some(1),
+            last_chars_modiff: Some(9),
+            ..WindowView::default()
+        };
+        assert_eq!(
+            mode_line_display_point(previous, 7, 30, Some((3, 12)), 1, 9, true),
+            11,
+            "same-row invisible motion keeps the preceding point"
+        );
+        assert_eq!(
+            mode_line_display_point(previous, 7, 30, Some((3, 4)), 1, 9, false),
+            30,
+            "ordinary visible motion renders the live point"
+        );
+        assert_eq!(
+            mode_line_display_point(previous, 7, 30, Some((3, 4)), 1, 10, true),
+            30,
+            "a text change must refresh the mode line"
+        );
+
+        let next = WindowView {
+            last_buffer_id: Some(7),
+            last_point: Some(30),
+            last_cursor: Some((3, 4)),
+            last_top_pos: Some(1),
+            last_chars_modiff: Some(9),
+            ..WindowView::default()
+        };
+        assert_eq!(
+            mode_line_display_point(next, 7, 30, Some((3, 4)), 1, 9, true),
+            30,
+            "without a stored deferral, an unchanged point renders live"
+        );
+
+        let mut state = TtyState::new();
+        state.views.insert(
+            2,
+            WindowView {
+                deferred_mode_line_point: Some(11),
+                ..WindowView::default()
+            },
+        );
+        state.note_input();
+        assert_eq!(state.views[&2].deferred_mode_line_point, None);
+    }
+
+    #[test]
     fn align_to_display_specs_lay_out_as_blank_columns() {
         let mut interp = Interpreter::new();
         let mut env: Env = Vec::new();
@@ -3476,6 +3697,107 @@ mod tests {
         // Raw offsets: a=0 b=1 space=2 tab=3 c=4 d=5 map onto the
         // laid-out string, with cd starting at column 10.
         assert_eq!(&map[..6], &[0, 1, 2, 3, 10, 11]);
+    }
+
+    #[test]
+    fn propertized_string_display_specs_replace_the_covered_text() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"x:y\n\")
+               (put-text-property
+                2 3 'display (propertize \": (166 GiB available)\" 'face 'bold)))",
+        )
+        .read()
+        .expect("read display replacement probe")
+        .expect("display replacement form exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate display replacement probe");
+        let (text, map) = displayed_line_with_map(&interp.buffer, 1);
+        assert_eq!(text, "x: (166 GiB available)y");
+        assert_eq!(
+            map.expect("replacement changes the display"),
+            vec![0, 1, 22, 23]
+        );
+        let visual = visual_line_at(
+            &interp.buffer,
+            &InvisibilitySpec {
+                active: true,
+                ..InvisibilitySpec::default()
+            },
+            1,
+        );
+        assert_eq!(
+            visual.text, "x: (166 GiB available)y",
+            "display replacement also applies on buffers with active invisibility"
+        );
+    }
+
+    #[test]
+    fn point_at_hidden_run_start_stays_before_the_ellipsis() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"head\nhidden\nnext\n\")
+               (put-text-property 5 13 'invisible 'fold))",
+        )
+        .read()
+        .expect("read folded line probe")
+        .expect("folded line form exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate folded line probe");
+        let visual = visual_line_at(
+            &interp.buffer,
+            &InvisibilitySpec {
+                entries: vec![(Value::Symbol("fold".into()), true)],
+                active: true,
+                ..InvisibilitySpec::default()
+            },
+            1,
+        );
+        assert_eq!(visual.text, "head...next");
+        assert_eq!(visual.map[4], 4, "run start maps before the ellipsis");
+        assert_eq!(visual.map[5], 7, "the hidden interior maps after it");
+    }
+
+    #[test]
+    fn interactive_startup_initializes_scratch_and_messages_buffers() {
+        let mut interp = crate::batch::initialize_interactive_interpreter()
+            .expect("interactive interpreter initializes");
+        let mut env: Env = Vec::new();
+        interp.set_variable("noninteractive", Value::Nil, &mut env);
+        initialize_session_buffers(&mut interp, &mut env)
+            .expect("interactive session buffers initialize");
+        let probe = crate::lisp::reader::Reader::new(
+            "(list
+               (with-current-buffer \"*scratch*\"
+                 (list major-mode (buffer-size) (buffer-modified-p)))
+               (with-current-buffer \"*Messages*\"
+                 (list major-mode (buffer-size))))",
+        )
+        .read()
+        .expect("read startup buffer probe")
+        .expect("startup buffer probe exists");
+        assert_eq!(
+            interp
+                .eval(&probe, &mut env)
+                .expect("run startup buffer probe"),
+            Value::list([
+                Value::list([
+                    Value::Symbol("lisp-interaction-mode".into()),
+                    Value::Integer(147),
+                    Value::Nil,
+                ]),
+                Value::list([
+                    Value::Symbol("messages-buffer-mode".into()),
+                    Value::Integer(0),
+                ]),
+            ])
+        );
     }
 
     #[test]
