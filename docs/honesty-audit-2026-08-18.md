@@ -83,6 +83,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | OPEN (measured) |
 | 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
 | 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
+| 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | OPEN (measured) |
 | 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
@@ -2052,3 +2053,30 @@ does intern, which is why the oracle probes agreed.
      honest fix is to run the walk only when the built-in reader produced the
      form.  Narrow -- it needs a custom read function AND a deliberately
      unintern'd symbol -- but real.  OPEN.
+
+121. **The obarray is thousands of symbols short, and finding 112 is a symptom
+     of it rather than a defect of its own.**
+     Chasing 112's remaining keyword gap led to the real shape of the problem.
+     Measured by dumping GNU's own symbol names and feeding them back as
+     RUNTIME STRINGS (a probe that lists them literally interns them by being
+     read, which is how an earlier measurement was contaminated):
+       - keywords: GNU 429, Emaxx 141, missing 288
+       - symbols with NO value, function or property cell: GNU 4,238,
+         Emaxx missing 2,340
+     A symbol reaches GNU's obarray merely by being MENTIONED in preloaded
+     Lisp -- `:key' comes from epg.el, `:host' from auth-source.el.  Emaxx's
+     startup does not put those names in its obarray, so roughly 4,400 symbols
+     GNU knows are absent.
+     `intern-soft' hides this for the common cases by inferring membership
+     from a value, function or property cell, which is why the suite never
+     noticed: symbols that MATTER usually have a cell.  It is exactly the
+     symbols with no cell -- names merely mentioned -- where the inference has
+     nothing to go on and the gap shows.  That is also why tightening the
+     keyword clause (see 112) collapsed: it removed the paper over a hole
+     without filling the hole.
+     This reframes 112.  Seeding a keyword list from the oracle would treat
+     the visible symptom and transcribe oracle data to do it.  The honest fix
+     is for Emaxx's preload to intern the names its Lisp mentions, the way
+     GNU's reader does -- computed, not copied.  Until then `intern-soft'
+     keeps its inference and 112 stays OPEN, now with the real cause attached.
+     OPEN.
