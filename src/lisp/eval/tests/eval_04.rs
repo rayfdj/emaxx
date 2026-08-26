@@ -5736,6 +5736,20 @@ fn where_is_first_prefers_a_short_character_binding() {
 }
 
 #[test]
+fn where_is_all_orders_character_bindings_before_symbolic_events() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(mapcar #'key-description
+                       (where-is-internal 'forward-word))"#,
+        ),
+        Value::list([
+            Value::String("M-f".into()),
+            Value::String("ESC <right>".into()),
+        ]),
+    );
+}
+
+#[test]
 fn batch_native_lisp_callables_preserve_help_arglists() {
     run_with_large_stack(|| {
         assert_eq!(

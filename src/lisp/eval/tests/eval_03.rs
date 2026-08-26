@@ -5992,6 +5992,28 @@ fn pos_visible_in_window_p_respects_window_height() {
 }
 
 #[test]
+fn pos_visible_in_window_p_uses_the_queried_split_window_height() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((other-buffer (get-buffer-create "*visibility-other*"))
+                       (other-window
+                        (split-window-internal
+                         (selected-window) 12 nil 0.5)))
+                  (with-current-buffer other-buffer
+                    (dotimes (_ 20) (insert "line\n")))
+                  (set-window-buffer other-window other-buffer)
+                  (with-current-buffer other-buffer
+                    (list (< (window-body-height other-window) 20)
+                          (pos-visible-in-window-p
+                           (point-max) other-window t))))
+                "#
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn pos_visible_in_window_p_is_nil_when_noninteractive() {
     assert_eq!(
         eval_str(

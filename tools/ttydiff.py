@@ -10,7 +10,9 @@ grid, and compares the grids region by region:
   echo area   the final row
 
 The contract is identical buffer content, cursor row/column, scrolling,
-mode-line rendering, and echo-area rendering.
+mode-line rendering, and echo-area rendering.  Named ``Action`` entries are
+compared after every complete command; legacy byte chunks retain their
+historical final-screen-only behavior.
 
 Usage:
     tools/ttydiff.py EMAXX_BINARY GNU_BINARY GNU_LISP_DIR [SCENARIO...]
@@ -19,23 +21,31 @@ With no SCENARIO arguments all built-in scenarios run.  Otherwise each
 argument names one built-in scenario to run.  Exits nonzero on any screen
 divergence; missing binaries skip with exit 0 so unconfigured environments
 stay green.
+
+For reproducible generated journeys and delta-debugged failures, see
+``tools/ttydiff_explore.py``.
 """
 
 import codecs
 import json
 import os
 import pty
+import random
 import select
+import shutil
 import struct
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import fcntl
 import termios
 
 ROWS, COLS = 24, 80
+STARTUP_WAIT_SECONDS = 120.0
 FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
 # A directory whose listing both editors complete over: two names sharing
 # the ambiguous prefix the *Completions* scenarios TAB on.
@@ -48,6 +58,28 @@ FIELDNOTES_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fieldn
 # the terminal default.  Erased cells always carry DEFAULT_ATTR — only
 # explicitly painted cells hold face attributes, on both editors alike.
 DEFAULT_ATTR = (None, None, False, False, False)
+
+
+@dataclass(frozen=True)
+class Action:
+    """One complete user command in a differential editing journey.
+
+    Named actions make a checkpoint failure reproducible without treating
+    arbitrary bytes inside a multi-key command as stable UI states.  Legacy
+    scenarios may continue to use raw ``bytes`` chunks and are compared only
+    at their final screen.
+    """
+
+    name: str
+    keys: bytes
+    checkpoint: bool = True
+    settle: Optional[float] = None
+    quiet: Optional[float] = None
+
+
+def action(name, keys, *, checkpoint=True, settle=None, quiet=None):
+    """Short spelling for declarative scenario entries."""
+    return Action(name, keys, checkpoint, settle, quiet)
 
 
 class Vt100Screen:
@@ -343,19 +375,26 @@ class Session:
         self.pid, self.fd = pid, fd
         self.screen = Vt100Screen()
 
-    def drain(self, timeout, quiet=0.2):
-        deadline = time.time() + timeout
-        quiet_deadline = time.time() + quiet
+    def drain(self, timeout, quiet=0.2, minimum=0.0):
+        started = time.time()
+        deadline = started + timeout
+        quiet_deadline = started + quiet
+        not_before = started + minimum
         while True:
-            remaining = deadline - time.time()
-            quiet_remaining = quiet_deadline - time.time()
-            if remaining <= 0 or quiet_remaining <= 0:
+            now = time.time()
+            remaining = deadline - now
+            quiet_remaining = quiet_deadline - now
+            minimum_remaining = not_before - now
+            if remaining <= 0 or (quiet_remaining <= 0 and minimum_remaining <= 0):
                 return
-            ready, _, _ = select.select([self.fd], [], [], min(remaining, quiet_remaining))
+            wait = min(remaining, max(quiet_remaining, minimum_remaining))
+            ready, _, _ = select.select([self.fd], [], [], wait)
             if not ready:
-                # The requested quiet interval elapsed after the last chunk
-                # this call observed, so the redraw has had its settle time.
-                return
+                # A quiet interval is only stable after the editor has had a
+                # minimum command-dispatch window.  Without that lower bound,
+                # a busy GNU process can produce no bytes for 200 ms and be
+                # snapshotted before it has consumed the key at all.
+                continue
             try:
                 chunk = os.read(self.fd, 65536)
             except OSError:
@@ -385,9 +424,44 @@ class Session:
             self.screen.feed(chunk)
         self.drain(2.0)
 
-    def send(self, data, settle=1.0, quiet=0.2):
+    def wait_for_screen_text(self, text, timeout, minimum=0.5):
+        """Wait until startup has displayed the requested visited target.
+
+        Taking the alternate screen is earlier than completing command-line
+        file visitation.  In particular, a cold mode load can go quiet long
+        enough to look settled while startup still owns the command loop.
+        Do not send the first test command until the target is visibly live.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if any(text in line for line in self.screen.lines()):
+                self.drain(max(3.0, minimum), quiet=0.5, minimum=minimum)
+                return
+            ready, _, _ = select.select([self.fd], [], [], 0.25)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(self.fd, 65536)
+            except OSError as error:
+                raise RuntimeError(
+                    f"editor terminal closed before displaying {text!r}"
+                ) from error
+            if not chunk:
+                break
+            self.screen.feed(chunk)
+        visible = [line for line in self.screen.lines() if line]
+        raise RuntimeError(
+            f"editor did not display startup target {text!r}; "
+            f"visible screen: {visible!r}"
+        )
+
+    def send(self, data, settle=1.0, quiet=0.2, explicit_settle=False):
         os.write(self.fd, data)
-        self.drain(settle, quiet)
+        self.drain(
+            settle,
+            quiet,
+            minimum=command_dispatch_minimum(data, settle, explicit_settle),
+        )
 
     def close(self):
         try:
@@ -424,6 +498,21 @@ def terminal_environment(env_extra):
     return env
 
 
+def command_dispatch_minimum(data, settle, explicit_settle=False):
+    """Lower bound for consuming a complete terminal command.
+
+    Emaxx dispatches terminal events through its command loop one by one.
+    A long minibuffer expression can therefore finish painting its text and
+    go quiet before the trailing RET has executed.  Scale the readiness floor
+    with the event count, without exceeding the action's declared timeout.
+    An explicitly timed action declares that its entire settle window is a
+    required dispatch floor, rather than merely a maximum drain deadline.
+    """
+    if explicit_settle:
+        return settle
+    return min(settle, max(0.35, len(data) * 0.05))
+
+
 def gnu_no_window_setup(lisp_dir):
     """Normalize an NS-built GNU oracle to Emaxx's no-window-system model."""
     menu_bar = json.dumps(os.path.abspath(os.path.join(lisp_dir, "menu-bar.el")))
@@ -445,125 +534,193 @@ def find_mode_line(lines):
     return len(lines) - 2
 
 
+def screen_divergences(gnu_screen, emaxx_screen):
+    """Return all observable terminal differences between two snapshots."""
+    gnu_lines = gnu_screen.lines()
+    emaxx_lines = emaxx_screen.lines()
+    gnu_attrs = gnu_screen.attr_rows()
+    emaxx_attrs = emaxx_screen.attr_rows()
+
+    gnu_mode = find_mode_line(gnu_lines)
+    emaxx_mode = find_mode_line(emaxx_lines)
+    # Both editors show the default menu bar on row 0 and work a
+    # 21-row text window under it; every row -- menu captions and
+    # scroll positions included -- must agree exactly.
+    gnu_text = gnu_lines[0:gnu_mode]
+    emaxx_text = emaxx_lines[0:emaxx_mode]
+    length = max(len(gnu_text), len(emaxx_text))
+    gnu_text += [""] * (length - len(gnu_text))
+    emaxx_text += [""] * (length - len(emaxx_text))
+
+    divergences = []
+    for offset, (expected, actual) in enumerate(zip(gnu_text, emaxx_text)):
+        if expected != actual:
+            divergences.append((offset, expected, actual))
+        elif gnu_attrs[offset] != emaxx_attrs[offset]:
+            divergences.append(
+                (
+                    f"{offset} (attrs)",
+                    describe_attr_row(gnu_attrs[offset]),
+                    describe_attr_row(emaxx_attrs[offset]),
+                )
+            )
+    # The mode line is part of the contract: same characters, same
+    # padding, same percent/line indicators.
+    if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
+        divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
+    elif gnu_attrs[gnu_mode] != emaxx_attrs[emaxx_mode]:
+        divergences.append(
+            (
+                "mode-line (attrs)",
+                describe_attr_row(gnu_attrs[gnu_mode]),
+                describe_attr_row(emaxx_attrs[emaxx_mode]),
+            )
+        )
+    # So is the echo area: the same final message (or its absence).
+    if gnu_lines[-1] != emaxx_lines[-1]:
+        divergences.append(("echo", gnu_lines[-1], emaxx_lines[-1]))
+    elif gnu_attrs[-1] != emaxx_attrs[-1]:
+        divergences.append(
+            (
+                "echo (attrs)",
+                describe_attr_row(gnu_attrs[-1]),
+                describe_attr_row(emaxx_attrs[-1]),
+            )
+        )
+    # Cursor placement is observable terminal state too.  A screen can
+    # have identical cells while point, minibuffer input, or redisplay
+    # leaves the hardware cursor on a different row or column.
+    gnu_cursor = (gnu_screen.row, gnu_screen.col)
+    emaxx_cursor = (emaxx_screen.row, emaxx_screen.col)
+    if gnu_cursor != emaxx_cursor:
+        divergences.append(
+            (
+                "cursor",
+                f"{gnu_cursor} on {gnu_lines[gnu_cursor[0]]!r}",
+                f"{emaxx_cursor} on {emaxx_lines[emaxx_cursor[0]]!r}",
+            )
+        )
+    return divergences, length
+
+
+def report_comparison(label, gnu_screen, emaxx_screen):
+    """Compare and print one named checkpoint; return whether it matched."""
+    divergences, length = screen_divergences(gnu_screen, emaxx_screen)
+    if divergences:
+        print(f"DIVERGE [{label}]: {len(divergences)} terminal difference(s)")
+        for offset, expected, actual in divergences[:8]:
+            print(f"  row {offset}:")
+            print(f"    gnu  : {expected!r}")
+            print(f"    emaxx: {actual!r}")
+        return False
+    print(f"MATCH [{label}]: text area identical ({length} rows)")
+    return True
+
+
+def normalize_action(item, index):
+    """Accept old byte chunks alongside named checkpoint actions."""
+    if isinstance(item, Action):
+        return item
+    if not isinstance(item, bytes):
+        raise TypeError(f"action {index + 1} must be bytes or Action, got {type(item)!r}")
+    return Action(f"step-{index + 1}", item, checkpoint=False)
+
+
+def action_timing(scenario, index, final, command):
+    """Choose deterministic redraw quiescence for one command."""
+    if command.settle is not None or command.quiet is not None:
+        return command.settle or 1.0, command.quiet or 0.2
+    if scenario == "completions-pop-up" and final:
+        return 4.0, 2.5
+    if scenario == "completions-dismiss" and final:
+        return 3.0, 1.0
+    if scenario in {"grep-null", "grep-next-error"} and index >= 1:
+        # The grep child can have a quiet process-startup interval longer
+        # than the ordinary key-settle window.  Wait through its launch and
+        # later navigation so the sentinel's summary and parsed hits exist.
+        return 4.0, 2.5
+    if scenario.startswith("compile-") and index == 3:
+        # Command submission, process output, and the compilation sentinel
+        # are separate events.  Wait for the sentinel before the following
+        # C-l so it clears the same completed message in both editors.
+        return 4.0, 1.5
+    if scenario == "org-fold-motion" and final:
+        # A cold Org redisplay can pause after accepting the final
+        # self-insert but before painting it.  A 200 ms quiet window
+        # occasionally captured GNU's preceding C-n frame instead.
+        return 3.0, 1.0
+    if scenario == "mx-shell":
+        # Shell startup, the pty echo, command output, and the next prompt
+        # are separate process events.  Wait for the initial prompt before
+        # typing too, and do not let a gap between later events masquerade
+        # as a stable final screen.
+        return 4.0, 1.5
+    if not command.checkpoint and final:
+        # Legacy byte chunks compare only after their final chunk.  Give that
+        # final complete gesture a real dispatch floor so a busy editor cannot
+        # be snapshotted at an intermediate minibuffer or prefix-key screen.
+        return 3.0, 0.5
+    return 1.0, 0.2
+
+
 def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait):
     gnu = Session(gnu_argv, gnu_env)
     emaxx = Session(emaxx_argv, emaxx_env)
     try:
         gnu.wait_boot(boot_wait)
         emaxx.wait_boot(boot_wait)
+        # A target basename is rendered in the mode line only after startup
+        # has visited it and established its major mode.  A prefix survives
+        # mode-line truncation while remaining unique to this disposable
+        # scenario target.
+        gnu_target = gnu_argv[-1]
+        emaxx_target = emaxx_argv[-1]
+        gnu.wait_for_screen_text(
+            os.path.basename(gnu_target)[:16],
+            boot_wait,
+            minimum=2.0 if os.path.isdir(gnu_target) else 0.5,
+        )
+        emaxx.wait_for_screen_text(
+            os.path.basename(emaxx_target)[:16],
+            boot_wait,
+            minimum=2.0 if os.path.isdir(emaxx_target) else 0.5,
+        )
         # Keep multi-key gestures close together: mouse press/release pairs
         # must stay a click, and the second completion TAB must reach the
         # first TAB's `sit-for'.  Only the final action needs a long quiet
         # window: popup capture waits past minibuffer-message's two-second
         # transient, while dismissal waits for its post-RET frame redraw.
-        for index, chunk in enumerate(keys):
+        commands = [normalize_action(item, index) for index, item in enumerate(keys)]
+        final_label = scenario
+        for index, command in enumerate(commands):
             final = index + 1 == len(keys)
-            if scenario == "completions-pop-up" and final:
-                settle, quiet = 4.0, 2.5
-            elif scenario == "completions-dismiss" and final:
-                settle, quiet = 3.0, 1.0
-            elif scenario in {"grep-null", "grep-next-error"} and index >= 1:
-                # The grep child can have a quiet process-startup interval
-                # longer than the ordinary key-settle window.  Wait through
-                # its launch and later navigation so the sentinel's summary
-                # and parsed hits exist before they are compared or visited.
-                settle, quiet = 4.0, 2.5
-            elif scenario == "org-fold-motion" and final:
-                # A cold Org redisplay can pause after accepting the final
-                # self-insert but before painting it.  A 200 ms quiet window
-                # occasionally captured GNU's preceding C-n frame instead.
-                settle, quiet = 3.0, 1.0
-            elif scenario == "mx-shell":
-                # Shell startup, the pty echo, command output, and the next
-                # prompt are separate process events.  Wait for the initial
-                # prompt before typing too, and do not let a gap between
-                # later events masquerade as a stable final screen.
-                settle, quiet = 4.0, 1.5
-            else:
-                settle, quiet = 1.0, 0.2
-            gnu.send(chunk, settle=settle, quiet=quiet)
-            emaxx.send(chunk, settle=settle, quiet=quiet)
+            settle, quiet = action_timing(scenario, index, final, command)
+            explicit_settle = command.settle is not None or (
+                not command.checkpoint and final
+            )
+            gnu.send(
+                command.keys,
+                settle=settle,
+                quiet=quiet,
+                explicit_settle=explicit_settle,
+            )
+            emaxx.send(
+                command.keys,
+                settle=settle,
+                quiet=quiet,
+                explicit_settle=explicit_settle,
+            )
+            if command.checkpoint:
+                checkpoint_label = f"{scenario}::{index + 1}:{command.name}"
+                if final:
+                    # The final drain below is part of this command's
+                    # readiness contract; report it once, with its name.
+                    final_label = checkpoint_label
+                elif not report_comparison(checkpoint_label, gnu.screen, emaxx.screen):
+                    return False
         gnu.drain(1.0)
         emaxx.drain(1.0)
-
-        gnu_lines = gnu.screen.lines()
-        emaxx_lines = emaxx.screen.lines()
-        gnu_attrs = gnu.screen.attr_rows()
-        emaxx_attrs = emaxx.screen.attr_rows()
-
-        gnu_mode = find_mode_line(gnu_lines)
-        emaxx_mode = find_mode_line(emaxx_lines)
-        # Both editors show the default menu bar on row 0 and work a
-        # 21-row text window under it; every row — menu captions and
-        # scroll positions included — must agree exactly.
-        gnu_text = gnu_lines[0:gnu_mode]
-        emaxx_text = emaxx_lines[0:emaxx_mode]
-
-        # Faces are part of the contract: every cell's SGR attributes must
-        # agree, on text rows, mode lines, and the echo area alike.
-        compare_attrs = os.environ.get("EMAXX_TTYDIFF_TEXT_ONLY") is None
-
-        length = max(len(gnu_text), len(emaxx_text))
-        gnu_text += [""] * (length - len(gnu_text))
-        emaxx_text += [""] * (length - len(emaxx_text))
-        divergences = []
-        for offset, (expected, actual) in enumerate(zip(gnu_text, emaxx_text)):
-            if expected != actual:
-                divergences.append((offset, expected, actual))
-            elif compare_attrs and gnu_attrs[offset] != emaxx_attrs[offset]:
-                divergences.append(
-                    (
-                        f"{offset} (attrs)",
-                        describe_attr_row(gnu_attrs[offset]),
-                        describe_attr_row(emaxx_attrs[offset]),
-                    )
-                )
-        # The mode line is part of the contract: same characters, same
-        # padding, same percent/line indicators.
-        if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
-            divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
-        elif compare_attrs and gnu_attrs[gnu_mode] != emaxx_attrs[emaxx_mode]:
-            divergences.append(
-                (
-                    "mode-line (attrs)",
-                    describe_attr_row(gnu_attrs[gnu_mode]),
-                    describe_attr_row(emaxx_attrs[emaxx_mode]),
-                )
-            )
-        # So is the echo area: the same final message (or its absence).
-        if gnu_lines[-1] != emaxx_lines[-1]:
-            divergences.append(("echo", gnu_lines[-1], emaxx_lines[-1]))
-        elif compare_attrs and gnu_attrs[len(gnu_lines) - 1] != emaxx_attrs[len(emaxx_lines) - 1]:
-            divergences.append(
-                (
-                    "echo (attrs)",
-                    describe_attr_row(gnu_attrs[len(gnu_lines) - 1]),
-                    describe_attr_row(emaxx_attrs[len(emaxx_lines) - 1]),
-                )
-            )
-        # Cursor placement is observable terminal state too.  A screen can
-        # have identical cells while point, minibuffer input, or redisplay
-        # leaves the hardware cursor on a different row or column.
-        gnu_cursor = (gnu.screen.row, gnu.screen.col)
-        emaxx_cursor = (emaxx.screen.row, emaxx.screen.col)
-        if gnu_cursor != emaxx_cursor:
-            divergences.append(
-                (
-                    "cursor",
-                    f"{gnu_cursor} on {gnu_lines[gnu_cursor[0]]!r}",
-                    f"{emaxx_cursor} on {emaxx_lines[emaxx_cursor[0]]!r}",
-                )
-            )
-
-        if divergences:
-            print(f"DIVERGE [{scenario}]: {len(divergences)} text row(s) differ")
-            for offset, expected, actual in divergences[:8]:
-                print(f"  row {offset}:")
-                print(f"    gnu  : {expected!r}")
-                print(f"    emaxx: {actual!r}")
-            return False
-        print(f"MATCH [{scenario}]: text area identical ({length} rows)")
-        return True
+        return report_comparison(final_label, gnu.screen, emaxx.screen)
     finally:
         gnu.close()
         emaxx.close()
@@ -573,7 +730,7 @@ WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird lin
 
 SEARCH_SAMPLE = "alpha beta gamma\nbeta delta beta\ngamma alpha beta\nlast line here\n"
 
-# The checked-in real-usage Org fixture from round 33: #+STARTUP folding,
+# The checked-in real-usage Org fixture: #+STARTUP folding,
 # sections long enough that raw and display row counts disagree, tables,
 # source blocks, tagged headlines, and TODO/DONE faces.
 FOLD_SAMPLE = FIELDNOTES_FIXTURE_PATH.read_text(encoding="utf-8")
@@ -616,6 +773,58 @@ ELISP_SAMPLE = """;; A comment line for font-lock.
 (defvar demo-variable 42
   "Another doc string.")
 """
+
+CORE_EDIT_SAMPLE = """alpha beta gamma delta
+second line has several words
+third line is here
+
+This paragraph is deliberately long enough that filling it at the ordinary
+seventy-column boundary changes its visible shape in a deterministic way.
+
+last paragraph ends here
+"""
+
+# A conservative grammar for deterministic stateful exploration.  Every item
+# is one complete command, touches only the disposable scenario buffer, and
+# cannot launch a subprocess or visit an external path.  Repetition in this
+# tuple is intentional weighting toward the commands used most often during
+# ordinary editing.
+SAFE_EDIT_ACTIONS = (
+    ("forward-char", b"\x06"),
+    ("forward-char", b"\x06"),
+    ("backward-char", b"\x02"),
+    ("backward-char", b"\x02"),
+    ("next-line", b"\x0e"),
+    ("next-line", b"\x0e"),
+    ("previous-line", b"\x10"),
+    ("beginning-of-line", b"\x01"),
+    ("end-of-line", b"\x05"),
+    ("forward-word", b"\x1bf"),
+    ("backward-word", b"\x1bb"),
+    ("self-insert-x", b"x"),
+    ("self-insert-space", b" "),
+    ("delete-char", b"\x04"),
+    ("backward-delete-char", b"\x7f"),
+    ("open-line", b"\x0f"),
+    ("transpose-chars", b"\x14"),
+    ("kill-line", b"\x0b"),
+    ("yank", b"\x19"),
+    ("undo", b"\x1f"),
+    ("set-mark", b"\x00"),
+    ("exchange-point-and-mark", b"\x18\x18"),
+)
+
+SEEDED_SAFE_RUNS = ((17, 14), (2309, 18), (7595, 22))
+
+
+def seeded_safe_actions(seed, steps):
+    """Generate a reproducible weighted sequence of safe editor commands."""
+    generator = random.Random(seed)
+    commands = []
+    for index in range(steps):
+        name, keys = generator.choice(SAFE_EDIT_ACTIONS)
+        commands.append(action(f"{index + 1:02}-{name}", keys))
+    return commands
 
 SCENARIOS = [
     # (name, initial file contents, keystrokes[, file suffix])
@@ -1400,6 +1609,337 @@ SCENARIOS = [
     ("page-past-end-error-echo", "only\nthree\nlines\n", [b"\x16", b"\x16"]),
 ]
 
+# These journeys are deliberately command-shaped rather than end-state-only.
+# They put the highest-frequency editing vocabulary first and compare the
+# complete terminal after every command, so an early mismatch cannot be
+# hidden by a later redraw, undo, or cursor movement.
+CORE_FREQUENCY_SCENARIO_NAMES = (
+    "core-character-motion",
+    "core-word-motion",
+    "core-buffer-motion",
+    "core-word-editing",
+    "core-line-editing",
+    "core-transpose",
+    "core-case-editing",
+    "core-paragraph-editing",
+    "core-mark-kill-yank",
+    "core-prefix-and-undo",
+)
+
+SCENARIOS += [
+    (
+        "core-character-motion",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-char", b"\x06"),
+            action("forward-char-again", b"\x06"),
+            action("backward-char", b"\x02"),
+            action("end-of-line", b"\x05"),
+            action("beginning-of-line", b"\x01"),
+            action("next-line", b"\x0e"),
+            action("previous-line", b"\x10"),
+        ],
+    ),
+    (
+        "core-word-motion",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-word", b"\x1bf"),
+            action("forward-word-again", b"\x1bf"),
+            action("backward-word", b"\x1bb"),
+            action("forward-sentence", b"\x1be"),
+            action("backward-sentence", b"\x1ba"),
+        ],
+    ),
+    (
+        "core-buffer-motion",
+        CORE_EDIT_SAMPLE,
+        [
+            action("end-of-buffer", b"\x1b>"),
+            action("backward-paragraph", b"\x1b{"),
+            action("forward-paragraph", b"\x1b}"),
+            action("beginning-of-buffer", b"\x1b<"),
+        ],
+    ),
+    (
+        "core-word-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-word", b"\x1bf"),
+            action("kill-word", b"\x1bd"),
+            action("backward-kill-word", b"\x1b\x7f"),
+            action("yank", b"\x19"),
+        ],
+    ),
+    (
+        "core-line-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("end-of-line", b"\x05"),
+            action("open-line", b"\x0f"),
+            action("self-insert", b"inserted"),
+            action("kill-line", b"\x0b"),
+            action("yank", b"\x19"),
+            action("join-line", b"\x1b^"),
+        ],
+    ),
+    (
+        "core-transpose",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-char", b"\x06"),
+            action("transpose-chars", b"\x14"),
+            action("forward-word", b"\x1bf"),
+            action("transpose-words", b"\x1bt"),
+        ],
+    ),
+    (
+        "core-case-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("upcase-word", b"\x1bu"),
+            action("downcase-word", b"\x1bl"),
+            action("capitalize-word", b"\x1bc"),
+        ],
+    ),
+    (
+        "core-paragraph-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-paragraph", b"\x1b}"),
+            action("forward-paragraph-again", b"\x1b}"),
+            action("fill-paragraph", b"\x1bq", settle=2.0, quiet=0.5),
+            action("backward-paragraph", b"\x1b{"),
+        ],
+    ),
+    (
+        "core-mark-kill-yank",
+        CORE_EDIT_SAMPLE,
+        [
+            action("set-mark", b"\x00"),
+            action("next-line", b"\x0e"),
+            action("end-of-line", b"\x05"),
+            action("kill-region", b"\x17"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank", b"\x19"),
+            action("exchange-point-mark", b"\x18\x18"),
+        ],
+    ),
+    (
+        "core-prefix-and-undo",
+        CORE_EDIT_SAMPLE,
+        [
+            action("universal-forward", b"\x154\x06"),
+            action("negative-forward", b"\x1b-2\x06"),
+            action("insert-run", b"xyz"),
+            action("undo", b"\x1f"),
+            action("undo-via-c-x-u", b"\x18u"),
+        ],
+    ),
+]
+
+HELP_FILE_DIRED_SCENARIO_NAMES = (
+    "help-key-then-quit",
+    "help-function-then-quit",
+    "file-save-buffer",
+    "buffer-switch-scratch",
+    "buffer-list",
+    "dired-motion-mark-sort",
+    "dired-open-and-return",
+)
+
+SCENARIOS += [
+    (
+        "help-key-then-quit",
+        CORE_EDIT_SAMPLE,
+        [
+            action("describe-forward-char-key", b"\x08k\x06", settle=2.0, quiet=0.5),
+            action("quit-help", b"q"),
+        ],
+    ),
+    (
+        "help-function-then-quit",
+        CORE_EDIT_SAMPLE,
+        [
+            action(
+                "describe-forward-word",
+                b"\x08fforward-word\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("quit-help", b"q"),
+        ],
+    ),
+    (
+        "file-save-buffer",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"saved "),
+            # The isolated files share a basename but not a parent directory,
+            # and GNU's transient `Wrote ...' echo includes that parent.  Defer
+            # only that path-bearing frame; the next strict checkpoint checks
+            # the post-save buffer, mode-line modified flag, echo, and cursor.
+            action(
+                "save-buffer",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-save-message", b"\x06"),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "buffer-switch-scratch",
+        CORE_EDIT_SAMPLE,
+        [
+            action("switch-to-scratch", b"\x18b*scratch*\r"),
+            action("insert-in-scratch", b"scratch text"),
+            action("switch-back", b"\x18b\r"),
+        ],
+    ),
+    (
+        "buffer-list",
+        CORE_EDIT_SAMPLE,
+        [
+            action("list-buffers", b"\x18\x02", settle=2.0, quiet=0.5),
+            action("other-window", b"\x18o"),
+            action("next-buffer-row", b"\x0e"),
+        ],
+    ),
+    (
+        "dired-motion-mark-sort",
+        "",
+        [
+            action(
+                "stable-listing",
+                b'\x1b:(dired-sort-other "-Al")\r',
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("next-line", b"n"),
+            action("previous-line", b"p"),
+            action("mark", b"m"),
+            action("unmark", b"u"),
+            action("toggle-sort", b"s", settle=2.0, quiet=0.5),
+            action("revert", b"g", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"target": "directory"},
+    ),
+    (
+        "dired-open-and-return",
+        "",
+        [
+            action(
+                "stable-listing",
+                b'\x1b:(dired-sort-other "-Al")\r',
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("next-line", b"n"),
+            action("open-entry", b"\r", settle=2.0, quiet=0.5),
+            action("return-to-dired", b"\x18b\r", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"target": "directory"},
+    ),
+]
+
+FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
+    "org-fieldnotes-todo-cycle",
+    "org-fieldnotes-priority",
+    "org-fieldnotes-table-motion",
+    "org-fieldnotes-heading-insert",
+    "org-fieldnotes-narrow-widen",
+    "org-fieldnotes-heading-motion",
+)
+
+SCENARIOS += [
+    (
+        "org-fieldnotes-todo-cycle",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-workshop-heading", b"\x13Rebuild the workshop\r"),
+            action("cycle-todo", b"\x03\x14", settle=2.0, quiet=0.5),
+            action("cycle-todo-again", b"\x03\x14", settle=2.0, quiet=0.5),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-priority",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-rust-heading", b"\x13Learn enough Rust\r"),
+            action("set-priority-c", b"\x03,C", settle=2.0, quiet=0.5),
+            action("remove-priority", b"\x03, ", settle=2.0, quiet=0.5),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-table-motion",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-table-row", b"\x13Piranesi\r"),
+            action("next-table-field", b"\t"),
+            action("next-table-row", b"\r"),
+            action("previous-table-field", b"\x1b[Z"),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-heading-insert",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-heading", b"\x13Buy timber\r"),
+            action("new-heading", b"\x1b\r", settle=2.0, quiet=0.5),
+            action("heading-text", b"Order delivery"),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-narrow-widen",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-heading", b"\x13Learn enough Rust\r"),
+            action("narrow-to-subtree", b"\x18ns", settle=2.0, quiet=0.5),
+            action("end-of-buffer", b"\x1b>"),
+            action("widen", b"\x18nw", settle=2.0, quiet=0.5),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-heading-motion",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("next-visible-heading", b"\x03\x0e"),
+            action("next-visible-heading-again", b"\x03\x0e"),
+            action("previous-visible-heading", b"\x03\x10"),
+            action("forward-same-level", b"\x03\x06"),
+            action("backward-same-level", b"\x03\x02"),
+        ],
+        ".org",
+    ),
+]
+
+SEEDED_SAFE_SCENARIO_NAMES = tuple(f"seeded-safe-{seed}" for seed, _ in SEEDED_SAFE_RUNS)
+SCENARIOS += [
+    (
+        f"seeded-safe-{seed}",
+        CORE_EDIT_SAMPLE,
+        seeded_safe_actions(seed, steps),
+    )
+    for seed, steps in SEEDED_SAFE_RUNS
+]
+
 
 def select_scenarios(names):
     """Return all scenarios, or the named subset in command-line order."""
@@ -1413,6 +1953,62 @@ def select_scenarios(names):
             f"unknown scenario(s): {', '.join(unknown)}; available: {available}"
         )
     return [by_name[name] for name in names]
+
+
+def create_scenario_target(name, contents, suffix=".dat", options=None):
+    """Create the disposable file or directory visited by both editors."""
+    options = options or {}
+    if options.get("target") == "directory":
+        path = tempfile.mkdtemp(prefix=f"ttydiff-{name}-")
+        for filename, body in (
+            ("alpha.txt", "alpha file\nsecond line\n"),
+            ("beta.txt", "beta file\n"),
+            ("notes.org", "* Dired fixture\nbody\n"),
+        ):
+            with open(os.path.join(path, filename), "w") as out:
+                out.write(body)
+        os.mkdir(os.path.join(path, "subdir"))
+        return path
+
+    handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
+    with os.fdopen(handle, "w") as out:
+        out.write(contents)
+    return path
+
+
+def remove_scenario_target(path):
+    """Remove a target created by :func:`create_scenario_target`."""
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
+def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
+    """Return GNU/Emaxx targets plus the paths that own their cleanup.
+
+    Most read-only journeys intentionally share one target.  A journey that
+    writes its visited file needs isolated copies: otherwise GNU saves first
+    and Emaxx correctly detects an external modification.  The isolated files
+    keep the same basename so the screen contract remains exact.
+    """
+    options = options or {}
+    if not options.get("separate_targets"):
+        path = create_scenario_target(name, contents, suffix, options)
+        return (path, path), [path]
+
+    roots = [
+        tempfile.mkdtemp(prefix=f"ttydiff-{name}-gnu-"),
+        tempfile.mkdtemp(prefix=f"ttydiff-{name}-emaxx-"),
+    ]
+    basename = f"ttydiff-{name}{suffix}"
+    targets = []
+    for root in roots:
+        path = os.path.join(root, basename)
+        with open(path, "w") as out:
+            out.write(contents)
+        targets.append(path)
+    return tuple(targets), roots
 
 
 def main():
@@ -1460,22 +2056,27 @@ def main():
         # A scenario may carry a file suffix; `.el' engages lisp-mode and
         # font-lock through the ordinary auto-mode-alist path.
         suffix = entry[3] if len(entry) > 3 else ".dat"
-        handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
-        with os.fdopen(handle, "w") as out:
-            out.write(contents)
+        options = entry[4] if len(entry) > 4 else {}
+        (gnu_path, emaxx_path), cleanup_targets = create_scenario_target_pair(
+            name, contents, suffix, options
+        )
         try:
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, path],
-                [emaxx_binary, path],
+                [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, gnu_path],
+                [emaxx_binary, emaxx_path],
                 {},
                 {"EMACSLOADPATH": load_path},
-                boot_wait=20.0,
+                # Cold Lisp loading can exceed twenty seconds on a busy CI
+                # host.  This is only a readiness deadline: comparisons and
+                # per-command settle windows remain strict and unchanged.
+                boot_wait=STARTUP_WAIT_SECONDS,
             )
             failures += 0 if ok else 1
         finally:
-            os.unlink(path)
+            for target in cleanup_targets:
+                remove_scenario_target(target)
     if failures:
         print(f"FAIL: {failures} scenario(s) diverged")
         sys.exit(1)

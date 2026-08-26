@@ -3795,6 +3795,14 @@ pub(crate) fn where_is_internal(
             || (target_keymap_id.is_some() && keymap_record_id(interp, &value) == target_keymap_id)
     });
 
+    // keymap.c builds the candidate stream in "shortest to longest"
+    // order, with character-only sequences visited before symbolic-event
+    // entries in a keymap.  That ordering is observable in Help's binding
+    // prose (`M-f' before `ESC <right>'), not only in FIRSTONLY selection.
+    // Runtime keymaps keep sparse and character storage separately, so
+    // restore the same preference order after collecting both surfaces.
+    matches.sort_by_key(|parts| where_is_binding_rank(parts));
+
     let mut advertised_preferred = false;
     if remapped_command.is_none()
         && let Some(advertised) = interp
@@ -3806,10 +3814,6 @@ pub(crate) fn where_is_internal(
         let preferred = matches.remove(index);
         matches.insert(0, preferred);
         advertised_preferred = true;
-    }
-
-    if first_only && !advertised_preferred {
-        matches.sort_by_key(|parts| where_is_binding_rank(parts));
     }
 
     let preferred_modifier = preferred_modifier_name(interp, env);
