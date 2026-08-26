@@ -8610,14 +8610,24 @@ fn set_network_process_option_applies_the_option_or_refuses() {
                     (let ((elsewhere (obarray-make)))
                       (set-network-process-option
                        server (intern ":keepalive" elsewhere) t))
-                    (plist-get (process-contact server t) :keepalive))
+                    (plist-get (process-contact server t) :keepalive)
+                    ;; process.c:2954 `list2 (opt, val)' carries the CALLER's
+                    ;; symbol, so `eq' against it succeeds and `eq' against the
+                    ;; interned keyword fails.  Rebuilding the symbol in the
+                    ;; error data inverted both.
+                    (let* ((elsewhere (obarray-make))
+                           (key (intern ":bindtodevice" elsewhere)))
+                      (condition-case error
+                          (set-network-process-option server key "nosuchdev0")
+                        (file-error (list (eq (nth 3 error) key)
+                                          (eq (nth 3 error) :bindtodevice))))))
             (delete-process server)))"#;
     let expected = concat!(
         "(t t \"Unknown or unsupported option\" nil ",
         "wrong-number-of-arguments wrong-type-argument t t \"lo0\" ",
         "\"Bad option value for :bindtodevice\" ",
         "(file-error \"Cannot set network option\" \"Device not configured\" ",
-        ":bindtodevice \"nosuchdev0\") t t nil)"
+        ":bindtodevice \"nosuchdev0\") t t nil (t nil))"
     );
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
