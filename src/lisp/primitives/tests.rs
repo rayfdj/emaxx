@@ -37,7 +37,11 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
         "primitive-contract oracle failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected,
+        "oracle disagreed; program sent was:\n{program}"
+    );
 }
 
 fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, expected: &str) {

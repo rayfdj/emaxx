@@ -447,6 +447,22 @@ pub(crate) fn default_intern_soft_result(
         Value::Nil
     } else if matches!(symbol_name, "nil" | "t") {
         crate::lisp::types::interned_symbol_value(symbol_name.into())
+    // Treating every `:name' as interned is WRONG in one direction and right
+    // in another, and the right direction is the common one.  GNU's
+    // `intern-soft' is a pure `oblookup', so a keyword nobody has interned
+    // answers nil -- Emaxx answers the keyword, which is finding 112.
+    //
+    // But tightening this to a real membership test made things worse, not
+    // better, and the measurement is worth keeping: GNU's preloaded obarray
+    // holds 429 keywords, Emaxx's holds 141.  Requiring real membership
+    // answered nil for 288 of GNU's 429 -- `:key', `:buffer', `:error',
+    // `:host' and so on -- trading one rare false positive for 288 common
+    // false negatives.  The permissive clause is accidentally right for every
+    // keyword GNU actually preloads.
+    //
+    // The honest fix is to seed the missing keywords into the obarray first,
+    // then tighten this; finding 112 stays OPEN until then rather than being
+    // closed by a change that regresses the realistic population.
     } else if symbol_name.starts_with(':')
         || interp.lookup_var(symbol_name, env).is_some()
         || interp.lookup_function(symbol_name, env).is_ok()

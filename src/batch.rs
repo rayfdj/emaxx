@@ -140,6 +140,21 @@ pub fn run_batch_with_actions(
                     if extract_perf_request_from_form(&form).is_some() {
                         continue;
                     }
+                    // GNU's reader interns as it reads, so `--eval' leaves
+                    // every symbol in the form it evaluates in the obarray.
+                    // (Not every symbol in the STRING: startup.el:2669 reads
+                    // one form and silently discards any trailing ones, which
+                    // Emaxx's read_all loop does not -- a separate, older
+                    // divergence.)  Walking per form rather than all forms up
+                    // front is the faithful choice: an early form asking about
+                    // a symbol only a later form mentions answers nil in GNU
+                    // too.  The file
+                    // loader and `eval-region' replicate that with this walk
+                    // (lisp/mod.rs:947, loading.rs:401); `--eval' did not, so
+                    // `emacs --batch --eval "(progn 'foo (intern-soft \"foo\"))"'
+                    // answered nil where GNU answers foo -- for ordinary
+                    // symbols as well as keywords.
+                    interpreter.intern_symbols_in_value(&form);
                     match interpreter.eval(&form, &mut eval_env) {
                         Ok(_) => {}
                         Err(LispError::Terminate(termination)) => return Ok(termination.into()),

@@ -80,7 +80,9 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | OPEN |
 | 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | OPEN |
 | 111 | network-interface-info was a bare nil beside a real network-interface-list | FIXED (macOS) 2026-08-26 - real ioctls; still nil on other platforms |
-| 112 | intern-soft guesses interned-ness from value/function/plist cells | OPEN |
+| 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | OPEN (measured) |
+| 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
+| 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
 | 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
@@ -1971,3 +1973,82 @@ outside the scanned range so the answers match anyway, but the sweeping claim
 was untrue and is withdrawn.  Those six also lack `:dimension', so
 `(charset-chars 'ascii)' signals in Emaxx where GNU answers 128 -- recorded
 here rather than left for someone to rediscover.
+
+**112 STAYS OPEN.  An attempted fix was measured, found to be a NET
+REGRESSION, and reverted -- and the entry that announced it was wrong twice.**
+
+The finding said `intern-soft' "infers interned-ness from the value, function,
+builtin and plist cells where GNU performs a pure `oblookup'".  Across ten
+symbol shapes, nine already agreed: a never-mentioned name, a name appearing
+only inside a string, a read-quoted symbol, an explicit `intern', a `setq', a
+`defun', a `put', an uninterned symbol's name, and an `unintern' round trip.
+The inference is not arbitrary -- in GNU you cannot give a symbol a value,
+function or property without interning it first.  An auditor later reproduced
+that agreement across a further dozen shapes (plist-only, `makunbound',
+`fmakunbound', nil-valued `defvar', `defalias', `##', `::', NUL and non-ASCII
+names, 5000-character names, shorthands, symbols-with-position).
+
+Exactly one shape diverges: a KEYWORD is bound to itself without being
+interned, so the value-cell clause calls every conceivable keyword interned
+and `(intern-soft ":never-mentioned")' answers the keyword where GNU answers
+nil.
+
+I tightened keywords to a real membership test.  THAT WAS WRONG, and the
+number is the reason: GNU's preloaded obarray holds 429 keywords; Emaxx's
+holds 141 (an earlier draft of this entry said 146, which was not reproducible
+and did not even reconcile with the 288 below -- 429 - 141 = 288 does).  Feeding GNU's own 429 keyword names back as runtime strings,
+Emaxx answered nil for 288 of them -- `:key', `:buffer', `:error', `:host'
+and so on.  The permissive clause is accidentally RIGHT for every keyword GNU
+actually preloads; requiring real membership traded one rare false positive
+for 288 common false negatives.  Reverted.
+The honest fix is to seed the missing keywords into Emaxx's obarray first --
+generated from the oracle the way the arity tables are -- and only then
+tighten this clause.  Until that happens 112 stays OPEN with the divergence
+stated precisely: never-mentioned keywords, and only those.
+
+**Correction to the entry that claimed 112 was fixed.**  It also asserted that
+the failing test which prompted the change was "a TEST artifact" because
+"loading a file or evaluating `--eval' runs `intern_symbols_in_value' over the
+form afterwards".  The two citations given are the FILE LOADER and
+`eval-region'.  Neither is `--eval', and `--eval' did not run the walk at all,
+so that justification was false and the product was genuinely wrong on that
+path -- see finding 119.  The half of the claim that held is that `-l FILE'
+does intern, which is why the oracle probes agreed.
+
+119. `--eval' did not intern the symbols it read.  GNU's reader interns as it
+     reads, so `emacs --batch --eval "(progn 'foo (intern-soft \"foo\"))"'
+     answers foo; Emaxx answered nil, for ordinary symbols as much as
+     keywords, because `batch.rs' evaluated the reader's output without the
+     `intern_symbols_in_value' walk that lisp/mod.rs:947 and loading.rs:401
+     perform for files and `eval-region'.  `eval-buffer' with a custom
+     `load-read-function' (loading.rs:546) LOOKED like the same asymmetry and
+     was also given the walk -- which was wrong, and an audit caught it before
+     this landed.  GNU interns nothing extra when reading is delegated to
+     Lisp: the form's symbols are whatever that function produced.  Walking it
+     resurrected a deliberately `unintern'-ed symbol that GNU leaves dead,
+     regressing a case that had agreed.  That walk is reverted; only `--eval'
+     changed.  A CLI test pins the fix end to end through the real binary,
+     because the in-process harness (eval/tests.rs:61,85) already interns per
+     form and is exactly what masked this bug.
+     Disclosed: `intern_symbols_in_value' walks conses, symbols and string
+     properties but NOT record or hash-table payloads, so symbols inside
+     `#s(...)' are interned on no path at all -- pre-existing and unchanged
+     here, but now inherited by `--eval' along with the rest.
+     FIXED.  Found by an audit that was checking a different claim -- the one
+     corrected above -- which is the second time this session that a false
+     justification turned out to be concealing a real defect.
+
+120. `eval-region' with a custom `load-read-function' runs
+     `intern_symbols_in_value' over whatever that Lisp function returned
+     (loading.rs:401).  GNU does not: when reading is delegated, it interns
+     nothing beyond what the function itself interned.  A reader returning a
+     deliberately `unintern'-ed symbol therefore has that symbol resurrected
+     in Emaxx and left dead in GNU -- `(intern-soft "gone")' answers the
+     symbol here and nil there.
+     Found because I nearly copied it.  Fixing finding 119 I added the same
+     walk to the `eval-buffer' twin "for symmetry", which regressed a case
+     that had been agreeing; the audit caught it, that walk is reverted, and
+     the remaining instance is recorded here rather than propagated.  The
+     honest fix is to run the walk only when the built-in reader produced the
+     form.  Narrow -- it needs a custom read function AND a deliberately
+     unintern'd symbol -- but real.  OPEN.

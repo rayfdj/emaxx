@@ -324,3 +324,35 @@ fn batch_load_propagates_kill_emacs_instead_of_reporting_a_load_error() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn batch_eval_interns_the_symbols_it_reads_like_gnu() {
+    // GNU's reader interns as it reads, so anything `--eval' mentions is in
+    // the obarray afterwards.  Emaxx ran the interning walk for file loading
+    // and `eval-region' but NOT for `--eval', so
+    // `(progn 'foo (intern-soft "foo"))' answered nil where GNU answers foo --
+    // for ordinary symbols as well as keywords.
+    //
+    // Found by an audit while it was checking a DIFFERENT claim: an earlier
+    // ledger entry asserted that `--eval' already interned, and used that to
+    // dismiss a failing test as an artifact.  The assertion was false and the
+    // product was genuinely wrong on that path.
+    let program = r#"(prin1 (list (progn 'zz-cli-plain (intern-soft "zz-cli-plain"))
+                                  ;; NOT discriminating for this fix: the
+                                  ;; permissive keyword clause answers any
+                                  ;; `:name' regardless of the walk.  Kept as a
+                                  ;; finding-112 pin -- it will start meaning
+                                  ;; something once the obarray is seeded.
+                                  (progn ':zz-cli-kw (intern-soft ":zz-cli-kw"))
+                                  (intern-soft "zz-cli-never-mentioned")))"#;
+    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args(["--quick", "--batch", "--eval", program])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "emaxx --eval failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "(zz-cli-plain :zz-cli-kw nil)",
+        "--eval must intern what it reads, and must not invent what it never read"
+    );
+}
