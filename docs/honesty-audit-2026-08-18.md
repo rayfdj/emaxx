@@ -2153,3 +2153,31 @@ This strengthens the case that 117 is a genuine Emaxx defect rather than an
 upstream test needing a wait, since a pure test-side race would not care which
 evaluator is underneath.  Still OPEN, still not to be resolved by retrying
 until green.
+
+**117 DIAGNOSED (2026-08-27): a genuine Emaxx defect, not an upstream test
+needing a wait.  The open question is answered.**
+The entry left two possibilities open -- either GNU's test races and needs a
+deterministic wait, or Emaxx's background path finishes later than GNU's.
+Measured, running the single ERT test directly against each binary:
+
+    GNU oracle          12 pass / 0 fail
+    Emaxx (this tree)   ~4 pass / 4 fail, and 2/8 on the previous evaluator
+
+GNU does not race at all.  (A first attempt at this measurement reported GNU
+failing 10/10, which was my invocation: a relative path from the wrong
+directory, so the test file never loaded.  Worth recording because a 10/10
+failure looked like a dramatic result and was pure operator error.)
+The test is NOT missing a wait.  It calls `(eshell-wait-for-subprocess t)',
+and that helper (test/lisp/eshell/eshell-tests-helpers.el:106) waits until
+`eshell-process-list' is EMPTY.  So the defect is an ordering one: Emaxx lets
+a process leave `eshell-process-list' before its output has been delivered to
+the redirection target, and the buffer is then read as "hi\n" instead of
+"hi\nbye\n".  GNU flushes the output before the process is removed.
+The script is `*echo hi' followed by `if {[ foo = foo ]} {*echo bye}' -- two
+external commands, the second spawned from inside a conditional, which is
+probably why the second one is the one lost.
+That the rate MOVES when the evaluator changes (6/8 before finding 105's fix,
+4/8 after) is consistent with this: anything altering the timing of Lisp
+evaluation shifts the window, which a pure test-side race would not do.
+Still OPEN, now with a mechanism rather than a shrug, and still not to be
+resolved by retrying until green.
