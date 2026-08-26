@@ -2181,3 +2181,29 @@ That the rate MOVES when the evaluator changes (6/8 before finding 105's fix,
 evaluation shifts the window, which a pure test-side race would not do.
 Still OPEN, now with a mechanism rather than a shrug, and still not to be
 resolved by retrying until green.
+
+**117: one hypothesis tried and DISPROVED (2026-08-27).**
+The diagnosis above said Emaxx lets a process leave `eshell-process-list'
+before its output reaches the target, so the obvious fix was GNU's ordering:
+`status_notify' delivers whatever is readable BEFORE running the sentinel,
+while `pump_external_process_output' drained only the processes that were live
+when it snapshotted them, then ran sentinels.  A process exiting between its
+own poll and the sentinel loop would therefore be reported finished with
+output still in the pipe.
+That reasoning is sound and the fix was implemented -- poll and deliver
+immediately before each sentinel.  It did NOT help: twelve runs gave 4 pass /
+8 fail against 4/4 before, i.e. no improvement and possibly worse.  The change
+was REVERTED rather than kept as a plausible-sounding improvement that fixes
+nothing; unverified complexity is how a codebase acquires the sort of thing
+this ledger records.
+What that rules out: the loss is not simply unread pipe bytes at sentinel
+time.
+Next hypothesis, untested: the wait may return during a GAP.
+`eshell-wait-for-subprocess t' waits for `eshell-process-list' to become
+EMPTY, and the script runs two external commands in sequence -- `*echo hi',
+then `*echo bye' from inside an `if' body.  If Emaxx removes the first process
+before spawning the second, the list is momentarily empty, the wait returns,
+and the buffer is read before "bye" is ever written.  That would explain why
+the missing text is always the SECOND command's, and why flushing at sentinel
+time changes nothing.  Testing it needs a way to observe `eshell-process-list'
+over time; a first attempt at that instrumentation did not survive batch mode.
