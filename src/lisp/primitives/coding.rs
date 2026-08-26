@@ -460,7 +460,12 @@ pub(crate) fn aset_vector_value(
                 current = cdr.borrow().clone();
             }
             Value::Nil => return Err(LispError::Signal("Args out of range".into())),
-            _ => return Err(LispError::WrongTypeArgument("arrayp".into(), target.clone())),
+            _ => {
+                return Err(LispError::WrongTypeArgument(
+                    "arrayp".into(),
+                    target.clone(),
+                ));
+            }
         }
     }
 }
@@ -1296,7 +1301,6 @@ pub(crate) fn string_identity_for_coding(
     }
     true
 }
-
 
 pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
     let actual_eol = detect_eol_type(bytes);

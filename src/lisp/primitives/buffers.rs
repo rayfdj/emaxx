@@ -118,23 +118,18 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
         // GNU would represent the same numeric value as a fixnum.  Accept it
         // only when it fits the ordinary signed position domain; a genuine
         // out-of-range bignum retains GNU's integer-or-marker-p error.
-        Value::BigInteger(pos) => pos
-            .to_i64()
-            .map(|pos| pos.max(0) as usize)
-            .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())),
-        Value::Marker(id) => interp
-            .marker_position(*id)
-            .ok_or_else(|| LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())),
-        _ => Err(LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())),
+        Value::BigInteger(pos) => pos.to_i64().map(|pos| pos.max(0) as usize).ok_or_else(|| {
+            LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())
+        }),
+        Value::Marker(id) => interp.marker_position(*id).ok_or_else(|| {
+            LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone())
+        }),
+        _ => Err(LispError::WrongTypeArgument(
+            "integer-or-marker-p".into(),
+            value.clone(),
+        )),
     }
 }
-
-
-
-
-
-
-
 
 pub(crate) fn translate_region_with_table(
     interp: &mut Interpreter,
@@ -270,7 +265,10 @@ fn translation_sequence_match(value: &Value, source: &[u32]) -> Option<(usize, V
 pub(crate) fn marker_id_from_value(value: &Value) -> Result<u64, LispError> {
     match value {
         Value::Marker(id) => Ok(*id),
-        _ => Err(LispError::WrongTypeArgument("markerp".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "markerp".into(),
+            value.clone(),
+        )),
     }
 }
 
@@ -383,7 +381,10 @@ pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -
 
 pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispError> {
     let Some(root) = vector_root_slot(value) else {
-        return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "vectorp".into(),
+            value.clone(),
+        ));
     };
     let key = root.cell_id();
     if let Some(slots) = VECTOR_SLOT_CACHE.with_borrow_mut(|cache| match cache.get(&key) {
@@ -400,7 +401,10 @@ pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispE
     }
 
     let Some((_, cdr)) = (value).cons_cells() else {
-        return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "vectorp".into(),
+            value.clone(),
+        ));
     };
     let mut current = cdr.borrow().clone();
     let mut slots = Vec::new();
@@ -411,7 +415,12 @@ pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispE
                 current = cell.cdr.borrow().clone();
             }
             Value::Nil => break,
-            _ => return Err(LispError::WrongTypeArgument("vectorp".into(), value.clone())),
+            _ => {
+                return Err(LispError::WrongTypeArgument(
+                    "vectorp".into(),
+                    value.clone(),
+                ));
+            }
         }
     }
 
@@ -440,13 +449,19 @@ pub(crate) fn bool_vector_values(
     value: &Value,
 ) -> Result<Vec<Value>, LispError> {
     let Value::Record(id) = value else {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "bool-vector-p".into(),
+            value.clone(),
+        ));
     };
     let record = interp
         .find_record(*id)
         .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()))?;
     if record.kind != crate::lisp::eval::RecordKind::BoolVector {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "bool-vector-p".into(),
+            value.clone(),
+        ));
     }
     Ok(record.slots.clone())
 }
@@ -484,13 +499,19 @@ pub(crate) fn set_bool_vector_bit(
     bit: bool,
 ) -> Result<(), LispError> {
     let Value::Record(id) = value else {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "bool-vector-p".into(),
+            value.clone(),
+        ));
     };
     let record = interp
         .find_record_mut(*id)
         .ok_or_else(|| LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()))?;
     if record.kind != crate::lisp::eval::RecordKind::BoolVector {
-        return Err(LispError::WrongTypeArgument("bool-vector-p".into(), value.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "bool-vector-p".into(),
+            value.clone(),
+        ));
     }
     if index >= record.slots.len() {
         return Err(LispError::Signal("Args out of range".into()));

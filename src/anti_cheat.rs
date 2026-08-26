@@ -342,9 +342,8 @@ pub(crate) fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
     // `super::call(interp, "buffer-narrowed-p", ...)` -- a Lisp-owned name
     // natively dispatched in the mode-line path -- sat in its blind spot
     // (finding 67, reported by the second audit).
-    let direct_native_call =
-        regex::Regex::new(r#"(?s)\bcall\s*\(\s*[^,()]+,\s*"([^"]+)""#)
-            .expect("compile direct-native-call pattern");
+    let direct_native_call = regex::Regex::new(r#"(?s)\bcall\s*\(\s*[^,()]+,\s*"([^"]+)""#)
+        .expect("compile direct-native-call pattern");
 
     for path in facade_gate_files() {
         if path
@@ -672,20 +671,62 @@ pub(crate) fn builtin_arities_match_fresh_regeneration() {
 /// before.
 pub fn enforce_all() -> Result<(), Vec<String>> {
     let gates: &[(&str, fn())] = &[
-        ("repo_does_not_define_batch_report_delegation", repo_does_not_define_batch_report_delegation as fn()),
-        ("production_batch_driver_can_only_call_audited_compat_helpers", production_batch_driver_can_only_call_audited_compat_helpers as fn()),
-        ("runtime_code_does_not_shell_out_to_oracle_emacs", runtime_code_does_not_shell_out_to_oracle_emacs as fn()),
-        ("runtime_does_not_publish_generated_or_compat_loaddefs", runtime_does_not_publish_generated_or_compat_loaddefs as fn()),
-        ("runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists", runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists as fn()),
-        ("runtime_does_not_reintroduce_removed_private_lisp_state", runtime_does_not_reintroduce_removed_private_lisp_state as fn()),
-        ("runtime_contains_no_project_private_lisp_namespace", runtime_contains_no_project_private_lisp_namespace as fn()),
-        ("runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch", runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch as fn()),
-        ("runtime_native_dispatch_calls_only_configured_gnu_c_primitives", runtime_native_dispatch_calls_only_configured_gnu_c_primitives as fn()),
-        ("bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values", bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values as fn()),
-        ("bare_runtime_rejects_gnu_elisp_owned_definition_forms", bare_runtime_rejects_gnu_elisp_owned_definition_forms as fn()),
-        ("tty_frontend_does_not_reintroduce_silent_fallback_fabrications", tty_frontend_does_not_reintroduce_silent_fallback_fabrications as fn()),
-        ("gnu_c_manifest_matches_fresh_regeneration", gnu_c_manifest_matches_fresh_regeneration as fn()),
-        ("builtin_arities_match_fresh_regeneration", builtin_arities_match_fresh_regeneration as fn()),
+        (
+            "repo_does_not_define_batch_report_delegation",
+            repo_does_not_define_batch_report_delegation as fn(),
+        ),
+        (
+            "production_batch_driver_can_only_call_audited_compat_helpers",
+            production_batch_driver_can_only_call_audited_compat_helpers as fn(),
+        ),
+        (
+            "runtime_code_does_not_shell_out_to_oracle_emacs",
+            runtime_code_does_not_shell_out_to_oracle_emacs as fn(),
+        ),
+        (
+            "runtime_does_not_publish_generated_or_compat_loaddefs",
+            runtime_does_not_publish_generated_or_compat_loaddefs as fn(),
+        ),
+        (
+            "runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists",
+            runtime_keeps_interpreter_metadata_out_of_lisp_symbol_plists as fn(),
+        ),
+        (
+            "runtime_does_not_reintroduce_removed_private_lisp_state",
+            runtime_does_not_reintroduce_removed_private_lisp_state as fn(),
+        ),
+        (
+            "runtime_contains_no_project_private_lisp_namespace",
+            runtime_contains_no_project_private_lisp_namespace as fn(),
+        ),
+        (
+            "runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch",
+            runtime_does_not_reintroduce_removed_elisp_or_non_gnu_dispatch as fn(),
+        ),
+        (
+            "runtime_native_dispatch_calls_only_configured_gnu_c_primitives",
+            runtime_native_dispatch_calls_only_configured_gnu_c_primitives as fn(),
+        ),
+        (
+            "bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values",
+            bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values as fn(),
+        ),
+        (
+            "bare_runtime_rejects_gnu_elisp_owned_definition_forms",
+            bare_runtime_rejects_gnu_elisp_owned_definition_forms as fn(),
+        ),
+        (
+            "tty_frontend_does_not_reintroduce_silent_fallback_fabrications",
+            tty_frontend_does_not_reintroduce_silent_fallback_fabrications as fn(),
+        ),
+        (
+            "gnu_c_manifest_matches_fresh_regeneration",
+            gnu_c_manifest_matches_fresh_regeneration as fn(),
+        ),
+        (
+            "builtin_arities_match_fresh_regeneration",
+            builtin_arities_match_fresh_regeneration as fn(),
+        ),
     ];
     let mut violations = Vec::new();
     for (name, gate) in gates {

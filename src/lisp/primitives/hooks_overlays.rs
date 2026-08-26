@@ -733,7 +733,10 @@ pub(crate) fn font_lock_put_buffer_property(
         }
     });
     if !applied {
-        return Err(LispError::Signal(format!("No buffer with id {}", buffer_id)));
+        return Err(LispError::Signal(format!(
+            "No buffer with id {}",
+            buffer_id
+        )));
     }
     Ok(())
 }

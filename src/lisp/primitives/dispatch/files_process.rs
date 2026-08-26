@@ -1993,9 +1993,7 @@ define_dispatch!(
                 need_arg_range(name, args, 3, 4)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 if !interp.is_network_process(process_id) {
-                    return Err(LispError::Signal(
-                        "Process is not a network process".into(),
-                    ));
+                    return Err(LispError::Signal("Process is not a network process".into()));
                 }
                 // process.c:2984-2986: a closed socket is "not running".
                 let Some(fd) = interp.network_socket_fd(process_id) else {
@@ -2362,7 +2360,10 @@ define_dispatch!(
                     && !base_url.is_nil()
                     && string_like(base_url).is_none()
                 {
-                    return Err(LispError::WrongTypeArgument("stringp".into(), base_url.clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "stringp".into(),
+                        base_url.clone(),
+                    ));
                 }
                 let source = interp
                     .buffer
@@ -3031,9 +3032,7 @@ fn set_socket_option(
             _ => match string_text(value) {
                 Ok(text) => Some(text),
                 Err(_) => {
-                    return Err(LispError::Signal(format!(
-                        "Bad option value for {option}"
-                    )));
+                    return Err(LispError::Signal(format!("Bad option value for {option}")));
                 }
             },
         }
@@ -3115,9 +3114,7 @@ fn set_socket_option(
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("file-error"),
             Value::string("Cannot set network option"),
-            Value::string(&super::super::processes::network_io_error_detail(
-                &error,
-            )),
+            Value::string(&super::super::processes::network_io_error_detail(&error)),
             option_symbol.clone(),
             value.clone(),
         ])));

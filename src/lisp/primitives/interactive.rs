@@ -163,7 +163,10 @@ pub(crate) fn checked_symbol_name(
     {
         return Ok(symbol.to_string());
     }
-    Err(LispError::WrongTypeArgument("symbolp".into(), value.clone()))
+    Err(LispError::WrongTypeArgument(
+        "symbolp".into(),
+        value.clone(),
+    ))
 }
 
 #[cfg(test)]
@@ -245,7 +248,6 @@ pub(crate) fn symbol_with_pos_eq_in_env(
         },
     )
 }
-
 
 pub(crate) fn eval_callable_metadata_form(
     interp: &mut Interpreter,
@@ -908,7 +910,10 @@ pub(crate) fn execute_command_binding(
     // `undo-auto--add-boundary', whose amalgamation policy (fusing runs
     // of self-inserts) native boundary pushes cannot reproduce.  A bare
     // runtime without simple.el keeps the plain native boundary.
-    if interp.lookup_function("undo-auto--add-boundary", env).is_ok() {
+    if interp
+        .lookup_function("undo-auto--add-boundary", env)
+        .is_ok()
+    {
         let _ = interp.call_function_value(
             Value::Symbol("undo-auto--add-boundary".into()),
             Some("undo-auto--add-boundary"),
@@ -1101,7 +1106,10 @@ pub(crate) fn tty_note_idle_start(interp: &mut Interpreter, env: &mut Env) {
         return;
     }
     TTY_IDLE_START.with(|cell| cell.set(Some(std::time::Instant::now())));
-    if interp.lookup_function("internal-timer-start-idle", env).is_ok() {
+    if interp
+        .lookup_function("internal-timer-start-idle", env)
+        .is_ok()
+    {
         let _ = interp.call_function_value(
             Value::Symbol("internal-timer-start-idle".into()),
             Some("internal-timer-start-idle"),
@@ -1118,7 +1126,9 @@ pub(crate) fn tty_note_idle_end() {
 
 // Fcurrent_idle_time's backing state: the elapsed idle span, when idle.
 pub(crate) fn tty_current_idle_duration() -> Option<std::time::Duration> {
-    TTY_IDLE_START.with(|cell| cell.get()).map(|start| start.elapsed())
+    TTY_IDLE_START
+        .with(|cell| cell.get())
+        .map(|start| start.elapsed())
 }
 
 pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_seconds: f64) -> bool {
@@ -1697,7 +1707,6 @@ pub(crate) fn need_arg_range(
     }
 }
 
-
 /// keyboard.c's menu_bar_items: the menu bar's top-level captions in
 /// display order.  Every active keymap's `menu-bar' prefix is scanned
 /// lowest-precedence first (global map, then local, then minor modes),
@@ -1770,44 +1779,44 @@ pub(crate) fn menu_bar_row_items(
         // even when its entry list carries shadowed duplicates.
         let mut seen: Vec<Value> = Vec::new();
         for menu in chain_menus {
-        // A runtime keymap answers as its record identity; walk GNU's
-        // public `(keymap ...)' cons projection of it.
-        let menu = {
-            if let Some(id) = super::keymap_record_id(interp, &menu) {
-                let _ = super::refresh_runtime_keymap_public_view(interp, id);
+            // A runtime keymap answers as its record identity; walk GNU's
+            // public `(keymap ...)' cons projection of it.
+            let menu = {
+                if let Some(id) = super::keymap_record_id(interp, &menu) {
+                    let _ = super::refresh_runtime_keymap_public_view(interp, id);
+                }
+                super::public_keymap_value(interp, &menu)
+            };
+            if !matches!(menu.car(), Ok(Value::Symbol(tag)) if tag == "keymap") {
+                continue;
             }
-            super::public_keymap_value(interp, &menu)
-        };
-        if !matches!(menu.car(), Ok(Value::Symbol(tag)) if tag == "keymap") {
-            continue;
-        }
-        let mut tail = menu.cdr().unwrap_or(Value::Nil);
-        while let Value::Cons(_) = tail {
-            let Ok(entry) = tail.car() else { break };
-            let next = tail.cdr().unwrap_or(Value::Nil);
-            match &entry {
-                // A parent keymap's entries follow through the tail.
-                Value::Symbol(tag) if tag == "keymap" => {}
-                Value::Cons(_) => {
-                    let key = entry.car().unwrap_or(Value::Nil);
-                    let item = entry.cdr().unwrap_or(Value::Nil);
-                    if !seen.iter().any(|earlier| same_key(earlier, &key)) {
-                        seen.push(key.clone());
-                        if matches!(&item, Value::Symbol(def) if def == "undefined") {
-                            // An explicit `undefined' discards any
-                            // previously made item for this key.
-                            items.retain(|(existing, _)| !same_key(existing, &key));
-                        } else if let Some(caption) = menu_item_caption(interp, env, &item)
-                            && !items.iter().any(|(existing, _)| same_key(existing, &key))
-                        {
-                            items.push((key, caption));
+            let mut tail = menu.cdr().unwrap_or(Value::Nil);
+            while let Value::Cons(_) = tail {
+                let Ok(entry) = tail.car() else { break };
+                let next = tail.cdr().unwrap_or(Value::Nil);
+                match &entry {
+                    // A parent keymap's entries follow through the tail.
+                    Value::Symbol(tag) if tag == "keymap" => {}
+                    Value::Cons(_) => {
+                        let key = entry.car().unwrap_or(Value::Nil);
+                        let item = entry.cdr().unwrap_or(Value::Nil);
+                        if !seen.iter().any(|earlier| same_key(earlier, &key)) {
+                            seen.push(key.clone());
+                            if matches!(&item, Value::Symbol(def) if def == "undefined") {
+                                // An explicit `undefined' discards any
+                                // previously made item for this key.
+                                items.retain(|(existing, _)| !same_key(existing, &key));
+                            } else if let Some(caption) = menu_item_caption(interp, env, &item)
+                                && !items.iter().any(|(existing, _)| same_key(existing, &key))
+                            {
+                                items.push((key, caption));
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
+                tail = next;
             }
-            tail = next;
-        }
         }
     }
     if let Some(final_items) = interp

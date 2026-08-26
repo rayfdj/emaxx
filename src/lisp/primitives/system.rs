@@ -18,7 +18,10 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
                     Value::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
                     Value::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
                     other => {
-                        return Err(LispError::WrongTypeArgument("symbolp".into(), other.clone()));
+                        return Err(LispError::WrongTypeArgument(
+                            "symbolp".into(),
+                            other.clone(),
+                        ));
                     }
                 };
             }
@@ -27,7 +30,10 @@ pub(crate) fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, Lis
                     Value::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
                     Value::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
                     other => {
-                        return Err(LispError::WrongTypeArgument("symbolp".into(), other.clone()));
+                        return Err(LispError::WrongTypeArgument(
+                            "symbolp".into(),
+                            other.clone(),
+                        ));
                     }
                 };
             }
@@ -245,9 +251,8 @@ pub(crate) fn user_full_name_from_uid(_uid: u32) -> Option<String> {
 
 #[cfg(not(unix))]
 pub(crate) fn user_full_name_from_login(login: &str) -> Option<String> {
-    (current_user_login_name().as_deref() == Some(login)).then(|| {
-        std::env::var("NAME").unwrap_or_else(|_| login.to_string())
-    })
+    (current_user_login_name().as_deref() == Some(login))
+        .then(|| std::env::var("NAME").unwrap_or_else(|_| login.to_string()))
 }
 
 /// Decode the legacy unsigned-ID representation accepted by GNU's
@@ -380,8 +385,8 @@ pub(crate) fn gnu_default_makefile_mode() -> &'static str {
 }
 
 pub(crate) fn default_system_configuration() -> String {
-    let machine = uname_field(UnameField::Machine)
-        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    let machine =
+        uname_field(UnameField::Machine).unwrap_or_else(|| std::env::consts::ARCH.to_string());
     // config.guess spells Darwin's arm64 as aarch64; GNU's triple comes
     // from autoconf, so use the same convention for the same hardware.
     let machine = if machine == "arm64" {
@@ -473,7 +478,6 @@ pub(crate) enum UnameField {
     Release,
     Machine,
 }
-
 
 pub(crate) fn compat_repo_root_from_test_directory(test_directory: &str) -> Option<PathBuf> {
     PathBuf::from(test_directory)
@@ -1137,8 +1141,6 @@ pub(crate) fn emacs_version_value() -> String {
     // gone (finding 65).
     "30.2".to_string()
 }
-
-
 
 pub(crate) fn system_configuration() -> String {
     // No env override: a runtime's reported identity is not configurable

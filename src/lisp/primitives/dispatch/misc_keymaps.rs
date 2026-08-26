@@ -321,7 +321,10 @@ define_dispatch!(
                         .cloned()
                         .unwrap_or(Value::Nil));
                 }
-                Err(LispError::WrongTypeArgument("keymapp".into(), args[0].clone()))
+                Err(LispError::WrongTypeArgument(
+                    "keymapp".into(),
+                    args[0].clone(),
+                ))
             }
             "command-remapping" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -376,7 +379,10 @@ define_dispatch!(
             "map-keymap-internal" => {
                 need_args(name, args, 2)?;
                 if !is_keymap_value(interp, &args[1]) {
-                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[1].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "keymapp".into(),
+                        args[1].clone(),
+                    ));
                 }
                 map_keymap_direct_value(interp, &args[0], &args[1], env)?;
                 Ok(keymap_parent_values(interp, &args[1])
@@ -388,7 +394,10 @@ define_dispatch!(
             "use-local-map" => {
                 need_args(name, args, 1)?;
                 if !args[0].is_nil() && !is_keymap_value(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "keymapp".into(),
+                        args[0].clone(),
+                    ));
                 }
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
@@ -400,7 +409,10 @@ define_dispatch!(
             "use-global-map" => {
                 need_args(name, args, 1)?;
                 if !is_keymap_value(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "keymapp".into(),
+                        args[0].clone(),
+                    ));
                 }
                 interp.set_current_global_map_value(args[0].clone());
                 Ok(Value::Nil)
@@ -672,7 +684,10 @@ define_dispatch!(
                                 Value::Symbol(name) => name.to_string(),
                                 Value::BuiltinFunc(name) => name.to_string(),
                                 other => {
-                                    return Err(LispError::WrongTypeArgument("symbolp".into(), other.clone()));
+                                    return Err(LispError::WrongTypeArgument(
+                                        "symbolp".into(),
+                                        other.clone(),
+                                    ));
                                 }
                             };
                         }
@@ -727,13 +742,22 @@ define_dispatch!(
             "copy-hash-table" => {
                 need_args(name, args, 1)?;
                 let Value::Record(id) = args[0] else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
                 };
                 let Some(record) = interp.find_record(id) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
                 };
                 if record.kind != crate::lisp::eval::RecordKind::HashTable {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
                 }
                 interp.copy_record(id)
             }
@@ -748,7 +772,10 @@ define_dispatch!(
                     return Ok(value.unwrap_or(default));
                 }
                 let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[1].clone(),
+                    ));
                 };
                 for (existing_key, value) in entries {
                     if hash_table_key_matches(
@@ -772,7 +799,10 @@ define_dispatch!(
                     return Ok(args[1].clone());
                 }
                 let Some((test, mut entries)) = json::hash_table_entries(interp, &args[2]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[2].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[2].clone(),
+                    ));
                 };
                 touch_hash_table_key(interp, &args[2], &test, &args[0], env)?;
                 let mut replaced = false;
@@ -793,7 +823,10 @@ define_dispatch!(
             "maphash" => {
                 need_args(name, args, 2)?;
                 let Some((_, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[1].clone(),
+                    ));
                 };
                 for (key, value) in entries {
                     call_function_value(interp, &args[0], &[key, value], env)?;
@@ -808,7 +841,10 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[1].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[1].clone(),
+                    ));
                 };
                 let mut retained = Vec::new();
                 for (existing_key, value) in entries {
@@ -829,7 +865,10 @@ define_dispatch!(
             "clrhash" => {
                 need_args(name, args, 1)?;
                 if json::hash_table_entries(interp, &args[0]).is_none() {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
                 }
                 set_hash_table_entries(interp, &args[0], Vec::new())?;
                 Ok(args[0].clone())
@@ -837,7 +876,10 @@ define_dispatch!(
             "hash-table-count" => {
                 need_args(name, args, 1)?;
                 let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
                 };
                 Ok(Value::Integer(entries.len() as i64))
             }
@@ -893,14 +935,20 @@ define_dispatch!(
             "internal--hash-table-histogram" => {
                 need_args(name, args, 1)?;
                 if json::hash_table_entries(interp, &args[0]).is_none() {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
                 }
                 Ok(Value::Nil)
             }
             "internal--hash-table-buckets" => {
                 need_args(name, args, 1)?;
                 let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                    return Err(LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
                 };
                 Ok(Value::list(entries.into_iter().map(|(key, value)| {
                     Value::list([Value::cons(key, value)])
@@ -934,7 +982,12 @@ define_dispatch!(
                     // samples, so the honest log is a real EMPTY hash table
                     // of the same test -- never a string spelled to print
                     // like one (2026-08-23 audit finding 78).
-                    call(interp, "make-hash-table", &[Value::symbol(":test"), Value::symbol("equal")], env)
+                    call(
+                        interp,
+                        "make-hash-table",
+                        &[Value::symbol(":test"), Value::symbol("equal")],
+                        env,
+                    )
                 } else {
                     Ok(Value::Nil)
                 }
@@ -970,7 +1023,12 @@ define_dispatch!(
                     if !interp.profiler_cpu_running {
                         interp.profiler_cpu_log_pending = false;
                     }
-                    call(interp, "make-hash-table", &[Value::symbol(":test"), Value::symbol("equal")], env)
+                    call(
+                        interp,
+                        "make-hash-table",
+                        &[Value::symbol(":test"), Value::symbol("equal")],
+                        env,
+                    )
                 } else {
                     Ok(Value::Nil)
                 }
@@ -1428,7 +1486,10 @@ define_dispatch!(
             "garbage-collect-maybe" => {
                 need_args(name, args, 1)?;
                 if !matches!(args[0], Value::Integer(value) if value >= 0) {
-                    return Err(LispError::WrongTypeArgument("wholenump".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "wholenump".into(),
+                        args[0].clone(),
+                    ));
                 }
                 // Emaxx uses Rust ownership rather than GNU's byte-allocation GC
                 // threshold, so no pending automatic collection can be due.
@@ -1681,8 +1742,6 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
     }
 }
 
-
-
 fn legacy_struct_vector_type(interp: &Interpreter, value: &Value, env: &Env) -> Option<String> {
     if !interp
         .lookup_var("cl-old-struct-compat-mode", env)
@@ -1703,9 +1762,3 @@ fn legacy_struct_vector_type(interp: &Interpreter, value: &Value, env: &Env) -> 
         None
     }
 }
-
-
-
-
-
-

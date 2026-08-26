@@ -717,7 +717,8 @@ pub fn current_emacs_runtime(emacs_binary: &Path) -> Result<EmacsRuntime, String
 
 pub fn sha256_of_file(path: &Path) -> Result<String, String> {
     use sha2::Digest;
-    let bytes = fs::read(path).map_err(|error| format!("read {} for hashing: {error}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|error| format!("read {} for hashing: {error}", path.display()))?;
     let mut hasher = sha2::Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
@@ -1042,21 +1043,23 @@ pub fn compare_reports_normalized(
             (Some(_), None) => issues.push({
                 mismatching_outcomes += 1;
                 ComparisonIssue {
-                kind: "missing_test_result".into(),
-                detail: format!(
-                    "{} reported `{name}` but {} did not",
-                    expected.runner, actual.runner
-                ),
-            }}),
+                    kind: "missing_test_result".into(),
+                    detail: format!(
+                        "{} reported `{name}` but {} did not",
+                        expected.runner, actual.runner
+                    ),
+                }
+            }),
             (None, Some(_)) => issues.push({
                 mismatching_outcomes += 1;
                 ComparisonIssue {
-                kind: "extra_test_result".into(),
-                detail: format!(
-                    "{} reported `{name}` but {} did not",
-                    actual.runner, expected.runner
-                ),
-            }}),
+                    kind: "extra_test_result".into(),
+                    detail: format!(
+                        "{} reported `{name}` but {} did not",
+                        actual.runner, expected.runner
+                    ),
+                }
+            }),
             (None, None) => {}
         }
     }

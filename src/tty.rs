@@ -20,10 +20,10 @@ use crossterm::{cursor, event, execute, queue, style, terminal};
 
 use crate::batch;
 use crate::lisp::eval::Interpreter;
-use crate::lisp::types::{Env, LispError, Value};
 use crate::lisp::primitives::{
     InvisibilitySpec, invisible_run_at, resolve_buffer_invisibility, visual_line_first_line,
 };
+use crate::lisp::types::{Env, LispError, Value};
 
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
@@ -480,7 +480,13 @@ fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRo
     let has_newline = long.text[..used].contains(&'\n');
     if used <= cols && !has_newline {
         let mut row = PaintRow::blank(cols);
-        for (col, (c, attrs)) in long.text.iter().zip(long.attrs.iter()).enumerate().take(cols) {
+        for (col, (c, attrs)) in long
+            .text
+            .iter()
+            .zip(long.attrs.iter())
+            .enumerate()
+            .take(cols)
+        {
             row.text[col] = *c;
             row.attrs[col] = *attrs;
         }
@@ -1282,8 +1288,8 @@ fn window_render_geometry(
     let auto_mode = auto_mode_value.is_truthy();
     // hscrolling_current_line_p: `current-line' hscrolls only the row
     // showing point, and only while auto-hscroll is not suspended.
-    let current_line_only = !suspended
-        && matches!(&auto_mode_value, Value::Symbol(name) if name == "current-line");
+    let current_line_only =
+        !suspended && matches!(&auto_mode_value, Value::Symbol(name) if name == "current-line");
     let truncate_now = truncate_lines || hscroll > 0 || partial_truncates;
     if auto_mode && !suspended && truncate_now {
         let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
@@ -1774,7 +1780,13 @@ fn plan_window_text(
         let next_line = fill_line + visual.lines_spanned;
         for (seg_index, segment) in segments.iter().enumerate().skip(from) {
             let row_start = position_of_visual_row(buffer, spec, fill_line, seg_index, usable);
-            rendered.push((segment.clone(), fill_line, seg_index, row_start, row_hscroll));
+            rendered.push((
+                segment.clone(),
+                fill_line,
+                seg_index,
+                row_start,
+                row_hscroll,
+            ));
             if rendered.len() == text_rows {
                 past_window = Some(if seg_index + 1 < segments.len() {
                     (fill_line, seg_index + 1)
@@ -2271,8 +2283,7 @@ fn redraw_with_echo_policy(
                     interpreter.get_buffer_by_id(info.buffer_id)
                 };
                 if let Some(buffer) = window_buffer {
-                    let spec =
-                        resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
+                    let spec = resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
                     let z = buffer.point_max();
                     let mut pos = plan.top_pos.min(z);
                     let end = plan.window_end.min(z);
@@ -2281,22 +2292,19 @@ fn redraw_with_echo_policy(
                         ranges.push((pos, end));
                     } else {
                         while pos < end {
-                            if crate::lisp::primitives::invisible_class_at(buffer, &spec, pos)
-                                != 0
+                            if crate::lisp::primitives::invisible_class_at(buffer, &spec, pos) != 0
                             {
-                                let run_end = crate::lisp::primitives::invisible_run_at(
-                                    buffer, &spec, pos,
-                                )
-                                .map(|(run_end, _)| run_end)
-                                .unwrap_or(pos + 1);
+                                let run_end =
+                                    crate::lisp::primitives::invisible_run_at(buffer, &spec, pos)
+                                        .map(|(run_end, _)| run_end)
+                                        .unwrap_or(pos + 1);
                                 pos = run_end.max(pos + 1);
                                 continue;
                             }
                             let visible_start = pos;
                             while pos < end
-                                && crate::lisp::primitives::invisible_class_at(
-                                    buffer, &spec, pos,
-                                ) == 0
+                                && crate::lisp::primitives::invisible_class_at(buffer, &spec, pos)
+                                    == 0
                             {
                                 pos += 1;
                             }
@@ -2309,8 +2317,7 @@ fn redraw_with_echo_policy(
                 }
             };
             let saved = interpreter.current_buffer_id();
-            if saved == info.buffer_id
-                || interpreter.set_current_buffer_id(info.buffer_id).is_ok()
+            if saved == info.buffer_id || interpreter.set_current_buffer_id(info.buffer_id).is_ok()
             {
                 if interpreter
                     .lookup_var("fontification-functions", env)
@@ -2342,8 +2349,7 @@ fn redraw_with_echo_policy(
                 let Ok(symbol) = symbol_value.as_symbol() else {
                     continue;
                 };
-                let Some(Value::Marker(marker)) =
-                    interpreter.lookup_var(symbol, &Vec::new())
+                let Some(Value::Marker(marker)) = interpreter.lookup_var(symbol, &Vec::new())
                 else {
                     continue;
                 };
@@ -2360,15 +2366,11 @@ fn redraw_with_echo_policy(
                 }) else {
                     continue;
                 };
-                let line_start = buffer
-                    .line_start_at(position.clamp(buffer.point_min(), buffer.point_max()));
-                let Some(row) = plan
-                    .rendered
-                    .iter()
-                    .position(|(_, _, seg, start, _)| {
-                        *seg == 0 && *start != usize::MAX && *start == line_start
-                    })
-                else {
+                let line_start =
+                    buffer.line_start_at(position.clamp(buffer.point_min(), buffer.point_max()));
+                let Some(row) = plan.rendered.iter().position(|(_, _, seg, start, _)| {
+                    *seg == 0 && *start != usize::MAX && *start == line_start
+                }) else {
                     continue;
                 };
                 let arrow = interpreter
@@ -2443,11 +2445,7 @@ fn redraw_with_echo_policy(
                     (text_top + row).min(frame_rows - 1) as u16,
                 );
             }
-            state
-                .views
-                .entry(info.window_id)
-                .or_default()
-                .synced_start = plan.top_pos;
+            state.views.entry(info.window_id).or_default().synced_start = plan.top_pos;
             selected_sync = Some((plan.top_pos, metrics));
         }
         mode_line_jobs.push(ModeLineJob {
@@ -2536,12 +2534,14 @@ fn redraw_with_echo_policy(
             // The right-truncation `$' glyph keeps the default face
             // (produce_special_glyphs); spans stop one cell short of it.
             let col_cap = job.body_width
-                - usize::from(job.truncate
-                    && truncated_on_right(
-                        display_width(&line_text),
-                        *row_hscroll,
-                        job.body_width,
-                    ));
+                - usize::from(
+                    job.truncate
+                        && truncated_on_right(
+                            display_width(&line_text),
+                            *row_hscroll,
+                            job.body_width,
+                        ),
+                );
             for (span_begin, span_end, attrs) in &resolved {
                 let begin = (*span_begin).max(*row_start);
                 let end = (*span_end).min(row_end);
@@ -2741,11 +2741,11 @@ fn redraw_with_echo_policy(
             0
         };
         for row_index in 0..job.text_rows {
-            let (line, seg, row_start, row_hscroll) = job
-                .rows
-                .get(row_index)
-                .copied()
-                .unwrap_or((0, 0, usize::MAX, 0));
+            let (line, seg, row_start, row_hscroll) =
+                job.rows
+                    .get(row_index)
+                    .copied()
+                    .unwrap_or((0, 0, usize::MAX, 0));
             let beyond = row_start == usize::MAX || row_start >= point_max;
             let value: i64 = if beyond {
                 0
@@ -3658,11 +3658,26 @@ mod tests {
             .buffer
             .insert(&format!("top\n{}\nbottom\n", "wide".repeat(50)));
         let buffer = &interpreter.buffer;
-        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 1, 0, 79), 1);
-        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 0, 79), 5);
-        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 1, 79), 84);
-        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 2, 79), 163);
-        assert_eq!(position_of_visual_row(buffer, &InvisibilitySpec::default(), 3, 0, 79), 206);
+        assert_eq!(
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), 1, 0, 79),
+            1
+        );
+        assert_eq!(
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 0, 79),
+            5
+        );
+        assert_eq!(
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 1, 79),
+            84
+        );
+        assert_eq!(
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 2, 79),
+            163
+        );
+        assert_eq!(
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), 3, 0, 79),
+            206
+        );
     }
 
     #[test]

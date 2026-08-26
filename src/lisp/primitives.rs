@@ -62,11 +62,11 @@ pub(crate) use generated_gnu_c_primitives::{
 mod hash_insert;
 mod hooks_overlays;
 mod interactive;
+mod invisibility;
 mod keys;
 mod loading;
 mod numeric_time;
 mod print;
-mod invisibility;
 mod processes;
 mod regexp;
 mod sequences;
@@ -90,11 +90,11 @@ pub(crate) use file_io::*;
 pub(crate) use hash_insert::*;
 pub(crate) use hooks_overlays::*;
 pub(crate) use interactive::*;
+pub(crate) use invisibility::*;
 pub(crate) use keys::*;
 pub(crate) use loading::*;
 pub(crate) use numeric_time::*;
 pub(crate) use print::*;
-pub(crate) use invisibility::*;
 pub(crate) use processes::*;
 pub(crate) use sequences::*;
 pub(crate) use strings::*;
@@ -217,10 +217,9 @@ pub(crate) use dispatch::{
     string_face_spans,
 };
 pub(crate) use dispatch::{
-    LineNumberLayout, LineNumberMode, TtyFaceAttrs, WindowRenderInfo,
-    render_window_header_line, render_window_mode_line, resolve_tty_face_attrs,
-    store_window_hscroll_state, window_face_spans, window_hscroll_state,
-    window_line_number_layout, window_render_layout,
+    LineNumberLayout, LineNumberMode, TtyFaceAttrs, WindowRenderInfo, render_window_header_line,
+    render_window_mode_line, resolve_tty_face_attrs, store_window_hscroll_state, window_face_spans,
+    window_hscroll_state, window_line_number_layout, window_render_layout,
 };
 pub use dispatch::{call, is_builtin};
 

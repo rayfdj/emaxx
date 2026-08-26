@@ -466,7 +466,12 @@ pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispErr
     let mut remaining = match count {
         Value::Integer(n) => BigInt::from(*n),
         Value::BigInteger(n) => n.clone().into(),
-        _ => return Err(LispError::WrongTypeArgument("integerp".into(), count.clone())),
+        _ => {
+            return Err(LispError::WrongTypeArgument(
+                "integerp".into(),
+                count.clone(),
+            ));
+        }
     };
 
     if remaining <= BigInt::zero() {
@@ -542,10 +547,16 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
                 // pseudovectors.  Flength accepts none of them here; bool
                 // vectors and keymaps were projected through their GNU public
                 // sequence representations above.
-                _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
+                _ => Err(LispError::WrongTypeArgument(
+                    "sequencep".into(),
+                    value.clone(),
+                )),
             }
         }
-        _ => Err(LispError::WrongTypeArgument("sequencep".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "sequencep".into(),
+            value.clone(),
+        )),
     }
 }
 
@@ -1178,7 +1189,10 @@ pub(crate) fn remove_equal(
                 .filter(|item| !values_equal(interp, item, elt))
                 .collect::<Vec<_>>(),
         )),
-        _ => Err(LispError::WrongTypeArgument("sequencep".into(), sequence.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "sequencep".into(),
+            sequence.clone(),
+        )),
     }
 }
 
@@ -1278,7 +1292,10 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
         let Some((car, cdr)) = (current.clone()).cons_cells() else {
-            return Err(LispError::WrongTypeArgument("consp".into(), current.clone()));
+            return Err(LispError::WrongTypeArgument(
+                "consp".into(),
+                current.clone(),
+            ));
         };
         let cell_id = car.cell_id();
         if seen.step(cell_id) {
@@ -1797,14 +1814,26 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::TreeSitterNode
         | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
         | crate::lisp::eval::RecordKind::Sqlite => {
-            hash_value_equal_at(interp, state, &record.type_tag, include_properties, depth + 1);
+            hash_value_equal_at(
+                interp,
+                state,
+                &record.type_tag,
+                include_properties,
+                depth + 1,
+            );
             hash_mix(state, id);
         }
         crate::lisp::eval::RecordKind::Record
         | crate::lisp::eval::RecordKind::Closure
         | crate::lisp::eval::RecordKind::Font
         | crate::lisp::eval::RecordKind::Keymap => {
-            hash_value_equal_at(interp, state, &record.type_tag, include_properties, depth + 1);
+            hash_value_equal_at(
+                interp,
+                state,
+                &record.type_tag,
+                include_properties,
+                depth + 1,
+            );
             hash_mix(state, record.slots.len() as u64);
             // fns.c:5447 `sxhash_vector' hashes a record's leading slots only.
             for slot in record.slots.iter().take(SXHASH_MAX_LEN) {
@@ -2446,7 +2475,6 @@ pub(crate) fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Valu
         ])
     }))
 }
-
 
 pub(crate) fn keymap_define_character_range(
     interp: &mut Interpreter,
@@ -3926,7 +3954,6 @@ pub(crate) fn collect_where_is_matches(
     }
     Ok(())
 }
-
 
 pub(crate) fn remap_key_binding_text(command: &str) -> String {
     format!("<remap> <{command}>")

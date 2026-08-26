@@ -17,7 +17,6 @@ pub(super) fn syntax_spec_value(spec: &str) -> Value {
     Value::String(spec.to_string().into())
 }
 
-
 pub(super) fn standard_syntax_table_entries() -> Vec<CharTableEntry> {
     vec![
         CharTableEntry {
@@ -224,10 +223,7 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             eol_type: None,
             // coding.c's C bootstrap and mule-conf.el both mark the raw
             // families `:for-unibyte t'.
-            plist: coding_plist('=', std::iter::once((
-                ":for-unibyte".to_string(),
-                Value::T,
-            ))),
+            plist: coding_plist('=', std::iter::once((":for-unibyte".to_string(), Value::T))),
         },
     ];
 

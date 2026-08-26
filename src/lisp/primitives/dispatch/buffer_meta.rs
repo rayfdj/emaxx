@@ -814,9 +814,7 @@ define_dispatch!(
                 let arity = builtin_arity_value(symbol)
                     .or_else(|| special_form_arity_value(symbol))
                     .ok_or_else(|| {
-                        LispError::Signal(format!(
-                            "emaxx: no GNU-derived arity for subr {symbol}"
-                        ))
+                        LispError::Signal(format!("emaxx: no GNU-derived arity for subr {symbol}"))
                     })?;
                 Ok(Value::String(
                     format!("{symbol}{}", render_prin1(interp, &arity, env)?).into(),
@@ -1122,8 +1120,37 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "get-unused-iso-final-char" => {
+                // charset.c:1406.  This returned the constant ?0 with both
+                // arguments unread (audit finding 104), so it answered "0"
+                // even for a kind of charset whose 0 slot is taken, and never
+                // signalled for a bad DIMENSION or CHARS.
                 need_args(name, args, 2)?;
-                Ok(Value::Integer('0' as i64))
+                // charset.c:1387-1388 is CHECK_FIXNUM, which names `fixnump'
+                // -- `as_integer' would name `integerp' and diverge on every
+                // non-integer input.
+                let dimension = args[0].as_fixnum()?;
+                let chars = args[1].as_fixnum()?;
+                // charset.c:1384 validates DIMENSION before CHARS, and its
+                // range is 1..=3 even though the docstring says "1 or 2".
+                if !(1..=3).contains(&dimension) {
+                    return Err(LispError::Signal(format!(
+                        "Invalid DIMENSION {dimension}, it should be 1, 2, or 3"
+                    )));
+                }
+                if chars != 94 && chars != 96 {
+                    return Err(LispError::Signal(format!(
+                        "Invalid CHARS {chars}, it should be 94 or 96"
+                    )));
+                }
+                // charset.c:1420 scans `0'..`?' -- the private-use range --
+                // and returns the first final char with no charset of this
+                // DIMENSION and CHARS registered against it, or nil.
+                let taken = iso_final_chars_in_use(interp, env, dimension, chars)?;
+                Ok(('0'..='?')
+                    .map(|final_char| final_char as i64)
+                    .find(|final_char| !taken.contains(final_char))
+                    .map(Value::Integer)
+                    .unwrap_or(Value::Nil))
             }
             "declare-equiv-charset" => {
                 need_args(name, args, 4)?;
@@ -1491,3 +1518,81 @@ define_dispatch!(
         }
     }
 );
+
+/// The ISO final characters already claimed by a charset of this DIMENSION and
+/// CHARS.  GNU keeps `ISO_CHARSET_TABLE' natively (charset.c:1421); Emaxx has
+/// no such index, so it reads the same facts back out of the charset registry
+/// that `charset-plist' exposes, asking Lisp for the dimension and chars just
+/// as `charset-dimension'/`charset-chars' would -- the idiom already used for
+/// `oclosure-type'.
+fn iso_final_chars_in_use(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    dimension: i64,
+    chars: i64,
+) -> Result<Vec<i64>, LispError> {
+    // charset.c:1440: `declare-equiv-charset' writes directly into the same
+    // ISO_CHARSET_TABLE this primitive reads, so those claims count even
+    // though they never touch a charset's plist.  Emaxx already keeps that
+    // table -- an earlier version of this scan derived a parallel one from
+    // plists alone and disagreed with it after any runtime declaration.
+    let mut taken = interp.iso_charset_finals(dimension, chars == 96);
+    let Some(list) = interp.lookup_var("charset-list", env) else {
+        // An unbound `charset-list' would make every slot look free, which is
+        // the old constant-?0 cheat wearing a different face.
+        return Err(LispError::Signal(
+            "charset-list is unbound; cannot determine used ISO final chars".into(),
+        ));
+    };
+    for charset in list.to_vec().unwrap_or_default() {
+        let Ok(name) = charset.as_symbol() else {
+            continue;
+        };
+        let Some(plist) = interp.charset_plist_value(&name) else {
+            continue;
+        };
+        let items = plist.to_vec().unwrap_or_default();
+        let mut final_char = None;
+        let mut index = 0;
+        while index + 1 < items.len() {
+            if items[index]
+                .as_symbol()
+                .is_ok_and(|key| key == ":iso-final-char")
+            {
+                final_char = items[index + 1].as_integer().ok();
+                break;
+            }
+            index += 2;
+        }
+        let Some(final_char) = final_char else {
+            continue;
+        };
+        if !('0' as i64..='?' as i64).contains(&final_char) {
+            continue;
+        }
+        let mut shape_of = |primitive: &str| -> Option<i64> {
+            interp
+                .call_function_value(
+                    Value::Symbol(primitive.into()),
+                    Some(primitive),
+                    std::slice::from_ref(&charset),
+                    env,
+                )
+                .ok()
+                .and_then(|value| value.as_integer().ok())
+        };
+        // charset.c:1395 reduces CHARS to a BOOLEAN -- `chars_flag' is
+        // `chars == 96' -- and ISO_CHARSET_TABLE is indexed by that flag, not
+        // by the number.  So every charset whose `charset-chars' is not 96
+        // shares the 94 bucket, including oddities like `arabic-digit', whose
+        // chars is 9.  Comparing the numbers for equality instead loses those
+        // and reports a slot free when GNU knows it is taken: (1 94) answered
+        // ?2 rather than ?6, because arabic-digit's claim on ?2 was skipped.
+        if shape_of("charset-dimension") == Some(dimension)
+            && shape_of("charset-chars").map(|value| value == 96) == Some(chars == 96)
+        {
+            taken.push(final_char);
+        }
+    }
+    Ok(taken)
+}
