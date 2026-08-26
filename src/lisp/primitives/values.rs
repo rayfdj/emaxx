@@ -4286,14 +4286,83 @@ pub(crate) fn key_sequence_is_prefix(
     Ok(false)
 }
 
+/// Whether the current locale encodes UTF-8, by GNU's own test:
+/// emacs.c:415 `using_utf8' decodes the two bytes of U+0100 with `mbrtowc'
+/// and checks both the length and the resulting wide character.  The result
+/// becomes `internal--text-quoting-flag' (emacs.c:1665), which is what makes
+/// a nil `text-quoting-style' mean grave rather than curved quotes in a
+/// non-UTF-8 locale -- the compatibility harness runs its children under
+/// LANG=C, where GNU therefore quotes `like this'.
+pub(crate) fn locale_uses_utf8() -> bool {
+    // GNU calls setlocale(LC_ALL, "") in main before testing (emacs.c:1657-
+    // 1663) -- though it SKIPS that call when LC_ALL is exactly "C", leaving
+    // the process in the startup "C" locale, which fails the test the same
+    // way.  Both branches therefore agree, and POSIX gives LC_ALL precedence
+    // inside setlocale(LC_CTYPE, "") anyway.  Without some such call the
+    // process stays in "C" and the test is meaningless.
+    //
+    // Note this mutates process-global locale state, lazily, on whichever
+    // thread first needs a quoting style.  Nothing else in Emaxx calls
+    // setlocale, so there is no one to race with, but the timing differs
+    // from GNU's once-in-main.
+    // `mbstate_t' is opaque and not exposed by the libc crate on every
+    // target; it is at most this large on the platforms Emaxx builds for,
+    // and only ever needs to be zeroed.
+    #[repr(C, align(8))]
+    struct MbState([u8; 128]);
+
+    unsafe extern "C" {
+        fn mbrtowc(
+            pwc: *mut libc::wchar_t,
+            s: *const libc::c_char,
+            n: libc::size_t,
+            ps: *mut MbState,
+        ) -> libc::size_t;
+    }
+
+    static UTF8: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *UTF8.get_or_init(|| {
+        // SAFETY: `setlocale' with an empty name selects the environment's
+        // locale, exactly as GNU's startup does, and `mbrtowc' is handed a
+        // two-byte buffer with a matching length and a zeroed state.
+        unsafe {
+            libc::setlocale(libc::LC_CTYPE, c"".as_ptr());
+            let mut wc: libc::wchar_t = 0;
+            let mut state = MbState([0; 128]);
+            let bytes: [libc::c_char; 2] = [0xc4u8 as libc::c_char, 0x80u8 as libc::c_char];
+            mbrtowc(&mut wc, bytes.as_ptr(), 2, &mut state) == 2 && wc == 0x100
+        }
+    })
+}
+
 /// GNU `doc.c:Ftext_quoting_style' collapses the Lisp variable to one of
-/// three effective styles.  Emaxx currently has no terminal display-table
-/// override, so nil follows GNU's display-capable default and means `curve'.
+/// three effective styles.  A nil variable consults
+/// `default_to_grave_quoting_style' (doc.c:653), whose first test is the
+/// locale flag above.
+///
+/// UNIMPLEMENTED (audit finding 95): that function has a SECOND test -- if
+/// the flag is set, it reads `standard-display-table' and answers grave when
+/// U+2018 is displayed as a one-element vector holding ?`.  That is a plain
+/// Lisp-variable read, not a terminal capability, so it is observable even in
+/// batch, and it is the path a non-batch GNU session actually uses (startup.el
+/// :1466 forces the flag to t there).  Emaxx always answers from the flag
+/// alone, so it says curve where GNU would say grave once that display table
+/// is installed.
 pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &'static str {
     match interp.lookup_var("text-quoting-style", env) {
         Some(Value::Symbol(style)) if style == "grave" => "grave",
         Some(Value::Symbol(style)) if style == "straight" => "straight",
         Some(Value::Symbol(style)) if style == "curve" => "curve",
+        // doc.c:679 consults the locale flag for NIL alone; every other
+        // non-nil value falls through to `curve' ("Any other value is
+        // treated as `curve'").  Routing unmatched values through the flag
+        // made a bogus style answer grave in a non-UTF-8 locale.
+        Some(Value::Nil) | None => {
+            let utf8 = interp
+                .lookup_var("internal--text-quoting-flag", env)
+                .map_or_else(locale_uses_utf8, |flag| flag.is_truthy());
+            if utf8 { "curve" } else { "grave" }
+        }
         _ => "curve",
     }
 }

@@ -1118,7 +1118,7 @@ pub(crate) fn delete_process_notifying(
     }
 }
 
-fn network_io_error_detail(error: &std::io::Error) -> String {
+pub(super) fn network_io_error_detail(error: &std::io::Error) -> String {
     let rendered = error.to_string();
     match rendered.split_once(" (os error") {
         Some((detail, _)) => detail.into(),

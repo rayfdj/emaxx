@@ -74,7 +74,7 @@ mod strings;
 pub(crate) mod syntax;
 mod system;
 mod text;
-mod values;
+pub(crate) mod values;
 mod window;
 
 pub(crate) use super::eval::is_special_form_name;

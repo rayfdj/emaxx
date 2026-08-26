@@ -543,6 +543,14 @@ fn eval_buffer_via_load_read_function(
                 break;
             }
         };
+        // Deliberately NO `intern_symbols_in_value' here.  When reading is
+        // delegated to a Lisp `load-read-function', GNU interns nothing extra
+        // -- the form's symbols are whatever that function produced.  Walking
+        // it re-interns symbols GNU leaves alone: a reader returning a
+        // deliberately `unintern'-ed symbol made Emaxx resurrect it while GNU
+        // still answered nil.  An earlier revision added the walk here for
+        // "symmetry" with `eval-region' below, which achieved symmetry by
+        // copying that path's defect (finding 120) rather than fixing it.
         match eager_expand_eval(interp, &form, env) {
             Ok(value) => result = Ok(value),
             Err(error) => {

@@ -177,6 +177,238 @@ fn interface_broadcast(ip: std::net::IpAddr, mask: std::net::IpAddr) -> std::net
     }
 }
 
+/// The `_IOWR' encoding from macOS `sys/ioccom.h': the request number is
+/// DERIVED from the group letter, the ordinal, and the size of the payload
+/// struct.  Computing it beats transcribing 0xc0206911 and friends, which
+/// would be a magic constant valid only for one struct layout on one platform.
+#[cfg(target_os = "macos")]
+const fn iowr(group: u8, number: u8, size: usize) -> libc::c_ulong {
+    const IOC_INOUT: libc::c_ulong = 0xc000_0000;
+    const IOCPARM_MASK: usize = 0x1fff;
+    IOC_INOUT
+        | (((size & IOCPARM_MASK) as libc::c_ulong) << 16)
+        | ((group as libc::c_ulong) << 8)
+        | number as libc::c_ulong
+}
+
+/// process.c:4386 `ifflag_table', in GNU's order.  The result list is built by
+/// consing, so it comes out REVERSED -- lo0 reads (multicast running loopback
+/// up), which is why the order here matters.  On a Cocoa build GNU spells
+/// IFF_NOTRAILERS "smart" rather than "notrailers" (process.c:4412).
+#[cfg(target_os = "macos")]
+const IFFLAG_TABLE: &[(libc::c_int, &str)] = &[
+    (libc::IFF_UP, "up"),
+    (libc::IFF_BROADCAST, "broadcast"),
+    (libc::IFF_DEBUG, "debug"),
+    (libc::IFF_LOOPBACK, "loopback"),
+    (libc::IFF_POINTOPOINT, "pointopoint"),
+    (libc::IFF_RUNNING, "running"),
+    (libc::IFF_NOARP, "noarp"),
+    (libc::IFF_PROMISC, "promisc"),
+    (libc::IFF_NOTRAILERS, "smart"),
+    (libc::IFF_ALLMULTI, "allmulti"),
+    (libc::IFF_MULTICAST, "multicast"),
+    (libc::IFF_OACTIVE, "oactive"),
+    (libc::IFF_SIMPLEX, "simplex"),
+    (libc::IFF_LINK0, "link0"),
+    (libc::IFF_LINK1, "link1"),
+    (libc::IFF_LINK2, "link2"),
+];
+
+/// GNU `conv_sockaddr_to_lisp' for the AF_INET case: [a b c d PORT].
+#[cfg(target_os = "macos")]
+fn sockaddr_storage_to_lisp(raw: &libc::sockaddr) -> Value {
+    if raw.sa_family as libc::c_int != libc::AF_INET {
+        return Value::Nil;
+    }
+    // SAFETY: sa_family says AF_INET, so the storage is a sockaddr_in.
+    let inet = unsafe { &*(raw as *const libc::sockaddr).cast::<libc::sockaddr_in>() };
+    let octets = u32::from_be(inet.sin_addr.s_addr).to_be_bytes();
+    super::super::processes::sockaddr_vector(std::net::SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)),
+        u16::from_be(inet.sin_port),
+    ))
+}
+
+/// process.c:4459 `network_interface_info'.  Returns
+/// (ADDR BCAST NETMASK HWADDR FLAGS), IPv4 only, with each component nil when
+/// its query fails -- and nil overall when EVERY query failed, which is how a
+/// nonexistent interface answers.  The arm this replaces was a bare
+/// `Ok(Value::Nil)' sitting beside a genuinely implemented
+/// `network-interface-list' (audit finding 111).
+fn network_interface_info(args: &[Value]) -> Result<Value, LispError> {
+    // GNU's arity is exactly 1 (process.c:4652), and `need_args' only checks a
+    // MINIMUM -- so the obvious call accepted two arguments and returned data
+    // where GNU signals wrong-number-of-arguments.  The generated arity table
+    // already recorded (1, 1); only this call site disagreed.
+    need_arg_range("network-interface-info", args, 1, 1)?;
+    let name = string_text(&args[0])?;
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // STILL THE CHEAT ON THIS PLATFORM, and deliberately labelled as such.
+        // GNU does NOT compile the body out on GNU/Linux: SIOCGIFFLAGS,
+        // SIOCGIFADDR, SIOCGIFNETMASK, SIOCGIFBRDADDR and SIOCGIFHWADDR are
+        // all defined there and process.c:4518 returns a full result
+        // including the hardware address.  Finding 111 is fixed for macOS
+        // only; a Linux port needs the ifr_hwaddr branch rather than the
+        // getifaddrs walk below.
+        let _ = name;
+        return Ok(Value::Nil);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
+        if name.len() >= request.ifr_name.len() {
+            // process.c:4473.
+            return Err(LispError::Signal("interface name too long".into()));
+        }
+        for (slot, byte) in request.ifr_name.iter_mut().zip(name.bytes()) {
+            *slot = byte as libc::c_char;
+        }
+
+        // SAFETY: a plain socket used only as an ioctl handle; closed below.
+        let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        if socket < 0 {
+            return Ok(Value::Nil);
+        }
+        let mut any = false;
+        let size = std::mem::size_of::<libc::ifreq>();
+
+        // FLAGS first, because the result list is consed in reverse.
+        let mut flags_value = Value::Nil;
+        let mut probe = request;
+        // SAFETY: `probe' is a fully initialised ifreq of the size encoded in
+        // the request number, and `socket' is live for every call below.
+        if unsafe { libc::ioctl(socket, iowr(b'i', 17, size), &mut probe) } == 0 {
+            any = true;
+            // process.c:4494: ifr_flags is a short, so widen without sign
+            // extension before testing bits.
+            let mut flags = unsafe { probe.ifr_ifru.ifru_flags } as u16 as libc::c_int;
+            let mut items = Vec::new();
+            for (bit, symbol) in IFFLAG_TABLE {
+                if flags == 0 {
+                    break;
+                }
+                if flags & bit != 0 {
+                    items.push(Value::symbol(symbol));
+                    flags -= bit;
+                }
+            }
+            // process.c:4506 names leftover bits by their bit NUMBER.
+            for ordinal in 0..32 {
+                if flags == 0 {
+                    break;
+                }
+                if flags & 1 != 0 {
+                    items.push(Value::Integer(ordinal));
+                }
+                flags >>= 1;
+            }
+            items.reverse();
+            flags_value = Value::list(items);
+        }
+
+        // HWADDR: macOS has no SIOCGIFHWADDR, so GNU walks getifaddrs looking
+        // for the AF_LINK entry (process.c:4531-4552).
+        // process.c does NOT set `any' in the getifaddrs branch; only the
+        // ioctl branches count toward it, so an interface yielding only a MAC
+        // still answers nil overall.  Mirrored deliberately.
+        let hwaddr_value = link_layer_address(&name);
+
+        let mut address_for = |number: u8| -> Value {
+            let mut probe = request;
+            // SAFETY: as above.
+            if unsafe { libc::ioctl(socket, iowr(b'i', number, size), &mut probe) } == 0 {
+                any = true;
+                // SAFETY: the kernel fills ifru_addr for these requests.
+                return sockaddr_storage_to_lisp(unsafe { &probe.ifr_ifru.ifru_addr });
+            }
+            Value::Nil
+        };
+        let netmask_value = address_for(37);
+        let broadcast_value = address_for(35);
+        let addr_value = address_for(33);
+
+        // SAFETY: `socket' was opened above and is not used after this.
+        unsafe { libc::close(socket) };
+
+        if !any {
+            return Ok(Value::Nil);
+        }
+        Ok(Value::list([
+            addr_value,
+            broadcast_value,
+            netmask_value,
+            hwaddr_value,
+            flags_value,
+        ]))
+    }
+}
+
+/// process.c:4531: the AF_LINK entry whose name matches and whose link-layer
+/// address is exactly 6 bytes becomes (SA_FAMILY . [b0 .. b5]).
+#[cfg(target_os = "macos")]
+fn link_layer_address(name: &str) -> Value {
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs allocates the list; freeifaddrs releases it below.
+    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+        return Value::Nil;
+    }
+    let mut result = Value::Nil;
+    let mut entry = list;
+    while !entry.is_null() {
+        // SAFETY: the list is NUL-terminated by a null ifa_next.
+        let current = unsafe { &*entry };
+        entry = current.ifa_next;
+        if current.ifa_addr.is_null() {
+            continue;
+        }
+        // SAFETY: ifa_addr is non-null and at least a sockaddr header.
+        let family = unsafe { (*current.ifa_addr).sa_family } as libc::c_int;
+        if family != libc::AF_LINK {
+            continue;
+        }
+        // SAFETY: ifa_name is a NUL-terminated C string owned by the list.
+        let entry_name = unsafe { std::ffi::CStr::from_ptr(current.ifa_name) };
+        if entry_name.to_bytes() != name.as_bytes() {
+            continue;
+        }
+        // SAFETY: AF_LINK means the address is a sockaddr_dl.  Read it
+        // unaligned through a raw pointer rather than forming a reference:
+        // the kernel's sockaddr_dl is VARIABLE-LENGTH and an entry shorter
+        // than the declared struct would make a reference invalid.
+        let link_pointer = current.ifa_addr.cast::<libc::sockaddr_dl>();
+        let link = unsafe { std::ptr::read_unaligned(link_pointer) };
+        if link.sdl_alen != 6 {
+            continue;
+        }
+        // process.c:4548 uses LLADDR(sdl), i.e. `sdl_data + sdl_nlen' --
+        // POINTER ARITHMETIC into a variable-length tail.  Indexing the
+        // libc-declared `[c_char; 12]' instead panics for any interface whose
+        // name is 7 bytes or longer and which has a 6-byte MAC: `bridge0'
+        // needs indices 7..=12 out of a declared length of 12.  That is a
+        // hard crash, not a wrong answer, and no test reached it because
+        // `lo0' has no MAC and `en0' has a 3-byte name.
+        let address = unsafe {
+            std::ptr::addr_of!((*link_pointer).sdl_data)
+                .cast::<u8>()
+                .add(link.sdl_nlen as usize)
+        };
+        let bytes: Vec<Value> = (0..6)
+            .map(|offset| Value::Integer(unsafe { *address.add(offset) } as i64))
+            .collect();
+        let mut vector = vec![Value::symbol("vector-literal")];
+        vector.extend(bytes);
+        result = Value::cons(Value::Integer(family as i64), Value::list(vector));
+        break;
+    }
+    // SAFETY: `list' came from a successful getifaddrs and is freed once.
+    unsafe { libc::freeifaddrs(list) };
+    result
+}
+
 fn network_interface_list(args: &[Value]) -> Result<Value, LispError> {
     need_arg_range("network-interface-list", args, 0, 2)?;
     let full = args.first().is_some_and(Value::is_truthy);
@@ -445,7 +677,32 @@ define_dispatch!(
             }
             "file-name-case-insensitive-p" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Nil)
+                // fileio.c:2689.  CHECK_STRING, expand, then walk up the tree
+                // until `file_name_case_insensitive_err' is conclusive: it
+                // returns negative for case-insensitive, 0 for sensitive, and
+                // a positive errno for "could not tell", in which case GNU
+                // retries on the parent.  The walk stops when the parent stops
+                // changing -- which is why a missing path answers nil rather
+                // than inheriting the root's answer: `file-name-directory' of
+                // "/nope/deep/" is itself, so the second hop already matches.
+                //
+                // The constant nil this replaces made
+                // files-tests-file-name-non-special-file-name-case-insensitive-p
+                // pass trivially, because that test compares the predicate's
+                // handler and non-handler answers against each other and any
+                // constant satisfies it (audit finding 108).
+                let mut path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                validate_file_name(&path)?;
+                loop {
+                    let err = super::super::system::file_name_case_insensitive_err(&path);
+                    if err <= 0 {
+                        return Ok(if err < 0 { Value::T } else { Value::Nil });
+                    }
+                    match super::super::system::file_name_directory(&path) {
+                        Some(parent) if parent != path => path = parent,
+                        _ => return Ok(Value::Nil),
+                    }
+                }
             }
             "file-name-concat" => Ok(Value::String(
                 file_name_concat(
@@ -1729,19 +1986,43 @@ define_dispatch!(
             "make-serial-process" => make_serial_process(interp, args, env),
             "serial-process-configure" => serial_process_configure(interp, args),
             "set-network-process-option" => {
-                // process.c Fset_network_process_option: a non-process
-                // signals processp; a non-network process errors.  The
-                // previous arm returned t unconditionally -- fabricated
-                // success (2026-08-23 audit finding 79).
-                need_arg_range(name, args, 2, 4)?;
+                // process.c:2962.  Finding 79 fixed the processp/network
+                // half; the option itself was still never read, so every
+                // call returned t whether or not anything was set -- and
+                // GNU's arity is 3, not 2 (audit finding 103).
+                need_arg_range(name, args, 3, 4)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 if !interp.is_network_process(process_id) {
                     return Err(LispError::Signal("Process is not a network process".into()));
                 }
-                Ok(Value::T)
+                // process.c:2984-2986: a closed socket is "not running".
+                let Some(fd) = interp.network_socket_fd(process_id) else {
+                    return Err(LispError::Signal("Process is not running".into()));
+                };
+                // process.c:2881 CHECK_SYMBOL (opt).
+                // process.c:2881 matches by SYMBOL NAME (strcmp), not by eq,
+                // so an uninterned or foreign-obarray symbol works in GNU.
+                // Emaxx stores those with internal markers in the raw name, so
+                // matching the raw name would silently turn a supported option
+                // into "Unknown or unsupported option".
+                let raw = args[1]
+                    .as_symbol()
+                    .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
+                let option = crate::lisp::types::visible_symbol_name(raw).to_string();
+                if set_socket_option(fd, &option, &args[1], &args[2])? {
+                    // process.c:2990 records the accepted option on the
+                    // process's contact plist, which `process-contact' reads.
+                    interp.put_process_contact_option(process_id, &args[1], args[2].clone());
+                    return Ok(Value::T);
+                }
+                // process.c:2994-2997.
+                match args.get(3) {
+                    Some(value) if !value.is_nil() => Ok(Value::Nil),
+                    _ => Err(LispError::Signal("Unknown or unsupported option".into())),
+                }
             }
             "network-interface-list" => network_interface_list(args),
-            "network-interface-info" => Ok(Value::Nil),
+            "network-interface-info" => network_interface_info(args),
             "network-lookup-address-info" => {
                 need_arg_range(name, args, 1, 3)?;
                 let host = string_text(&args[0])?;
@@ -2702,3 +2983,144 @@ fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
     }
     rendered
 }
+
+/// process.c:2877 `set_socket_option'.  Returns whether the option was
+/// recognised AND applied; the caller turns a false into GNU's
+/// "Unknown or unsupported option" (or nil under NO-ERROR).
+///
+/// The table mirrors process.c:2839.  SO_PRIORITY is the only entry GNU
+/// compiles out on this platform, so asking for it is genuinely unsupported
+/// rather than unimplemented; SO_BINDTODEVICE IS defined here (macOS
+/// sys/socket.h:190, 0x1134) and GNU accepts it, so omitting it would be a
+/// regression -- verified against the oracle, which returns t and records
+/// "lo0" on the contact plist.
+fn set_socket_option(
+    fd: std::os::fd::RawFd,
+    option: &str,
+    option_symbol: &Value,
+    value: &Value,
+) -> Result<bool, LispError> {
+    use std::ffi::c_void;
+
+    enum Kind {
+        Bool,
+        Linger,
+        IfName,
+    }
+    let entry = match option {
+        ":broadcast" => Some((libc::SO_BROADCAST, Kind::Bool)),
+        ":dontroute" => Some((libc::SO_DONTROUTE, Kind::Bool)),
+        ":keepalive" => Some((libc::SO_KEEPALIVE, Kind::Bool)),
+        ":oobinline" => Some((libc::SO_OOBINLINE, Kind::Bool)),
+        ":reuseaddr" => Some((libc::SO_REUSEADDR, Kind::Bool)),
+        ":linger" => Some((libc::SO_LINGER, Kind::Linger)),
+        ":bindtodevice" => Some((SO_BINDTODEVICE, Kind::IfName)),
+        _ => None,
+    };
+    let Some((optnum, kind)) = entry else {
+        return Ok(false);
+    };
+
+    // process.c:2921 rejects a non-string, non-nil device name BEFORE the
+    // syscall, with a distinct message from the unknown-option one.
+    let device = if let Kind::IfName = kind {
+        match value {
+            Value::Nil => None,
+            // process.c:2920 gates on STRINGP.  Emaxx has two string
+            // representations (`String' and the shared `StringObject'), so
+            // test through `string_text' rather than one variant.
+            _ => match string_text(value) {
+                Ok(text) => Some(text),
+                Err(_) => {
+                    return Err(LispError::Signal(format!("Bad option value for {option}")));
+                }
+            },
+        }
+    } else {
+        None
+    };
+
+    // SAFETY: `fd' is a live descriptor owned by the process record, and each
+    // arm passes a pointer to a correctly sized local of the type the option
+    // expects.
+    let applied = unsafe {
+        match kind {
+            Kind::Bool => {
+                let optval: libc::c_int = if value.is_nil() { 0 } else { 1 };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    optnum,
+                    std::ptr::addr_of!(optval).cast::<c_void>(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            }
+            Kind::Linger => {
+                // process.c:2931.  Only an int-ranged fixnum sets l_linger;
+                // anything else (float, string, bignum, t) leaves it 0 and
+                // just toggles l_onoff.  Truncating an out-of-range integer
+                // would put a value in the kernel that GNU never would.
+                let seconds = match value {
+                    Value::Integer(count) => i32::try_from(*count).ok(),
+                    _ => None,
+                };
+                let linger = libc::linger {
+                    l_onoff: match seconds {
+                        Some(_) => 1,
+                        None if value.is_nil() => 0,
+                        None => 1,
+                    },
+                    l_linger: seconds.unwrap_or(0),
+                };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    optnum,
+                    std::ptr::addr_of!(linger).cast::<c_void>(),
+                    std::mem::size_of::<libc::linger>() as libc::socklen_t,
+                )
+            }
+            Kind::IfName => {
+                // process.c:2913-2925: a zeroed IFNAMSIZ+1 buffer, at most
+                // IFNAMSIZ bytes copied in, and always IFNAMSIZ handed to the
+                // kernel -- unbinding needs the zeroed buffer, not a short one.
+                let mut devname = [0u8; libc::IFNAMSIZ + 1];
+                if let Some(text) = device.as_deref() {
+                    let bytes = text.as_bytes();
+                    let length = bytes.len().min(libc::IFNAMSIZ);
+                    devname[..length].copy_from_slice(&bytes[..length]);
+                }
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    optnum,
+                    devname.as_ptr().cast::<c_void>(),
+                    libc::IFNAMSIZ as libc::socklen_t,
+                )
+            }
+        }
+    };
+    // process.c:2953 saves errno on the line after the call for a reason, and
+    // fileio.c:293 spells it out: building a Lisp string can itself set errno.
+    // Capture before allocating anything.
+    let failure = (applied < 0).then(std::io::Error::last_os_error);
+    if let Some(error) = failure {
+        // process.c:2940 `report_file_errno ("Cannot set network option",
+        // list2 (opt, val), errno)' -- a file-error carrying the option and
+        // value as data, not an `error' with them folded into the message.
+        // list2 (opt, val) carries the CALLER's symbol, so an `eq' test on
+        // the error data succeeds for a foreign-obarray keyword.  Rebuilding
+        // the symbol here was the same identity bug fixed on the plist path.
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("file-error"),
+            Value::string("Cannot set network option"),
+            Value::string(&super::super::processes::network_io_error_detail(&error)),
+            option_symbol.clone(),
+            value.clone(),
+        ])));
+    }
+    Ok(true)
+}
+
+/// macOS sys/socket.h:190.  The libc crate does not expose this for Darwin.
+const SO_BINDTODEVICE: libc::c_int = 0x1134;

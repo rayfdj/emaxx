@@ -127,6 +127,9 @@ struct GnuTlsApi {
     cipher_key_size: AlgorithmSize,
     cipher_iv_size: AlgorithmUnsigned,
     mac_list: AlgorithmList,
+    digest_list: AlgorithmList,
+    digest_name: AlgorithmName,
+    digest_length: AlgorithmUnsigned,
     mac_name: AlgorithmName,
     mac_length: AlgorithmUnsigned,
     mac_key_size: AlgorithmSize,
@@ -285,6 +288,13 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 cipher_key_size: load_symbol(&library, b"gnutls_cipher_get_key_size")?,
                 cipher_iv_size: load_symbol(&library, b"gnutls_cipher_get_iv_size")?,
                 mac_list: load_symbol(&library, b"gnutls_mac_list")?,
+                // gnutls.c:402,403,434 load exactly these three for
+                // `gnutls-digests'.  The catalogue used to be a transcribed
+                // constant table in this file while its cipher and mac
+                // neighbours were queried live (audit finding 100).
+                digest_list: load_symbol(&library, b"gnutls_digest_list")?,
+                digest_name: load_symbol(&library, b"gnutls_digest_get_name")?,
+                digest_length: load_symbol(&library, b"gnutls_hash_get_len")?,
                 mac_name: load_symbol(&library, b"gnutls_mac_get_name")?,
                 mac_length: load_symbol(&library, b"gnutls_hmac_get_len")?,
                 mac_key_size: load_symbol(&library, b"gnutls_mac_get_key_size")?,
@@ -383,79 +393,59 @@ struct DigestSpec {
     name: &'static str,
     id: i64,
     algorithm: &'static str,
-    length: i64,
 }
 
-// GnuTLS 3 enumerates these in the reverse order.  `gnutls-digests' conses
-// each descriptor, producing this stable public order in GNU Emacs 30.2.
+// NOT the `gnutls-digests' catalogue -- that is queried from the library now
+// (audit finding 100).  This is only the mapping from a GnuTLS digest name to
+// the internal hash implementation `gnutls-hash-digest' uses, which has no
+// equivalent in the library and must live somewhere.
 const DIGESTS: &[DigestSpec] = &[
     DigestSpec {
         name: "STREEBOG-512",
         id: 17,
         algorithm: "streebog-512",
-        length: 64,
     },
     DigestSpec {
         name: "STREEBOG-256",
         id: 16,
         algorithm: "streebog-256",
-        length: 32,
     },
     DigestSpec {
         name: "GOSTR341194",
         id: 15,
         algorithm: "gost94-cryptopro",
-        length: 32,
     },
     DigestSpec {
         name: "MD5",
         id: 2,
         algorithm: "md5",
-        length: 16,
     },
     DigestSpec {
         name: "SHA224",
         id: 9,
         algorithm: "sha224",
-        length: 28,
     },
     DigestSpec {
         name: "SHA512",
         id: 8,
         algorithm: "sha512",
-        length: 64,
     },
     DigestSpec {
         name: "SHA384",
         id: 7,
         algorithm: "sha384",
-        length: 48,
     },
     DigestSpec {
         name: "SHA256",
         id: 6,
         algorithm: "sha256",
-        length: 32,
     },
     DigestSpec {
         name: "SHA1",
         id: 3,
         algorithm: "sha1",
-        length: 20,
     },
 ];
-
-fn descriptor(spec: &DigestSpec) -> Value {
-    Value::list([
-        Value::symbol(spec.name),
-        Value::symbol(":digest-algorithm-id"),
-        Value::Integer(spec.id),
-        Value::symbol(":type"),
-        Value::symbol("gnutls-digest-algorithm"),
-        Value::symbol(":digest-algorithm-length"),
-        Value::Integer(spec.length),
-    ])
-}
 
 fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
     let mut current = plist.clone();
@@ -533,6 +523,34 @@ fn cipher_catalog(library: &GnuTlsLibrary) -> Value {
         })
         .collect::<Vec<_>>();
     // GNU conses each descriptor while traversing GnuTLS's forward list.
+    entries.reverse();
+    Value::list(entries)
+}
+
+/// gnutls.c:2713 `Fgnutls_digests': walk `gnutls_digest_list', and for each
+/// algorithm cons a plist of its name, id, type and hash length.  GNU conses,
+/// so the list comes back reversed relative to the library's own order --
+/// which is why `entries.reverse()' is not cosmetic.
+fn digest_catalog(library: &GnuTlsLibrary) -> Value {
+    let api = library.api;
+    let mut entries = algorithm_ids(api.digest_list)
+        .into_iter()
+        .filter_map(|id| {
+            // SAFETY: `id` came directly from `gnutls_digest_list`.
+            let name = c_string(unsafe { (api.digest_name)(id) })?;
+            // SAFETY: `gnutls_hash_get_len` accepts any digest-list ID.
+            let length = unsafe { (api.digest_length)(id) };
+            Some(Value::list([
+                Value::symbol(&name),
+                Value::symbol(":digest-algorithm-id"),
+                Value::Integer(i64::from(id)),
+                Value::symbol(":type"),
+                Value::symbol("gnutls-digest-algorithm"),
+                Value::symbol(":digest-algorithm-length"),
+                Value::Integer(length as i64),
+            ]))
+        })
+        .collect::<Vec<_>>();
     entries.reverse();
     Value::list(entries)
 }
@@ -1703,7 +1721,8 @@ define_dispatch!(
             }
             "gnutls-digests" => {
                 need_args(name, args, 0)?;
-                Ok(Value::list(DIGESTS.iter().map(descriptor)))
+                let library = load_gnutls()?;
+                Ok(digest_catalog(&library))
             }
             "gnutls-error-fatalp" => {
                 need_args(name, args, 1)?;

@@ -232,17 +232,6 @@ pub(super) enum SourceLiteralKind {
 }
 
 impl Interpreter {
-    // This evaluator recurses once per subform rather than once per
-    // funcall/eval level like GNU Emacs, so the same Lisp program nests
-    // several times deeper here.  Scale the user-visible limit so honest
-    // deep recursion still fits while runaway recursion keeps signaling
-    // the GNU error instead of exhausting the Rust stack.
-    // GNU 30 additionally grows `max-lisp-eval-depth' dynamically while C
-    // stack remains, so honest recursion tens of thousands of calls deep
-    // succeeds interpreted (cl-macs--labels recurses 42000 deep); the batch
-    // thread's large stack backs the same headroom here.
-    const LISP_EVAL_DEPTH_SCALE: usize = 384;
-
     fn source_form_analysis(&mut self, source: &Value) -> Result<SourceFormAnalysis, LispError> {
         let Some((source_anchor, _)) = source.cons_cells() else {
             return Err(LispError::WrongTypeArgument("listp".into(), source.clone()));
@@ -321,27 +310,53 @@ impl Interpreter {
             return result;
         }
         self.lisp_eval_depth += 1;
-        if self.lisp_eval_depth > 800 * Self::LISP_EVAL_DEPTH_SCALE
-            && self.lisp_eval_depth > self.max_lisp_eval_depth()
-        {
+        // eval.c:2504-2509.  NOTE: GNU increments at TWO sites -- `eval_sub'
+        // here and `Ffuncall' (eval.c:3078) -- while Emaxx increments only
+        // here, so a `funcall'/`apply' chain counts 2 units per level where
+        // GNU counts 3.  Emaxx therefore trips LATER on those paths, never
+        // earlier, so no honest program fails that GNU accepts; the limit
+        // simply means something slightly different there.  Tracked
+        // separately rather than claimed as done.
+        //   if (++lisp_eval_depth > max_lisp_eval_depth) {
+        //     if (max_lisp_eval_depth < 100) max_lisp_eval_depth = 100;
+        //     if (lisp_eval_depth > max_lisp_eval_depth)
+        //       xsignal1 (Qexcessive_lisp_nesting, make_fixnum (lisp_eval_depth));
+        //   }
+        // Three things were wrong here (audit finding 105).  The limit came
+        // from the GLOBAL cell, so `(let ((max-lisp-eval-depth 100)) ...)'
+        // was invisible and a runaway recursion under a deliberately small
+        // binding ran to completion.  It was multiplied by 384 and floored at
+        // 307200, so the variable could not lower the limit at all.  And it
+        // raised a plain `error' where GNU raises `excessive-lisp-nesting'
+        // carrying the depth -- a condition this tree already defines
+        // (eval.rs:732) and never signalled.
+        let limit = self.lisp_eval_depth_limit(env);
+        if self.lisp_eval_depth > limit {
+            let reached = self.lisp_eval_depth;
             self.lisp_eval_depth -= 1;
-            return Err(LispError::Signal(
-                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
-            ));
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])));
         }
         // GNU grows `max-lisp-eval-depth' while C stack remains and signals
-        // before the stack dies (eval.c near_C_stack_top).  The scaled
-        // counter above cannot see the actual stack, and a deep non-tail
-        // recursion can exhaust even the 8 GiB batch thread before it
-        // trips (the pinned semantic-utest-ia.el did exactly that, as a
-        // SIGABRT with no report).  Mirror GNU's contract directly: when
-        // the running thread's stack headroom falls below the margin,
-        // signal `excessive-lisp-nesting' instead of crashing.
+        // before the stack dies (eval.c near_C_stack_top).  The counter above
+        // cannot see the actual stack, and a deep non-tail recursion can
+        // exhaust even the 8 GiB batch thread before it trips (the pinned
+        // semantic-utest-ia.el did exactly that, as a SIGABRT with no
+        // report).  Mirror GNU's contract directly: when the running thread's
+        // stack headroom falls below the margin, signal
+        // `excessive-lisp-nesting' instead of crashing -- and signal it as
+        // that CONDITION, which this arm previously did not do.  It raised a
+        // plain `error' while the comment above claimed otherwise, so a
+        // `condition-case' keyed on `recursion-error' missed it.
         if self.lisp_eval_depth.is_multiple_of(64) && !Self::stack_headroom_remains() {
+            let reached = self.lisp_eval_depth;
             self.lisp_eval_depth -= 1;
-            return Err(LispError::Signal(
-                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
-            ));
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])));
         }
         let result = self.eval_inner(expr, env);
         self.lisp_eval_depth -= 1;
@@ -379,12 +394,18 @@ impl Interpreter {
         true
     }
 
-    fn max_lisp_eval_depth(&self) -> usize {
-        self.global_value("max-lisp-eval-depth")
+    /// The effective `max-lisp-eval-depth', read through the DYNAMIC binding
+    /// so a `let' is honoured, with eval.c:2506's floor: a limit below 100 is
+    /// raised to 100 rather than rejected.
+    fn lisp_eval_depth_limit(&self, env: &Env) -> usize {
+        // Clamp BEFORE converting: `usize::try_from(-5)' fails, so folding
+        // the conversion into the default turned a negative limit into 1600 --
+        // LARGER than requested, where eval.c:2506 floors it at 100.
+        let requested = self
+            .lookup_var("max-lisp-eval-depth", env)
             .and_then(|value| value.as_integer().ok())
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(1600)
-            .saturating_mul(Self::LISP_EVAL_DEPTH_SCALE)
+            .unwrap_or(1600);
+        usize::try_from(requested.max(100)).unwrap_or(100)
     }
 
     fn eval_inner(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
