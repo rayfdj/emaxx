@@ -73,7 +73,8 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | OPEN |
 | 103 | set-network-process-option fabricated success and never read the option | FIXED 2026-08-26 - real setsockopt, 20 cases oracle-matched |
 | 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
-| 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | OPEN |
+| 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
+| 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
@@ -88,7 +89,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
 | 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
-| 117 | the gate contains an intermittent test that fails ~1 run in 5, so "green" has always been partly luck | OPEN |
+| 117 | the gate contains an intermittent test that fails up to 75% of runs under load, so "green" has always been partly luck | OPEN (rate revised UP) |
 | 118 | network-interface-list omits most interfaces: 3 where GNU reports 11 on the same host | OPEN |
 
 # Honesty audit — 2026-08-18
@@ -2080,3 +2081,75 @@ does intern, which is why the oracle probes agreed.
      GNU's reader does -- computed, not copied.  Until then `intern-soft'
      keeps its inference and 112 stays OPEN, now with the real cause attached.
      OPEN.
+
+**105 FIXED (2026-08-27).**  `max-lisp-eval-depth' was read from the GLOBAL
+cell, so `(let ((max-lisp-eval-depth 100)) ...)' was invisible and a runaway
+recursion under a deliberately small binding ran to completion.  The value was
+then multiplied by 384 and floored at 307,200, so the variable could not lower
+the limit at all, and exceeding it raised a plain `error' where GNU raises
+`excessive-lisp-nesting' -- a condition this tree already defined
+(eval.rs:732) and had never once signalled.
+It now mirrors eval.c:2504-2509: read the DYNAMIC binding, raise a sub-100
+limit to 100 rather than rejecting it, and signal
+`(excessive-lisp-nesting DEPTH)'.  The 384x scale is deleted.
+The finding was WRONG about one clause and it is worth saying so: it claimed
+`stack_headroom_remains()' is "hardcoded true".  On this platform it is a real
+`pthread_get_stackaddr_np' probe; the `true' body is only the non-macOS arm.
+That function is untouched -- but the guard beside it DID raise the same plain
+`error' the finding describes, while its own comment claimed it signalled
+`excessive-lisp-nesting'.  Now it signals what the comment always said.
+The risk this change carried was that the 384x scale existed to let honest
+deep recursion succeed, so removing it might make Emaxx signal where GNU
+succeeds, or crash where it previously signalled.  An audit measured both and
+neither happened.  Exact thresholds on the same recursion: GNU last succeeds
+at 792 and signals `(excessive-lisp-nesting 1601)' at 793; Emaxx succeeds to
+794 and signals the identical object at 795 -- two frames MORE permissive.
+Roughly sixty programs matched byte-for-byte, including `cl-labels' 1000 deep,
+`macroexpand-all' 400 deep, `cl-loop' to 20,000 and a 200,000-level nested
+print.  Deliberate stack-overflow attempts (a million-deep non-tail `cons'
+recursion under a 1e8 limit) produced no panic: with the scale gone the
+counter trips at 1,601 instead of 614,400, so the native stack is reached
+~384x LATER.  Removing the scale reduced crash risk rather than raising it.
+Also fixed here, both found by that audit: a NEGATIVE limit became the 1600
+default instead of flooring to 100, because the `usize' conversion ran before
+the clamp -- making the limit larger than requested where GNU makes it
+smaller; and a truncated comment left behind by the deletion, which ended
+mid-sentence and asserted that this evaluator "nests several times deeper"
+than GNU, a claim the threshold measurement above disproves.
+
+122. Emaxx increments `lisp_eval_depth' at ONE site (core.rs, `eval'); GNU
+     increments at TWO -- `eval_sub' (eval.c:2504) and `Ffuncall'
+     (eval.c:3078).  Measured: a direct call costs 2 units per level in both,
+     but a `funcall'/`apply' chain costs 3 in GNU and 2 here, so those paths
+     trip at roughly 795 levels where GNU trips at 529.
+     The divergence is in the SAFE direction -- Emaxx tolerates more, so no
+     honest program fails that GNU accepts -- but `max-lisp-eval-depth' means
+     something slightly different on those paths, and a GNU test that pins the
+     depth at which a funcall chain fails would disagree.  Recorded rather
+     than folded into finding 105, whose comment now states the gap instead of
+     claiming eval.c is mirrored "exactly".  OPEN.
+
+**Correction to 117: the failure rate is much worse than recorded, and it is
+load-dependent.**  The entry says "roughly one run in five", from five
+consecutive runs giving four passes and one failure, corroborated by four
+failures across seventeen gate logs (~24%).  Re-measured on 2026-08-27 while
+checking whether an evaluator change had worsened it:
+
+    previous evaluator (HEAD~1 core.rs)   2 pass / 6 fail
+    current evaluator                     4 pass / 4 fail
+
+Eight runs each, back to back, same machine, load average ~5.  So the real
+rate is somewhere between half and three quarters of runs when the machine is
+busy, not one in five -- the original figure was taken on an idle machine and
+generalised.  A "green gate" is therefore a much weaker statement than this
+ledger has been treating it as, and every green gate reported during this
+session should be read with that in mind.
+The A/B also answers the question it was run for: the flake is NOT caused by
+the `max-lisp-eval-depth' change (finding 105).  The older evaluator fails it
+MORE often, so if anything the change helps; eight samples a side cannot
+distinguish that from noise, but they comfortably exclude "the change made it
+worse".
+This strengthens the case that 117 is a genuine Emaxx defect rather than an
+upstream test needing a wait, since a pure test-side race would not care which
+evaluator is underneath.  Still OPEN, still not to be resolved by retrying
+until green.

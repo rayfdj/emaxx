@@ -8640,6 +8640,53 @@ fn network_interface_info_reports_the_real_interface() {
 }
 
 #[test]
+fn max_lisp_eval_depth_is_honoured_dynamically() {
+    // eval.c:2504-2509.  The limit came from the GLOBAL cell, so a `let' was
+    // invisible; it was then multiplied by 384 and floored at 307200, so the
+    // variable could not lower it at all; and exceeding it raised a plain
+    // `error' rather than `excessive-lisp-nesting' (audit finding 105).
+    //
+    // The first row is the discriminating one: under a deliberately small
+    // binding a runaway recursion ran to completion and returned `done'.
+    // The second pins eval.c:2506's floor -- a limit below 100 is RAISED to
+    // 100, not rejected -- and the third pins that ordinary recursion under
+    // the default limit still succeeds, which is what the old scaling was
+    // there to protect.
+    let program = r#"
+        (progn
+          (defun zz-depth-rec (n) (if (> n 0) (zz-depth-rec (1- n)) 'done))
+          (list (condition-case error
+                    (let ((max-lisp-eval-depth 100)) (zz-depth-rec 500))
+                  (error (car error)))
+                (condition-case error
+                    (let ((max-lisp-eval-depth 5)) (zz-depth-rec 50))
+                  (error (car error)))
+                (condition-case error (zz-depth-rec 200) (error (car error)))
+                ;; A NEGATIVE limit floors to 100 like any sub-100 value.
+                ;; Converting before clamping turned it into the 1600 default
+                ;; -- larger than requested, where GNU makes it smaller.
+                (condition-case error
+                    (let ((max-lisp-eval-depth -5)) (zz-depth-rec 500))
+                  (error (car error)))
+                (get 'excessive-lisp-nesting 'error-conditions)))"#;
+    let expected = concat!(
+        "(excessive-lisp-nesting excessive-lisp-nesting done ",
+        "excessive-lisp-nesting (excessive-lisp-nesting recursion-error error))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read depth program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate depth program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn get_unused_iso_final_char_scans_the_registered_charsets() {
     // charset.c:1406 scans `0'..`?' for a final char no charset of this
     // DIMENSION and CHARS has claimed.  This returned the constant ?0 with
