@@ -157,8 +157,7 @@ fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) 
 /// hook used by both cons fields.  Cache reads are therefore a single boolean
 /// load regardless of unrelated data mutation; mutations pay only for caches
 /// that actually depend on the field being borrowed mutably.
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct ConsMutationSnapshot {
     valid: Rc<Cell<bool>>,
     field_ids: Vec<usize>,
@@ -984,10 +983,7 @@ impl EnvFrame {
     /// COPY, preserving the frame's evaluator metadata (identity,
     /// namespace flag).  Frames shared between environments are
     /// deduplicated by the caller via `identity_ptr'.
-    pub(crate) fn deep_copy_with(
-        &self,
-        copy: &mut impl FnMut(&Value) -> Value,
-    ) -> Self {
+    pub(crate) fn deep_copy_with(&self, copy: &mut impl FnMut(&Value) -> Value) -> Self {
         let data = &self.0;
         Self(Rc::new(EnvFrameData {
             bindings: data
@@ -1004,7 +1000,6 @@ impl EnvFrame {
                 .map(|environment| copy(environment)),
         }))
     }
-
 
     pub fn new(bindings: Vec<(String, Value)>) -> Self {
         Self(Rc::new(EnvFrameData {
@@ -1421,14 +1416,34 @@ impl Value {
 
     // Accessors
 
+    /// GNU's `CHECK_FIXNUM', which names `fixnump' -- NOT `integerp'.
+    ///
+    /// `as_integer' below is the `CHECK_INTEGER' analogue and names
+    /// `integerp'; the two are genuinely different predicates and GNU picks
+    /// deliberately.  `(nth 'a '(1))' signals `integerp' while
+    /// `(get-unused-iso-final-char 'a 94)' signals `fixnump', so a primitive
+    /// mirroring CHECK_FIXNUM must use this one.
+    pub fn as_fixnum(&self) -> Result<i64, LispError> {
+        match self {
+            Value::Integer(n) => Ok(*n),
+            // A bignum is an integer but not a fixnum, which is exactly what
+            // CHECK_FIXNUM rejects.
+            _ => Err(LispError::WrongTypeArgument("fixnump".into(), self.clone())),
+        }
+    }
+
     pub fn as_integer(&self) -> Result<i64, LispError> {
-        // GNU's CHECK_FIXNUM names `integerp' ((nth 'a ...) => (integerp a)).
+        // GNU's CHECK_INTEGER names `integerp'; CHECK_FIXNUM names `fixnump'
+        // and is spelled `as_fixnum' above.
         match self {
             Value::Integer(n) => Ok(*n),
             Value::BigInteger(n) => n
                 .to_i64()
                 .ok_or_else(|| LispError::WrongTypeArgument("fixnump".into(), self.clone())),
-            _ => Err(LispError::WrongTypeArgument("integerp".into(), self.clone())),
+            _ => Err(LispError::WrongTypeArgument(
+                "integerp".into(),
+                self.clone(),
+            )),
         }
     }
 
@@ -1543,7 +1558,12 @@ impl Value {
                     result.push(cell.car.borrow().clone());
                     current = cell.cdr.borrow().clone();
                 }
-                _ => return Err(LispError::WrongTypeArgument("listp".into(), current.clone())),
+                _ => {
+                    return Err(LispError::WrongTypeArgument(
+                        "listp".into(),
+                        current.clone(),
+                    ));
+                }
             }
         }
     }

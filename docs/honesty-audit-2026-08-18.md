@@ -68,11 +68,11 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 97 | commandp returns t where GNU signals on an interactive-form property | OPEN (disclosed) |
 | 98 | the 7595 denominator excluded 3 files dropped by a 20s inventory cap 9x tighter than the run's own 180s default | FIXED 2026-08-26 - regenerated to 7883 |
 | 99 | make-thread body classifier pattern-matches three lambda shapes instead of running the body | OPEN |
-| 100 | GnuTLS digest catalogue transcribed from the oracle while cipher/mac lists are queried live | OPEN |
+| 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | OPEN |
 | 103 | set-network-process-option fabricated success and never read the option | FIXED 2026-08-26 - real setsockopt, 20 cases oracle-matched |
-| 104 | get-unused-iso-final-char returns a constant and swallows validation | OPEN |
+| 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | OPEN |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
@@ -1912,3 +1912,62 @@ exactly as documented.
 Independently confirmed by that round: all 18 interfaces on this host, plus
 three nonexistent names and eight edge cases including an embedded-NUL name
 and the 15/16-byte boundary, are byte-identical to the oracle.
+
+**100 FIXED (2026-08-26).**  The `gnutls-digests' catalogue was a 9-entry
+constant table in the oracle's exact order, in a file whose cipher and mac
+catalogues were already queried live through dlopen -- the transcription sat
+twenty lines from the machinery that would have replaced it.  It now loads
+`gnutls_digest_list', `gnutls_digest_get_name' and `gnutls_hash_get_len'
+alongside its neighbours (gnutls.c:402,403,434) and builds the plists exactly
+as gnutls.c:2713 does, including the reversal that GNU's consing produces.
+Byte-identical to the oracle, nine digests.  The remaining constant table is
+NOT the catalogue: it maps a GnuTLS digest name to the internal hash
+implementation `gnutls-hash-digest' uses, which has no library equivalent and
+must live somewhere; its transcribed `length' field, now redundant, is gone.
+Two honest limits.  The retained table still carries the oracle's `id' values
+and its SET of nine names, used by `gnutls-hash-digest' -- so a host whose
+GnuTLS listed a tenth digest would have `gnutls-digests' report it and
+`gnutls-hash-digest' reject it.  And the test for this pins CORRECTNESS, not
+liveness: the constant table was built from this host's GnuTLS, so restoring
+it would leave the test green.  That the query is live rests on code
+inspection, exactly as with finding 101.
+Also disclosed: the digest symbols are loaded with the fallible loader, so a
+GnuTLS older than 3.2.2 -- which lacks `gnutls_digest_list' -- would fail the
+whole library load and take `gnutls-available-p' with it, where GNU falls back
+to `gnutls_mac_list' (gnutls.c:2327-2333).  Pre-existing in kind: the cipher
+tag/IV size symbols, gated at the same versions, already load fallibly.
+
+**104 FIXED (2026-08-26).**  `get-unused-iso-final-char' returned the constant
+?0 with both arguments unread, so it answered "0" even where that slot was
+taken and never signalled for a bad DIMENSION or CHARS.  It now validates in
+GNU's order -- DIMENSION first, and its real range is 1..=3 even though the
+docstring says "1 or 2" -- and scans `0'..`?' against the charsets actually
+registered, reading `:iso-final-char' from the same plists `charset-plist'
+exposes and asking Lisp for each charset's dimension and chars, PLUS the
+equivalence declarations `declare-equiv-charset' writes straight into the same
+table (charset.c:1440) -- an earlier version derived a parallel table from
+plists alone and diverged from Emaxx's own `iso_charsets' after any runtime
+declaration: GNU went 54 -> 55 on a fresh declaration where Emaxx stayed 54.
+Eleven cases byte-identical: all six dimension/chars pairs, both range errors,
+three type errors, and the equivalence-declaration round trip.
+One subtlety cost a wrong answer before it was found by comparing against the
+oracle rather than by reasoning -- and a second, found by audit, was that
+charset.c:1387 is CHECK_FIXNUM, which names `fixnump', while the obvious
+`as_integer' helper names `integerp' (its own comment claimed otherwise).
+Six type-error inputs signalled the wrong predicate, and the test compared
+only `(car error)', which cannot see the difference.  A `as_fixnum' helper now
+mirrors CHECK_FIXNUM and the test compares whole error objects.
+The first subtlety: charset.c:1395 reduces CHARS to the BOOLEAN
+`chars == 96', and ISO_CHARSET_TABLE is indexed by that flag rather than by
+the number, so every charset whose `charset-chars' is not 96 shares the 94
+bucket.  `arabic-digit' has a chars of 9 and claims final char ?2 there.
+Comparing the numbers for equality skipped it and reported (1 94) as ?2 where
+GNU answers ?6.  Emaxx's charset registry agrees with GNU on the charsets that matter here --
+every charset whose final char falls in the scanned `0'..`?' range -- and only
+the bucketing rule was wrong.  An earlier draft claimed agreement on "all 203
+charsets and their final chars", which is FALSE: six differ, `ascii' most
+clearly, with final char ?B in GNU and none recorded in Emaxx.  All six sit
+outside the scanned range so the answers match anyway, but the sweeping claim
+was untrue and is withdrawn.  Those six also lack `:dimension', so
+`(charset-chars 'ascii)' signals in Emaxx where GNU answers 128 -- recorded
+here rather than left for someone to rediscover.

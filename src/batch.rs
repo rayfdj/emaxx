@@ -85,8 +85,8 @@ pub fn run_batch_with_actions(
     let perf_request = parse_perf_request(&eval_expressions)?;
     // The compat helper's load-error reports record the harness-provided
     // selector; mirror GNU's `emaxx-compat--selector' environment contract.
-    let selector_string = env::var("EMAXX_COMPAT_SELECTOR")
-        .unwrap_or_else(|_| "(quote t)".to_string());
+    let selector_string =
+        env::var("EMAXX_COMPAT_SELECTOR").unwrap_or_else(|_| "(quote t)".to_string());
     let mut eval_env: Env = Vec::new();
     for action in &actions {
         match action {
@@ -230,7 +230,6 @@ fn emit_unhandled_batch_error(interpreter: &mut Interpreter, error: &LispError) 
     }
     eprintln!("  normal-top-level()");
 }
-
 
 /// Bootstrap the full Lisp runtime for an interactive terminal session.
 ///
@@ -1209,7 +1208,6 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     Ok(())
 }
 
-
 fn format_backtrace_summary(interpreter: &Interpreter) -> String {
     format_backtrace_frames(interpreter.backtrace_frames_snapshot())
 }
@@ -1294,7 +1292,6 @@ fn resolve_load_target(
 
     Err(format!("cannot resolve load target `{target}`"))
 }
-
 
 fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
     let items = form.to_vec().ok()?;
@@ -1419,7 +1416,6 @@ fn verbose_mode() -> bool {
     )
 }
 
-
 fn write_junit_report_if_requested(report: &BatchReport) -> Result<(), String> {
     let Ok(path) = env::var("EMACS_TEST_JUNIT_REPORT") else {
         return Ok(());
@@ -1533,7 +1529,6 @@ mod tests {
         assert_eq!(request.samples, 5);
     }
 
-
     #[test]
     fn batch_load_resolution_prefers_elc_only_when_requested() {
         let unique = SystemTime::now()
@@ -1562,7 +1557,6 @@ mod tests {
 
         fs::remove_dir_all(root).expect("remove load directory");
     }
-
 
     #[test]
     fn batch_runtime_binds_command_line_args_left_to_nil() {
@@ -1775,12 +1769,10 @@ mod tests {
             load_path: vec![root.clone()],
             ..Default::default()
         };
-        let interpreter =
-            initialize_batch_interpreter(&options).expect("a shadowing -L must not break the image");
+        let interpreter = initialize_batch_interpreter(&options)
+            .expect("a shadowing -L must not break the image");
         assert!(
-            interpreter
-                .lookup_function("when", &Vec::new())
-                .is_ok(),
+            interpreter.lookup_function("when", &Vec::new()).is_ok(),
             "the reconstructed image must be complete despite the shadowing -L"
         );
         assert_eq!(
@@ -2715,11 +2707,7 @@ mod tests {
                         Value::String("cyan".into()),
                         Value::String("white".into()),
                     ]),
-                    Value::list([
-                        Value::Integer(65535),
-                        Value::Integer(0),
-                        Value::Integer(0),
-                    ]),
+                    Value::list([Value::Integer(65535), Value::Integer(0), Value::Integer(0),]),
                     Value::T,
                     Value::list([Value::Float(1.0), Value::Float(0.0), Value::Float(0.0)]),
                 ])

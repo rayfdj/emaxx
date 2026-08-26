@@ -32,9 +32,6 @@ pub(crate) fn normalize_bigint_value(value: BigInt) -> Value {
         .unwrap_or(Value::BigInteger(value.into()))
 }
 
-
-
-
 pub(crate) fn string_version_compare(left: &str, right: &str) -> Ordering {
     let left_bytes = left.as_bytes();
     let right_bytes = right.as_bytes();
@@ -111,7 +108,6 @@ pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {
         .flatten()
         .map(arity_value)
 }
-
 
 pub(crate) fn lambda_arity_value(params: &[String]) -> Value {
     let mut required = 0i64;
@@ -242,10 +238,12 @@ pub(crate) fn function_arity_value(
                 .ok_or_else(|| invalid_function_arity(function))?;
             closure_arity_value(argument_spec, function)
         }
-        _ => Err(LispError::WrongTypeArgument("functionp".into(), function.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "functionp".into(),
+            function.clone(),
+        )),
     }
 }
-
 
 pub(crate) fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
     match value {
@@ -335,7 +333,10 @@ pub(crate) fn integer_rounding_value(
         ));
     }
     if float_result && !matches!(args[0], Value::Float(_)) {
-        return Err(LispError::WrongTypeArgument("floatp".into(), args[0].clone()));
+        return Err(LispError::WrongTypeArgument(
+            "floatp".into(),
+            args[0].clone(),
+        ));
     }
 
     if args.len() == 1 {
@@ -552,9 +553,9 @@ pub(crate) fn expt_value(
     let exponent_bigint = exponent_bigint?;
     if exponent_bigint.is_negative() {
         let base_value = integer_like_i64(interp, base)? as f64;
-        let exponent_value = exponent_bigint
-            .to_f64()
-            .ok_or_else(|| LispError::WrongTypeArgument("number-or-marker-p".into(), exponent.clone()))?;
+        let exponent_value = exponent_bigint.to_f64().ok_or_else(|| {
+            LispError::WrongTypeArgument("number-or-marker-p".into(), exponent.clone())
+        })?;
         return Ok(Value::Float(base_value.powf(exponent_value)));
     }
 
@@ -587,7 +588,10 @@ pub(crate) fn exact_binary_rational(
         Value::Integer(value) => Ok(Some((BigInt::from(*value), 0))),
         Value::BigInteger(value) => Ok(Some((value.clone().into(), 0))),
         Value::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
-        _ => Err(LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "number-or-marker-p".into(),
+            value.clone(),
+        )),
     }
 }
 
@@ -1273,10 +1277,15 @@ fn explicit_zone_spec_from_value(
             }
             let offset = match &items[0] {
                 Value::Integer(value) => *value as i32,
-                Value::BigInteger(value) => value
-                    .to_i32()
-                    .ok_or_else(|| LispError::WrongTypeArgument("integerp".into(), items[0].clone()))?,
-                _ => return Err(LispError::WrongTypeArgument("integerp".into(), items[0].clone())),
+                Value::BigInteger(value) => value.to_i32().ok_or_else(|| {
+                    LispError::WrongTypeArgument("integerp".into(), items[0].clone())
+                })?,
+                _ => {
+                    return Err(LispError::WrongTypeArgument(
+                        "integerp".into(),
+                        items[0].clone(),
+                    ));
+                }
             };
             let abbreviation = items
                 .get(1)
@@ -2144,7 +2153,10 @@ pub(crate) fn numeric_ordering(
             value,
             Value::Integer(_) | Value::BigInteger(_) | Value::Float(_) | Value::Marker(_)
         ) {
-            return Err(LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone()));
+            return Err(LispError::WrongTypeArgument(
+                "number-or-marker-p".into(),
+                value.clone(),
+            ));
         }
     }
     if matches!(left, Value::Float(value) if value.is_nan())
@@ -2239,12 +2251,13 @@ pub(crate) fn numeric_result_value(
         Value::Integer(number) => Ok(Value::Integer(*number)),
         Value::BigInteger(number) => Ok(normalize_bigint_value(number.clone().into())),
         Value::Float(number) => Ok(Value::Float(*number)),
-        Value::Marker(id) => {
-            Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {
-                LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
-            })? as i64))
-        }
-        _ => Err(LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())),
+        Value::Marker(id) => Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {
+            LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
+        })? as i64)),
+        _ => Err(LispError::WrongTypeArgument(
+            "number-or-marker-p".into(),
+            value.clone(),
+        )),
     }
 }
 
@@ -2423,6 +2436,9 @@ pub(crate) fn number_to_string(value: &Value) -> Result<String, LispError> {
         Value::Integer(n) => Ok(n.to_string()),
         Value::BigInteger(n) => Ok(n.to_string()),
         Value::Float(f) => Ok(crate::lisp::types::format_float(*f)),
-        _ => Err(LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "number-or-marker-p".into(),
+            value.clone(),
+        )),
     }
 }

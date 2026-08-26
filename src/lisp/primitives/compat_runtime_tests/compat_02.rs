@@ -1293,11 +1293,7 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
         &mut env,
         &[record_head.clone(), record_mid.clone(), sym("e")],
     );
-    let record_nested_f = make_record(
-        &mut interp,
-        &mut env,
-        &[record_head, record_mid, sym("f")],
-    );
+    let record_nested_f = make_record(&mut interp, &mut env, &[record_head, record_mid, sym("f")]);
     let cases = vec![
         ("number", parse("1"), parse("2")),
         ("number_neg_neg", parse("-2"), parse("-1")),
@@ -1457,15 +1453,21 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             {
                 let head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
                 let inner = make_record(&mut interp, &mut env, &[sym("u")]);
-                let mid =
-                    make_record(&mut interp, &mut env, &[sym("c"), sym("d"), inner, sym("x")]);
+                let mid = make_record(
+                    &mut interp,
+                    &mut env,
+                    &[sym("c"), sym("d"), inner, sym("x")],
+                );
                 make_record(&mut interp, &mut env, &[head, mid, sym("e")])
             },
             {
                 let head = make_record(&mut interp, &mut env, &[sym("b"), sym("a")]);
                 let inner = make_record(&mut interp, &mut env, &[sym("v")]);
-                let mid =
-                    make_record(&mut interp, &mut env, &[sym("c"), sym("d"), inner, sym("x")]);
+                let mid = make_record(
+                    &mut interp,
+                    &mut env,
+                    &[sym("c"), sym("d"), inner, sym("x")],
+                );
                 make_record(&mut interp, &mut env, &[head, mid, sym("e")])
             },
         ),

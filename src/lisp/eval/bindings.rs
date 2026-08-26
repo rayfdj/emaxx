@@ -120,7 +120,6 @@ pub(super) fn lisp_environment_declares_special(environment: &Value, name: &str)
     .is_some()
 }
 
-
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
         // Cow avoids a per-lookup String allocation for the overwhelmingly
@@ -352,7 +351,6 @@ impl Interpreter {
             // registry before tty-colors.el layers its portable policy over
             // the host value cell.
             "tty-defined-color-alist" => Some(Value::Nil),
-
 
             // GNU emacs.c defvar (":" on POSIX).
             "path-separator" => Some(Value::String(":".into())),
@@ -1249,7 +1247,6 @@ fn temp_directory_name() -> String {
     }
     directory
 }
-
 
 /// Every statically-valued name in `builtin_var_value' that GNU's C
 /// sources create with a DEFVAR_* (verified against the pinned checkout,

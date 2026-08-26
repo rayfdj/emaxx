@@ -746,7 +746,10 @@ fn parse_shorthand_string(value: &types::Value) -> Result<String, types::LispErr
     match value {
         types::Value::String(text) => Ok(text.to_string()),
         types::Value::StringObject(state) => Ok(state.borrow().text.clone()),
-        other => Err(types::LispError::WrongTypeArgument("stringp".into(), other.clone())),
+        other => Err(types::LispError::WrongTypeArgument(
+            "stringp".into(),
+            other.clone(),
+        )),
     }
 }
 
@@ -759,7 +762,10 @@ fn parse_symbol_shorthands(raw_value: &str) -> Result<Vec<(String, String)>, typ
     let mut shorthands = Vec::with_capacity(entries.len());
     for entry in entries {
         let Some((from, to)) = entry.cons_values() else {
-            return Err(types::LispError::WrongTypeArgument("consp".into(), entry.clone()));
+            return Err(types::LispError::WrongTypeArgument(
+                "consp".into(),
+                entry.clone(),
+            ));
         };
         shorthands.push((parse_shorthand_string(&from)?, parse_shorthand_string(&to)?));
     }

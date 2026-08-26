@@ -843,9 +843,7 @@ impl Interpreter {
             crate::lisp::eval::NetworkRuntime::Listener(listener) => Some(listener.as_raw_fd()),
             crate::lisp::eval::NetworkRuntime::Stream(stream) => Some(stream.as_raw_fd()),
             crate::lisp::eval::NetworkRuntime::Datagram { socket, .. } => Some(socket.as_raw_fd()),
-            crate::lisp::eval::NetworkRuntime::UnixListener(listener) => {
-                Some(listener.as_raw_fd())
-            }
+            crate::lisp::eval::NetworkRuntime::UnixListener(listener) => Some(listener.as_raw_fd()),
             crate::lisp::eval::NetworkRuntime::UnixStream(stream) => Some(stream.as_raw_fd()),
         }
     }
@@ -2547,8 +2545,7 @@ impl Interpreter {
             .thread_states
             .iter()
             .filter(|thread| {
-                thread.record_id != self.main_thread_id
-                    && thread.record_id != self.active_thread_id
+                thread.record_id != self.main_thread_id && thread.record_id != self.active_thread_id
             })
             .map(|thread| thread.record_id)
             .collect::<Vec<_>>();
@@ -2660,11 +2657,13 @@ impl Interpreter {
                 // `curve'.
                 LispError::Signal(format!(
                     "Condition variable{}s mutex is not held by current thread",
-                    if crate::lisp::primitives::values::effective_text_quoting_style(self, env) == "curve" {
-                    '\u{2019}'
-                } else {
-                    '\''
-                }
+                    if crate::lisp::primitives::values::effective_text_quoting_style(self, env)
+                        == "curve"
+                    {
+                        '\u{2019}'
+                    } else {
+                        '\''
+                    }
                 ))
             })?;
         if let Some(mutex) = self.find_mutex_state_mut(mutex_id) {
@@ -2741,7 +2740,9 @@ impl Interpreter {
             // thread.c:558, as above.
             return Err(LispError::Signal(format!(
                 "Condition variable{}s mutex is not held by current thread",
-                if crate::lisp::primitives::values::effective_text_quoting_style(self, env) == "curve" {
+                if crate::lisp::primitives::values::effective_text_quoting_style(self, env)
+                    == "curve"
+                {
                     '\u{2019}'
                 } else {
                     '\''
@@ -2800,7 +2801,6 @@ impl Interpreter {
         }
     }
 
-
     pub(super) fn unlock_mutex(&mut self, thread_id: u64, mutex_id: u64) {
         let Some(mutex) = self.find_mutex_state_mut(mutex_id) else {
             return;
@@ -2832,8 +2832,6 @@ impl Interpreter {
         self.unlock_processes_for_thread(record_id);
         self.last_thread_error = Some(value);
     }
-
-
 
     pub(super) fn deliver_signal_to_main_thread(
         &mut self,

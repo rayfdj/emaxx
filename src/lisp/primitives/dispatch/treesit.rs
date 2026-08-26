@@ -37,7 +37,10 @@ fn current_or_named_buffer(
         None | Some(Value::Nil) => interp.current_buffer_id(),
         Some(buffer @ Value::Buffer(_)) => interp.resolve_buffer_id(buffer)?,
         Some(other) => {
-            return Err(LispError::WrongTypeArgument("bufferp".into(), other.clone()));
+            return Err(LispError::WrongTypeArgument(
+                "bufferp".into(),
+                other.clone(),
+            ));
         }
     };
     Ok((buffer_id, interp.root_buffer_id(buffer_id)))
@@ -1025,7 +1028,10 @@ define_dispatch!(
             "treesit-parser-set-included-ranges" => {
                 need_args(name, args, 2)?;
                 if !args[1].is_list() {
-                    return Err(LispError::WrongTypeArgument("consp".into(), args[1].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "consp".into(),
+                        args[1].clone(),
+                    ));
                 }
                 interp.set_treesit_included_ranges(&args[0], args[1].clone())?;
                 Ok(Value::Nil)
@@ -1169,7 +1175,9 @@ define_dispatch!(
                 }
                 let field = primitives::string_like(&args[1])
                     .map(|string| string.text)
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1].clone()))?;
+                    .ok_or_else(|| {
+                        LispError::WrongTypeArgument("stringp".into(), args[1].clone())
+                    })?;
                 related_node(interp, &args[0], |node| node.child_by_field_name(field))
             }
             "treesit-node-field-name-for-child" => {
@@ -1304,7 +1312,10 @@ define_dispatch!(
             "treesit-query-compile" => {
                 need_arg_range(name, args, 2, 3)?;
                 if !args[0].is_symbol() {
-                    return Err(LispError::WrongTypeArgument("symbolp".into(), args[0].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "symbolp".into(),
+                        args[0].clone(),
+                    ));
                 }
                 if interp.treesit_query_state(&args[1]).is_some() {
                     return Ok(args[1].clone());
@@ -1414,7 +1425,10 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let process = args.get(2).filter(|function| !function.is_nil());
                 if process.is_some_and(|function| !functionp(interp, function, env)) {
-                    return Err(LispError::WrongTypeArgument("functionp".into(), args[2].clone()));
+                    return Err(LispError::WrongTypeArgument(
+                        "functionp".into(),
+                        args[2].clone(),
+                    ));
                 }
                 let depth = args
                     .get(3)

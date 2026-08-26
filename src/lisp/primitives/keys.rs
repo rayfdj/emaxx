@@ -540,7 +540,10 @@ pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, Lis
         Value::Integer(_) | Value::Symbol(_) => {
             Ok(vec![normalize_key_description_event(sequence.clone())])
         }
-        _ => Err(LispError::WrongTypeArgument("arrayp".into(), sequence.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "arrayp".into(),
+            sequence.clone(),
+        )),
     }
 }
 

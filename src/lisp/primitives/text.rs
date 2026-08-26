@@ -186,8 +186,8 @@ pub(crate) fn string_distance_value(
     right: &Value,
     compare_bytes: bool,
 ) -> Result<Value, LispError> {
-    let left_string =
-        string_like(left).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), left.clone()))?;
+    let left_string = string_like(left)
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), left.clone()))?;
     let right_string = string_like(right)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), right.clone()))?;
 
@@ -344,7 +344,10 @@ pub(crate) fn integer_for_format(
             let n = integer_like_i64(interp, value)?;
             Ok((Some(n), BigInt::from(n)))
         }
-        _ => Err(LispError::WrongTypeArgument("integerp".into(), value.clone())),
+        _ => Err(LispError::WrongTypeArgument(
+            "integerp".into(),
+            value.clone(),
+        )),
     }
 }
 

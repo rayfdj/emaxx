@@ -88,7 +88,11 @@ fn try_main() -> Result<u8, String> {
     if cli.batch {
         let outcome = run_batch_with_large_stack(
             BatchRunOptions {
-                load_path: cli.load_path.into_iter().map(expand_load_path_entry).collect(),
+                load_path: cli
+                    .load_path
+                    .into_iter()
+                    .map(expand_load_path_entry)
+                    .collect(),
                 load: cli.load,
                 eval: cli.eval,
                 funcall: cli.funcall,

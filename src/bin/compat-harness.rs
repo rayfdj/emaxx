@@ -1051,10 +1051,9 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
     }
     let (_, dirty) = git_state(&compat::project_root())?;
     if dirty != Some(false) {
-        return Err(
-            "frozen mode requires a clean working tree so the score is \
-             commit-addressable; commit or stash first".into(),
-        );
+        return Err("frozen mode requires a clean working tree so the score is \
+             commit-addressable; commit or stash first"
+            .into());
     }
     enforce_anti_cheat_gates()?;
     let context = load_context()?;
@@ -2604,7 +2603,6 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     Ok(RunnerArtifacts { report, process })
 }
 
-
 fn load_or_synthesize_report(
     result_path: &Path,
     runner: &str,
@@ -2643,7 +2641,11 @@ fn load_or_synthesize_report(
         };
         format!(
             "process terminated without a status code: {}",
-            if detail.is_empty() { "no output" } else { detail }
+            if detail.is_empty() {
+                "no output"
+            } else {
+                detail
+            }
         )
     };
     let report = BatchReport::load_error(runner, relative_file, selector, message);

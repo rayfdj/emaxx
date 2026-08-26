@@ -8636,6 +8636,99 @@ fn network_interface_info_reports_the_real_interface() {
 }
 
 #[test]
+fn get_unused_iso_final_char_scans_the_registered_charsets() {
+    // charset.c:1406 scans `0'..`?' for a final char no charset of this
+    // DIMENSION and CHARS has claimed.  This returned the constant ?0 with
+    // both arguments unread (audit finding 104).
+    //
+    // The (1 94) row is the discriminating one twice over: it answers ?6, so
+    // a constant ?0 fails, AND getting there requires GNU's actual bucketing
+    // rule -- charset.c:1395 reduces CHARS to the BOOLEAN `chars == 96', so
+    // `arabic-digit', whose charset-chars is 9, shares the 94 bucket and
+    // claims ?2.  Comparing the numbers for equality answers ?2 here instead.
+    let program = r#"
+        (list (get-unused-iso-final-char 1 94)
+              (get-unused-iso-final-char 1 96)
+              (get-unused-iso-final-char 2 94)
+              (get-unused-iso-final-char 2 96)
+              (get-unused-iso-final-char 3 94)
+              (get-unused-iso-final-char 3 96)
+              (condition-case error (get-unused-iso-final-char 1 ?0)
+                (error (cadr error)))
+              (condition-case error (get-unused-iso-final-char 9 94)
+                (error (cadr error)))
+              ;; The WHOLE error object, not just its car: charset.c:1387 is
+              ;; CHECK_FIXNUM, which names `fixnump', and comparing only the
+              ;; condition symbol let `integerp' pass here undetected.
+              (condition-case error (get-unused-iso-final-char "x" 94)
+                (error error))
+              (condition-case error (get-unused-iso-final-char 1 "x")
+                (error error))
+              (condition-case error (get-unused-iso-final-char 1.0 94)
+                (error error))
+              ;; charset.c:1440 writes equivalence declarations into the same
+              ;; table this primitive reads, so declaring one must consume the
+              ;; slot it names.
+              (progn (declare-equiv-charset 1 94 ?6 'ascii)
+                     (get-unused-iso-final-char 1 94)))"#;
+    let expected = concat!(
+        "(54 51 50 48 48 48 \"Invalid CHARS 48, it should be 94 or 96\" ",
+        "\"Invalid DIMENSION 9, it should be 1, 2, or 3\" ",
+        "(wrong-type-argument fixnump \"x\") ",
+        "(wrong-type-argument fixnump \"x\") ",
+        "(wrong-type-argument fixnump 1.0) 55)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read iso-final-char program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate iso-final-char program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn gnutls_digests_are_queried_from_the_library() {
+    // gnutls.c:2713 walks `gnutls_digest_list' and asks the library for each
+    // algorithm's name and hash length.  Emaxx carried a transcribed 9-entry
+    // table in the oracle's exact order while its cipher and mac neighbours
+    // in the same file were queried live through dlopen (audit finding 100).
+    //
+    // Compared against the live oracle rather than a literal: the catalogue is
+    // a property of the host's GnuTLS, so a hardcoded expectation here would
+    // just be the same transcription in a different file.
+    //
+    // HONEST LIMIT: this pins CORRECTNESS, not liveness.  The table it
+    // replaced happened to match this host's GnuTLS exactly -- that is how it
+    // was built -- so restoring the constant would leave this test green.
+    // Only a host whose GnuTLS lists a different set would tell them apart.
+    // That the query is live rests on reading the code, as with finding 101.
+    let program = "(prin1-to-string (gnutls-digests))";
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read gnutls-digests program")
+        .remove(0);
+    let rendered = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate gnutls-digests program");
+    let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
+    assert_upstream_primitive_contract(&format!("(princ {program})"), &rendered);
+
+    // A catalogue that came from the library has entries; an empty answer
+    // would satisfy an oracle comparison only if GnuTLS were missing, and
+    // this host has it.
+    assert!(
+        rendered.starts_with("((") && rendered.contains(":digest-algorithm-length"),
+        "expected a populated digest catalogue, got {rendered}"
+    );
+}
+
+#[test]
 fn set_network_process_option_applies_the_option_or_refuses() {
     // process.c:2962.  The arm this replaces resolved the process, confirmed
     // it was a network process, and returned t WITHOUT EVER READING THE
@@ -8776,10 +8869,9 @@ fn operating_system_release_is_wired_to_the_uname_syscall() {
     // drifting away from the syscall or the binding being dropped.  It would
     // NOT fail if someone reintroduced the literal today.  That the cheat is
     // gone rests on reading eval.rs, not on this assertion.
-    let expected = crate::lisp::primitives::uname_field(
-        crate::lisp::primitives::UnameField::Release,
-    )
-    .expect("uname(2) should answer on a supported host");
+    let expected =
+        crate::lisp::primitives::uname_field(crate::lisp::primitives::UnameField::Release)
+            .expect("uname(2) should answer on a supported host");
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let form = Reader::new("operating-system-release")
         .read_all()
@@ -11788,7 +11880,8 @@ fn combine_change_calls_coalesces_hooks_and_tracks_the_updated_end() {
     let expected = r#"(body-result ((before 1 1 "") (after 1 3 0 "ab")) "ab")"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
+    let mut interp =
+        crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -12281,7 +12374,8 @@ fn native_headless_window_geometry_and_hscroll_match_gnu_c_contracts() {
     let expected_printed = "((73 73 73 23 23) (left-margin left-margin (0 . 0) (72 . 0) right-margin right-margin mode-line) (0 5 8 4 0 71 0) (nil nil) t (t t t t nil nil) (tab-line header-line (0 . 2) 21))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
+    let mut interp =
+        crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -12361,7 +12455,8 @@ fn native_indent_c_motion_and_line_number_width_family_matches_gnu() {
     let expected_printed = "(((12 1 3 4 t) (5 0 1 4 t) (8 0 2 2 nil) (7 2 1 1 nil) (5 0 1 4 t) (6 1 1 1 nil) (12 4 1 4 nil)) (999 23 4 6 6.0 (7 9) (0 0 0.0)))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
+    let mut interp =
+        crate::test_support::initialized_gnu_early_lisp_interpreter_with(&["emacs-lisp/macroexp"]);
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -14651,10 +14746,7 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
         (vec![Value::Symbol("down".into())], "next-line"),
         (vec![Value::Symbol("left".into())], "left-char"),
         (vec![Value::Symbol("right".into())], "right-char"),
-        (
-            vec![Value::Symbol("home".into())],
-            "move-beginning-of-line",
-        ),
+        (vec![Value::Symbol("home".into())], "move-beginning-of-line"),
         (vec![Value::Symbol("end".into())], "move-end-of-line"),
         (
             vec![Value::Symbol("deletechar".into())],

@@ -1121,8 +1121,6 @@ pub(crate) fn decode_file_contents(
     Ok((decode_text_bytes(interp, &normalized, &detected)?, detected))
 }
 
-
-
 pub(crate) fn insert_file_contents(
     interp: &mut Interpreter,
     env: &mut Env,

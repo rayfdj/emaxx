@@ -186,7 +186,10 @@ pub(crate) fn window_start(
         None | Some(Value::Nil) => Ok(current_window_start(interp)),
         Some(value) => {
             let Some(id) = window_record_id_from_value(interp, value) else {
-                return Err(LispError::WrongTypeArgument("windowp".into(), value.clone()));
+                return Err(LispError::WrongTypeArgument(
+                    "windowp".into(),
+                    value.clone(),
+                ));
             };
             if id == interp.selected_window_id() {
                 return Ok(current_window_start(interp));
@@ -214,7 +217,10 @@ pub(crate) fn set_window_start_value(
         window.clone()
     };
     let Some(id) = window_record_id_from_value(interp, &window) else {
-        return Err(LispError::WrongTypeArgument("windowp".into(), window.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "windowp".into(),
+            window.clone(),
+        ));
     };
     let buffer_id = window_buffer_id(interp, &window).unwrap_or(interp.current_buffer_id());
     let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
@@ -225,7 +231,10 @@ pub(crate) fn set_window_start_value(
         return Ok(());
     }
     let Some(record) = interp.find_record_mut(id) else {
-        return Err(LispError::WrongTypeArgument("windowp".into(), window.clone()));
+        return Err(LispError::WrongTypeArgument(
+            "windowp".into(),
+            window.clone(),
+        ));
     };
     if record.slots.len() <= WINDOW_START_SLOT {
         record.slots.resize(WINDOW_START_SLOT + 1, Value::Nil);

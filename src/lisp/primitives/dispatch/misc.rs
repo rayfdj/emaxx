@@ -1857,13 +1857,6 @@ pub(crate) fn fallback_function_documentation(
     builtin_doc_from_doc_file(interp, function)
 }
 
-
-
-
-
-
-
-
 /// Parse a GNU Emacs `DOC` file into a map from function name to docstring.
 ///
 /// Entries are separated by the `\x1f` (unit-separator) byte and prefixed by a

@@ -1405,9 +1405,7 @@ fn record_sentinel_atom_members(
                 };
                 let posix_matches = |ch: char| match (class.as_str(), table_class(ch)) {
                     ("word", Some(resolved)) => resolved == super::syntax::SyntaxClass::Word,
-                    ("space", Some(resolved)) => {
-                        resolved == super::syntax::SyntaxClass::Whitespace
-                    }
+                    ("space", Some(resolved)) => resolved == super::syntax::SyntaxClass::Whitespace,
                     _ => skip_char_matches_class(ch, class),
                 };
                 posix_matches(entry.original)
@@ -2649,7 +2647,6 @@ pub(super) fn posix_string_match_impl(
     Ok(Value::Nil)
 }
 
-
 struct SkipCharsSpec {
     negate: bool,
     literals: Vec<char>,
@@ -2856,7 +2853,6 @@ fn skip_char_matches_spec_with_syntax(
         .any(|class| skip_char_matches_class_with_syntax(ch, class, syntax));
     (literal_match || range_match || class_match) != spec.negate
 }
-
 
 pub(super) fn skip_chars_forward_impl(
     interp: &mut Interpreter,

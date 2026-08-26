@@ -1148,21 +1148,8 @@ impl Interpreter {
         }
     }
 
-
     // ── Special forms ──
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod eval_value_buffer_tests {

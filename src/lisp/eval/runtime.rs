@@ -1393,7 +1393,10 @@ impl Interpreter {
                 )?;
             }
             _ => {
-                return Err(LispError::WrongTypeArgument("integer-or-marker-p".into(), value.clone()));
+                return Err(LispError::WrongTypeArgument(
+                    "integer-or-marker-p".into(),
+                    value.clone(),
+                ));
             }
         }
         self.set_marker_insertion_type(marker_id, insertion_type);
