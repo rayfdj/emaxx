@@ -177,6 +177,238 @@ fn interface_broadcast(ip: std::net::IpAddr, mask: std::net::IpAddr) -> std::net
     }
 }
 
+/// The `_IOWR' encoding from macOS `sys/ioccom.h': the request number is
+/// DERIVED from the group letter, the ordinal, and the size of the payload
+/// struct.  Computing it beats transcribing 0xc0206911 and friends, which
+/// would be a magic constant valid only for one struct layout on one platform.
+#[cfg(target_os = "macos")]
+const fn iowr(group: u8, number: u8, size: usize) -> libc::c_ulong {
+    const IOC_INOUT: libc::c_ulong = 0xc000_0000;
+    const IOCPARM_MASK: usize = 0x1fff;
+    IOC_INOUT
+        | (((size & IOCPARM_MASK) as libc::c_ulong) << 16)
+        | ((group as libc::c_ulong) << 8)
+        | number as libc::c_ulong
+}
+
+/// process.c:4386 `ifflag_table', in GNU's order.  The result list is built by
+/// consing, so it comes out REVERSED -- lo0 reads (multicast running loopback
+/// up), which is why the order here matters.  On a Cocoa build GNU spells
+/// IFF_NOTRAILERS "smart" rather than "notrailers" (process.c:4412).
+#[cfg(target_os = "macos")]
+const IFFLAG_TABLE: &[(libc::c_int, &str)] = &[
+    (libc::IFF_UP, "up"),
+    (libc::IFF_BROADCAST, "broadcast"),
+    (libc::IFF_DEBUG, "debug"),
+    (libc::IFF_LOOPBACK, "loopback"),
+    (libc::IFF_POINTOPOINT, "pointopoint"),
+    (libc::IFF_RUNNING, "running"),
+    (libc::IFF_NOARP, "noarp"),
+    (libc::IFF_PROMISC, "promisc"),
+    (libc::IFF_NOTRAILERS, "smart"),
+    (libc::IFF_ALLMULTI, "allmulti"),
+    (libc::IFF_MULTICAST, "multicast"),
+    (libc::IFF_OACTIVE, "oactive"),
+    (libc::IFF_SIMPLEX, "simplex"),
+    (libc::IFF_LINK0, "link0"),
+    (libc::IFF_LINK1, "link1"),
+    (libc::IFF_LINK2, "link2"),
+];
+
+/// GNU `conv_sockaddr_to_lisp' for the AF_INET case: [a b c d PORT].
+#[cfg(target_os = "macos")]
+fn sockaddr_storage_to_lisp(raw: &libc::sockaddr) -> Value {
+    if raw.sa_family as libc::c_int != libc::AF_INET {
+        return Value::Nil;
+    }
+    // SAFETY: sa_family says AF_INET, so the storage is a sockaddr_in.
+    let inet = unsafe { &*(raw as *const libc::sockaddr).cast::<libc::sockaddr_in>() };
+    let octets = u32::from_be(inet.sin_addr.s_addr).to_be_bytes();
+    super::super::processes::sockaddr_vector(std::net::SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(octets)),
+        u16::from_be(inet.sin_port),
+    ))
+}
+
+/// process.c:4459 `network_interface_info'.  Returns
+/// (ADDR BCAST NETMASK HWADDR FLAGS), IPv4 only, with each component nil when
+/// its query fails -- and nil overall when EVERY query failed, which is how a
+/// nonexistent interface answers.  The arm this replaces was a bare
+/// `Ok(Value::Nil)' sitting beside a genuinely implemented
+/// `network-interface-list' (audit finding 111).
+fn network_interface_info(args: &[Value]) -> Result<Value, LispError> {
+    // GNU's arity is exactly 1 (process.c:4652), and `need_args' only checks a
+    // MINIMUM -- so the obvious call accepted two arguments and returned data
+    // where GNU signals wrong-number-of-arguments.  The generated arity table
+    // already recorded (1, 1); only this call site disagreed.
+    need_arg_range("network-interface-info", args, 1, 1)?;
+    let name = string_text(&args[0])?;
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // STILL THE CHEAT ON THIS PLATFORM, and deliberately labelled as such.
+        // GNU does NOT compile the body out on GNU/Linux: SIOCGIFFLAGS,
+        // SIOCGIFADDR, SIOCGIFNETMASK, SIOCGIFBRDADDR and SIOCGIFHWADDR are
+        // all defined there and process.c:4518 returns a full result
+        // including the hardware address.  Finding 111 is fixed for macOS
+        // only; a Linux port needs the ifr_hwaddr branch rather than the
+        // getifaddrs walk below.
+        let _ = name;
+        return Ok(Value::Nil);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut request: libc::ifreq = unsafe { std::mem::zeroed() };
+        if name.len() >= request.ifr_name.len() {
+            // process.c:4473.
+            return Err(LispError::Signal("interface name too long".into()));
+        }
+        for (slot, byte) in request.ifr_name.iter_mut().zip(name.bytes()) {
+            *slot = byte as libc::c_char;
+        }
+
+        // SAFETY: a plain socket used only as an ioctl handle; closed below.
+        let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        if socket < 0 {
+            return Ok(Value::Nil);
+        }
+        let mut any = false;
+        let size = std::mem::size_of::<libc::ifreq>();
+
+        // FLAGS first, because the result list is consed in reverse.
+        let mut flags_value = Value::Nil;
+        let mut probe = request;
+        // SAFETY: `probe' is a fully initialised ifreq of the size encoded in
+        // the request number, and `socket' is live for every call below.
+        if unsafe { libc::ioctl(socket, iowr(b'i', 17, size), &mut probe) } == 0 {
+            any = true;
+            // process.c:4494: ifr_flags is a short, so widen without sign
+            // extension before testing bits.
+            let mut flags = unsafe { probe.ifr_ifru.ifru_flags } as u16 as libc::c_int;
+            let mut items = Vec::new();
+            for (bit, symbol) in IFFLAG_TABLE {
+                if flags == 0 {
+                    break;
+                }
+                if flags & bit != 0 {
+                    items.push(Value::symbol(symbol));
+                    flags -= bit;
+                }
+            }
+            // process.c:4506 names leftover bits by their bit NUMBER.
+            for ordinal in 0..32 {
+                if flags == 0 {
+                    break;
+                }
+                if flags & 1 != 0 {
+                    items.push(Value::Integer(ordinal));
+                }
+                flags >>= 1;
+            }
+            items.reverse();
+            flags_value = Value::list(items);
+        }
+
+        // HWADDR: macOS has no SIOCGIFHWADDR, so GNU walks getifaddrs looking
+        // for the AF_LINK entry (process.c:4531-4552).
+        // process.c does NOT set `any' in the getifaddrs branch; only the
+        // ioctl branches count toward it, so an interface yielding only a MAC
+        // still answers nil overall.  Mirrored deliberately.
+        let hwaddr_value = link_layer_address(&name);
+
+        let mut address_for = |number: u8| -> Value {
+            let mut probe = request;
+            // SAFETY: as above.
+            if unsafe { libc::ioctl(socket, iowr(b'i', number, size), &mut probe) } == 0 {
+                any = true;
+                // SAFETY: the kernel fills ifru_addr for these requests.
+                return sockaddr_storage_to_lisp(unsafe { &probe.ifr_ifru.ifru_addr });
+            }
+            Value::Nil
+        };
+        let netmask_value = address_for(37);
+        let broadcast_value = address_for(35);
+        let addr_value = address_for(33);
+
+        // SAFETY: `socket' was opened above and is not used after this.
+        unsafe { libc::close(socket) };
+
+        if !any {
+            return Ok(Value::Nil);
+        }
+        Ok(Value::list([
+            addr_value,
+            broadcast_value,
+            netmask_value,
+            hwaddr_value,
+            flags_value,
+        ]))
+    }
+}
+
+/// process.c:4531: the AF_LINK entry whose name matches and whose link-layer
+/// address is exactly 6 bytes becomes (SA_FAMILY . [b0 .. b5]).
+#[cfg(target_os = "macos")]
+fn link_layer_address(name: &str) -> Value {
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs allocates the list; freeifaddrs releases it below.
+    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+        return Value::Nil;
+    }
+    let mut result = Value::Nil;
+    let mut entry = list;
+    while !entry.is_null() {
+        // SAFETY: the list is NUL-terminated by a null ifa_next.
+        let current = unsafe { &*entry };
+        entry = current.ifa_next;
+        if current.ifa_addr.is_null() {
+            continue;
+        }
+        // SAFETY: ifa_addr is non-null and at least a sockaddr header.
+        let family = unsafe { (*current.ifa_addr).sa_family } as libc::c_int;
+        if family != libc::AF_LINK {
+            continue;
+        }
+        // SAFETY: ifa_name is a NUL-terminated C string owned by the list.
+        let entry_name = unsafe { std::ffi::CStr::from_ptr(current.ifa_name) };
+        if entry_name.to_bytes() != name.as_bytes() {
+            continue;
+        }
+        // SAFETY: AF_LINK means the address is a sockaddr_dl.  Read it
+        // unaligned through a raw pointer rather than forming a reference:
+        // the kernel's sockaddr_dl is VARIABLE-LENGTH and an entry shorter
+        // than the declared struct would make a reference invalid.
+        let link_pointer = current.ifa_addr.cast::<libc::sockaddr_dl>();
+        let link = unsafe { std::ptr::read_unaligned(link_pointer) };
+        if link.sdl_alen != 6 {
+            continue;
+        }
+        // process.c:4548 uses LLADDR(sdl), i.e. `sdl_data + sdl_nlen' --
+        // POINTER ARITHMETIC into a variable-length tail.  Indexing the
+        // libc-declared `[c_char; 12]' instead panics for any interface whose
+        // name is 7 bytes or longer and which has a 6-byte MAC: `bridge0'
+        // needs indices 7..=12 out of a declared length of 12.  That is a
+        // hard crash, not a wrong answer, and no test reached it because
+        // `lo0' has no MAC and `en0' has a 3-byte name.
+        let address = unsafe {
+            std::ptr::addr_of!((*link_pointer).sdl_data)
+                .cast::<u8>()
+                .add(link.sdl_nlen as usize)
+        };
+        let bytes: Vec<Value> = (0..6)
+            .map(|offset| Value::Integer(unsafe { *address.add(offset) } as i64))
+            .collect();
+        let mut vector = vec![Value::symbol("vector-literal")];
+        vector.extend(bytes);
+        result = Value::cons(Value::Integer(family as i64), Value::list(vector));
+        break;
+    }
+    // SAFETY: `list' came from a successful getifaddrs and is freed once.
+    unsafe { libc::freeifaddrs(list) };
+    result
+}
+
 fn network_interface_list(args: &[Value]) -> Result<Value, LispError> {
     need_arg_range("network-interface-list", args, 0, 2)?;
     let full = args.first().is_some_and(Value::is_truthy);
@@ -1792,7 +2024,7 @@ define_dispatch!(
                 }
             }
             "network-interface-list" => network_interface_list(args),
-            "network-interface-info" => Ok(Value::Nil),
+            "network-interface-info" => network_interface_info(args),
             "network-lookup-address-info" => {
                 need_arg_range(name, args, 1, 3)?;
                 let host = string_text(&args[0])?;

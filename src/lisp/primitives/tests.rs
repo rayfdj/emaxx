@@ -8554,6 +8554,87 @@ fn canonical_combining_classes_come_from_complete_unicode_data_inner() {
     }
 }
 
+// macOS only, matching the `#[cfg]` on the code it covers: on GNU/Linux the
+// Emaxx arm is still the acknowledged bare-nil cheat and these interface names
+// do not exist, so the assertions below would fail against a tree that is
+// behaving exactly as documented.
+#[cfg(target_os = "macos")]
+#[test]
+fn network_interface_info_reports_the_real_interface() {
+    // process.c:4459 returns (ADDR BCAST NETMASK HWADDR FLAGS), IPv4 only,
+    // and nil for an interface that answers no query.  The arm this replaces
+    // was a bare nil beside a genuinely implemented `network-interface-list'
+    // (audit finding 111).
+    //
+    // The interfaces are NAMED rather than enumerated: `network-interface-list'
+    // itself disagrees with GNU about which interfaces exist (finding 118), so
+    // driving the sweep from it would compare two different sets.  A name that
+    // does not exist on some host answers nil on BOTH sides, so this stays
+    // correct off this machine -- it just tests less there.
+    //
+    // `bridge0' is not decoration.  Its 7-character name is what makes
+    // LLADDR's pointer arithmetic differ from indexing the libc-declared
+    // 12-byte sdl_data, and the first version of this code PANICKED on it.
+    // The first version of this test named only lo0, which has no MAC at all,
+    // so the entire hardware-address path went unexecuted and the crash shipped
+    // to the gate unnoticed.
+    let program = r#"
+        (prin1-to-string
+         (list (network-interface-info "lo0")
+               (network-interface-info "en0")
+               (network-interface-info "bridge0")
+               (network-interface-info "nosuchdev0")
+               (condition-case error
+                   (network-interface-info "averyveryverylongname0123456789")
+                 (error (cadr error)))
+               (condition-case error
+                   (network-interface-info 42)
+                 (error (car error)))))"#;
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read interface-info program")
+        .remove(0);
+    let rendered = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate interface-info program");
+    let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
+
+    // Compare Lisp-rendered text on both sides.  Rust's `Display' for a cons
+    // whose CDR is a vector flattens it -- `(18 vector-literal 74 ...)' -- while
+    // `prin1' correctly writes `(18 . [74 ...])'; only the Lisp printer is the
+    // contract, and only it is what GNU is being compared against.
+    assert_upstream_primitive_contract(&format!("(princ {program})"), &rendered);
+
+    let rows = Reader::new(&rendered)
+        .read()
+        .expect("re-read rendered result")
+        .expect("rendered result exists")
+        .to_vec()
+        .expect("interface-info list");
+    assert!(
+        !rows[0].is_nil(),
+        "lo0 must report real data, not the constant nil this replaced"
+    );
+    assert!(rows[3].is_nil(), "a nonexistent interface answers nil");
+    // The panic needed BOTH a hardware address and a name of 7+ bytes, since
+    // it was an overrun past the libc-declared 12-byte sdl_data at offset
+    // sdl_nlen.  Asserting merely that "some interface has a MAC" is satisfied
+    // by en0, whose 3-byte name never reaches the overflowing offsets -- which
+    // is how the crash shipped in the first place.  Require the long-named one
+    // specifically, and fail loudly rather than silently testing less if this
+    // host has no such device.
+    let long_named_with_mac = rows[2]
+        .to_vec()
+        .is_ok_and(|parts| parts.get(3).is_some_and(|hw| !hw.is_nil()));
+    assert!(
+        long_named_with_mac,
+        "bridge0 (a 7-byte name with a MAC) reported none, so the LLADDR \
+         pointer arithmetic that once panicked went unexercised"
+    );
+}
+
 #[test]
 fn set_network_process_option_applies_the_option_or_refuses() {
     // process.c:2962.  The arm this replaces resolved the process, confirmed
