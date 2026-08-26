@@ -1779,7 +1779,7 @@ define_dispatch!(
                     .as_symbol()
                     .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
                 let option = crate::lisp::types::visible_symbol_name(&raw).to_string();
-                if set_socket_option(fd, &option, &args[2])? {
+                if set_socket_option(fd, &option, &args[1], &args[2])? {
                     // process.c:2990 records the accepted option on the
                     // process's contact plist, which `process-contact' reads.
                     interp.put_process_contact_option(process_id, &args[1], args[2].clone());
@@ -2764,6 +2764,7 @@ fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
 fn set_socket_option(
     fd: std::os::fd::RawFd,
     option: &str,
+    option_symbol: &Value,
     value: &Value,
 ) -> Result<bool, LispError> {
     use std::ffi::c_void;
@@ -2868,17 +2869,24 @@ fn set_socket_option(
             }
         }
     };
-    if applied < 0 {
+    // process.c:2953 saves errno on the line after the call for a reason, and
+    // fileio.c:293 spells it out: building a Lisp string can itself set errno.
+    // Capture before allocating anything.
+    let failure = (applied < 0).then(std::io::Error::last_os_error);
+    if let Some(error) = failure {
         // process.c:2940 `report_file_errno ("Cannot set network option",
         // list2 (opt, val), errno)' -- a file-error carrying the option and
         // value as data, not an `error' with them folded into the message.
+        // list2 (opt, val) carries the CALLER's symbol, so an `eq' test on
+        // the error data succeeds for a foreign-obarray keyword.  Rebuilding
+        // the symbol here was the same identity bug fixed on the plist path.
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("file-error"),
             Value::string("Cannot set network option"),
             Value::string(&super::super::processes::network_io_error_detail(
-                &std::io::Error::last_os_error(),
+                &error,
             )),
-            Value::Symbol(option.to_string().into()),
+            option_symbol.clone(),
             value.clone(),
         ])));
     }

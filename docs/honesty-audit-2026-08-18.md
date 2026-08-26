@@ -85,6 +85,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
 | 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
+| 117 | the gate contains an intermittent test that fails ~1 run in 5, so "green" has always been partly luck | OPEN |
 
 # Honesty audit — 2026-08-18
 
@@ -1736,6 +1737,18 @@ symbol is stored verbatim and existing entries match by raw-name identity,
 deliberately NOT by the visible name used for the option-table lookup, because
 GNU uses two different comparisons (strcmp for the table at process.c:2881, EQ
 for the plist at :2990).
+A FOURTH round of review then found the same identity bug surviving on the
+ERROR path: `report_file_errno' (process.c:2954) puts `list2 (opt, val)' in
+the file-error data, again the caller's symbol, and Emaxx was rebuilding it
+there too -- so `(eq (nth 3 err) key)' answered nil where GNU answers t.  The
+fix on the plist path had simply not been carried the few lines across to the
+error path.  Both now pass the caller's symbol through, pinned by a test row
+that asserts `eq' succeeds against the caller's keyword AND fails against the
+interned one, which is what distinguishes a stored symbol from a rebuilt one.
+The same round found `std::io::Error::last_os_error()' being read after two
+allocating calls; process.c:2953 saves errno on the line after the syscall and
+fileio.c:293 warns explicitly that building a Lisp string can clobber it.
+Errno is now captured immediately.
 
 **Process note.**  The three ledger corrections above were written once
 before, reported as landed, and silently lost: the editing script verified
@@ -1749,3 +1762,30 @@ report, not a publication.  Ledger edits are now applied and re-read from disk
 one at a time.  The irony is exact: an honesty ledger asserted a fix that had not
 happened, which is the same defect finding 113 recorded about
 `truncate-string-to-width'.
+
+117. **The gate has been partly luck and nobody noticed.**
+     `upstream_eshell_script_regressions_stay_green' (eval_05.rs:7779) wraps
+     GNU's `em-script-test/source-script/background'
+     (test/lisp/eshell/em-script-tests.el:70), which sources a script in the
+     BACKGROUND and then compares the buffer.  When the check wins the race
+     the buffer holds "hi\n" instead of "hi\nbye\n" and the test fails.
+     Measured, not guessed: five consecutive runs of the identical binary gave
+     four passes and one failure, and a sweep of every gate log kept this
+     session shows the same test failing in v22, v23, v30 and v42 while
+     passing in thirteen others -- roughly one run in five, stable across
+     weeks and unrelated to whatever change was under test.
+     The consequence is uncomfortable and worth stating plainly: every "gate
+     is green" in this project's history carried about a 20% chance of this
+     test failing instead, and a green gate was therefore never quite the
+     proof it was presented as.  It also means a red gate can be noise, which
+     is the more dangerous half -- it trains the reader to retry rather than
+     investigate.
+     Not caused by, and cannot be caused by, the socket-option work committed
+     alongside this note: that code is reachable only from
+     `set-network-process-option', which eshell scripts never call.
+     The fix is not to retry until green.  Either the upstream test needs a
+     deterministic wait for the background job before it reads the buffer, or
+     Emaxx's background-source path completes later than GNU's and the race is
+     an Emaxx defect wearing a flake's clothing -- which has NOT been
+     determined.  Until it is, gate results should be read as "green modulo a
+     known 1-in-5 flake in this one test".  OPEN.
