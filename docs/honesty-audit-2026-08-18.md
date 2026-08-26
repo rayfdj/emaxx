@@ -79,13 +79,14 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
 | 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | OPEN |
 | 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | OPEN |
-| 111 | network-interface-info is a bare nil beside a real network-interface-list | OPEN |
+| 111 | network-interface-info was a bare nil beside a real network-interface-list | FIXED (macOS) 2026-08-26 - real ioctls; still nil on other platforms |
 | 112 | intern-soft guesses interned-ness from value/function/plist cells | OPEN |
 | 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
 | 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
 | 117 | the gate contains an intermittent test that fails ~1 run in 5, so "green" has always been partly luck | OPEN |
+| 118 | network-interface-list omits most interfaces: 3 where GNU reports 11 on the same host | OPEN |
 
 # Honesty audit — 2026-08-18
 
@@ -1789,3 +1790,125 @@ happened, which is the same defect finding 113 recorded about
      an Emaxx defect wearing a flake's clothing -- which has NOT been
      determined.  Until it is, gate results should be read as "green modulo a
      known 1-in-5 flake in this one test".  OPEN.
+
+**111 FIXED (2026-08-26).**  `network-interface-info' was `Ok(Value::Nil)' --
+a bare constant sitting beside a genuinely implemented
+`network-interface-list' in the same match.  It now mirrors process.c:4459:
+a socket used purely as an ioctl handle, SIOCGIFFLAGS / SIOCGIFNETMASK /
+SIOCGIFBRDADDR / SIOCGIFADDR for the four IPv4 components, and a `getifaddrs'
+walk for the link-layer address, since macOS has no SIOCGIFHWADDR
+(process.c:4532).  Six cases byte-identical to the oracle -- `lo0' (nil broadcast, nil hardware
+address), `en0' and `bridge0' (both with real MACs), a nonexistent device
+answering nil, "interface name too long", and `wrong-type-argument' for a
+non-string.  All six are in the committed test, not merely hand-probed: an
+earlier draft of this entry claimed "five cases including en0" when the test
+contained four and `en0' was not among them, which is the finding-111 species
+of defect reappearing inside finding 111's own repair.
+Details worth recording because each is a place a plausible implementation
+would have diverged:
+  - The flag list is built by CONSING in process.c:4498, so it emerges in
+    REVERSE table order -- `lo0' reads (multicast running loopback up), not
+    (up loopback running multicast).
+  - On a Cocoa build GNU spells IFF_NOTRAILERS "smart", not "notrailers"
+    (process.c:4412), and the oracle is such a build.
+  - process.c:4494 widens `ifr_flags' as UNSIGNED before testing bits,
+    because IFF_MULTICAST can set the sign bit of a short.
+  - `any' is set only by the ioctl branches; the getifaddrs hardware-address
+    branch deliberately does NOT set it, so an interface that yields only a
+    MAC still answers nil overall.  Mirrored rather than "improved".
+  - The SIOCGIF* request numbers are NOT exposed by the libc crate on macOS.
+    They are COMPUTED here from the `_IOWR' encoding in sys/ioccom.h -- group
+    letter, ordinal, and payload size -- rather than transcribed as
+    0xc0206911 and friends, which would be magic constants valid for exactly
+    one struct layout on one platform, and would be the same species of
+    defect as finding 101.
+Disclosed: IPv6 is out of scope here exactly as it is in GNU, whose docstring
+directs callers to `network-interface-list' for it.
+
+**Correction to 111, found by adversarial audit before the commit landed.**
+The first implementation PANICKED -- a hard crash, not a wrong answer -- on
+any interface whose name is 7 bytes or longer and which has a 6-byte MAC.
+`bridge0' exists on this very host and reproduced it immediately: GNU returns
+`(nil nil nil (18 . [54 126 46 241 3 64]) (simplex multicast smart running
+broadcast up))', Emaxx aborted with "index out of bounds: the len is 12 but
+the index is 12".  The cause is that the kernel's `sockaddr_dl' is
+VARIABLE-LENGTH: process.c:4548 reads the address through `LLADDR(sdl)', which
+is pointer arithmetic `sdl_data + sdl_nlen' into a tail that extends past the
+declared array, while Emaxx indexed the libc-declared `[c_char; 12]'.  A
+7-byte name needs indices 7..=12 of a 12-long array.  Now read through a raw
+pointer, and the struct itself is read with `read_unaligned' rather than by
+forming a reference, since an entry shorter than the declared struct would
+make a reference invalid.
+The crash survived my own five-case probe because `lo0' has no hardware
+address (its AF_LINK entry has `sdl_alen' 0, so the walk returns early) and
+`en0' has a 3-byte name.  The ~35 lines of `getifaddrs' unsafe were reached by
+NO test.  The committed test now names `bridge0' explicitly and asserts that
+at least one named interface reports a hardware address, so the path cannot go
+unexercised again.
+Two smaller defects from the same audit: the flag table carried an
+`IFF_ALTPHYS' -> "altphys" row that does NOT exist in GNU's table
+(process.c:4386), under a comment claiming the table was GNU's in GNU's order
+-- harmless, because on macOS IFF_ALTPHYS and IFF_LINK2 are the same bit and
+the earlier row consumes it, but the fidelity claim was false, so the row is
+deleted.  And the non-macOS arm's comment claimed GNU "compiles the whole body
+out" on other platforms, which is the opposite of the truth: GNU/Linux defines
+all five SIOCGIF* requests and returns full data including the hardware
+address via `ifr_hwaddr' (process.c:4518).  Finding 111 is fixed for macOS
+ONLY; the ledger row now says so, and the non-macOS arm is labelled as the
+cheat it still is.
+
+118. `network-interface-list' reports far fewer interfaces than GNU on the
+     same host: 3 against 11, verified side by side.
+     CORRECTED before this entry was committed: the first draft named the
+     wrong cause and asserted something about GNU that is FALSE.  It claimed
+     GNU "enumerates link-layer-only entries"; process.c:4344 is `else
+     continue' -- GNU skips every address that is not AF_INET or AF_INET6,
+     and the AF_LINK-only devices on this host (gif0, stf0, anpi0/1, en1-en4,
+     bridge0, ap1) appear in NEITHER list.  It also blamed `if_addrs' for
+     yielding "only interfaces carrying an IP address", which is not what that
+     crate does.
+     The real cause is a disabled cargo feature: if-addrs 0.15.0
+     (`src/sockaddr.rs:45-49`) discards every fe80:: link-local address unless
+     its `link-local' feature is on, and `Cargo.toml:67' pins
+     `if-addrs = "=0.15.0"' without features.  All eight missing rows are
+     fe80:: addresses -- lo0's fe80::1, en0's link-local, awdl0, llw0 and
+     utun0-3 -- on interfaces that DO carry IP addresses.
+     Enabling that feature is NOT the whole fix, though an earlier draft of
+     this entry implied it was.  The list is ALSO built in the opposite order
+     from GNU: Emaxx maps forward over the crate's iterator
+     (files_process.rs:419) while GNU conses each row onto the front
+     (process.c:4350ff), so the three rows the two currently share appear
+     reversed.  Enabling the feature alone would yield eleven rows in the
+     wrong order.  Both halves need doing, and the result checked against
+     GNU's list element by element rather than by count.
+     Found while writing the test for finding 111: driving that test by
+     enumerating interfaces compared two different sets and failed loudly.
+     Not a fabricated value, so not the same species as 111, but the list is
+     materially incomplete and any GNU test that counts interfaces or looks
+     for a specific device will diverge.  OPEN.
+
+**Second correction to 111, from the verification round.**  The audit that
+confirmed the LLADDR crash fix also found the repair had left two weaknesses
+and one divergence.
+The divergence: `need_args' checks only a MINIMUM, so
+`(network-interface-info "lo0" "x")' returned data where GNU signals
+`wrong-number-of-arguments'.  The generated arity table already recorded
+(1, 1) and the sibling `network-interface-list', whose dispatch arm sits directly
+beside this one, already used the bounded helper; only this call site
+disagreed.  Now `need_arg_range(1, 1)',
+and probed identical.  (Over-arity tolerance is systemic in Emaxx --
+`(car '(1) 2)' also returns 1 rather than signalling -- so this is one instance
+of a wider gap, not the whole of it.)
+The weaknesses were both in the test written to prove the crash was fixed.
+It asserted that SOME named interface reported a hardware address, which `en0'
+satisfies -- and `en0' has a 3-byte name, so it never reaches the offsets that
+overflowed.  The assertion would have passed on a host without `bridge0' while
+the LLADDR arithmetic went unexercised, which is exactly how the crash shipped
+the first time.  It now requires the 7-byte-named interface specifically and
+fails loudly rather than testing less.  The test was also not `cfg'-gated to
+macOS, so on GNU/Linux -- where the Emaxx arm is still the acknowledged cheat
+and these devices do not exist -- it would have failed against a tree behaving
+exactly as documented.
+Independently confirmed by that round: all 18 interfaces on this host, plus
+three nonexistent names and eight edge cases including an embedded-NUL name
+and the 15/16-byte boundary, are byte-identical to the oracle.
