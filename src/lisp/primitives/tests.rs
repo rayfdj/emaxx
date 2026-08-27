@@ -8674,6 +8674,55 @@ fn network_interface_info_reports_the_real_interface() {
 }
 
 #[test]
+fn core_libraries_are_not_shadowed_by_cedet_subdirectories() {
+    // Finding 123.  Emaxx discovers test-helper directories with a recursive
+    // walk when EMACS_TEST_DIRECTORY is set -- which the compatibility harness
+    // sets for every child it measures -- and those 77 extra directories (66
+    // under test/, 11 under lisp/) used to sit AHEAD of the standard library.
+    // ELEVEN core names then resolved into CEDET, quail and fixture
+    // directories; five of them are checked here:
+    //
+    //     chart comp debug generic map
+    //
+    // `(require 'map)' loaded cedet/srecode/map.el, which provides
+    // `srecode/map', and failed.  Five manifest files require one of THESE
+    // five, worth at least 324 outcomes -- including the 177 of
+    // test/src/comp-tests.el.  The full eleven-name exposure is larger and
+    // has not been counted.
+    //
+    // THIS TEST DOES NOT PIN THE ORDERING FIX, and an audit caught it
+    // claiming to.  `initialized_upstream_batch_interpreter' is built with
+    // `load_path' ALREADY set to GNU's 25 directories (test_support.rs), and
+    // those sit at the head under either ordering, so this passed with the fix
+    // reverted.  The real regression test is
+    // `standard_library_precedes_the_discovered_test_tree' in batch.rs, which
+    // asserts the order directly and does fail when reverted (verified).
+    //
+    // What this one is still worth: it confirms against the live oracle that
+    // these requires SUCCEED and agree with GNU, which is the user-visible
+    // half.  Note the shadow set was ELEVEN names, not the five here --
+    // compile, cpp, emoji, etags, grep and python were shadowed too.
+    let program = r#"
+        (list (require 'map nil t)
+              (require 'comp nil t)
+              (require 'chart nil t)
+              (require 'generic nil t)
+              (and (fboundp 'map-elt) (fboundp 'map-put!) t))"#;
+    let expected = "(map comp chart generic t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read core-library program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate core-library program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn max_lisp_eval_depth_is_honoured_dynamically() {
     // eval.c:2504-2509.  The limit came from the GLOBAL cell, so a `let' was
     // invisible; it was then multiplied by 384 and floored at 307200, so the
