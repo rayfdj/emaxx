@@ -1848,6 +1848,133 @@ SCENARIOS += [
     ),
 ]
 
+HIGH_VALUE_COMMAND_SCENARIO_NAMES = (
+    "minibuffer-edit-abort",
+    "kill-buffer-confirm",
+    "keyboard-macro-repeat",
+    "register-text-and-point",
+    "rectangle-kill-yank",
+    "query-replace-step-and-undo",
+    "bookmark-set-and-jump",
+    "revert-buffer-confirm",
+)
+
+SCENARIOS += [
+    (
+        "minibuffer-edit-abort",
+        CORE_EDIT_SAMPLE,
+        [
+            action("open-m-x", b"\x1bx"),
+            action("type-misspelled-command", b"forward-wrod"),
+            action("backward-word", b"\x1bb"),
+            action("kill-word", b"\x1bd"),
+            action("insert-correction", b"word"),
+            action("abort-minibuffer", b"\x07"),
+            action("open-m-x-again", b"\x1bx"),
+            action("type-command", b"forward-word"),
+            action("execute-command", b"\r"),
+        ],
+    ),
+    (
+        "kill-buffer-confirm",
+        CORE_EDIT_SAMPLE,
+        [
+            action("modify-visited-file", b"temporary edits"),
+            action("open-kill-buffer-prompt", b"\x18k"),
+            action("choose-current-buffer", b"\r", settle=2.0, quiet=0.5),
+            action("kill-without-saving", b"y", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "keyboard-macro-repeat",
+        CORE_EDIT_SAMPLE,
+        [
+            action("start-kbd-macro", b"\x18("),
+            action("end-of-line", b"\x05"),
+            action("insert-bang", b"!"),
+            action("next-line", b"\x0e"),
+            action("beginning-of-line", b"\x01"),
+            action("end-kbd-macro", b"\x18)"),
+            action("execute-kbd-macro", b"\x18e", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "register-text-and-point",
+        CORE_EDIT_SAMPLE,
+        [
+            action("set-mark", b"\x00"),
+            action("end-of-line", b"\x05"),
+            action("copy-to-register-a", b"\x18rsa"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-register-a", b"\x18ria"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("forward-word", b"\x1bf"),
+            action("point-to-register-p", b"\x18r p"),
+            action("end-of-buffer-again", b"\x1b>"),
+            action("jump-to-register-p", b"\x18rjp"),
+        ],
+    ),
+    (
+        "rectangle-kill-yank",
+        "abcd 1111\nabcd 2222\nabcd 3333\nlast line\n",
+        [
+            action("forward-char", b"\x06"),
+            action("set-mark", b"\x00"),
+            action("forward-char-again", b"\x06"),
+            action("forward-char-third-column", b"\x06"),
+            action("next-line", b"\x0e"),
+            action("next-line-again", b"\x0e"),
+            action("kill-rectangle", b"\x18rk", settle=2.0, quiet=0.5),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-rectangle", b"\x18ry", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "query-replace-step-and-undo",
+        "alpha one alpha\nalpha two\nlast alpha\n",
+        [
+            action("open-query-replace", b"\x1b%"),
+            action("old-text", b"alpha\r"),
+            action("new-text", b"omega\r", settle=2.0, quiet=0.5),
+            action("replace-one", b"y"),
+            action("skip-one", b"n"),
+            action("replace-rest", b"!", settle=2.0, quiet=0.5),
+            action("undo-replacement", b"\x1f"),
+            action("undo-replacement-again", b"\x1f"),
+        ],
+    ),
+    (
+        "bookmark-set-and-jump",
+        CORE_EDIT_SAMPLE,
+        [
+            action(
+                "disable-bookmark-persistence",
+                b"\x1b:(setq bookmark-save-flag nil)\r",
+            ),
+            action("forward-word", b"\x1bf"),
+            action("open-bookmark-set", b"\x18rm"),
+            action("name-bookmark", b"tty-spot\r", settle=2.0, quiet=0.5),
+            action("end-of-buffer", b"\x1b>"),
+            action("open-bookmark-jump", b"\x18rb"),
+            action("choose-bookmark", b"tty-spot\r", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "revert-buffer-confirm",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"changed "),
+            action(
+                "request-revert-buffer",
+                b"\x1bxrevert-buffer\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("confirm-revert-buffer", b"yes\r", settle=2.0, quiet=0.5),
+        ],
+    ),
+]
+
 FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
     "org-fieldnotes-todo-cycle",
     "org-fieldnotes-priority",

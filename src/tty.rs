@@ -544,7 +544,8 @@ fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRo
     let used = long
         .text
         .iter()
-        .rposition(|c| *c != ' ')
+        .zip(long.attrs.iter())
+        .rposition(|(c, attrs)| *c != ' ' || *attrs != CellAttrs::default())
         .map(|last| last + 1)
         .unwrap_or(0);
     let has_newline = long.text[..used].contains(&'\n');
@@ -604,7 +605,8 @@ fn wrapped_echo_cursor(
     let used = long
         .text
         .iter()
-        .rposition(|c| *c != ' ')
+        .zip(long.attrs.iter())
+        .rposition(|(c, attrs)| *c != ' ' || *attrs != CellAttrs::default())
         .map(|last| last + 1)
         .unwrap_or(0);
     let extent = used.max(position.min(long.text.len()));
@@ -737,11 +739,40 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
         if state.minibuffer_owns_echo {
             return;
         }
+        // A full redisplay may have just painted this exact message with
+        // resolved face spans.  The emission tick is authoritative for the
+        // cells, but not for the cursor: read-multiple-choice binds
+        // `cursor-in-echo-area' only after issuing its message, so a later
+        // blocking read must still move the cursor onto the already-current
+        // echo glass.
+        // Matrix invalidation can clear `painted_echo' afterward; the
+        // tick remains proof that repainting would only flatten face spans.
+        let emitted = crate::lisp::primitives::echo_area_message_tick();
+        if state.painted_message_tick == emitted {
+            if crate::lisp::primitives::tty_cursor_in_echo_area() {
+                mini_rows = state.echo_rows.max(1);
+                let mut long = PaintRow::blank(cols * mini_rows);
+                long.blit(0, &text, CellAttrs::default());
+                let (row, col) = wrapped_echo_cursor(&long, text.chars().count(), cols, mini_rows);
+                let base = (rows as usize).saturating_sub(mini_rows);
+                let mut out = io::stdout();
+                let _ = queue!(
+                    out,
+                    cursor::MoveTo(
+                        col.min(cols.saturating_sub(1)) as u16,
+                        (base + row).min(rows.saturating_sub(1) as usize) as u16,
+                    ),
+                    cursor::Show,
+                );
+                let _ = out.flush();
+            }
+            return;
+        }
         mini_rows = state.echo_rows.max(1);
         let max_rows = state.echo_max_rows.max(1);
         // Painting (or confirming) the channel brings the glass up to
         // date with every message emitted so far.
-        state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
+        state.painted_message_tick = emitted;
         let painted: String = state
             .painted_echo
             .first()
@@ -3958,6 +3989,21 @@ mod tests {
         let mut trailing = PaintRow::blank(160);
         trailing.blit(0, &format!("{}): ", "x".repeat(79)), CellAttrs::default());
         assert_eq!(wrapped_echo_cursor(&trailing, 82, 80, 2), (1, 3));
+    }
+
+    #[test]
+    fn wrapped_echo_preserves_a_faced_trailing_space() {
+        let face = CellAttrs {
+            foreground: Some(4),
+            ..CellAttrs::default()
+        };
+        let mut prompt = PaintRow::blank(160);
+        prompt.blit(0, &format!("{}): ", "x".repeat(79)), face);
+
+        let rows = wrap_echo_paint(&prompt, 80, 2);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].attrs[2], face);
+        assert_eq!(rows[1].text[2], ' ');
     }
 
     #[test]

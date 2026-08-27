@@ -929,7 +929,11 @@ pub(crate) fn execute_command_binding(
     // blocks with redisplay frozen (the F10 menu) keeps the old message
     // visible until an explicit `message' repaints the row.
     crate::lisp::primitives::expire_echo_area_message();
-    interp.set_variable("last-command-event", last_event, env);
+    interp.set_variable("last-command-event", last_event.clone(), env);
+    interp.set_variable("last-input-event", last_event.clone(), env);
+    if !mouse_event_on_menu_bar(&last_event) {
+        interp.set_variable("last-nonmenu-event", last_event, env);
+    }
     // The canonical key-state channel: this-command-keys,
     // this-single-command-keys, and their raw variants all read it
     // (isearch's pre-command-hook indexes the vector).
@@ -942,6 +946,16 @@ pub(crate) fn execute_command_binding(
         env,
     );
     interp.set_variable("this-command", binding.clone(), env);
+    // read_char records terminal events as they arrive while a keyboard
+    // macro is being defined.  The command's end keys are deliberately
+    // provisional: `end-kbd-macro' truncates back to the last command
+    // boundary, while an ordinary completed command commits them below.
+    if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        interp.kbd_macro_definition.extend_from_slice(keys);
+    }
     // Timers may have messed with `deactivate-mark'; the command starts
     // with it reset (keyboard.c command_loop_1).
     interp.set_variable("deactivate-mark", Value::Nil, env);
@@ -1076,6 +1090,13 @@ pub(crate) fn execute_command_binding(
         .lookup_var("current-prefix-arg", env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", last_prefix, env);
+    if result.is_ok()
+        && interp
+            .lookup_var("defining-kbd-macro", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
+    }
     // keyboard.c:1421 (command_loop_1): before waiting for the next key
     // sequence, `this-command' and its shadows go nil -- Lisp that runs
     // between commands (idle timers; eldoc's `(not this-command)' guard)
@@ -1306,7 +1327,13 @@ pub(crate) fn pop_unread_command_event_value(
                     let idle = idle_start
                         .get_or_insert_with(std::time::Instant::now)
                         .elapsed();
-                    run_due_timers(interp, env, idle.as_secs_f64());
+                    if run_due_timers(interp, env, idle.as_secs_f64()) {
+                        // A blocking Lisp reader owns the command thread, so
+                        // the outer terminal loop cannot observe timer work.
+                        // Redisplay here, as read_char does after timer_check;
+                        // query-replace's lazy-highlight overlays rely on it.
+                        run_tty_frame_redraw(interp, env);
+                    }
                 }
             }
         }
