@@ -830,8 +830,16 @@ fn string_multibyte_conversion_helpers_match_fns_expectations() {
         std::slice::from_ref(&raw),
         &mut env,
     )
-    .expect("string-make-multibyte should decode latin-1 bytes");
-    assert_eq!(string_text(&made).expect("decoded text"), "é");
+    .expect("string-make-multibyte should accept the raw byte");
+    // character.c's unibyte_char_to_multibyte: a non-ASCII byte becomes an
+    // eight-bit character, not latin-1 -- the oracle answers 4194281
+    // (raw #xE9) for (string-make-multibyte (string-make-unibyte "\u{e9}")).
+    // The previous expectation here encoded the latin-1 shortcut this
+    // batch removed.
+    assert_eq!(
+        string_text(&made).expect("decoded text"),
+        crate::lisp::primitives::raw_byte_regex_char(0xE9).to_string()
+    );
     assert!(string_like(&made).expect("decoded string").multibyte);
     let roundtripped = call(&mut interp, "string-as-unibyte", &[made], &mut env)
         .expect("string-as-unibyte should roundtrip");
