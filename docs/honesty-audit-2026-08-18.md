@@ -70,6 +70,10 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 99 | make-thread: the classifier claim was stale; the real defects were join/bindings/handlers | FIXED 2026-08-27 - three semantics fixes; interleaving stays open as 84 |
 | 124 | timers fire inside thread-join and see the joiner's let bindings; GNU runs none there | OPEN |
 | 125 | thread-signal to the main thread prints eagerly and drops the data; GNU queues an event | OPEN |
+| 126 | detect-coding-string still answers raw-text where the read path now answers iso-latin-1 | OPEN |
+| 127 | supra-Unicode characters (private charset codepoints) cannot live in strings/buffers | OPEN (structural) |
+| 128 | encode substitution rules for the generic/charset arms never swept against the oracle | OPEN |
+| 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | OPEN |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | OPEN |
@@ -78,7 +82,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
 | 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
 | 123 | EMACS_TEST_DIRECTORY shadowed 11 core libraries (5 of them in the 397-name sweep), putting at least 324 measured outcomes (4.1%) at risk | FIXED 2026-08-27 - standard library ordered first, sweep 5 -> 0 |
-| 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
+| 106 | decode-coding-string falls back to identity for every unimplemented system | FIXED (euc-jp real; file reads consult the alist; one disclosed limit) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
 | 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | OPEN |
@@ -2411,3 +2415,94 @@ changed, so a later grandchild reads the mutated value.  The first draft said
 125. `thread-signal' aimed at the MAIN thread prints "Error ..." eagerly at
      delivery time and DROPS the data (probed: ("hi") became nil); GNU queues
      a THREAD_EVENT and batch prints nothing.  Pre-existing.  OPEN.
+
+## 2026-08-28 coding batch (finding 106 closed; findings 126-128 recorded)
+
+Finding 106 is FIXED.  The work grew as probes disproved my drafts; each
+correction below is the oracle's, not mine.
+
+  - `insert-file-contents' now consults `file-coding-system-alist' via the
+    already-working `find-operation-coding-system' (fileio.c's third source,
+    after coding-system-for-read and set-auto-coding-function).  A pure-ASCII
+    .el file reads as prefer-utf-8-unix, not undecided-unix.  `prefer-utf-8'
+    itself now detects like `undecided' except that a file which decides
+    nothing keeps the prefer-utf-8 name.
+  - euc-jp is a real codec: JIS X 0208 via the :unify-map table (unify-charset
+    now records state instead of validating and forgetting; mule-conf.el's
+    calls finally do something), halfwidth katakana behind SS2, JIS X 0212
+    behind SS3, latin-jisx0201 designated with ESC ( J and restored before
+    controls/eol, space for unencodable, raw-byte resync on invalid input.
+    :subset charsets (both jisx0201 halves) convert through their parent, and
+    the code-offset fallback now uses the :code-space INDEX (jisx0208's hole
+    0x222F is offset+108, not offset+0x222F).  japanese.el's re-definition of
+    japanese-iso-8bit had been shadowing the bootstrap euc-jp codec entirely
+    -- every euc-jp decode was raw bytes -- fixed by keeping the internal
+    codec discriminator on re-definition.  test/src/coding-tests.el: 9/9.
+  - Detection and naming were wrong in ways my own draft tests exposed:
+    a file with no eol byte anywhere detects as the BARE base (undecided /
+    utf-8), and a bare-undecided read leaves buffer-file-coding-system nil;
+    `last-coding-system-used' keeps the caller's own spelling (euc-jp stays
+    euc-jp, unix stays unix, binary stays binary) unless the decoder actually
+    resolved a charset or an eol the request left open; the pure-ASCII
+    shortcut requires the coding to be :ascii-compatible-p, which for
+    iso-2022 systems GNU RECOMPUTES from the initial G0 designation
+    (japanese.el passes nil for euc-jp; coding.c:11285 overwrites it to t).
+    Non-UTF-8 8-bit junk detects as iso-latin-1 (mojibake), except that a
+    C1-control byte 0x80..0x9F rejects the latin-1 category and stays
+    raw-text -- all probed row by row against the oracle.
+  - `string-as-unibyte'/`string-as-multibyte' now expose and parse the
+    INTERNAL (UTF-8) bytes; what stood there used the latin-1 byte below
+    0x100, signalled above it, and as-multibyte PANICKED on any 8-bit byte
+    (RAW_BYTE8_BASE + byte exceeds char::MAX).  `string-make-unibyte' takes
+    the low byte of a character with no unibyte equivalent (GNU: ?B for
+    U+3042); `string-make-multibyte' produces eight-bit characters, not
+    latin-1.  This was why the coding-tests binary file emaxx generated
+    differed byte-for-byte from GNU's.
+
+Disclosed limitations (not claimed as fixed):
+  - A JIS code missing from the unify table decodes in GNU to a
+    supra-Unicode codepoint (0xA2 0xAF -> 1310828); emaxx strings are Rust
+    strings and cannot hold characters beyond 0x10FFFF, so such bytes decode
+    to raw-byte markers instead.  Affects only unmapped holes.
+  - GNU's unify-charset early-return is gated on the lazily loaded
+    deunifier: AFTER an encode through the charset, (unify-charset
+    'japanese-jisx0208 42) is nil where a fresh session signals "Bad
+    unify-map".  Emaxx always signals; the fresh-session behavior is the one
+    regression-tested.
+
+Gate v60 (the batch's first full gate) failed two pre-existing unit tests
+sitting exactly on the changed behaviors; both were re-probed before
+touching:
+  - revert_buffer_reloads_non_utf8_file_as_raw_text: a UNIBYTE buffer
+    suppresses every conversion except eol (fileio.c's comment, oracle
+    rows byte-identical after the fix) -- the read is raw-text and even
+    valid UTF-8 stays as its bytes.  The new latin-1 detection had leaked
+    into unibyte reads, and the probe also exposed a PRE-EXISTING bug the
+    fix removes: emaxx had been DECODING utf-8 into unibyte buffers
+    (content (192 10) where GNU keeps (195 128 10)).
+  - string_multibyte_conversion_helpers_match_fns_expectations: its
+    latin-1 expectation for string-make-multibyte encoded the removed
+    shortcut; the oracle answers the eight-bit character, and the
+    roundtrip half of the test still holds.  Expectation corrected
+    in-place with the reason.
+
+New findings recorded while probing (all pre-existing, none fixed here):
+
+126. `detect-coding-string' (detect_coding_names_for_text, coding.rs) still
+     answers raw-text for non-UTF-8 8-bit text where the read-path detector
+     now answers iso-latin-1; the two detectors should share the category
+     logic.  OPEN.
+127. Emaxx cannot represent supra-Unicode characters (private charset
+     codepoints above 0x10FFFF) in strings or buffers at all; decode-char
+     returns them as integers but text drops to raw-byte markers.  Structural
+     -- same root as the 106 limitation above.  OPEN.
+128. `encode-coding-string' of an unencodable character substitutes space
+     for euc-jp (matching coding.c's iso-2022 default char) but the generic
+     `_ '/charset arms still have their own substitution rules that were
+     never swept against the oracle coding-by-coding.  OPEN.
+129. iso-2022-7bit content is DETECTED by name (a hand-rolled ESC-window
+     check) but never decoded: a file of ISO-2022 escapes reads back as its
+     raw escape bytes where GNU decodes the kanji, the detected name misses
+     the eol variant GNU appends for files, and the same detection fires for
+     `decode-coding-string' where GNU's answers stay `undecided'.  All three
+     pre-exist this batch (probed while auditing it).  OPEN.

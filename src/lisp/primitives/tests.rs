@@ -8795,6 +8795,251 @@ fn skip_chars_word_class_includes_ascii_digits() {
 }
 
 #[test]
+fn euc_jp_codec_follows_the_oracle_contract() {
+    // The real euc-jp codec behind finding 106's second half (the stub
+    // signalled for every non-ASCII character): JIS X 0208 as the high
+    // bank, halfwidth katakana behind SS2, latin-jisx0201 designated with
+    // ESC ( J and restored before controls/eol, space for unencodable,
+    // raw-byte resynchronization on invalid sequences, and encode-char /
+    // decode-char through the now-honoured `unify-charset' state.  Every
+    // row is the oracle's own answer.
+    let program = r#"
+        (list
+         (append (encode-coding-string (string 12354) 'euc-jp) nil)
+         (append (encode-coding-string (string 65393) 'euc-jp) nil)
+         (append (encode-coding-string (string 165) 'euc-jp) nil)
+         (append (encode-coding-string (string 165 10 97) 'euc-jp) nil)
+         (append (encode-coding-string (string 8364) 'euc-jp) nil)
+         (append (encode-coding-string (string 97 12354 10 98 12450) 'euc-jp-dos) nil)
+         (append (decode-coding-string (unibyte-string 164 162) 'euc-jp) nil)
+         (append (decode-coding-string (unibyte-string 142 177) 'euc-jp) nil)
+         (append (decode-coding-string (unibyte-string 143 203 174) 'euc-jp) nil)
+         (append (decode-coding-string (unibyte-string 164 65 255) 'euc-jp) nil)
+         (append (decode-coding-string (unibyte-string 164) 'euc-jp) nil)
+         (encode-char 12354 'japanese-jisx0208)
+         (decode-char 'japanese-jisx0208 9250)
+         (encode-char 65393 'katakana-jisx0201)
+         (encode-char 165 'latin-jisx0201))"#;
+    let expected = concat!(
+        "((164 162) (142 177) (27 40 74 92 27 40 66) (27 40 74 92 27 40 66 10 97) (32) ",
+        "(97 164 162 13 10 98 165 162) (12354) (65393) (29476) (4194212 65 4194303) ",
+        "(4194212) 9250 12354 49 92)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read euc-jp program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate euc-jp program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn unify_charset_validates_and_deunifies_like_charset_c() {
+    // charset.c:1330 Funify_charset.  Only offset-method charsets whose
+    // code-offset lies beyond Unicode can unify; a bad map argument
+    // signals (error "Bad unify-map" 42) in a fresh session (GNU's
+    // early return is gated on the lazily loaded deunifier, so it does
+    // not fire before any encode); de-unification restores the raw
+    // code-offset conversion, indexed through :code-space -- jisx0212's
+    // code 0x4B2E is index 0x8F79, hence 1347449, not offset + 0x4B2E.
+    let program = r#"
+        (list
+         (unify-charset 'japanese-jisx0208)
+         (let ((text-quoting-style 'straight))
+           (condition-case e (unify-charset 'ascii) (error (cadr e))))
+         (condition-case e (unify-charset 'japanese-jisx0208 42) (error e))
+         (progn (unify-charset 'japanese-jisx0212 nil t)
+                (prog1 (list (decode-char 'japanese-jisx0212 19246)
+                             (encode-char 29476 'japanese-jisx0212))
+                  (unify-charset 'japanese-jisx0212)))
+         (decode-char 'japanese-jisx0212 19246))"#;
+    let expected = concat!(
+        "(nil \"Can't unify charset: ascii\" (error \"Bad unify-map\" 42) ",
+        "(1347449 nil) 29476)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read unify-charset program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate unify-charset program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn file_reads_consult_the_coding_alist_and_name_like_the_oracle() {
+    // Three findings in one contract, every row the oracle's answer:
+    //   - insert-file-contents consults `file-coding-system-alist' via
+    //     find-operation-coding-system (fileio.c), so a pure-ASCII .el
+    //     file reads as prefer-utf-8-unix, not undecided-unix;
+    //   - a detection that concludes bare `undecided' (pure ASCII, no
+    //     eol byte anywhere) leaves buffer-file-coding-system nil, while
+    //     LF upgrades it to undecided-unix and a BOM-less no-newline
+    //     UTF-8 file becomes bare utf-8 in last-coding-system-used but
+    //     utf-8-unix in the buffer; an explicit request keeps its own
+    //     spelling (`unix', `binary') unless detection resolved a
+    //     charset or an eol the request left open;
+    //   - non-UTF-8 8-bit junk without C1 controls detects as
+    //     iso-latin-1, and a byte in 0x80..0x9F forces raw-text.
+    let program = r#"
+        (progn
+          ;; The default buffer-file-coding-system is the oracle host's
+          ;; locale (utf-8 on a desktop, nil under LANG=C); pin it so the
+          ;; nil-vs-set contract below is environment-independent.
+          (setq-default buffer-file-coding-system nil)
+          (defun zz-cf-read (name content wcoding rcoding)
+            (let ((f (make-temp-file "emaxx-coding" nil name)))
+              (unwind-protect
+                  (progn
+                    (let ((coding-system-for-write wcoding))
+                      (with-temp-file f (insert content)))
+                    (with-temp-buffer
+                      (let ((coding-system-for-read rcoding))
+                        (insert-file-contents f))
+                      (list last-coding-system-used buffer-file-coding-system)))
+                (delete-file f))))
+          (list
+           (zz-cf-read ".el" "alpha" 'utf-8 nil)
+           (zz-cf-read ".el" "alpha\n" 'utf-8 nil)
+           (zz-cf-read ".txt" "alpha" 'utf-8 nil)
+           (zz-cf-read ".txt" "alpha\n" 'utf-8 nil)
+           (zz-cf-read ".txt" (string 97 192) 'utf-8 nil)
+           (zz-cf-read ".txt" (string 97 13 10) 'binary nil)
+           (zz-cf-read ".txt" "alpha" 'utf-8 'unix)
+           (zz-cf-read ".txt" "alpha" 'utf-8 'utf-8)
+           (zz-cf-read ".txt" "alpha
+" 'utf-8 'binary)
+           (zz-cf-read ".txt" (string 12354 10) 'euc-jp 'euc-jp)
+           (zz-cf-read ".txt" (apply #'unibyte-string '(97 255 254)) 'binary nil)
+           (zz-cf-read ".txt" (apply #'unibyte-string '(97 129 10)) 'binary nil)
+           ;; a unibyte buffer suppresses every conversion except eol:
+           ;; valid UTF-8 stays as its bytes and the read is raw-text
+           (let ((f (make-temp-file "emaxx-coding" nil ".txt")))
+             (unwind-protect
+                 (progn
+                   (let ((coding-system-for-write 'binary))
+                     (with-temp-file f (insert (unibyte-string 195 128 10))))
+                   (with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert-file-contents f)
+                     (list last-coding-system-used buffer-file-coding-system
+                           (append (buffer-string) nil))))
+               (delete-file f)))
+           (car (find-operation-coding-system 'insert-file-contents "any.el"))))"#;
+    let expected = concat!(
+        "((prefer-utf-8 prefer-utf-8-unix) (prefer-utf-8-unix prefer-utf-8-unix) ",
+        "(undecided nil) (undecided-unix undecided-unix) (utf-8 utf-8-unix) ",
+        "(undecided-dos undecided-dos) (unix undecided-unix) (utf-8 utf-8-unix) ",
+        "(binary no-conversion) (japanese-iso-8bit-unix japanese-iso-8bit-unix) ",
+        "(iso-latin-1 iso-latin-1-unix) (raw-text-unix raw-text-unix) ",
+        "(raw-text-unix raw-text-unix (195 128 10)) prefer-utf-8)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read file-coding program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate file-coding program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn string_decode_names_last_coding_system_used_like_the_oracle() {
+    // coding.c's decoder records the coding it actually used: the
+    // requested spelling survives verbatim (the euc-jp alias stays
+    // `euc-jp', canonicalizing was this port's invention), pure-ASCII
+    // input without a CR never re-resolves the name (LF included), and
+    // only a decode that both converted something and saw an eol byte
+    // gains the canonical eol subsidiary (japanese-iso-8bit-unix).
+    let program = r#"
+        (list
+         (progn (decode-coding-string "alpha" 'undecided) last-coding-system-used)
+         (progn (decode-coding-string "alpha\n" 'undecided) last-coding-system-used)
+         (progn (decode-coding-string (unibyte-string 97 13 10) 'undecided)
+                last-coding-system-used)
+         (progn (decode-coding-string (unibyte-string 195 128) 'undecided)
+                last-coding-system-used)
+         (progn (decode-coding-string "alpha\n" 'utf-8) last-coding-system-used)
+         (progn (decode-coding-string (unibyte-string 164 162) 'euc-jp)
+                last-coding-system-used)
+         (progn (decode-coding-string (unibyte-string 164 162 10) 'euc-jp)
+                last-coding-system-used)
+         (progn (decode-coding-string (unibyte-string 164 162) 'euc-jp-unix)
+                last-coding-system-used)
+         (progn (encode-coding-string "a" 'euc-jp) last-coding-system-used)
+         (progn (decode-coding-string (unibyte-string 97 255 254) 'undecided)
+                last-coding-system-used))"#;
+    let expected = concat!(
+        "(undecided undecided undecided-dos utf-8 utf-8 euc-jp ",
+        "japanese-iso-8bit-unix euc-jp-unix euc-jp iso-latin-1)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read lcsu program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate lcsu program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn string_byte_conversions_use_the_internal_encoding() {
+    // character.c: `string-as-unibyte' exposes the INTERNAL (UTF-8)
+    // bytes and `string-as-multibyte' reads them back (what stood here
+    // used the latin-1 byte below 0x100, signalled above it, and
+    // panicked on any 8-bit byte in as-multibyte); `string-make-unibyte'
+    // takes the low byte of a character with no unibyte equivalent, and
+    // `string-make-multibyte' turns non-ASCII bytes into eight-bit
+    // characters, not latin-1.  Oracle answers throughout.
+    let program = r#"
+        (with-suppressed-warnings ((obsolete string-as-unibyte
+                                             string-as-multibyte
+                                             string-make-unibyte
+                                             string-make-multibyte))
+          (list
+           (append (string-as-unibyte (string 192)) nil)
+           (append (string-as-unibyte (string 12354)) nil)
+           (append (string-to-multibyte (string-as-unibyte (string 192))) nil)
+           (append (string-as-multibyte (unibyte-string 195 128)) nil)
+           (append (string-as-multibyte (unibyte-string 195)) nil)
+           (append (string-make-unibyte (string 192)) nil)
+           (append (string-make-unibyte (string 12354)) nil)
+           (append (string-make-multibyte (unibyte-string 192)) nil)))"#;
+    let expected = concat!(
+        "((195 128) (227 129 130) (4194243 4194176) (192) (4194243) ",
+        "(192) (66) (4194240))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read byte-conversion program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate byte-conversion program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn max_lisp_eval_depth_is_honoured_dynamically() {
     // eval.c:2504-2509.  The limit came from the GLOBAL cell, so a `let' was
     // invisible; it was then multiplied by 384 and floored at 307200, so the

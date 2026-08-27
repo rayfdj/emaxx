@@ -2891,6 +2891,11 @@ pub struct Interpreter {
     /// Charsets defined with :supplementary-p; they sort after every
     /// non-supplementary charset in the ordered (priority) list.
     charset_supplementary: HashSet<String>,
+    /// Charsets currently unified with Unicode (charset.c's UNIFIED_P
+    /// flag, set by `unify-charset').  mule-conf.el unifies the CJK
+    /// offset-method charsets at load; while unified, code<->character
+    /// conversion goes through the charset's `:unify-map' file.
+    charset_unified: HashSet<String>,
     /// ISO charset associations keyed by (dimension, chars, final).
     iso_charsets: Vec<(i64, i64, u32, String)>,
     /// Coding systems keyed by canonical name.
@@ -3760,6 +3765,7 @@ impl Interpreter {
             charset_supplementary: ["emacs".to_string(), "eight-bit".to_string()]
                 .into_iter()
                 .collect(),
+            charset_unified: HashSet::new(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],
