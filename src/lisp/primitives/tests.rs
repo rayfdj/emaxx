@@ -8689,6 +8689,77 @@ fn core_libraries_are_not_shadowed_by_cedet_subdirectories() {
 }
 
 #[test]
+fn threads_get_their_own_bindings_handlers_and_join_semantics() {
+    // The real content behind stale finding 99, all mirroring thread.c:
+    //
+    //   - a body error is caught by the thread itself (thread.c:815), kept
+    //     for `thread-last-error', and `thread-join' returns NIL; only a
+    //     `thread-signal'-delivered kill re-raises out of the join
+    //     (thread.c:1081/1088);
+    //   - each thread owns its dynamic bindings (unbind/rebind_for_thread_
+    //     switch, thread.c:87-100): a child sees GLOBALS, its setq writes
+    //     globals, and the parent's let-exit restores the child-written
+    //     value; nested grandchildren must not see the grandparent's lets
+    //     either (the first version of the swap walked the whole shared
+    //     stack and re-exposed them);
+    //   - each thread owns its handler list: ERT wraps test bodies in
+    //     `handler-bind' (ert.el:803), and with a shared stack a child's
+    //     error ran the PARENT's handler, whose cl-return-from died at the
+    //     boundary as (no-catch --cl-block-error-- nil).
+    let program = r#"
+        (progn
+          (defvar zz-tt 'global)
+          (list
+           ;; join of an errored thread: nil, error retrievable
+           (thread-join (make-thread (lambda () (car 42))))
+           (thread-last-error 'cleanup)
+           ;; child sees the global, not the parent's let
+           (let ((zz-tt 'parent))
+             (thread-join (make-thread (lambda () zz-tt))))
+           ;; child setq writes the global; parent's let-exit restores it
+           (progn (let ((zz-tt 'parent))
+                    (thread-join (make-thread (lambda () (setq zz-tt 'child)))))
+                  zz-tt)
+           ;; grandchild sees the global through two levels of lets
+           (let ((zz-tt 'p1))
+             (thread-join (make-thread (lambda ()
+               (let ((zz-tt 'p2))
+                 (thread-join (make-thread (lambda () zz-tt))))))))
+           ;; parent handler-bind must not see the child's error
+           (let ((zz-hb nil))
+             (handler-bind ((error (lambda (_) (setq zz-hb 'parent-saw))))
+               (thread-join (make-thread (lambda () (car 42)))))
+             (list zz-hb (car (thread-last-error 'cleanup))))
+           ;; a delivered signal comes back out of the join
+           (let ((m (make-mutex)) (started nil))
+             (mutex-lock m)
+             (let ((th (make-thread (lambda () (setq started t) (mutex-lock m)))))
+               (while (not started) (thread-yield))
+               (thread-signal th 'quit nil)
+               (condition-case e (thread-join th) (quit 'quit-resignalled))))))"#;
+    // Rows interact by design: row 4's child setq legitimately leaves the
+    // GLOBAL as `child' (the parent's let-exit restores the child-written
+    // value -- the two-way swap), so row 5's grandchild correctly reads
+    // `child'.  The first draft of this expectation said `global' for both
+    // and the ORACLE corrected it.
+    let expected = concat!(
+        "(nil (wrong-type-argument listp 42) global child child ",
+        "(nil wrong-type-argument) quit-resignalled)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read thread semantics program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate thread semantics program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn skip_chars_word_class_includes_ascii_digits() {
     // The SkipSyntaxSnapshot classifies each segment by sampling its START,
     // which is only correct where the class is uniform across the window.
