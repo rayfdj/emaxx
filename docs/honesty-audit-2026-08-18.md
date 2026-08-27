@@ -67,7 +67,9 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 96 | no DEFVAR_BOOL coercion: bool-typed variables read back the raw value | OPEN (disclosed) |
 | 97 | commandp returns t where GNU signals on an interactive-form property | OPEN (disclosed) |
 | 98 | the 7595 denominator excluded 3 files dropped by a 20s inventory cap 9x tighter than the run's own 180s default | FIXED 2026-08-26 - regenerated to 7883 |
-| 99 | make-thread body classifier pattern-matches three lambda shapes instead of running the body | OPEN |
+| 99 | make-thread: the classifier claim was stale; the real defects were join/bindings/handlers | FIXED 2026-08-27 - three semantics fixes; interleaving stays open as 84 |
+| 124 | timers fire inside thread-join and see the joiner's let bindings; GNU runs none there | OPEN |
+| 125 | thread-signal to the main thread prints eagerly and drops the data; GNU queues an event | OPEN |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | OPEN |
@@ -2357,3 +2359,55 @@ property rather than comparing two indices, because the index form only failed
 under the old order thanks to `cedet' sorting before `emacs-lisp' in one
 unsorted directory walk; the prefix form cannot hold under the old ordering on
 any filesystem.
+
+**99 FIXED (2026-08-27), and the finding's own description was stale.**
+The entry said thread bodies were pattern-matched into three shapes and
+anything else rejected.  That no longer reproduces: arbitrary bodies execute
+(the classifier's unrecognised case falls through to a real call).  Probing
+what actually diverged found three semantic defects, all now fixed and
+GNU-verified:
+  - `thread-join' of a thread whose BODY errored re-raised the error in the
+    joining thread; GNU catches every body error inside the thread
+    (thread.c:815 internal_condition_case), records it for
+    `thread-last-error', and join returns NIL.  Only a `thread-signal'
+    delivery re-raises out of the join (the error_symbol snapshot,
+    thread.c:1081/1088) -- threads-mutex-signal requires the injected quit to
+    come OUT of the join, and a first draft that returned nil for both broke
+    it.  A `delivered' flag now separates the cases.  Disclosed shortcut: GNU
+    returns nil when the target processed the delivery before join; Emaxx's
+    cooperative kill is instant, so that window does not exist.
+  - Dynamic bindings leaked into children: the parent's `let' stack was
+    visible, and a child `setq' wrote the parent's let slot only to be undone
+    at let-exit.  GNU gives each thread its own specpdl and SWAPS on switch
+    (thread.c:87-100, watchers skipped per data.c SET_INTERNAL_THREAD_SWITCH).
+    Implemented as a two-way swap over the live binding records; the child
+    reads and writes GLOBALS, and the parent's let-exit restores the
+    child-written value -- verified against the oracle, whose cell ends
+    `child-wrote'.  The pre-commit audit then found the swap walked the WHOLE
+    shared stack, so a GRANDCHILD saw the grandparent's lets again; a
+    boundary stack now confines each swap to the suspending thread's own
+    records, and the nested probe matches GNU both levels down.
+  - The handler list was shared, so a child's error ran the PARENT's
+    `handler-bind' handlers.  ERT was the proving case: ert.el:803 wraps every
+    test body in handler-bind, and a child error inside an ERT test ran ERT's
+    debugfun, whose cl-return-from died at the thread boundary as
+    `(no-catch --cl-block-error-- nil)' -- recorded as the thread's error in
+    place of the real one.  Children now start with an empty handler list.
+Measured: test/src/thread-tests.el goes 4 -> 3 mismatches (threads-errors now
+passes; threads-mutex-signal stays green).  The remaining three
+(condvar-wait, mutex-contention, bug48990) are the cooperative-interleaving
+gap and stay disclosed under finding 84 -- NOT claimed here.
+The expectation for the new regression test was itself corrected by the
+oracle: rows interact, because a child setq legitimately leaves the GLOBAL
+changed, so a later grandchild reads the mutated value.  The first draft said
+`global' where GNU answers `child'.
+
+124. Timers fire inside `thread-join' and observe the JOINER's dynamic `let'
+     bindings.  GNU's Fthread_join blocks without running timers at all
+     (probed: a due timer never runs during the join).  Pre-existing --
+     `run_pending_timer_events' predates the thread work -- and adjacent to
+     it: whichever thread timers run in, they currently run WITHOUT the
+     binding swap.  OPEN.
+125. `thread-signal' aimed at the MAIN thread prints "Error ..." eagerly at
+     delivery time and DROPS the data (probed: ("hi") became nil); GNU queues
+     a THREAD_EVENT and batch prints nothing.  Pre-existing.  OPEN.

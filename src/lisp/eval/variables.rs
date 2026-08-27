@@ -1167,6 +1167,90 @@ impl Interpreter {
         }
     }
 
+    /// GNU `unbind_for_thread_switch' / `rebind_for_thread_switch'
+    /// (thread.c:87-100): each thread owns its dynamic bindings, so before
+    /// another thread's body runs, every live special binding is SWAPPED out
+    /// -- the cell gets the pre-binding value back, and the binding record
+    /// keeps the current cell value for the swap back.  The swap is two-way
+    /// on purpose: a child `setq' writes the real global, and when the
+    /// parent's `let' later exits, the value it restores is whatever the
+    /// child left there (probed: GNU's cell ends `child-wrote', not the
+    /// pre-let value).  `restore_special_binding' already prefers the LIVE
+    /// stack entry by binding_id, so updating `previous' in place is exactly
+    /// what let-exit will consult.
+    ///
+    /// GNU performs these swaps with SET_INTERNAL_THREAD_SWITCH, which skips
+    /// variable watchers; cells are therefore written directly here.
+    /// Only records from START onward are swapped: those below belong to
+    /// already-suspended ancestor threads, whose values must stay swapped out
+    /// while a descendant runs.  GNU gets this for free by walking one
+    /// thread's own specpdl (thread.c:94-100); the shared stack needs the
+    /// boundary made explicit.
+    pub(crate) fn swap_special_bindings_for_thread_switch(
+        &mut self,
+        start: usize,
+        rebind: bool,
+    ) {
+        let mut records = std::mem::take(&mut self.active_special_restores);
+        let end = records.len();
+        let start = start.min(end);
+        let indices: Vec<usize> = if rebind {
+            (start..end).collect()
+        } else {
+            (start..end).rev().collect()
+        };
+        for index in indices {
+            let record = &mut records[index];
+            if record.local_binding_killed {
+                continue;
+            }
+            match record.scope {
+                SpecialBindingScope::Global => {
+                    if let Some(undo_state) = record.previous_undo_state.take() {
+                        // buffer-undo-list binds through the buffer's undo
+                        // machinery rather than a value cell.
+                        let buffer_id = self.current_buffer_id();
+                        if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                            let current = buffer.take_undo_state();
+                            buffer.restore_undo_state(undo_state);
+                            record.previous_undo_state = Some(current);
+                        } else {
+                            record.previous_undo_state = Some(undo_state);
+                        }
+                        continue;
+                    }
+                    let current = self.global_value(&record.name);
+                    match record.previous.take() {
+                        Some(value) => self.set_global_binding(&record.name, value),
+                        None => {
+                            self.globals.remove(&record.name);
+                        }
+                    }
+                    record.previous = current;
+                }
+                SpecialBindingScope::BufferLocal(buffer_id) => {
+                    if let Some(undo_state) = record.previous_undo_state.take() {
+                        if let Some(buffer) = self.get_buffer_by_id_mut(buffer_id) {
+                            let current = buffer.take_undo_state();
+                            buffer.restore_undo_state(undo_state);
+                            record.previous_undo_state = Some(current);
+                        } else {
+                            record.previous_undo_state = Some(undo_state);
+                        }
+                        continue;
+                    }
+                    let current = self.buffer_local_value(buffer_id, &record.name);
+                    match record.previous.take() {
+                        Some(value) => self.set_buffer_local_value(buffer_id, &record.name, value),
+                        None => self.remove_buffer_local_value(buffer_id, &record.name),
+                    }
+                    record.previous = current;
+                }
+            }
+        }
+        self.active_special_restores = records;
+    }
+
     pub(crate) fn restore_special_binding(
         &mut self,
         restore: SpecialBindingRestore,

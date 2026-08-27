@@ -1408,8 +1408,17 @@ enum ThreadProgram {
 
 #[derive(Clone, Debug)]
 enum ThreadOutcome {
+    /// `delivered' distinguishes a signal INJECTED with `thread-signal' from
+    /// an error the body raised itself.  GNU keeps them in different places:
+    /// a body error is caught by thread.c:815's internal_condition_case,
+    /// recorded for `thread-last-error', and the thread finishes with a nil
+    /// result -- `thread-join' returns nil.  `thread-signal' sets the
+    /// target's `error_symbol', and `Fthread_join' SNAPSHOTS that field on
+    /// entry (thread.c:1081) and re-raises it after the target dies
+    /// (thread.c:1088) -- which is what threads-mutex-signal requires: the
+    /// injected `quit' comes out of the JOIN.
     Returned(Value),
-    Signaled(Value),
+    Signaled { value: Value, delivered: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -2968,6 +2977,12 @@ pub struct Interpreter {
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
+    /// Indices into `active_special_restores' marking where suspended
+    /// ancestor threads' records end.  GNU's unbind_for_thread_switch walks
+    /// only the OUTGOING thread's own specpdl; swapping the whole stack
+    /// re-exposed a grandparent's let values to a grandchild (audit finding
+    /// on the first version of the thread-switch swap).
+    thread_swap_boundaries: Vec<usize>,
     /// Marker-tracked labeled restrictions, with the innermost entry last.
     labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
@@ -3798,6 +3813,7 @@ impl Interpreter {
             always_buffer_local_specials: HashSet::new(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
+            thread_swap_boundaries: Vec::new(),
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
