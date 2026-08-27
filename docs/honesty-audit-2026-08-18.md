@@ -75,7 +75,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
 | 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
-| 123 | EMACS_TEST_DIRECTORY shadows 5 core libraries, putting 324 measured outcomes (4.1%) at risk | OPEN (cost measured) |
+| 123 | EMACS_TEST_DIRECTORY shadowed 11 core libraries (5 of them in the 397-name sweep), putting at least 324 measured outcomes (4.1%) at risk | FIXED 2026-08-27 - standard library ordered first, sweep 5 -> 0 |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | OPEN (deflating) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
@@ -2289,3 +2289,71 @@ outcomes may be failing for a reason that has nothing to do with Emaxx's
 actual Lisp behaviour, and fixing it is honest work that could move the score
 substantially.  Whether all 324 actually fail is still unverified; that needs
 a frozen run, and this note should not be cited as if it were measured.
+
+**123 FIXED (2026-08-27).**  `effective_batch_load_path' (batch.rs) appended
+the repo-local test directories BEFORE the installation's own Lisp.  Those
+come from a RECURSIVE `WalkDir' (compat.rs `repo_local_elisp_load_path'), so
+77 extra directories -- 66 under `test/' and 11 under `lisp/' itself -- went in
+ahead of the standard library (an earlier draft said 35, which matches nothing
+measurable; GNU carries 25 entries and Emaxx carried 102) -- GNU's load-path holds nothing below one level under `lisp/', and
+does not respond to EMACS_TEST_DIRECTORY at all.
+The fix is ordering, not removal: the standard library now goes in first and
+the test tree after it, so helper discovery still works while core names
+resolve as GNU resolves them.  The 397-name `locate-library' sweep goes from
+five differences to ZERO, and `(require 'map)', `(require 'comp)',
+`(require 'chart)' and `(require 'generic)' all succeed under the harness
+environment where they previously failed.
+Pinned by `standard_library_precedes_the_discovered_test_tree' (batch.rs),
+which asserts the ORDER directly and was verified to fail when the fix is
+reverted ("core at 40, lisp/cedet/srecode at 23").
+An audit caught the FIRST attempt at that test being vacuous: it drove
+`initialized_upstream_batch_interpreter', which is constructed with
+`load_path' already set to GNU's 25 directories, so they head the list under
+either ordering and the test passed with the fix reverted.  It is kept, and
+relabelled, for what it does show -- that those requires succeed and agree
+with the oracle.
+The shadow set was also larger than first recorded: ELEVEN names, not five.
+Besides chart/comp/debug/generic/map, the walk shadowed `compile' and `cpp'
+(cedet/srecode), `grep' and `python' (cedet/semantic), `emoji' (leim/quail),
+and `etags' -- that last from
+test/manual/etags/el-src/emacs/lisp/progmodes/etags.el, a PARSING FIXTURE that
+would have shadowed the real etags.  The manifest exposure is correspondingly
+larger than the 324 quoted below; 324 counts only the five originally found,
+and the honest figure is not yet measured.
+NOT CLAIMED: that this recovers 324 outcomes.  The 324 is the number of
+manifest outcomes in files that require a shadowed library; how many of them
+were failing FOR THIS REASON is unmeasured and needs a frozen run.  The honest
+statement is that a defect which could break `(require 'map)' in 4.1% of the
+denominator is gone, not that 4.1% has been recovered.
+A smaller divergence remains and is deliberately not chased: Emaxx's
+load-path still CONTAINS the test directories, where GNU's does not, so
+`(locate-library "eshell-tests-helpers")' answers a path here and nil in GNU.
+The reason is narrower than an earlier draft said.  GNU's runner supplies
+ONE directory, APPENDED -- test/Makefile.in:64 is `-L "$(SEPCHAR)$(srcdir)"',
+and the leading separator means append -- and GNU's tests do not find helpers
+through load-path at all: they pass `require's FILENAME argument
+(em-alias-tests.el:31), which is why `(locate-library "eshell-tests-helpers")'
+is nil in GNU even with that `-L'.  Emaxx's harness passes NO `-L' at all
+(compat.rs sets only environment variables), so the walk is how its children
+find those helpers.  Now that the walk sits behind the standard library it
+cannot shadow it -- and GNU appending rather than prepending means this
+ordering is what upstream itself does.
+
+**123, two further notes from the verification round.**
+A concrete win that was not noticed when the fix was written: the ONE basename
+colliding between `test/' and `lisp/' is `etags', and the test-tree copy is
+`test/manual/etags/el-src/emacs/lisp/progmodes/etags.el' -- a PARSING FIXTURE.
+`etags-tests.el:26' and `elisp-mode-tests.el:583' both `(require 'etags)' and
+were getting that fixture instead of the real library.  The reorder fixes them
+rather than breaking anything: there is no test-local override anywhere under
+`test/' that legitimately needs to win.
+And the evidence is stronger than the entry claimed: Emaxx's first 25
+load-path entries are now byte-identical, in order, to GNU's ENTIRE 25-entry
+load-path, and a 1,596-name sweep over every basename under `lisp/**' finds
+ZERO cases where GNU resolves one file and Emaxx resolves a different one.
+The 186 remaining differences are all `GNU nil / Emaxx a path' -- over-
+permissive, never wrong.  The regression test now asserts that prefix
+property rather than comparing two indices, because the index form only failed
+under the old order thanks to `cedet' sorting before `emacs-lisp' in one
+unsorted directory walk; the prefix form cannot hold under the old ordering on
+any filesystem.
