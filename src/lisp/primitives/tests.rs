@@ -8689,6 +8689,41 @@ fn core_libraries_are_not_shadowed_by_cedet_subdirectories() {
 }
 
 #[test]
+fn skip_chars_word_class_includes_ascii_digits() {
+    // The SkipSyntaxSnapshot classifies each segment by sampling its START,
+    // which is only correct where the class is uniform across the window.
+    // `default_syntax_entry' varies per character INSIDE ASCII, and with
+    // boundaries drawn only from explicit char-table entries the window
+    // holding the digits sampled as punctuation: `skip-chars-forward
+    // "[:word:]"' stopped dead at ?0 while `char-syntax' answered w.  This
+    // was the single regression between the 2026-08-25 and 2026-08-27 frozen
+    // baselines (regex-tests-word-character-class).
+    let program = r#"
+        (list (with-temp-buffer (insert "abcABC012\N{U+2620}-, \t\n")
+                (goto-char (point-min))
+                (skip-chars-forward "[:word:]") (point))
+              (with-temp-buffer (insert "012a")
+                (goto-char (point-min))
+                (skip-chars-forward "[:word:]") (point))
+              (with-temp-buffer (insert "C012")
+                (goto-char (point-min))
+                (skip-chars-forward "[:word:]") (point))
+              (char-syntax ?0))"#;
+    let expected = "(11 5 5 119)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read skip-word program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate skip-word program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn max_lisp_eval_depth_is_honoured_dynamically() {
     // eval.c:2504-2509.  The limit came from the GLOBAL cell, so a `let' was
     // invisible; it was then multiplied by 384 and floored at 307200, so the
