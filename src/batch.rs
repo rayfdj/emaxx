@@ -677,6 +677,28 @@ fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, 
     // directories — the fallback `data-directory' already uses for GNU's DOC
     // database.
     let mut load_path = options.load_path.clone();
+    // The installation's own Lisp goes in BEFORE the test tree.  GNU's
+    // load-path does not respond to EMACS_TEST_DIRECTORY at all -- it holds
+    // the 25 dumped entries either way, and none of them is deeper than one
+    // level under lisp/.  Emaxx discovers test-helper directories with a
+    // RECURSIVE walk, which adds 35 deeper directories; with those ahead of
+    // the standard library, CEDET subdirectories shadowed five core names:
+    //
+    //     chart comp debug generic map
+    //
+    // `(require 'map)' then loaded cedet/srecode/map.el, which provides
+    // `srecode/map', and failed -- under the exact environment the
+    // compatibility harness gives every child it measures (finding 123).
+    // Ordering the standard library first keeps helper discovery working
+    // while letting core names resolve the way GNU resolves them.
+    let sibling = compat::project_root().join("../emacs");
+    if sibling.join("lisp").is_dir() {
+        for path in compat::emaxx_upstream_load_path(&sibling)? {
+            if !load_path.contains(&path) {
+                load_path.push(path);
+            }
+        }
+    }
     if let Ok(test_directory) = env::var("EMACS_TEST_DIRECTORY") {
         let test_directory = PathBuf::from(test_directory);
         if let Some(repo_root) = test_directory.parent() {
@@ -684,14 +706,6 @@ fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, 
                 if !load_path.contains(&path) {
                     load_path.push(path);
                 }
-            }
-        }
-    }
-    let sibling = compat::project_root().join("../emacs");
-    if sibling.join("lisp").is_dir() {
-        for path in compat::emaxx_upstream_load_path(&sibling)? {
-            if !load_path.contains(&path) {
-                load_path.push(path);
             }
         }
     }
@@ -1571,6 +1585,61 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove load directory");
+    }
+
+    #[test]
+    fn standard_library_precedes_the_discovered_test_tree() {
+        // Finding 123.  `effective_batch_load_path' appended the recursively
+        // discovered repo directories BEFORE the installation's Lisp, so 77
+        // directories -- 11 of them under `lisp/' itself -- sat ahead of the
+        // standard library and shadowed core names.  ELEVEN resolved into
+        // CEDET/quail/fixture directories: chart, comp, debug, generic, map,
+        // compile, cpp, emoji, etags, grep, python.  `etags' is the vivid one
+        // -- it came from test/manual/etags/el-src/.../etags.el, a PARSING
+        // FIXTURE, which would have shadowed the real etags.
+        //
+        // This asserts the ORDER directly rather than through an
+        // interpreter.  A previous attempt tested it via
+        // `initialized_upstream_batch_interpreter', which is built with
+        // `load_path' ALREADY set to GNU's 25 directories (test_support.rs);
+        // those sit at the head under either ordering, so that test passed
+        // with the fix reverted and pinned nothing.
+        let upstream = compat::project_root().join("../emacs");
+        if !upstream.join("lisp").is_dir() {
+            return;
+        }
+        let previous = env::var("EMACS_TEST_DIRECTORY").ok();
+        // SAFETY: the batch suite runs with --test-threads=1.
+        unsafe { env::set_var("EMACS_TEST_DIRECTORY", upstream.join("test")) }
+        // An EMPTY `load_path' is what the real CLI passes; supplying one
+        // would reintroduce the fixture that made the old test vacuous.
+        let resolved = effective_batch_load_path(&BatchRunOptions::default());
+        // SAFETY: still serialized by --test-threads=1.
+        unsafe {
+            match previous {
+                Some(value) => env::set_var("EMACS_TEST_DIRECTORY", value),
+                None => env::remove_var("EMACS_TEST_DIRECTORY"),
+            }
+        }
+        let resolved = resolved.expect("resolve batch load path");
+        // Assert the PREFIX rather than relative indices.  Comparing
+        // `position(emacs-lisp) < position(cedet/srecode)' happens to fail
+        // under the old order on this filesystem only because `cedet' sorts
+        // before `emacs-lisp' in one unsorted WalkDir -- that is readdir
+        // order, not a guarantee.  Requiring GNU's entire load-path to be an
+        // exact leading prefix cannot hold under the old ordering on any
+        // filesystem, and says what the fix actually promises.
+        let upstream_paths =
+            compat::emaxx_upstream_load_path(&upstream).expect("upstream load path");
+        assert!(
+            resolved.len() > upstream_paths.len(),
+            "the discovered test tree should still be appended"
+        );
+        assert_eq!(
+            &resolved[..upstream_paths.len()],
+            upstream_paths.as_slice(),
+            "GNU's load-path must be an exact leading prefix of Emaxx's"
+        );
     }
 
     #[test]
