@@ -1162,8 +1162,24 @@ impl Interpreter {
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if id == self.current_buffer_id {
+            // GNU replaces a killed current buffer from the visible buffer
+            // list (`other-buffer' policy), never from the interpreter's
+            // storage stack.  A recently used internal minibuffer is often
+            // last in that stack after an interactive prompt, but must not
+            // become the ordinary selected window's buffer.
+            let replacement_id = self
+                .buffer_list
+                .iter()
+                .find(|(buffer_id, name)| *buffer_id != id && !name.starts_with(' '))
+                .map(|(buffer_id, _)| *buffer_id);
             self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
-            if let Some((next_id, next_buffer)) = self.inactive_buffers.pop() {
+            if let Some((position, next_id)) = replacement_id.and_then(|next_id| {
+                self.inactive_buffers
+                    .iter()
+                    .position(|(buffer_id, _)| *buffer_id == next_id)
+                    .map(|position| (position, next_id))
+            }) {
+                let (_, next_buffer) = self.inactive_buffers.swap_remove(position);
                 self.buffer = next_buffer;
                 self.current_buffer_id = next_id;
             } else {

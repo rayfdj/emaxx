@@ -4696,6 +4696,40 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
 }
 
 #[test]
+fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-replace-point-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::write(&path, "alpha beta\n").expect("write replace fixture");
+    interp.buffer.insert("changed alpha beta\n");
+    interp.buffer.goto_char(9);
+
+    call(
+        &mut interp,
+        "insert-file-contents",
+        &[
+            Value::String(path.display().to_string().into()),
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("if-regular".into()),
+        ],
+        &mut env,
+    )
+    .expect("replace buffer contents");
+
+    assert_eq!(interp.buffer.buffer_string(), "alpha beta\n");
+    assert_eq!(interp.buffer.point(), interp.buffer.point_min());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -12064,6 +12098,88 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
 }
 
 #[test]
+fn native_keyboard_macro_family_publishes_gnu_status_messages() {
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    crate::lisp::primitives::set_echo_area_message(None);
+
+    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
+        .expect("start a fresh keyboard macro");
+    assert_eq!(
+        crate::lisp::primitives::echo_area_message().as_deref(),
+        Some("Defining kbd macro...")
+    );
+
+    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish the keyboard macro");
+    assert_eq!(
+        crate::lisp::primitives::echo_area_message().as_deref(),
+        Some("Keyboard macro defined")
+    );
+
+    call(
+        &mut interp,
+        "start-kbd-macro",
+        &[Value::T, Value::T],
+        &mut env,
+    )
+    .expect("append without replaying the previous macro");
+    assert_eq!(
+        crate::lisp::primitives::echo_area_message().as_deref(),
+        Some("Appending to kbd macro...")
+    );
+}
+
+#[test]
+fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.buffer.insert("xy");
+    interp.buffer.goto_char(1);
+    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
+        .expect("start keyboard macro recording");
+
+    crate::lisp::primitives::execute_command_binding(
+        &mut interp,
+        &mut env,
+        Value::Symbol("forward-char".into()),
+        &[Value::Integer(6)],
+        Value::Integer(6),
+    )
+    .expect("execute recorded command");
+    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+
+    assert_eq!(
+        interp.lookup_var("last-kbd-macro", &env),
+        Some(Value::list([
+            Value::Symbol("vector-literal".into()),
+            Value::Integer(6),
+        ]))
+    );
+    assert_eq!(
+        interp.lookup_var("last-input-event", &env),
+        Some(Value::Integer(6))
+    );
+    assert_eq!(
+        interp.lookup_var("last-nonmenu-event", &env),
+        Some(Value::Integer(6))
+    );
+}
+
+#[test]
+fn file_attributes_nil_matches_gnu_missing_file_contract() {
+    assert_upstream_primitive_contract("(prin1 (file-attributes nil))", "nil");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    assert_eq!(
+        call(&mut interp, "file-attributes", &[Value::Nil], &mut env)
+            .expect("nil denotes an absent file"),
+        Value::Nil
+    );
+}
+
+#[test]
 fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
     let contracts = [
         (
@@ -14158,6 +14274,51 @@ fn tty_event_reader_does_not_preempt_queued_events() {
 }
 
 #[test]
+fn blocking_tty_event_read_redraws_after_a_due_timer() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq emaxx-test-timer-fired nil)
+           (run-at-time 0 nil (lambda () (setq emaxx-test-timer-fired t))))",
+    )
+    .expect("schedule an immediately due timer");
+
+    let polls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let poll_count = std::rc::Rc::clone(&polls);
+    set_tty_event_poller(Some(Box::new(move || {
+        let count = poll_count.get();
+        poll_count.set(count + 1);
+        Some((count > 0).then_some(Value::Integer(120)))
+    })));
+    let saw_timer = std::rc::Rc::new(std::cell::Cell::new(false));
+    let observed = std::rc::Rc::clone(&saw_timer);
+    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+        if interp
+            .lookup_var("emaxx-test-timer-fired", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            observed.set(true);
+        }
+    })));
+
+    let event = call(&mut interp, "read-event", &[], &mut env);
+    set_tty_frame_redraw(None);
+    set_tty_event_poller(None);
+    assert_eq!(
+        event.expect("the second poll supplies input"),
+        Value::Integer(120)
+    );
+    assert!(
+        saw_timer.get(),
+        "timer work performed inside read-event must reach redisplay"
+    );
+}
+
+#[test]
 fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -14328,6 +14489,44 @@ fn tty_completing_read_completes_with_tab() {
     assert_eq!(
         result.expect("TAB completes the unique prefix"),
         Value::String("forward-char".into())
+    );
+}
+
+#[test]
+fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let current = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(13)))));
+    let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&prompts);
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
+        if let Some(prompt) = interp.minibuffer_prompt_text() {
+            observed.borrow_mut().push(prompt.to_string());
+        }
+    })));
+
+    let result = call(
+        &mut interp,
+        "read-buffer",
+        &[Value::String("Kill buffer: ".into()), current, Value::T],
+        &mut env,
+    );
+    set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+
+    assert_eq!(
+        result.expect("empty input chooses the current buffer default"),
+        Value::String("*scratch*".into())
+    );
+    assert!(
+        prompts
+            .borrow()
+            .iter()
+            .any(|prompt| prompt == "Kill buffer (default *scratch*): "),
+        "read-buffer must publish GNU's formatted default prompt, got {:?}",
+        prompts.borrow()
     );
 }
 

@@ -5276,6 +5276,30 @@ fn killing_selected_window_buffer_moves_window_to_live_buffer() {
 }
 
 #[test]
+fn killing_current_buffer_ignores_recent_internal_minibuffer_as_replacement() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let* ((original (current-buffer))
+                    (victim (get-buffer-create \"kill-visible-victim\"))
+                    (minibuffer (get-buffer-create \" *Minibuf-1*\")))
+               (set-window-buffer nil victim)
+               (set-buffer victim)
+               ;; Reproduce the storage order left by an interactive read:
+               ;; the internal minibuffer was current most recently, while
+               ;; Vbuffer_alist still ranks ORIGINAL as the visible fallback.
+               (set-buffer minibuffer)
+               (set-buffer victim)
+               (kill-buffer victim)
+               (list (eq (current-buffer) original)
+                     (eq (window-buffer) original)))"
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn killing_buffer_replaces_it_in_every_window() {
     let mut interp = Interpreter::new();
     assert_eq!(

@@ -1203,6 +1203,17 @@ pub(crate) fn insert_file_contents(
             let start = interp.buffer.point_min() + prefix;
             let end = interp.buffer.point_min() + old_end;
             let replacement = new_chars[prefix..new_end].iter().collect::<String>();
+            let replacement_len = replacement.chars().count();
+            // Fileio's replacement keeps point before inserted text.  Point
+            // in (or exactly at the end of) the discarded middle collapses
+            // to its start; point after it follows the unchanged suffix.
+            let replacement_point = if original_point <= start {
+                original_point
+            } else if original_point <= end {
+                start
+            } else {
+                original_point - (end - start) + replacement_len
+            };
             inserted_chars = replacement.chars().count();
             if start != end {
                 // GNU runs the modification hooks only for the portion that
@@ -1223,7 +1234,7 @@ pub(crate) fn insert_file_contents(
             }
             interp
                 .buffer
-                .goto_char(original_point.min(interp.buffer.point_max()));
+                .goto_char(replacement_point.min(interp.buffer.point_max()));
             return Ok(());
         }
         if let Some(hooks) = interp.lookup_var("after-insert-file-functions", env)
