@@ -28,7 +28,7 @@ fn dribble_event_bytes(event: &Value) -> Vec<u8> {
     }
 }
 
-fn record_external_input_event(interp: &mut Interpreter, event: &Value) {
+fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
     if !interp.kbd_macro_executions.is_empty() {
         return;
     }
@@ -43,6 +43,17 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value) {
     {
         let _ = file.write_all(&dribble_event_bytes(event));
         let _ = file.flush();
+    }
+    // read_char records terminal events at the point where they are
+    // consumed, including events read recursively by an interactive
+    // command.  The outer command loop records only that command's key
+    // sequence, so a register name, query answer, or other nested input
+    // must be appended here to make the macro self-contained on replay.
+    if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        interp.kbd_macro_definition.push(event.clone());
     }
 }
 
@@ -1320,7 +1331,7 @@ pub(crate) fn pop_unread_command_event_value(
                     if event == Value::Integer(7) {
                         return Err(LispError::SignalValue(Value::Symbol("quit".into())));
                     }
-                    record_external_input_event(interp, &event);
+                    record_external_input_event(interp, &event, env);
                     return Ok(event);
                 }
                 Some(None) => {
@@ -1340,7 +1351,7 @@ pub(crate) fn pop_unread_command_event_value(
         if let Some(read) = read_via_tty_event_reader(cursor_in_echo_area) {
             return match read {
                 Some(event) => {
-                    record_external_input_event(interp, &event);
+                    record_external_input_event(interp, &event, env);
                     Ok(event)
                 }
                 None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
@@ -1352,7 +1363,7 @@ pub(crate) fn pop_unread_command_event_value(
     }
     let event = events.remove(0);
     interp.set_variable("unread-command-events", Value::list(events), env);
-    record_external_input_event(interp, &event);
+    record_external_input_event(interp, &event, env);
     Ok(event)
 }
 
@@ -2053,7 +2064,7 @@ pub(crate) fn read_tty_event_with_timeout(
     let started = std::time::Instant::now();
     loop {
         if let Some(event) = take_unread_command_event(interp, env) {
-            record_external_input_event(interp, &event);
+            record_external_input_event(interp, &event, env);
             return Ok(Some(event));
         }
         let cursor_in_echo_area = interp
@@ -2068,7 +2079,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 if event == Value::Integer(7) {
                     return Err(LispError::SignalValue(Value::Symbol("quit".into())));
                 }
-                record_external_input_event(interp, &event);
+                record_external_input_event(interp, &event, env);
                 return Ok(Some(event));
             }
             Some(None) => {
