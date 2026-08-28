@@ -2168,14 +2168,16 @@ impl ImageGraphCopier {
                     return copied.clone();
                 }
                 let mut inner = state.borrow().clone();
-                let copied = Value::StringObject(std::rc::Rc::new(std::cell::RefCell::new(
+                let copied_state = std::rc::Rc::new(std::cell::RefCell::new(
                     crate::lisp::types::SharedStringState {
                         text: std::mem::take(&mut inner.text),
                         props: Vec::new(),
                         multibyte: inner.multibyte,
                         extended_chars: std::mem::take(&mut inner.extended_chars),
                     },
-                )));
+                ));
+                crate::lisp::types::register_string_object(&copied_state);
+                let copied = Value::StringObject(copied_state);
                 self.strings.insert(key, copied.clone());
                 let props = state.borrow().props.clone();
                 let copied_props = props
@@ -2356,7 +2358,64 @@ impl ImageGraphCopier {
     }
 }
 
+/// Finding 110: the live-object counts behind `garbage-collect'.
+///
+/// GNU's numbers come from allocator bookkeeping (gcstat), not from a
+/// heap walk; emaxx keeps the equivalent books in types.rs -- a live
+/// cons-cell counter maintained at construction and Drop, and Weak
+/// registries of string allocations swept lazily.  What each field means
+/// here, where the object models differ:
+///
+/// - `conses' counts every live cons cell, vector-literal spines
+///   included: vectors ride on conses internally, so cons cells are where
+///   their storage truthfully is.  `vectors'/`vector_slots' are 0 -- no
+///   vector heap objects exist in this implementation.
+/// - `floats' is 0: emaxx floats are immediate f64s, not heap cells.
+/// - `intervals' counts text-property spans (buffer spans plus string
+///   spans), the closest live analogue of GNU's interval tree nodes.
+/// - Markers, overlays, char-tables, frames and records are id-indexed
+///   host state rather than Lisp heap objects and have no row of their
+///   own.  Records are never reclaimed, so values they reference remain
+///   live allocations and stay counted.
+#[derive(Default)]
+pub(crate) struct LiveObjectCensus {
+    pub(crate) conses: usize,
+    pub(crate) symbols: usize,
+    pub(crate) strings: usize,
+    pub(crate) string_bytes: usize,
+    pub(crate) vectors: usize,
+    pub(crate) vector_slots: usize,
+    pub(crate) floats: usize,
+    pub(crate) intervals: usize,
+    pub(crate) buffers: usize,
+}
+
 impl Interpreter {
+    /// Assemble the live-object census from the allocation books (see
+    /// `LiveObjectCensus' and types.rs's live-object accounting).  This is
+    /// O(live strings), never a graph walk: loadup.el runs
+    /// `garbage-collect' after every file it loads, so the census is on
+    /// the boot path.
+    pub(crate) fn live_object_census(&self) -> LiveObjectCensus {
+        let strings = crate::lisp::types::census_live_strings();
+        let mut census = LiveObjectCensus {
+            conses: crate::lisp::types::census_live_conses(),
+            symbols: self.known_symbol_count(),
+            strings: strings.count,
+            string_bytes: strings.bytes,
+            vectors: 0,
+            vector_slots: 0,
+            floats: 0,
+            intervals: strings.property_spans,
+            buffers: 1 + self.inactive_buffers.len(),
+        };
+        census.intervals += self.buffer.text_property_span_count();
+        for (_, buffer) in &self.inactive_buffers {
+            census.intervals += buffer.text_property_span_count();
+        }
+        census
+    }
+
     /// Issue #11: clone this interpreter for use as an independent image.
     /// `Interpreter::clone' shares every Rc-backed Lisp value with the
     /// original; this method then rewrites all Lisp values reachable from

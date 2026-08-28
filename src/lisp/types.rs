@@ -242,7 +242,12 @@ impl std::hash::Hash for SharedText {
 
 impl SharedText {
     pub fn new(text: String) -> Self {
-        Self(Rc::new(text))
+        let text = Rc::new(text);
+        INTERNED_TEXT_BOOK.with(|book| {
+            book.borrow_mut().push(Rc::downgrade(&text));
+            INTERNED_TEXT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+        });
+        Self(text)
     }
 
     pub fn as_str(&self) -> &str {
@@ -703,8 +708,92 @@ impl ConsValueCell {
     }
 }
 
+// ===== Live-object accounting (finding 110) =====
+//
+// GNU's `garbage-collect' numbers come from allocator bookkeeping, not a
+// heap walk; these are emaxx's equivalent books.  Every Lisp value lives
+// on one thread (Rc is !Send), so plain thread-locals are exact and each
+// test interpreter thread keeps its own books.  Cons cells are counted at
+// construction and un-counted in Drop -- Rust ownership is the sweep.
+// Strings register a Weak handle at allocation; the census upgrades each
+// handle and prunes the dead ones, which is the lazy equivalent of GNU's
+// sweep visiting every string block.
+thread_local! {
+    static LIVE_CONSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static STRING_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<RefCell<SharedStringState>>>> =
+        const { RefCell::new(Vec::new()) };
+    static STRING_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+    static INTERNED_TEXT_BOOK: RefCell<Vec<std::rc::Weak<String>>> =
+        const { RefCell::new(Vec::new()) };
+    static INTERNED_TEXT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+}
+
+/// Drop the dead handles when a book outgrows its limit, so a session that
+/// never calls `garbage-collect' holds at most ~2x the live handles.  The
+/// amortized cost per registration stays O(1).
+fn prune_book<T>(book: &RefCell<Vec<std::rc::Weak<T>>>, limit: &std::cell::Cell<usize>) {
+    let mut book = book.borrow_mut();
+    if book.len() < limit.get() {
+        return;
+    }
+    book.retain(|weak| weak.strong_count() > 0);
+    limit.set((book.len() * 2).max(1 << 16));
+}
+
+/// Every new string OBJECT must pass through here (all four construction
+/// sites do); an unregistered object would be invisible to the census.
+pub(crate) fn register_string_object(state: &Rc<RefCell<SharedStringState>>) {
+    STRING_OBJECT_BOOK.with(|book| {
+        book.borrow_mut().push(Rc::downgrade(state));
+        STRING_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+    });
+}
+
+#[derive(Default)]
+pub(crate) struct StringCensus {
+    pub(crate) count: usize,
+    pub(crate) bytes: usize,
+    pub(crate) property_spans: usize,
+}
+
+pub(crate) fn census_live_conses() -> usize {
+    LIVE_CONSES.with(|count| count.get())
+}
+
+pub(crate) fn census_live_strings() -> StringCensus {
+    let mut census = StringCensus::default();
+    STRING_OBJECT_BOOK.with(|book| {
+        let mut book = book.borrow_mut();
+        book.retain(|weak| match weak.upgrade() {
+            Some(state) => {
+                let state = RefCell::borrow(&state);
+                census.count += 1;
+                census.bytes += state.text.len();
+                census.property_spans += state.props.len();
+                true
+            }
+            None => false,
+        });
+        STRING_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+    });
+    INTERNED_TEXT_BOOK.with(|book| {
+        let mut book = book.borrow_mut();
+        book.retain(|weak| match weak.upgrade() {
+            Some(text) => {
+                census.count += 1;
+                census.bytes += text.len();
+                true
+            }
+            None => false,
+        });
+        INTERNED_TEXT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+    });
+    census
+}
+
 impl ConsCell {
     fn new(car: Value, cdr: Value) -> Self {
+        LIVE_CONSES.with(|count| count.set(count.get() + 1));
         Self {
             car: ConsValueCell::new(car),
             cdr: ConsValueCell::new(cdr),
@@ -720,6 +809,12 @@ impl ConsCell {
             &cell.car as *const ConsValueCell as usize,
             &cell.cdr as *const ConsValueCell as usize,
         ]
+    }
+}
+
+impl Drop for ConsCell {
+    fn drop(&mut self) {
+        LIVE_CONSES.with(|count| count.set(count.get().saturating_sub(1)));
     }
 }
 
