@@ -1428,8 +1428,9 @@ fn visual_line_at(
         // padding cells belong to the raw char that produced them.
         let mut raw_of_display = vec![0usize; display_count + 1];
         for raw in 0..map.len().saturating_sub(1) {
-            for display in map[raw]..map[raw + 1].min(display_count + 1) {
-                raw_of_display[display] = raw;
+            let end = map[raw + 1].min(display_count + 1);
+            for cell in raw_of_display.iter_mut().take(end).skip(map[raw]) {
+                *cell = raw;
             }
         }
         if let Some(last) = map.last() {
@@ -1613,7 +1614,6 @@ fn displayed_line_text(buffer: &crate::buffer::Buffer, line: usize) -> String {
 /// visible with GNU's recenter-on-jump model (selected window only), and
 /// render the visible rows under the window's own wrap-or-truncate
 /// geometry.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn plan_window_text(
     buffer: &crate::buffer::Buffer,

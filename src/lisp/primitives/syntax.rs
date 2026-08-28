@@ -1598,16 +1598,15 @@ fn back_comment_gnu(
                     comment_lossage = true;
                 }
             }
-            SyntaxClass::OpenParen => {
+            SyntaxClass::OpenParen
                 if open_paren_defun_start_enabled(interp)
                     && !comment_use_syntax_ppss_enabled(interp)
-                    && (from == stop || chars[from - 2] == '\n')
-                {
-                    // A defun-start is assumed to be outside of strings.
-                    defun_start = from;
-                    from = stop;
-                    continue;
-                }
+                    && (from == stop || chars[from - 2] == '\n') =>
+            {
+                // A defun-start is assumed to be outside of strings.
+                defun_start = from;
+                from = stop;
+                continue;
             }
             _ => {}
         }

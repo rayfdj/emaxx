@@ -1760,7 +1760,7 @@ impl Interpreter {
     pub(crate) fn note_stepped_yield(&mut self) {
         self.fruitless_stepped_yields = self.fruitless_stepped_yields.saturating_add(1);
         if std::env::var_os("EMAXX_DEBUG_YIELD").is_some()
-            && self.fruitless_stepped_yields % 10_000 == 0
+            && self.fruitless_stepped_yields.is_multiple_of(10_000)
         {
             eprintln!("YIELD-GUARD count={}", self.fruitless_stepped_yields);
         }
@@ -2544,7 +2544,9 @@ impl Interpreter {
             // `threads-errors' mismatch in test/src/thread-tests.el.
             // `finish_thread_with_signal' has already stored the error for
             // `thread-last-error', exactly as `record_thread_error' does.
-            ThreadOutcome::Signaled { delivered: false, .. } => Ok(Value::Nil),
+            ThreadOutcome::Signaled {
+                delivered: false, ..
+            } => Ok(Value::Nil),
             // The injected signal comes back out of the join, exactly as
             // GNU's snapshot re-raise does.  (One disclosed shortcut: GNU
             // returns nil if the target managed to PROCESS the delivery
@@ -2552,9 +2554,10 @@ impl Interpreter {
             // clear.  Emaxx's cooperative `thread-signal' kills the target
             // instantly, so that window does not exist here and every
             // delivered signal re-raises.)
-            ThreadOutcome::Signaled { value, delivered: true } => {
-                Err(LispError::SignalValue(value))
-            }
+            ThreadOutcome::Signaled {
+                value,
+                delivered: true,
+            } => Err(LispError::SignalValue(value)),
         }
     }
 
@@ -2911,11 +2914,7 @@ impl Interpreter {
                 // (thread.c:87-100), so the child reads and writes GLOBALS.
                 // The swap is two-way; see
                 // `swap_special_bindings_for_thread_switch'.
-                let swap_start = self
-                    .thread_swap_boundaries
-                    .last()
-                    .copied()
-                    .unwrap_or(0);
+                let swap_start = self.thread_swap_boundaries.last().copied().unwrap_or(0);
                 self.swap_special_bindings_for_thread_switch(swap_start, false);
                 self.thread_swap_boundaries
                     .push(self.active_special_restores.len());

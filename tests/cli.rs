@@ -349,7 +349,11 @@ fn batch_eval_interns_the_symbols_it_reads_like_gnu() {
         .args(["--quick", "--batch", "--eval", program])
         .output()
         .unwrap();
-    assert!(output.status.success(), "emaxx --eval failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "emaxx --eval failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "(zz-cli-plain :zz-cli-kw nil)",

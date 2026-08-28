@@ -994,10 +994,7 @@ impl EnvFrame {
             identity: data.identity,
             function_bindings: data.function_bindings,
             local_special_declarations: data.local_special_declarations.clone(),
-            lisp_environment: data
-                .lisp_environment
-                .as_ref()
-                .map(|environment| copy(environment)),
+            lisp_environment: data.lisp_environment.as_ref().map(copy),
         }))
     }
 
@@ -1943,6 +1940,105 @@ impl From<crate::buffer::BufferError> for LispError {
     }
 }
 
+/// Depth- and length-bounded rendering of a LispError for host-side trace
+/// lines.  The derived Debug impl recurses the full payload graph, which is
+/// unbounded and cycle-blind; trace output must never be able to kill the
+/// process that produces it.
+pub(crate) fn bounded_error_debug(error: &LispError) -> String {
+    fn render(value: &Value, depth: usize, out: &mut String) {
+        if out.len() > 2048 {
+            out.push('…');
+            return;
+        }
+        if depth == 0 {
+            out.push('…');
+            return;
+        }
+        match value {
+            Value::Cons(cell) => {
+                out.push('(');
+                let mut cursor = Value::Cons(cell.clone());
+                let mut emitted = 0;
+                while let Value::Cons(cell) = &cursor {
+                    if emitted >= 8 || out.len() > 2048 {
+                        out.push_str(" …");
+                        break;
+                    }
+                    if emitted > 0 {
+                        out.push(' ');
+                    }
+                    render(&cell.car.borrow().clone(), depth - 1, out);
+                    emitted += 1;
+                    let next = cell.cdr.borrow().clone();
+                    match next {
+                        Value::Nil => break,
+                        Value::Cons(_) => cursor = next,
+                        other => {
+                            out.push_str(" . ");
+                            render(&other, depth - 1, out);
+                            break;
+                        }
+                    }
+                }
+                out.push(')');
+            }
+            Value::StringObject(state) => {
+                let text: String = std::cell::RefCell::borrow(state).text.clone();
+                let mut brief: String = text.chars().take(48).collect();
+                if brief.len() < text.len() {
+                    brief.push('…');
+                }
+                out.push('"');
+                out.push_str(&brief);
+                out.push('"');
+            }
+            Value::String(text) => {
+                let mut brief: String = text.chars().take(48).collect();
+                if brief.chars().count() < text.chars().count() {
+                    brief.push('…');
+                }
+                out.push('"');
+                out.push_str(&brief);
+                out.push('"');
+            }
+            other => {
+                let _ = std::fmt::Write::write_fmt(out, format_args!("{other}"));
+            }
+        }
+    }
+    match error {
+        LispError::Signal(message) => format!("Signal({message:?})"),
+        LispError::SignalValue(value) => {
+            let mut out = String::from("SignalValue(");
+            render(value, 6, &mut out);
+            out.push(')');
+            out
+        }
+        LispError::Throw(tag, value) => {
+            let mut out = String::from("Throw(");
+            render(tag, 3, &mut out);
+            out.push_str(", ");
+            render(value, 4, &mut out);
+            out.push(')');
+            out
+        }
+        LispError::WrongTypeArgument(predicate, value) => {
+            let mut out = format!("WrongTypeArgument({predicate}, ");
+            render(value, 4, &mut out);
+            out.push(')');
+            out
+        }
+        other => {
+            let text = format!("{other}");
+            let mut brief: String = text.chars().take(256).collect();
+            if brief.len() < text.len() {
+                brief.push('…');
+            }
+            brief
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2244,104 +2340,5 @@ mod tests {
         assert_eq!(Value::Float(1.0).to_string(), "1.0");
         assert_eq!(Value::Float(-10.0).to_string(), "-10.0");
         assert_eq!(Value::Float(1.25).to_string(), "1.25");
-    }
-}
-
-/// Depth- and length-bounded rendering of a LispError for host-side trace
-/// lines.  The derived Debug impl recurses the full payload graph, which is
-/// unbounded and cycle-blind; trace output must never be able to kill the
-/// process that produces it.
-pub(crate) fn bounded_error_debug(error: &LispError) -> String {
-    fn render(value: &Value, depth: usize, out: &mut String) {
-        if out.len() > 2048 {
-            out.push_str("…");
-            return;
-        }
-        if depth == 0 {
-            out.push_str("…");
-            return;
-        }
-        match value {
-            Value::Cons(cell) => {
-                out.push('(');
-                let mut cursor = Value::Cons(cell.clone());
-                let mut emitted = 0;
-                while let Value::Cons(cell) = &cursor {
-                    if emitted >= 8 || out.len() > 2048 {
-                        out.push_str(" …");
-                        break;
-                    }
-                    if emitted > 0 {
-                        out.push(' ');
-                    }
-                    render(&cell.car.borrow().clone(), depth - 1, out);
-                    emitted += 1;
-                    let next = cell.cdr.borrow().clone();
-                    match next {
-                        Value::Nil => break,
-                        Value::Cons(_) => cursor = next,
-                        other => {
-                            out.push_str(" . ");
-                            render(&other, depth - 1, out);
-                            break;
-                        }
-                    }
-                }
-                out.push(')');
-            }
-            Value::StringObject(state) => {
-                let text: String = std::cell::RefCell::borrow(state).text.clone();
-                let mut brief: String = text.chars().take(48).collect();
-                if brief.len() < text.len() {
-                    brief.push('…');
-                }
-                out.push('"');
-                out.push_str(&brief);
-                out.push('"');
-            }
-            Value::String(text) => {
-                let mut brief: String = text.chars().take(48).collect();
-                if brief.chars().count() < text.chars().count() {
-                    brief.push('…');
-                }
-                out.push('"');
-                out.push_str(&brief);
-                out.push('"');
-            }
-            other => {
-                let _ = std::fmt::Write::write_fmt(out, format_args!("{other}"));
-            }
-        }
-    }
-    match error {
-        LispError::Signal(message) => format!("Signal({message:?})"),
-        LispError::SignalValue(value) => {
-            let mut out = String::from("SignalValue(");
-            render(value, 6, &mut out);
-            out.push(')');
-            out
-        }
-        LispError::Throw(tag, value) => {
-            let mut out = String::from("Throw(");
-            render(tag, 3, &mut out);
-            out.push_str(", ");
-            render(value, 4, &mut out);
-            out.push(')');
-            out
-        }
-        LispError::WrongTypeArgument(predicate, value) => {
-            let mut out = format!("WrongTypeArgument({predicate}, ");
-            render(value, 4, &mut out);
-            out.push(')');
-            out
-        }
-        other => {
-            let text = format!("{other}");
-            let mut brief: String = text.chars().take(256).collect();
-            if brief.len() < text.len() {
-                brief.push('…');
-            }
-            brief
-        }
     }
 }

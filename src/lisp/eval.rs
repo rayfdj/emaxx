@@ -1418,7 +1418,10 @@ enum ThreadOutcome {
     /// (thread.c:1088) -- which is what threads-mutex-signal requires: the
     /// injected `quit' comes out of the JOIN.
     Returned(Value),
-    Signaled { value: Value, delivered: bool },
+    Signaled {
+        value: Value,
+        delivered: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1821,38 +1824,38 @@ impl Clone for ProcessState {
             panic!("image-template clone with a live process runtime");
         }
         Self {
-            record_id: self.record_id.clone(),
-            kind: self.kind.clone(),
-            buffer_id: self.buffer_id.clone(),
-            mark_marker_id: self.mark_marker_id.clone(),
+            record_id: self.record_id,
+            kind: self.kind,
+            buffer_id: self.buffer_id,
+            mark_marker_id: self.mark_marker_id,
             status: self.status.clone(),
             filter: self.filter.clone(),
             sentinel: self.sentinel.clone(),
-            sentinel_notified: self.sentinel_notified.clone(),
+            sentinel_notified: self.sentinel_notified,
             log: self.log.clone(),
             name: self.name.clone(),
-            thread_id: self.thread_id.clone(),
-            query_on_exit_flag: self.query_on_exit_flag.clone(),
-            traffic_stopped: self.traffic_stopped.clone(),
-            inherit_coding_system_flag: self.inherit_coding_system_flag.clone(),
+            thread_id: self.thread_id,
+            query_on_exit_flag: self.query_on_exit_flag,
+            traffic_stopped: self.traffic_stopped,
+            inherit_coding_system_flag: self.inherit_coding_system_flag,
             decoding: self.decoding.clone(),
             encoding: self.encoding.clone(),
             program: self.program.clone(),
             argv: self.argv.clone(),
-            stderr_process_id: self.stderr_process_id.clone(),
-            exit_code: self.exit_code.clone(),
-            exit_signal: self.exit_signal.clone(),
-            os_pid: self.os_pid.clone(),
+            stderr_process_id: self.stderr_process_id,
+            exit_code: self.exit_code,
+            exit_signal: self.exit_signal,
+            os_pid: self.os_pid,
             runtime: None,
             network: None,
             serial: None,
             contact_host: self.contact_host.clone(),
-            contact_service: self.contact_service.clone(),
+            contact_service: self.contact_service,
             remote: self.remote.clone(),
-            parent_server_id: self.parent_server_id.clone(),
+            parent_server_id: self.parent_server_id,
             pending_stdout: self.pending_stdout.clone(),
             pending_stderr: self.pending_stderr.clone(),
-            output_delivery_count: self.output_delivery_count.clone(),
+            output_delivery_count: self.output_delivery_count,
             plist: self.plist.clone(),
             gnutls: self.gnutls.clone(),
             contact: self.contact.clone(),
@@ -2121,9 +2124,6 @@ pub(crate) struct MinibufferRuntimeState {
     prompt: Option<String>,
 }
 
-/// The interpreter state: holds the global environment, the current buffer,
-/// and ERT test results.
-
 /// Issue #11: a graph-preserving deep copy of every Lisp value reachable
 /// from an image-template interpreter.  `Interpreter::clone' copies the
 /// host-side tables but SHARES the Rc value graphs, so interior mutation
@@ -2281,8 +2281,7 @@ impl ImageGraphCopier {
     fn copy_cons_chain(&mut self, head: &Value) -> Value {
         let mut spine = Vec::new();
         let mut cursor = head.clone();
-        loop {
-            let Value::Cons(cell) = &cursor else { break };
+        while let Value::Cons(cell) = &cursor {
             let key = crate::lisp::types::ConsCell::identity(cell);
             if self.cons.contains_key(&key) {
                 break;
@@ -2700,6 +2699,8 @@ impl Drop for ImageTemplateToken {
     }
 }
 
+/// The interpreter state: holds the global environment, the current buffer,
+/// and ERT test results.
 #[derive(Clone)]
 pub struct Interpreter {
     /// Present only on interpreters cloned from the test image template.
@@ -2891,6 +2892,15 @@ pub struct Interpreter {
     /// Charsets defined with :supplementary-p; they sort after every
     /// non-supplementary charset in the ordered (priority) list.
     charset_supplementary: HashSet<String>,
+    /// coding.c's Vsjis_coding_system: the most recently defined
+    /// shift-jis-type coding system.  decode-sjis-char/encode-sjis-char
+    /// convert through ITS charset list -- japanese.el defines
+    /// japanese-shift-jis-2004 after japanese-shift-jis, so the
+    /// primitives answer through the JIS X 0213 charsets while the
+    /// `sjis' string codec stays on JIS X 0208.
+    pub(crate) sjis_coding_system: String,
+    /// coding.c's Vbig5_coding_system, same contract as sjis above.
+    pub(crate) big5_coding_system: String,
     /// Charsets currently unified with Unicode (charset.c's UNIFIED_P
     /// flag, set by `unify-charset').  mule-conf.el unifies the CJK
     /// offset-method charsets at load; while unified, code<->character
@@ -3766,6 +3776,8 @@ impl Interpreter {
                 .into_iter()
                 .collect(),
             charset_unified: HashSet::new(),
+            sjis_coding_system: "sjis".into(),
+            big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],
