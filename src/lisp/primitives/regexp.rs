@@ -90,6 +90,38 @@ fn contains_point_assertion(pattern: &str) -> bool {
     false
 }
 
+/// Whether shortening a greedy match at the backward-search bound could
+/// change a zero-width assertion that consults the following character.
+///
+/// GNU treats the bound as a hard consumption limit, so a regexp such as
+/// `[[:digit:]]+' can successively find every adjacent digit when searching
+/// backward.  We may safely retry such a match against the bounded prefix.
+/// End/word/symbol assertions are different: truncating their haystack would
+/// invent an end or a non-word character.  Keep those on the full-context
+/// path instead.
+fn pattern_end_depends_on_following_context(pattern: &str) -> bool {
+    if pattern.contains("[[:<:]]") || pattern.contains("[[:>:]]") {
+        return true;
+    }
+
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            return true;
+        }
+        if ch != '\\' {
+            continue;
+        }
+        match chars.next() {
+            Some('\'') | Some('b' | 'B' | '<' | '>') => return true,
+            Some('_') if matches!(chars.next(), Some('<' | '>')) => return true,
+            Some(_) => {}
+            None => break,
+        }
+    }
+    false
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RegexpCategoryScope {
     Standard,
@@ -3354,6 +3386,24 @@ pub(super) fn buffer_regex_search(
                 .as_ref()
                 .map(|encoding| std::rc::Rc::<str>::from(encoding.haystack.as_str()))
                 .unwrap_or(prefix);
+            let boundary_byte = point_boundary
+                .boundary_byte(&prefix)
+                .unwrap_or(prefix.len());
+            let bounded_prefix = &prefix[..boundary_byte];
+            let bounded_regex = if posix || pattern_end_depends_on_following_context(&pattern.text)
+            {
+                None
+            } else {
+                Some(compile_elisp_regex_with_syntax_properties(
+                    interp,
+                    &pattern,
+                    env,
+                    SearchPointBoundary::End.ordinary_assertion(),
+                    true,
+                    syntax_encoding.as_ref(),
+                    RegexpCategoryScope::CurrentBuffer,
+                )?)
+            };
             let empty_line_pattern = pattern.text == "^$";
             if empty_line_pattern
                 && let Some(pos) =
@@ -3415,7 +3465,10 @@ pub(super) fn buffer_regex_search(
                     move_on_failure,
                 );
             }
-            let mut best_match: Option<(usize, usize, usize)> = None;
+            // The final flag records that the candidate was shortened at the
+            // hard backward-search bound and must be recaptured on the
+            // bounded prefix below.
+            let mut best_match: Option<(usize, usize, usize, bool)> = None;
             let mut search_byte = 0usize;
             while search_byte <= prefix.len() {
                 let Some(captures) = regex
@@ -3427,30 +3480,49 @@ pub(super) fn buffer_regex_search(
                 let Some(matched) = captures.get(0) else {
                     break;
                 };
+                let full_match_start_byte = matched.start();
+                let (candidate_haystack, candidate_match, shortened) =
+                    if matched.end() <= boundary_byte {
+                        (&*prefix, matched, false)
+                    } else if let Some(bounded_regex) = &bounded_regex
+                        && let Some(bounded_captures) = bounded_regex
+                            .captures_from_pos(bounded_prefix, full_match_start_byte)
+                            .map_err(|error| LispError::Signal(error.to_string()))?
+                        && let Some(bounded_match) = bounded_captures.get(0)
+                        && bounded_match.start() == full_match_start_byte
+                    {
+                        (bounded_prefix, bounded_match, true)
+                    } else {
+                        let Some(next) = prefix[full_match_start_byte..].chars().next() else {
+                            break;
+                        };
+                        search_byte = full_match_start_byte + next.len_utf8();
+                        continue;
+                    };
                 let Some(match_start) = backward_match_position(
                     absolute_start,
-                    &prefix,
-                    matched.start(),
+                    candidate_haystack,
+                    candidate_match.start(),
                     empty_line_pattern,
                 ) else {
                     break;
                 };
                 let Some(match_end) = backward_match_position(
                     absolute_start,
-                    &prefix,
-                    matched.end(),
+                    candidate_haystack,
+                    candidate_match.end(),
                     empty_line_pattern,
                 ) else {
                     break;
                 };
                 if match_start >= limit
                     && match_end <= search_point
-                    && best_match.is_none_or(|(best_start, best_end, _)| {
+                    && best_match.is_none_or(|(best_start, best_end, _, _)| {
                         match_start > best_start
                             || (match_start == best_start && match_end > best_end)
                     })
                 {
-                    best_match = Some((match_start, match_end, matched.start()));
+                    best_match = Some((match_start, match_end, full_match_start_byte, shortened));
                 }
 
                 // Move from the match's START, not its end: backward search
@@ -3458,15 +3530,21 @@ pub(super) fn buffer_regex_search(
                 // the rightmost start.  Each iteration nevertheless moves
                 // monotonically, unlike the former per-character loop that
                 // restarted an unanchored search at every buffer position.
-                let Some(next) = prefix[matched.start()..].chars().next() else {
+                let Some(next) = prefix[full_match_start_byte..].chars().next() else {
                     break;
                 };
-                search_byte = matched.start() + next.len_utf8();
+                search_byte = full_match_start_byte + next.len_utf8();
             }
-            if let Some((match_start, _, start_byte)) = best_match
-                && let Some(captures) = regex
-                    .captures_from_pos(&prefix, start_byte)
-                    .map_err(|error| LispError::Signal(error.to_string()))?
+            if let Some((match_start, _, start_byte, shortened)) = best_match
+                && let Some(captures) = if shortened {
+                    bounded_regex
+                        .as_ref()
+                        .expect("shortened match has regex")
+                        .captures_from_pos(bounded_prefix, start_byte)
+                } else {
+                    regex.captures_from_pos(&prefix, start_byte)
+                }
+                .map_err(|error| LispError::Signal(error.to_string()))?
                 && captures
                     .get(0)
                     .is_some_and(|matched| matched.start() == start_byte)
@@ -3474,9 +3552,16 @@ pub(super) fn buffer_regex_search(
                 set_backward_match_data(
                     interp,
                     absolute_start,
-                    &prefix,
+                    if shortened { bounded_prefix } else { &prefix },
                     &captures,
-                    regex.capture_mapping(),
+                    if shortened {
+                        bounded_regex
+                            .as_ref()
+                            .expect("shortened match has regex")
+                            .capture_mapping()
+                    } else {
+                        regex.capture_mapping()
+                    },
                     Some(interp.current_buffer_id()),
                     empty_line_pattern,
                 );

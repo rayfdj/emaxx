@@ -14853,6 +14853,62 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 }
 
 #[test]
+fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable(
+        "this-command",
+        Value::Symbol("outer-command".into()),
+        &mut env,
+    );
+    interp.set_variable(
+        "real-this-command",
+        Value::Symbol("outer-real-command".into()),
+        &mut env,
+    );
+    interp.set_variable(
+        "this-original-command",
+        Value::Symbol("outer-original-command".into()),
+        &mut env,
+    );
+    let script = std::rc::Rc::new(std::cell::RefCell::new(
+        "answer\r"
+            .chars()
+            .rev()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect::<Vec<_>>(),
+    ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[Value::String("Input: ".into())],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+
+    assert_eq!(
+        result.expect("live minibuffer submits"),
+        Value::String("answer".into())
+    );
+    assert_eq!(
+        interp.lookup_var("this-command", &env),
+        Some(Value::Symbol("outer-command".into()))
+    );
+    assert_eq!(
+        interp.lookup_var("real-this-command", &env),
+        Some(Value::Symbol("outer-real-command".into()))
+    );
+    assert_eq!(
+        interp.lookup_var("this-original-command", &env),
+        Some(Value::Symbol("outer-original-command".into()))
+    );
+}
+
+#[test]
 fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

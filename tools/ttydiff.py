@@ -1577,11 +1577,20 @@ SCENARIOS = [
         SEARCH_SAMPLE,
         [b"\x1bsobeta\r", b"\x18o", b"\x0e\x0e", b"\r"],
     ),
-    # replace-string end to end, with its echo summary.
+    # replace-string end to end, with its echo summary.  Check the summary
+    # before execute-extended-command's two-second shorter-name timer, then
+    # issue a real command so the pending suggestion is cancelled in both
+    # editors.  Capturing at the timer's teardown boundary races two correct
+    # redisplay schedules and does not test replace-string itself.
     (
         "replace-string",
         SEARCH_SAMPLE,
-        [b"\x1bxreplace-string\rbeta\rBETA\r"],
+        [
+            action("open-replace-string", b"\x1bxreplace-string\r"),
+            action("enter-old-string", b"beta\r"),
+            action("enter-new-string", b"BETA\r"),
+            action("cancel-delayed-suggestion", b"\x0c"),
+        ],
     ),
     # #+STARTUP: overview folds on open; the fontification pass must
     # cover the planned window (folds push its end far past any
@@ -2327,7 +2336,9 @@ SCENARIOS += [
         ],
     ),
     # Exercise both sides of the modern undo state machine, then fork the
-    # history and prove redo cannot resurrect the abandoned branch.
+    # history and prove redo cannot resurrect the abandoned branch.  M-x
+    # briefly advertises undo-redo's C-M-_ binding; check the command's stable
+    # post-hint message instead of sampling inside that two-second overlay.
     (
         "undo-redo-divergent",
         "base\n",
@@ -2337,7 +2348,7 @@ SCENARIOS += [
             action(
                 "redo-alpha",
                 b"\x1bxundo-redo\r",
-                settle=2.0,
+                settle=5.0,
                 quiet=0.5,
             ),
             action("undo-redone-alpha", b"\x1f"),
@@ -2345,7 +2356,7 @@ SCENARIOS += [
             action(
                 "reject-redo-after-divergence",
                 b"\x1bxundo-redo\r",
-                settle=2.0,
+                settle=5.0,
                 quiet=0.5,
             ),
             action("undo-divergent-branch", b"\x1f"),
@@ -2406,6 +2417,124 @@ SCENARIOS += [
             action("insert-at-end", b"Z"),
             action("undo-end-edit", b"\x18u"),
             action("undo-start-edit", b"\x18u"),
+        ],
+    ),
+]
+
+REGEXP_SEARCH_REPLACE_SCENARIO_NAMES = (
+    "regexp-isearch-forward",
+    "regexp-isearch-backward",
+    "regexp-isearch-edit-fail-wrap",
+    "regexp-isearch-abort",
+    "regexp-isearch-other-key-exit",
+    "regexp-isearch-invalid-recovery",
+    "query-replace-regexp-captures",
+    "query-replace-regexp-choices-undo",
+)
+
+SCENARIOS += [
+    (
+        "regexp-isearch-forward",
+        "alpha 123 beta\naxxxa 456\nomega alpha\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-regexp", b"a.*a"),
+            action("repeat-regexp", b"\x13"),
+            action("exit-regexp-isearch", b"\r"),
+        ],
+    ),
+    (
+        "regexp-isearch-backward",
+        "alpha 123 beta\naxxxa 456\nomega 789\n",
+        [
+            action("end-of-buffer", b"\x1b>"),
+            action("open-backward-regexp-isearch", b"\x1b\x12"),
+            action("type-digit-regexp", b"[[:digit:]]+"),
+            action("repeat-backward-regexp", b"\x12"),
+            action("exit-regexp-isearch", b"\r"),
+        ],
+    ),
+    (
+        "regexp-isearch-edit-fail-wrap",
+        "alpha beta alpha\nsecond alpha\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-failing-regexp", b"zeta"),
+            action("erase-failing-regexp", b"\x7f\x7f\x7f\x7f"),
+            action("type-working-regexp", b"alpha"),
+            action("repeat-second-match", b"\x13"),
+            action("repeat-third-match", b"\x13"),
+            action("wrap-to-first-match", b"\x13"),
+            action("exit-wrapped-isearch", b"\r"),
+        ],
+    ),
+    (
+        "regexp-isearch-abort",
+        "alpha beta\nsecond beta\n",
+        [
+            action("move-origin", b"\x06\x06"),
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-regexp", b"beta"),
+            # A cold GNU isearch can defer processing C-g until after the
+            # ordinary one-second checkpoint floor.  Wait for the abort's
+            # observable restored-point frame, not the unchanged pre-key
+            # screen that happens to be quiet while the event is pending.
+            action("abort-regexp-isearch", b"\x07", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "regexp-isearch-other-key-exit",
+        "alpha beta\nsecond beta\nthird line\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-regexp", b"beta"),
+            action("exit-and-run-next-line", b"\x0e"),
+        ],
+    ),
+    (
+        "regexp-isearch-invalid-recovery",
+        "alpha beta\nsecond alpha\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-invalid-regexp", b"["),
+            action("delete-invalid-regexp", b"\x7f"),
+            action("type-recovered-regexp", b"alpha"),
+            action("exit-recovered-isearch", b"\r"),
+        ],
+    ),
+    (
+        "query-replace-regexp-captures",
+        "alpha-12 beta-34 alpha-56\n",
+        [
+            action("open-query-replace-regexp", b"\x1bxquery-replace-regexp\r"),
+            action(
+                "enter-capture-regexp",
+                b"\\([[:alpha:]]+\\)-\\([[:digit:]]+\\)\r",
+            ),
+            action("enter-backreference-replacement", b"\\2:\\1\r"),
+            action("replace-first", b"y"),
+            action("skip-second", b"n"),
+            # The M-x binding suggestion is scheduled two seconds after the
+            # replacement finishes.  Observe it inside its display window,
+            # rather than racing the exact timer deadline.
+            action("replace-rest", b"!", settle=3.0, quiet=0.5),
+            action("undo-replacement", b"\x1f"),
+            action("undo-replacement-again", b"\x1f"),
+        ],
+    ),
+    (
+        "query-replace-regexp-choices-undo",
+        "cat1 cat2 cat3 cat4\n",
+        [
+            action("open-query-replace-regexp", b"\x1bxquery-replace-regexp\r"),
+            action("enter-numbered-cat-regexp", b"cat[[:digit:]]\r"),
+            action("enter-replacement", b"dog\r"),
+            action("replace-first", b"y"),
+            action("skip-second", b"n"),
+            action("replace-third", b"y"),
+            action("quit-before-fourth", b"q", settle=3.0, quiet=0.5),
+            action("undo-quit-replacements", b"\x1f"),
+            action("undo-quit-replacements-again", b"\x1f"),
         ],
     ),
 ]

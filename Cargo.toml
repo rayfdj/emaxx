@@ -86,3 +86,17 @@ opt-level = 1
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# The full test gate: release-grade optimization with the safety nets the
+# dev-profile gate has been relying on kept ON -- debug assertions and
+# overflow checks have caught wrapped C-style index arithmetic in ported
+# code, and the gate must not lose them.  LTO is thinned and codegen units
+# widened because the gate rebuilds test binaries far more often than a
+# release ships; runtime is dominated by the interpreter, not by the last
+# few percent of inlining.
+[profile.gate]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+lto = "thin"
+codegen-units = 16
