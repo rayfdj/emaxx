@@ -1085,7 +1085,9 @@ pub(crate) fn decode_file_contents(
         let explicit_eol = requested
             .as_deref()
             .and_then(|request| interp.coding_system_eol_type_value(request));
-        let eol = explicit_eol.map(Some).unwrap_or_else(|| detect_eol_type_opt(bytes));
+        let eol = explicit_eol
+            .map(Some)
+            .unwrap_or_else(|| detect_eol_type_opt(bytes));
         let normalized = decode_bytes_with_explicit_eol(bytes, eol.unwrap_or(0));
         return Ok((
             decode_raw_text_bytes(&normalized),

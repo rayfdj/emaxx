@@ -350,7 +350,7 @@ impl Interpreter {
         // that CONDITION, which this arm previously did not do.  It raised a
         // plain `error' while the comment above claimed otherwise, so a
         // `condition-case' keyed on `recursion-error' missed it.
-        if self.lisp_eval_depth % 64 == 0 && !Self::stack_headroom_remains() {
+        if self.lisp_eval_depth.is_multiple_of(64) && !Self::stack_headroom_remains() {
             let reached = self.lisp_eval_depth;
             self.lisp_eval_depth -= 1;
             return Err(LispError::SignalValue(Value::list([

@@ -637,7 +637,7 @@ pub(crate) fn builtin_arities_match_fresh_regeneration() {
     let fresh_path =
         std::env::temp_dir().join(format!("emaxx-arities-regen-{}.rs", std::process::id()));
     let status = std::process::Command::new(&oracle)
-        .current_dir(&root)
+        .current_dir(root)
         .args([
             "-Q",
             "--batch",

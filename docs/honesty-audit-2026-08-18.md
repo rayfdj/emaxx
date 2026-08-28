@@ -83,7 +83,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
 | 123 | EMACS_TEST_DIRECTORY shadowed 11 core libraries (5 of them in the 397-name sweep), putting at least 324 measured outcomes (4.1%) at risk | FIXED 2026-08-27 - standard library ordered first, sweep 5 -> 0 |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | FIXED (euc-jp real; file reads consult the alist; one disclosed limit) |
-| 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | OPEN |
+| 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | FIXED 2026-08-28 (big5 twins included; two GNU crash/UB paths disclosed) |
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
 | 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | OPEN |
 | 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | OPEN |
@@ -2506,3 +2506,41 @@ New findings recorded while probing (all pre-existing, none fixed here):
      the eol variant GNU appends for files, and the same detection fires for
      `decode-coding-string' where GNU's answers stay `undecided'.  All three
      pre-exist this batch (probed while auditing it).  OPEN.
+
+## 2026-08-28 sjis/big5 batch (finding 107 closed)
+
+Finding 107 is FIXED, and the big5 stub pair -- the same one-probe-value
+disease next door -- went with it.  Everything below is oracle-probed.
+
+  - decode-sjis-char/encode-sjis-char convert through the charsets of
+    coding.c's Vsjis_coding_system, which is the LAST defined shift-jis
+    system: japanese-shift-jis-2004 in a full load.  Their kanji bank is
+    therefore JIS X 0213 plane 1 -- (decode-sjis-char #x8940) is 38498
+    through JISX2131.map, and the euro sign, absent from JIS X 0208,
+    ENCODES as #x8540 -- while the `sjis' STRING codec belongs to
+    japanese-shift-jis and stays on JIS X 0208.  The same byte pair can
+    answer differently between the primitive and the string decode; both
+    answers are GNU's own.  Emaxx now tracks Vsjis/Vbig5 equivalents.
+  - encode-sjis-char applies JIS_TO_SJIS to whatever code the charset
+    search returns, halfwidth-katakana codes included: U+FF71's code
+    0x31 becomes 0x70AF, an invalid SJIS code, exactly as GNU answers.
+  - Charset conversion grew `:superset' support (jisx0213.2004-1 is the
+    superset of jisx0213-a and jisx0213-1), riding the unify-charset
+    state from the previous batch.
+  - The sjis string codec: kana as code+0x80, JIS X 0208 through
+    JIS_TO_SJIS, space for unencodable, raw-byte resync on invalid
+    sequences; the big5 codec mirrors it through BIG5.map.
+  - decode-big5-char reproduces coding.c's own bug: Fdecode_big5_char
+    masks the second byte with 0x7F before validating, so half of Big5
+    (#xA4A4 among them) signals "Invalid code" while encode-big5-char
+    happily produces those codes.  Asymmetry oracle-confirmed.
+
+Disclosed divergences (not claimed as fixed):
+  - GNU's unencodable path in Fencode_sjis_char reads a NULL charset
+    pointer: (encode-sjis-char #xA5) ABORTS the oracle binary (SIGABRT)
+    and other unencodable characters return garbage.  Emaxx signals the
+    error the docstring promises.  Untestable against the oracle.
+  - Unmapped two-byte codes decode in GNU to supra-Unicode codepoints
+    ((decode-coding-string "\xED\x40" 'sjis) is 1318992); emaxx strings
+    cannot hold them and fall back to raw-byte markers -- the same
+    finding-127 limitation as euc-jp.

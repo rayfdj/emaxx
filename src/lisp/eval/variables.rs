@@ -1186,11 +1186,7 @@ impl Interpreter {
     /// while a descendant runs.  GNU gets this for free by walking one
     /// thread's own specpdl (thread.c:94-100); the shared stack needs the
     /// boundary made explicit.
-    pub(crate) fn swap_special_bindings_for_thread_switch(
-        &mut self,
-        start: usize,
-        rebind: bool,
-    ) {
+    pub(crate) fn swap_special_bindings_for_thread_switch(&mut self, start: usize, rebind: bool) {
         let mut records = std::mem::take(&mut self.active_special_restores);
         let end = records.len();
         let start = start.min(end);

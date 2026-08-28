@@ -320,6 +320,77 @@ pub(crate) fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         .expect("join large-stack test thread");
 }
 
+/// Rewrite PROGRAM so every non-ASCII character becomes a `\N{U+XXXX}'
+/// escape, keeping the text safe to hand the oracle through `--eval'.
+///
+/// GNU decodes command-line arguments with the locale's coding system, so a
+/// program containing literal non-ASCII is corrupted under LANG=C -- often
+/// badly enough that the reader rejects it outright with
+/// `Invalid read syntax: "?"'.  LANG=C is exactly the environment the
+/// compatibility harness runs its children in, so an oracle contract checked
+/// through a literal `--eval' argument is checked in an environment where it
+/// cannot work.
+///
+/// Loading the program from a file instead would fix the decoding but change
+/// what is being measured: `-l FILE' leaves `last-coding-system-used' as
+/// `prefer-utf-8-unix' in BOTH locales where `--eval' leaves it
+/// `no-conversion' under LANG=C (and `utf-8-unix' under a UTF-8 locale), which
+/// coding-sensitive contracts observe.  Escaping keeps the evaluation context
+/// byte-for-byte identical to the original `--eval' call.  Verified against
+/// the oracle: the escaped form yields identical output under both LANG=C and
+/// a UTF-8 locale, and leaves each locale's own coding state untouched.
+///
+/// The escape is only valid where the Lisp reader accepts one -- inside a
+/// string or after `?'.  That covers every non-ASCII character in these
+/// contract programs; a non-ASCII SYMBOL name would need a different scheme.
+pub(crate) fn oracle_program_ascii(program: &str) -> String {
+    if program.is_ascii() {
+        return program.to_string();
+    }
+    let mut escaped = String::with_capacity(program.len());
+    let mut in_string = false;
+    let mut in_comment = false;
+    let mut previous = '\0';
+    let mut before_previous = '\0';
+    for character in program.chars() {
+        if character.is_ascii() {
+            match character {
+                '\n' => in_comment = false,
+                ';' if !in_string => in_comment = true,
+                '"' if !in_comment && previous != '\\' => in_string = !in_string,
+                _ => {}
+            }
+            escaped.push(character);
+        } else {
+            // Escaping is only MEANING-PRESERVING where the reader takes a
+            // `\N{...}' escape.  Two positions would change the program
+            // silently rather than fail: a non-ASCII character in a SYMBOL
+            // name (`a\u{2018}b' reads as the symbol `aN{U+2018}b'), and one
+            // preceded by a backslash inside a string (`"x\\\u{2018}y"' reads
+            // as a literal backslash followed by the escape text).  Refuse
+            // both loudly -- an oracle handed a subtly different question is
+            // exactly the kind of defect this helper exists to prevent.
+            let after_question = previous == '?' || (previous == '\\' && before_previous == '?');
+            let escapable =
+                in_comment || (in_string && previous != '\\') || (!in_string && previous == '?');
+            assert!(
+                escapable && !(after_question && previous == '\\'),
+                "non-ASCII {character:?} (U+{:04X}) sits where a \\N{{U+XXXX}} escape would                  change the program's meaning; spell it explicitly or extend this helper.                  Context: {:?}",
+                character as u32,
+                program
+                    .split(character)
+                    .next()
+                    .map(|head| head.chars().rev().take(40).collect::<String>())
+                    .unwrap_or_default()
+            );
+            escaped.push_str(&format!("\\N{{U+{:04X}}}", character as u32));
+        }
+        before_previous = previous;
+        previous = character;
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HostTestGate, acquire_batch_source_bootstrap_permit, mark_process_test};
@@ -426,75 +497,4 @@ mod tests {
             .expect("second process test should enter after thread teardown");
         second.join().expect("second process test should finish");
     }
-}
-
-/// Rewrite PROGRAM so every non-ASCII character becomes a `\N{U+XXXX}'
-/// escape, keeping the text safe to hand the oracle through `--eval'.
-///
-/// GNU decodes command-line arguments with the locale's coding system, so a
-/// program containing literal non-ASCII is corrupted under LANG=C -- often
-/// badly enough that the reader rejects it outright with
-/// `Invalid read syntax: "?"'.  LANG=C is exactly the environment the
-/// compatibility harness runs its children in, so an oracle contract checked
-/// through a literal `--eval' argument is checked in an environment where it
-/// cannot work.
-///
-/// Loading the program from a file instead would fix the decoding but change
-/// what is being measured: `-l FILE' leaves `last-coding-system-used' as
-/// `prefer-utf-8-unix' in BOTH locales where `--eval' leaves it
-/// `no-conversion' under LANG=C (and `utf-8-unix' under a UTF-8 locale), which
-/// coding-sensitive contracts observe.  Escaping keeps the evaluation context
-/// byte-for-byte identical to the original `--eval' call.  Verified against
-/// the oracle: the escaped form yields identical output under both LANG=C and
-/// a UTF-8 locale, and leaves each locale's own coding state untouched.
-///
-/// The escape is only valid where the Lisp reader accepts one -- inside a
-/// string or after `?'.  That covers every non-ASCII character in these
-/// contract programs; a non-ASCII SYMBOL name would need a different scheme.
-pub(crate) fn oracle_program_ascii(program: &str) -> String {
-    if program.is_ascii() {
-        return program.to_string();
-    }
-    let mut escaped = String::with_capacity(program.len());
-    let mut in_string = false;
-    let mut in_comment = false;
-    let mut previous = '\0';
-    let mut before_previous = '\0';
-    for character in program.chars() {
-        if character.is_ascii() {
-            match character {
-                '\n' => in_comment = false,
-                ';' if !in_string => in_comment = true,
-                '"' if !in_comment && previous != '\\' => in_string = !in_string,
-                _ => {}
-            }
-            escaped.push(character);
-        } else {
-            // Escaping is only MEANING-PRESERVING where the reader takes a
-            // `\N{...}' escape.  Two positions would change the program
-            // silently rather than fail: a non-ASCII character in a SYMBOL
-            // name (`a\u{2018}b' reads as the symbol `aN{U+2018}b'), and one
-            // preceded by a backslash inside a string (`"x\\\u{2018}y"' reads
-            // as a literal backslash followed by the escape text).  Refuse
-            // both loudly -- an oracle handed a subtly different question is
-            // exactly the kind of defect this helper exists to prevent.
-            let after_question = previous == '?' || (previous == '\\' && before_previous == '?');
-            let escapable =
-                in_comment || (in_string && previous != '\\') || (!in_string && previous == '?');
-            assert!(
-                escapable && !(after_question && previous == '\\'),
-                "non-ASCII {character:?} (U+{:04X}) sits where a \\N{{U+XXXX}} escape would                  change the program's meaning; spell it explicitly or extend this helper.                  Context: {:?}",
-                character as u32,
-                program
-                    .split(character)
-                    .next()
-                    .map(|head| head.chars().rev().take(40).collect::<String>())
-                    .unwrap_or_default()
-            );
-            escaped.push_str(&format!("\\N{{U+{:04X}}}", character as u32));
-        }
-        before_previous = previous;
-        previous = character;
-    }
-    escaped
 }

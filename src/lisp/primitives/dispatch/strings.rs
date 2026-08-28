@@ -422,10 +422,7 @@ define_dispatch!(
                 let bytes = string
                     .text
                     .chars()
-                    .map(|ch| {
-                        raw_byte_from_regex_char(ch)
-                            .unwrap_or_else(|| (ch as u32 & 0xFF) as u8)
-                    })
+                    .map(|ch| raw_byte_from_regex_char(ch).unwrap_or((ch as u32 & 0xFF) as u8))
                     .collect::<Vec<u8>>();
                 Ok(bytes_to_shared_unibyte_value(&bytes))
             }

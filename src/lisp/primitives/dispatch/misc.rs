@@ -863,8 +863,7 @@ define_dispatch!(
                 // diverge from GNU at the 64th link, and the sibling
                 // `command-modes' walk is likewise uncapped.
                 let mut probe = args[0].clone();
-                loop {
-                    let Ok(symbol) = probe.as_symbol() else { break };
+                while let Ok(symbol) = probe.as_symbol() {
                     let symbol = symbol.to_string();
                     if let Some(form) = interp.get_symbol_property(&symbol, "interactive-form")
                         && !matches!(form, Value::Nil)
@@ -1846,7 +1845,6 @@ thread_local! {
 /// have no lambda body to read a docstring from, yet their docstrings are not in
 /// the `DOC` file either — they live inline in the byte-compiled sources.  We
 /// scan the `.el` sources once and cache a name → first-docstring map.
-
 pub(crate) fn fallback_function_documentation(
     interp: &Interpreter,
     function: &str,
