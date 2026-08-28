@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from ttydiff import (
     Action,
+    ADVERSARIAL_COMMAND_SCENARIO_NAMES,
     COLS,
     CORE_FREQUENCY_SCENARIO_NAMES,
     FIELDNOTES_FIXTURE_PATH,
@@ -124,6 +125,7 @@ class Vt100ScreenTests(unittest.TestCase):
             CORE_FREQUENCY_SCENARIO_NAMES,
             HELP_FILE_DIRED_SCENARIO_NAMES,
             HIGH_VALUE_COMMAND_SCENARIO_NAMES,
+            ADVERSARIAL_COMMAND_SCENARIO_NAMES,
             FIELDNOTES_ADVANCED_SCENARIO_NAMES,
             SEEDED_SAFE_SCENARIO_NAMES,
         )
@@ -168,6 +170,35 @@ class Vt100ScreenTests(unittest.TestCase):
             self.assertEqual(Path(gnu_path).name, Path(emaxx_path).name)
             self.assertEqual(Path(gnu_path).read_text(), "initial\n")
             self.assertEqual(Path(emaxx_path).read_text(), "initial\n")
+        finally:
+            for target in cleanup:
+                remove_scenario_target(target)
+
+    def test_mutating_dired_scenarios_get_isolated_same_named_directories(
+        self,
+    ) -> None:
+        (gnu_path, emaxx_path), cleanup = create_scenario_target_pair(
+            "dired-contract",
+            "",
+            ".dat",
+            {
+                "target": "directory",
+                "separate_targets": True,
+                "padding_entries": 3,
+            },
+        )
+        try:
+            gnu = Path(gnu_path)
+            emaxx = Path(emaxx_path)
+            self.assertNotEqual(gnu.parent, emaxx.parent)
+            self.assertEqual(gnu.name, emaxx.name)
+            self.assertEqual(
+                sorted(path.name for path in gnu.iterdir()),
+                sorted(path.name for path in emaxx.iterdir()),
+            )
+            self.assertTrue((gnu / "00-padding-02.txt").is_file())
+            (gnu / "alpha.txt").write_text("GNU-only mutation\n")
+            self.assertEqual((emaxx / "alpha.txt").read_text(), "alpha file\nsecond line\n")
         finally:
             for target in cleanup:
                 remove_scenario_target(target)

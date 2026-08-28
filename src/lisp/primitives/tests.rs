@@ -12567,6 +12567,47 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
 }
 
 #[test]
+fn keyboard_macro_records_input_read_inside_a_command() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let definition =
+        Reader::new("(defun emaxx-test-read-char-command () (interactive) (read-char))")
+            .read()
+            .expect("nested-input command should parse")
+            .expect("nested-input command should exist");
+    interp
+        .eval(&definition, &mut env)
+        .expect("define nested-input command");
+    interp.set_variable(
+        "unread-command-events",
+        Value::list([Value::Integer(97)]),
+        &mut env,
+    );
+    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
+        .expect("start keyboard macro recording");
+
+    crate::lisp::primitives::execute_command_binding(
+        &mut interp,
+        &mut env,
+        Value::Symbol("emaxx-test-read-char-command".into()),
+        &[Value::Integer(3), Value::Integer(114)],
+        Value::Integer(114),
+    )
+    .expect("execute a command that reads another event");
+    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+
+    assert_eq!(
+        interp.lookup_var("last-kbd-macro", &env),
+        Some(Value::list([
+            Value::Symbol("vector-literal".into()),
+            Value::Integer(3),
+            Value::Integer(114),
+            Value::Integer(97),
+        ]))
+    );
+}
+
+#[test]
 fn file_attributes_nil_matches_gnu_missing_file_contract() {
     assert_upstream_primitive_contract("(prin1 (file-attributes nil))", "nil");
 

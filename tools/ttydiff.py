@@ -1882,7 +1882,7 @@ SCENARIOS += [
             action("modify-visited-file", b"temporary edits"),
             action("open-kill-buffer-prompt", b"\x18k"),
             action("choose-current-buffer", b"\r", settle=2.0, quiet=0.5),
-            action("kill-without-saving", b"y", settle=2.0, quiet=0.5),
+            action("kill-without-saving", b"yes\r", settle=2.0, quiet=0.5),
         ],
     ),
     (
@@ -1972,6 +1972,186 @@ SCENARIOS += [
             ),
             action("confirm-revert-buffer", b"yes\r", settle=2.0, quiet=0.5),
         ],
+    ),
+]
+
+ADVERSARIAL_COMMAND_SCENARIO_NAMES = (
+    "kill-buffer-cancel-save",
+    "revert-buffer-decline",
+    "write-file-save-as",
+    "keyboard-macro-abort-append",
+    "keyboard-macro-read-char",
+    "dired-copy-rename-delete",
+)
+
+SCENARIOS += [
+    (
+        "kill-buffer-cancel-save",
+        CORE_EDIT_SAMPLE,
+        [
+            action("modify-visited-file", b"unsaved "),
+            action("open-kill-buffer-prompt", b"\x18k"),
+            action("choose-current-buffer", b"\r", settle=2.0, quiet=0.5),
+            action("cancel-kill", b"no\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-cancelled-state",
+                b'\x1b:(list (buffer-name) (and buffer-file-name t) '
+                b'(buffer-modified-p))\r',
+                settle=2.0,
+                quiet=0.5,
+            ),
+            # GNU's save confirmation names the isolated parent directory.
+            # The following motion strictly checks the saved mode line and
+            # buffer contents after clearing only that path-bearing echo.
+            action(
+                "save-buffer",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-save-message", b"\x01"),
+            action("open-kill-after-save", b"\x18k"),
+            action("kill-saved-buffer", b"\r", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "revert-buffer-decline",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"changed "),
+            action(
+                "request-revert-buffer",
+                b"\x1bxrevert-buffer\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            # GNU's delayed suggest-key-bindings hint is timing-dependent;
+            # the next strict motion verifies that declining preserved the
+            # modified buffer, mode line, and cursor after clearing it.
+            action(
+                "decline-revert-buffer",
+                b"no\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("verify-declined-buffer", b"\x06"),
+        ],
+    ),
+    (
+        "write-file-save-as",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"saved-as "),
+            # The initial file-name minibuffer contains each target's
+            # isolated parent.  Replace it before comparing the prompt.
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action("replace-destination", b"\x01\x0bsaved-copy.dat"),
+            # `Wrote /isolated/parent/saved-copy.dat' differs only by the
+            # intentionally distinct parent.  The next strict command checks
+            # the visited basename, clean mode line, contents, and cursor.
+            action(
+                "write-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-write-message", b"\x06"),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "keyboard-macro-abort-append",
+        CORE_EDIT_SAMPLE,
+        [
+            action("start-aborted-macro", b"\x18("),
+            action("end-of-line", b"\x05"),
+            action("insert-aborted-bang", b"!"),
+            action("abort-macro", b"\x07", settle=2.0, quiet=0.5),
+            action("undo-aborted-edit", b"\x1f"),
+            action("start-fresh-macro", b"\x18("),
+            action("fresh-end-of-line", b"\x05"),
+            action("fresh-insert-bang", b"!"),
+            action("end-fresh-macro", b"\x18)"),
+            action("append-without-replay", b"\x15\x15\x18("),
+            action("append-next-line", b"\x0e"),
+            action("append-beginning-of-line", b"\x01"),
+            action("append-insert-marker", b">"),
+            action("end-appended-macro", b"\x18)"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("execute-appended-macro", b"\x18e", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "keyboard-macro-read-char",
+        CORE_EDIT_SAMPLE,
+        [
+            action("start-kbd-macro", b"\x18("),
+            # `point-to-register' reads the register with `read-char' after
+            # its key binding has dispatched.  The nested `a' must become
+            # part of the macro, not turn into a replay-time prompt.
+            action("point-to-register-a", b"\x18r a"),
+            action("forward-word", b"\x1bf"),
+            action("end-kbd-macro", b"\x18)"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("execute-read-char-macro", b"\x18e", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "dired-copy-rename-delete",
+        "",
+        [
+            action(
+                "stable-listing",
+                b'\x1b:(dired-sort-other "-Al")\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            # The absolute fixture roots must differ so each editor mutates
+            # independent state.  Move the real entry to mid-window before
+            # the first strict comparison, leaving only listing data visible.
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("open-copy-prompt", b"C", checkpoint=False),
+            action("name-copy", b"\x01\x0balpha-copy.txt"),
+            action(
+                "finish-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-copy-message", b"\x0c", settle=2.0, quiet=0.5),
+            action("find-beta", b"\x13beta.txt\r"),
+            action("open-rename-prompt", b"R", checkpoint=False),
+            action("name-rename", b"\x01\x0bbeta-renamed.txt"),
+            action(
+                "finish-rename",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-rename-message", b"\x0c", settle=2.0, quiet=0.5),
+            action("find-notes", b"\x13notes.org\r"),
+            action("open-delete-prompt", b"D", checkpoint=False),
+            action(
+                "confirm-delete",
+                b"yes\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-delete-message", b"\x0c", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"target": "directory", "separate_targets": True, "padding_entries": 32},
     ),
 ]
 
@@ -2082,19 +2262,27 @@ def select_scenarios(names):
     return [by_name[name] for name in names]
 
 
+def populate_scenario_directory(path, padding_entries=0):
+    """Populate one deterministic Dired fixture directory."""
+    for index in range(padding_entries):
+        with open(os.path.join(path, f"00-padding-{index:02}.txt"), "w") as out:
+            out.write(f"padding file {index:02}\n")
+    for filename, body in (
+        ("alpha.txt", "alpha file\nsecond line\n"),
+        ("beta.txt", "beta file\n"),
+        ("notes.org", "* Dired fixture\nbody\n"),
+    ):
+        with open(os.path.join(path, filename), "w") as out:
+            out.write(body)
+    os.mkdir(os.path.join(path, "subdir"))
+
+
 def create_scenario_target(name, contents, suffix=".dat", options=None):
     """Create the disposable file or directory visited by both editors."""
     options = options or {}
     if options.get("target") == "directory":
         path = tempfile.mkdtemp(prefix=f"ttydiff-{name}-")
-        for filename, body in (
-            ("alpha.txt", "alpha file\nsecond line\n"),
-            ("beta.txt", "beta file\n"),
-            ("notes.org", "* Dired fixture\nbody\n"),
-        ):
-            with open(os.path.join(path, filename), "w") as out:
-                out.write(body)
-        os.mkdir(os.path.join(path, "subdir"))
+        populate_scenario_directory(path, options.get("padding_entries", 0))
         return path
 
     handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
@@ -2128,6 +2316,16 @@ def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
         tempfile.mkdtemp(prefix=f"ttydiff-{name}-gnu-"),
         tempfile.mkdtemp(prefix=f"ttydiff-{name}-emaxx-"),
     ]
+    if options.get("target") == "directory":
+        basename = f"ttydiff-{name}"
+        targets = []
+        for root in roots:
+            path = os.path.join(root, basename)
+            os.mkdir(path)
+            populate_scenario_directory(path, options.get("padding_entries", 0))
+            targets.append(path)
+        return tuple(targets), roots
+
     basename = f"ttydiff-{name}{suffix}"
     targets = []
     for root in roots:
