@@ -4614,39 +4614,52 @@ fn substitute_in_file_name_expands_shell_style_env_vars() {
 }
 
 #[test]
-fn compat_paths_follow_emacs_test_directory_layout() {
+fn dumped_directory_family_ignores_the_test_harness_variable() {
+    // Finding 102: data-directory, doc-directory, installation-directory
+    // and emacsclient-program-name were derived from EMACS_TEST_DIRECTORY
+    // -- exactly the rule source-directory's own comment bans.  In GNU
+    // they are epaths.h constants fixed when the binary is built; here
+    // that means the pinned sibling checkout's paths, whatever the
+    // harness environment says.
+    let repo = crate::compat::canonicalize_path(&upstream_emacs_repo())
+        .expect("sibling GNU checkout")
+        .display()
+        .to_string();
+    let program = concat!(
+        "(prin1 (list data-directory doc-directory installation-directory ",
+        "emacsclient-program-name))"
+    );
+    let expected = format!("(\"{repo}/etc/\" \"{repo}/etc/\" \"{repo}/\" \"emacsclient\")");
+    assert_upstream_primitive_contract(program, &expected);
+
+    // A hostile EMACS_TEST_DIRECTORY pointing at a fake repo layout --
+    // complete with the binaries the old derivation looked for -- must
+    // change none of them.
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let repo_root = std::env::temp_dir().join(format!("emaxx-compat-paths-{unique}"));
-    let test_dir = repo_root.join("test");
-    let src_dir = repo_root.join("src");
-    let lib_src_dir = repo_root.join("lib-src");
+    let fake_root = std::env::temp_dir().join(format!("emaxx-compat-paths-{unique}"));
+    let test_dir = fake_root.join("test");
     std::fs::create_dir_all(&test_dir).expect("create test directory");
-    std::fs::create_dir_all(&src_dir).expect("create src directory");
-    std::fs::create_dir_all(&lib_src_dir).expect("create lib-src directory");
-    std::fs::write(src_dir.join("emacs"), "").expect("write fake emacs binary");
-    std::fs::write(lib_src_dir.join("emacsclient"), "").expect("write fake emacsclient binary");
+    std::fs::create_dir_all(fake_root.join("src")).expect("create src directory");
+    std::fs::create_dir_all(fake_root.join("lib-src")).expect("create lib-src directory");
+    std::fs::create_dir_all(fake_root.join("etc")).expect("create etc directory");
+    std::fs::write(fake_root.join("src/emacs"), "").expect("write fake emacs binary");
+    std::fs::write(fake_root.join("lib-src/emacsclient"), "")
+        .expect("write fake emacsclient binary");
 
-    let test_directory = test_dir.display().to_string();
-    assert_eq!(
-        compat_emacsclient_path_from_test_directory(&test_directory),
-        Some(lib_src_dir.join("emacsclient"))
-    );
     let old = std::env::var("EMACS_TEST_DIRECTORY").ok();
     unsafe {
-        std::env::set_var("EMACS_TEST_DIRECTORY", &test_directory);
+        std::env::set_var("EMACS_TEST_DIRECTORY", test_dir.display().to_string());
     }
     assert_eq!(
         current_invocation_path(),
         std::env::current_exe().expect("current test executable"),
         "EMACS_TEST_DIRECTORY must never redirect Emaxx subprocesses to the GNU oracle"
     );
-    assert_eq!(
-        compat_installation_directory(),
-        Some(path_to_directory_string(&repo_root))
-    );
+    assert_eq!(compat_data_directory(), Some(format!("{repo}/etc/")));
+    assert_eq!(compat_installation_directory(), Some(format!("{repo}/")));
     if let Some(value) = old {
         unsafe {
             std::env::set_var("EMACS_TEST_DIRECTORY", value);
@@ -4656,8 +4669,23 @@ fn compat_paths_follow_emacs_test_directory_layout() {
             std::env::remove_var("EMACS_TEST_DIRECTORY");
         }
     }
+    let _ = std::fs::remove_dir_all(&fake_root);
 
-    let _ = std::fs::remove_dir_all(&repo_root);
+    // The interpreter's dumped bindings answer the same oracle row.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let values = interp
+        .eval(
+            &Reader::new(
+                "(list data-directory doc-directory installation-directory \
+                 emacsclient-program-name)",
+            )
+            .read_all()
+            .expect("read directory-family list")
+            .remove(0),
+            &mut Vec::new(),
+        )
+        .expect("evaluate directory-family list");
+    assert_eq!(values.to_string(), expected);
 }
 
 #[test]
@@ -9129,6 +9157,135 @@ fn big5_conversion_follows_the_oracle_contract() {
     let result = interp
         .eval(&form, &mut Vec::new())
         .expect("evaluate big5 program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn garbage_collect_reports_the_live_census() {
+    // Finding 110: every count was a fabricated 0.  The alist shape --
+    // nine rows, this exact order, these exact lengths, integer columns
+    // throughout -- is GNU's (alloc.c, oracle-confirmed); the numbers are
+    // emaxx's own live reachability census, which no oracle row can pin
+    // (GNU's counts are its allocator's heap state).
+    let shape_program = r#"
+        (mapcar (lambda (entry)
+                  (list (car entry)
+                        (length entry)
+                        (null (delq t (mapcar #'integerp (cdr entry))))))
+                (garbage-collect))"#;
+    let expected = concat!(
+        "((conses 4 t) (symbols 4 t) (strings 4 t) (string-bytes 3 t) ",
+        "(vectors 3 t) (vector-slots 4 t) (floats 4 t) (intervals 4 t) ",
+        "(buffers 3 t))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {shape_program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(shape_program)
+        .read_all()
+        .expect("read garbage-collect shape program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate garbage-collect shape program");
+    assert_eq!(result.to_string(), expected);
+
+    // The census itself: a booted image holds its preloaded Lisp, so the
+    // discriminating counts cannot be anywhere near the old zeros.
+    let counts_form = Reader::new(
+        r#"(mapcar (lambda (entry) (cons (car entry) (nth 2 entry)))
+                   (garbage-collect))"#,
+    )
+    .read_all()
+    .expect("read garbage-collect counts program")
+    .remove(0);
+    let counts = interp
+        .eval(&counts_form, &mut Vec::new())
+        .expect("evaluate garbage-collect counts program")
+        .to_string();
+    let count_of = |key: &str| -> i64 {
+        let marker = format!("({key} . ");
+        let start = counts.find(&marker).map(|at| at + marker.len());
+        start
+            .and_then(|at| counts[at..].split(')').next())
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or_else(|| panic!("no {key} count in {counts}"))
+    };
+    assert!(count_of("conses") > 10_000, "conses: {counts}");
+    assert!(count_of("symbols") > 1_000, "symbols: {counts}");
+    assert!(count_of("strings") > 100, "strings: {counts}");
+    assert!(count_of("string-bytes") > 10_000, "string-bytes: {counts}");
+    assert!(count_of("buffers") >= 1, "buffers: {counts}");
+}
+
+#[test]
+fn overriding_keymaps_follow_the_oracle_contract() {
+    // Finding 109: dispatch suppressed local and minor maps under
+    // overriding-terminal-local-map unless subr.el's `add-keymap-witness'
+    // marker was present -- a rule keymap.c does not have in either
+    // direction.  GNU 30.2 (keymap.c:1657): overriding-terminal-local-map
+    // suppresses NOTHING and rides on top of the keymap-property, minor
+    // and local maps; overriding-local-map replaces them, and only while
+    // overriding-terminal-local-map is nil; where-is searches with the
+    // overriding maps out of force entirely (keymap.c:2653).
+    let program = r#"
+        (let ((transient (make-sparse-keymap))
+              (local (make-sparse-keymap))
+              (minor (make-sparse-keymap))
+              (result ()))
+          (define-key transient "t" 'zz-transient-cmd)
+          (define-key local "l" 'zz-local-cmd)
+          (define-key minor "m" 'zz-minor-cmd)
+          (define-key minor "l" 'zz-minor-l-cmd)
+          (with-temp-buffer
+            (use-local-map local)
+            (setq-local zz-keymap-witness-minor-mode t)
+            (let ((minor-mode-map-alist
+                   (list (cons 'zz-keymap-witness-minor-mode minor))))
+              (push (list :baseline (key-binding "l") (key-binding "m")
+                          (key-binding "t"))
+                    result)
+              (let ((overriding-terminal-local-map transient))
+                (push (list :otlp (key-binding "l") (key-binding "m")
+                            (key-binding "t") (key-binding "a"))
+                      result))
+              (let ((overriding-terminal-local-map nil))
+                (internal-push-keymap transient
+                                      'overriding-terminal-local-map)
+                (push (list :witness (key-binding "l") (key-binding "t"))
+                      result))
+              (let ((overriding-local-map transient))
+                (push (list :olp (key-binding "l") (key-binding "m")
+                            (key-binding "t") (key-binding "a"))
+                      result))
+              (let ((overriding-terminal-local-map transient)
+                    (overriding-local-map local))
+                (push (list :both (key-binding "l") (key-binding "t"))
+                      result))
+              (push (list :where-is
+                          (let ((overriding-terminal-local-map transient))
+                            (where-is-internal 'zz-transient-cmd nil t)))
+                    result)))
+          (nreverse result))"#;
+    let expected = concat!(
+        "((:baseline zz-minor-l-cmd zz-minor-cmd self-insert-command) ",
+        "(:otlp zz-minor-l-cmd zz-minor-cmd zz-transient-cmd self-insert-command) ",
+        "(:witness zz-minor-l-cmd zz-transient-cmd) ",
+        "(:olp self-insert-command self-insert-command zz-transient-cmd ",
+        "self-insert-command) ",
+        "(:both zz-minor-l-cmd zz-transient-cmd) ",
+        "(:where-is nil))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read overriding-keymap program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate overriding-keymap program");
     assert_eq!(result.to_string(), expected);
 }
 

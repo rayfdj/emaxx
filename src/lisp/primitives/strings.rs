@@ -430,12 +430,14 @@ pub(crate) fn make_shared_string_value_with_extended_chars(
     multibyte: bool,
     extended_chars: Vec<(usize, u32)>,
 ) -> Value {
-    Value::StringObject(Rc::new(RefCell::new(SharedStringState {
+    let state = Rc::new(RefCell::new(SharedStringState {
         text,
         props: shared_string_props(&props),
         multibyte,
         extended_chars,
-    })))
+    }));
+    crate::lisp::types::register_string_object(&state);
+    Value::StringObject(state)
 }
 
 pub(crate) fn string_like_value_with_extended_chars(

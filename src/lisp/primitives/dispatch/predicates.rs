@@ -386,7 +386,13 @@ define_dispatch!(
             }
             "current-active-maps" => {
                 need_arg_range(name, args, 0, 2)?;
-                Ok(Value::list(current_active_maps(interp, env, args.get(1))?))
+                let olp = args.first().is_some_and(Value::is_truthy);
+                Ok(Value::list(current_active_maps(
+                    interp,
+                    env,
+                    olp,
+                    args.get(1),
+                )?))
             }
             "commandp" => {
                 need_args(name, args, 1)?;
