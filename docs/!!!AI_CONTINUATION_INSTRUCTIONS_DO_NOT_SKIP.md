@@ -26,6 +26,12 @@ parallel-only noise.
 
 ## Current Resume Point
 
+> **NOTE (2026-08-28): the live resume point is now
+> `docs/handover-2026-08-28.md`.**  The checkpoints below this line are
+> older history; read them only for background, never as the place to
+> resume.  The standing constraints in the newest handover override any
+> conflicting older text in this file.
+
 - 2026-08-18 SWEEP TRIAGE IN PROGRESS (after phases 4-6): the
   compat_runtime module is green 76/76 serial (commit 4093638) — 24
   facade tests deleted (their honest coverage is the oracle harness),
