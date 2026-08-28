@@ -2544,3 +2544,18 @@ Disclosed divergences (not claimed as fixed):
     ((decode-coding-string "\xED\x40" 'sjis) is 1318992); emaxx strings
     cannot hold them and fall back to raw-byte markers -- the same
     finding-127 limitation as euc-jp.
+
+## 2026-08-28 gate profile change (no findings; recorded for gate integrity)
+
+The full serial gate moved from cargo's dev default to a dedicated
+`[profile.gate]` (Cargo.toml): release-grade optimization with
+`debug-assertions = true` and `overflow-checks = true` kept ON.  This
+is a speed change, not a rigor change, and the claim was verified the
+strong way: on the Linux container the IDENTICAL tree (finding-107
+batch) ran the full gate under both profiles and produced the
+identical 44-name environmental failure list, with everything else
+green both times.  The overflow/assertion nets -- the reason the slow
+profile was quietly valuable in a codebase full of ported C index
+arithmetic -- are exactly what the new profile refuses to give up.
+Wall clock on that container: ~3 h 28 m -> ~53 m.  The gate script in
+docs/handover-2026-08-28.md now carries `--profile gate`.
