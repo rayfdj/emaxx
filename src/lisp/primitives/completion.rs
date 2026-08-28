@@ -1034,6 +1034,30 @@ pub(crate) fn run_active_minibuffer<T>(
     // vanishes when the read finishes, on every exit path, quits
     // included, and the pre-read window selection returns.
     let saved_windows = minibuffer.saved_windows.clone();
+    // read_minibuf enters a recursive command loop, whose per-command
+    // bookkeeping must not erase the command that opened the minibuffer.
+    // In particular, execute-extended-command deliberately publishes the
+    // invoked command through `real-this-command'; its delayed key-binding
+    // suggestion checks that value after nested regexp/replacement prompts
+    // return.  Restore all three outer command identities on every path.
+    let saved_command_state = [
+        (
+            "this-command",
+            interp.lookup_var("this-command", env).unwrap_or(Value::Nil),
+        ),
+        (
+            "real-this-command",
+            interp
+                .lookup_var("real-this-command", env)
+                .unwrap_or(Value::Nil),
+        ),
+        (
+            "this-original-command",
+            interp
+                .lookup_var("this-original-command", env)
+                .unwrap_or(Value::Nil),
+        ),
+    ];
     let result = (|| {
         // GNU minibuf.c:read_minibuf runs `minibuffer-setup-hook' with the
         // minibuffer already current (the next statement there is
@@ -1058,6 +1082,9 @@ pub(crate) fn run_active_minibuffer<T>(
         body(interp, env)
     })();
     restore_active_minibuffer(interp, minibuffer);
+    for (name, value) in saved_command_state {
+        interp.set_variable(name, value, env);
+    }
     if interp
         .lookup_var("read-minibuffer-restore-windows", env)
         .is_none_or(|restore| restore.is_truthy())
