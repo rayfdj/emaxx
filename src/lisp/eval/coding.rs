@@ -454,9 +454,54 @@ impl Interpreter {
             .unwrap_or_else(|| kind_canonical.clone());
         let resolved_kind = if resolved_kind == "iso-2022" && name == "japanese-iso-8bit" {
             "euc-jp".to_string()
+        } else if resolved_kind == "shift-jis" && name == "japanese-shift-jis" {
+            // Same routing for the Shift-JIS codec: japanese.el's
+            // re-definition must keep reaching it.
+            "sjis".to_string()
         } else {
             resolved_kind
         };
+        // The three type checks below compare the RAW :coding-type
+        // argument, not its canonicalization: `big5' is also a coding
+        // system name, and once chinese.el defines chinese-big5 and
+        // re-points the alias, canonicalizing would stop matching on a
+        // reload.  GNU compares the type symbol itself.
+        if kind == "big5" {
+            // coding.c's big5 twin of the shift-jis block below.
+            self.big5_coding_system = name.to_string();
+        }
+        if kind == "shift-jis" || kind == "big5" {
+            // coding.c:11357: Vsjis_coding_system tracks the most recent
+            // shift-jis definition (japanese-shift-jis-2004 in a full
+            // load), and the sjis-char primitives read their charsets
+            // from it; Vbig5_coding_system is handled above.  Either
+            // type's ascii compatibility comes from the FIRST charset
+            // in :charset-list (ascii, hence t).
+            if kind == "shift-jis" {
+                self.sjis_coding_system = name.to_string();
+            }
+            let first_charset_ascii_compatible = items
+                .windows(2)
+                .find_map(|pair| {
+                    matches!(&pair[0], Value::Symbol(key) if key == ":charset-list")
+                        .then(|| pair[1].clone())
+                })
+                .and_then(|list| list.to_vec().ok())
+                .and_then(|charsets| charsets.first().cloned())
+                .is_some_and(|charset| matches!(&charset, Value::Symbol(name) if name == "ascii"));
+            if first_charset_ascii_compatible {
+                if let Some(index) = items.iter().position(
+                    |item| matches!(item, Value::Symbol(key) if key == ":ascii-compatible-p"),
+                ) {
+                    if index + 1 < items.len() {
+                        items[index + 1] = Value::T;
+                    }
+                } else {
+                    items.push(Value::Symbol(":ascii-compatible-p".into()));
+                    items.push(Value::T);
+                }
+            }
+        }
         // coding.c:11285 (Fdefine_coding_system_internal): an iso-2022
         // system is ascii-compatible when its INITIAL G0 designation is a
         // single ascii-compatible charset -- euc-jp's [ascii ...] yields

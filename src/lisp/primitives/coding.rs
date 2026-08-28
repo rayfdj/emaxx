@@ -126,6 +126,26 @@ fn charset_subset(interp: &Interpreter, charset: &str) -> Option<(String, i64, i
     ))
 }
 
+/// A `:superset (CHILD ...)' charset (japanese-jisx0213.2004-1 is the
+/// superset of jisx0213-a and jisx0213-1) shares its children's code
+/// space: conversion tries each child in order.  An entry may also be
+/// (CHILD . OFFSET), shifting the codes by OFFSET.
+fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, i64)>> {
+    let superset = charset_plist_property(interp, charset, ":superset")?;
+    let items = superset.to_vec().ok()?;
+    let children: Vec<(String, i64)> = items
+        .iter()
+        .filter_map(|item| match item {
+            Value::Symbol(name) => Some((name.to_string(), 0)),
+            other => {
+                let (car, cdr) = other.cons_values()?;
+                Some((car.as_symbol().ok()?.to_string(), cdr.as_integer().ok()?))
+            }
+        })
+        .collect();
+    (!children.is_empty()).then_some(children)
+}
+
 pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32) -> Option<u32> {
     let canonical = interp.charset_canonical_name(charset)?;
     match canonical.as_str() {
@@ -145,6 +165,12 @@ pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32
         && let Some((_, character)) = map.iter().find(|(mapped_code, _)| *mapped_code == code)
     {
         return Some(*character);
+    }
+    if let Some(children) = charset_superset(interp, &canonical) {
+        return children.iter().find_map(|(child, offset)| {
+            let child_code = u32::try_from(i64::from(code).checked_sub(*offset)?).ok()?;
+            decode_charset_code(interp, child, child_code)
+        });
     }
     if let Some((parent, min, max, offset)) = charset_subset(interp, &canonical) {
         let parent_code = i64::from(code).checked_sub(offset)?;
@@ -237,6 +263,12 @@ pub(crate) fn encode_charset_char(
     {
         return Some(*code);
     }
+    if let Some(children) = charset_superset(interp, &canonical) {
+        return children.iter().find_map(|(child, offset)| {
+            let child_code = encode_charset_char(interp, child, character)?;
+            u32::try_from(i64::from(child_code).checked_add(*offset)?).ok()
+        });
+    }
     if let Some((parent, min, max, offset)) = charset_subset(interp, &canonical) {
         let parent_code = i64::from(encode_charset_char(interp, &parent, character)?);
         if !(min..=max).contains(&parent_code) {
@@ -295,7 +327,19 @@ fn coding_system_utf16_options(
     (big_endian, with_bom, detect_bom)
 }
 
-fn coding_system_charset_names(interp: &Interpreter, coding: &str) -> Vec<String> {
+/// The (roman kana kanji ...) charsets of coding.c's Vsjis_coding_system,
+/// for the sjis-char primitives.
+pub(crate) fn sjis_primitive_charsets(interp: &Interpreter) -> Option<(String, String, String)> {
+    let coding = interp.sjis_coding_system.clone();
+    let charsets = coding_system_charset_names(interp, &coding);
+    Some((
+        charsets.first()?.clone(),
+        charsets.get(1)?.clone(),
+        charsets.get(2)?.clone(),
+    ))
+}
+
+pub(crate) fn coding_system_charset_names(interp: &Interpreter, coding: &str) -> Vec<String> {
     let Some(charsets) = coding_system_property(interp, coding, ":charset-list") else {
         return Vec::new();
     };
@@ -1113,6 +1157,176 @@ pub(crate) fn decode_euc_jp_bytes(interp: &Interpreter, bytes: &[u8]) -> String 
     out
 }
 
+/// coding.h:567 SJIS_TO_JIS.
+pub(crate) fn sjis_to_jis(code: u32) -> u32 {
+    let (s1, s2) = (code >> 8, code & 0xFF);
+    let (j1, j2) = if s2 >= 0x9F {
+        (s1 * 2 - if s1 >= 0xE0 { 0x160 } else { 0xE0 }, s2 - 0x7E)
+    } else {
+        (
+            s1 * 2 - if s1 >= 0xE0 { 0x161 } else { 0xE1 },
+            s2 - if s2 >= 0x7F { 0x20 } else { 0x1F },
+        )
+    };
+    (j1 << 8) | j2
+}
+
+/// coding.h:608 JIS_TO_SJIS.  Like GNU, this is applied blindly to
+/// whatever code the charset search returned -- a katakana-jisx0201
+/// code 0x31 becomes 0x70AF through the same arithmetic, and the
+/// oracle's encode-sjis-char answers exactly that.
+pub(crate) fn jis_to_sjis(code: u32) -> u32 {
+    let (j1, j2) = (code >> 8, code & 0xFF);
+    let (s1, s2) = if j1 & 1 != 0 {
+        (
+            j1 / 2 + if j1 < 0x5F { 0x71 } else { 0xB1 },
+            j2 + if j2 >= 0x60 { 0x20 } else { 0x1F },
+        )
+    } else {
+        (j1 / 2 + if j1 < 0x5F { 0x70 } else { 0xB0 }, j2 + 0x7E)
+    };
+    (s1 << 8) | s2
+}
+
+/// Shift-JIS through the same charset tables (coding.c's shift-jis codec
+/// for japanese-shift-jis): ASCII single-byte, halfwidth katakana as its
+/// code + 0x80, JIS X 0208 as the two-byte code through JIS_TO_SJIS, a
+/// space for unencodable characters and raw-byte markers as their byte.
+pub(crate) fn encode_sjis_bytes(interp: &Interpreter, text: &str) -> Result<Vec<u8>, LispError> {
+    let mut out = Vec::new();
+    for ch in text.chars() {
+        let code = ch as u32;
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            out.push(byte);
+            continue;
+        }
+        if code <= 0x7F {
+            out.push(code as u8);
+            continue;
+        }
+        if let Some(code) = encode_charset_char(interp, "katakana-jisx0201", code) {
+            out.push(code as u8 | 0x80);
+            continue;
+        }
+        if let Some(code) = encode_charset_char(interp, "japanese-jisx0208", code) {
+            let sjis = jis_to_sjis(code);
+            out.extend([(sjis >> 8) as u8, (sjis & 0xFF) as u8]);
+            continue;
+        }
+        out.push(b' ');
+    }
+    Ok(out)
+}
+
+/// The Shift-JIS decoder: 0xA1..0xDF is halfwidth katakana, 0x81..0x9F
+/// and 0xE0..0xEF lead a two-byte code (trail 0x40..0xFC except 0x7F)
+/// decoded through SJIS_TO_JIS and JIS X 0208; anything else is a raw
+/// byte and the scan resynchronizes.  An unmapped code decodes in GNU
+/// to a supra-Unicode codepoint, which emaxx strings cannot hold: those
+/// fall back to raw-byte markers (the ledger's disclosed limitation).
+pub(crate) fn decode_sjis_bytes(interp: &Interpreter, bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut rest = bytes;
+    while let Some((&lead, tail)) = rest.split_first() {
+        let (decoded, consumed) = match lead {
+            0x00..=0x7F => (Some(char::from(lead)), 1),
+            0xA1..=0xDF => (
+                decode_charset_code(interp, "katakana-jisx0201", u32::from(lead) - 0x80)
+                    .and_then(char::from_u32),
+                1,
+            ),
+            0x81..=0x9F | 0xE0..=0xEF => match tail.first() {
+                Some(&trail) if (0x40..=0xFC).contains(&trail) && trail != 0x7F => (
+                    decode_charset_code(
+                        interp,
+                        "japanese-jisx0208",
+                        sjis_to_jis(u32::from(lead) << 8 | u32::from(trail)),
+                    )
+                    .and_then(char::from_u32),
+                    2,
+                ),
+                _ => (None, 1),
+            },
+            _ => (None, 1),
+        };
+        match decoded {
+            Some(ch) => {
+                out.push(ch);
+                rest = &rest[consumed..];
+            }
+            None => {
+                out.push(raw_byte_regex_char(lead));
+                rest = &rest[1..];
+            }
+        }
+    }
+    out
+}
+
+/// Big5 through the BIG5 charset map: ASCII single-byte, everything the
+/// map encodes as its two-byte code, a space for unencodable characters.
+pub(crate) fn encode_big5_bytes(interp: &Interpreter, text: &str) -> Result<Vec<u8>, LispError> {
+    let mut out = Vec::new();
+    for ch in text.chars() {
+        let code = ch as u32;
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            out.push(byte);
+            continue;
+        }
+        if code <= 0x7F {
+            out.push(code as u8);
+            continue;
+        }
+        if let Some(code) = encode_charset_char(interp, "big5", code) {
+            out.extend([(code >> 8) as u8, (code & 0xFF) as u8]);
+            continue;
+        }
+        out.push(b' ');
+    }
+    Ok(out)
+}
+
+/// The Big5 decoder: a lead 0xA1..0xFE with trail 0x40..0x7E or
+/// 0xA1..0xFE decodes through the BIG5 map; anything else is a raw byte
+/// and the scan resynchronizes.
+pub(crate) fn decode_big5_bytes(interp: &Interpreter, bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut rest = bytes;
+    while let Some((&lead, tail)) = rest.split_first() {
+        let (decoded, consumed) = match lead {
+            0x00..=0x7F => (Some(char::from(lead)), 1),
+            0xA1..=0xFE => match tail.first() {
+                Some(&trail)
+                    if (0x40..=0x7E).contains(&trail) || (0xA1..=0xFE).contains(&trail) =>
+                {
+                    (
+                        decode_charset_code(
+                            interp,
+                            "big5",
+                            u32::from(lead) << 8 | u32::from(trail),
+                        )
+                        .and_then(char::from_u32),
+                        2,
+                    )
+                }
+                _ => (None, 1),
+            },
+            _ => (None, 1),
+        };
+        match decoded {
+            Some(ch) => {
+                out.push(ch);
+                rest = &rest[consumed..];
+            }
+            None => {
+                out.push(raw_byte_regex_char(lead));
+                rest = &rest[1..];
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -1192,6 +1406,8 @@ pub(crate) fn encode_text_bytes(
         "us-ascii" => encode_ascii_bytes(&text),
         "raw-text" | "no-conversion" => encode_raw_text_bytes(&text),
         "euc-jp" => encode_euc_jp_bytes(interp, &text),
+        "sjis" => encode_sjis_bytes(interp, &text),
+        "big5" => encode_big5_bytes(interp, &text),
         "charset" => encode_charset_coding_bytes(interp, &text, &canonical),
         _ => encode_raw_text_bytes(&text),
     }
@@ -1366,6 +1582,36 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
                 }
             })
             .collect(),
+        "sjis" => text
+            .chars()
+            .map(|ch| {
+                let code = ch as u32;
+                if raw_byte_from_regex_char(ch).is_some()
+                    || code <= 0x7F
+                    || ["japanese-jisx0208", "katakana-jisx0201"]
+                        .iter()
+                        .any(|charset| encode_charset_char(interp, charset, code).is_some())
+                {
+                    ch
+                } else {
+                    ' '
+                }
+            })
+            .collect(),
+        "big5" => text
+            .chars()
+            .map(|ch| {
+                let code = ch as u32;
+                if raw_byte_from_regex_char(ch).is_some()
+                    || code <= 0x7F
+                    || encode_charset_char(interp, "big5", code).is_some()
+                {
+                    ch
+                } else {
+                    ' '
+                }
+            })
+            .collect(),
         "charset" => {
             let charsets = coding_system_charset_names(interp, coding);
             let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
@@ -1441,6 +1687,8 @@ pub(crate) fn decode_text_bytes(
         "us-ascii" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
         "raw-text" | "no-conversion" => Ok(decode_raw_text_bytes(bytes)),
         "euc-jp" => Ok(decode_euc_jp_bytes(interp, bytes)),
+        "sjis" => Ok(decode_sjis_bytes(interp, bytes)),
+        "big5" => Ok(decode_big5_bytes(interp, bytes)),
         "charset" => Ok(decode_charset_coding_bytes(interp, bytes, &canonical)),
         _ => Ok(decode_raw_text_bytes(bytes)),
     }
@@ -1471,8 +1719,19 @@ pub(crate) fn string_unencodable_positions(
             }
             "iso-latin-1" | "raw-text" | "no-conversion" => raw_byte.is_some() || code <= 0xFF,
             "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
-            "sjis" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
-            "big5" | "iso-2022-7bit" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
+            "sjis" => {
+                raw_byte.is_some()
+                    || code <= 0x7F
+                    || ["japanese-jisx0208", "katakana-jisx0201"]
+                        .iter()
+                        .any(|charset| encode_charset_char(interp, charset, code).is_some())
+            }
+            "iso-2022-7bit" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
+            "big5" => {
+                raw_byte.is_some()
+                    || code <= 0x7F
+                    || encode_charset_char(interp, "big5", code).is_some()
+            }
             "euc-jp" => {
                 raw_byte.is_some()
                     || code <= 0x7F

@@ -18,6 +18,7 @@ from ttydiff import (
     HIGH_VALUE_COMMAND_SCENARIO_NAMES,
     SCENARIOS,
     SEEDED_SAFE_SCENARIO_NAMES,
+    UNDO_KILL_RING_SCENARIO_NAMES,
     Vt100Screen,
     action_timing,
     command_dispatch_minimum,
@@ -127,6 +128,7 @@ class Vt100ScreenTests(unittest.TestCase):
             HIGH_VALUE_COMMAND_SCENARIO_NAMES,
             ADVERSARIAL_COMMAND_SCENARIO_NAMES,
             FIELDNOTES_ADVANCED_SCENARIO_NAMES,
+            UNDO_KILL_RING_SCENARIO_NAMES,
             SEEDED_SAFE_SCENARIO_NAMES,
         )
         for group in groups:
