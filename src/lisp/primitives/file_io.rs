@@ -1041,6 +1041,59 @@ pub(crate) fn decode_file_contents(
     {
         requested = auto_coding_for_file(interp, env, bytes, filename)?;
     }
+    // GNU's third source, after coding-system-for-read and the auto-coding
+    // policy: `file-coding-system-alist' via Ffind_operation_coding_system
+    // (fileio.c consults it from insert-file-contents itself).  This is where
+    // "\.el\'" maps to prefer-utf-8 -- reading a pure-ASCII .el file must
+    // set buffer-file-coding-system to prefer-utf-8-unix, not undecided-unix
+    // (coding-tests' prefer-utf-8 row).  Emaxx already implements the
+    // function; it was simply never consulted here.
+    if requested.is_none()
+        && let Some(filename) = filename
+    {
+        let mut operation_env = env.clone();
+        let pair = interp.call_function_value(
+            Value::Symbol("find-operation-coding-system".into()),
+            Some("find-operation-coding-system"),
+            &[
+                Value::Symbol("insert-file-contents".into()),
+                Value::String(filename.to_string().into()),
+            ],
+            &mut operation_env,
+        )?;
+        if let Some((decoding, _)) = pair.cons_values()
+            && let Ok(name) = decoding.as_symbol()
+        {
+            requested = Some(name.to_string());
+        }
+    }
+    // fileio.c Finsert_file_contents: "If enable-multibyte-characters is
+    // nil, we must suppress all character code conversion except for
+    // end-of-line conversion" -- a unibyte buffer reads EVERYTHING as
+    // raw-text (valid UTF-8 included, which stays as its bytes), with the
+    // eol either explicitly requested or detected, and the coding recorded
+    // as raw-text/raw-text-<eol> accordingly (oracle-probed).  raw-text and
+    // no-conversion requests keep their own conversion-free paths below.
+    if !interp.buffer.is_multibyte()
+        && !requested.as_deref().is_some_and(|request| {
+            matches!(
+                interp.coding_system_kind_name(request).as_deref(),
+                Some("raw-text" | "no-conversion")
+            )
+        })
+    {
+        let explicit_eol = requested
+            .as_deref()
+            .and_then(|request| interp.coding_system_eol_type_value(request));
+        let eol = explicit_eol
+            .map(Some)
+            .unwrap_or_else(|| detect_eol_type_opt(bytes));
+        let normalized = decode_bytes_with_explicit_eol(bytes, eol.unwrap_or(0));
+        return Ok((
+            decode_raw_text_bytes(&normalized),
+            coding_variant_name(interp, "raw-text", eol),
+        ));
+    }
     if let Some(requested) = requested {
         // `no-conversion' is the byte-preserving path used by the Lisp
         // `insert-file-contents-literally' wrapper.  In particular, CRLF
@@ -1051,6 +1104,24 @@ pub(crate) fn decode_file_contents(
         if requested == "undecided" {
             let (detected, normalized) = auto_detect_coding(interp, bytes);
             return Ok((decode_text_bytes(interp, &normalized, &detected)?, detected));
+        }
+        // `prefer-utf-8' is GNU's undecided-type system from mule-conf.el
+        // (file-coding-system-alist maps "\.el\'" to it): detection runs
+        // as for `undecided', except that a file which decides nothing
+        // (pure ASCII) is recorded as prefer-utf-8 rather than undecided.
+        // Valid non-ASCII UTF-8 already detects as utf-8 whatever the
+        // priorities say, which is the other half of :prefer-utf-8 t.
+        if interp.coding_system_base_name(&requested).as_deref() == Some("prefer-utf-8") {
+            let (detected, normalized) = auto_detect_coding(interp, bytes);
+            let text = decode_text_bytes(interp, &normalized, &detected)?;
+            let detected =
+                if interp.coding_system_base_name(&detected).as_deref() == Some("undecided") {
+                    let eol = interp.coding_system_eol_type_value(&detected);
+                    coding_variant_name(interp, "prefer-utf-8", eol)
+                } else {
+                    detected
+                };
+            return Ok((text, detected));
         }
         if coding_system_auto_detects_bom(interp, &requested) {
             let actual_eol = detect_eol_type(bytes);
@@ -1075,7 +1146,17 @@ pub(crate) fn decode_file_contents(
         let requested_base = interp
             .coding_system_base_name(&requested)
             .unwrap_or(requested.clone());
-        if matches!(requested_base.as_str(), "unix" | "dos" | "mac") {
+        // This branch serves two spellings of the same request: a bare EOL
+        // name (`unix') and its canonicalized form (`undecided-unix').  The
+        // `requested == "undecided"' check above compares the FULL name, so
+        // the eol variants fell through to the raw decoder: reading a UTF-8
+        // file with `coding-system-for-read 'unix' produced raw bytes and
+        // left buffer-file-coding-system as undecided-unix, where GNU
+        // detects the charset and answers utf-8-unix (coding-tests' latin/
+        // prefer-utf-8/binary rows, finding 106's file-reading half).
+        if matches!(requested_base.as_str(), "unix" | "dos" | "mac")
+            || (requested_base == "undecided" && explicit_eol.is_some())
+        {
             let eol = explicit_eol.unwrap_or(0);
             let normalized = decode_bytes_with_explicit_eol(bytes, eol);
             let detected_base = if std::str::from_utf8(&normalized).is_ok() {
@@ -1265,14 +1346,32 @@ pub(crate) fn insert_file_contents(
     restore_result?;
     // Reading no characters decides nothing: GNU leaves the buffer's
     // coding system at its default and records `undecided'.
+    //
+    // A read whose detection stayed at bare `undecided' (pure ASCII with
+    // no eol byte anywhere) also decides nothing: mule.el's
+    // find-new-buffer-file-coding-system answers nil then, so GNU leaves
+    // buffer-file-coding-system alone (nil in a fresh buffer) while
+    // last-coding-system-used records the bare name.  Any other bare base
+    // (a BOM-less UTF-8 file without a newline reads as plain `utf-8')
+    // still sets the buffer's coding, with the eol defaulted to unix.
     let detected = if text.is_empty() {
         "undecided".to_string()
     } else {
-        interp.set_buffer_local_value(
-            interp.current_buffer_id(),
-            "buffer-file-coding-system",
-            Value::Symbol(detected.clone().into()),
-        );
+        if detected != "undecided" {
+            let buffer_coding = if interp.coding_system_eol_type_value(&detected).is_some() {
+                detected.clone()
+            } else {
+                let base = interp
+                    .coding_system_base_name(&detected)
+                    .unwrap_or_else(|| detected.clone());
+                coding_variant_name(interp, &base, Some(0))
+            };
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "buffer-file-coding-system",
+                Value::Symbol(buffer_coding.into()),
+            );
+        }
         detected
     };
     if visit {
@@ -1285,7 +1384,30 @@ pub(crate) fn insert_file_contents(
         // must not remove the file's own contents.
         interp.buffer.clear_undo();
     }
-    set_last_coding_system_used(interp, &detected, env);
+    // last-coding-system-used keeps the caller's own spelling (`unix',
+    // `binary', a bare `utf-8') unless the detector actually resolved
+    // something the request left open: a detected charset moves to the
+    // canonical name, and a detected eol adds the canonical subsidiary
+    // (euc-jp + LF answers japanese-iso-8bit-unix).  Oracle-probed rows
+    // throughout; buffer-file-coding-system above stays canonical.
+    let recorded = interp
+        .lookup_var("coding-system-for-read", env)
+        .filter(|value| !value.is_nil())
+        .and_then(|value| value.as_symbol().ok().map(str::to_string))
+        .filter(|request| {
+            let canonical = interp
+                .coding_system_canonical_name(request)
+                .unwrap_or_else(|| request.clone());
+            matches!(
+                interp.coding_system_kind_name(&canonical).as_deref(),
+                Some("raw-text" | "no-conversion")
+            ) || (interp.coding_system_base_name(&detected)
+                == interp.coding_system_base_name(&canonical)
+                && (interp.coding_system_eol_type_value(&canonical).is_some()
+                    || detect_eol_type_opt(&bytes).is_none()))
+        })
+        .unwrap_or_else(|| detected.clone());
+    set_last_coding_system_used(interp, &recorded, env);
     let inserted = finish_insert_file_contents(interp, env, inserted_chars, &args[1..])?;
     Ok(Value::list([
         Value::String(path.into()),

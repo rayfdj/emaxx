@@ -353,8 +353,21 @@ define_dispatch!(
                 let string = string_like(&args[0]).ok_or_else(|| {
                     LispError::WrongTypeArgument("stringp".into(), args[0].clone())
                 })?;
+                // character.c's unibyte_char_to_multibyte under the
+                // harness's unibyte environment: a non-ASCII byte becomes
+                // an eight-bit character ((string-make-multibyte "\300")
+                // is the raw byte 4194240), not a latin-1 character.
                 let bytes = encode_raw_text_bytes(&string.text)?;
-                let text = decode_latin_bytes(&bytes);
+                let text = bytes
+                    .iter()
+                    .map(|&byte| {
+                        if byte <= 0x7F {
+                            char::from(byte)
+                        } else {
+                            raw_byte_regex_char(byte)
+                        }
+                    })
+                    .collect::<String>();
                 let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
                 Ok(if string.props.is_empty() {
                     if multibyte {
@@ -367,25 +380,27 @@ define_dispatch!(
                 })
             }
             "string-as-multibyte" => {
+                // character.c str_as_multibyte: reinterpret the unibyte
+                // string's bytes as the internal (UTF-8) encoding -- valid
+                // sequences become their characters ((195 128) reads back
+                // as U+00C0), stray bytes stay eight-bit characters.  What
+                // stood here pushed RAW_BYTE8_BASE + byte into a char,
+                // which is beyond char::MAX and panicked on any 8-bit byte.
                 need_args(name, args, 1)?;
                 let string = string_like(&args[0]).ok_or_else(|| {
                     LispError::WrongTypeArgument("stringp".into(), args[0].clone())
                 })?;
+                if string.multibyte {
+                    return Ok(string_like_value_with_multibyte(
+                        string.text,
+                        string.props,
+                        true,
+                    ));
+                }
                 let bytes = encode_raw_text_bytes(&string.text)?;
-                let text = bytes
-                    .into_iter()
-                    .map(|byte| {
-                        if byte <= 0x7F {
-                            char::from(byte)
-                        } else {
-                            char::from_u32(RAW_BYTE8_BASE + byte as u32)
-                                .expect("raw byte8 marker should be valid")
-                        }
-                    })
-                    .collect::<String>();
                 Ok(make_shared_string_value_with_multibyte(
-                    text,
-                    Vec::new(),
+                    decode_utf8_bytes(&bytes),
+                    string.props,
                     true,
                 ))
             }
@@ -394,15 +409,50 @@ define_dispatch!(
                 let string = string_like(&args[0]).ok_or_else(|| {
                     LispError::WrongTypeArgument("stringp".into(), args[0].clone())
                 })?;
-                let bytes = encode_raw_text_bytes(&string.text)?;
+                if !string.multibyte {
+                    return Ok(string_like_value_with_multibyte(
+                        string.text,
+                        string.props,
+                        false,
+                    ));
+                }
+                // charset.c CHAR_TO_BYTE8's fallback: a character with no
+                // unibyte equivalent contributes its low byte (the oracle:
+                // (string-make-unibyte (string 12354)) is "\102").
+                let bytes = string
+                    .text
+                    .chars()
+                    .map(|ch| raw_byte_from_regex_char(ch).unwrap_or((ch as u32 & 0xFF) as u8))
+                    .collect::<Vec<u8>>();
                 Ok(bytes_to_shared_unibyte_value(&bytes))
             }
             "string-as-unibyte" => {
+                // character.c str_as_unibyte: the string's INTERNAL bytes.
+                // A character contributes its UTF-8 encoding ("\300" reads
+                // as (195 128)), an eight-bit character its single byte.
+                // What stood here used the latin-1 byte for U+0080..U+00FF
+                // and signalled beyond, which is `string-make-unibyte's
+                // business, not this primitive's.
                 need_args(name, args, 1)?;
                 let string = string_like(&args[0]).ok_or_else(|| {
                     LispError::WrongTypeArgument("stringp".into(), args[0].clone())
                 })?;
-                let bytes = encode_raw_text_bytes(&string.text)?;
+                if !string.multibyte {
+                    return Ok(string_like_value_with_multibyte(
+                        string.text,
+                        string.props,
+                        false,
+                    ));
+                }
+                let mut bytes = Vec::new();
+                for ch in string.text.chars() {
+                    if let Some(byte) = raw_byte_from_regex_char(ch) {
+                        bytes.push(byte);
+                    } else {
+                        let mut buffer = [0u8; 4];
+                        bytes.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
+                    }
+                }
                 Ok(bytes_to_unibyte_value(&bytes))
             }
             "unibyte-string" => {

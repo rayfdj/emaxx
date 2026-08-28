@@ -2499,7 +2499,7 @@ impl Interpreter {
             return Ok(Value::Nil);
         }
         let signal = build_signal_value(condition, data);
-        self.finish_thread_with_signal(record_id, signal);
+        self.finish_thread_with_signal(record_id, signal, true);
         Ok(Value::Nil)
     }
 
@@ -2531,7 +2531,33 @@ impl Interpreter {
             .unwrap_or(ThreadOutcome::Returned(Value::Nil))
         {
             ThreadOutcome::Returned(value) => Ok(value),
-            ThreadOutcome::Signaled(value) => Err(LispError::SignalValue(value)),
+            // thread.c:815 runs the whole thread function inside
+            // `internal_condition_case (..., record_thread_error)': a body
+            // error is ALWAYS caught, recorded for `thread-last-error', and
+            // the thread finishes normally with a nil result.  Fthread_join's
+            // re-signal branch (thread.c:1088) reads `error_symbol', which
+            // belongs to the separate `thread-signal' delivery machinery and
+            // is cleared by the target's own handler -- so joining an errored
+            // thread returns NIL.  Re-raising here made
+            // `(thread-join (make-thread (lambda () (car 42))))' signal in
+            // the JOINING thread where GNU answers nil, which is the
+            // `threads-errors' mismatch in test/src/thread-tests.el.
+            // `finish_thread_with_signal' has already stored the error for
+            // `thread-last-error', exactly as `record_thread_error' does.
+            ThreadOutcome::Signaled {
+                delivered: false, ..
+            } => Ok(Value::Nil),
+            // The injected signal comes back out of the join, exactly as
+            // GNU's snapshot re-raise does.  (One disclosed shortcut: GNU
+            // returns nil if the target managed to PROCESS the delivery
+            // before join was called, because the snapshot is then already
+            // clear.  Emaxx's cooperative `thread-signal' kills the target
+            // instantly, so that window does not exist here and every
+            // delivered signal re-raises.)
+            ThreadOutcome::Signaled {
+                value,
+                delivered: true,
+            } => Err(LispError::SignalValue(value)),
         }
     }
 
@@ -2824,10 +2850,18 @@ impl Interpreter {
         self.unlock_processes_for_thread(record_id);
     }
 
-    pub(super) fn finish_thread_with_signal(&mut self, record_id: u64, value: Value) {
+    pub(super) fn finish_thread_with_signal(
+        &mut self,
+        record_id: u64,
+        value: Value,
+        delivered: bool,
+    ) {
         if let Some(thread) = self.find_thread_state_mut(record_id) {
             thread.status = ThreadStatus::Finished;
-            thread.outcome = Some(ThreadOutcome::Signaled(value.clone()));
+            thread.outcome = Some(ThreadOutcome::Signaled {
+                value: value.clone(),
+                delivered,
+            });
         }
         self.unlock_processes_for_thread(record_id);
         self.last_thread_error = Some(value);
@@ -2866,13 +2900,52 @@ impl Interpreter {
                 Ok(())
             }
             ThreadProgram::Call(function) => {
-                match self.call_function_value(function, None, &[], env) {
+                // Each GNU thread gets its OWN specpdl: the spawner's dynamic
+                // `let' bindings are invisible to the child, which sees
+                // globals (and writes globals with `setq').  Passing the
+                // driving thread's `env' here leaked the parent's entire
+                // dynamic stack into the child --
+                // `(let ((zz 1)) (thread-join (make-thread (lambda () zz))))'
+                // answered 1 where GNU answers the global.  Lexical captures
+                // live inside `function' itself and are unaffected.
+                let mut thread_env = Vec::new();
+                // ...and its own view of the dynamic cells: swap every live
+                // special binding out for the duration of the body
+                // (thread.c:87-100), so the child reads and writes GLOBALS.
+                // The swap is two-way; see
+                // `swap_special_bindings_for_thread_switch'.
+                let swap_start = self.thread_swap_boundaries.last().copied().unwrap_or(0);
+                self.swap_special_bindings_for_thread_switch(swap_start, false);
+                self.thread_swap_boundaries
+                    .push(self.active_special_restores.len());
+                // GNU also swaps the HANDLER list per thread (m_handlerlist):
+                // a child starts with no condition handlers, so the parent's
+                // `handler-bind' handlers must not see the child's signals.
+                // ERT is the proving case -- ert.el:803 wraps every test body
+                // in `(handler-bind (((error quit) debugfun)) ...)', and with
+                // a shared stack a child's `(error ...)' ran ERT's debugfun,
+                // whose `cl-return-from' then died at the thread boundary as
+                // `(no-catch --cl-block-error-- nil)' instead of the child's
+                // real error reaching `thread-last-error'.
+                // (Catches need no such swap: a child's `throw' bubbles as a
+                // Rust Err to this boundary and is recorded as no-catch,
+                // which is GNU's per-thread catchlist behaviour already.)
+                let parent_handlers = std::mem::take(&mut self.active_handlers);
+                let outcome = self.call_function_value(function, None, &[], &mut thread_env);
+                self.active_handlers = parent_handlers;
+                self.thread_swap_boundaries.pop();
+                self.swap_special_bindings_for_thread_switch(swap_start, true);
+                match outcome {
                     Ok(value) => {
                         self.finish_thread_success(record_id, value);
                         Ok(())
                     }
                     Err(error) => {
-                        self.finish_thread_with_signal(record_id, error_condition_value(&error));
+                        self.finish_thread_with_signal(
+                            record_id,
+                            error_condition_value(&error),
+                            false,
+                        );
                         Ok(())
                     }
                 }

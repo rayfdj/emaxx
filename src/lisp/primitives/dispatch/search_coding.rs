@@ -960,7 +960,11 @@ define_dispatch!(
                 }
                 let start = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
-                let coding = checked_coding_name(interp, &args[2])?;
+                // GNU records the coding under the symbol the caller gave
+                // (the euc-jp alias stays `euc-jp'); canonicalization is the
+                // codec's business, not last-coding-system-used's.
+                let coding = checked_coding_name(interp, &args[2])?
+                    .map(|_| args[2].as_symbol().expect("validated symbol").to_string());
                 let region = interp
                     .buffer
                     .buffer_substring(start, end)
@@ -1025,7 +1029,9 @@ define_dispatch!(
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let coding = checked_coding_name(interp, &args[1])?;
+                // Verbatim for the same reason as the region ops above.
+                let coding = checked_coding_name(interp, &args[1])?
+                    .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
                 encode_coding_value(interp, &args[0], coding.as_deref(), nocopy, env)
             }
@@ -1034,7 +1040,8 @@ define_dispatch!(
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let coding = checked_coding_name(interp, &args[1])?;
+                let coding = checked_coding_name(interp, &args[1])?
+                    .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
                 let decoded = decode_coding_text(interp, &args[0], coding.as_deref(), nocopy, env)?;
                 if let Some(buffer) = args.get(3)
