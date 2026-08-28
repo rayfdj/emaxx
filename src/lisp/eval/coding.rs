@@ -84,6 +84,21 @@ impl Interpreter {
         id
     }
 
+    pub fn charset_is_unified(&self, name: &str) -> bool {
+        self.charset_canonical_name(name)
+            .is_some_and(|canonical| self.charset_unified.contains(&canonical))
+    }
+
+    pub fn set_charset_unified(&mut self, name: &str, unified: bool) {
+        if let Some(canonical) = self.charset_canonical_name(name) {
+            if unified {
+                self.charset_unified.insert(canonical);
+            } else {
+                self.charset_unified.remove(&canonical);
+            }
+        }
+    }
+
     pub fn charset_plist_value(&self, name: &str) -> Option<Value> {
         let canonical = self.charset_canonical_name(name)?;
         self.charset_plists
@@ -427,12 +442,76 @@ impl Interpreter {
             items.push(mnemonic_key);
             items.push(Value::Integer(mnemonic));
         }
+        // The Rust `kind' field is the internal codec discriminator, not
+        // the public coding type (bootstrap gives its euc-jp entry kind
+        // "euc-jp" while `coding-system-type' answers iso-2022 from the
+        // plist).  When japanese.el re-defines japanese-iso-8bit with
+        // :coding-type iso-2022, keep routing it to the EUC-JP codec;
+        // without this the Lisp definition shadowed the bootstrap entry
+        // and every euc-jp conversion fell to the raw-bytes default arms.
+        let resolved_kind = self
+            .coding_system_kind_name(&kind_canonical)
+            .unwrap_or_else(|| kind_canonical.clone());
+        let resolved_kind = if resolved_kind == "iso-2022" && name == "japanese-iso-8bit" {
+            "euc-jp".to_string()
+        } else {
+            resolved_kind
+        };
+        // coding.c:11285 (Fdefine_coding_system_internal): an iso-2022
+        // system is ascii-compatible when its INITIAL G0 designation is a
+        // single ascii-compatible charset -- euc-jp's [ascii ...] yields
+        // t though japanese.el passes :ascii-compatible-p nil, while
+        // iso-2022-7bit's [(ascii t) ...] (a designation list, no fixed
+        // initial) stays nil.  The C recompute overwrites the argument,
+        // and the lcsu naming rules read the result.
+        if kind_canonical == "iso-2022" {
+            let g0_ascii_compatible = items
+                .windows(2)
+                .find_map(|pair| {
+                    matches!(&pair[0], Value::Symbol(key) if key == ":designation")
+                        .then(|| pair[1].clone())
+                })
+                .and_then(|designation| designation.to_vec().ok())
+                .and_then(|values| {
+                    values
+                        .strip_prefix(&[Value::Symbol("vector-literal".into())])
+                        .unwrap_or(&values)
+                        .first()
+                        .cloned()
+                })
+                .is_some_and(|initial| match initial {
+                    Value::Symbol(charset) => {
+                        charset == "ascii"
+                            || self
+                                .charset_plist_value(&charset)
+                                .and_then(|plist| plist.to_vec().ok())
+                                .is_some_and(|items| {
+                                    items.windows(2).any(|pair| {
+                                        matches!(&pair[0], Value::Symbol(key)
+                                            if key == ":ascii-compatible-p")
+                                            && pair[1].is_truthy()
+                                    })
+                                })
+                    }
+                    _ => false,
+                });
+            if g0_ascii_compatible {
+                if let Some(index) = items.iter().position(
+                    |item| matches!(item, Value::Symbol(key) if key == ":ascii-compatible-p"),
+                ) {
+                    if index + 1 < items.len() {
+                        items[index + 1] = Value::T;
+                    }
+                } else {
+                    items.push(Value::Symbol(":ascii-compatible-p".into()));
+                    items.push(Value::T);
+                }
+            }
+        }
         let definition = CodingSystemState {
             name: name.to_string(),
             base: name.to_string(),
-            kind: self
-                .coding_system_kind_name(&kind_canonical)
-                .unwrap_or(kind_canonical),
+            kind: resolved_kind,
             eol_type,
             plist: Value::list(items),
         };

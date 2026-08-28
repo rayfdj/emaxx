@@ -61,7 +61,16 @@ fn parse_charset_map(contents: &str) -> Vec<(u32, u32)> {
 }
 
 fn charset_map(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
-    let map = charset_plist_property(interp, charset, ":map")?;
+    // Unified charsets (charset.c's UNIFIED_P, set by `unify-charset' --
+    // mule-conf.el unifies the CJK offset charsets at load) convert
+    // through their :unify-map table; only codes absent from the table
+    // fall back to the code-offset rule.
+    let map = charset_plist_property(interp, charset, ":map").or_else(|| {
+        interp
+            .charset_is_unified(charset)
+            .then(|| charset_plist_property(interp, charset, ":unify-map"))
+            .flatten()
+    })?;
     if is_vector_value(&map) {
         let values = map.to_vec().ok()?;
         let values = values
@@ -99,6 +108,24 @@ fn charset_map(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
     Some(parsed)
 }
 
+/// A `:subset (PARENT MIN MAX OFFSET)' charset (e.g. latin-jisx0201 and
+/// katakana-jisx0201, both windows onto jisx0201) converts through PARENT:
+/// its code C corresponds to PARENT's code C - OFFSET, valid when the
+/// parent code lies in MIN..=MAX.
+fn charset_subset(interp: &Interpreter, charset: &str) -> Option<(String, i64, i64, i64)> {
+    let subset = charset_plist_property(interp, charset, ":subset")?;
+    let items = subset.to_vec().ok()?;
+    if items.len() != 4 {
+        return None;
+    }
+    Some((
+        items[0].as_symbol().ok()?.to_string(),
+        items[1].as_integer().ok()?,
+        items[2].as_integer().ok()?,
+        items[3].as_integer().ok()?,
+    ))
+}
+
 pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32) -> Option<u32> {
     let canonical = interp.charset_canonical_name(charset)?;
     match canonical.as_str() {
@@ -119,10 +146,67 @@ pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32
     {
         return Some(*character);
     }
+    if let Some((parent, min, max, offset)) = charset_subset(interp, &canonical) {
+        let parent_code = i64::from(code).checked_sub(offset)?;
+        if !(min..=max).contains(&parent_code) {
+            return None;
+        }
+        return decode_charset_code(interp, &parent, u32::try_from(parent_code).ok()?);
+    }
     let offset = charset_plist_property(interp, &canonical, ":code-offset")?
         .as_integer()
         .ok()?;
-    u32::try_from(i64::from(code).checked_add(offset)?).ok()
+    let index = charset_code_to_index(interp, &canonical, code).unwrap_or(code);
+    u32::try_from(i64::from(index).checked_add(offset)?).ok()
+}
+
+/// charset.c's CODE_POINT_TO_INDEX: the ordinal of CODE within the
+/// charset's :code-space, counting the first (least significant) byte
+/// fastest.  jisx0208's hole 0x222F is index 108, so its non-unified
+/// character is code-offset + 108, not code-offset + 0x222F.
+fn charset_code_space(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
+    let space = charset_plist_property(interp, charset, ":code-space")?;
+    let values = space.to_vec().ok()?;
+    let values = values
+        .strip_prefix(&[Value::Symbol("vector-literal".into())])
+        .unwrap_or(&values);
+    let bounds: Vec<(u32, u32)> = values
+        .chunks_exact(2)
+        .filter_map(|pair| {
+            Some((
+                u32::try_from(pair[0].as_integer().ok()?).ok()?,
+                u32::try_from(pair[1].as_integer().ok()?).ok()?,
+            ))
+        })
+        .collect();
+    (!bounds.is_empty()).then_some(bounds)
+}
+
+fn charset_code_to_index(interp: &Interpreter, charset: &str, code: u32) -> Option<u32> {
+    let bounds = charset_code_space(interp, charset)?;
+    let mut index = 0u32;
+    let mut stride = 1u32;
+    for (dimension, (min, max)) in bounds.iter().enumerate() {
+        let byte = (code >> (8 * dimension)) & 0xFF;
+        if byte < *min || byte > *max {
+            return None;
+        }
+        index = index.checked_add((byte - min).checked_mul(stride)?)?;
+        stride = stride.checked_mul(max - min + 1)?;
+    }
+    Some(index)
+}
+
+fn charset_index_to_code(interp: &Interpreter, charset: &str, index: u32) -> Option<u32> {
+    let bounds = charset_code_space(interp, charset)?;
+    let mut code = 0u32;
+    let mut remaining = index;
+    for (dimension, (min, max)) in bounds.iter().enumerate() {
+        let size = max - min + 1;
+        code |= (min + remaining % size) << (8 * dimension);
+        remaining /= size;
+    }
+    (remaining == 0).then_some(code)
 }
 
 pub(crate) fn encode_charset_char(
@@ -153,10 +237,18 @@ pub(crate) fn encode_charset_char(
     {
         return Some(*code);
     }
+    if let Some((parent, min, max, offset)) = charset_subset(interp, &canonical) {
+        let parent_code = i64::from(encode_charset_char(interp, &parent, character)?);
+        if !(min..=max).contains(&parent_code) {
+            return None;
+        }
+        return u32::try_from(parent_code.checked_add(offset)?).ok();
+    }
     let offset = charset_plist_property(interp, &canonical, ":code-offset")?
         .as_integer()
         .ok()?;
-    u32::try_from(i64::from(character).checked_sub(offset)?).ok()
+    let index = u32::try_from(i64::from(character).checked_sub(offset)?).ok()?;
+    Some(charset_index_to_code(interp, &canonical, index).unwrap_or(index))
 }
 
 fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) -> Option<Value> {
@@ -733,6 +825,17 @@ pub(crate) fn strip_utf8_bom(bytes: &[u8]) -> (bool, &[u8]) {
     }
 }
 
+/// Like `detect_eol_type', but reports None when the bytes contain no
+/// line-ending byte at all: GNU's detector leaves the eol UNDECIDED then,
+/// and the detected coding keeps its bare base name (`undecided', `utf-8')
+/// instead of gaining a `-unix' suffix.
+pub(crate) fn detect_eol_type_opt(bytes: &[u8]) -> Option<i64> {
+    bytes
+        .iter()
+        .any(|byte| matches!(byte, b'\r' | b'\n'))
+        .then(|| detect_eol_type(bytes))
+}
+
 pub(crate) fn detect_eol_type(bytes: &[u8]) -> i64 {
     let mut saw_crlf = false;
     let mut saw_lf = false;
@@ -891,17 +994,123 @@ pub(crate) fn encode_utf8_bytes(text: &str, with_bom: bool) -> Result<Vec<u8>, L
     Ok(bytes)
 }
 
-/// EUC-JP (japanese-iso-8bit) encoding is not implemented.
-///
-/// What stood here encoded exactly one non-ASCII character — `あ', the
-/// character the tests happened to use — and signalled for every other.  A
-/// codec that knows one codepoint is a fabrication, not a partial
-/// implementation, so it signals honestly until the JIS X 0208 tables exist.
-pub(crate) fn encode_euc_jp_bytes(text: &str) -> Result<Vec<u8>, LispError> {
-    if text.chars().all(|ch| (ch as u32) <= 0x7F) {
-        return Ok(text.bytes().collect());
+/// EUC-JP through the charset tables (coding.c's iso-2022 encoder for
+/// japanese-iso-8bit): ASCII stays single-byte, JIS X 0208 becomes the
+/// two-byte high bank, halfwidth katakana rides SS2 (0x8E), JIS X 0212
+/// rides SS3 (0x8F).  Characters of latin-jisx0201 (yen sign, overline)
+/// are designated into G0 with ESC ( J and restored to ASCII with
+/// ESC ( B before controls/eol and at the end (the coding system's
+/// ascii-at-eol/ascii-at-cntl flags); an unencodable character becomes
+/// a space, and raw-byte markers pass through as their byte.  Each of
+/// these is the oracle's own answer -- see the regression contract.
+pub(crate) fn encode_euc_jp_bytes(interp: &Interpreter, text: &str) -> Result<Vec<u8>, LispError> {
+    let mut out = Vec::new();
+    let mut g0_latin = false;
+    let restore_ascii = |out: &mut Vec<u8>, g0_latin: &mut bool| {
+        if *g0_latin {
+            out.extend([0x1B, b'(', b'B']);
+            *g0_latin = false;
+        }
+    };
+    for ch in text.chars() {
+        let code = ch as u32;
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            out.push(byte);
+            continue;
+        }
+        if code < 0x20 || code == 0x7F {
+            restore_ascii(&mut out, &mut g0_latin);
+            out.push(code as u8);
+            continue;
+        }
+        if code <= 0x7F {
+            out.push(code as u8);
+            continue;
+        }
+        if let Some(code) = encode_charset_char(interp, "japanese-jisx0208", code) {
+            out.extend([(code >> 8) as u8 | 0x80, (code & 0xFF) as u8 | 0x80]);
+            continue;
+        }
+        if let Some(code) = encode_charset_char(interp, "katakana-jisx0201", code) {
+            out.extend([0x8E, code as u8 | 0x80]);
+            continue;
+        }
+        if let Some(code) = encode_charset_char(interp, "japanese-jisx0212", code) {
+            out.extend([0x8F, (code >> 8) as u8 | 0x80, (code & 0xFF) as u8 | 0x80]);
+            continue;
+        }
+        if let Some(code) = encode_charset_char(interp, "latin-jisx0201", code) {
+            if !g0_latin {
+                out.extend([0x1B, b'(', b'J']);
+                g0_latin = true;
+            }
+            out.push(code as u8);
+            continue;
+        }
+        out.push(b' ');
     }
-    Err(LispError::Signal("Character cannot be encoded".into()))
+    restore_ascii(&mut out, &mut g0_latin);
+    Ok(out)
+}
+
+/// The euc-jp decoder does NOT interpret ISO-2022 escapes (the coding
+/// system lacks the `designation' flag): ESC sequences pass through as
+/// literal characters, per the oracle.  A byte that cannot start or
+/// complete a valid EUC sequence decodes as its raw-byte marker and the
+/// scan resynchronizes at the next byte.
+pub(crate) fn decode_euc_jp_bytes(interp: &Interpreter, bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut rest = bytes;
+    let is_high = |byte: u8| (0xA1..=0xFE).contains(&byte);
+    while let Some((&lead, tail)) = rest.split_first() {
+        let (decoded, consumed) = match lead {
+            0x00..=0x7F => (Some(char::from(lead)), 1),
+            0x8E => match tail.first() {
+                Some(&byte) if is_high(byte) => (
+                    decode_charset_code(interp, "katakana-jisx0201", u32::from(byte & 0x7F))
+                        .and_then(char::from_u32),
+                    2,
+                ),
+                _ => (None, 1),
+            },
+            0x8F => match (tail.first(), tail.get(1)) {
+                (Some(&hi), Some(&lo)) if is_high(hi) && is_high(lo) => (
+                    decode_charset_code(
+                        interp,
+                        "japanese-jisx0212",
+                        u32::from(hi & 0x7F) << 8 | u32::from(lo & 0x7F),
+                    )
+                    .and_then(char::from_u32),
+                    3,
+                ),
+                _ => (None, 1),
+            },
+            _ if is_high(lead) => match tail.first() {
+                Some(&lo) if is_high(lo) => (
+                    decode_charset_code(
+                        interp,
+                        "japanese-jisx0208",
+                        u32::from(lead & 0x7F) << 8 | u32::from(lo & 0x7F),
+                    )
+                    .and_then(char::from_u32),
+                    2,
+                ),
+                _ => (None, 1),
+            },
+            _ => (None, 1),
+        };
+        match decoded {
+            Some(ch) => {
+                out.push(ch);
+                rest = &rest[consumed..];
+            }
+            None => {
+                out.push(raw_byte_regex_char(lead));
+                rest = &rest[1..];
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
@@ -982,7 +1191,7 @@ pub(crate) fn encode_text_bytes(
         "iso-latin-1" => encode_iso_latin_bytes(&text),
         "us-ascii" => encode_ascii_bytes(&text),
         "raw-text" | "no-conversion" => encode_raw_text_bytes(&text),
-        "euc-jp" => encode_euc_jp_bytes(&text),
+        "euc-jp" => encode_euc_jp_bytes(interp, &text),
         "charset" => encode_charset_coding_bytes(interp, &text, &canonical),
         _ => encode_raw_text_bytes(&text),
     }
@@ -1133,6 +1342,30 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
                 }
             })
             .collect(),
+        "euc-jp" => text
+            .chars()
+            .map(|ch| {
+                let code = ch as u32;
+                if raw_byte_from_regex_char(ch).is_some()
+                    || code <= 0x7F
+                    || [
+                        "japanese-jisx0208",
+                        "katakana-jisx0201",
+                        "japanese-jisx0212",
+                        "latin-jisx0201",
+                    ]
+                    .iter()
+                    .any(|charset| encode_charset_char(interp, charset, code).is_some())
+                {
+                    ch
+                } else {
+                    // coding.c's iso-2022 encoder emits a space for an
+                    // unencodable character (the oracle's answer for
+                    // (encode-coding-string "\u{20AC}" 'euc-jp)).
+                    ' '
+                }
+            })
+            .collect(),
         "charset" => {
             let charsets = coding_system_charset_names(interp, coding);
             let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
@@ -1206,7 +1439,8 @@ pub(crate) fn decode_text_bytes(
         "utf-16le" => Ok(decode_utf16_bytes(bytes, false, false, false)),
         "iso-latin-1" => Ok(decode_latin_bytes(bytes)),
         "us-ascii" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
-        "raw-text" | "no-conversion" | "euc-jp" => Ok(decode_raw_text_bytes(bytes)),
+        "raw-text" | "no-conversion" => Ok(decode_raw_text_bytes(bytes)),
+        "euc-jp" => Ok(decode_euc_jp_bytes(interp, bytes)),
         "charset" => Ok(decode_charset_coding_bytes(interp, bytes, &canonical)),
         _ => Ok(decode_raw_text_bytes(bytes)),
     }
@@ -1239,7 +1473,18 @@ pub(crate) fn string_unencodable_positions(
             "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
             "sjis" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
             "big5" | "iso-2022-7bit" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
-            "euc-jp" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
+            "euc-jp" => {
+                raw_byte.is_some()
+                    || code <= 0x7F
+                    || [
+                        "japanese-jisx0208",
+                        "katakana-jisx0201",
+                        "japanese-jisx0212",
+                        "latin-jisx0201",
+                    ]
+                    .iter()
+                    .any(|charset| encode_charset_char(interp, charset, code).is_some())
+            }
             "charset" => {
                 (coding_system_is_ascii_compatible(interp, &canonical)
                     && (raw_byte.is_some_and(|byte| byte <= 0x7f) || code <= 0x7f))
@@ -1303,18 +1548,21 @@ pub(crate) fn string_identity_for_coding(
 }
 
 pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
-    let actual_eol = detect_eol_type(bytes);
-    let normalized = decode_bytes_with_explicit_eol(bytes, actual_eol);
+    // None when no eol byte exists: the name then stays the bare base,
+    // which is what GNU records in last-coding-system-used and what lets
+    // the file reader know that nothing was decided.
+    let actual_eol = detect_eol_type_opt(bytes);
+    let normalized = decode_bytes_with_explicit_eol(bytes, actual_eol.unwrap_or(0));
     let (has_bom, bomless) = strip_utf8_bom(&normalized);
     if has_bom {
         return (
-            coding_variant_name(interp, "utf-8-with-signature", Some(actual_eol)),
+            coding_variant_name(interp, "utf-8-with-signature", actual_eol),
             bomless.to_vec(),
         );
     }
     if normalized.contains(&0) {
         return (
-            coding_variant_name(interp, "no-conversion", Some(actual_eol)),
+            coding_variant_name(interp, "no-conversion", actual_eol),
             normalized,
         );
     }
@@ -1324,10 +1572,7 @@ pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String,
         let base = interp
             .coding_system_base_name(&canonical)
             .unwrap_or(canonical);
-        return (
-            coding_variant_name(interp, &base, Some(actual_eol)),
-            normalized,
-        );
+        return (coding_variant_name(interp, &base, actual_eol), normalized);
     }
     if bomless
         .windows(4)
@@ -1349,17 +1594,28 @@ pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String,
             // (prefer-utf-8 cannot even be preferred, and a preferred
             // utf-8-auto still answers undecided-unix).
             return (
-                coding_variant_name(interp, "undecided", Some(actual_eol)),
+                coding_variant_name(interp, "undecided", actual_eol),
                 normalized,
             );
         }
+        return (coding_variant_name(interp, "utf-8", actual_eol), normalized);
+    }
+    // Non-UTF-8 8-bit data without a null byte: GNU's detector falls to
+    // the highest-priority charset coding, iso-latin-1 under the harness's
+    // LANG=C environment -- every byte decodes (mojibake, not raw bytes).
+    // A byte in 0x80..=0x9F is a C1 control, which no ISO 8859 text uses:
+    // its presence rejects the latin-1 category and the read stays
+    // raw-text (the oracle: (97 255) is latin-1, (97 129) is raw-text,
+    // and a stray valid UTF-8 sequence like C3 80 forces raw-text through
+    // its 0x80 continuation byte).
+    if bomless.iter().any(|byte| (0x80..=0x9F).contains(byte)) {
         return (
-            coding_variant_name(interp, "utf-8", Some(actual_eol)),
+            coding_variant_name(interp, "raw-text", actual_eol),
             normalized,
         );
     }
     (
-        coding_variant_name(interp, "raw-text", Some(actual_eol)),
+        coding_variant_name(interp, "iso-latin-1", actual_eol),
         normalized,
     )
 }
@@ -1657,7 +1913,9 @@ pub(crate) fn encode_coding_value(
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(coding))?;
-    set_last_coding_system_used(interp, &canonical, env);
+    // The requested spelling, not the canonical name (the oracle answers
+    // `euc-jp' for (encode-coding-string "a" 'euc-jp)).
+    set_last_coding_system_used(interp, coding, env);
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted_text = run_coding_conversion(interp, &string.text, &pre_write, true, env)?;
@@ -1747,18 +2005,42 @@ pub(crate) fn decode_coding_text(
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
+    // String decoding names `last-coding-system-used' differently from a
+    // file read (the oracle's contract): pure-ASCII input without a CR
+    // never re-resolves the name -- the requested spelling survives, alias
+    // and all (euc-jp stays `euc-jp', LF included) -- and a converted text
+    // gains the canonical eol subsidiary only when an eol byte was seen.
     let actual_coding = if let Some((detected, _)) = &undecided_bytes {
-        detected.clone()
+        let bytes = encode_raw_text_bytes(&string.text)?;
+        if bytes.iter().all(u8::is_ascii) && !bytes.contains(&b'\r') {
+            interp
+                .coding_system_base_name(detected)
+                .unwrap_or_else(|| detected.clone())
+        } else {
+            detected.clone()
+        }
     } else if interp.coding_system_eol_type_value(&canonical).is_none()
         && !matches!(canonical.as_str(), "no-conversion" | "binary")
     {
         let bytes = encode_raw_text_bytes(&string.text)?;
-        let base = interp
-            .coding_system_base_name(&canonical)
-            .unwrap_or_else(|| canonical.clone());
-        coding_variant_name(interp, &base, Some(detect_eol_type(&bytes)))
+        // The pure-ASCII shortcut is really "the decoder never ran": it
+        // needs the coding to be ascii-compatible.  iso-2022-7bit is not
+        // (its ESC sequences convert), so even an all-ASCII decode with a
+        // LF re-resolves to iso-2022-7bit-unix, per the oracle.
+        let untouched =
+            bytes.iter().all(u8::is_ascii) && coding_system_is_ascii_compatible(interp, &canonical);
+        match detect_eol_type_opt(&bytes) {
+            Some(eol) if bytes.contains(&b'\r') || !untouched => {
+                let base = interp
+                    .coding_system_base_name(&canonical)
+                    .unwrap_or_else(|| canonical.clone());
+                coding_variant_name(interp, &base, Some(eol))
+            }
+            _ => coding.to_string(),
+        }
     } else {
-        canonical.clone()
+        // Explicit eol (or binary): the requested spelling survives.
+        coding.to_string()
     };
     set_last_coding_system_used(interp, &actual_coding, env);
     let text = if let Some((_, normalized)) = undecided_bytes {

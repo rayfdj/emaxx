@@ -2686,7 +2686,22 @@ impl SkipSyntaxSnapshot {
         }
         // Surrogates are not scalars; keep the same boundary seeds the class
         // renderer uses so segment starts are always valid characters.
+        //
+        // Every ASCII code point is also a boundary.  Each window below is
+        // classified by sampling its START, which is only correct where the
+        // class is uniform across the window -- and the fallback
+        // `default_syntax_entry' varies PER CHARACTER inside ASCII (digits
+        // word, punctuation punct, space whitespace...) while being uniformly
+        // Word above 0x80.  Boundaries drawn only from explicit char-table
+        // entries left ASCII gaps spanning several default classes, and the
+        // window holding the digits sampled as punctuation: skip-chars
+        // `[:word:]' stopped dead at `0' while `char-syntax' said w.  The
+        // regression reached the frozen measurement as
+        // regex-tests-word-character-class, the one file that moved between
+        // the 2026-08-25 and 2026-08-27 baselines.  128 extra boundaries make
+        // the sample exact everywhere and coalescing merges them right back.
         let mut boundaries = vec![0u32, 0xd800, 0xe000];
+        boundaries.extend(0..=0x80u32);
         let mut current = Some(table_id);
         let mut seen = std::collections::HashSet::new();
         while let Some(id) = current {

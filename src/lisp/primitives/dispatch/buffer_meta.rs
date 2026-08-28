@@ -1099,24 +1099,74 @@ define_dispatch!(
                 Ok(args[1].clone())
             }
             "unify-charset" => {
+                // charset.c:1330 Funify_charset.
                 need_arg_range(name, args, 1, 3)?;
                 let charset = args[0].as_symbol()?;
                 if !interp.has_charset(charset) {
                     return Err(LispError::Void(charset.to_string()));
                 }
+                let deunify = args.get(2).is_some_and(Value::is_truthy);
+                if deunify {
+                    // charset.c:1344: de-unifying a non-unified charset is
+                    // a no-op, decided before any other validation.
+                    interp.set_charset_unified(charset, false);
+                    return Ok(Value::Nil);
+                }
+                // No early return on the unify side: charset.c:1344 skips
+                // only when the DEUNIFIER table is already loaded, and that
+                // load is lazy (an encode through the charset triggers it).
+                // A fresh session therefore falls through and re-checks the
+                // arguments -- (unify-charset 'japanese-jisx0208 42) errors
+                // "Bad unify-map" -- which is what emaxx reproduces.  The
+                // post-encode nil answer is a disclosed divergence (the
+                // ledger's finding on euc-jp/unification).
+                // charset.c:1350: only offset-method charsets whose
+                // code-offset lies above the Unicode space can be unified.
+                let code_offset = interp
+                    .charset_plist_value(charset)
+                    .and_then(|plist| plist.to_vec().ok())
+                    .and_then(|items| {
+                        items.windows(2).find_map(|pair| {
+                            matches!(&pair[0], Value::Symbol(key) if key == ":code-offset")
+                                .then(|| pair[1].as_integer().ok())
+                                .flatten()
+                        })
+                    });
+                if !code_offset.is_some_and(|offset| offset >= 0x11_0000) {
+                    return Err(LispError::Signal(format!("Can't unify charset: {charset}")));
+                }
                 if let Some(map) = args.get(1)
                     && !map.is_nil()
-                    && !map.is_string()
-                    && !is_vector_value(map)
                 {
-                    return Err(LispError::TypeError(
-                        "string-or-vector".into(),
-                        map.type_name(),
-                    ));
+                    if !map.is_string() && !is_vector_value(map) {
+                        // charset.c:1360 signal_error ("Bad unify-map", ...).
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("error".into()),
+                            Value::string("Bad unify-map"),
+                            map.clone(),
+                        ])));
+                    }
+                    // charset.c:1362: an explicit map replaces the
+                    // charset's :unify-map attribute.
+                    if let Some(plist) = interp.charset_plist_value(charset)
+                        && let Ok(mut items) = plist.to_vec()
+                    {
+                        let key = items
+                            .iter()
+                            .position(|item| matches!(item, Value::Symbol(k) if k == ":unify-map"));
+                        match key {
+                            Some(index) if index + 1 < items.len() => {
+                                items[index + 1] = map.clone();
+                            }
+                            _ => {
+                                items.push(Value::Symbol(":unify-map".into()));
+                                items.push(map.clone());
+                            }
+                        }
+                        interp.set_charset_plist_value(charset, Value::list(items))?;
+                    }
                 }
-                // GNU maps legacy private charset code points onto Unicode here.
-                // Emaxx stores buffer text as Unicode already, so registration is
-                // the semantic state change and no secondary char table is needed.
+                interp.set_charset_unified(charset, true);
                 Ok(Value::Nil)
             }
             "get-unused-iso-final-char" => {
