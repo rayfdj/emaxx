@@ -1443,42 +1443,144 @@ define_dispatch!(
                 find_coding_systems_region_internal_value(interp, &args[0], &args[1], args.get(2))
             }
             "decode-sjis-char" => {
+                // coding.c Fdecode_sjis_char, converting through the
+                // charsets of Vsjis_coding_system -- the LAST defined
+                // shift-jis system, japanese-shift-jis-2004 in a full
+                // load, so the kanji bank is JIS X 0213 plane 1 while
+                // the `sjis' string codec stays on JIS X 0208 (both
+                // answers oracle-probed: #x8940 is 38498 here and the
+                // 0208 offset character through decode-coding-string).
                 need_args(name, args, 1)?;
-                let code = args[0].as_integer()?;
-                match code {
-                    0..=0x7F => Ok(Value::Integer(code)),
-                    0x82A0 => Ok(Value::Integer('あ' as i64)),
-                    _ => Err(LispError::Signal("Invalid Shift_JIS character".into())),
+                let code = args[0].as_fixnum()?;
+                // coding.c CHECK_FIXNAT prints as `wholenump'; any
+                // in-range fixnum passes and oversized codes fall to
+                // the "Invalid code" validation below (oracle rows).
+                if code < 0 {
+                    return Err(LispError::WrongTypeArgument(
+                        "wholenump".into(),
+                        args[0].clone(),
+                    ));
                 }
+                let invalid = || LispError::Signal(format!("Invalid code: {code}"));
+                if code <= 0x7F {
+                    return Ok(Value::Integer(code));
+                }
+                let charsets = sjis_primitive_charsets(interp).ok_or_else(invalid)?;
+                let decoded = if (0xA0..0xDF).contains(&code) {
+                    decode_charset_code(interp, &charsets.1, code as u32 - 0x80)
+                } else {
+                    let (c1, c2) = (code >> 8, code & 0xFF);
+                    if c1 < 0x81
+                        || (c1 > 0x9F && c1 < 0xE0)
+                        || c1 > 0xEF
+                        || c2 < 0x40
+                        || c2 == 0x7F
+                        || c2 > 0xFC
+                    {
+                        return Err(invalid());
+                    }
+                    decode_charset_code(interp, &charsets.2, sjis_to_jis(code as u32))
+                };
+                decoded
+                    .map(|character| Value::Integer(i64::from(character)))
+                    .ok_or_else(invalid)
             }
             "encode-sjis-char" => {
+                // coding.c Fencode_sjis_char: find the character in
+                // Vsjis_coding_system's charset list and push the code
+                // through JIS_TO_SJIS unconditionally (halfwidth kana
+                // codes included -- the oracle answers 0x70AF for
+                // U+FF71).  GNU's unencodable path reads past a null
+                // charset pointer (it ABORTS on U+00A5 and returns
+                // stack garbage elsewhere); emaxx takes the error the
+                // docstring promises, disclosed in the ledger.
                 need_args(name, args, 1)?;
-                let code = args[0].as_integer()?;
+                let character = args[0].as_fixnum()?;
+                if !(0..=0x3FFFFF).contains(&character) {
+                    return Err(LispError::WrongTypeArgument(
+                        "characterp".into(),
+                        args[0].clone(),
+                    ));
+                }
+                if character <= 0x7F {
+                    return Ok(Value::Integer(character));
+                }
+                let coding = interp.sjis_coding_system.clone();
+                let code = coding_system_charset_names(interp, &coding)
+                    .iter()
+                    .find_map(|charset| encode_charset_char(interp, charset, character as u32));
                 match code {
-                    0..=0x7F => Ok(Value::Integer(code)),
-                    x if x == 'あ' as i64 => Ok(Value::Integer(0x82A0)),
-                    _ => Err(LispError::Signal(
-                        "Character cannot be encoded in Shift_JIS".into(),
-                    )),
+                    Some(code) => Ok(Value::Integer(i64::from(jis_to_sjis(code)))),
+                    None => Err(LispError::Signal(format!(
+                        "Can't encode by shift_jis encoding: {}",
+                        char::from_u32(character as u32).unwrap_or('?')
+                    ))),
                 }
             }
             "decode-big5-char" => {
+                // coding.c Fdecode_big5_char over Vbig5_coding_system's
+                // charsets -- INCLUDING its bug: the second byte is
+                // masked with 0x7F before validation, so every code
+                // whose low byte has bit 7 set (half of Big5, 0xA4A4
+                // among them) is rejected as invalid while the encode
+                // direction happily produces it.  The oracle confirms
+                // both halves of the asymmetry.
                 need_args(name, args, 1)?;
-                let code = args[0].as_integer()?;
-                match code {
-                    0..=0x7F => Ok(Value::Integer(code)),
-                    _ => Err(LispError::Signal("Invalid Big5 character".into())),
+                let code = args[0].as_fixnum()?;
+                // CHECK_FIXNAT as above: `wholenump', no upper bound.
+                if code < 0 {
+                    return Err(LispError::WrongTypeArgument(
+                        "wholenump".into(),
+                        args[0].clone(),
+                    ));
                 }
+                let invalid = || LispError::Signal(format!("Invalid code: {code}"));
+                if code <= 0x7F {
+                    return Ok(Value::Integer(code));
+                }
+                let (b1, b2) = (code >> 8, code & 0x7F);
+                if !(0xA1..=0xFE).contains(&b1)
+                    || b2 < 0x40
+                    || (b2 > 0x7E && b2 < 0xA1)
+                    || b2 > 0xFE
+                {
+                    return Err(invalid());
+                }
+                let charsets =
+                    coding_system_charset_names(interp, &interp.big5_coding_system.clone());
+                let big5 = charsets.get(1).ok_or_else(invalid)?;
+                decode_charset_code(interp, big5, code as u32)
+                    .map(|character| Value::Integer(i64::from(character)))
+                    .ok_or_else(invalid)
             }
             "encode-big5-char" => {
+                // coding.c Fencode_big5_char: the character's code in
+                // Vbig5_coding_system's charset list, verbatim (no
+                // JIS-style shuffling).  GNU's unencodable path shares
+                // Fencode_sjis_char's null-charset read; emaxx signals
+                // the docstring's error instead.
                 need_args(name, args, 1)?;
-                let code = args[0].as_integer()?;
-                match code {
-                    0..=0x7F => Ok(Value::Integer(code)),
-                    _ => Err(LispError::Signal(
-                        "Character cannot be encoded in Big5".into(),
-                    )),
+                let character = args[0].as_fixnum()?;
+                if !(0..=0x3FFFFF).contains(&character) {
+                    return Err(LispError::WrongTypeArgument(
+                        "characterp".into(),
+                        args[0].clone(),
+                    ));
                 }
+                if character <= 0x7F {
+                    return Ok(Value::Integer(character));
+                }
+                let coding = interp.big5_coding_system.clone();
+                coding_system_charset_names(interp, &coding)
+                    .iter()
+                    .find_map(|charset| encode_charset_char(interp, charset, character as u32))
+                    .map(|code| Value::Integer(i64::from(code)))
+                    .ok_or_else(|| {
+                        LispError::Signal(format!(
+                            "Can't encode by Big5 encoding: {}",
+                            char::from_u32(character as u32).unwrap_or('?')
+                        ))
+                    })
             }
             "terminal-coding-system" => Ok(interp
                 .terminal_coding_system()

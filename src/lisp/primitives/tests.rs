@@ -9074,6 +9074,99 @@ fn string_byte_conversions_use_the_internal_encoding() {
 }
 
 #[test]
+fn sjis_conversion_follows_the_oracle_contract() {
+    // The real Shift-JIS behind finding 107 (the stubs knew one pair).
+    // The sjis-char primitives convert through Vsjis_coding_system --
+    // the LAST defined shift-jis system, japanese-shift-jis-2004, so
+    // their kanji bank is JIS X 0213 plane 1 (#x8940 is 38498 and the
+    // euro sign ENCODES as #x8540 through JISX2131's 0x2921), while the
+    // `sjis' string codec stays on japanese-shift-jis's JIS X 0208.
+    // encode-sjis-char pushes whatever code the charset search found
+    // through JIS_TO_SJIS -- a katakana code 0x31 becomes 0x70AF.
+    // (encode-sjis-char #xA5) is NOT probed: GNU's unencodable path
+    // aborts the oracle binary; see the ledger.
+    let program = r#"
+        (list
+         (decode-sjis-char #x82A0)
+         (decode-sjis-char #x8940)
+         (decode-sjis-char #xB1)
+         (condition-case e (decode-sjis-char #x8040) (error e))
+         (condition-case e (decode-sjis-char #xA0) (error e))
+         (condition-case e (decode-sjis-char -1) (error e))
+         (condition-case e (decode-sjis-char (ash 1 30)) (error e))
+         (encode-sjis-char #x3042)
+         (encode-sjis-char #xFF71)
+         (encode-sjis-char #x20AC)
+         (append (encode-coding-string (string #x3042 #xFF71 10) 'sjis) nil)
+         (append (encode-coding-string (string #x3042 10) 'sjis-dos) nil)
+         (append (encode-coding-string (string #x20AC) 'sjis) nil)
+         (append (decode-coding-string (unibyte-string #x82 #xA0 #xB1 10) 'sjis) nil)
+         (append (decode-coding-string (unibyte-string #xA0 #x41) 'sjis) nil)
+         (append (decode-coding-string (unibyte-string #x82 #x7F #x41) 'sjis) nil)
+         (append (decode-coding-string (unibyte-string #x82) 'sjis) nil))"#;
+    let expected = concat!(
+        "(12354 38498 65393 (error \"Invalid code: 32832\") ",
+        "(error \"Invalid code: 160\") (wrong-type-argument wholenump -1) ",
+        "(error \"Invalid code: 1073741824\") 33440 28847 34112 ",
+        "(130 160 177 10) (130 160 13 10) (32) (12354 65393 10) ",
+        "(4194208 65) (4194178 127 65) (4194178))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read sjis program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate sjis program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn big5_conversion_follows_the_oracle_contract() {
+    // Big5 through the BIG5 charset map.  decode-big5-char reproduces
+    // coding.c's own bug: Fdecode_big5_char masks the second byte with
+    // 0x7F before validating, so every code whose low byte has bit 7
+    // set -- #xA4A4 among them -- signals "Invalid code" while the
+    // encode direction produces exactly that code.  The string codec
+    // has no such mask.  Every row is the oracle's answer.
+    let program = r#"
+        (list
+         (decode-big5-char #xA440)
+         (condition-case e (decode-big5-char #xA4A4) (error e))
+         (condition-case e (decode-big5-char #xA000) (error e))
+         (encode-big5-char #x4E2D)
+         (encode-big5-char #x20AC)
+         (append (encode-coding-string (string #x4E2D 10) 'big5) nil)
+         (append (encode-coding-string (string #x20AC) 'big5) nil)
+         (append (encode-coding-string (string #x3042) 'big5) nil)
+         (append (decode-coding-string (unibyte-string #xA4 #xA4 10) 'big5) nil)
+         (append (decode-coding-string (unibyte-string #xA1 #x30 #x41) 'big5) nil)
+         (append (decode-coding-string (unibyte-string #xA1 #xA1) 'big5) nil)
+         (append (decode-coding-string (encode-coding-string "a中€" 'big5) 'big5) nil)
+         (progn (decode-coding-string (unibyte-string #xA4 #xA4) 'big5)
+                last-coding-system-used))"#;
+    let expected = concat!(
+        "(19968 (error \"Invalid code: 42148\") (error \"Invalid code: 40960\") ",
+        "42148 41953 (164 164 10) (163 225) (32) (20013 10) ",
+        "(4194209 48 65) (65115) (97 20013 8364) big5)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read big5 program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate big5 program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn max_lisp_eval_depth_is_honoured_dynamically() {
     // eval.c:2504-2509.  The limit came from the GLOBAL cell, so a `let' was
     // invisible; it was then multiplied by 384 and floored at 307200, so the

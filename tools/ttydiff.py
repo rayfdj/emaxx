@@ -2194,7 +2194,10 @@ SCENARIOS += [
             action("open-contents", b"\x1b[Z"),
             action("search-table-row", b"\x13Piranesi\r"),
             action("next-table-field", b"\t"),
-            action("next-table-row", b"\r"),
+            # Org realigns the table before moving.  On a cold process that
+            # work can cross the generic 200 ms quiet window, so wait for the
+            # completed command while preserving the same strict frame.
+            action("next-table-row", b"\r", settle=2.0, quiet=0.5),
             action("previous-table-field", b"\x1b[Z"),
         ],
         ".org",
@@ -2234,6 +2237,176 @@ SCENARIOS += [
             action("backward-same-level", b"\x03\x02"),
         ],
         ".org",
+    ),
+]
+
+UNDO_KILL_RING_SCENARIO_NAMES = (
+    "undo-kill-line-coalescing",
+    "undo-kill-line-boundaries",
+    "undo-word-kill-order",
+    "undo-yank-pop-cycle",
+    "undo-yank-pop-invalid",
+    "undo-redo-divergent",
+    "undo-keyboard-macro-boundaries",
+    "undo-region-limited",
+    "undo-repeat-c-slash",
+    "undo-repeat-c-x-u",
+)
+
+SCENARIOS += [
+    # Consecutive C-k commands are one kill-ring entry.  The final yank
+    # distinguishes GNU-style coalescing from merely deleting the same text.
+    (
+        "undo-kill-line-coalescing",
+        "alpha\nbeta\ngamma\n",
+        [
+            action("kill-alpha", b"\x0b"),
+            action("kill-first-newline", b"\x0b"),
+            action("kill-beta", b"\x0b"),
+            action("kill-second-newline", b"\x0b"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-coalesced-kill", b"\x19"),
+        ],
+    ),
+    # C-k alternates between text and newline deletion, handles an empty
+    # line, kills unterminated final text, and then reports the EOB error.
+    (
+        "undo-kill-line-boundaries",
+        "one\n\nthree",
+        [
+            action("kill-first-text", b"\x0b"),
+            action("kill-first-newline", b"\x0b"),
+            action("kill-empty-line", b"\x0b"),
+            action("kill-final-text", b"\x0b"),
+            action("kill-at-end-of-buffer", b"\x0b"),
+            action("yank-boundary-kill", b"\x19"),
+        ],
+    ),
+    # Forward word kills append while a backward word kill prepends.  Yanking
+    # the resulting entry exposes both direction and ordering mistakes.
+    (
+        "undo-word-kill-order",
+        "alpha beta gamma delta\n",
+        [
+            action("forward-word", b"\x1bf"),
+            action("kill-next-word", b"\x1bd"),
+            action("kill-following-word", b"\x1bd"),
+            action("backward-kill-word", b"\x1b\x7f"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-ordered-entry", b"\x19"),
+        ],
+    ),
+    # Three non-consecutive kills make three entries.  M-y must replace the
+    # exact yank span, cycle through the older entries, and wrap to newest;
+    # C-x C-x then makes point/mark placement visible on the glass.
+    (
+        "undo-yank-pop-cycle",
+        "one\ntwo\nthree\nanchor\n",
+        [
+            action("kill-one", b"\x0b"),
+            action("move-to-two", b"\x0e"),
+            action("kill-two", b"\x0b"),
+            action("move-to-three", b"\x0e"),
+            action("kill-three", b"\x0b"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-newest", b"\x19"),
+            action("yank-pop-two", b"\x1by"),
+            action("yank-pop-one", b"\x1by"),
+            action("yank-pop-wrap", b"\x1by"),
+            action("exchange-yank-point-and-mark", b"\x18\x18"),
+        ],
+    ),
+    # yank-pop is invalid unless the previous command was a yank/yank-pop.
+    # The strict frame proves both the GNU error and unchanged buffer text.
+    (
+        "undo-yank-pop-invalid",
+        "stable text\n",
+        [
+            action("forward-char", b"\x06"),
+            action("invalid-yank-pop", b"\x1by"),
+        ],
+    ),
+    # Exercise both sides of the modern undo state machine, then fork the
+    # history and prove redo cannot resurrect the abandoned branch.
+    (
+        "undo-redo-divergent",
+        "base\n",
+        [
+            action("insert-alpha", b"alpha"),
+            action("undo-alpha", b"\x1f"),
+            action(
+                "redo-alpha",
+                b"\x1bxundo-redo\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("undo-redone-alpha", b"\x1f"),
+            action("insert-divergent-branch", b"branch"),
+            action(
+                "reject-redo-after-divergence",
+                b"\x1bxundo-redo\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("undo-divergent-branch", b"\x1f"),
+        ],
+    ),
+    # Recording a macro performs ordinary edits; replay is a compound edit.
+    # Repeated undo must cross the same inner and outer boundaries as GNU.
+    (
+        "undo-keyboard-macro-boundaries",
+        "abcd\n",
+        [
+            action("start-macro", b"\x18("),
+            action("macro-insert-x", b"X"),
+            action("macro-forward-char", b"\x06"),
+            action("macro-insert-y", b"Y"),
+            action("end-macro", b"\x18)"),
+            action("undo-recorded-y", b"\x1f"),
+            action("undo-recorded-x", b"\x1f"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("execute-macro", b"\x18e", settle=2.0, quiet=0.5),
+            action("undo-macro-edit", b"\x1f"),
+            action("undo-macro-edit-again", b"\x1f"),
+        ],
+    ),
+    # The newest edit is outside the active region.  Region-limited undo must
+    # select the older in-region group while preserving the final Z edit.
+    (
+        "undo-region-limited",
+        "aaa\nbbb\nccc\n",
+        [
+            action("insert-in-first-line", b"X"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-outside-region", b"Z"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("set-region-mark", b"\x00"),
+            action("select-first-line", b"\x05"),
+            action("undo-in-region", b"\x1f"),
+            action("verify-outside-edit", b"\x1b>"),
+        ],
+    ),
+    (
+        "undo-repeat-c-slash",
+        "base\n",
+        [
+            action("insert-at-start", b"A"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-at-end", b"Z"),
+            action("undo-end-edit", b"\x1f"),
+            action("undo-start-edit", b"\x1f"),
+        ],
+    ),
+    (
+        "undo-repeat-c-x-u",
+        "base\n",
+        [
+            action("insert-at-start", b"A"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-at-end", b"Z"),
+            action("undo-end-edit", b"\x18u"),
+            action("undo-start-edit", b"\x18u"),
+        ],
     ),
 ]
 

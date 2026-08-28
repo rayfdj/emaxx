@@ -254,7 +254,7 @@ fn network_interface_info(args: &[Value]) -> Result<Value, LispError> {
         // only; a Linux port needs the ifr_hwaddr branch rather than the
         // getifaddrs walk below.
         let _ = name;
-        return Ok(Value::Nil);
+        Ok(Value::Nil)
     }
 
     #[cfg(target_os = "macos")]
@@ -2938,6 +2938,9 @@ fn signal_process_target_pid(
 fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
     use std::os::unix::fs::MetadataExt;
     let mode = metadata.mode();
+    // The `as u32' casts are needed on macOS, where libc::mode_t is u16;
+    // on GNU/Linux mode_t is already u32 and clippy flags them as no-ops.
+    #[allow(clippy::unnecessary_cast)]
     let type_char = match mode & (libc::S_IFMT as u32) {
         m if m == libc::S_IFDIR as u32 => 'd',
         m if m == libc::S_IFLNK as u32 => 'l',

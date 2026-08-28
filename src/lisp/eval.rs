@@ -2701,6 +2701,8 @@ impl Drop for ImageTemplateToken {
     }
 }
 
+/// The interpreter state: holds the global environment, the current buffer,
+/// and ERT test results.
 #[derive(Clone)]
 pub struct Interpreter {
     /// Present only on interpreters cloned from the test image template.
@@ -2892,6 +2894,15 @@ pub struct Interpreter {
     /// Charsets defined with :supplementary-p; they sort after every
     /// non-supplementary charset in the ordered (priority) list.
     charset_supplementary: HashSet<String>,
+    /// coding.c's Vsjis_coding_system: the most recently defined
+    /// shift-jis-type coding system.  decode-sjis-char/encode-sjis-char
+    /// convert through ITS charset list -- japanese.el defines
+    /// japanese-shift-jis-2004 after japanese-shift-jis, so the
+    /// primitives answer through the JIS X 0213 charsets while the
+    /// `sjis' string codec stays on JIS X 0208.
+    pub(crate) sjis_coding_system: String,
+    /// coding.c's Vbig5_coding_system, same contract as sjis above.
+    pub(crate) big5_coding_system: String,
     /// Charsets currently unified with Unicode (charset.c's UNIFIED_P
     /// flag, set by `unify-charset').  mule-conf.el unifies the CJK
     /// offset-method charsets at load; while unified, code<->character
@@ -3767,6 +3778,8 @@ impl Interpreter {
                 .into_iter()
                 .collect(),
             charset_unified: HashSet::new(),
+            sjis_coding_system: "sjis".into(),
+            big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],
