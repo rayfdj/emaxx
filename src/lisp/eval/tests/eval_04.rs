@@ -2856,17 +2856,40 @@ fn call_process_region_can_delete_entire_buffer() {
 }
 
 #[test]
-fn call_process_missing_program_signals_file_error() {
+fn call_process_missing_program_signals_file_missing() {
     assert_eq!(
         eval_str(
             r#"
-                (condition-case nil
+                (condition-case error
                     (call-process "/definitely/missing/emaxx-program" nil nil nil)
-                  (file-error 'caught)
+                  (file-missing (list (car error) (cadr error)))
                   (error 'wrong-condition))
                 "#
         ),
-        Value::Symbol("caught".into())
+        Value::list([
+            Value::Symbol("file-missing".into()),
+            Value::String("Searching for program".into())
+        ])
+    );
+}
+
+#[test]
+fn call_process_missing_default_directory_reports_directory_operation() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((default-directory
+                       "/definitely/missing/emaxx-default-directory/"))
+                  (condition-case error
+                      (call-process "/usr/bin/true" nil nil nil)
+                    (file-missing (list (car error) (cadr error)))
+                    (error 'wrong-condition)))
+                "#
+        ),
+        Value::list([
+            Value::Symbol("file-missing".into()),
+            Value::String("Setting current directory".into())
+        ])
     );
 }
 

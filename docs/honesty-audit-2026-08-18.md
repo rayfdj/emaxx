@@ -93,7 +93,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
 | 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
 | 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | FIXED 2026-08-29 - missing names 3,908 -> 124 vs the Linux oracle; four computed mechanisms; residual classes named in the close-out |
-| 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | FIXED 2026-08-29 - LANG=C is the gate standard; the five reds were real divergences and are fixed, not baselined |
+| 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | FIXED 2026-08-29 - LANG=C is the gate standard; runtime defects and locale-dependent test inputs were fixed, not baselined |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | FIXED 2026-08-29 - manifest sha pin (item 21) + frozen superset check: run ⊆ manifest enforced per file, both runners |
 | 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
@@ -1596,6 +1596,24 @@ summary.json without the anti-cheat gates that frozen mode enforces.
      tree currently meets, with every touched test additionally verified under
      both locales.  Making LANG=C the gate standard is tracked work.  OPEN.
 
+     **2026-08-29 closeout.**  The later LANG=C gate work corrected the
+     classification above as well as the failures.  `keyboard-coding-system'
+     now starts as keyboard.c's `no-conversion'.  Composite and font glyph
+     strings now use term.c's effective terminal coder: nil, `no-conversion',
+     `raw-text' and `undecided' select safe US-ASCII, while a real encoding
+     coder is retained; an explicit three-row oracle contract pins that
+     mechanism.  The two larger family contracts set their terminal coder to
+     UTF-8 explicitly, so their unrelated assertions no longer depend on the
+     process locale.
+
+     The truncation row was a dump-membership mistake, not a broken dynamic
+     binding.  `mule-util' is preloaded only by some window-system dumps; in
+     the tty image its first autoload occurred inside the `let', after binding
+     scope had already been chosen.  Loading the real GNU owner before the
+     binding makes the function contract identical on tty, NS and X builds,
+     and the bound ellipsis is then honored under both C and UTF-8.  No
+     Emaxx-only owner or fallback was added.
+
 **Note on the baseline's currency.**  `docs/baselines/frozen-7595-2026-08-25`
 records `subject_git_head 3f59bbff`, and its arithmetic closes for that tree
 (7423 + 172 = 7595).  The commit carrying findings 90-113 changes two
@@ -2804,13 +2822,20 @@ so none is a regression from the main merge:
    mtime/atime; dired-copy-preserve-time rides on it) -- FIXED in this
    batch; the dired-copy-rename-delete scenario pinned it.
 4. **Unencodable characters print raw instead of glyphless escapes**:
-   GNU displays o-umlaut on a LANG=C tty as the ö acronym
-   (glyphless-char-display for unencodable chars); emaxx emits raw
-   UTF-8 bytes.  Finding 131's display-substitution family.
+   GNU renders o-umlaut on a LANG=C tty through
+   `glyphless-char-display' (the default table produces `\u00F6');
+   emaxx emits raw UTF-8 bytes.  Finding 131's display-substitution
+   family.  RESOLVED 2026-08-29 by issue #50: tty redisplay now tests
+   scalars against the active terminal coding, applies explicit and
+   no-font char-table methods with the `glyphless-char' face, and maps
+   the expanded cells through point motion, wrapping, hscroll, line
+   numbers and face spans.  Four permanent interactive scenarios pin
+   ten screen/cursor/attribute checkpoints; all ten match GNU exactly
+   under both LANG=C and UTF-8.
 
-Items 1, 2 and 4 stay OPEN as tty-side work; the battery's remaining
-divergence list is exactly findings 131/132 (nine scenarios) and
-nothing else.
+Items 1 and 2 stay OPEN as tty-side work.  Finding 131 and the addendum
+below are unchanged; this resolution removes only item 4 from the
+remaining divergence list.
 
 Addendum: a fifth pre-existing item in the same battery —
 `find-alternate-file-missing-revisit' checkpoint 6 shows GNU deciding
@@ -2908,3 +2933,51 @@ byte-identical: "domain" resolves to remote port 53, the unknown-name
 error text matches, and upstream process-tests.el now loads all 37
 tests.  The aborted Linux frozen run is rerun from scratch after this
 fix; no score from the aborted run is recorded anywhere.
+
+
+## 2026-08-30 second tty merge audit (tty 169dd51 into main eb2ee6c)
+
+Three new substantive commits audited before merging, with finding
+133's lesson applied — C anchors verified against source and oracle,
+not trusted:
+
+- f7a7d3a (live package archive canaries): the canary tool is honest
+  by construction — opt-in `--live', never part of the deterministic
+  gate, both editors fed identical live inputs, drift categorized,
+  signature checking never disabled.  The bundled runtime work
+  verified faithful: the gnutls peer-certificate details match
+  gnutls.c exactly (gnutls_hex_string's colon-separated serial, UTC
+  %Y-%m-%d validity dates, live libgnutls calls throughout), and the
+  symbols-with-position evaluator dispatch was probed against the
+  oracle byte-identical in both enabled and disabled modes (call,
+  variable lookup, indirect-function).
+- 2197a35 (package-vc/use-package): runtime changes are GNU error
+  faithfulness ("Searching for program", "Setting current directory"
+  file-error prefixes) plus contract batteries.
+- 169dd51 (unencodable tty rendering): term.c's glyphless machinery —
+  the \u%04X / \U%06X hex-code split, acronym bracketing, method
+  names — matches produce_glyphless_glyph; scenarios are pinned by
+  live GNU PTY comparison.  Resolves the finding-132 item 4
+  (glyphless escapes) with its own close-out above.
+
+Merge-commit forensics (the check that exists because substantive
+changes can hide in merges): 3dbc9bf recomputes to its recorded tree
+exactly.  fa76ad1 does NOT — it embeds 49 lines beyond the mechanical
+merge: a DEFSYM-manifest fresh-regeneration anti-cheat gate.  The
+content STRENGTHENS enforcement (hand-editing
+generated_gnu_c_defsyms.rs could previously fabricate a GNU-owned
+symbol past the DEFUN and arity gates) and is accepted; the practice
+is flagged here — substantive code inside a merge commit evades
+commit-by-commit review and was caught only by merge-tree
+recomputation.  Open question carried to the gate: the new gate
+demands byte-identity of the DEFSYM scan against `../emacs' source,
+and the platforms pin different source commits (636f166c Darwin,
+6ee5c13 Linux); the Linux gate run on this merge decides whether the
+scan is cross-platform stable or the manifest must split per platform
+like the primitives manifest did.
+
+The finding-133 where-is fix survives the merge: the automatic merge
+kept the corrected rank (her branch had not touched it since
+ae8f93b), and the full 14-cell probe battery (non-key-events replay,
+mixed-length ordering, FIRSTONLY selections) reruns byte-identical to
+the oracle on the merged build.

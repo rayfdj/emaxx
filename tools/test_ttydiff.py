@@ -16,6 +16,7 @@ from ttydiff import (
     FIELDNOTES_ADVANCED_SCENARIO_NAMES,
     FIELDNOTES_SCENARIO_NAMES,
     FILE_LIFECYCLE_SCENARIO_NAMES,
+    GLYPHLESS_DISPLAY_SCENARIO_NAMES,
     HELP_FILE_DIRED_SCENARIO_NAMES,
     HIGH_VALUE_COMMAND_SCENARIO_NAMES,
     PACKAGE_MENU_SCENARIO_NAMES,
@@ -130,6 +131,7 @@ class Vt100ScreenTests(unittest.TestCase):
         by_name = {entry[0]: entry for entry in SCENARIOS}
         groups = (
             CORE_FREQUENCY_SCENARIO_NAMES,
+            GLYPHLESS_DISPLAY_SCENARIO_NAMES,
             HELP_FILE_DIRED_SCENARIO_NAMES,
             HIGH_VALUE_COMMAND_SCENARIO_NAMES,
             ADVERSARIAL_COMMAND_SCENARIO_NAMES,
@@ -147,6 +149,34 @@ class Vt100ScreenTests(unittest.TestCase):
                 self.assertTrue(by_name[name][2])
                 self.assertTrue(all(isinstance(item, Action) for item in by_name[name][2]))
                 self.assertTrue(any(item.checkpoint for item in by_name[name][2]))
+
+    def test_glyphless_journey_keeps_real_scalars_and_per_character_motion(self) -> None:
+        self.assertEqual(
+            GLYPHLESS_DISPLAY_SCENARIO_NAMES,
+            (
+                "glyphless-unencodable-motion",
+                "glyphless-unencodable-wrap",
+                "glyphless-unencodable-hscroll",
+                "glyphless-unencodable-hscroll-line-numbers",
+            ),
+        )
+        scenarios = {entry[0]: entry for entry in SCENARIOS}
+        scenario = scenarios["glyphless-unencodable-motion"]
+        self.assertEqual(scenario[1], "AöB€CλD\n")
+        self.assertEqual(len(scenario[2]), 7)
+        self.assertTrue(all(action.keys == b"\x06" for action in scenario[2]))
+        self.assertEqual(
+            scenarios["glyphless-unencodable-wrap"][1],
+            "x" * 76 + "öZ\n",
+        )
+        self.assertIn(
+            b"set-window-hscroll nil 3",
+            scenarios["glyphless-unencodable-hscroll"][2][0].keys,
+        )
+        self.assertIn(
+            b"display-line-numbers t",
+            scenarios["glyphless-unencodable-hscroll-line-numbers"][2][0].keys,
+        )
 
     def test_seeded_safe_actions_are_reproducible_complete_commands(self) -> None:
         first = seeded_safe_actions(7595, 24)

@@ -957,6 +957,26 @@ pub(crate) fn encode_raw_text_bytes(text: &str) -> Result<Vec<u8>, LispError> {
     Ok(bytes)
 }
 
+/// Bytes stored by a multibyte Emacs buffer when conversion is disabled.
+/// Ordinary characters use Emacs's UTF-8-compatible internal spelling;
+/// byte8 marker characters remain their original single octet.  Treating
+/// every Latin-1 character as a byte corrupts no-conversion `.elc' output
+/// (for example U+00A7 must be C2 A7, not A7).
+pub(crate) fn encode_internal_multibyte_bytes(text: &str) -> Result<Vec<u8>, LispError> {
+    let mut bytes = Vec::with_capacity(text.len());
+    for ch in text.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            bytes.push(byte);
+        } else if ch == json::INVALID_UNICODE_SENTINEL {
+            return Err(LispError::TypeError("character".into(), "string".into()));
+        } else {
+            let mut encoded = [0u8; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+        }
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn encode_iso_latin_bytes(text: &str) -> Result<Vec<u8>, LispError> {
     encode_raw_text_bytes(text)
 }

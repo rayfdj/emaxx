@@ -625,8 +625,9 @@ define_dispatch!(
                         .lookup_var("default-directory", env)
                         .and_then(|value| string_like(&value).map(|string| string.text)),
                 };
-                Ok(Value::String(
-                    expand_file_name_runtime(interp, env, &path, base.as_deref())?.into(),
+                Ok(string_like_value(
+                    expand_file_name_runtime(interp, env, &path, base.as_deref())?,
+                    Vec::new(),
                 ))
             }
             "substitute-in-file-name" => {

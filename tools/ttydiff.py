@@ -1693,7 +1693,58 @@ CORE_FREQUENCY_SCENARIO_NAMES = (
     "core-prefix-and-undo",
 )
 
+GLYPHLESS_DISPLAY_SCENARIO_NAMES = (
+    "glyphless-unencodable-motion",
+    "glyphless-unencodable-wrap",
+    "glyphless-unencodable-hscroll",
+    "glyphless-unencodable-hscroll-line-numbers",
+)
+
 SCENARIOS += [
+    (
+        "glyphless-unencodable-motion",
+        "AöB€CλD\n",
+        [
+            action("forward-over-ascii-a", b"\x06"),
+            action("forward-over-o-umlaut", b"\x06"),
+            action("forward-over-ascii-b", b"\x06"),
+            action("forward-over-euro", b"\x06"),
+            action("forward-over-ascii-c", b"\x06"),
+            action("forward-over-lambda", b"\x06"),
+            action("forward-over-ascii-d", b"\x06"),
+        ],
+    ),
+    (
+        "glyphless-unencodable-wrap",
+        "x" * 76 + "öZ\n",
+        [action("end-of-wrapped-line", b"\x05")],
+    ),
+    (
+        "glyphless-unencodable-hscroll",
+        "ABöCDEFG\n",
+        [
+            action(
+                "hscroll-through-glyphless-escape",
+                b"\x1b:(progn (setq auto-hscroll-mode nil truncate-lines t) "
+                b"(set-window-hscroll nil 3))\r",
+                settle=2.0,
+                quiet=0.5,
+            )
+        ],
+    ),
+    (
+        "glyphless-unencodable-hscroll-line-numbers",
+        "ABöCDEFG\n",
+        [
+            action(
+                "hscroll-through-glyphless-escape-with-line-numbers",
+                b"\x1b:(progn (setq auto-hscroll-mode nil truncate-lines t "
+                b"display-line-numbers t) (set-window-hscroll nil 3))\r",
+                settle=2.0,
+                quiet=0.5,
+            )
+        ],
+    ),
     (
         "core-character-motion",
         CORE_EDIT_SAMPLE,

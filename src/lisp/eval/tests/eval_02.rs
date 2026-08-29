@@ -730,6 +730,22 @@ fn expand_file_name_uses_dynamic_default_directory() {
 }
 
 #[test]
+fn expand_file_name_result_keeps_identity_when_nested_then_rebound() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let* ((state (list (expand-file-name "child")))
+                   (first (car state))
+                   (second (car state)))
+              (list (eq first second)
+                    (eq first (expand-file-name "child"))))
+            "#,
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn custom_current_group_alist_defaults_to_nil() {
     assert_eq!(
         eval_str_with_upstream_batch("custom-current-group-alist"),
@@ -1398,6 +1414,101 @@ fn byte_compile_file_loads_macro_expanded_function_bodies() {
     let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(result, Value::Integer(-7));
+}
+
+#[test]
+fn byte_compile_file_evaluates_positioned_macro_conditions() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-positioned-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("positioned.el");
+    let dest_path = dir.join("positioned.elc");
+    std::fs::write(
+        &source_path,
+        ";;; -*- lexical-binding: t -*-\n\
+         (eval-when-compile\n\
+           (defmacro positioned-static-if (condition then-form &rest else-forms)\n\
+             (if (eval condition lexical-binding)\n\
+                 then-form\n\
+               (cons 'progn else-forms))))\n\
+         (defun positioned-static-result ()\n\
+           \"A § dynamic docstring also exercises the compiled file marker.\"\n\
+           (positioned-static-if (fboundp 'car) 41 9))\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((byte-compile-dest-file-function (lambda (_) {dest_path:?})))
+              (list (byte-compile-file {source_path:?})
+                    (progn
+                      (load {dest_path:?} nil 'nomessage)
+                      (positioned-static-result))))
+            "#,
+        source_path = source_path.display().to_string(),
+        dest_path = dest_path.display().to_string(),
+    );
+
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
+    let compiled = std::fs::read(&dest_path).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::list([Value::T, Value::Integer(41)]));
+    assert!(
+        compiled
+            .windows(b"(#$ . ".len())
+            .any(|bytes| bytes == b"(#$ . "),
+        "byte compiler must preserve GNU's #$ compiled-file substitution"
+    );
+    assert!(
+        compiled.windows(2).any(|bytes| bytes == [0xC2, 0xA7]),
+        "no-conversion must retain multibyte buffer text in utf-8-emacs form"
+    );
+}
+
+#[test]
+fn genuine_bytecode_special_bindings_hide_caller_lexicals() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (require 'bytecomp)
+           (defvar bytecode-special-scope-probe 'global)
+           (defun bytecode-special-scope-probe-fn (fresh)
+             (let ((bytecode-special-scope-probe fresh))
+               bytecode-special-scope-probe))
+           (byte-compile 'bytecode-special-scope-probe-fn))",
+    );
+    let mut caller_env = vec![
+        vec![(
+            "bytecode-special-scope-probe".into(),
+            Value::Symbol("stale-caller-lexical".into()),
+        )]
+        .into(),
+    ];
+
+    let actual = interp
+        .call_function_value(
+            Value::Symbol("bytecode-special-scope-probe-fn".into()),
+            Some("bytecode-special-scope-probe-fn"),
+            &[Value::Symbol("fresh-dynamic".into())],
+            &mut caller_env,
+        )
+        .expect("call compiled special-binding probe");
+
+    assert_eq!(actual, Value::Symbol("fresh-dynamic".into()));
+    assert_eq!(
+        interp
+            .symbol_value_cell("bytecode-special-scope-probe")
+            .expect("restored global binding"),
+        Value::Symbol("global".into())
+    );
 }
 
 #[test]
@@ -5076,25 +5187,20 @@ fn char_width_matches_string_width_for_single_characters() {
 
 #[test]
 fn truncate_string_to_width_uses_display_columns() {
-    // GNU preloads international/mule-util.el, the Elisp owner of
-    // `truncate-string-to-width', in its dumped image.
+    // mule-util is preloaded only by some window-system dumps.  Load its real
+    // GNU owner before binding its variable so this function contract is the
+    // same on tty, NS, and X builds instead of depending on dump membership.
     assert_eq!(
         eval_str_with_upstream_batch(
-            // mule-util.el's `truncate-string-ellipsis' falls back to "..."
-            // when U+2026 is not displayable, which is the case under LANG=C
-            // -- verified against the oracle, which returns "hun2..." there
-            // and "h\u{2026}" in a UTF-8 locale.  Pinning the variable makes
-            // the answer "h\u{2026}" in BOTH locales, which is the contract
-            // asserted below.  NOTE (finding 113): Emaxx does not yet honour
-            // the binding, so this test is still red under LANG=C -- the pin
-            // is a correct spec, not a fix.
-            "(let ((truncate-string-ellipsis \"\u{2026}\"))
-                   (list (truncate-string-to-width \"abcdef\" 3)
+            "(progn
+               (require 'mule-util)
+               (let ((truncate-string-ellipsis \"\u{2026}\"))
+                 (list (truncate-string-to-width \"abcdef\" 3)
                        (truncate-string-to-width \"界a\" 2)
                        (truncate-string-to-width \"a\" 3 0 ?.)
                        (truncate-string-to-width \"abcdef\" 4 2)
                        (truncate-string-to-width \"hun2\" 2 0 nil t)
-                       (truncate-string-to-width \"hi\" 2 0 nil t)))"
+                       (truncate-string-to-width \"hi\" 2 0 nil t))))"
         ),
         Value::list([
             Value::String("abc".into()),
