@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::eval::{GnuTlsSessionApi, ProcessGnuTlsSession};
+use chrono::{DateTime, Utc};
 use libloading::Library;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use zeroize::Zeroizing;
@@ -76,6 +77,13 @@ type CertificateVerifyPeers =
 type CertificateGetPeers = unsafe extern "C" fn(*mut c_void, *mut c_uint) -> *const GnuTlsDatum;
 type SessionAlgorithm = unsafe extern "C" fn(*mut c_void) -> c_int;
 type X509CrtGetDn = unsafe extern "C" fn(*mut c_void, *mut c_char, *mut usize) -> c_int;
+type X509CrtGetVersion = unsafe extern "C" fn(*mut c_void) -> c_uint;
+type X509CrtGetSerial = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut usize) -> c_int;
+type X509CrtGetTime = unsafe extern "C" fn(*mut c_void) -> libc::time_t;
+type X509CrtGetPkAlgorithm = unsafe extern "C" fn(*mut c_void, *mut c_uint) -> c_int;
+type X509CrtGetSignatureAlgorithm = unsafe extern "C" fn(*mut c_void) -> c_int;
+type X509CrtExport2 = unsafe extern "C" fn(*mut c_void, c_int, *mut GnuTlsDatum) -> c_int;
+type PkBitsToSecParam = unsafe extern "C" fn(c_int, c_uint) -> c_int;
 
 #[repr(C)]
 struct GnuTlsDatum {
@@ -153,6 +161,17 @@ struct GnuTlsApi {
     x509_crt_print: X509CrtPrint,
     x509_crt_get_issuer_dn: X509CrtGetDn,
     x509_crt_get_dn: X509CrtGetDn,
+    x509_crt_get_version: X509CrtGetVersion,
+    x509_crt_get_serial: X509CrtGetSerial,
+    x509_crt_get_activation_time: X509CrtGetTime,
+    x509_crt_get_expiration_time: X509CrtGetTime,
+    x509_crt_get_pk_algorithm: X509CrtGetPkAlgorithm,
+    x509_crt_get_signature_algorithm: X509CrtGetSignatureAlgorithm,
+    x509_crt_export2: X509CrtExport2,
+    pk_algorithm_name: AlgorithmName,
+    sign_algorithm_name: AlgorithmName,
+    pk_bits_to_sec_param: PkBitsToSecParam,
+    sec_param_name: AlgorithmName,
     free: GnuTlsFree,
     error_is_fatal: ErrorIsFatal,
     error_string: ErrorString,
@@ -319,6 +338,29 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
                 x509_crt_print: load_symbol(&library, b"gnutls_x509_crt_print")?,
                 x509_crt_get_issuer_dn: load_symbol(&library, b"gnutls_x509_crt_get_issuer_dn")?,
                 x509_crt_get_dn: load_symbol(&library, b"gnutls_x509_crt_get_dn")?,
+                x509_crt_get_version: load_symbol(&library, b"gnutls_x509_crt_get_version")?,
+                x509_crt_get_serial: load_symbol(&library, b"gnutls_x509_crt_get_serial")?,
+                x509_crt_get_activation_time: load_symbol(
+                    &library,
+                    b"gnutls_x509_crt_get_activation_time",
+                )?,
+                x509_crt_get_expiration_time: load_symbol(
+                    &library,
+                    b"gnutls_x509_crt_get_expiration_time",
+                )?,
+                x509_crt_get_pk_algorithm: load_symbol(
+                    &library,
+                    b"gnutls_x509_crt_get_pk_algorithm",
+                )?,
+                x509_crt_get_signature_algorithm: load_symbol(
+                    &library,
+                    b"gnutls_x509_crt_get_signature_algorithm",
+                )?,
+                x509_crt_export2: load_symbol(&library, b"gnutls_x509_crt_export2")?,
+                pk_algorithm_name: load_symbol(&library, b"gnutls_pk_algorithm_get_name")?,
+                sign_algorithm_name: load_symbol(&library, b"gnutls_sign_get_name")?,
+                pk_bits_to_sec_param: load_symbol(&library, b"gnutls_pk_bits_to_sec_param")?,
+                sec_param_name: load_symbol(&library, b"gnutls_sec_param_get_name")?,
                 free: load_data_symbol(&library, b"gnutls_free")?,
                 error_is_fatal: load_symbol(&library, b"gnutls_error_is_fatal")?,
                 error_string: load_symbol(&library, b"gnutls_strerror")?,
@@ -1148,6 +1190,56 @@ fn x509_distinguished_name(get_name: X509CrtGetDn, certificate: *mut c_void) -> 
     Some(String::from_utf8_lossy(&output).into_owned())
 }
 
+fn x509_serial_number(api: &GnuTlsApi, certificate: *mut c_void) -> Option<String> {
+    let mut size = 0;
+    // SAFETY: A null output pointer is GnuTLS's documented size probe.
+    let _ = unsafe { (api.x509_crt_get_serial)(certificate, std::ptr::null_mut(), &mut size) };
+    if size == 0 {
+        return None;
+    }
+    let mut serial = vec![0_u8; size];
+    // SAFETY: SERIAL is writable for SIZE bytes and CERTIFICATE is live.
+    if unsafe { (api.x509_crt_get_serial)(certificate, serial.as_mut_ptr().cast(), &mut size) } < 0
+    {
+        return None;
+    }
+    serial.truncate(size.min(serial.len()));
+    Some(
+        serial
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
+}
+
+fn x509_date(get_time: X509CrtGetTime, certificate: *mut c_void) -> Option<String> {
+    // SAFETY: CERTIFICATE is a live imported X.509 handle.
+    let timestamp = unsafe { get_time(certificate) };
+    DateTime::<Utc>::from_timestamp(timestamp, 0).map(|date| date.format("%Y-%m-%d").to_string())
+}
+
+fn x509_pem(api: &GnuTlsApi, certificate: *mut c_void) -> Option<String> {
+    let mut output = GnuTlsDatum {
+        data: std::ptr::null_mut(),
+        size: 0,
+    };
+    // GNUTLS_X509_FMT_PEM = 1.  GnuTLS allocates OUTPUT through its public
+    // allocator and transfers ownership to the caller on success.
+    // SAFETY: CERTIFICATE is live and OUTPUT is writable.
+    if unsafe { (api.x509_crt_export2)(certificate, 1, &mut output) } < 0 || output.data.is_null() {
+        return None;
+    }
+    // SAFETY: Successful export returned OUTPUT.SIZE initialized bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(output.data, output.size as usize) };
+    let pem = String::from_utf8_lossy(bytes)
+        .trim_end_matches('\0')
+        .to_string();
+    // SAFETY: GnuTLS allocated OUTPUT.DATA and requires its matching free.
+    unsafe { (api.free)(output.data.cast()) };
+    Some(pem)
+}
+
 fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
     let mut count = 0;
     // SAFETY: STATE is a successfully handshaken session; GnuTLS owns the
@@ -1176,15 +1268,72 @@ fn peer_certificates(api: &GnuTlsApi, state: *mut c_void) -> Vec<Value> {
             if unsafe { (api.x509_crt_import)(certificate.pointer, peer, 0) } < 0 {
                 return None;
             }
-            let mut details = Vec::new();
+            let mut details = vec![
+                Value::symbol(":version"),
+                Value::Integer(i64::from(unsafe {
+                    // SAFETY: CERTIFICATE is a live imported X.509 handle.
+                    (api.x509_crt_get_version)(certificate.pointer)
+                })),
+            ];
+            if let Some(serial) = x509_serial_number(api, certificate.pointer) {
+                details.extend([
+                    Value::symbol(":serial-number"),
+                    Value::String(serial.into()),
+                ]);
+            }
             if let Some(issuer) =
                 x509_distinguished_name(api.x509_crt_get_issuer_dn, certificate.pointer)
             {
                 details.extend([Value::symbol(":issuer"), Value::String(issuer.into())]);
             }
+            if let Some(valid_from) =
+                x509_date(api.x509_crt_get_activation_time, certificate.pointer)
+            {
+                details.extend([
+                    Value::symbol(":valid-from"),
+                    Value::String(valid_from.into()),
+                ]);
+            }
+            if let Some(valid_to) = x509_date(api.x509_crt_get_expiration_time, certificate.pointer)
+            {
+                details.extend([Value::symbol(":valid-to"), Value::String(valid_to.into())]);
+            }
             if let Some(subject) = x509_distinguished_name(api.x509_crt_get_dn, certificate.pointer)
             {
                 details.extend([Value::symbol(":subject"), Value::String(subject.into())]);
+            }
+            let mut public_key_bits = 0;
+            // SAFETY: CERTIFICATE is live and PUBLIC_KEY_BITS is writable.
+            let public_key = unsafe {
+                (api.x509_crt_get_pk_algorithm)(certificate.pointer, &mut public_key_bits)
+            };
+            // SAFETY: Algorithm-name functions return library-owned static strings.
+            if let Some(name) = unsafe { c_string((api.pk_algorithm_name)(public_key)) } {
+                details.extend([
+                    Value::symbol(":public-key-algorithm"),
+                    Value::String(name.into()),
+                ]);
+            }
+            // SAFETY: PUBLIC_KEY and PUBLIC_KEY_BITS came from this certificate;
+            // the security-parameter name is library-owned static storage.
+            let security_parameter =
+                unsafe { (api.pk_bits_to_sec_param)(public_key, public_key_bits) };
+            if let Some(name) = unsafe { c_string((api.sec_param_name)(security_parameter)) } {
+                details.extend([
+                    Value::symbol(":certificate-security-level"),
+                    Value::String(name.into()),
+                ]);
+            }
+            // SAFETY: CERTIFICATE is live and the name pointer is static.
+            let signature = unsafe { (api.x509_crt_get_signature_algorithm)(certificate.pointer) };
+            if let Some(name) = unsafe { c_string((api.sign_algorithm_name)(signature)) } {
+                details.extend([
+                    Value::symbol(":signature-algorithm"),
+                    Value::String(name.into()),
+                ]);
+            }
+            if let Some(pem) = x509_pem(api, certificate.pointer) {
+                details.extend([Value::symbol(":pem"), Value::String(pem.into())]);
             }
             Some(Value::list(details))
         })

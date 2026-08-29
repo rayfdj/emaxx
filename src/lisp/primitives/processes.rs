@@ -51,7 +51,7 @@ pub(crate) fn run_external_process(
 
     let mut command = Command::new(program);
     command.args(argv);
-    configure_external_command(interp, env, &mut command);
+    configure_external_command(interp, env, &mut command)?;
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, false);
     command.stdin(if input.is_some() {
@@ -61,9 +61,13 @@ pub(crate) fn run_external_process(
     });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| LispError::SignalValue(file_error_value(&error.to_string(), program)))?;
+    let mut child = command.spawn().map_err(|error| {
+        LispError::SignalValue(file_operation_error_value(
+            "Searching for program",
+            &error,
+            program,
+        ))
+    })?;
     if let Some(stdin_data) = input
         && let Some(mut stdin) = child.stdin.take()
     {
@@ -76,7 +80,11 @@ pub(crate) fn run_external_process(
         .map_err(|error| LispError::Signal(error.to_string()))
 }
 
-pub(crate) fn configure_external_command(interp: &Interpreter, env: &Env, command: &mut Command) {
+pub(crate) fn configure_external_command(
+    interp: &Interpreter,
+    env: &Env,
+    command: &mut Command,
+) -> Result<(), LispError> {
     if let Some(default_directory) = interp
         .lookup_var("default-directory", env)
         .and_then(|value| string_like(&value).map(|string| string.text))
@@ -86,9 +94,26 @@ pub(crate) fn configure_external_command(interp: &Interpreter, env: &Env, comman
         // retain Lisp's logical remote directory while its transport runs the
         // actual program locally, so resolve it through the same path policy
         // as every other host filesystem operation.
-        command.current_dir(resolve_file_name_in_env(interp, env, &default_directory));
+        let directory = resolve_file_name_in_env(interp, env, &default_directory);
+        let metadata = fs::metadata(&directory).map_err(|error| {
+            LispError::SignalValue(file_operation_error_value(
+                "Setting current directory",
+                &error,
+                &directory,
+            ))
+        })?;
+        if !metadata.is_dir() {
+            let error = std::io::Error::from(ErrorKind::NotADirectory);
+            return Err(LispError::SignalValue(file_operation_error_value(
+                "Setting current directory",
+                &error,
+                &directory,
+            )));
+        }
+        command.current_dir(directory);
     }
     apply_process_environment(interp, env, command);
+    Ok(())
 }
 
 pub(crate) fn spawn_persistent_process(
@@ -104,7 +129,7 @@ pub(crate) fn spawn_persistent_process(
 
     let mut command = Command::new(program);
     command.args(argv);
-    configure_external_command(interp, env, &mut command);
+    configure_external_command(interp, env, &mut command)?;
 
     let default_pty = interp
         .lookup_var("process-connection-type", env)

@@ -503,17 +503,21 @@ pub(crate) fn write_region_value_with_logical_path(
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);
     validate_file_name(&path)?;
-    let text = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
-        interp.buffer.buffer_string()
+    let (text, source_multibyte) = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
+        (interp.buffer.buffer_string(), interp.buffer.is_multibyte())
     } else if string_like(&args[0]).is_some() {
-        string_text(&args[0])?
+        let string = string_like(&args[0]).expect("checked string-like value");
+        (string.text, string.multibyte)
     } else {
         let start = position_from_value(interp, &args[0])?;
         let end = position_from_value(interp, &args[1])?;
-        interp
-            .buffer
-            .buffer_substring(start, end)
-            .map_err(|error| LispError::Signal(error.to_string()))?
+        (
+            interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?,
+            interp.buffer.is_multibyte(),
+        )
     };
     let visiting = args
         .get(4)
@@ -522,7 +526,14 @@ pub(crate) fn write_region_value_with_logical_path(
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
-    let bytes = encode_text_bytes(interp, &text, &coding, inhibit_eol_conversion)?;
+    let no_conversion = interp
+        .coding_system_base_name(&coding)
+        .is_some_and(|base| base == "no-conversion");
+    let bytes = if no_conversion && source_multibyte {
+        encode_internal_multibyte_bytes(&text)?
+    } else {
+        encode_text_bytes(interp, &text, &coding, inhibit_eol_conversion)?
+    };
     if let Some(mustbenew) = args.get(6).filter(|value| value.is_truthy())
         && fs::symlink_metadata(&path).is_ok()
     {

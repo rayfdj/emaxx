@@ -617,6 +617,46 @@ pub(crate) fn gnu_c_manifest_matches_fresh_regeneration() {
     let _ = fs::remove_file(&fresh_path);
 }
 
+pub(crate) fn gnu_c_defsym_manifest_matches_fresh_regeneration() {
+    // DEFSYM names are interned into the production obarray during image
+    // construction.  A hand edit could therefore fabricate a GNU-owned
+    // symbol even though the DEFUN manifest and native-dispatch gates stay
+    // clean.  Regenerate the source-level inventory from the pinned sibling
+    // checkout and require byte identity.
+    let root = repo_root();
+    let oracle = root.join("../emacs/src/emacs");
+    assert!(
+        oracle.exists(),
+        "pinned GNU sibling checkout required for the DEFSYM manifest regeneration gate"
+    );
+    let fresh_path =
+        std::env::temp_dir().join(format!("emaxx-defsym-regen-{}.rs", std::process::id()));
+    let status = std::process::Command::new(&oracle)
+        .current_dir(root)
+        .args([
+            "-Q",
+            "--batch",
+            "-l",
+            "compat/generate_gnu_c_defsym_manifest.el",
+            "--eval",
+            &format!(
+                "(emaxx-generate-gnu-c-defsym-manifest \"../emacs/src\" {:?})",
+                fresh_path.display().to_string()
+            ),
+        ])
+        .status()
+        .expect("run the GNU C DEFSYM manifest generator with the oracle binary");
+    assert!(status.success(), "DEFSYM manifest generator failed");
+    let fresh = fs::read_to_string(&fresh_path).expect("read regenerated DEFSYM manifest");
+    let committed = fs::read_to_string(root.join("src/lisp/primitives/generated_gnu_c_defsyms.rs"))
+        .expect("read committed DEFSYM manifest");
+    assert_eq!(
+        fresh, committed,
+        "committed GNU C DEFSYM manifest does not match fresh regeneration from the pinned checkout"
+    );
+    let _ = fs::remove_file(&fresh_path);
+}
+
 pub(crate) fn builtin_arities_match_fresh_regeneration() {
     // The arities manifest feeds native dispatch arity checks and
     // interactive forms.  A hand edit could widen an arity or forge an
@@ -735,6 +775,10 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             gnu_c_manifest_matches_fresh_regeneration as fn(),
         ),
         (
+            "gnu_c_defsym_manifest_matches_fresh_regeneration",
+            gnu_c_defsym_manifest_matches_fresh_regeneration as fn(),
+        ),
+        (
             "builtin_arities_match_fresh_regeneration",
             builtin_arities_match_fresh_regeneration as fn(),
         ),
@@ -810,6 +854,11 @@ mod gate_tests {
     #[test]
     fn gnu_c_manifest_matches_fresh_regeneration() {
         super::gnu_c_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn gnu_c_defsym_manifest_matches_fresh_regeneration() {
+        super::gnu_c_defsym_manifest_matches_fresh_regeneration();
     }
 
     #[test]
