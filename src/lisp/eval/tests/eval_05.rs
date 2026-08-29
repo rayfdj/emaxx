@@ -6642,6 +6642,26 @@ fn upstream_lisp_test_interpreter(test_file: &str) -> Interpreter {
         Value::String(data_directory.into()),
         &mut env,
     );
+    // GNU's test driver and the compat harness's isolated checkout both run
+    // test files with a writable `default-directory'; eieio-test-persist,
+    // for one, writes "test-psN.pt" straight into it.  This in-process
+    // harness starts in the workspace (read-only for the unprivileged gate
+    // user, and not a place tests may litter either way), so give each
+    // interpreter its own disposable directory instead.
+    let scratch_directory = std::env::temp_dir().join(format!(
+        "emaxx-upstream-lisp-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&scratch_directory).expect("create upstream test scratch directory");
+    interp.set_variable(
+        "default-directory",
+        Value::String(crate::lisp::primitives::path_to_directory_string(&scratch_directory).into()),
+        &mut env,
+    );
     // The compatibility harness passes `-l ert' before loading every test
     // file.  Emaxx also has native bootstrap ERT forms, so relying on the
     // test file's `(require 'ert)' would leave that already-provided feature

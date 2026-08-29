@@ -1604,11 +1604,14 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let coding = checked_coding_name(interp, &args[0])?;
-                interp.set_keyboard_coding_system(coding.clone());
-                Ok(coding
-                    .map(|value| Value::Symbol(value.into()))
-                    .unwrap_or(Value::Nil))
+                // A nil CODING means "no decoding": GNU stores raw
+                // keyboard input and (keyboard-coding-system) reads back
+                // `no-conversion', not nil (oracle-pinned).  coding.c's
+                // Fset_keyboard_coding_system_internal returns nil always.
+                let coding =
+                    checked_coding_name(interp, &args[0])?.or_else(|| Some("no-conversion".into()));
+                interp.set_keyboard_coding_system(coding);
+                Ok(Value::Nil)
             }
             "find-operation-coding-system" => find_operation_coding_system_value(interp, args, env),
             "set-coding-system-priority" => {

@@ -3843,7 +3843,10 @@ impl Interpreter {
             coding_aliases: builtin_coding_aliases(),
             coding_priority: builtin_coding_priority(),
             terminal_coding: None,
-            keyboard_coding: None,
+            // keyboard.c initializes keyboard decoding to no-conversion; a
+            // batch GNU answers `no-conversion' for (keyboard-coding-system)
+            // before any Lisp touches it (oracle-pinned under LANG=C).
+            keyboard_coding: Some("no-conversion".into()),
             input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_table_id: None,

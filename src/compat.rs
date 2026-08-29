@@ -349,6 +349,57 @@ pub fn load_oracle_lock() -> Result<OracleLock, String> {
     Ok(lock)
 }
 
+/// Serializes process-environment mutation against interpreter boots.
+/// Boot paths read EMAXX_DUMP_SOURCE_DIRECTORY / EMACS_TEST_DIRECTORY while
+/// resolving their Lisp tree; a test that points those at a fixture root
+/// while another thread boots sends that boot into the fixture.  Boots hold
+/// READ for the duration of initialization; env-mutating tests hold WRITE
+/// across their set-var/restore span.  A boot performed BY the mutating
+/// test itself (that is the point of such tests) skips the read
+/// acquisition via the thread-local write marker, since an RwLock is not
+/// reentrant.
+fn boot_environment_lock() -> &'static std::sync::RwLock<()> {
+    static LOCK: std::sync::OnceLock<std::sync::RwLock<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::RwLock::new(()))
+}
+
+thread_local! {
+    static BOOT_ENV_WRITE_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub struct BootEnvironmentWriteGuard {
+    _guard: std::sync::RwLockWriteGuard<'static, ()>,
+}
+
+impl Drop for BootEnvironmentWriteGuard {
+    fn drop(&mut self) {
+        BOOT_ENV_WRITE_HELD.with(|held| held.set(false));
+    }
+}
+
+/// Take the boot-environment write lock before mutating the process
+/// environment a boot consults.  Hold the guard across set-var AND restore.
+pub fn lock_boot_environment_for_write() -> BootEnvironmentWriteGuard {
+    let guard = boot_environment_lock()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    BOOT_ENV_WRITE_HELD.with(|held| held.set(true));
+    BootEnvironmentWriteGuard { _guard: guard }
+}
+
+/// The boot-side read acquisition; None when this very thread holds the
+/// write guard (its own boot is the one the mutation is FOR).
+pub fn boot_environment_read_guard() -> Option<std::sync::RwLockReadGuard<'static, ()>> {
+    if BOOT_ENV_WRITE_HELD.with(std::cell::Cell::get) {
+        return None;
+    }
+    Some(
+        boot_environment_lock()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 pub fn load_oracle_local_config() -> Result<OracleLocalConfig, String> {
     read_json_file(&oracle_local_path())
 }
@@ -459,10 +510,47 @@ pub fn configure_upstream_like_env_with_home(
 }
 
 pub fn emaxx_upstream_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
-    if let Ok(paths) = upstream_repo_load_path(emacs_repo) {
-        return Ok(paths);
+    // Finding 130: when an oracle binary EXISTS, a failed probe must be
+    // LOUD, not silently degrade to the manual tree walk -- the walk does
+    // not produce the same list, so the interpreter would boot different
+    // Lisp than the oracle with nothing in any log saying so.  The manual
+    // walk remains the standalone-editor path for a sibling checkout with
+    // no built binary.  Transient spawn failures (fork under memory
+    // pressure in a loaded test process) get a short bounded retry first.
+    let oracle_binary_present = oracle_binary_for_repo(emacs_repo)
+        .map(|binary| binary.is_file())
+        .unwrap_or(false);
+    let mut last_error = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(200 << attempt));
+        }
+        match upstream_repo_load_path(emacs_repo) {
+            Ok(paths) => return Ok(paths),
+            Err(error) => last_error = error,
+        }
+        if !oracle_binary_present {
+            break;
+        }
+    }
+    if oracle_binary_present {
+        return Err(format!(
+            "oracle load-path probe failed and the silent manual-walk \
+             fallback is disabled while an oracle binary exists \
+             (finding 130): {last_error}"
+        ));
     }
     repo_local_elisp_load_path(emacs_repo)
+}
+
+fn oracle_binary_for_repo(emacs_repo: &Path) -> Result<PathBuf, String> {
+    let repo_root = canonicalize_path(emacs_repo)?;
+    Ok(match load_oracle_local_config() {
+        Ok(local) if canonicalize_path(&local.emacs_repo).ok().as_ref() == Some(&repo_root) => {
+            local.emacs_binary
+        }
+        _ => emacs_repo.join("src/emacs"),
+    })
 }
 
 fn upstream_repo_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
