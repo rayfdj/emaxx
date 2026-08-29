@@ -124,19 +124,28 @@ self-contained under /usr/local/lib/emaxx-rustfmt).
 Baseline list (lib stage 2180 passed / 16 failed / 4 ignored; bins and
 integration fully green):
 
-Environmental (6):
+Environmental (7):
 ```
 lisp::eval::tests::eval_01::subprocess_exit_is_event_driven_and_notifies_newest_process_first_once
 lisp::eval::tests::eval_02::truncate_string_to_width_uses_display_columns
 lisp::eval::tests::eval_05::eshell_internal_command_feeds_external_pipeline_before_returning
+lisp::primitives::tests::accept_process_output_honors_seconds_with_no_millis_argument
 lisp::primitives::tests::accept_process_output_ignores_distractor_output_until_target_delivers
 lisp::primitives::tests::accept_process_output_without_timeout_waits_for_requested_process
 lisp::primitives::tests::make_network_process_ipv6_family_uses_an_ipv6_listener
 ```
-The first passes 3/3 solo — the finding-117 load/timing cluster
-(task #25), joined by the two accept-process-output siblings and the
-eshell pipeline.  IPv6 is the container kernel.  truncate is the
-Darwin-image loadup contract (mule-util under the ns feature).
+The subprocess/accept names are the finding-117 delivery-ordering
+cluster (task #25), and they are BISTABLE, not merely flaky:
+`honors_seconds' fails 3/3 solo on an idle box (the printf child
+exits before accept-process-output runs, and emaxx batches the
+output and the exit sentinel into one delivery where GNU returns
+after the output batch) yet passed the load-heavy run that recorded
+the original second-era list — the load decides which side of the
+race the host lands on, in either direction, so a member of this
+cluster flapping between runs is the documented expectation until
+task #25 fixes the delivery ordering itself.  IPv6 is the container
+kernel.  truncate is the Darwin-image loadup contract (mule-util
+under the ns feature).
 
 Real divergences, newly measurable and queued for fixes (10) — the
 old oracle could not answer these probes at all; the rebuilt one
