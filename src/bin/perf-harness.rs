@@ -217,8 +217,12 @@ struct Context {
 }
 
 fn load_context() -> Result<Context, String> {
-    let lock = compat::load_oracle_lock()?;
+    // Per-platform lock, keyed by the local oracle's reported configuration
+    // (same rule as the compat harness): each platform validates against
+    // its own pin only.
     let local = compat::load_oracle_local_config()?;
+    let configuration = compat::oracle_reported_configuration(&local.emacs_binary)?;
+    let lock = compat::load_oracle_lock_for_configuration(&configuration)?;
     compat::validate_oracle(&lock, &local)?;
     Ok(Context { lock, local })
 }
