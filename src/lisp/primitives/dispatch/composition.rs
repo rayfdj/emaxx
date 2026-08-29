@@ -348,7 +348,7 @@ fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError
         || matches!(value, Value::Terminal(0))
         || matches!(value, Value::Frame(id) if interp.frame_is_live(*id))
     {
-        Ok(Value::symbol("utf-8-unix"))
+        Ok(Value::symbol(&interp.effective_terminal_coding_system()))
     } else {
         Err(wrong_type_argument("terminal-live-p", value.clone()))
     }

@@ -1300,7 +1300,8 @@ struct WindowPlan {
     top_pos: usize,
     /// Position just past the last displayed character (GNU window-end).
     window_end: usize,
-    /// Cursor cell within the window's text rect, for the selected window.
+    /// Cursor cell within the window body (including any line-number gutter),
+    /// for the selected window.
     cursor: Option<(usize, usize)>,
 }
 
@@ -1501,43 +1502,148 @@ fn space_align_to_target(value: &Value) -> Option<usize> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GlyphlessDisplayMethod {
+    ZeroWidth,
+    ThinSpace,
+    EmptyBox,
+    HexCode,
+    Acronym(String),
+}
+
+impl GlyphlessDisplayMethod {
+    fn render(&self, character: char) -> String {
+        match self {
+            Self::ZeroWidth => String::new(),
+            Self::ThinSpace => " ".into(),
+            Self::EmptyBox => {
+                let width = unicode_width::UnicodeWidthChar::width(character)
+                    .unwrap_or(0)
+                    .clamp(1, 4);
+                format!("[{}]", " ".repeat(width))
+            }
+            Self::HexCode if u32::from(character) < 0x10000 => {
+                format!("\\u{:04X}", u32::from(character))
+            }
+            Self::HexCode => format!("\\U{:06X}", u32::from(character)),
+            Self::Acronym(acronym) if acronym.chars().count() == 1 => acronym.clone(),
+            Self::Acronym(acronym) => {
+                let acronym: String = acronym.chars().take(6).take_while(char::is_ascii).collect();
+                format!("[{acronym}]")
+            }
+        }
+    }
+}
+
+struct GlyphlessDisplayContext<'a> {
+    interpreter: &'a Interpreter,
+    table_id: Option<u64>,
+    terminal_coding: String,
+}
+
+impl<'a> GlyphlessDisplayContext<'a> {
+    fn new(interpreter: &'a Interpreter, buffer_id: u64) -> Self {
+        let table_id = match interpreter
+            .buffer_local_toplevel_value(buffer_id, "glyphless-char-display")
+            .or_else(|| interpreter.default_toplevel_value("glyphless-char-display"))
+        {
+            Some(Value::CharTable(table_id)) => Some(table_id),
+            _ => None,
+        };
+        // The shared term.c policy is what makes LANG=C produce glyphless
+        // hex escapes instead of sending raw UTF-8.
+        let terminal_coding = interpreter.effective_terminal_coding_system();
+        Self {
+            interpreter,
+            table_id,
+            terminal_coding,
+        }
+    }
+
+    fn method_from_value(value: Value, no_font_fallback: bool) -> Option<GlyphlessDisplayMethod> {
+        let value = value
+            .cons_values()
+            .map(|(_, text_terminal)| text_terminal)
+            .unwrap_or(value);
+        let method = match value {
+            Value::Symbol(name) if name == "zero-width" && no_font_fallback => {
+                GlyphlessDisplayMethod::EmptyBox
+            }
+            Value::Symbol(name) if name == "zero-width" => GlyphlessDisplayMethod::ZeroWidth,
+            Value::Symbol(name) if name == "thin-space" => GlyphlessDisplayMethod::ThinSpace,
+            Value::Symbol(name) if name == "empty-box" => GlyphlessDisplayMethod::EmptyBox,
+            Value::Symbol(name) if name == "hex-code" => GlyphlessDisplayMethod::HexCode,
+            value => match crate::lisp::primitives::string_text(&value) {
+                Ok(acronym) => GlyphlessDisplayMethod::Acronym(acronym),
+                Err(_) if no_font_fallback => GlyphlessDisplayMethod::EmptyBox,
+                Err(_) => return None,
+            },
+        };
+        Some(method)
+    }
+
+    fn method_for(&self, character: char) -> Option<GlyphlessDisplayMethod> {
+        if let Some(table_id) = self.table_id
+            && let Some(method) = self
+                .interpreter
+                .char_table_get(table_id, u32::from(character))
+                .and_then(|value| Self::method_from_value(value, false))
+        {
+            return Some(method);
+        }
+        // Raw eight-bit characters bypass terminal encoding in term.c and
+        // are always emitted as their byte.  Every ordinary scalar is tested
+        // against the same coding implementation used by Lisp conversion.
+        let encodable = character.is_ascii()
+            || crate::lisp::primitives::raw_byte_from_regex_char(character).is_some()
+            || crate::lisp::primitives::string_unencodable_positions(
+                &character.to_string(),
+                &self.terminal_coding,
+                self.interpreter,
+            )
+            .expect("the validated terminal coding system remains registered")
+            .is_empty();
+        if encodable {
+            return None;
+        }
+        let fallback = self
+            .table_id
+            .and_then(|table_id| self.interpreter.char_table_extra_slot(table_id, 0))
+            .unwrap_or(Value::Nil);
+        Self::method_from_value(fallback, true).or(Some(GlyphlessDisplayMethod::EmptyBox))
+    }
+}
+
 /// Apply the current buffer's `glyphless-char-display' substitutions to a
 /// rendered string and keep its face spans in display-character offsets.
-/// Tabulated lists use this on text terminals to turn their GUI triangles
-/// into the configured ASCII `v'/`^' indicators without changing the Lisp
-/// header string shared with graphical frames.
+/// This covers mode/header strings; ordinary window lines use the same
+/// context through `glyphless_visual_line_at' so layout and point account
+/// for expansions before cells are planned.
 fn apply_glyphless_char_display(
     interpreter: &Interpreter,
     buffer_id: u64,
     text: String,
     spans: &mut Vec<(usize, usize, Value)>,
 ) -> String {
-    let Some(Value::CharTable(table_id)) =
-        interpreter.buffer_local_value(buffer_id, "glyphless-char-display")
-    else {
-        return text;
-    };
+    let context = GlyphlessDisplayContext::new(interpreter, buffer_id);
     let mut rendered = String::with_capacity(text.len());
     let mut display_offsets = Vec::with_capacity(text.chars().count() + 1);
     let mut replacement_spans = Vec::new();
     display_offsets.push(0);
     let mut display_chars = 0usize;
     for character in text.chars() {
-        let value = interpreter
-            .char_table_get(table_id, u32::from(character))
-            .unwrap_or(Value::Nil);
-        let replacement = crate::lisp::primitives::string_like(&value)
-            .map(|string| string.text)
-            .or_else(|| {
-                value.cons_values().and_then(|(_, tail)| {
-                    crate::lisp::primitives::string_like(&tail).map(|string| string.text)
-                })
-            });
-        if let Some(replacement) = replacement {
+        if let Some(method) = context.method_for(character) {
+            let replacement = method.render(character);
             let from = display_chars;
             display_chars += replacement.chars().count();
             rendered.push_str(&replacement);
-            replacement_spans.push((from, display_chars, Value::Symbol("escape-glyph".into())));
+            if from < display_chars {
+                replacement_spans.push((
+                    from,
+                    display_chars,
+                    Value::Symbol("glyphless-char".into()),
+                ));
+            }
         } else {
             display_chars += 1;
             rendered.push(character);
@@ -1566,6 +1672,8 @@ struct VisualLine {
     lines_spanned: usize,
     /// Display char indexes where a three-dot ellipsis begins.
     ellipses: Vec<usize>,
+    /// Display char ranges produced by `glyphless-char-display'.
+    glyphless_spans: Vec<(usize, usize)>,
 }
 
 fn visual_line_at(
@@ -1600,6 +1708,7 @@ fn visual_line_at(
             raw_of_display,
             lines_spanned: 1,
             ellipses: Vec::new(),
+            glyphless_spans: Vec::new(),
         };
     }
     let line_begin = buffer.line_start_of(first_line);
@@ -1708,7 +1817,61 @@ fn visual_line_at(
         raw_of_display,
         lines_spanned,
         ellipses,
+        glyphless_spans: Vec::new(),
     }
+}
+
+fn glyphless_visual_line_at(
+    buffer: &crate::buffer::Buffer,
+    spec: &InvisibilitySpec,
+    first_line: usize,
+    context: Option<&GlyphlessDisplayContext<'_>>,
+) -> VisualLine {
+    let mut visual = visual_line_at(buffer, spec, first_line);
+    let Some(context) = context else {
+        return visual;
+    };
+    let old_text = std::mem::take(&mut visual.text);
+    let old_raw_of_display = std::mem::take(&mut visual.raw_of_display);
+    let old_count = old_text.chars().count();
+    let final_raw = old_raw_of_display.last().copied().unwrap_or(0);
+    let mut old_to_new = Vec::with_capacity(old_count + 1);
+    let mut rendered = String::with_capacity(old_text.len());
+    let mut raw_of_display = Vec::with_capacity(old_raw_of_display.len());
+    let mut glyphless_spans = Vec::new();
+    let mut display_chars = 0usize;
+    for (index, character) in old_text.chars().enumerate() {
+        old_to_new.push(display_chars);
+        let raw = old_raw_of_display.get(index).copied().unwrap_or(final_raw);
+        if let Some(method) = context.method_for(character) {
+            let replacement = method.render(character);
+            let from = display_chars;
+            for replacement_character in replacement.chars() {
+                rendered.push(replacement_character);
+                raw_of_display.push(raw);
+                display_chars += 1;
+            }
+            if from < display_chars {
+                glyphless_spans.push((from, display_chars));
+            }
+        } else {
+            rendered.push(character);
+            raw_of_display.push(raw);
+            display_chars += 1;
+        }
+    }
+    old_to_new.push(display_chars);
+    raw_of_display.push(final_raw);
+    for offset in &mut visual.map {
+        *offset = old_to_new.get(*offset).copied().unwrap_or(display_chars);
+    }
+    for offset in &mut visual.ellipses {
+        *offset = old_to_new.get(*offset).copied().unwrap_or(display_chars);
+    }
+    visual.text = rendered;
+    visual.raw_of_display = raw_of_display;
+    visual.glyphless_spans = glyphless_spans;
+    visual
 }
 
 /// One buffer line as redisplay lays it out: a character carrying a
@@ -1806,6 +1969,7 @@ fn displayed_line_text(buffer: &crate::buffer::Buffer, line: usize) -> String {
 fn plan_window_text(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
+    glyphless: Option<&GlyphlessDisplayContext<'_>>,
     view: &mut WindowView,
     commanded_start: usize,
     point: usize,
@@ -1821,39 +1985,55 @@ fn plan_window_text(
     let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
     let body_width = body_width.saturating_sub(lnum_cols).max(1);
     let usable = body_width.saturating_sub(1).max(1);
-    let segs_of = |line: &str| {
+    let segs_of = |visual: &VisualLine| {
         if truncate {
             1
         } else {
-            segment_count(display_width(line), usable)
+            wrap_glyphless_visual_line(visual, body_width).len()
         }
     };
-    let line_text_at = |line: usize| visual_line_at(buffer, spec, line).text;
-    // The display column a buffer position occupies on its visual line
-    // (invisible runs collapse; the ellipsis and joined tails count).
-    let visual_dcol = |first_line: usize, pos: usize| {
-        let visual = visual_line_at(buffer, spec, first_line);
-        let offset = pos.saturating_sub(buffer.line_start_of(first_line));
-        let index = visual
-            .map
-            .get(offset)
-            .copied()
-            .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
-        display_column(&visual.text, index)
-    };
+    let visual_at = |line: usize| glyphless_visual_line_at(buffer, spec, line, glyphless);
 
     let point_line = visual_line_first_line(buffer, spec, buffer.line_number_at_pos(point));
-    let point_line_text = line_text_at(point_line);
-    let point_dcol = visual_dcol(point_line, point);
+    let point_visual = visual_at(point_line);
+    let point_offset = point.saturating_sub(buffer.line_start_of(point_line));
+    let point_index = point_visual
+        .map
+        .get(point_offset)
+        .copied()
+        .unwrap_or_else(|| point_visual.map.last().copied().unwrap_or(0));
+    let point_dcol = display_column(&point_visual.text, point_index);
     let (point_seg, cursor_col) = if truncate {
-        // An hscrolled window spends column zero on the left `$' glyph,
-        // which replaces the character at column HSCROLL itself: a
-        // character at column C lands on screen column C - HSCROLL.
-        let on_screen = (point_dcol as i64 - hscroll as i64).max(0);
-        (0, (on_screen as usize).min(body_width.saturating_sub(1)))
+        // Without a line-number gutter, the left `$' occupies one screen
+        // cell before source column HSCROLL.  A point hidden farther left
+        // still clamps to the marker itself.
+        let on_screen = HscrollLayout::new(&point_visual, hscroll, lnum_cols == 0)
+            .screen_column(point_dcol)
+            .unwrap_or(0);
+        (0, on_screen.min(body_width.saturating_sub(1)))
     } else {
-        let seg = (point_dcol / usable).min(segs_of(&point_line_text) - 1);
-        (seg, point_dcol - seg * usable)
+        let wrapped = wrap_glyphless_visual_line(&point_visual, body_width);
+        wrapped_position_of_column(
+            &wrapped,
+            point_dcol,
+            point_visual
+                .glyphless_spans
+                .iter()
+                .any(|(from, _)| *from == point_index),
+        )
+    };
+    let cursor_hidden_left = truncate
+        && hscroll > 0
+        && lnum_cols > 0
+        && HscrollLayout::new(&point_visual, hscroll, false)
+            .screen_column(point_dcol)
+            .is_none();
+    let cursor_col = if lnum_cols == 0 {
+        cursor_col
+    } else if cursor_hidden_left {
+        lnum_cols.saturating_sub(1)
+    } else {
+        lnum_cols.saturating_add(cursor_col)
     };
 
     // A command that owns its scrolling (recenter, scroll-up) moved the
@@ -1864,9 +2044,28 @@ fn plan_window_text(
     if commanded_start != view.synced_start || !selected {
         let start_line =
             visual_line_first_line(buffer, spec, buffer.line_number_at_pos(commanded_start));
-        let start_dcol = visual_dcol(start_line, commanded_start);
+        let start_visual = visual_at(start_line);
+        let start_offset = commanded_start.saturating_sub(buffer.line_start_of(start_line));
+        let start_index = start_visual
+            .map
+            .get(start_offset)
+            .copied()
+            .unwrap_or_else(|| start_visual.map.last().copied().unwrap_or(0));
+        let start_dcol = display_column(&start_visual.text, start_index);
         view.top_line = start_line;
-        view.top_seg = if truncate { 0 } else { start_dcol / usable };
+        view.top_seg = if truncate {
+            0
+        } else {
+            wrapped_position_of_column(
+                &wrap_glyphless_visual_line(&start_visual, body_width),
+                start_dcol,
+                start_visual
+                    .glyphless_spans
+                    .iter()
+                    .any(|(from, _)| *from == start_index),
+            )
+            .0
+        };
     }
 
     // Keep point visible, counting visual rows (wrapped lines span
@@ -1889,8 +2088,8 @@ fn plan_window_text(
             let mut walk = view.top_line;
             let mut first = true;
             while walk < point_line {
-                let visual = visual_line_at(buffer, spec, walk);
-                let segs = segs_of(&visual.text);
+                let visual = glyphless_visual_line_at(buffer, spec, walk, glyphless);
+                let segs = segs_of(&visual);
                 let skipped = if first { view.top_seg } else { 0 };
                 first = false;
                 rows_before += segs.saturating_sub(skipped);
@@ -1919,7 +2118,7 @@ fn plan_window_text(
                 stepped += step;
             } else if line > 1 {
                 line = visual_line_first_line(buffer, spec, line - 1);
-                seg = segs_of(&line_text_at(line)) - 1;
+                seg = segs_of(&visual_at(line)) - 1;
                 budget -= 1;
                 stepped += 1;
             } else {
@@ -1941,7 +2140,7 @@ fn plan_window_text(
     let mut fill_line = view.top_line;
     let mut first_fill = true;
     'fill: while rendered.len() < text_rows && fill_line <= last_line {
-        let visual = visual_line_at(buffer, spec, fill_line);
+        let visual = glyphless_visual_line_at(buffer, spec, fill_line, glyphless);
         // `auto-hscroll-mode' `current-line': the row showing point
         // hscrolls by the window's hscroll, every other row keeps the
         // explicit minimum.
@@ -1952,12 +2151,15 @@ fn plan_window_text(
         };
         let segments = if truncate {
             vec![if lnum_cols > 0 {
-                truncate_row_from(&visual.text, body_width, row_hscroll)
+                truncate_row_from(&visual, body_width, row_hscroll)
             } else {
-                truncate_row_hscrolled(&visual.text, body_width, row_hscroll)
+                truncate_row_hscrolled(&visual, body_width, row_hscroll)
             }]
         } else {
-            wrap_segments(&visual.text, body_width)
+            wrap_glyphless_visual_line(&visual, body_width)
+                .into_iter()
+                .map(|segment| segment.text)
+                .collect()
         };
         let from = if first_fill {
             view.top_seg.min(segments.len() - 1)
@@ -1967,7 +2169,8 @@ fn plan_window_text(
         first_fill = false;
         let next_line = fill_line + visual.lines_spanned;
         for (seg_index, segment) in segments.iter().enumerate().skip(from) {
-            let row_start = position_of_visual_row(buffer, spec, fill_line, seg_index, usable);
+            let row_start =
+                position_of_visual_row(buffer, spec, glyphless, fill_line, seg_index, usable);
             rendered.push((
                 segment.clone(),
                 fill_line,
@@ -1988,13 +2191,14 @@ fn plan_window_text(
     }
     rendered.resize(text_rows, (String::new(), 0, 0, usize::MAX, 0));
 
-    let top_pos = position_of_visual_row(buffer, spec, view.top_line, view.top_seg, usable);
+    let top_pos =
+        position_of_visual_row(buffer, spec, glyphless, view.top_line, view.top_seg, usable);
     let window_end = match past_window {
         // A row past the final buffer line means the window shows
         // everything: window-end is ZV (a buffer without a trailing
         // newline has no line beyond its last).
         Some((line, _)) if line > last_line => buffer.point_max(),
-        Some((line, seg)) => position_of_visual_row(buffer, spec, line, seg, usable),
+        Some((line, seg)) => position_of_visual_row(buffer, spec, glyphless, line, seg, usable),
         None => buffer.point_max(),
     };
     WindowPlan {
@@ -2473,9 +2677,11 @@ fn redraw_with_echo_policy(
                 continue 'windows;
             };
             let invisibility = resolve_buffer_invisibility(interpreter, buffer, info.buffer_id);
+            let glyphless = GlyphlessDisplayContext::new(interpreter, info.buffer_id);
             let plan = plan_window_text(
                 buffer,
                 &invisibility,
+                Some(&glyphless),
                 view,
                 info.start,
                 info.point,
@@ -2686,7 +2892,7 @@ fn redraw_with_echo_policy(
         if info.selected {
             if let Some((row, col)) = plan.cursor {
                 cursor_position = (
-                    (text_left + col).min(cols - 1) as u16,
+                    (info.left + col).min(cols - 1) as u16,
                     (text_top + row).min(frame_rows - 1) as u16,
                 );
             }
@@ -2750,9 +2956,6 @@ fn redraw_with_echo_policy(
             job.window_end,
             job.selected,
         );
-        if spans.is_empty() {
-            continue;
-        }
         let resolved: Vec<(usize, usize, CellAttrs)> = spans
             .iter()
             .map(|(begin, end, face)| {
@@ -2763,6 +2966,16 @@ fn redraw_with_echo_policy(
                 (*begin, *end, attrs)
             })
             .collect();
+        let glyphless_attrs = *state
+            .face_cache
+            .entry("glyphless-char".into())
+            .or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(
+                    interpreter,
+                    env,
+                    &Value::Symbol("glyphless-char".into()),
+                )
+            });
         let buffer = if job.buffer_id == interpreter.current_buffer_id() {
             &interpreter.buffer
         } else {
@@ -2772,6 +2985,7 @@ fn redraw_with_echo_policy(
             }
         };
         let job_invisibility = resolve_buffer_invisibility(interpreter, buffer, job.buffer_id);
+        let glyphless = GlyphlessDisplayContext::new(interpreter, job.buffer_id);
         for (index, (line, seg, row_start, row_hscroll)) in job.rows.iter().enumerate() {
             if *row_start == usize::MAX {
                 continue;
@@ -2785,20 +2999,35 @@ fn redraw_with_echo_policy(
             if row_end <= *row_start {
                 continue;
             }
-            let visual = visual_line_at(buffer, &job_invisibility, *line);
+            let visual =
+                glyphless_visual_line_at(buffer, &job_invisibility, *line, Some(&glyphless));
             let line_text = visual.text.clone();
+            let wrapped =
+                (!job.truncate).then(|| wrap_glyphless_visual_line(&visual, job.body_width));
+            let segment_start = if job.truncate {
+                0
+            } else {
+                wrapped
+                    .as_ref()
+                    .expect("non-truncating row has wrapped geometry")
+                    .get(*seg)
+                    .map_or(seg * job.usable, |segment| segment.start_column)
+            };
+            let hscroll_layout = HscrollLayout::new(&visual, *row_hscroll, job.lnum_cols == 0);
             let line_begin = buffer.line_start_of(*line);
             // The right-truncation `$' glyph keeps the default face
             // (produce_special_glyphs); spans stop one cell short of it.
-            let col_cap = job.body_width
-                - usize::from(
-                    job.truncate
-                        && truncated_on_right(
-                            display_width(&line_text),
-                            *row_hscroll,
-                            job.body_width,
-                        ),
-                );
+            let col_cap = (if wrapped
+                .as_ref()
+                .is_some_and(|segments| *seg + 1 < segments.len())
+            {
+                job.usable
+            } else {
+                job.body_width
+            }) - usize::from(
+                job.truncate
+                    && truncated_on_right(display_width(&line_text), *row_hscroll, job.body_width),
+            );
             for (span_begin, span_end, attrs) in &resolved {
                 let begin = (*span_begin).max(*row_start);
                 let end = (*span_end).min(row_end);
@@ -2824,21 +3053,22 @@ fn redraw_with_echo_policy(
                 // column's first glyph, so text column HSCROLL itself is
                 // visible at text column zero; without one, the `$' owns
                 // column zero and text resumes from column one.
-                let hscroll_floor = if job.lnum_cols > 0 { 0 } else { 1 };
                 let col_of = |pos: usize| {
                     let offset = display_index_of(pos);
                     let column = display_column(&line_text, offset);
                     if *row_hscroll > 0 {
-                        (column as i64 - *row_hscroll as i64).max(hscroll_floor) as usize
+                        hscroll_layout
+                            .screen_column(column)
+                            .unwrap_or(hscroll_layout.screen_start)
                     } else {
-                        column.saturating_sub(seg * job.usable)
+                        column.saturating_sub(segment_start)
                     }
                 };
                 let from_col = col_of(begin).min(col_cap);
                 // A span covering the newline paints its glyph's cell —
                 // and an `:extend' face (the region) keeps painting to
                 // the window edge, GNU's whole-row highlight.
-                let line_chars = line_text.chars().count();
+                let line_chars = visual.map.len().saturating_sub(1);
                 let mut to_col = col_of(end);
                 if end.saturating_sub(line_begin) > line_chars {
                     to_col = if attrs.extend {
@@ -2853,19 +3083,50 @@ fn redraw_with_echo_policy(
                 }
                 frame[job.top + index].overlay(job.left + from_col, job.left + to_col, *attrs);
             }
+            // Terminal no-font glyphs merge `glyphless-char' over the face
+            // already selected for the source character.  Apply them after
+            // buffer/overlay faces so unspecified attributes inherit from
+            // that underlying face exactly as merge_glyphless_glyph_face does.
+            for &(span_begin, span_end) in &visual.glyphless_spans {
+                let begin_column = display_column(&line_text, span_begin);
+                let end_column = display_column(&line_text, span_end);
+                let (from_col, to_col) = if *row_hscroll > 0 {
+                    (
+                        hscroll_layout
+                            .screen_column(begin_column)
+                            .unwrap_or(hscroll_layout.screen_start),
+                        hscroll_layout
+                            .screen_column(end_column)
+                            .unwrap_or(hscroll_layout.screen_start),
+                    )
+                } else {
+                    (
+                        begin_column.saturating_sub(segment_start),
+                        end_column.saturating_sub(segment_start),
+                    )
+                };
+                let from_col = from_col.min(col_cap);
+                let to_col = to_col.min(col_cap);
+                if from_col < to_col {
+                    frame[job.top + index].overlay(
+                        job.left + from_col,
+                        job.left + to_col,
+                        glyphless_attrs,
+                    );
+                }
+            }
             // The ellipsis takes the face of the text before it
             // (display_ellipsis draws with the iterator's saved face):
             // copy the preceding cell's attributes over the dots.
             for &ellipsis_index in &visual.ellipses {
                 let mut column = display_column(&line_text, ellipsis_index);
                 if *row_hscroll > 0 {
-                    let shifted = column as i64 - *row_hscroll as i64;
-                    if shifted < i64::from(job.lnum_cols == 0) {
+                    let Some(shifted) = hscroll_layout.screen_column(column) else {
                         continue;
-                    }
-                    column = shifted as usize;
+                    };
+                    column = shifted;
                 } else {
-                    column = column.saturating_sub(seg * job.usable);
+                    column = column.saturating_sub(segment_start);
                 }
                 if column == 0 || column >= col_cap {
                     continue;
@@ -2907,6 +3168,7 @@ fn redraw_with_echo_policy(
         let current_attrs = resolve("line-number-current-line");
         let major_attrs = (layout.major_tick > 0).then(|| resolve("line-number-major-tick"));
         let minor_attrs = (layout.minor_tick > 0).then(|| resolve("line-number-minor-tick"));
+        let glyphless = GlyphlessDisplayContext::new(interpreter, job.buffer_id);
         let Some(buffer) = (if job.buffer_id == interpreter.current_buffer_id() {
             Some(&interpreter.buffer)
         } else {
@@ -2926,12 +3188,11 @@ fn redraw_with_echo_policy(
             }
         };
         let point_max = buffer.point_max();
-        let usable = job.text_width.saturating_sub(1).max(1);
-        let segs_of = |text: &str| {
+        let segs_of = |visual: &VisualLine| {
             if job.truncate {
                 1
             } else {
-                segment_count(display_width(text), usable)
+                wrap_glyphless_visual_line(visual, job.text_width).len()
             }
         };
         // Visual mode: the window-relative screen row showing point,
@@ -2956,8 +3217,8 @@ fn redraw_with_echo_policy(
                 let mut line = from.0;
                 let mut first_seg = from.1 as i64;
                 while line < to.0 {
-                    let visual = visual_line_at(buffer, &spec, line);
-                    rows += segs_of(&visual.text) as i64 - first_seg;
+                    let visual = glyphless_visual_line_at(buffer, &spec, line, Some(&glyphless));
+                    rows += segs_of(&visual) as i64 - first_seg;
                     first_seg = 0;
                     line += visual.lines_spanned.max(1);
                 }
@@ -2972,14 +3233,24 @@ fn redraw_with_echo_policy(
                 let point_seg = if job.truncate {
                     0
                 } else {
-                    let visual = visual_line_at(buffer, &spec, point_vline);
+                    let visual =
+                        glyphless_visual_line_at(buffer, &spec, point_vline, Some(&glyphless));
                     let offset = point.saturating_sub(buffer.line_start_of(point_vline));
                     let index = visual
                         .map
                         .get(offset)
                         .copied()
                         .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
-                    display_column(&visual.text, index) / usable
+                    let column = display_column(&visual.text, index);
+                    wrapped_position_of_column(
+                        &wrap_glyphless_visual_line(&visual, job.text_width),
+                        column,
+                        visual
+                            .glyphless_spans
+                            .iter()
+                            .any(|(from, _)| *from == index),
+                    )
+                    .0
                 };
                 let first = job
                     .rows
@@ -3056,7 +3327,9 @@ fn redraw_with_echo_policy(
             frame[job.top + row_index].blit(job.left, &text, attrs);
             if !beyond
                 && row_hscroll > 0
-                && display_width(&visual_line_at(buffer, &spec, line).text) > 0
+                && display_width(
+                    &glyphless_visual_line_at(buffer, &spec, line, Some(&glyphless)).text,
+                ) > 0
             {
                 frame[job.top + row_index].blit(job.left, "$", CellAttrs::default());
             }
@@ -3539,36 +3812,74 @@ fn truncate_row(line: &str, width: usize) -> String {
     row
 }
 
-/// A truncated row under horizontal scrolling, as GNU's tty draws it:
-/// column zero carries the `$' left-truncation glyph whenever the line
-/// has any character scrolled off (an empty line shows nothing), the
-/// visible text follows from column HSCROLL of the expanded line, and a
-/// tail that still does not fit ends in the `$' right-truncation glyph.
 /// An hscrolled row when a line-number column precedes the text: the
 /// left `$' replaces the column's own first glyph (produce_special_glyphs
 /// overwrites the row's first glyph, which is now a line-number cell),
-/// so the text area simply shows the line from column HSCROLL onward,
-/// truncated on the right as usual.
-fn truncate_row_from(line: &str, width: usize, hscroll: usize) -> String {
+/// so the text area uses the gutter form of `HscrollLayout' and truncates
+/// on the right as usual.
+fn truncate_row_from(visual: &VisualLine, width: usize, hscroll: usize) -> String {
     if hscroll == 0 {
-        return truncate_row(line, width);
+        return truncate_row(&visual.text, width);
     }
-    let expanded = expand_tabs(line);
-    let visible: String = expanded.chars().skip(hscroll).collect();
+    let expanded = expand_tabs(&visual.text);
+    let layout = HscrollLayout::new(visual, hscroll, false);
+    let visible: String = expanded.chars().skip(layout.source_start).collect();
     truncate_row(&visible, width)
 }
 
-fn truncate_row_hscrolled(line: &str, width: usize, hscroll: usize) -> String {
-    if hscroll == 0 {
-        return truncate_row(line, width);
+/// GNU's horizontal-scroll layout for the text area.  Normally text starts at
+/// HSCROLL; an inline left `$' overwrites that first glyph.  If the column is
+/// anywhere inside a multi-cell glyphless element, redisplay restarts the
+/// whole element.  An inline marker overwrites its first cell, while a marker
+/// in the line-number gutter leaves the whole restarted element visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HscrollLayout {
+    /// First expanded display column copied into the visible text area.
+    source_start: usize,
+    /// Screen column where `source_start' is drawn (one after a left `$'
+    /// marker, or zero when the marker occupies a line-number gutter).
+    screen_start: usize,
+}
+
+impl HscrollLayout {
+    fn new(visual: &VisualLine, hscroll: usize, left_marker: bool) -> Self {
+        if hscroll == 0 {
+            return Self {
+                source_start: 0,
+                screen_start: 0,
+            };
+        }
+        let screen_start = usize::from(left_marker);
+        let glyphless_start = visual.glyphless_spans.iter().find_map(|(from, to)| {
+            let from = display_column(&visual.text, *from);
+            let to = display_column(&visual.text, *to);
+            (from <= hscroll && hscroll < to).then_some(from)
+        });
+        let source_start = glyphless_start
+            .unwrap_or(hscroll)
+            .saturating_add(screen_start);
+        Self {
+            source_start,
+            screen_start,
+        }
     }
-    let expanded = expand_tabs(line);
+
+    fn screen_column(self, source_column: usize) -> Option<usize> {
+        (source_column >= self.source_start)
+            .then(|| self.screen_start + source_column - self.source_start)
+    }
+}
+
+fn truncate_row_hscrolled(visual: &VisualLine, width: usize, hscroll: usize) -> String {
+    if hscroll == 0 {
+        return truncate_row(&visual.text, width);
+    }
+    let expanded = expand_tabs(&visual.text);
     if expanded.is_empty() {
         return expanded;
     }
-    // The `$' glyph replaces the character at column HSCROLL itself;
-    // visible text resumes one column past it.
-    let remaining: Vec<char> = expanded.chars().skip(hscroll + 1).collect();
+    let layout = HscrollLayout::new(visual, hscroll, true);
+    let remaining: Vec<char> = expanded.chars().skip(layout.source_start).collect();
     let available = width.saturating_sub(1).max(1);
     let mut row = String::from("$");
     if remaining.len() < available {
@@ -3585,6 +3896,7 @@ fn truncate_row_hscrolled(line: &str, width: usize, hscroll: usize) -> String {
 fn position_of_visual_row(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
+    glyphless: Option<&GlyphlessDisplayContext<'_>>,
     line: usize,
     seg: usize,
     usable: usize,
@@ -3593,8 +3905,10 @@ fn position_of_visual_row(
     if seg == 0 {
         return start;
     }
-    let visual = visual_line_at(buffer, spec, line);
-    let target = seg * usable;
+    let visual = glyphless_visual_line_at(buffer, spec, line, glyphless);
+    let target = wrap_glyphless_visual_line(&visual, usable + 1)
+        .get(seg)
+        .map_or(seg * usable, |segment| segment.start_column);
     let mut col = 0usize;
     let mut index = 0usize;
     for c in visual.text.chars() {
@@ -3644,35 +3958,94 @@ fn display_width(line: &str) -> usize {
     column
 }
 
-/// Number of visual rows a line of display width WIDTH occupies when each
-/// continued row holds USABLE columns.  Every line fills at least one row.
-fn segment_count(width: usize, usable: usize) -> usize {
-    width.div_ceil(usable).max(1)
-}
-
 /// Render a buffer line as visual rows: continuation rows carry
 /// `usable' (= cols - 1) columns plus GNU's trailing `\' marker; the
 /// final row holds the remainder.  A line wraps exactly when its display
-/// width exceeds usable — even an exactly-cols-wide line continues, as
-/// on a GNU tty.
-fn wrap_segments(line: &str, cols: usize) -> Vec<String> {
+/// width exceeds usable.  Glyphless display elements that cross a row edge
+/// restart in full on the continuation row, matching a GNU tty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WrappedVisualSegment {
+    text: String,
+    /// Display-column range in the unwrapped visual line.  A glyphless
+    /// element that straddles a row boundary can make the next segment start
+    /// before the preceding segment ended: GNU restarts that whole display
+    /// element on the continuation row.
+    start_column: usize,
+    end_column: usize,
+}
+
+fn wrap_glyphless_visual_line(visual: &VisualLine, cols: usize) -> Vec<WrappedVisualSegment> {
     let usable = cols.saturating_sub(1).max(1);
-    let expanded = expand_tabs(line);
-    let width = expanded.chars().count();
-    if width <= usable {
-        return vec![expanded];
-    }
+    let expanded = expand_tabs(&visual.text);
     let chars: Vec<char> = expanded.chars().collect();
+    let width = chars.len();
+    let glyphless_columns: Vec<(usize, usize)> = visual
+        .glyphless_spans
+        .iter()
+        .map(|(from, to)| {
+            (
+                display_column(&visual.text, *from),
+                display_column(&visual.text, *to),
+            )
+        })
+        .collect();
+    if width <= usable {
+        return vec![WrappedVisualSegment {
+            text: expanded,
+            start_column: 0,
+            end_column: width,
+        }];
+    }
     let mut segments = Vec::with_capacity(width.div_ceil(usable));
     let mut start = 0usize;
     while width - start > usable {
-        let mut segment: String = chars[start..start + usable].iter().collect();
-        segment.push('\\');
-        segments.push(segment);
-        start += usable;
+        let end = start + usable;
+        let mut text: String = chars[start..end].iter().collect();
+        text.push('\\');
+        segments.push(WrappedVisualSegment {
+            text,
+            start_column: start,
+            end_column: end,
+        });
+        let restart = glyphless_columns
+            .iter()
+            .find_map(|(from, to)| (*from < end && end < *to).then_some(*from))
+            .filter(|restart| *restart > start)
+            .unwrap_or(end);
+        start = restart;
     }
-    segments.push(chars[start..].iter().collect());
+    segments.push(WrappedVisualSegment {
+        text: chars[start..].iter().collect(),
+        start_column: start,
+        end_column: width,
+    });
     segments
+}
+
+fn wrapped_position_of_column(
+    segments: &[WrappedVisualSegment],
+    column: usize,
+    prefer_first: bool,
+) -> (usize, usize) {
+    let matches = segments.iter().enumerate().filter(|(index, segment)| {
+        segment.start_column <= column
+            && (column < segment.end_column
+                || (*index + 1 == segments.len() && column == segment.end_column))
+    });
+    let selected = if prefer_first {
+        matches.into_iter().next()
+    } else {
+        matches.into_iter().next_back()
+    };
+    selected
+        .map(|(index, segment)| (index, column.saturating_sub(segment.start_column)))
+        .unwrap_or_else(|| {
+            let index = segments.len().saturating_sub(1);
+            let start = segments
+                .get(index)
+                .map_or(0, |segment| segment.start_column);
+            (index, column.saturating_sub(start))
+        })
 }
 
 /// Display column of a character offset within LINE under tab expansion.
@@ -3708,6 +4081,144 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
+    fn test_visual_line(line: &str) -> VisualLine {
+        let chars = line.chars().count();
+        VisualLine {
+            text: line.into(),
+            map: (0..=chars).collect(),
+            raw_of_display: (0..=chars).collect(),
+            lines_spanned: 1,
+            ellipses: Vec::new(),
+            glyphless_spans: Vec::new(),
+        }
+    }
+
+    fn wrapped_test_line(line: &str, cols: usize) -> Vec<String> {
+        wrap_glyphless_visual_line(&test_visual_line(line), cols)
+            .into_iter()
+            .map(|segment| segment.text)
+            .collect()
+    }
+
+    #[test]
+    fn terminal_glyphless_expansion_tracks_coding_faces_and_point_columns() {
+        let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        interpreter.set_terminal_coding_system(None);
+        interpreter.buffer.insert("AöB€C😀D\n");
+        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let visual = glyphless_visual_line_at(
+            &interpreter.buffer,
+            &InvisibilitySpec::default(),
+            1,
+            Some(&context),
+        );
+        assert_eq!(visual.text, "A\\u00F6B\\u20ACC\\U01F600D");
+        assert_eq!(visual.map, vec![0, 1, 7, 8, 14, 15, 23, 24]);
+        assert_eq!(visual.glyphless_spans, vec![(1, 7), (8, 14), (15, 23)]);
+        assert!(visual.raw_of_display[1..7].iter().all(|raw| *raw == 1));
+        assert!(visual.raw_of_display[8..14].iter().all(|raw| *raw == 3));
+        assert!(visual.raw_of_display[15..23].iter().all(|raw| *raw == 5));
+
+        drop(context);
+        interpreter.set_terminal_coding_system(Some("utf-8-unix".into()));
+        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let visual = glyphless_visual_line_at(
+            &interpreter.buffer,
+            &InvisibilitySpec::default(),
+            1,
+            Some(&context),
+        );
+        assert_eq!(visual.text, "AöB€C😀D");
+        assert_eq!(visual.map, (0..=7).collect::<Vec<_>>());
+        assert!(visual.glyphless_spans.is_empty());
+    }
+
+    #[test]
+    fn glyphless_methods_follow_text_terminal_cons_and_width_rules() {
+        assert_eq!(GlyphlessDisplayMethod::HexCode.render('😀'), "\\U01F600");
+        assert_eq!(
+            GlyphlessDisplayMethod::Acronym("ABCDEFG".into()).render('x'),
+            "[ABCDEF]"
+        );
+        assert_eq!(GlyphlessDisplayMethod::EmptyBox.render('😀'), "[  ]");
+
+        let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        interpreter.set_terminal_coding_system(None);
+        interpreter.buffer.insert("ö😀\n");
+        let Value::CharTable(table_id) = interpreter
+            .default_toplevel_value("glyphless-char-display")
+            .expect("initialized glyphless table")
+        else {
+            panic!("glyphless-char-display is a char table")
+        };
+        interpreter
+            .char_table_set(
+                table_id,
+                u32::from('ö'),
+                Value::cons(Value::Symbol("empty-box".into()), Value::String("o".into())),
+            )
+            .expect("set text-terminal acronym");
+        interpreter
+            .set_char_table_extra_slot(table_id, 0, Value::Symbol("empty-box".into()))
+            .expect("set no-font fallback");
+        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let visual = glyphless_visual_line_at(
+            &interpreter.buffer,
+            &InvisibilitySpec::default(),
+            1,
+            Some(&context),
+        );
+        assert_eq!(visual.text, "o[  ]");
+        assert_eq!(visual.map, vec![0, 1, 5]);
+        assert_eq!(visual.glyphless_spans, vec![(0, 1), (1, 5)]);
+    }
+
+    #[test]
+    fn glyphless_wrap_restarts_a_split_display_element_like_gnu() {
+        let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        interpreter.set_terminal_coding_system(None);
+        interpreter
+            .buffer
+            .insert(&format!("{}öZ\n", "x".repeat(76)));
+        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let visual = glyphless_visual_line_at(
+            &interpreter.buffer,
+            &InvisibilitySpec::default(),
+            1,
+            Some(&context),
+        );
+        let segments = wrap_glyphless_visual_line(&visual, 80);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.text.clone())
+                .collect::<Vec<_>>(),
+            vec![format!("{}\\u0\\", "x".repeat(76)), "\\u00F6Z".into()]
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (segment.start_column, segment.end_column))
+                .collect::<Vec<_>>(),
+            vec![(0, 79), (76, 83)]
+        );
+        assert_eq!(wrapped_position_of_column(&segments, 76, true), (0, 76));
+        assert_eq!(wrapped_position_of_column(&segments, 83, false), (1, 7));
+        let boundary = vec![
+            WrappedVisualSegment {
+                text: String::new(),
+                start_column: 0,
+                end_column: 79,
+            },
+            WrappedVisualSegment {
+                text: String::new(),
+                start_column: 79,
+                end_column: 85,
+            },
+        ];
+        assert_eq!(wrapped_position_of_column(&boundary, 79, true), (1, 0));
+    }
+
     #[test]
     fn tabulated_list_glyphless_table_uses_tty_sort_indicators() {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
@@ -3733,8 +4244,8 @@ mod tests {
             spans,
             vec![
                 (0, 3, Value::Symbol("bold".into())),
-                (1, 2, Value::Symbol("escape-glyph".into())),
-                (2, 3, Value::Symbol("escape-glyph".into())),
+                (1, 2, Value::Symbol("glyphless-char".into())),
+                (2, 3, Value::Symbol("glyphless-char".into())),
             ]
         );
     }
@@ -4032,9 +4543,12 @@ mod tests {
 
     #[test]
     fn rendered_lines_expand_tabs_to_eight_column_stops() {
-        assert_eq!(wrap_segments("a\tb", 80), vec!["a       b"]);
-        assert_eq!(wrap_segments("\t\t", 80), vec!["                "]);
-        assert_eq!(wrap_segments("12345678\tx", 80), vec!["12345678        x"]);
+        assert_eq!(wrapped_test_line("a\tb", 80), vec!["a       b"]);
+        assert_eq!(wrapped_test_line("\t\t", 80), vec!["                "]);
+        assert_eq!(
+            wrapped_test_line("12345678\tx", 80),
+            vec!["12345678        x"]
+        );
     }
 
     // The wrap geometry below is pinned against observed GNU 30.2 tty
@@ -4045,17 +4559,90 @@ mod tests {
     fn long_lines_wrap_exactly_like_a_gnu_tty() {
         let of = |n: usize| "A".repeat(n);
 
-        assert_eq!(wrap_segments(&of(79), 80), vec![of(79)]);
-        assert_eq!(wrap_segments(&of(80), 80), vec![of(79) + "\\", of(1)]);
+        assert_eq!(wrapped_test_line(&of(79), 80), vec![of(79)]);
+        assert_eq!(wrapped_test_line(&of(80), 80), vec![of(79) + "\\", of(1)]);
         assert_eq!(
-            wrap_segments(&of(159), 80),
+            wrapped_test_line(&of(159), 80),
             vec![of(79) + "\\", of(79) + "\\", of(1)]
         );
-        assert_eq!(wrap_segments(&of(158), 80), vec![of(79) + "\\", of(79)]);
+        assert_eq!(wrapped_test_line(&of(158), 80), vec![of(79) + "\\", of(79)]);
         assert_eq!(
-            wrap_segments(&of(200), 80),
+            wrapped_test_line(&of(200), 80),
             vec![of(79) + "\\", of(79) + "\\", of(42)]
         );
+    }
+
+    #[test]
+    fn hscroll_marker_precedes_the_requested_source_column() {
+        let ordinary = test_visual_line("abcdef");
+        assert_eq!(truncate_row_hscrolled(&ordinary, 80, 3), "$ef");
+        assert_eq!(truncate_row_from(&ordinary, 80, 3), "def");
+        assert_eq!(HscrollLayout::new(&ordinary, 0, true).source_start, 0);
+        assert_eq!(HscrollLayout::new(&ordinary, 3, true).source_start, 4);
+        assert_eq!(
+            HscrollLayout::new(&ordinary, 3, true).screen_column(4),
+            Some(1)
+        );
+        assert_eq!(
+            HscrollLayout::new(&ordinary, 3, false).screen_column(3),
+            Some(0)
+        );
+
+        let mut glyphless = test_visual_line("AB\\u00F6CDEFG");
+        glyphless.glyphless_spans.push((2, 8));
+        for hscroll in 2..8 {
+            assert_eq!(
+                truncate_row_hscrolled(&glyphless, 80, hscroll),
+                "$u00F6CDEFG"
+            );
+            assert_eq!(truncate_row_from(&glyphless, 80, hscroll), "\\u00F6CDEFG");
+        }
+        assert_eq!(truncate_row_hscrolled(&glyphless, 80, 1), "$\\u00F6CDEFG");
+        assert_eq!(truncate_row_hscrolled(&glyphless, 80, 8), "$DEFG");
+        assert_eq!(truncate_row_from(&glyphless, 80, 1), "B\\u00F6CDEFG");
+        assert_eq!(truncate_row_from(&glyphless, 80, 8), "CDEFG");
+        let inside = HscrollLayout::new(&glyphless, 3, true);
+        assert_eq!(inside.source_start, 3);
+        assert_eq!(inside.screen_column(2), None);
+        assert_eq!(inside.screen_column(3), Some(1));
+        assert_eq!(inside.screen_column(8), Some(6));
+    }
+
+    #[test]
+    fn hscrolled_hidden_point_uses_the_last_line_number_gutter_cell() {
+        let mut interpreter = Interpreter::new();
+        interpreter.buffer.insert("abcdef\n");
+        let mut view = WindowView::default();
+        let plan = plan_window_text(
+            &interpreter.buffer,
+            &InvisibilitySpec::default(),
+            None,
+            &mut view,
+            1,
+            1,
+            3,
+            80,
+            true,
+            &RenderGeometry {
+                truncate: true,
+                hscroll: 3,
+                current_line_only: false,
+                min_hscroll: 3,
+                lnum: Some(crate::lisp::primitives::LineNumberLayout {
+                    mode: crate::lisp::primitives::LineNumberMode::Absolute,
+                    width: 2,
+                    cols: 4,
+                    current_absolute: true,
+                    offset: 0,
+                    widen: false,
+                    major_tick: 0,
+                    minor_tick: 0,
+                }),
+            },
+            true,
+        );
+        assert_eq!(plan.rendered[0].0, "def");
+        assert_eq!(plan.cursor, Some((0, 3)));
     }
 
     #[test]
@@ -4095,16 +4682,19 @@ mod tests {
 
     #[test]
     fn segment_counts_follow_the_wrap_geometry() {
-        assert_eq!(segment_count(0, 79), 1);
-        assert_eq!(segment_count(79, 79), 1);
-        assert_eq!(segment_count(80, 79), 2);
-        assert_eq!(segment_count(158, 79), 2);
-        assert_eq!(segment_count(159, 79), 3);
-        for width in [0, 1, 79, 80, 158, 159, 200] {
+        for (width, expected) in [
+            (0, 1),
+            (1, 1),
+            (79, 1),
+            (80, 2),
+            (158, 2),
+            (159, 3),
+            (200, 3),
+        ] {
             assert_eq!(
-                segment_count(width, 79),
-                wrap_segments(&"A".repeat(width), 80).len(),
-                "count and rendering disagree at width {width}"
+                wrapped_test_line(&"A".repeat(width), 80).len(),
+                expected,
+                "unexpected row count at width {width}"
             );
         }
     }
@@ -4117,23 +4707,23 @@ mod tests {
             .insert(&format!("top\n{}\nbottom\n", "wide".repeat(50)));
         let buffer = &interpreter.buffer;
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), 1, 0, 79),
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 1, 0, 79),
             1
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 0, 79),
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 2, 0, 79),
             5
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 1, 79),
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 2, 1, 79),
             84
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), 2, 2, 79),
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 2, 2, 79),
             163
         );
         assert_eq!(
-            position_of_visual_row(buffer, &InvisibilitySpec::default(), 3, 0, 79),
+            position_of_visual_row(buffer, &InvisibilitySpec::default(), None, 3, 0, 79),
             206
         );
     }
@@ -4167,6 +4757,7 @@ mod tests {
         let plan = plan_window_text(
             &interpreter.buffer,
             &InvisibilitySpec::default(),
+            None,
             &mut view,
             start,
             interpreter.buffer.line_start_of(55),
@@ -4207,6 +4798,7 @@ mod tests {
         let plan = plan_window_text(
             &interpreter.buffer,
             &InvisibilitySpec::default(),
+            None,
             &mut view,
             interpreter.buffer.point_min(),
             point,
@@ -4241,6 +4833,7 @@ mod tests {
         let plan = plan_window_text(
             &interpreter.buffer,
             &InvisibilitySpec::default(),
+            None,
             &mut view,
             1,
             1,
