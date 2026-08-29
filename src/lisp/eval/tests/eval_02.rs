@@ -3176,6 +3176,92 @@ fn re_search_backward_respects_line_end_anchors() {
 }
 
 #[test]
+fn re_search_backward_revisits_adjacent_greedy_matches() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "alpha 123 beta\naxxxa 456\nomega 789\n")
+                  (goto-char (point-max))
+                  (let (matches)
+                    (while (re-search-backward "[[:digit:]]+" nil t)
+                      (push (list (point) (match-end 0) (match-string 0)) matches))
+                    (nreverse matches)))
+                "#
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(34),
+                Value::Integer(35),
+                Value::String("9".into())
+            ]),
+            Value::list([
+                Value::Integer(33),
+                Value::Integer(34),
+                Value::String("8".into())
+            ]),
+            Value::list([
+                Value::Integer(32),
+                Value::Integer(33),
+                Value::String("7".into())
+            ]),
+            Value::list([
+                Value::Integer(24),
+                Value::Integer(25),
+                Value::String("6".into())
+            ]),
+            Value::list([
+                Value::Integer(23),
+                Value::Integer(24),
+                Value::String("5".into())
+            ]),
+            Value::list([
+                Value::Integer(22),
+                Value::Integer(23),
+                Value::String("4".into())
+            ]),
+            Value::list([
+                Value::Integer(9),
+                Value::Integer(10),
+                Value::String("3".into())
+            ]),
+            Value::list([
+                Value::Integer(8),
+                Value::Integer(9),
+                Value::String("2".into())
+            ]),
+            Value::list([
+                Value::Integer(7),
+                Value::Integer(8),
+                Value::String("1".into())
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn re_search_backward_does_not_invent_context_sensitive_endpoints() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (mapcar
+                 (lambda (regexp)
+                   (with-temp-buffer
+                     (insert "abc")
+                     (goto-char 2)
+                     (list (re-search-backward regexp nil t) (point))))
+                 '(".*$" ".*\\'" ".*\\>"))
+                "#
+        ),
+        Value::list([
+            Value::list([Value::Nil, Value::Integer(2)]),
+            Value::list([Value::Nil, Value::Integer(2)]),
+            Value::list([Value::Nil, Value::Integer(2)]),
+        ])
+    );
+}
+
+#[test]
 fn re_search_backward_preserves_context_after_the_search_point() {
     assert_eq!(
         eval_str(

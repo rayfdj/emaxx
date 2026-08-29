@@ -10,7 +10,9 @@ grid, and compares the grids region by region:
   echo area   the final row
 
 The contract is identical buffer content, cursor row/column, scrolling,
-mode-line rendering, and echo-area rendering.
+mode-line rendering, and echo-area rendering.  Named ``Action`` entries are
+compared after every complete command; legacy byte chunks retain their
+historical final-screen-only behavior.
 
 Usage:
     tools/ttydiff.py EMAXX_BINARY GNU_BINARY GNU_LISP_DIR [SCENARIO...]
@@ -19,33 +21,70 @@ With no SCENARIO arguments all built-in scenarios run.  Otherwise each
 argument names one built-in scenario to run.  Exits nonzero on any screen
 divergence; missing binaries skip with exit 0 so unconfigured environments
 stay green.
+
+For reproducible generated journeys and delta-debugged failures, see
+``tools/ttydiff_explore.py``.
 """
 
 import codecs
 import json
 import os
 import pty
+import random
 import select
+import shutil
+import stat
 import struct
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 import fcntl
 import termios
 
 ROWS, COLS = 24, 80
+STARTUP_WAIT_SECONDS = 120.0
 FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
 # A directory whose listing both editors complete over: two names sharing
 # the ambiguous prefix the *Completions* scenarios TAB on.
 COMPLETIONS_DIR_NAME = "emaxxffcomp"
 COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
+FIELDNOTES_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fieldnotes.org"
+SCENARIO_MTIME = 946684800
 
 
 # (fg, bg, bold, underline, reverse): fg/bg are ANSI indexes or None for
 # the terminal default.  Erased cells always carry DEFAULT_ATTR — only
 # explicitly painted cells hold face attributes, on both editors alike.
 DEFAULT_ATTR = (None, None, False, False, False)
+
+
+@dataclass(frozen=True)
+class Action:
+    """One complete user command in a differential editing journey.
+
+    Named actions make a checkpoint failure reproducible without treating
+    arbitrary bytes inside a multi-key command as stable UI states.  Legacy
+    scenarios may continue to use raw ``bytes`` chunks and are compared only
+    at their final screen.
+    """
+
+    name: str
+    keys: bytes
+    checkpoint: bool = True
+    settle: Optional[float] = None
+    quiet: Optional[float] = None
+    filesystem: bool = False
+
+
+def action(
+    name, keys, *, checkpoint=True, settle=None, quiet=None, filesystem=False
+):
+    """Short spelling for declarative scenario entries."""
+    return Action(name, keys, checkpoint, settle, quiet, filesystem)
 
 
 class Vt100Screen:
@@ -341,19 +380,26 @@ class Session:
         self.pid, self.fd = pid, fd
         self.screen = Vt100Screen()
 
-    def drain(self, timeout, quiet=0.2):
-        deadline = time.time() + timeout
-        quiet_deadline = time.time() + quiet
+    def drain(self, timeout, quiet=0.2, minimum=0.0):
+        started = time.time()
+        deadline = started + timeout
+        quiet_deadline = started + quiet
+        not_before = started + minimum
         while True:
-            remaining = deadline - time.time()
-            quiet_remaining = quiet_deadline - time.time()
-            if remaining <= 0 or quiet_remaining <= 0:
+            now = time.time()
+            remaining = deadline - now
+            quiet_remaining = quiet_deadline - now
+            minimum_remaining = not_before - now
+            if remaining <= 0 or (quiet_remaining <= 0 and minimum_remaining <= 0):
                 return
-            ready, _, _ = select.select([self.fd], [], [], min(remaining, quiet_remaining))
+            wait = min(remaining, max(quiet_remaining, minimum_remaining))
+            ready, _, _ = select.select([self.fd], [], [], wait)
             if not ready:
-                # The requested quiet interval elapsed after the last chunk
-                # this call observed, so the redraw has had its settle time.
-                return
+                # A quiet interval is only stable after the editor has had a
+                # minimum command-dispatch window.  Without that lower bound,
+                # a busy GNU process can produce no bytes for 200 ms and be
+                # snapshotted before it has consumed the key at all.
+                continue
             try:
                 chunk = os.read(self.fd, 65536)
             except OSError:
@@ -383,9 +429,44 @@ class Session:
             self.screen.feed(chunk)
         self.drain(2.0)
 
-    def send(self, data, settle=1.0, quiet=0.2):
+    def wait_for_screen_text(self, text, timeout, minimum=0.5):
+        """Wait until startup has displayed the requested visited target.
+
+        Taking the alternate screen is earlier than completing command-line
+        file visitation.  In particular, a cold mode load can go quiet long
+        enough to look settled while startup still owns the command loop.
+        Do not send the first test command until the target is visibly live.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if any(text in line for line in self.screen.lines()):
+                self.drain(max(3.0, minimum), quiet=0.5, minimum=minimum)
+                return
+            ready, _, _ = select.select([self.fd], [], [], 0.25)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(self.fd, 65536)
+            except OSError as error:
+                raise RuntimeError(
+                    f"editor terminal closed before displaying {text!r}"
+                ) from error
+            if not chunk:
+                break
+            self.screen.feed(chunk)
+        visible = [line for line in self.screen.lines() if line]
+        raise RuntimeError(
+            f"editor did not display startup target {text!r}; "
+            f"visible screen: {visible!r}"
+        )
+
+    def send(self, data, settle=1.0, quiet=0.2, explicit_settle=False):
         os.write(self.fd, data)
-        self.drain(settle, quiet)
+        self.drain(
+            settle,
+            quiet,
+            minimum=command_dispatch_minimum(data, settle, explicit_settle),
+        )
 
     def close(self):
         try:
@@ -422,6 +503,21 @@ def terminal_environment(env_extra):
     return env
 
 
+def command_dispatch_minimum(data, settle, explicit_settle=False):
+    """Lower bound for consuming a complete terminal command.
+
+    Emaxx dispatches terminal events through its command loop one by one.
+    A long minibuffer expression can therefore finish painting its text and
+    go quiet before the trailing RET has executed.  Scale the readiness floor
+    with the event count, without exceeding the action's declared timeout.
+    An explicitly timed action declares that its entire settle window is a
+    required dispatch floor, rather than merely a maximum drain deadline.
+    """
+    if explicit_settle:
+        return settle
+    return min(settle, max(0.35, len(data) * 0.05))
+
+
 def gnu_no_window_setup(lisp_dir):
     """Normalize an NS-built GNU oracle to Emaxx's no-window-system model."""
     menu_bar = json.dumps(os.path.abspath(os.path.join(lisp_dir, "menu-bar.el")))
@@ -443,108 +539,246 @@ def find_mode_line(lines):
     return len(lines) - 2
 
 
+def screen_divergences(gnu_screen, emaxx_screen):
+    """Return all observable terminal differences between two snapshots."""
+    gnu_lines = gnu_screen.lines()
+    emaxx_lines = emaxx_screen.lines()
+    gnu_attrs = gnu_screen.attr_rows()
+    emaxx_attrs = emaxx_screen.attr_rows()
+
+    gnu_mode = find_mode_line(gnu_lines)
+    emaxx_mode = find_mode_line(emaxx_lines)
+    # Both editors show the default menu bar on row 0 and work a
+    # 21-row text window under it; every row -- menu captions and
+    # scroll positions included -- must agree exactly.
+    gnu_text = gnu_lines[0:gnu_mode]
+    emaxx_text = emaxx_lines[0:emaxx_mode]
+    length = max(len(gnu_text), len(emaxx_text))
+    gnu_text += [""] * (length - len(gnu_text))
+    emaxx_text += [""] * (length - len(emaxx_text))
+
+    divergences = []
+    for offset, (expected, actual) in enumerate(zip(gnu_text, emaxx_text)):
+        if expected != actual:
+            divergences.append((offset, expected, actual))
+        elif gnu_attrs[offset] != emaxx_attrs[offset]:
+            divergences.append(
+                (
+                    f"{offset} (attrs)",
+                    describe_attr_row(gnu_attrs[offset]),
+                    describe_attr_row(emaxx_attrs[offset]),
+                )
+            )
+    # The mode line is part of the contract: same characters, same
+    # padding, same percent/line indicators.
+    if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
+        divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
+    elif gnu_attrs[gnu_mode] != emaxx_attrs[emaxx_mode]:
+        divergences.append(
+            (
+                "mode-line (attrs)",
+                describe_attr_row(gnu_attrs[gnu_mode]),
+                describe_attr_row(emaxx_attrs[emaxx_mode]),
+            )
+        )
+    # So is the echo area: the same final message (or its absence).
+    if gnu_lines[-1] != emaxx_lines[-1]:
+        divergences.append(("echo", gnu_lines[-1], emaxx_lines[-1]))
+    elif gnu_attrs[-1] != emaxx_attrs[-1]:
+        divergences.append(
+            (
+                "echo (attrs)",
+                describe_attr_row(gnu_attrs[-1]),
+                describe_attr_row(emaxx_attrs[-1]),
+            )
+        )
+    # Cursor placement is observable terminal state too.  A screen can
+    # have identical cells while point, minibuffer input, or redisplay
+    # leaves the hardware cursor on a different row or column.
+    gnu_cursor = (gnu_screen.row, gnu_screen.col)
+    emaxx_cursor = (emaxx_screen.row, emaxx_screen.col)
+    if gnu_cursor != emaxx_cursor:
+        divergences.append(
+            (
+                "cursor",
+                f"{gnu_cursor} on {gnu_lines[gnu_cursor[0]]!r}",
+                f"{emaxx_cursor} on {emaxx_lines[emaxx_cursor[0]]!r}",
+            )
+        )
+    return divergences, length
+
+
+def report_comparison(label, gnu_screen, emaxx_screen):
+    """Compare and print one named checkpoint; return whether it matched."""
+    divergences, length = screen_divergences(gnu_screen, emaxx_screen)
+    if divergences:
+        print(f"DIVERGE [{label}]: {len(divergences)} terminal difference(s)")
+        for offset, expected, actual in divergences[:8]:
+            print(f"  row {offset}:")
+            print(f"    gnu  : {expected!r}")
+            print(f"    emaxx: {actual!r}")
+        return False
+    print(f"MATCH [{label}]: text area identical ({length} rows)")
+    return True
+
+
+def filesystem_snapshot(target):
+    """Return a path-independent, byte-exact snapshot for one fixture root."""
+    target = Path(target)
+    root = target if target.is_dir() else target.parent
+    records = []
+    for path in [root] + sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        metadata = path.lstat()
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        mode = stat.S_IMODE(metadata.st_mode)
+        if path.is_symlink():
+            records.append((relative, "symlink", mode, os.readlink(path)))
+        elif path.is_dir():
+            records.append((relative, "directory", mode, None))
+        elif path.is_file():
+            records.append((relative, "file", mode, path.read_bytes()))
+        else:
+            records.append((relative, "other", mode, None))
+    return tuple(records)
+
+
+def report_filesystem_comparison(label, gnu_target, emaxx_target):
+    """Compare isolated fixture trees after a mutating user command."""
+    gnu_snapshot = filesystem_snapshot(gnu_target)
+    emaxx_snapshot = filesystem_snapshot(emaxx_target)
+    if gnu_snapshot == emaxx_snapshot:
+        print(f"MATCH [{label} filesystem]: isolated fixture trees identical")
+        return True
+    print(f"DIVERGE [{label} filesystem]: isolated fixture trees differ")
+    gnu_by_path = {record[0]: record[1:] for record in gnu_snapshot}
+    emaxx_by_path = {record[0]: record[1:] for record in emaxx_snapshot}
+    for relative in sorted(set(gnu_by_path) | set(emaxx_by_path))[:8]:
+        expected = repr(gnu_by_path.get(relative))
+        actual = repr(emaxx_by_path.get(relative))
+        if expected != actual:
+            print(f"  path {relative!r}:")
+            print(f"    gnu  : {expected[:240]}")
+            print(f"    emaxx: {actual[:240]}")
+    return False
+
+
+def normalize_action(item, index):
+    """Accept old byte chunks alongside named checkpoint actions."""
+    if isinstance(item, Action):
+        return item
+    if not isinstance(item, bytes):
+        raise TypeError(f"action {index + 1} must be bytes or Action, got {type(item)!r}")
+    return Action(f"step-{index + 1}", item, checkpoint=False)
+
+
+def action_timing(scenario, index, final, command):
+    """Choose deterministic redraw quiescence for one command."""
+    if command.settle is not None or command.quiet is not None:
+        return command.settle or 1.0, command.quiet or 0.2
+    if scenario == "completions-pop-up" and final:
+        return 4.0, 2.5
+    if scenario == "completions-dismiss" and final:
+        return 3.0, 1.0
+    if scenario in {"grep-null", "grep-next-error"} and index >= 1:
+        # The grep child can have a quiet process-startup interval longer
+        # than the ordinary key-settle window.  Wait through its launch and
+        # later navigation so the sentinel's summary and parsed hits exist.
+        return 4.0, 2.5
+    if scenario.startswith("compile-") and index == 3:
+        # Command submission, process output, and the compilation sentinel
+        # are separate events.  Wait for the sentinel before the following
+        # C-l so it clears the same completed message in both editors.
+        return 4.0, 1.5
+    if scenario == "org-fold-motion" and final:
+        # A cold Org redisplay can pause after accepting the final
+        # self-insert but before painting it.  A 200 ms quiet window
+        # occasionally captured GNU's preceding C-n frame instead.
+        return 3.0, 1.0
+    if scenario == "mx-shell":
+        # Shell startup, the pty echo, command output, and the next prompt
+        # are separate process events.  Wait for the initial prompt before
+        # typing too, and do not let a gap between later events masquerade
+        # as a stable final screen.
+        return 4.0, 1.5
+    if not command.checkpoint and final:
+        # Legacy byte chunks compare only after their final chunk.  Give that
+        # final complete gesture a real dispatch floor so a busy editor cannot
+        # be snapshotted at an intermediate minibuffer or prefix-key screen.
+        return 3.0, 0.5
+    return 1.0, 0.2
+
+
 def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait):
     gnu = Session(gnu_argv, gnu_env)
     emaxx = Session(emaxx_argv, emaxx_env)
     try:
         gnu.wait_boot(boot_wait)
         emaxx.wait_boot(boot_wait)
+        # A target basename is rendered in the mode line only after startup
+        # has visited it and established its major mode.  A prefix survives
+        # mode-line truncation while remaining unique to this disposable
+        # scenario target.
+        gnu_target = gnu_argv[-1]
+        emaxx_target = emaxx_argv[-1]
+        gnu.wait_for_screen_text(
+            os.path.basename(gnu_target)[:16],
+            boot_wait,
+            minimum=2.0 if os.path.isdir(gnu_target) else 0.5,
+        )
+        emaxx.wait_for_screen_text(
+            os.path.basename(emaxx_target)[:16],
+            boot_wait,
+            minimum=2.0 if os.path.isdir(emaxx_target) else 0.5,
+        )
         # Keep multi-key gestures close together: mouse press/release pairs
         # must stay a click, and the second completion TAB must reach the
         # first TAB's `sit-for'.  Only the final action needs a long quiet
         # window: popup capture waits past minibuffer-message's two-second
         # transient, while dismissal waits for its post-RET frame redraw.
-        for index, chunk in enumerate(keys):
+        commands = [normalize_action(item, index) for index, item in enumerate(keys)]
+        final_label = scenario
+        final_command = None
+        for index, command in enumerate(commands):
             final = index + 1 == len(keys)
-            if scenario == "completions-pop-up" and final:
-                settle, quiet = 4.0, 2.5
-            elif scenario == "completions-dismiss" and final:
-                settle, quiet = 3.0, 1.0
-            else:
-                settle, quiet = 1.0, 0.2
-            gnu.send(chunk, settle=settle, quiet=quiet)
-            emaxx.send(chunk, settle=settle, quiet=quiet)
+            settle, quiet = action_timing(scenario, index, final, command)
+            explicit_settle = command.settle is not None or (
+                not command.checkpoint and final
+            )
+            gnu.send(
+                command.keys,
+                settle=settle,
+                quiet=quiet,
+                explicit_settle=explicit_settle,
+            )
+            emaxx.send(
+                command.keys,
+                settle=settle,
+                quiet=quiet,
+                explicit_settle=explicit_settle,
+            )
+            if command.checkpoint:
+                checkpoint_label = f"{scenario}::{index + 1}:{command.name}"
+                if final:
+                    # The final drain below is part of this command's
+                    # readiness contract; report it once, with its name.
+                    final_label = checkpoint_label
+                    final_command = command
+                else:
+                    if not report_comparison(checkpoint_label, gnu.screen, emaxx.screen):
+                        return False
+                    if command.filesystem and not report_filesystem_comparison(
+                        checkpoint_label, gnu_target, emaxx_target
+                    ):
+                        return False
         gnu.drain(1.0)
         emaxx.drain(1.0)
-
-        gnu_lines = gnu.screen.lines()
-        emaxx_lines = emaxx.screen.lines()
-        gnu_attrs = gnu.screen.attr_rows()
-        emaxx_attrs = emaxx.screen.attr_rows()
-
-        gnu_mode = find_mode_line(gnu_lines)
-        emaxx_mode = find_mode_line(emaxx_lines)
-        # Both editors show the default menu bar on row 0 and work a
-        # 21-row text window under it; every row — menu captions and
-        # scroll positions included — must agree exactly.
-        gnu_text = gnu_lines[0:gnu_mode]
-        emaxx_text = emaxx_lines[0:emaxx_mode]
-
-        # Faces are part of the contract: every cell's SGR attributes must
-        # agree, on text rows, mode lines, and the echo area alike.
-        compare_attrs = os.environ.get("EMAXX_TTYDIFF_TEXT_ONLY") is None
-
-        length = max(len(gnu_text), len(emaxx_text))
-        gnu_text += [""] * (length - len(gnu_text))
-        emaxx_text += [""] * (length - len(emaxx_text))
-        divergences = []
-        for offset, (expected, actual) in enumerate(zip(gnu_text, emaxx_text)):
-            if expected != actual:
-                divergences.append((offset, expected, actual))
-            elif compare_attrs and gnu_attrs[offset] != emaxx_attrs[offset]:
-                divergences.append(
-                    (
-                        f"{offset} (attrs)",
-                        describe_attr_row(gnu_attrs[offset]),
-                        describe_attr_row(emaxx_attrs[offset]),
-                    )
-                )
-        # The mode line is part of the contract: same characters, same
-        # padding, same percent/line indicators.
-        if gnu_lines[gnu_mode] != emaxx_lines[emaxx_mode]:
-            divergences.append(("mode-line", gnu_lines[gnu_mode], emaxx_lines[emaxx_mode]))
-        elif compare_attrs and gnu_attrs[gnu_mode] != emaxx_attrs[emaxx_mode]:
-            divergences.append(
-                (
-                    "mode-line (attrs)",
-                    describe_attr_row(gnu_attrs[gnu_mode]),
-                    describe_attr_row(emaxx_attrs[emaxx_mode]),
-                )
-            )
-        # So is the echo area: the same final message (or its absence).
-        if gnu_lines[-1] != emaxx_lines[-1]:
-            divergences.append(("echo", gnu_lines[-1], emaxx_lines[-1]))
-        elif compare_attrs and gnu_attrs[len(gnu_lines) - 1] != emaxx_attrs[len(emaxx_lines) - 1]:
-            divergences.append(
-                (
-                    "echo (attrs)",
-                    describe_attr_row(gnu_attrs[len(gnu_lines) - 1]),
-                    describe_attr_row(emaxx_attrs[len(emaxx_lines) - 1]),
-                )
-            )
-        # Cursor placement is observable terminal state too.  A screen can
-        # have identical cells while point, minibuffer input, or redisplay
-        # leaves the hardware cursor on a different row or column.
-        gnu_cursor = (gnu.screen.row, gnu.screen.col)
-        emaxx_cursor = (emaxx.screen.row, emaxx.screen.col)
-        if gnu_cursor != emaxx_cursor:
-            divergences.append(
-                (
-                    "cursor",
-                    f"{gnu_cursor} on {gnu_lines[gnu_cursor[0]]!r}",
-                    f"{emaxx_cursor} on {emaxx_lines[emaxx_cursor[0]]!r}",
-                )
-            )
-
-        if divergences:
-            print(f"DIVERGE [{scenario}]: {len(divergences)} text row(s) differ")
-            for offset, expected, actual in divergences[:8]:
-                print(f"  row {offset}:")
-                print(f"    gnu  : {expected!r}")
-                print(f"    emaxx: {actual!r}")
+        if not report_comparison(final_label, gnu.screen, emaxx.screen):
             return False
-        print(f"MATCH [{scenario}]: text area identical ({length} rows)")
-        return True
+        return not (
+            final_command
+            and final_command.filesystem
+            and not report_filesystem_comparison(final_label, gnu_target, emaxx_target)
+        )
     finally:
         gnu.close()
         emaxx.close()
@@ -554,18 +788,17 @@ WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird lin
 
 SEARCH_SAMPLE = "alpha beta gamma\nbeta delta beta\ngamma alpha beta\nlast line here\n"
 
-# A real-usage org shape: #+STARTUP folding, sections long enough that
-# raw line counts and display row counts disagree, a full-width tagged
-# headline that truncates, and a DONE entry for the done-headline face.
-FOLD_SAMPLE = (
-    "#+TITLE: Notes\n#+STARTUP: overview\n\n* Alpha section\n"
-    + "alpha body line with some words in it\n" * 28
-    + "** Alpha child\nchild body\n"
-    + "* Beta section, whose headline runs wide enough to truncate"
-    + " on the glass          :tagone:beta:\n"
-    + "beta body\n" * 28
-    + "* DONE Finished chores                                       :home:\n"
-    + "done body text\n* Gamma\ngamma body\n"
+# The checked-in real-usage Org fixture: #+STARTUP folding,
+# sections long enough that raw and display row counts disagree, tables,
+# source blocks, tagged headlines, and TODO/DONE faces.
+FOLD_SAMPLE = FIELDNOTES_FIXTURE_PATH.read_text(encoding="utf-8")
+
+FIELDNOTES_SCENARIO_NAMES = (
+    "org-overview-open",
+    "org-backtab-cycle",
+    "org-tab-children",
+    "org-done-face",
+    "org-occur-wraps",
 )
 
 # Compilation timestamps can never agree between two processes; both
@@ -598,6 +831,58 @@ ELISP_SAMPLE = """;; A comment line for font-lock.
 (defvar demo-variable 42
   "Another doc string.")
 """
+
+CORE_EDIT_SAMPLE = """alpha beta gamma delta
+second line has several words
+third line is here
+
+This paragraph is deliberately long enough that filling it at the ordinary
+seventy-column boundary changes its visible shape in a deterministic way.
+
+last paragraph ends here
+"""
+
+# A conservative grammar for deterministic stateful exploration.  Every item
+# is one complete command, touches only the disposable scenario buffer, and
+# cannot launch a subprocess or visit an external path.  Repetition in this
+# tuple is intentional weighting toward the commands used most often during
+# ordinary editing.
+SAFE_EDIT_ACTIONS = (
+    ("forward-char", b"\x06"),
+    ("forward-char", b"\x06"),
+    ("backward-char", b"\x02"),
+    ("backward-char", b"\x02"),
+    ("next-line", b"\x0e"),
+    ("next-line", b"\x0e"),
+    ("previous-line", b"\x10"),
+    ("beginning-of-line", b"\x01"),
+    ("end-of-line", b"\x05"),
+    ("forward-word", b"\x1bf"),
+    ("backward-word", b"\x1bb"),
+    ("self-insert-x", b"x"),
+    ("self-insert-space", b" "),
+    ("delete-char", b"\x04"),
+    ("backward-delete-char", b"\x7f"),
+    ("open-line", b"\x0f"),
+    ("transpose-chars", b"\x14"),
+    ("kill-line", b"\x0b"),
+    ("yank", b"\x19"),
+    ("undo", b"\x1f"),
+    ("set-mark", b"\x00"),
+    ("exchange-point-and-mark", b"\x18\x18"),
+)
+
+SEEDED_SAFE_RUNS = ((17, 14), (2309, 18), (7595, 22))
+
+
+def seeded_safe_actions(seed, steps):
+    """Generate a reproducible weighted sequence of safe editor commands."""
+    generator = random.Random(seed)
+    commands = []
+    for index in range(steps):
+        name, keys = generator.choice(SAFE_EDIT_ACTIONS)
+        commands.append(action(f"{index + 1:02}-{name}", keys))
+    return commands
 
 SCENARIOS = [
     # (name, initial file contents, keystrokes[, file suffix])
@@ -780,7 +1065,7 @@ SCENARIOS = [
     ),
     # Paging past the end signals; the screen keeps its last good state.
     (
-        "page-past-end",
+        "page-past-end-preserves-screen",
         "".join(f"line {n:03}\n" for n in range(30)),
         [b"\x16", b"\x16", b"Z"],
     ),
@@ -833,7 +1118,7 @@ SCENARIOS = [
     ),
     # C-x C-x swaps point and mark and reactivates the region.
     (
-        "exchange-point-mark",
+        "exchange-point-mark-motion",
         "alpha one\nbeta two\ngamma three\n",
         [b"\x0e", b"\x00", b"\x0e", b"\x06\x06", b"\x18\x18"],
     ),
@@ -1062,7 +1347,7 @@ SCENARIOS = [
     ),
     # C-x C-x re-activates the region and swaps point with mark.
     (
-        "exchange-point-mark",
+        "exchange-point-mark-reactivate",
         "alpha one\nbeta two\ngamma three\n",
         [b"\x00", b"\x0e\x0e", b"\x18\x18"],
     ),
@@ -1350,11 +1635,20 @@ SCENARIOS = [
         SEARCH_SAMPLE,
         [b"\x1bsobeta\r", b"\x18o", b"\x0e\x0e", b"\r"],
     ),
-    # replace-string end to end, with its echo summary.
+    # replace-string end to end, with its echo summary.  Check the summary
+    # before execute-extended-command's two-second shorter-name timer, then
+    # issue a real command so the pending suggestion is cancelled in both
+    # editors.  Capturing at the timer's teardown boundary races two correct
+    # redisplay schedules and does not test replace-string itself.
     (
         "replace-string",
         SEARCH_SAMPLE,
-        [b"\x1bxreplace-string\rbeta\rBETA\r"],
+        [
+            action("open-replace-string", b"\x1bxreplace-string\r"),
+            action("enter-old-string", b"beta\r"),
+            action("enter-new-string", b"BETA\r"),
+            action("cancel-delayed-suggestion", b"\x0c"),
+        ],
     ),
     # #+STARTUP: overview folds on open; the fontification pass must
     # cover the planned window (folds push its end far past any
@@ -1379,7 +1673,1847 @@ SCENARIOS = [
     ("org-occur-wraps", FOLD_SAMPLE, [b"\x1bsosection\r"], ".org"),
     # Paging past the end: scroll-up signals (end-of-buffer) with nil
     # DATA, so the echo reads "End of buffer" with no ": nil" tail.
-    ("page-past-end", "only\nthree\nlines\n", [b"\x16", b"\x16"]),
+    ("page-past-end-error-echo", "only\nthree\nlines\n", [b"\x16", b"\x16"]),
+]
+
+# These journeys are deliberately command-shaped rather than end-state-only.
+# They put the highest-frequency editing vocabulary first and compare the
+# complete terminal after every command, so an early mismatch cannot be
+# hidden by a later redraw, undo, or cursor movement.
+CORE_FREQUENCY_SCENARIO_NAMES = (
+    "core-character-motion",
+    "core-word-motion",
+    "core-buffer-motion",
+    "core-word-editing",
+    "core-line-editing",
+    "core-transpose",
+    "core-case-editing",
+    "core-paragraph-editing",
+    "core-mark-kill-yank",
+    "core-prefix-and-undo",
+)
+
+SCENARIOS += [
+    (
+        "core-character-motion",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-char", b"\x06"),
+            action("forward-char-again", b"\x06"),
+            action("backward-char", b"\x02"),
+            action("end-of-line", b"\x05"),
+            action("beginning-of-line", b"\x01"),
+            action("next-line", b"\x0e"),
+            action("previous-line", b"\x10"),
+        ],
+    ),
+    (
+        "core-word-motion",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-word", b"\x1bf"),
+            action("forward-word-again", b"\x1bf"),
+            action("backward-word", b"\x1bb"),
+            action("forward-sentence", b"\x1be"),
+            action("backward-sentence", b"\x1ba"),
+        ],
+    ),
+    (
+        "core-buffer-motion",
+        CORE_EDIT_SAMPLE,
+        [
+            action("end-of-buffer", b"\x1b>"),
+            action("backward-paragraph", b"\x1b{"),
+            action("forward-paragraph", b"\x1b}"),
+            action("beginning-of-buffer", b"\x1b<"),
+        ],
+    ),
+    (
+        "core-word-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-word", b"\x1bf"),
+            action("kill-word", b"\x1bd"),
+            action("backward-kill-word", b"\x1b\x7f"),
+            action("yank", b"\x19"),
+        ],
+    ),
+    (
+        "core-line-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("end-of-line", b"\x05"),
+            action("open-line", b"\x0f"),
+            action("self-insert", b"inserted"),
+            action("kill-line", b"\x0b"),
+            action("yank", b"\x19"),
+            action("join-line", b"\x1b^"),
+        ],
+    ),
+    (
+        "core-transpose",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-char", b"\x06"),
+            action("transpose-chars", b"\x14"),
+            action("forward-word", b"\x1bf"),
+            action("transpose-words", b"\x1bt"),
+        ],
+    ),
+    (
+        "core-case-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("upcase-word", b"\x1bu"),
+            action("downcase-word", b"\x1bl"),
+            action("capitalize-word", b"\x1bc"),
+        ],
+    ),
+    (
+        "core-paragraph-editing",
+        CORE_EDIT_SAMPLE,
+        [
+            action("forward-paragraph", b"\x1b}"),
+            action("forward-paragraph-again", b"\x1b}"),
+            action("fill-paragraph", b"\x1bq", settle=2.0, quiet=0.5),
+            action("backward-paragraph", b"\x1b{"),
+        ],
+    ),
+    (
+        "core-mark-kill-yank",
+        CORE_EDIT_SAMPLE,
+        [
+            action("set-mark", b"\x00"),
+            action("next-line", b"\x0e"),
+            action("end-of-line", b"\x05"),
+            action("kill-region", b"\x17"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank", b"\x19"),
+            action("exchange-point-mark", b"\x18\x18"),
+        ],
+    ),
+    (
+        "core-prefix-and-undo",
+        CORE_EDIT_SAMPLE,
+        [
+            action("universal-forward", b"\x154\x06"),
+            action("negative-forward", b"\x1b-2\x06"),
+            action("insert-run", b"xyz"),
+            action("undo", b"\x1f"),
+            action("undo-via-c-x-u", b"\x18u"),
+        ],
+    ),
+]
+
+HELP_FILE_DIRED_SCENARIO_NAMES = (
+    "help-key-then-quit",
+    "help-function-then-quit",
+    "file-save-buffer",
+    "buffer-switch-scratch",
+    "buffer-list",
+    "dired-motion-mark-sort",
+    "dired-open-and-return",
+)
+
+SCENARIOS += [
+    (
+        "help-key-then-quit",
+        CORE_EDIT_SAMPLE,
+        [
+            action("describe-forward-char-key", b"\x08k\x06", settle=2.0, quiet=0.5),
+            action("quit-help", b"q"),
+        ],
+    ),
+    (
+        "help-function-then-quit",
+        CORE_EDIT_SAMPLE,
+        [
+            action(
+                "describe-forward-word",
+                b"\x08fforward-word\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("quit-help", b"q"),
+        ],
+    ),
+    (
+        "file-save-buffer",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"saved "),
+            # The isolated files share a basename but not a parent directory,
+            # and GNU's transient `Wrote ...' echo includes that parent.  Defer
+            # only that path-bearing frame; the next strict checkpoint checks
+            # the post-save buffer, mode-line modified flag, echo, and cursor.
+            action(
+                "save-buffer",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-save-message", b"\x06"),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "buffer-switch-scratch",
+        CORE_EDIT_SAMPLE,
+        [
+            action("switch-to-scratch", b"\x18b*scratch*\r"),
+            action("insert-in-scratch", b"scratch text"),
+            action("switch-back", b"\x18b\r"),
+        ],
+    ),
+    (
+        "buffer-list",
+        CORE_EDIT_SAMPLE,
+        [
+            action("list-buffers", b"\x18\x02", settle=2.0, quiet=0.5),
+            action("other-window", b"\x18o"),
+            action("next-buffer-row", b"\x0e"),
+        ],
+    ),
+    (
+        "dired-motion-mark-sort",
+        "",
+        [
+            action(
+                "stable-listing",
+                b'\x1b:(dired-sort-other "-Al")\r',
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("next-line", b"n"),
+            action("previous-line", b"p"),
+            action("mark", b"m"),
+            action("unmark", b"u"),
+            action("toggle-sort", b"s", settle=2.0, quiet=0.5),
+            action("revert", b"g", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"target": "directory"},
+    ),
+    (
+        "dired-open-and-return",
+        "",
+        [
+            action(
+                "stable-listing",
+                b'\x1b:(dired-sort-other "-Al")\r',
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("next-line", b"n"),
+            action("open-entry", b"\r", settle=2.0, quiet=0.5),
+            action("return-to-dired", b"\x18b\r", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"target": "directory"},
+    ),
+]
+
+HIGH_VALUE_COMMAND_SCENARIO_NAMES = (
+    "minibuffer-edit-abort",
+    "kill-buffer-confirm",
+    "keyboard-macro-repeat",
+    "register-text-and-point",
+    "rectangle-kill-yank",
+    "query-replace-step-and-undo",
+    "bookmark-set-and-jump",
+    "revert-buffer-confirm",
+)
+
+SCENARIOS += [
+    (
+        "minibuffer-edit-abort",
+        CORE_EDIT_SAMPLE,
+        [
+            action("open-m-x", b"\x1bx"),
+            action("type-misspelled-command", b"forward-wrod"),
+            action("backward-word", b"\x1bb"),
+            action("kill-word", b"\x1bd"),
+            action("insert-correction", b"word"),
+            action("abort-minibuffer", b"\x07"),
+            action("open-m-x-again", b"\x1bx"),
+            action("type-command", b"forward-word"),
+            action("execute-command", b"\r"),
+        ],
+    ),
+    (
+        "kill-buffer-confirm",
+        CORE_EDIT_SAMPLE,
+        [
+            action("modify-visited-file", b"temporary edits"),
+            action("open-kill-buffer-prompt", b"\x18k"),
+            action("choose-current-buffer", b"\r", settle=2.0, quiet=0.5),
+            action("kill-without-saving", b"yes\r", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "keyboard-macro-repeat",
+        CORE_EDIT_SAMPLE,
+        [
+            action("start-kbd-macro", b"\x18("),
+            action("end-of-line", b"\x05"),
+            action("insert-bang", b"!"),
+            action("next-line", b"\x0e"),
+            action("beginning-of-line", b"\x01"),
+            action("end-kbd-macro", b"\x18)"),
+            action("execute-kbd-macro", b"\x18e", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "register-text-and-point",
+        CORE_EDIT_SAMPLE,
+        [
+            action("set-mark", b"\x00"),
+            action("end-of-line", b"\x05"),
+            action("copy-to-register-a", b"\x18rsa"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-register-a", b"\x18ria"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("forward-word", b"\x1bf"),
+            action("point-to-register-p", b"\x18r p"),
+            action("end-of-buffer-again", b"\x1b>"),
+            action("jump-to-register-p", b"\x18rjp"),
+        ],
+    ),
+    (
+        "rectangle-kill-yank",
+        "abcd 1111\nabcd 2222\nabcd 3333\nlast line\n",
+        [
+            action("forward-char", b"\x06"),
+            action("set-mark", b"\x00"),
+            action("forward-char-again", b"\x06"),
+            action("forward-char-third-column", b"\x06"),
+            action("next-line", b"\x0e"),
+            action("next-line-again", b"\x0e"),
+            action("kill-rectangle", b"\x18rk", settle=2.0, quiet=0.5),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-rectangle", b"\x18ry", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "query-replace-step-and-undo",
+        "alpha one alpha\nalpha two\nlast alpha\n",
+        [
+            action("open-query-replace", b"\x1b%"),
+            action("old-text", b"alpha\r"),
+            action("new-text", b"omega\r", settle=2.0, quiet=0.5),
+            action("replace-one", b"y"),
+            action("skip-one", b"n"),
+            action("replace-rest", b"!", settle=2.0, quiet=0.5),
+            action("undo-replacement", b"\x1f"),
+            action("undo-replacement-again", b"\x1f"),
+        ],
+    ),
+    (
+        "bookmark-set-and-jump",
+        CORE_EDIT_SAMPLE,
+        [
+            action(
+                "disable-bookmark-persistence",
+                b"\x1b:(setq bookmark-save-flag nil)\r",
+            ),
+            action("forward-word", b"\x1bf"),
+            action("open-bookmark-set", b"\x18rm"),
+            action("name-bookmark", b"tty-spot\r", settle=2.0, quiet=0.5),
+            action("end-of-buffer", b"\x1b>"),
+            action("open-bookmark-jump", b"\x18rb"),
+            action("choose-bookmark", b"tty-spot\r", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "revert-buffer-confirm",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"changed "),
+            action(
+                "request-revert-buffer",
+                b"\x1bxrevert-buffer\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("confirm-revert-buffer", b"yes\r", settle=2.0, quiet=0.5),
+        ],
+    ),
+]
+
+ADVERSARIAL_COMMAND_SCENARIO_NAMES = (
+    "kill-buffer-cancel-save",
+    "revert-buffer-decline",
+    "write-file-save-as",
+    "keyboard-macro-abort-append",
+    "keyboard-macro-read-char",
+    "dired-copy-rename-delete",
+)
+
+SCENARIOS += [
+    (
+        "kill-buffer-cancel-save",
+        CORE_EDIT_SAMPLE,
+        [
+            action("modify-visited-file", b"unsaved "),
+            action("open-kill-buffer-prompt", b"\x18k"),
+            action("choose-current-buffer", b"\r", settle=2.0, quiet=0.5),
+            action("cancel-kill", b"no\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-cancelled-state",
+                b'\x1b:(list (buffer-name) (and buffer-file-name t) '
+                b'(buffer-modified-p))\r',
+                settle=2.0,
+                quiet=0.5,
+            ),
+            # GNU's save confirmation names the isolated parent directory.
+            # The following motion strictly checks the saved mode line and
+            # buffer contents after clearing only that path-bearing echo.
+            action(
+                "save-buffer",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-save-message", b"\x01"),
+            action("open-kill-after-save", b"\x18k"),
+            action("kill-saved-buffer", b"\r", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "revert-buffer-decline",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"changed "),
+            action(
+                "request-revert-buffer",
+                b"\x1bxrevert-buffer\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            # GNU's delayed suggest-key-bindings hint is timing-dependent;
+            # the next strict motion verifies that declining preserved the
+            # modified buffer, mode line, and cursor after clearing it.
+            action(
+                "decline-revert-buffer",
+                b"no\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("verify-declined-buffer", b"\x06"),
+        ],
+    ),
+    (
+        "write-file-save-as",
+        CORE_EDIT_SAMPLE,
+        [
+            action("insert-change", b"saved-as "),
+            # The initial file-name minibuffer contains each target's
+            # isolated parent.  Replace it before comparing the prompt.
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action("replace-destination", b"\x01\x0bsaved-copy.dat"),
+            # `Wrote /isolated/parent/saved-copy.dat' differs only by the
+            # intentionally distinct parent.  The next strict command checks
+            # the visited basename, clean mode line, contents, and cursor.
+            action(
+                "write-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-write-message", b"\x06"),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "keyboard-macro-abort-append",
+        CORE_EDIT_SAMPLE,
+        [
+            action("start-aborted-macro", b"\x18("),
+            action("end-of-line", b"\x05"),
+            action("insert-aborted-bang", b"!"),
+            action("abort-macro", b"\x07", settle=2.0, quiet=0.5),
+            action("undo-aborted-edit", b"\x1f"),
+            action("start-fresh-macro", b"\x18("),
+            action("fresh-end-of-line", b"\x05"),
+            action("fresh-insert-bang", b"!"),
+            action("end-fresh-macro", b"\x18)"),
+            action("append-without-replay", b"\x15\x15\x18("),
+            action("append-next-line", b"\x0e"),
+            action("append-beginning-of-line", b"\x01"),
+            action("append-insert-marker", b">"),
+            action("end-appended-macro", b"\x18)"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("execute-appended-macro", b"\x18e", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "keyboard-macro-read-char",
+        CORE_EDIT_SAMPLE,
+        [
+            action("start-kbd-macro", b"\x18("),
+            # `point-to-register' reads the register with `read-char' after
+            # its key binding has dispatched.  The nested `a' must become
+            # part of the macro, not turn into a replay-time prompt.
+            action("point-to-register-a", b"\x18r a"),
+            action("forward-word", b"\x1bf"),
+            action("end-kbd-macro", b"\x18)"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("execute-read-char-macro", b"\x18e", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "dired-copy-rename-delete",
+        "",
+        [
+            action(
+                "stable-listing",
+                b'\x1b:(dired-sort-other "-Al")\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            # The absolute fixture roots must differ so each editor mutates
+            # independent state.  Move the real entry to mid-window before
+            # the first strict comparison, leaving only listing data visible.
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("open-copy-prompt", b"C", checkpoint=False),
+            action("name-copy", b"\x01\x0balpha-copy.txt"),
+            action(
+                "finish-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-copy-message", b"\x0c", settle=2.0, quiet=0.5),
+            action("find-beta", b"\x13beta.txt\r"),
+            action("open-rename-prompt", b"R", checkpoint=False),
+            action("name-rename", b"\x01\x0bbeta-renamed.txt"),
+            action(
+                "finish-rename",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-rename-message", b"\x0c", settle=2.0, quiet=0.5),
+            action("find-notes", b"\x13notes.org\r"),
+            action("open-delete-prompt", b"D", checkpoint=False),
+            action(
+                "confirm-delete",
+                b"yes\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("clear-delete-message", b"\x0c", settle=2.0, quiet=0.5),
+        ],
+        ".dat",
+        {"target": "directory", "separate_targets": True, "padding_entries": 32},
+    ),
+]
+
+DIRED_BATCH_SCENARIO_NAMES = (
+    "dired-batch-copy-files",
+    "dired-batch-rename-files",
+    "dired-batch-delete-files",
+    "dired-batch-copy-mixed-tree",
+    "dired-batch-overwrite-decline",
+    "dired-batch-overwrite-accept",
+    "dired-batch-copy-cancel",
+    "dired-batch-copy-missing-target",
+    "dired-batch-copy-partial-failure",
+    "dired-batch-copy-permission-failure",
+    "dired-refresh-after-external-delete",
+)
+
+DIRED_BATCH_SETUP = action(
+    "stable-batch-listing",
+    b"\x1b:(progn (setq dired-recursive-copies 'always "
+    b"dired-recursive-deletes 'always delete-by-moving-to-trash nil) "
+    b'(dired-sort-other "-Al"))\r',
+    checkpoint=False,
+    settle=2.0,
+    quiet=0.5,
+)
+
+DIRED_BATCH_BASE_OPTIONS = {
+    "target": "directory",
+    "separate_targets": True,
+    "padding_entries": 32,
+}
+
+SCENARIOS += [
+    (
+        "dired-batch-copy-files",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-copy", b"C", checkpoint=False),
+            action(
+                "name-copy-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-batch-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-batch-copy",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("copy-dest",)),
+    ),
+    (
+        "dired-batch-rename-files",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-rename", b"R", checkpoint=False),
+            action(
+                "name-rename-directory",
+                b"\x01\x0brename-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-batch-rename",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-batch-rename",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("rename-dest",)),
+    ),
+    (
+        "dired-batch-delete-files",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-delete", b"D", checkpoint=False),
+            action(
+                "confirm-batch-delete",
+                b"yes\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-batch-delete",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        DIRED_BATCH_BASE_OPTIONS,
+    ),
+    (
+        "dired-batch-copy-mixed-tree",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-notes", b"\x13notes.org\r", checkpoint=False),
+            action("center-notes", b"\x0c"),
+            action("mark-notes", b"m"),
+            action("find-subdir", b"\x13subdir\r", checkpoint=False),
+            action("mark-subdir", b"m"),
+            action("open-mixed-copy", b"C", checkpoint=False),
+            action(
+                "name-tree-directory",
+                b"\x01\x0btree-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-mixed-copy",
+                b"\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-mixed-copy",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_directories=("tree-dest",),
+            extra_files={
+                "subdir/inside.txt": "nested file\n",
+                "subdir/deep/leaf.txt": "deep nested file\n",
+            },
+        ),
+    ),
+    (
+        "dired-batch-overwrite-decline",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-overwrite-copy", b"C", checkpoint=False),
+            action(
+                "name-overwrite-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "submit-overwrite-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-existing-file",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("dismiss-skip-log", b"\x181", checkpoint=False),
+            action(
+                "verify-overwrite-decline",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_files={"copy-dest/alpha.txt": "keep existing alpha\n"},
+        ),
+    ),
+    (
+        "dired-batch-overwrite-accept",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-overwrite-copy", b"C", checkpoint=False),
+            action(
+                "name-overwrite-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "submit-overwrite-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-existing-file",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-overwrite-accept",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_files={"copy-dest/alpha.txt": "replace existing alpha\n"},
+        ),
+    ),
+    (
+        "dired-batch-copy-cancel",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-copy", b"C", checkpoint=False),
+            action(
+                "type-cancelled-destination",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action("cancel-batch-copy", b"\x07", checkpoint=False),
+            action(
+                "verify-cancelled-copy",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("copy-dest",)),
+    ),
+    (
+        "dired-batch-copy-missing-target",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-copy", b"C", checkpoint=False),
+            action(
+                "name-missing-directory",
+                b"\x01\x0bmissing-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "submit-missing-directory",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-create-directory",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-missing-target-failure",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        DIRED_BATCH_BASE_OPTIONS,
+    ),
+    (
+        "dired-batch-copy-partial-failure",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action(
+                "remove-beta-externally",
+                b'\x1b:(delete-file "beta.txt")\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("open-partial-copy", b"C", checkpoint=False),
+            action(
+                "name-partial-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-partial-copy",
+                b"\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("dismiss-partial-log", b"\x181", checkpoint=False),
+            action(
+                "verify-partial-failure",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("copy-dest",)),
+    ),
+    (
+        "dired-batch-copy-permission-failure",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-protected-copy", b"C", checkpoint=False),
+            action(
+                "name-protected-directory",
+                b"\x01\x0bblocked/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-protected-copy",
+                b"\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("dismiss-permission-log", b"\x181", checkpoint=False),
+            action(
+                "verify-permission-failure",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_directories=("blocked",),
+            modes={"blocked": 0o500},
+        ),
+    ),
+    (
+        "dired-refresh-after-external-delete",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-beta", b"\x13beta.txt\r", checkpoint=False),
+            action("center-beta", b"\x0c"),
+            action("mark-beta", b"m"),
+            action(
+                "remove-beta-externally",
+                b'\x1b:(delete-file "beta.txt")\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "refresh-after-delete",
+                b"g",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        DIRED_BATCH_BASE_OPTIONS,
+    ),
+]
+
+PACKAGE_MENU_SCENARIO_NAMES = (
+    "package-menu-filter-install-cancel",
+    "package-menu-install-refresh-remove",
+)
+
+PACKAGE_MENU_SETUP = action(
+    "open-local-package-menu",
+    b"\x1b:(progn (require 'package) "
+    b'(unless (eq package-check-signature \'allow-unsigned) (error "signature policy")) '
+    b'(setq package-user-dir (expand-file-name "packages/" default-directory) '
+    b"package-archives (list (cons \"local\" "
+    b'(expand-file-name "archive/" default-directory)))) '
+    b"(package-initialize) (package-refresh-contents) (list-packages))\r",
+    settle=6.0,
+    quiet=1.0,
+)
+
+PACKAGE_MENU_OPTIONS = {
+    "target": "directory",
+    "separate_targets": True,
+    "extra_files": {
+        "archive/archive-contents": (
+            '(1 (ttydiff-package . [(1 0) nil "TTY package lifecycle fixture" '
+            "single]))\n"
+        ),
+        "archive/ttydiff-package-1.0.el": (
+            ";;; ttydiff-package.el --- TTY package lifecycle fixture "
+            "-*- lexical-binding: t; -*-\n"
+            ";; Version: 1.0\n"
+            ";;; Code:\n"
+            ";;;###autoload\n"
+            "(defun ttydiff-package-command () (interactive) (message \"TTY package active\"))\n"
+            "(provide 'ttydiff-package)\n"
+            ";;; ttydiff-package.el ends here\n"
+        ),
+    },
+}
+
+SCENARIOS += [
+    (
+        "package-menu-filter-install-cancel",
+        "",
+        [
+            PACKAGE_MENU_SETUP,
+            action("filter-by-package-name", b"/nttydiff-package\r"),
+            action("mark-package-install", b"i"),
+            action("show-install-confirmation", b"x"),
+            action("decline-install", b"n", settle=2.0, quiet=0.5),
+            action(
+                "verify-cancelled-install",
+                b"\x1b:(package-installed-p 'ttydiff-package)\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".dat",
+        PACKAGE_MENU_OPTIONS,
+    ),
+    (
+        "package-menu-install-refresh-remove",
+        "",
+        [
+            PACKAGE_MENU_SETUP,
+            action("filter-by-package-name", b"/nttydiff-package\r"),
+            action("mark-package-install", b"i"),
+            action("show-install-confirmation", b"x"),
+            action("confirm-install", b"y", settle=6.0, quiet=1.0),
+            action("refresh-package-menu", b"r", settle=6.0, quiet=1.0),
+            action("find-installed-package", b"\x13ttydiff-package\r"),
+            action("mark-package-delete", b"d"),
+            action("show-delete-confirmation", b"x"),
+            action("confirm-delete", b"y", settle=4.0, quiet=1.0),
+            action(
+                "verify-package-removal",
+                b"\x1b:(list (package-installed-p 'ttydiff-package) "
+                b"(eq package-check-signature 'allow-unsigned))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".dat",
+        PACKAGE_MENU_OPTIONS,
+    ),
+]
+
+FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
+    "org-fieldnotes-todo-cycle",
+    "org-fieldnotes-priority",
+    "org-fieldnotes-table-motion",
+    "org-fieldnotes-heading-insert",
+    "org-fieldnotes-narrow-widen",
+    "org-fieldnotes-heading-motion",
+)
+
+SCENARIOS += [
+    (
+        "org-fieldnotes-todo-cycle",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-workshop-heading", b"\x13Rebuild the workshop\r"),
+            action("cycle-todo", b"\x03\x14", settle=2.0, quiet=0.5),
+            action("cycle-todo-again", b"\x03\x14", settle=2.0, quiet=0.5),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-priority",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-rust-heading", b"\x13Learn enough Rust\r"),
+            action("set-priority-c", b"\x03,C", settle=2.0, quiet=0.5),
+            action("remove-priority", b"\x03, ", settle=2.0, quiet=0.5),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-table-motion",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-table-row", b"\x13Piranesi\r"),
+            action("next-table-field", b"\t"),
+            # Org realigns the table before moving.  On a cold process that
+            # work can cross the generic 200 ms quiet window, so wait for the
+            # completed command while preserving the same strict frame.
+            action("next-table-row", b"\r", settle=2.0, quiet=0.5),
+            action("previous-table-field", b"\x1b[Z"),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-heading-insert",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-heading", b"\x13Buy timber\r"),
+            action("new-heading", b"\x1b\r", settle=2.0, quiet=0.5),
+            action("heading-text", b"Order delivery"),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-narrow-widen",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("search-heading", b"\x13Learn enough Rust\r"),
+            action("narrow-to-subtree", b"\x18ns", settle=2.0, quiet=0.5),
+            action("end-of-buffer", b"\x1b>"),
+            action("widen", b"\x18nw", settle=2.0, quiet=0.5),
+        ],
+        ".org",
+    ),
+    (
+        "org-fieldnotes-heading-motion",
+        FOLD_SAMPLE,
+        [
+            action("open-contents", b"\x1b[Z"),
+            action("next-visible-heading", b"\x03\x0e"),
+            action("next-visible-heading-again", b"\x03\x0e"),
+            action("previous-visible-heading", b"\x03\x10"),
+            action("forward-same-level", b"\x03\x06"),
+            action("backward-same-level", b"\x03\x02"),
+        ],
+        ".org",
+    ),
+]
+
+UNDO_KILL_RING_SCENARIO_NAMES = (
+    "undo-kill-line-coalescing",
+    "undo-kill-line-boundaries",
+    "undo-word-kill-order",
+    "undo-yank-pop-cycle",
+    "undo-yank-pop-invalid",
+    "undo-redo-divergent",
+    "undo-keyboard-macro-boundaries",
+    "undo-region-limited",
+    "undo-repeat-c-slash",
+    "undo-repeat-c-x-u",
+)
+
+SCENARIOS += [
+    # Consecutive C-k commands are one kill-ring entry.  The final yank
+    # distinguishes GNU-style coalescing from merely deleting the same text.
+    (
+        "undo-kill-line-coalescing",
+        "alpha\nbeta\ngamma\n",
+        [
+            action("kill-alpha", b"\x0b"),
+            action("kill-first-newline", b"\x0b"),
+            action("kill-beta", b"\x0b"),
+            action("kill-second-newline", b"\x0b"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-coalesced-kill", b"\x19"),
+        ],
+    ),
+    # C-k alternates between text and newline deletion, handles an empty
+    # line, kills unterminated final text, and then reports the EOB error.
+    (
+        "undo-kill-line-boundaries",
+        "one\n\nthree",
+        [
+            action("kill-first-text", b"\x0b"),
+            action("kill-first-newline", b"\x0b"),
+            action("kill-empty-line", b"\x0b"),
+            action("kill-final-text", b"\x0b"),
+            action("kill-at-end-of-buffer", b"\x0b"),
+            action("yank-boundary-kill", b"\x19"),
+        ],
+    ),
+    # Forward word kills append while a backward word kill prepends.  Yanking
+    # the resulting entry exposes both direction and ordering mistakes.
+    (
+        "undo-word-kill-order",
+        "alpha beta gamma delta\n",
+        [
+            action("forward-word", b"\x1bf"),
+            action("kill-next-word", b"\x1bd"),
+            action("kill-following-word", b"\x1bd"),
+            action("backward-kill-word", b"\x1b\x7f"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-ordered-entry", b"\x19"),
+        ],
+    ),
+    # Three non-consecutive kills make three entries.  M-y must replace the
+    # exact yank span, cycle through the older entries, and wrap to newest;
+    # C-x C-x then makes point/mark placement visible on the glass.
+    (
+        "undo-yank-pop-cycle",
+        "one\ntwo\nthree\nanchor\n",
+        [
+            action("kill-one", b"\x0b"),
+            action("move-to-two", b"\x0e"),
+            action("kill-two", b"\x0b"),
+            action("move-to-three", b"\x0e"),
+            action("kill-three", b"\x0b"),
+            action("end-of-buffer", b"\x1b>"),
+            action("yank-newest", b"\x19"),
+            action("yank-pop-two", b"\x1by"),
+            action("yank-pop-one", b"\x1by"),
+            action("yank-pop-wrap", b"\x1by"),
+            action("exchange-yank-point-and-mark", b"\x18\x18"),
+        ],
+    ),
+    # yank-pop is invalid unless the previous command was a yank/yank-pop.
+    # The strict frame proves both the GNU error and unchanged buffer text.
+    (
+        "undo-yank-pop-invalid",
+        "stable text\n",
+        [
+            action("forward-char", b"\x06"),
+            action("invalid-yank-pop", b"\x1by"),
+        ],
+    ),
+    # Exercise both sides of the modern undo state machine, then fork the
+    # history and prove redo cannot resurrect the abandoned branch.  M-x
+    # briefly advertises undo-redo's C-M-_ binding; check the command's stable
+    # post-hint message instead of sampling inside that two-second overlay.
+    (
+        "undo-redo-divergent",
+        "base\n",
+        [
+            action("insert-alpha", b"alpha"),
+            action("undo-alpha", b"\x1f"),
+            action(
+                "redo-alpha",
+                b"\x1bxundo-redo\r",
+                settle=5.0,
+                quiet=0.5,
+            ),
+            action("undo-redone-alpha", b"\x1f"),
+            action("insert-divergent-branch", b"branch"),
+            action(
+                "reject-redo-after-divergence",
+                b"\x1bxundo-redo\r",
+                settle=5.0,
+                quiet=0.5,
+            ),
+            action("undo-divergent-branch", b"\x1f"),
+        ],
+    ),
+    # Recording a macro performs ordinary edits; replay is a compound edit.
+    # Repeated undo must cross the same inner and outer boundaries as GNU.
+    (
+        "undo-keyboard-macro-boundaries",
+        "abcd\n",
+        [
+            action("start-macro", b"\x18("),
+            action("macro-insert-x", b"X"),
+            action("macro-forward-char", b"\x06"),
+            action("macro-insert-y", b"Y"),
+            action("end-macro", b"\x18)"),
+            action("undo-recorded-y", b"\x1f"),
+            action("undo-recorded-x", b"\x1f"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("execute-macro", b"\x18e", settle=2.0, quiet=0.5),
+            action("undo-macro-edit", b"\x1f"),
+            action("undo-macro-edit-again", b"\x1f"),
+        ],
+    ),
+    # The newest edit is outside the active region.  Region-limited undo must
+    # select the older in-region group while preserving the final Z edit.
+    (
+        "undo-region-limited",
+        "aaa\nbbb\nccc\n",
+        [
+            action("insert-in-first-line", b"X"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-outside-region", b"Z"),
+            action("beginning-of-buffer", b"\x1b<"),
+            action("set-region-mark", b"\x00"),
+            action("select-first-line", b"\x05"),
+            action("undo-in-region", b"\x1f"),
+            action("verify-outside-edit", b"\x1b>"),
+        ],
+    ),
+    (
+        "undo-repeat-c-slash",
+        "base\n",
+        [
+            action("insert-at-start", b"A"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-at-end", b"Z"),
+            action("undo-end-edit", b"\x1f"),
+            action("undo-start-edit", b"\x1f"),
+        ],
+    ),
+    (
+        "undo-repeat-c-x-u",
+        "base\n",
+        [
+            action("insert-at-start", b"A"),
+            action("end-of-buffer", b"\x1b>"),
+            action("insert-at-end", b"Z"),
+            action("undo-end-edit", b"\x18u"),
+            action("undo-start-edit", b"\x18u"),
+        ],
+    ),
+]
+
+REGEXP_SEARCH_REPLACE_SCENARIO_NAMES = (
+    "regexp-isearch-forward",
+    "regexp-isearch-backward",
+    "regexp-isearch-edit-fail-wrap",
+    "regexp-isearch-abort",
+    "regexp-isearch-other-key-exit",
+    "regexp-isearch-invalid-recovery",
+    "query-replace-regexp-captures",
+    "query-replace-regexp-choices-undo",
+)
+
+SCENARIOS += [
+    (
+        "regexp-isearch-forward",
+        "alpha 123 beta\naxxxa 456\nomega alpha\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-regexp", b"a.*a"),
+            action("repeat-regexp", b"\x13"),
+            action("exit-regexp-isearch", b"\r"),
+        ],
+    ),
+    (
+        "regexp-isearch-backward",
+        "alpha 123 beta\naxxxa 456\nomega 789\n",
+        [
+            action("end-of-buffer", b"\x1b>"),
+            action("open-backward-regexp-isearch", b"\x1b\x12"),
+            action("type-digit-regexp", b"[[:digit:]]+"),
+            action("repeat-backward-regexp", b"\x12"),
+            action("exit-regexp-isearch", b"\r"),
+        ],
+    ),
+    (
+        "regexp-isearch-edit-fail-wrap",
+        "alpha beta alpha\nsecond alpha\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-failing-regexp", b"zeta"),
+            action("erase-failing-regexp", b"\x7f\x7f\x7f\x7f"),
+            action("type-working-regexp", b"alpha"),
+            action("repeat-second-match", b"\x13"),
+            action("repeat-third-match", b"\x13"),
+            action("wrap-to-first-match", b"\x13"),
+            action("exit-wrapped-isearch", b"\r"),
+        ],
+    ),
+    (
+        "regexp-isearch-abort",
+        "alpha beta\nsecond beta\n",
+        [
+            action("move-origin", b"\x06\x06"),
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-regexp", b"beta"),
+            # A cold GNU isearch can defer processing C-g until after the
+            # ordinary one-second checkpoint floor.  Wait for the abort's
+            # observable restored-point frame, not the unchanged pre-key
+            # screen that happens to be quiet while the event is pending.
+            action("abort-regexp-isearch", b"\x07", settle=2.0, quiet=0.5),
+        ],
+    ),
+    (
+        "regexp-isearch-other-key-exit",
+        "alpha beta\nsecond beta\nthird line\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-regexp", b"beta"),
+            action("exit-and-run-next-line", b"\x0e"),
+        ],
+    ),
+    (
+        "regexp-isearch-invalid-recovery",
+        "alpha beta\nsecond alpha\n",
+        [
+            action("open-forward-regexp-isearch", b"\x1b\x13"),
+            action("type-invalid-regexp", b"["),
+            action("delete-invalid-regexp", b"\x7f"),
+            action("type-recovered-regexp", b"alpha"),
+            action("exit-recovered-isearch", b"\r"),
+        ],
+    ),
+    (
+        "query-replace-regexp-captures",
+        "alpha-12 beta-34 alpha-56\n",
+        [
+            action("open-query-replace-regexp", b"\x1bxquery-replace-regexp\r"),
+            action(
+                "enter-capture-regexp",
+                b"\\([[:alpha:]]+\\)-\\([[:digit:]]+\\)\r",
+            ),
+            action("enter-backreference-replacement", b"\\2:\\1\r"),
+            action("replace-first", b"y"),
+            action("skip-second", b"n"),
+            # The M-x binding suggestion is scheduled two seconds after the
+            # replacement finishes.  Observe it inside its display window,
+            # rather than racing the exact timer deadline.
+            action("replace-rest", b"!", settle=3.0, quiet=0.5),
+            action("undo-replacement", b"\x1f"),
+            action("undo-replacement-again", b"\x1f"),
+        ],
+    ),
+    (
+        "query-replace-regexp-choices-undo",
+        "cat1 cat2 cat3 cat4\n",
+        [
+            action("open-query-replace-regexp", b"\x1bxquery-replace-regexp\r"),
+            action("enter-numbered-cat-regexp", b"cat[[:digit:]]\r"),
+            action("enter-replacement", b"dog\r"),
+            action("replace-first", b"y"),
+            action("skip-second", b"n"),
+            action("replace-third", b"y"),
+            action("quit-before-fourth", b"q", settle=3.0, quiet=0.5),
+            action("undo-quit-replacements", b"\x1f"),
+            action("undo-quit-replacements-again", b"\x1f"),
+        ],
+    ),
+]
+
+FILE_LIFECYCLE_SCENARIO_NAMES = (
+    "save-some-buffers-selective",
+    "overwrite-decline",
+    "overwrite-accept-revisit",
+    "overwrite-write-failure",
+    "supersession-decline",
+    "supersession-accept-revisit",
+    "find-alternate-file-success",
+    "find-alternate-file-cancel",
+    "find-alternate-file-missing-revisit",
+    "find-alternate-file-modified-decline",
+    "find-alternate-file-modified-accept",
+)
+
+FILE_LIFECYCLE_SETUP = action(
+    "disable-lockfiles-and-autosave",
+    b"\x1b:(progn (setq create-lockfiles nil auto-save-default nil) "
+    b"(auto-save-mode -1))\r",
+    checkpoint=False,
+)
+
+SCENARIOS += [
+    (
+        "save-some-buffers-selective",
+        "primary file\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action(
+                "prepare-two-modified-buffers",
+                b'\x1b:(let ((one (find-file-noselect "save-one.dat")) '
+                b'(two (find-file-noselect "save-two.dat"))) '
+                b'(with-current-buffer one (goto-char (point-max)) '
+                b'(auto-save-mode -1) (insert "saved one\\n")) '
+                b'(with-current-buffer two (goto-char (point-max)) '
+                b'(auto-save-mode -1) (insert "declined two\\n")) '
+                b'(switch-to-buffer one))\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "open-save-some-buffers",
+                b"\x1bxsave-some-buffers\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("save-first-buffer", b"y", checkpoint=False),
+            action(
+                "decline-second-buffer",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-selective-state",
+                b'\x1b:(list (buffer-modified-p '
+                b'(get-file-buffer (expand-file-name "save-one.dat"))) '
+                b'(buffer-modified-p '
+                b'(get-file-buffer (expand-file-name "save-two.dat"))))\r',
+                filesystem=True,
+            ),
+            action("kill-saved-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-saved-bytes",
+                b"\x18\x06\x01\x0bsave-one.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {
+            "separate_targets": True,
+            "extra_files": {
+                "save-one.dat": "one original\n",
+                "save-two.dat": "two original\n",
+            },
+        },
+    ),
+    (
+        "overwrite-decline",
+        "source original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"replacement "),
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action(
+                "choose-existing-destination",
+                b"\x01\x0bexisting.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-overwrite",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-declined-overwrite",
+                b'\x1b:(list (buffer-name) (buffer-modified-p))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"existing.dat": "keep me\n"}},
+    ),
+    (
+        "overwrite-accept-revisit",
+        "source original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"replacement "),
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action(
+                "choose-existing-destination",
+                b"\x01\x0bexisting.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-overwrite",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-overwritten-buffer",
+                b"\x1b:(list (buffer-name) (buffer-modified-p) "
+                b"(file-name-nondirectory buffer-file-name))\r",
+                filesystem=True,
+            ),
+            action("kill-overwritten-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-overwritten-bytes",
+                b"\x18\x06\x01\x0bexisting.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"existing.dat": "old bytes\n"}},
+    ),
+    (
+        "overwrite-write-failure",
+        "source original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"replacement "),
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action(
+                "choose-unwritable-destination",
+                b"\x01\x0blocked/existing.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-unwritable-overwrite",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-write-failure-state",
+                b'\x1b:(list (buffer-name) (buffer-modified-p))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {
+            "separate_targets": True,
+            "extra_files": {"blocked/existing.dat": "protected\n"},
+            "modes": {"blocked/existing.dat": 0o400, "blocked": 0o500},
+        },
+    ),
+    (
+        "supersession-decline",
+        "disk original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("insert-local-change", b"local "),
+            action(
+                "replace-disk-externally",
+                b'\x1b:(let ((path buffer-file-name)) (with-temp-buffer '
+                b'(insert "external bytes\\n") '
+                b'(write-region (point-min) (point-max) path nil nil)))\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "request-save-after-external-change",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-supersession",
+                b"no\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-declined-supersession",
+                b'\x1b:(list (buffer-modified-p) '
+                b'(verify-visited-file-modtime))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "supersession-accept-revisit",
+        "disk original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("insert-local-change", b"local "),
+            action(
+                "replace-disk-externally",
+                b'\x1b:(let ((path buffer-file-name)) (with-temp-buffer '
+                b'(insert "external bytes\\n") '
+                b'(write-region (point-min) (point-max) path nil nil)))\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "request-save-after-external-change",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "confirm-save-after-supersession",
+                b"yes\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-supersession",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-accepted-supersession",
+                b'\x1b:(list (buffer-modified-p) '
+                b'(verify-visited-file-modtime))\r',
+                filesystem=True,
+            ),
+            action("kill-saved-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-superseded-bytes",
+                b"\x18\x06\x01\x0bttydiff-supersession-accept-revisit.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "find-alternate-file-success",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "visit-alternate-file",
+                b"\x01\x0balternate.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+    (
+        "find-alternate-file-cancel",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action("type-alternate-name", b"\x01\x0balternate.dat", checkpoint=False),
+            action("cancel-alternate-file", b"\x07", filesystem=True),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+    (
+        "find-alternate-file-missing-revisit",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "visit-missing-alternate",
+                b"\x01\x0bmissing.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+            action("insert-new-file-bytes", b"created bytes\n"),
+            action(
+                "save-new-alternate",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("verify-created-file", b"\x01", filesystem=True),
+            action("kill-created-file", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-created-file",
+                b"\x18\x06\x01\x0bmissing.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "find-alternate-file-modified-decline",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"unsaved "),
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "choose-alternate-file",
+                b"\x01\x0balternate.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-killing-modified-buffer",
+                b"no\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-modified-buffer-preserved",
+                b'\x1b:(list (buffer-name) (buffer-modified-p))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+    (
+        "find-alternate-file-modified-accept",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"discarded "),
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "choose-alternate-file",
+                b"\x01\x0balternate.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-killing-modified-buffer",
+                b"yes\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+]
+
+SEEDED_SAFE_SCENARIO_NAMES = tuple(f"seeded-safe-{seed}" for seed, _ in SEEDED_SAFE_RUNS)
+SCENARIOS += [
+    (
+        f"seeded-safe-{seed}",
+        CORE_EDIT_SAMPLE,
+        seeded_safe_actions(seed, steps),
+    )
+    for seed, steps in SEEDED_SAFE_RUNS
 ]
 
 
@@ -1397,6 +3531,133 @@ def select_scenarios(names):
     return [by_name[name] for name in names]
 
 
+def populate_scenario_directory(
+    path,
+    padding_entries=0,
+    extra_files=None,
+    extra_directories=(),
+    modes=None,
+):
+    """Populate one deterministic Dired fixture directory."""
+    for index in range(padding_entries):
+        with open(os.path.join(path, f"00-padding-{index:02}.txt"), "w") as out:
+            out.write(f"padding file {index:02}\n")
+    for filename, body in (
+        ("alpha.txt", "alpha file\nsecond line\n"),
+        ("beta.txt", "beta file\n"),
+        ("notes.org", "* Dired fixture\nbody\n"),
+    ):
+        with open(os.path.join(path, filename), "w") as out:
+            out.write(body)
+    os.mkdir(os.path.join(path, "subdir"))
+    for relative in extra_directories:
+        (Path(path) / relative).mkdir(parents=True, exist_ok=True)
+    for relative, body in (extra_files or {}).items():
+        extra = Path(path) / relative
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(body, bytes):
+            extra.write_bytes(body)
+        else:
+            extra.write_text(body, encoding="utf-8")
+    fixture_paths = sorted(
+        Path(path).rglob("*"),
+        key=lambda candidate: len(candidate.parts),
+        reverse=True,
+    )
+    for fixture_path in fixture_paths + [Path(path)]:
+        os.utime(fixture_path, (SCENARIO_MTIME, SCENARIO_MTIME))
+    for relative, mode in (modes or {}).items():
+        os.chmod(Path(path) / relative, mode)
+
+
+def create_scenario_target(name, contents, suffix=".dat", options=None):
+    """Create the disposable file or directory visited by both editors."""
+    options = options or {}
+    if options.get("target") == "directory":
+        path = tempfile.mkdtemp(prefix=f"ttydiff-{name}-")
+        populate_scenario_directory(
+            path,
+            options.get("padding_entries", 0),
+            options.get("extra_files"),
+            options.get("extra_directories", ()),
+            options.get("modes"),
+        )
+        return path
+
+    handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
+    with os.fdopen(handle, "w") as out:
+        out.write(contents)
+    return path
+
+
+def remove_scenario_target(path):
+    """Remove a target created by :func:`create_scenario_target`."""
+    if os.path.isdir(path):
+        for root, directories, files in os.walk(path):
+            os.chmod(root, 0o700)
+            for name in directories:
+                os.chmod(os.path.join(root, name), 0o700)
+            for name in files:
+                candidate = os.path.join(root, name)
+                if not os.path.islink(candidate):
+                    os.chmod(candidate, 0o600)
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
+def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
+    """Return GNU/Emaxx targets plus the paths that own their cleanup.
+
+    Most read-only journeys intentionally share one target.  A journey that
+    writes its visited file needs isolated copies: otherwise GNU saves first
+    and Emaxx correctly detects an external modification.  The isolated files
+    keep the same basename so the screen contract remains exact.
+    """
+    options = options or {}
+    if not options.get("separate_targets"):
+        path = create_scenario_target(name, contents, suffix, options)
+        return (path, path), [path]
+
+    roots = [
+        tempfile.mkdtemp(prefix=f"ttydiff-{name}-gnu-"),
+        tempfile.mkdtemp(prefix=f"ttydiff-{name}-emaxx-"),
+    ]
+    if options.get("target") == "directory":
+        basename = f"ttydiff-{name}"
+        targets = []
+        for root in roots:
+            path = os.path.join(root, basename)
+            os.mkdir(path)
+            populate_scenario_directory(
+                path,
+                options.get("padding_entries", 0),
+                options.get("extra_files"),
+                options.get("extra_directories", ()),
+                options.get("modes"),
+            )
+            targets.append(path)
+        return tuple(targets), roots
+
+    basename = f"ttydiff-{name}{suffix}"
+    targets = []
+    for root in roots:
+        path = os.path.join(root, basename)
+        with open(path, "w") as out:
+            out.write(contents)
+        for relative, body in options.get("extra_files", {}).items():
+            extra = Path(root) / relative
+            extra.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(body, bytes):
+                extra.write_bytes(body)
+            else:
+                extra.write_text(body, encoding="utf-8")
+        for relative, mode in options.get("modes", {}).items():
+            os.chmod(Path(root) / relative, mode)
+        targets.append(path)
+    return tuple(targets), roots
+
+
 def main():
     if len(sys.argv) < 4:
         print(__doc__)
@@ -1404,10 +3665,18 @@ def main():
     emaxx_binary, gnu_binary, lisp_dir = sys.argv[1:4]
     for path, label in [(emaxx_binary, "emaxx"), (gnu_binary, "GNU emacs")]:
         if not os.path.exists(path):
-            print(f"SKIP: no {label} binary at {path}")
+            message = f"no {label} binary at {path}"
+            if os.environ.get("EMAXX_TTYDIFF_REQUIRE") == "1":
+                print(f"ERROR: {message}", file=sys.stderr)
+                sys.exit(2)
+            print(f"SKIP: {message}")
             return
     if not os.path.isdir(lisp_dir):
-        print(f"SKIP: no GNU lisp tree at {lisp_dir}")
+        message = f"no GNU lisp tree at {lisp_dir}"
+        if os.environ.get("EMAXX_TTYDIFF_REQUIRE") == "1":
+            print(f"ERROR: {message}", file=sys.stderr)
+            sys.exit(2)
+        print(f"SKIP: {message}")
         return
     load_path = os.pathsep.join(
         [lisp_dir] + sorted(e.path for e in os.scandir(lisp_dir) if e.is_dir())
@@ -1434,22 +3703,27 @@ def main():
         # A scenario may carry a file suffix; `.el' engages lisp-mode and
         # font-lock through the ordinary auto-mode-alist path.
         suffix = entry[3] if len(entry) > 3 else ".dat"
-        handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
-        with os.fdopen(handle, "w") as out:
-            out.write(contents)
+        options = entry[4] if len(entry) > 4 else {}
+        (gnu_path, emaxx_path), cleanup_targets = create_scenario_target_pair(
+            name, contents, suffix, options
+        )
         try:
             ok = compare(
                 name,
                 keys,
-                [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, path],
-                [emaxx_binary, path],
+                [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, gnu_path],
+                [emaxx_binary, emaxx_path],
                 {},
                 {"EMACSLOADPATH": load_path},
-                boot_wait=20.0,
+                # Cold Lisp loading can exceed twenty seconds on a busy CI
+                # host.  This is only a readiness deadline: comparisons and
+                # per-command settle windows remain strict and unchanged.
+                boot_wait=STARTUP_WAIT_SECONDS,
             )
             failures += 0 if ok else 1
         finally:
-            os.unlink(path)
+            for target in cleanup_targets:
+                remove_scenario_target(target)
     if failures:
         print(f"FAIL: {failures} scenario(s) diverged")
         sys.exit(1)

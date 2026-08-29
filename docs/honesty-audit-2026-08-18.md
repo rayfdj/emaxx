@@ -2730,3 +2730,32 @@ pinned Darwin-image contract -- the same host-vs-contract policy
 question as mule-util (see docs/oracle-build-contract.md), not
 invented names: the original zz-/emaxx-contamination check stays
 clean.
+
+
+## 2026-08-29 tty merge audit (tty-frontend 16826b4 -> main)
+
+All seven tty-side commits since the 196d80f merge-base were audited
+before this merge: no oracle copying, no harness gaming, no boundary
+violations found.  The new ttydiff comparator is stricter than its
+predecessor (verbatim row/attribute/mode-line/echo/cursor comparison
+plus filesystem snapshots), the package-lifecycle test runs BOTH
+binaries live on identical synthetic fixtures and compares stdout
+byte-for-byte, and the core fixes carry GNU C anchors (write-region
+supersession under `create-lockfiles' nil, yes-or-no-p for overwrite
+confirmation, insert-file-contents replacement point policy, where-is
+candidate ordering, kbd-macro boundary truncation, minibuf.c prompt
+interval copying).  Two items noted, kept, and worth future scrutiny:
+
+- tty.rs `deferred_mode_line_point': reproduces GNU's stale mode-line
+  redisplay artifact (point-based constructs keeping their pre-motion
+  value after same-row motion inside invisible text, until the next
+  input) by modeling WHEN GNU's incremental redisplay skips, not by
+  porting the matrix machinery itself.  Faithful in effect and
+  narrowly guarded (same buffer, cursor row, window start, and modiff
+  required); a mis-generalization would diverge on new scenarios and
+  the battery would catch it.  Mechanism-approximate, disclosed here.
+- regexp.rs backward-search bound handling: a bounded-prefix retry
+  guarded by `pattern_end_depends_on_following_context', which
+  declines the shortcut for every end/word/symbol assertion rather
+  than risk inventing context.  Self-limiting; failure mode is the
+  prior full-context behavior.

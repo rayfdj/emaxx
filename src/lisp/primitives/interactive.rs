@@ -28,7 +28,7 @@ fn dribble_event_bytes(event: &Value) -> Vec<u8> {
     }
 }
 
-fn record_external_input_event(interp: &mut Interpreter, event: &Value) {
+fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
     if !interp.kbd_macro_executions.is_empty() {
         return;
     }
@@ -43,6 +43,17 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value) {
     {
         let _ = file.write_all(&dribble_event_bytes(event));
         let _ = file.flush();
+    }
+    // read_char records terminal events at the point where they are
+    // consumed, including events read recursively by an interactive
+    // command.  The outer command loop records only that command's key
+    // sequence, so a register name, query answer, or other nested input
+    // must be appended here to make the macro self-contained on replay.
+    if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        interp.kbd_macro_definition.push(event.clone());
     }
 }
 
@@ -929,7 +940,11 @@ pub(crate) fn execute_command_binding(
     // blocks with redisplay frozen (the F10 menu) keeps the old message
     // visible until an explicit `message' repaints the row.
     crate::lisp::primitives::expire_echo_area_message();
-    interp.set_variable("last-command-event", last_event, env);
+    interp.set_variable("last-command-event", last_event.clone(), env);
+    interp.set_variable("last-input-event", last_event.clone(), env);
+    if !mouse_event_on_menu_bar(&last_event) {
+        interp.set_variable("last-nonmenu-event", last_event, env);
+    }
     // The canonical key-state channel: this-command-keys,
     // this-single-command-keys, and their raw variants all read it
     // (isearch's pre-command-hook indexes the vector).
@@ -942,6 +957,16 @@ pub(crate) fn execute_command_binding(
         env,
     );
     interp.set_variable("this-command", binding.clone(), env);
+    // read_char records terminal events as they arrive while a keyboard
+    // macro is being defined.  The command's end keys are deliberately
+    // provisional: `end-kbd-macro' truncates back to the last command
+    // boundary, while an ordinary completed command commits them below.
+    if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        interp.kbd_macro_definition.extend_from_slice(keys);
+    }
     // Timers may have messed with `deactivate-mark'; the command starts
     // with it reset (keyboard.c command_loop_1).
     interp.set_variable("deactivate-mark", Value::Nil, env);
@@ -1076,6 +1101,13 @@ pub(crate) fn execute_command_binding(
         .lookup_var("current-prefix-arg", env)
         .unwrap_or(Value::Nil);
     interp.set_variable("last-prefix-arg", last_prefix, env);
+    if result.is_ok()
+        && interp
+            .lookup_var("defining-kbd-macro", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
+    }
     // keyboard.c:1421 (command_loop_1): before waiting for the next key
     // sequence, `this-command' and its shadows go nil -- Lisp that runs
     // between commands (idle timers; eldoc's `(not this-command)' guard)
@@ -1299,21 +1331,27 @@ pub(crate) fn pop_unread_command_event_value(
                     if event == Value::Integer(7) {
                         return Err(LispError::SignalValue(Value::Symbol("quit".into())));
                     }
-                    record_external_input_event(interp, &event);
+                    record_external_input_event(interp, &event, env);
                     return Ok(event);
                 }
                 Some(None) => {
                     let idle = idle_start
                         .get_or_insert_with(std::time::Instant::now)
                         .elapsed();
-                    run_due_timers(interp, env, idle.as_secs_f64());
+                    if run_due_timers(interp, env, idle.as_secs_f64()) {
+                        // A blocking Lisp reader owns the command thread, so
+                        // the outer terminal loop cannot observe timer work.
+                        // Redisplay here, as read_char does after timer_check;
+                        // query-replace's lazy-highlight overlays rely on it.
+                        run_tty_frame_redraw(interp, env);
+                    }
                 }
             }
         }
         if let Some(read) = read_via_tty_event_reader(cursor_in_echo_area) {
             return match read {
                 Some(event) => {
-                    record_external_input_event(interp, &event);
+                    record_external_input_event(interp, &event, env);
                     Ok(event)
                 }
                 None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
@@ -1325,7 +1363,7 @@ pub(crate) fn pop_unread_command_event_value(
     }
     let event = events.remove(0);
     interp.set_variable("unread-command-events", Value::list(events), env);
-    record_external_input_event(interp, &event);
+    record_external_input_event(interp, &event, env);
     Ok(event)
 }
 
@@ -2026,7 +2064,7 @@ pub(crate) fn read_tty_event_with_timeout(
     let started = std::time::Instant::now();
     loop {
         if let Some(event) = take_unread_command_event(interp, env) {
-            record_external_input_event(interp, &event);
+            record_external_input_event(interp, &event, env);
             return Ok(Some(event));
         }
         let cursor_in_echo_area = interp
@@ -2041,7 +2079,7 @@ pub(crate) fn read_tty_event_with_timeout(
                 if event == Value::Integer(7) {
                     return Err(LispError::SignalValue(Value::Symbol("quit".into())));
                 }
-                record_external_input_event(interp, &event);
+                record_external_input_event(interp, &event, env);
                 return Ok(Some(event));
             }
             Some(None) => {

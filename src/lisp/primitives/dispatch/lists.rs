@@ -281,7 +281,7 @@ fn active_minibuffer_text(interp: &mut Interpreter, env: &mut Env) -> Result<Str
 fn read_minibuffer_text_from_kbd_macro(
     interp: &mut Interpreter,
     env: &mut Env,
-    prompt: &str,
+    prompt: &Value,
     initial: &str,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
@@ -410,8 +410,8 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
     active_minibuffer_text(interp, env).map(Some)
 }
 
-fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispError> {
-    print!("{prompt}");
+fn read_minibuffer_text_from_batch_stdin(prompt: &Value) -> Result<String, LispError> {
+    print!("{}", string_text(prompt)?);
     std::io::stdout()
         .flush()
         .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -438,7 +438,7 @@ fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispErr
 fn read_minibuffer_text_without_queued_events(
     interp: &mut Interpreter,
     env: &mut Env,
-    prompt: &str,
+    prompt: &Value,
     initial: &str,
     local_map: &Value,
     history: Value,
@@ -469,7 +469,7 @@ fn read_minibuffer_text_without_queued_events(
 fn read_minibuffer_text_from_unread_events(
     interp: &mut Interpreter,
     env: &mut Env,
-    prompt: &str,
+    prompt: &Value,
     initial: &str,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
@@ -1648,6 +1648,12 @@ define_dispatch!(
                     interp.kbd_macro_definition.clear();
                     interp.kbd_macro_committed_len = 0;
                 }
+                let status = if args[0].is_truthy() {
+                    "Appending to kbd macro..."
+                } else {
+                    "Defining kbd macro..."
+                };
+                super::call(interp, "message", &[Value::String(status.into())], env)?;
                 interp.set_variable("defining-kbd-macro", Value::T, env);
                 Ok(Value::Nil)
             }
@@ -1674,6 +1680,12 @@ define_dispatch!(
                         .chain(interp.kbd_macro_definition.iter().cloned()),
                 );
                 interp.set_variable("last-kbd-macro", last_macro.clone(), env);
+                super::call(
+                    interp,
+                    "message",
+                    &[Value::String("Keyboard macro defined".into())],
+                    env,
+                )?;
                 if repeat == 0 {
                     let mut execute_args = vec![last_macro, Value::Integer(0)];
                     if let Some(loop_function) = args.get(1) {
@@ -2010,7 +2022,10 @@ define_dispatch!(
                     .and_then(string_like)
                     .map(|string| string.text)
                     .unwrap_or_default();
-                let prompt = string_text(&args[0])?;
+                let prompt = args[0].clone();
+                if string_like(&prompt).is_none() {
+                    return Err(wrong_type_argument("stringp", prompt));
+                }
                 let local_map = args
                     .get(2)
                     .filter(|map| !map.is_nil())
@@ -2071,6 +2086,55 @@ define_dispatch!(
             "completing-read" => completing_read(interp, args, env),
             "read-buffer" => {
                 need_arg_range(name, args, 1, 4)?;
+                let default = match args.get(1).cloned().unwrap_or(Value::Nil) {
+                    Value::Buffer(buffer) => Value::String(buffer.name.clone()),
+                    other => other,
+                };
+                if let Some(function) = interp
+                    .lookup_var("read-buffer-function", env)
+                    .filter(|function| !function.is_nil())
+                {
+                    let mut call_args = vec![
+                        args[0].clone(),
+                        default,
+                        args.get(2).cloned().unwrap_or(Value::Nil),
+                    ];
+                    if let Some(predicate) = args.get(3) {
+                        call_args.push(predicate.clone());
+                    }
+                    return call_function_value(interp, &function, &call_args, env);
+                }
+                let prompt = if default.is_nil() {
+                    args[0].clone()
+                } else {
+                    let raw = string_text(&args[0])?;
+                    let stem = raw
+                        .strip_suffix(": ")
+                        .or_else(|| raw.strip_suffix(':'))
+                        .or_else(|| raw.strip_suffix(' '))
+                        .unwrap_or(&raw);
+                    let shown_default = default.car().unwrap_or_else(|_| default.clone());
+                    call_function_value(
+                        interp,
+                        &Value::Symbol("format-prompt".into()),
+                        &[Value::String(stem.into()), shown_default.clone()],
+                        env,
+                    )
+                    .or_else(|error| {
+                        if matches!(error, LispError::VoidFunction(_)) {
+                            Ok(Value::String(
+                                format!(
+                                    "{stem} (default {}): ",
+                                    string_text(&shown_default)
+                                        .unwrap_or_else(|_| format!("{shown_default}"))
+                                )
+                                .into(),
+                            ))
+                        } else {
+                            Err(error)
+                        }
+                    })?
+                };
                 let buffers = super::call(interp, "buffer-list", &[], env)?
                     .to_vec()
                     .unwrap_or_default()
@@ -2083,13 +2147,13 @@ define_dispatch!(
                 completing_read(
                     interp,
                     &[
-                        args[0].clone(),
+                        prompt,
                         Value::list(buffers),
                         args.get(3).cloned().unwrap_or(Value::Nil),
                         args.get(2).cloned().unwrap_or(Value::Nil),
                         Value::Nil,
-                        Value::Nil,
-                        args.get(1).cloned().unwrap_or(Value::Nil),
+                        Value::Symbol("buffer-name-history".into()),
+                        default,
                     ],
                     env,
                 )

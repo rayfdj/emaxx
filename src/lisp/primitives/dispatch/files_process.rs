@@ -891,6 +891,12 @@ define_dispatch!(
             }
             "file-attributes" => {
                 need_arg_range(name, args, 1, 3)?;
+                // GNU's Ffile_attributes treats nil like a file name that
+                // does not exist.  bookmark.el relies on this while its
+                // optional timestamp is still unset.
+                if args[0].is_nil() {
+                    return Ok(Value::Nil);
+                }
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
                 let metadata = match fs::symlink_metadata(&path) {

@@ -714,6 +714,73 @@ fn save_buffer_skips_unmodified_and_unchanged_files() {
 }
 
 #[test]
+fn write_region_checks_supersession_when_lockfile_creation_is_disabled() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let path = make_compat_temp_file(&mut interp, &mut env, "emaxx-lock-supersession-");
+    std::fs::write(&path, "visited bytes\n").expect("write initial visited file");
+    std::fs::File::open(&path)
+        .expect("open initial visited file")
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100_000)),
+        )
+        .expect("set initial visited timestamp");
+
+    interp.buffer = crate::buffer::Buffer::from_text("*lock-supersession*", "local bytes\n");
+    interp.buffer.file = Some(path.clone());
+    interp.buffer.file_truename = Some(canonical_file_name(&path));
+    interp
+        .buffer
+        .set_visited_file_modtime(file_modtime(&path).expect("initial visited modtime"));
+
+    std::fs::write(&path, "external bytes\n").expect("replace visited file externally");
+    std::fs::File::open(&path)
+        .expect("open externally replaced file")
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(200_000)),
+        )
+        .expect("set external replacement timestamp");
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq create-lockfiles nil emaxx-test-supersession-file nil)
+           (defun userlock--ask-user-about-supersession-threat (filename)
+             (setq emaxx-test-supersession-file filename)))",
+    )
+    .expect("install supersession observer");
+
+    call(
+        &mut interp,
+        "write-region",
+        &[
+            Value::Nil,
+            Value::Nil,
+            Value::String(path.clone().into()),
+            Value::Nil,
+            Value::T,
+        ],
+        &mut env,
+    )
+    .expect("write-region supersession check");
+    let observed = interp
+        .lookup_var("emaxx-test-supersession-file", &env)
+        .expect("supersession observer records the visited file");
+    assert_eq!(
+        string_text(&observed).expect("supersession observer receives a file name"),
+        canonical_file_name(&path)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read supersession write"),
+        "local bytes\n"
+    );
+
+    std::fs::remove_file(path).expect("cleanup supersession fixture");
+}
+
+#[test]
 fn buffer_stale_default_detects_clean_file_modtime_changes() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
