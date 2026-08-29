@@ -730,6 +730,22 @@ fn expand_file_name_uses_dynamic_default_directory() {
 }
 
 #[test]
+fn expand_file_name_result_keeps_identity_when_nested_then_rebound() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let* ((state (list (expand-file-name "child")))
+                   (first (car state))
+                   (second (car state)))
+              (list (eq first second)
+                    (eq first (expand-file-name "child"))))
+            "#,
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn custom_current_group_alist_defaults_to_nil() {
     assert_eq!(
         eval_str_with_upstream_batch("custom-current-group-alist"),
