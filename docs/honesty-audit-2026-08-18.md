@@ -74,6 +74,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 127 | supra-Unicode characters (private charset codepoints) cannot live in strings/buffers | OPEN (structural) |
 | 128 | encode substitution rules for the generic/charset arms never swept against the oracle | OPEN |
 | 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | OPEN |
+| 130 | a failed oracle load-path probe silently falls back to the manual tree walk, changing what the harness boots without a trace | OPEN (recorded 2026-08-29) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -88,13 +89,13 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | FIXED 2026-08-28 - keymap.c:1657 rule ported; witness inert, 6 scenarios oracle-matched |
 | 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | FIXED 2026-08-28 - live reachability census; shape oracle-matched, counts are emaxx truth |
 | 111 | network-interface-info was a bare nil beside a real network-interface-list | FIXED (macOS) 2026-08-26 - real ioctls; still nil on other platforms |
-| 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | OPEN (measured) |
+| 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | FIXED 2026-08-29 - the mentioned-names hole is filled computed-not-copied; missing keywords 288 -> 7 (process.c socket-option table); see the obarray close-out |
 | 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
 | 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
-| 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | OPEN (measured) |
-| 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
+| 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | FIXED 2026-08-29 - missing names 3,908 -> 124 vs the Linux oracle; four computed mechanisms; residual classes named in the close-out |
+| 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | FIXED 2026-08-29 - LANG=C is the gate standard; the five reds were real divergences and are fixed, not baselined |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
-| 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
+| 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | FIXED 2026-08-29 - manifest sha pin (item 21) + frozen superset check: run ⊆ manifest enforced per file, both runners |
 | 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
 | 117 | the gate contains an intermittent test that fails up to 75% of runs under load, so "green" has always been partly luck | OPEN (rate revised UP) |
 | 118 | network-interface-list omits most interfaces: 3 where GNU reports 11 on the same host | OPEN |
@@ -2620,3 +2621,201 @@ present, so the old lib-src derivation was wrong twice.  The regression
 test sets a hostile EMACS_TEST_DIRECTORY at a fake repo layout and
 asserts nothing moves, then matches the whole family against the oracle
 row.
+
+
+## 2026-08-29 finding 130: the silent load-path fallback
+
+`emaxx_upstream_load_path' (compat.rs:461) asks the ORACLE BINARY for
+its load-path and, if that probe fails for any reason, silently falls
+back to `repo_local_elisp_load_path' -- a manual tree walk that does
+not produce the same list (it missed `language/misc-lang' outright).
+Discovered while standardizing the Linux gate environment: the
+unprivileged gate user had a 1024 open-file limit, the parallel suite
+exhausted it, oracle spawns failed with EMFILE, and four boot-heavy
+tests flaked with "Cannot open load file" -- the fallback had changed
+what the interpreter booted, with nothing in any log saying so.  The
+fallback itself is legitimate (the standalone editor boots through it
+when no oracle binary exists), but under the HARNESS a silent
+degradation of the boot tree is a measurement hazard: a subject that
+boots different Lisp than the oracle can mismatch or match for the
+wrong reasons.  Not fixed here; recorded for the harness-integrity
+queue.  The gate script now raises the fd limit, which removes the
+trigger but not the hazard.
+
+
+## 2026-08-29 finding 115 closed: the frozen superset check
+
+The frozen battery pinned the manifest bytes (sha-256), the counts
+(518 files / 1 load error / 7883 outcomes), and proved manifest ⊆ run
+per file for both runners.  The un-checked direction was run ⊆
+manifest: when upstream's pinned selector starts yielding outcomes the
+manifest does not carry (a test added to an existing file),
+`filter_report_by_exact_names' silently dropped them from both
+reports before comparison -- drift that is score-inflating by
+construction, since a new upstream test emaxx would fail simply
+stopped being counted.  Frozen runs now refuse to proceed when either
+runner produces an unmanifested selected outcome, naming the tests and
+the regeneration recipe.  The check deliberately compares selected
+OUTCOMES, not discovery: 53 manifest entries legitimately select
+nothing (all-:expensive/:unstable files), and discovery still sees
+those tests.  With the sha pin closing the "edited manifest" direction
+and this check closing the "stale manifest" direction, finding 115's
+regeneration-freshness gap is closed; the C-primitive and arities
+manifests keep their separate fresh-regeneration gates.
+
+
+## 2026-08-29 findings 112/121 closed: the obarray gap, by mechanism
+
+Measured by dumping both binaries' `mapatoms' output to files under
+LANG=C batch (never feeding those files back as expectations -- the
+worklists steered WHERE to look; every fix below is a mechanism ported
+from GNU source).  Starting point: 17,015 GNU names, 13,557 emaxx names,
+3,908 missing.  Four mechanisms:
+
+1. **Reader literals** (3,908 -> 1,925): `intern_symbols_in_value'
+   walked conses, symbols and string properties but no ReaderForm --
+   symbols living only inside `#[...]' compiled constant vectors,
+   `#s(...)' hash tables/records, char-tables, or circular labels were
+   interned on no path.  lread.c interns at every `read_symbol',
+   whatever literal it is inside.  This was finding 119's own disclosed
+   residue.
+2. **Coding-system subsidiaries** (-793): coding.c's make_subsidiaries
+   interns NAME-unix/-dos/-mac for every base coding system and alias
+   with undecided eol; emaxx's define-coding-system(-alias) now does the
+   same.
+3. **defsubr names**: lread.c's defsubr interns every C primitive's
+   name at image build; emaxx registers the same committed DEFUN
+   contract surface its dispatch is gated against (arity-Some entries
+   of generated_gnu_c_primitives.rs).
+4. **DEFSYM names** (net effect with 3: 1,132 -> 124): a new generated
+   manifest, generated_gnu_c_defsyms.rs, from the same source-contract
+   convention as the DEFUN manifest ("GNU Emacs 30.2 src/*.c DEFSYM
+   declarations", regeneration script in compat/).  Registration
+   filters to files the oracle build compiles, derived from the DEFUN
+   manifest's availability facts, with other window systems'
+   sources (android*/w32*/haiku*/pgtk*, xfns.c, xmenu.c) excluded by
+   the oracle-build-contract taxonomy.
+
+En route, two REAL event divergences surfaced and are fixed with
+oracle-probe verification (16-row table byte-identical):
+
+- `define-key'/`lookup-key' did not convert Lucid-style event lists:
+  `[(control meta shift kp-9)]' and `[C-M-S-kp-9]' named different
+  bindings (GNU: the same one, keymap.c Fdefine_key/lookup_key_1), and
+  a DEF vector opening with a cons (XEmacs-style macro) was stored
+  unconverted where GNU converts each event.  bindings.el's keypad
+  loop therefore produced a function-key-map unreachable by canonical
+  event symbols -- 245 modifier event names absent, and lookups
+  answering nil where GNU answers the translation.
+- `event-convert-list' dropped the control modifier where keyboard.c's
+  make_ctrl_char keeps it (C-9 = ?9 with the control bit, not bare
+  ?9), lost the shift bit when folding control onto a shifted letter,
+  and mis-folded `?', space and `@'.
+
+Residual 124 (0.7% of GNU's names), by class, all C intern-loops
+outside DEFSYM/DEFUN declarations: font.c style tables (weights,
+slants, widths: `extrabold', `demibold', ...), coding.c's
+`coding-category-*' name table, process.c's socket-option table (the 7
+remaining keywords), inotify/kqueue event names, native-comp unit
+names, and font family strings.  Each belongs to a subsystem port and
+is left OPEN as the successor entry to 121's number.
+
+Contract note: emaxx's image answers `(fboundp 'x-create-frame)' t per
+the Darwin oracle contract, so its loadup replay includes the
+`x-create-frame'-gated preloads (fringe, image, fontset, dnd,
+tool-bar, mwheel, scroll-bar); the Linux comparison oracle is a
+no-window-system build that skips them.  Their symbols therefore show
+as "extra" against the LINUX dump (749 names) while matching the
+pinned Darwin-image contract -- the same host-vs-contract policy
+question as mule-util (see docs/oracle-build-contract.md), not
+invented names: the original zz-/emaxx-contamination check stays
+clean.
+
+
+## 2026-08-29 tty merge audit (tty-frontend 16826b4 -> main)
+
+All seven tty-side commits since the 196d80f merge-base were audited
+before this merge: no oracle copying, no harness gaming, no boundary
+violations found.  The new ttydiff comparator is stricter than its
+predecessor (verbatim row/attribute/mode-line/echo/cursor comparison
+plus filesystem snapshots), the package-lifecycle test runs BOTH
+binaries live on identical synthetic fixtures and compares stdout
+byte-for-byte, and the core fixes carry GNU C anchors (write-region
+supersession under `create-lockfiles' nil, yes-or-no-p for overwrite
+confirmation, insert-file-contents replacement point policy, where-is
+candidate ordering, kbd-macro boundary truncation, minibuf.c prompt
+interval copying).  Two items noted, kept, and worth future scrutiny:
+
+- tty.rs `deferred_mode_line_point': reproduces GNU's stale mode-line
+  redisplay artifact (point-based constructs keeping their pre-motion
+  value after same-row motion inside invisible text, until the next
+  input) by modeling WHEN GNU's incremental redisplay skips, not by
+  porting the matrix machinery itself.  Faithful in effect and
+  narrowly guarded (same buffer, cursor row, window start, and modiff
+  required); a mis-generalization would diverge on new scenarios and
+  the battery would catch it.  Mechanism-approximate, disclosed here.
+- regexp.rs backward-search bound handling: a bounded-prefix retry
+  guarded by `pattern_end_depends_on_following_context', which
+  declines the shortcut for every end/word/symbol assertion rather
+  than risk inventing context.  Self-limiting; failure mode is the
+  prior full-context behavior.
+
+
+## 2026-08-29 finding 131: the tty quote-display chain (homoglyph face)
+
+The LANG=C differential battery's `hscroll-disabled' scenario (the one
+that lands in *Disabled Command* help) shows GNU painting the
+substituted apostrophe in "Here's" with the `homoglyph' face (fg1)
+where emaxx paints default -- one cell, attribute-only, text equal.
+The mechanism is a three-part GNU chain emaxx does not implement:
+non-batch startup forces `internal--text-quoting-flag' t, so help text
+keeps CURVED quotes in the buffer; `startup--setup-quote-display'
+(startup.el:978) installs `standard-display-table' entries mapping
+each curved quote to an ASCII glyph code carrying `homoglyph'; and the
+display engine honors display-table glyph codes, emitting the
+replacement char with its face.  Emaxx instead answers "grave" from
+the locale flag, so its help buffers contain straight/grave quotes
+directly -- the same visible glyphs with no face, which is why every
+other row compares equal and only this attribute differs.  Finding 95
+already recorded the doc.c side of this interplay.  OPEN: the honest
+fix is the whole chain (flag, GNU's own setup function, display-table
+glyph rendering in the tty renderer), not a face special-case on
+quote characters.
+
+
+## 2026-08-29 finding 132: interactive-session defects the LANG=C battery exposed
+
+Running the full 210-scenario differential battery on the standardized
+Linux environment (fresh HOMEs, LANG=C) surfaced four pre-existing
+emaxx defects -- all verified against the PRE-merge tty tip (16826b4),
+so none is a regression from the main merge:
+
+1. **epg subprocess conversation hangs the tty command loop.**
+   `package-import-keyring' (epg's gpg --import dialogue over
+   accept-process-output) never returns inside an interactive `M-:',
+   wedging the minibuffer; `call-process' and `epg-find-configuration'
+   are fine.  This is why both package-menu scenarios diverge: their
+   setup's `package-refresh-contents' imports the keyring on a fresh
+   HOME.  A machine whose gpg state skips the import never sees it.
+2. **`M-:' on a void variable wedges instead of erroring.**  GNU exits
+   the minibuffer and shows "Symbol's value as variable is void";
+   emaxx leaves the prompt stuck (a valid expression submits fine).
+3. **copy-file ignored KEEP-TIME** (fileio.c copies the source's
+   mtime/atime; dired-copy-preserve-time rides on it) -- FIXED in this
+   batch; the dired-copy-rename-delete scenario pinned it.
+4. **Unencodable characters print raw instead of glyphless escapes**:
+   GNU displays o-umlaut on a LANG=C tty as the ö acronym
+   (glyphless-char-display for unencodable chars); emaxx emits raw
+   UTF-8 bytes.  Finding 131's display-substitution family.
+
+Items 1, 2 and 4 stay OPEN as tty-side work; the battery's remaining
+divergence list is exactly findings 131/132 (nine scenarios) and
+nothing else.
+
+Addendum: a fifth pre-existing item in the same battery —
+`find-alternate-file-missing-revisit' checkpoint 6 shows GNU deciding
+utf-8 (mode-line `U') for a re-read file that emaxx leaves undecided
+(`-'): revisit-time coding detection does not update
+`buffer-file-coding-system' from the decoded content.  Verified
+diverging pre-merge as well (at an earlier checkpoint, additionally
+masked by the %z renderer defect fixed in this batch).  OPEN.

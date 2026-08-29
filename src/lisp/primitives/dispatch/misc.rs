@@ -1459,22 +1459,66 @@ fn standard_doc_path(interp: &Interpreter, env: &Env) -> Result<PathBuf, LispErr
     doc_path(&directory, &filename)
 }
 
-fn decode_doc_string(bytes: &[u8], position: i64) -> Result<Option<String>, LispError> {
+fn decode_doc_string(
+    bytes: &[u8],
+    position: i64,
+    dynamic: bool,
+) -> Result<Option<String>, LispError> {
     let Some(position) = position
         .checked_abs()
         .and_then(|value| usize::try_from(value).ok())
     else {
         return Ok(None);
     };
-    if position == 0
-        || position > bytes.len()
-        || bytes.get(position.wrapping_sub(1)) != Some(&b'\n')
-    {
+    if position == 0 || position > bytes.len() {
         return Ok(None);
     }
-    let marker = bytes[..position - 1].iter().rposition(|byte| *byte == 0x1f);
-    if marker.is_none() {
-        return Ok(None);
+    // doc.c:236-264 sanity checking.  A dynamic (FILE . POS) docstring in a
+    // `.elc' starts right after a '\037' delimiter or a "#@NNN " comment
+    // header; a DOC-file entry starts after the "\037<tag><name>\n" preamble.
+    if dynamic {
+        if bytes[position - 1] != 0x1f {
+            if bytes[position - 1] != b' ' {
+                return Ok(None);
+            }
+            let mut test = 2usize;
+            while position
+                .checked_sub(test)
+                .is_some_and(|at| bytes[at].is_ascii_digit())
+            {
+                test += 1;
+            }
+            let Some(at) = position.checked_sub(test) else {
+                return Ok(None);
+            };
+            if bytes[at] != b'@' {
+                return Ok(None);
+            }
+            test += 1;
+            let Some(at) = position.checked_sub(test) else {
+                return Ok(None);
+            };
+            if bytes[at] != b'#' {
+                return Ok(None);
+            }
+        }
+    } else {
+        if bytes[position - 1] != b'\n' {
+            return Ok(None);
+        }
+        let mut test = 2usize;
+        while position
+            .checked_sub(test)
+            .is_some_and(|at| bytes[at] > b' ')
+        {
+            test += 1;
+        }
+        if position
+            .checked_sub(test)
+            .is_none_or(|at| bytes[at] != 0x1f)
+        {
+            return Ok(None);
+        }
     }
     let end = bytes[position..]
         .iter()
@@ -1515,18 +1559,39 @@ fn doc_reference_parts(
     value: &Value,
     env: &Env,
 ) -> Result<Option<(PathBuf, i64)>, LispError> {
-    if let Value::Integer(position) = value {
-        return Ok(Some((standard_doc_path(interp, env)?, *position)));
+    // doc.c:get_doc_string pairs the position with a file and directory:
+    // an integer FILEPOS reads `internal-doc-file-name' in `doc-directory',
+    // a (FILE . POS) cons reads FILE against `lisp-directory'.  A
+    // non-string directory or file answers nil there (doc.c:135-139),
+    // never a wrong-type-argument signal.
+    let (filename, directory, position) = if let Value::Integer(position) = value {
+        (
+            interp
+                .lookup_var("internal-doc-file-name", env)
+                .unwrap_or(Value::Nil),
+            interp
+                .lookup_var("doc-directory", env)
+                .unwrap_or(Value::Nil),
+            *position,
+        )
+    } else {
+        let Some((filename, position)) = value.cons_values() else {
+            return Ok(None);
+        };
+        let Value::Integer(position) = position else {
+            return Ok(None);
+        };
+        (
+            filename,
+            interp
+                .lookup_var("lisp-directory", env)
+                .unwrap_or(Value::Nil),
+            position,
+        )
+    };
+    if string_like(&directory).is_none() || string_like(&filename).is_none() {
+        return Ok(None);
     }
-    let Some((filename, position)) = value.cons_values() else {
-        return Ok(None);
-    };
-    let Value::Integer(position) = position else {
-        return Ok(None);
-    };
-    let directory = interp
-        .lookup_var("lisp-directory", env)
-        .unwrap_or(Value::Nil);
     Ok(Some((doc_path(&directory, &filename)?, position)))
 }
 
@@ -1539,9 +1604,10 @@ fn resolve_doc_reference(
         return Ok(None);
     };
     match std::fs::read(&path) {
-        Ok(bytes) => {
-            Ok(decode_doc_string(&bytes, position)?.map(|value| Value::String(value.into())))
-        }
+        Ok(bytes) => Ok(
+            decode_doc_string(&bytes, position, !matches!(value, Value::Integer(_)))?
+                .map(|value| Value::String(value.into())),
+        ),
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound) => {
             let filename = path
                 .file_name()

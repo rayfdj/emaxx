@@ -675,7 +675,87 @@ define_dispatch!(
             }
             "locale-info" => {
                 need_args(name, args, 1)?;
-                let _item = args[0].as_symbol()?;
+                let item = args[0].as_symbol()?;
+                // fns.c:Flocale_info -- real langinfo(3) answers.  This was
+                // a stub returning nil for every ITEM, which sent GNU's own
+                // set-locale-environment down the no-codeset branch at boot
+                // (mule-cmds.el reads `codeset' to pick the coding systems).
+                // GNU decodes the strings with locale-coding-system; the
+                // names this build consults are ASCII in the harness
+                // locales, so a lossy UTF-8 read is byte-identical there.
+                #[cfg(unix)]
+                {
+                    fn langinfo_string(item: libc::nl_item) -> Option<String> {
+                        let pointer = unsafe { libc::nl_langinfo(item) };
+                        if pointer.is_null() {
+                            return None;
+                        }
+                        let text = unsafe { std::ffi::CStr::from_ptr(pointer) };
+                        Some(text.to_string_lossy().into_owned())
+                    }
+                    fn langinfo_vector(items: &[libc::nl_item]) -> Value {
+                        let mut result = vec![Value::symbol("vector-literal")];
+                        for item in items {
+                            result.push(
+                                langinfo_string(*item)
+                                    .map(|name| Value::String(name.into()))
+                                    .unwrap_or(Value::Nil),
+                            );
+                        }
+                        Value::list(result)
+                    }
+                    match item {
+                        "codeset" => {
+                            return Ok(langinfo_string(libc::CODESET)
+                                .filter(|name| !name.is_empty())
+                                .map(|name| Value::String(name.into()))
+                                .unwrap_or(Value::Nil));
+                        }
+                        "days" => {
+                            return Ok(langinfo_vector(&[
+                                libc::DAY_1,
+                                libc::DAY_2,
+                                libc::DAY_3,
+                                libc::DAY_4,
+                                libc::DAY_5,
+                                libc::DAY_6,
+                                libc::DAY_7,
+                            ]));
+                        }
+                        "months" => {
+                            return Ok(langinfo_vector(&[
+                                libc::MON_1,
+                                libc::MON_2,
+                                libc::MON_3,
+                                libc::MON_4,
+                                libc::MON_5,
+                                libc::MON_6,
+                                libc::MON_7,
+                                libc::MON_8,
+                                libc::MON_9,
+                                libc::MON_10,
+                                libc::MON_11,
+                                libc::MON_12,
+                            ]));
+                        }
+                        #[cfg(target_os = "linux")]
+                        "paper" => {
+                            // glibc returns the millimeter value IN the
+                            // pointer, exactly as fns.c casts it.  The
+                            // nl_item codes are _NL_ITEM(LC_PAPER = 7,
+                            // index): height 0, width 1.  Darwin has no
+                            // LC_PAPER; GNU there answers nil, and so does
+                            // the cfg fall-through below.
+                            let width = unsafe { libc::nl_langinfo((7 << 16) | 1) } as isize;
+                            let height = unsafe { libc::nl_langinfo(7 << 16) } as isize;
+                            return Ok(Value::list([
+                                Value::Integer(width as i64),
+                                Value::Integer(height as i64),
+                            ]));
+                        }
+                        _ => {}
+                    }
+                }
                 Ok(Value::Nil)
             }
             "clear-string" => {

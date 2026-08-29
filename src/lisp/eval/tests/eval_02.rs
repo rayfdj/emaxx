@@ -3838,9 +3838,12 @@ fn process_identity_supports_desktop_lock_checks() {
                     (stringp proc-cmd)
                     my-cmd
                     (daemonp)
-                    (or (equal proc-cmd my-cmd)
-                        (and (string-match-p "emacs" proc-cmd)
-                             (string-match-p "emacs" my-cmd)))))
+                    ;; `comm' is the kernel's executable name, truncated to
+                    ;; its TASK_COMM_LEN/MAXCOMLEN budget.  Compare it as a
+                    ;; prefix of the invocation basename rather than
+                    ;; assuming either process is literally named "emacs".
+                    (and (> (length proc-cmd) 0)
+                         (string-prefix-p proc-cmd my-cmd))))
             "#,
     );
     let items = value

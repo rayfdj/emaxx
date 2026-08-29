@@ -508,7 +508,13 @@ fn local_package_archive_lifecycle_matches_gnu_across_restarts_and_failures() {
                          (file-exists-p
                           (expand-file-name "journey-multi.elc"
                                             (package-desc-dir multi)))
-                         (eq signature-error 'epg-error)
+                         ;; Which error a garbage signature raises depends
+                         ;; on the host's gpg (epg-error on some, package.el's
+                         ;; bad-signature on others).  Assert only that
+                         ;; verification REFUSED; the prin1 below feeds the
+                         ;; exact symbol to the GNU-vs-emaxx stdout
+                         ;; comparison, which pins it per host.
+                         (not (eq signature-error 'accepted))
                          (equal (sort (directory-files
                                        package-user-dir nil "\\`journey-" t)
                                       #'string<)

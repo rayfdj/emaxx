@@ -340,6 +340,15 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     #[cfg(test)]
     let _source_bootstrap_permit =
         (!prefer_compiled_loads).then(crate::test_support::acquire_batch_source_bootstrap_permit);
+    // Boot resolves its Lisp tree partly from process environment
+    // (EMAXX_DUMP_SOURCE_DIRECTORY, EMACS_TEST_DIRECTORY).  Tests that
+    // point those at fixture roots take this lock for WRITE; every boot
+    // holds it for READ so a concurrent mutation cannot send this boot to
+    // the fixture tree.  The "--test-threads=1" SAFETY comments this
+    // replaces were wrong: the gate runs the suite in parallel, and a
+    // sibling test's fixture env made random preloads fail with
+    // "Cannot open load file".
+    let _boot_environment = compat::boot_environment_read_guard();
     let mut interpreter = Interpreter::new();
     let before_init_time =
         lisp::primitives::system_time_list_value(std::time::SystemTime::now())
@@ -388,6 +397,7 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
         // computed against a nil directory, so they no longer equalled
         // `(locate-user-emacs-file ...)' as they do in GNU.
         initialize_batch_user_emacs_directory(interpreter)?;
+        initialize_batch_lisp_directory(interpreter)?;
         if !options.defer_delayed_custom_init {
             complete_delayed_custom_initialization(interpreter)?;
         }
@@ -640,6 +650,38 @@ fn initialize_batch_user_emacs_directory(interpreter: &mut Interpreter) -> Resul
             .eval(&form, &mut Vec::new())
             .map_err(|error| format!("initialize user-emacs-directory: {error}"))?;
     }
+    Ok(())
+}
+
+/// startup.el:1186 in `command-line': locate `simple' on `load-path' and
+/// record its true directory as `lisp-directory'.  doc.c's get_doc_string
+/// resolves compiled functions' (FILE . POS) docstring references against
+/// this variable; while it stays nil every `.elc' doc reference answers nil
+/// and `help-function-arglist' degrades to arity-derived argument names.
+fn initialize_batch_lisp_directory(interpreter: &mut Interpreter) -> Result<(), String> {
+    if interpreter
+        .lookup_function("locate-file", &Vec::new())
+        .is_err()
+    {
+        return if has_configured_lisp_tree(interpreter) {
+            Err("GNU files.el did not define locate-file".into())
+        } else {
+            Ok(())
+        };
+    }
+    let form = Reader::new(
+        "(let ((simple-file-name
+                (locate-file \"simple\" load-path (get-load-suffixes))))
+           (when simple-file-name
+             (setq lisp-directory
+                   (file-truename (file-name-directory simple-file-name)))))",
+    )
+    .read_all()
+    .map_err(|error| format!("read startup lisp-directory form: {error}"))?
+    .remove(0);
+    interpreter
+        .eval(&form, &mut Vec::new())
+        .map_err(|error| format!("initialize lisp-directory: {error}"))?;
     Ok(())
 }
 
@@ -1516,6 +1558,7 @@ mod tests {
             .stack_size(128 * 1024 * 1024)
             .spawn(move || {
                 let _permit = permit;
+                crate::test_support::note_host_permit_moved_to_this_thread();
                 test();
             })
             .expect("spawn large-stack test thread")
@@ -1608,19 +1651,23 @@ mod tests {
         if !upstream.join("lisp").is_dir() {
             return;
         }
+        let _env_write = compat::lock_boot_environment_for_write();
         let previous = env::var("EMACS_TEST_DIRECTORY").ok();
-        // SAFETY: the batch suite runs with --test-threads=1.
+        // SAFETY: env mutation is serialized against every concurrent boot
+        // by the boot-environment write lock held above (the old
+        // "--test-threads=1" justification was wrong; the gate is parallel).
         unsafe { env::set_var("EMACS_TEST_DIRECTORY", upstream.join("test")) }
         // An EMPTY `load_path' is what the real CLI passes; supplying one
         // would reintroduce the fixture that made the old test vacuous.
         let resolved = effective_batch_load_path(&BatchRunOptions::default());
-        // SAFETY: still serialized by --test-threads=1.
+        // SAFETY: serialized by the boot-environment write lock above.
         unsafe {
             match previous {
                 Some(value) => env::set_var("EMACS_TEST_DIRECTORY", value),
                 None => env::remove_var("EMACS_TEST_DIRECTORY"),
             }
         }
+        drop(_env_write);
         let resolved = resolved.expect("resolve batch load path");
         // Assert the PREFIX rather than relative indices.  Comparing
         // `position(emacs-lisp) < position(cedet/srecode)' happens to fail
@@ -1924,15 +1971,18 @@ mod tests {
         )
         .expect("write broken seq preload");
 
+        let _env_write = compat::lock_boot_environment_for_write();
         let previous_dump = env::var(compat::DUMP_SOURCE_DIRECTORY_ENV).ok();
         let previous_test = env::var("EMACS_TEST_DIRECTORY").ok();
-        // SAFETY: the batch suite runs with --test-threads=1.
+        // SAFETY: env mutation is serialized against every concurrent boot
+        // by the boot-environment write lock held above (the old
+        // "--test-threads=1" justification was wrong; the gate is parallel).
         unsafe {
             env::set_var(compat::DUMP_SOURCE_DIRECTORY_ENV, &root);
             env::set_var("EMACS_TEST_DIRECTORY", root.join("test"));
         }
         let result = initialize_batch_interpreter(&BatchRunOptions::default());
-        // SAFETY: still serialized by --test-threads=1.
+        // SAFETY: serialized by the boot-environment write lock above.
         unsafe {
             match previous_dump {
                 Some(value) => env::set_var(compat::DUMP_SOURCE_DIRECTORY_ENV, value),
@@ -3115,6 +3165,13 @@ mod tests {
                             (unibyte-string 239 187 191 97)
                             'utf-8-with-signature)
                            (with-temp-buffer
+                             ;; Pin the input: under LANG=C the buffer
+                             ;; coding defaults to nil/raw-text and the
+                             ;; sgml row answers differently per locale
+                             ;; (finding 113's hardcoded-expectation
+                             ;; class).  With the pin, the oracle answers
+                             ;; identically under C and UTF-8 locales.
+                             (setq buffer-file-coding-system 'utf-8-unix)
                              (insert
                               \"<!doctype html><html><head>\"
                               \"<meta charset='utf-8'></head></html>\")

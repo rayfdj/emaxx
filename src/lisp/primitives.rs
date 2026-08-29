@@ -55,9 +55,11 @@ mod completion;
 mod dispatch;
 mod file_io;
 mod generated_builtin_arities;
+mod generated_gnu_c_defsyms;
+pub(crate) use generated_gnu_c_defsyms::GNU_C_DEFSYMS;
 mod generated_gnu_c_primitives;
 pub(crate) use generated_gnu_c_primitives::{
-    generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
+    GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
 };
 mod hash_insert;
 mod hooks_overlays;
