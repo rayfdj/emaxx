@@ -93,9 +93,9 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
 | 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
 | 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | OPEN (measured) |
-| 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | OPEN (5 tests red) |
+| 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | FIXED 2026-08-29 - LANG=C is the gate standard; the five reds were real divergences and are fixed, not baselined |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
-| 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | OPEN (disclosed) |
+| 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | FIXED 2026-08-29 - manifest sha pin (item 21) + frozen superset check: run ⊆ manifest enforced per file, both runners |
 | 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
 | 117 | the gate contains an intermittent test that fails up to 75% of runs under load, so "green" has always been partly luck | OPEN (rate revised UP) |
 | 118 | network-interface-list omits most interfaces: 3 where GNU reports 11 on the same host | OPEN |
@@ -2641,3 +2641,24 @@ boots different Lisp than the oracle can mismatch or match for the
 wrong reasons.  Not fixed here; recorded for the harness-integrity
 queue.  The gate script now raises the fd limit, which removes the
 trigger but not the hazard.
+
+
+## 2026-08-29 finding 115 closed: the frozen superset check
+
+The frozen battery pinned the manifest bytes (sha-256), the counts
+(518 files / 1 load error / 7883 outcomes), and proved manifest ⊆ run
+per file for both runners.  The un-checked direction was run ⊆
+manifest: when upstream's pinned selector starts yielding outcomes the
+manifest does not carry (a test added to an existing file),
+`filter_report_by_exact_names' silently dropped them from both
+reports before comparison -- drift that is score-inflating by
+construction, since a new upstream test emaxx would fail simply
+stopped being counted.  Frozen runs now refuse to proceed when either
+runner produces an unmanifested selected outcome, naming the tests and
+the regeneration recipe.  The check deliberately compares selected
+OUTCOMES, not discovery: 53 manifest entries legitimately select
+nothing (all-:expensive/:unstable files), and discovery still sees
+those tests.  With the sha pin closing the "edited manifest" direction
+and this check closing the "stale manifest" direction, finding 115's
+regeneration-freshness gap is closed; the C-primitive and arities
+manifests keep their separate fresh-regeneration gates.

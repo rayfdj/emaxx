@@ -1598,6 +1598,23 @@ fn import_landed_regressions(args: RegressionImportLandedArgs) -> Result<u8, Str
     Ok(0)
 }
 
+/// Names a runner's report produced as selected outcomes that the frozen
+/// manifest does not carry.  Non-empty means the manifest is stale relative
+/// to the pinned selector's yield — the direction `filter_report_by_exact_names'
+/// would otherwise hide (finding 115).
+fn unmanifested_result_names(
+    report: &compat::BatchReport,
+    required_names: &BTreeSet<String>,
+) -> Vec<String> {
+    report
+        .results
+        .iter()
+        .map(|result| result.name.as_str())
+        .filter(|name| !required_names.contains(*name))
+        .map(str::to_string)
+        .collect()
+}
+
 fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, String> {
     let CompatRunPlan {
         mode,
@@ -1692,6 +1709,24 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             if !missing_oracle.is_empty() || !missing_emaxx.is_empty() {
                 return Err(format!(
                     "frozen outcome coverage failed for `{relative}`: missing from GNU Emacs {missing_oracle:?}; missing from Emaxx {missing_emaxx:?}"
+                ));
+            }
+            // Finding 115: the coverage check above proves manifest ⊆ run,
+            // but a STALE manifest let run-minus-manifest names vanish
+            // through the exact-name filter above — score-inflating drift
+            // by construction (a new upstream test emaxx fails would simply
+            // stop being counted).  Prove run ⊆ manifest too, on selected
+            // OUTCOMES (discovery legitimately sees :expensive/:unstable
+            // tests the pinned selector never runs).
+            let unmanifested_oracle = unmanifested_result_names(&oracle.report, &required_names);
+            let unmanifested_emaxx = unmanifested_result_names(&emaxx.report, &required_names);
+            if !unmanifested_oracle.is_empty() || !unmanifested_emaxx.is_empty() {
+                return Err(format!(
+                    "frozen manifest is stale for `{relative}`: the pinned selector now \
+                     yields outcomes the manifest does not carry (GNU Emacs \
+                     {unmanifested_oracle:?}; Emaxx {unmanifested_emaxx:?}); regenerate \
+                     compat/oracle_tests_all.txt (`compat-harness list --scope all`) and \
+                     re-pin the frozen counts"
                 ));
             }
             compared_outcomes += required_names.len();
@@ -3135,6 +3170,52 @@ fn cargo_profile_for_binary_directory(bin_dir: &Path) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmanifested_result_names_flag_manifest_staleness_in_both_directions() {
+        let report = compat::BatchReport {
+            runner: "emacs".into(),
+            file: "test/src/foo-tests.el".into(),
+            selector: "t".into(),
+            file_status: compat::FileStatus::Loaded,
+            file_error: None,
+            discovered_tests: ["foo", "foo-new", "foo-expensive"]
+                .into_iter()
+                .map(|name| compat::DiscoveredTest {
+                    name: name.into(),
+                    tags: Vec::new(),
+                    expected_result: ":passed".into(),
+                })
+                .collect(),
+            // `foo-expensive' is discovered but not selected: discovery
+            // alone must never count as staleness.
+            selected_tests: vec!["foo".into(), "foo-new".into()],
+            results: ["foo", "foo-new"]
+                .into_iter()
+                .map(|name| compat::TestOutcome {
+                    name: name.into(),
+                    status: compat::TestStatus::Passed,
+                    condition_type: None,
+                    message: None,
+                })
+                .collect(),
+            summary: compat::BatchSummary {
+                total: 2,
+                passed: 2,
+                failed: 0,
+                skipped: 0,
+                unexpected: 0,
+            },
+        };
+
+        // Manifest carrying every selected outcome: nothing unmanifested.
+        let complete = BTreeSet::from(["foo".to_string(), "foo-new".to_string()]);
+        assert!(unmanifested_result_names(&report, &complete).is_empty());
+
+        // Stale manifest missing the newly-added `foo-new': flagged.
+        let stale = BTreeSet::from(["foo".to_string()]);
+        assert_eq!(unmanifested_result_names(&report, &stale), ["foo-new"]);
+    }
 
     #[test]
     fn checked_in_frozen_manifest_matches_the_pinned_counts() {
