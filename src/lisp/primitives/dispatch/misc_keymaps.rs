@@ -1461,10 +1461,20 @@ define_dispatch!(
             }
             "garbage-collect" => {
                 need_args(name, args, 0)?;
+                // The reclamation emaxx really performs: weak hash entries
+                // whose keys/values are no longer reachable are dropped, as
+                // GNU's sweep does.  Everything else is freed by ownership
+                // the moment it becomes unreachable.
                 collect_weak_hash_tables(interp)?;
-                // GNU returns ((TYPE SIZE USED FREE) ...); the SIZE column is
-                // the 64-bit object layout constant (memory-report.el computes
-                // object sizes from it).  Counts are approximations.
+                // GNU returns ((TYPE SIZE USED FREE) ...) in exactly this
+                // row order (alloc.c, oracle-confirmed).  USED counts come
+                // from the live reachability census (finding 110 -- these
+                // were fabricated zeros); SIZE columns are THIS binary's
+                // real per-object layout constants, so memory-report.el
+                // computes emaxx-true byte totals, not GNU's.  FREE columns
+                // are 0 truthfully: Rust ownership retains no free lists.
+                let census = interp.live_object_census();
+                let cons_size = std::mem::size_of::<crate::lisp::types::ConsCell>() as i64;
                 let entry = |name: &str, rest: &[i64]| {
                     Value::list(
                         std::iter::once(Value::Symbol(name.into()))
@@ -1472,15 +1482,44 @@ define_dispatch!(
                     )
                 };
                 Ok(Value::list([
-                    entry("conses", &[16, 0, 0]),
-                    entry("symbols", &[48, 0, 0]),
-                    entry("strings", &[32, 0, 0]),
-                    entry("string-bytes", &[1, 0]),
-                    entry("vectors", &[16, 0]),
-                    entry("vector-slots", &[8, 0, 0]),
-                    entry("floats", &[8, 0, 0]),
-                    entry("intervals", &[56, 0, 0]),
-                    entry("buffers", &[984, 0]),
+                    entry("conses", &[cons_size, census.conses as i64, 0]),
+                    entry(
+                        "symbols",
+                        &[
+                            std::mem::size_of::<String>() as i64,
+                            census.symbols as i64,
+                            0,
+                        ],
+                    ),
+                    entry(
+                        "strings",
+                        &[
+                            std::mem::size_of::<crate::lisp::types::SharedStringState>() as i64,
+                            census.strings as i64,
+                            0,
+                        ],
+                    ),
+                    entry("string-bytes", &[1, census.string_bytes as i64]),
+                    // Vectors ride on tagged cons chains internally, so a
+                    // vector header and each slot really cost one cons cell.
+                    entry("vectors", &[cons_size, census.vectors as i64]),
+                    entry("vector-slots", &[cons_size, census.vector_slots as i64, 0]),
+                    entry("floats", &[8, census.floats as i64, 0]),
+                    entry(
+                        "intervals",
+                        &[
+                            std::mem::size_of::<crate::buffer::TextPropertySpan>() as i64,
+                            census.intervals as i64,
+                            0,
+                        ],
+                    ),
+                    entry(
+                        "buffers",
+                        &[
+                            std::mem::size_of::<crate::buffer::Buffer>() as i64,
+                            census.buffers as i64,
+                        ],
+                    ),
                 ]))
             }
             "garbage-collect-maybe" => {

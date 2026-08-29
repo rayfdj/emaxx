@@ -841,6 +841,12 @@ impl Buffer {
         }
     }
 
+    /// How many text-property spans this buffer holds (the census's
+    /// `intervals' analogue for buffer text).
+    pub(crate) fn text_property_span_count(&self) -> usize {
+        self.text_properties.len()
+    }
+
     pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {
         self.text_properties_at_ref(pos)
             .iter()

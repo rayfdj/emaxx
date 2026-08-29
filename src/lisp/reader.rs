@@ -606,14 +606,14 @@ impl<'a> Reader<'a> {
                     // when a quoted list is traversed or macro-expanded.
                     // GNU's reader allocates the object once, so repeated
                     // evaluation of the same literal returns that object.
-                    return Ok(Some(Value::StringObject(Rc::new(RefCell::new(
-                        SharedStringState {
-                            text: s,
-                            props: Vec::new(),
-                            multibyte: has_explicit_multibyte || has_invalid_unicode,
-                            extended_chars,
-                        },
-                    )))));
+                    let state = Rc::new(RefCell::new(SharedStringState {
+                        text: s,
+                        props: Vec::new(),
+                        multibyte: has_explicit_multibyte || has_invalid_unicode,
+                        extended_chars,
+                    }));
+                    crate::lisp::types::register_string_object(&state);
+                    return Ok(Some(Value::StringObject(state)));
                 }
                 Some(b'\\') => {
                     self.advance();
@@ -1673,14 +1673,14 @@ impl<'a> Reader<'a> {
             });
             index += 3;
         }
-        Ok(Some(Value::StringObject(Rc::new(RefCell::new(
-            SharedStringState {
-                text,
-                props,
-                multibyte,
-                extended_chars,
-            },
-        )))))
+        let state = Rc::new(RefCell::new(SharedStringState {
+            text,
+            props,
+            multibyte,
+            extended_chars,
+        }));
+        crate::lisp::types::register_string_object(&state);
+        Ok(Some(Value::StringObject(state)))
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
