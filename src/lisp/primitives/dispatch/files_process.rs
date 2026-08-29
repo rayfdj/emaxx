@@ -1100,6 +1100,25 @@ define_dispatch!(
                     };
                     file_operation_error("Copying file", &error, path)
                 })?;
+                // fileio.c:Fcopy_file KEEP-TIME: give the copy the same
+                // last-modified (and access) time as the original.  Dired's
+                // default `dired-copy-preserve-time' rides on this.
+                if args.get(3).is_some_and(Value::is_truthy)
+                    && let Ok(metadata) = fs::metadata(&source)
+                {
+                    let mut times = fs::FileTimes::new();
+                    if let Ok(modified) = metadata.modified() {
+                        times = times.set_modified(modified);
+                    }
+                    if let Ok(accessed) = metadata.accessed() {
+                        times = times.set_accessed(accessed);
+                    }
+                    // fileio.c only warns ("Cannot set file date") when this
+                    // fails; the copy itself already succeeded.
+                    if let Ok(file) = fs::File::options().write(true).open(&target) {
+                        let _ = file.set_times(times);
+                    }
+                }
                 Ok(Value::Nil)
             }
             "rename-file" => {

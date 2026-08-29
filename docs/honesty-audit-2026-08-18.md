@@ -2759,3 +2759,63 @@ interval copying).  Two items noted, kept, and worth future scrutiny:
   declines the shortcut for every end/word/symbol assertion rather
   than risk inventing context.  Self-limiting; failure mode is the
   prior full-context behavior.
+
+
+## 2026-08-29 finding 131: the tty quote-display chain (homoglyph face)
+
+The LANG=C differential battery's `hscroll-disabled' scenario (the one
+that lands in *Disabled Command* help) shows GNU painting the
+substituted apostrophe in "Here's" with the `homoglyph' face (fg1)
+where emaxx paints default -- one cell, attribute-only, text equal.
+The mechanism is a three-part GNU chain emaxx does not implement:
+non-batch startup forces `internal--text-quoting-flag' t, so help text
+keeps CURVED quotes in the buffer; `startup--setup-quote-display'
+(startup.el:978) installs `standard-display-table' entries mapping
+each curved quote to an ASCII glyph code carrying `homoglyph'; and the
+display engine honors display-table glyph codes, emitting the
+replacement char with its face.  Emaxx instead answers "grave" from
+the locale flag, so its help buffers contain straight/grave quotes
+directly -- the same visible glyphs with no face, which is why every
+other row compares equal and only this attribute differs.  Finding 95
+already recorded the doc.c side of this interplay.  OPEN: the honest
+fix is the whole chain (flag, GNU's own setup function, display-table
+glyph rendering in the tty renderer), not a face special-case on
+quote characters.
+
+
+## 2026-08-29 finding 132: interactive-session defects the LANG=C battery exposed
+
+Running the full 210-scenario differential battery on the standardized
+Linux environment (fresh HOMEs, LANG=C) surfaced four pre-existing
+emaxx defects -- all verified against the PRE-merge tty tip (16826b4),
+so none is a regression from the main merge:
+
+1. **epg subprocess conversation hangs the tty command loop.**
+   `package-import-keyring' (epg's gpg --import dialogue over
+   accept-process-output) never returns inside an interactive `M-:',
+   wedging the minibuffer; `call-process' and `epg-find-configuration'
+   are fine.  This is why both package-menu scenarios diverge: their
+   setup's `package-refresh-contents' imports the keyring on a fresh
+   HOME.  A machine whose gpg state skips the import never sees it.
+2. **`M-:' on a void variable wedges instead of erroring.**  GNU exits
+   the minibuffer and shows "Symbol's value as variable is void";
+   emaxx leaves the prompt stuck (a valid expression submits fine).
+3. **copy-file ignored KEEP-TIME** (fileio.c copies the source's
+   mtime/atime; dired-copy-preserve-time rides on it) -- FIXED in this
+   batch; the dired-copy-rename-delete scenario pinned it.
+4. **Unencodable characters print raw instead of glyphless escapes**:
+   GNU displays o-umlaut on a LANG=C tty as the ö acronym
+   (glyphless-char-display for unencodable chars); emaxx emits raw
+   UTF-8 bytes.  Finding 131's display-substitution family.
+
+Items 1, 2 and 4 stay OPEN as tty-side work; the battery's remaining
+divergence list is exactly findings 131/132 (nine scenarios) and
+nothing else.
+
+Addendum: a fifth pre-existing item in the same battery —
+`find-alternate-file-missing-revisit' checkpoint 6 shows GNU deciding
+utf-8 (mode-line `U') for a re-read file that emaxx leaves undecided
+(`-'): revisit-time coding detection does not update
+`buffer-file-coding-system' from the decoded content.  Verified
+diverging pre-merge as well (at an earlier checkpoint, additionally
+masked by the %z renderer defect fixed in this batch).  OPEN.
