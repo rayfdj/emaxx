@@ -8399,9 +8399,22 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
                       (stringp (plist-get peer :protocol))
                       (plist-get peer :warnings)
                       (let ((certificate (plist-get peer :certificate)))
+                        (require 'nsm)
                         (list (consp (plist-get peer :certificates))
                               (stringp (plist-get certificate :issuer))
-                              (stringp (plist-get certificate :subject))))
+                              (stringp (plist-get certificate :subject))
+                              (integerp (plist-get certificate :version))
+                              (stringp (plist-get certificate :serial-number))
+                              (stringp (plist-get certificate :valid-from))
+                              (stringp (plist-get certificate :valid-to))
+                              (stringp (plist-get certificate :public-key-algorithm))
+                              (stringp (plist-get certificate :certificate-security-level))
+                              (stringp (plist-get certificate :signature-algorithm))
+                              (stringp (plist-get certificate :pem))
+                              (null (nsm-protocol-check--sha1-sig
+                                     "localhost" {port} peer))
+                              (null (nsm-protocol-check--md5-sig
+                                     "localhost" {port} peer))))
                       (condition-case error-data
                           (gnutls-boot
                            mismatch 'gnutls-x509pki
@@ -8416,7 +8429,7 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
         client_key = client_key.display(),
         client_certificate = client_certificate.display()
     );
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(&program)
         .read()
@@ -8433,7 +8446,7 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
     assert_eq!(items.get(2), Some(&Value::Nil));
     assert_eq!(
         items.get(3),
-        Some(&Value::list([Value::T, Value::T, Value::T]))
+        Some(&Value::list(std::iter::repeat_n(Value::T, 13)))
     );
     assert!(
         matches!(

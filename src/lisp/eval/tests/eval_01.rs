@@ -4286,6 +4286,46 @@ fn fboundp_obeys_gnu_check_symbol_for_positioned_symbols() {
 }
 
 #[test]
+fn evaluator_dispatches_positioned_callees_only_while_enabled() {
+    // GNU eval.c and bytecode.c strip the source position when a positioned
+    // symbol occupies function position.  The upstream byte compiler relies
+    // on this while evaluating macro conditions from positioned source.
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defmacro positioned-call-probe (&rest body)
+                 (cons 'progn body))
+               (setq positioned-call-value 37)
+               (let ((symbols-with-pos-enabled t))
+                 (list
+                   (eval (position-symbol 'positioned-call-value 0) t)
+                   (eval (list (position-symbol 'fboundp 1) '(quote car)) t)
+                   (eval (list (position-symbol 'if 2) nil 7 9) t)
+                   (eval (list (position-symbol 'positioned-call-probe 3) 11) t)
+                   (funcall (position-symbol 'car 4) '(ok))
+                   (not (null (macrop (position-symbol 'positioned-call-probe 5))))
+                   (eq (car (indirect-function
+                              (position-symbol 'positioned-call-probe 6)))
+                       'macro)
+                   (let ((symbols-with-pos-enabled nil))
+                     (condition-case error
+                         (eval (list (position-symbol 'fboundp 7) '(quote car)) t)
+                       (invalid-function (car error)))))))"
+        ),
+        Value::list([
+            Value::Integer(37),
+            Value::T,
+            Value::Integer(9),
+            Value::Integer(11),
+            Value::Symbol("ok".into()),
+            Value::T,
+            Value::T,
+            Value::Symbol("invalid-function".into()),
+        ])
+    );
+}
+
+#[test]
 fn intern_soft_obeys_gnu_symbolp_for_positioned_symbols() {
     assert_eq!(
         eval_str(

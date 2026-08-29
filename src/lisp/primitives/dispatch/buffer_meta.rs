@@ -702,29 +702,36 @@ define_dispatch!(
                 let mut seen = Vec::new();
                 let mut current = args[0].clone();
                 loop {
-                    match &current {
-                        Value::Symbol(symbol) => {
-                            if seen.iter().any(|existing| existing == symbol) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("cyclic-function-indirection".into()),
-                                    Value::Symbol(symbol.clone()),
-                                ])));
-                            }
-                            seen.push(symbol.clone());
-                            match interp.lookup_function(symbol, env) {
-                                Ok(resolved) if matches!(resolved, Value::Symbol(_)) => {
-                                    current = resolved;
-                                }
-                                Ok(resolved) => return Ok(resolved),
-                                // Since Emacs 24.4, a void function cell is
-                                // represented as nil and indirect-function returns
-                                // that nil.  Calling the result is where a
-                                // void-function condition belongs.
-                                Err(LispError::VoidFunction(_)) => return Ok(Value::Nil),
-                                Err(error) => return Err(error),
-                            }
+                    let symbol = match &current {
+                        Value::Symbol(symbol) => symbol.clone(),
+                        _ if symbols_with_pos_enabled(interp, env) => {
+                            let Some((Value::Symbol(symbol), _)) =
+                                symbol_with_pos_parts(interp, &current)
+                            else {
+                                return Ok(current);
+                            };
+                            symbol
                         }
                         _ => return Ok(current),
+                    };
+                    if seen.iter().any(|existing| existing == &symbol) {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("cyclic-function-indirection".into()),
+                            Value::Symbol(symbol),
+                        ])));
+                    }
+                    seen.push(symbol.clone());
+                    match interp.lookup_function(&symbol, env) {
+                        Ok(resolved) if matches!(resolved, Value::Symbol(_)) => {
+                            current = resolved;
+                        }
+                        Ok(resolved) => return Ok(resolved),
+                        // Since Emacs 24.4, a void function cell is
+                        // represented as nil and indirect-function returns
+                        // that nil.  Calling the result is where a
+                        // void-function condition belongs.
+                        Err(LispError::VoidFunction(_)) => return Ok(Value::Nil),
+                        Err(error) => return Err(error),
                     }
                 }
             }
