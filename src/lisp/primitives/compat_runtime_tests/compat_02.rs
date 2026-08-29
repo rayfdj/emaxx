@@ -982,6 +982,17 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
         .to_string();
     let destination = Value::list([Value::T, Value::String(stderr_path.clone().into())]);
 
+    // Pin the read coding: under LANG=C the process-output decode answers
+    // Latin-1 for byte 0xFF on BOTH binaries (GNU: char 255), while the
+    // raw-byte expectation below is the utf-8 answer.  Binding
+    // coding-system-for-read makes the contract locale-independent
+    // (finding 113's hardcoded-expectation class).
+    interp.set_variable(
+        "coding-system-for-read",
+        Value::Symbol("utf-8".into()),
+        &mut env,
+    );
+
     write_process_output(
         &mut interp,
         &destination,

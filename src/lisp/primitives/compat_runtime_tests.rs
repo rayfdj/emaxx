@@ -26,6 +26,7 @@ fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
+            crate::test_support::note_host_permit_moved_to_this_thread();
             test();
         })
         .expect("spawn large-stack test thread")

@@ -5201,6 +5201,21 @@ fn decode_mode_line_spec(
 // `coding-system-mnemonic' is GNU mule.el's; reach it through the
 // ordinary function cell, never the native dispatcher.
 fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value) -> char {
+    // xdisp.c:28432: an undefined spec ("Not yet decided") renders '-' in
+    // a multibyte buffer and ' ' in a unibyte one WITHOUT consulting any
+    // mnemonic.  (terminal-coding-system) is nil on a fresh tty and GNU
+    // shows '-' there, while (coding-system-mnemonic nil) would answer
+    // '=' by resolving nil to no-conversion.
+    let defined = !coding.is_nil()
+        && super::call(interp, "coding-system-p", std::slice::from_ref(coding), env)
+            .is_ok_and(|value| value.is_truthy());
+    if !defined {
+        return if interp.buffer.is_multibyte() {
+            '-'
+        } else {
+            ' '
+        };
+    }
     // xdisp.c:28421 `decode_mode_spec_coding' reads CODING_ATTR_MNEMONIC
     // out of the coding system's attribute vector; the same datum reaches
     // Lisp as the `:mnemonic' entry of the C-owned `coding-system-plist'.

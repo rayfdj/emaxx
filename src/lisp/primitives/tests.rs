@@ -4650,6 +4650,7 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
     std::fs::write(fake_root.join("lib-src/emacsclient"), "")
         .expect("write fake emacsclient binary");
 
+    let _env_write = crate::compat::lock_boot_environment_for_write();
     let old = std::env::var("EMACS_TEST_DIRECTORY").ok();
     unsafe {
         std::env::set_var("EMACS_TEST_DIRECTORY", test_dir.display().to_string());
@@ -4671,6 +4672,7 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
         }
     }
     let _ = std::fs::remove_dir_all(&fake_root);
+    drop(_env_write);
 
     // The interpreter's dumped bindings answer the same oracle row.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();

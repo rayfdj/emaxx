@@ -76,6 +76,27 @@ impl HostTestGate {
 enum HostTestPermitKind {
     Shared,
     Exclusive,
+    /// This thread already holds a real permit (a large-stack wrapper moved
+    /// one in), so a nested acquisition must not book a second slot: with
+    /// MAX_CONCURRENT_HOST_HEAVY_TESTS = 2, two tests each holding one
+    /// permit and each waiting for a second deadlock the whole suite.  The
+    /// gdb-verified hang: `run_with_large_stack' moves its permit into the
+    /// big-stack thread, whose `upstream_batch_interpreter_with_features'
+    /// then calls `acquire_host_test_permit' again.  An inherited permit
+    /// keeps the invariant "one slot per concurrently-running marked test"
+    /// and releases nothing on drop.
+    Inherited,
+}
+
+thread_local! {
+    static HOST_PERMIT_HELD_BY_THIS_THREAD: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Mark the current thread as owning a moved-in host permit (the large-stack
+/// wrappers call this from the spawned thread before running the test body).
+pub(crate) fn note_host_permit_moved_to_this_thread() {
+    HOST_PERMIT_HELD_BY_THIS_THREAD.with(|held| held.set(true));
 }
 
 /// Permit for tests that deliberately share scarce or process-wide host
@@ -96,6 +117,7 @@ impl Drop for HostTestPermit {
         match self.kind {
             HostTestPermitKind::Shared => state.shared_active -= 1,
             HostTestPermitKind::Exclusive => state.exclusive_active = false,
+            HostTestPermitKind::Inherited => {}
         }
         self.gate.available.notify_all();
     }
@@ -132,7 +154,15 @@ thread_local! {
 }
 
 /// Preserve the existing bounded parallelism for ordinary host-heavy tests.
+/// A thread that already holds a moved-in permit gets an inherited no-op
+/// permit instead of booking a second slot (see HostTestPermitKind).
 pub(crate) fn acquire_host_test_permit() -> HostTestPermit {
+    if HOST_PERMIT_HELD_BY_THIS_THREAD.with(std::cell::Cell::get) {
+        return HostTestPermit {
+            gate: host_test_gate(),
+            kind: HostTestPermitKind::Inherited,
+        };
+    }
     host_test_gate().acquire_shared()
 }
 
@@ -313,6 +343,7 @@ pub(crate) fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         .stack_size(128 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
+            note_host_permit_moved_to_this_thread();
             test();
         })
         .expect("spawn large-stack test thread")
