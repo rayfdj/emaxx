@@ -2124,6 +2124,8 @@ pub(crate) struct MinibufferRuntimeState {
     prompt: Option<String>,
 }
 
+/// The interpreter state: holds the global environment, the current buffer,
+/// and ERT test results.
 /// Issue #11: a graph-preserving deep copy of every Lisp value reachable
 /// from an image-template interpreter.  `Interpreter::clone' copies the
 /// host-side tables but SHARES the Rc value graphs, so interior mutation

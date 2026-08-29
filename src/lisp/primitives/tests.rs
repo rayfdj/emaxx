@@ -3,7 +3,8 @@ use crate::lisp::reader::Reader;
 use std::io::Write;
 
 fn upstream_emacs_repo() -> PathBuf {
-    crate::compat::project_root().join("../emacs")
+    crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
+        .expect("canonical sibling GNU checkout")
 }
 
 /// Call NAME through the interpreter's function cell, exactly as GNU
@@ -4723,6 +4724,40 @@ fn insert_file_contents_reports_missing_input_as_file_missing() {
     assert_eq!(error.condition_type(), "file-missing");
     assert_eq!(interp.buffer.file.as_deref(), Some(path.as_str()));
     assert!(!interp.buffer.is_modified());
+}
+
+#[test]
+fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-replace-point-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::write(&path, "alpha beta\n").expect("write replace fixture");
+    interp.buffer.insert("changed alpha beta\n");
+    interp.buffer.goto_char(9);
+
+    call(
+        &mut interp,
+        "insert-file-contents",
+        &[
+            Value::String(path.display().to_string().into()),
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("if-regular".into()),
+        ],
+        &mut env,
+    )
+    .expect("replace buffer contents");
+
+    assert_eq!(interp.buffer.buffer_string(), "alpha beta\n");
+    assert_eq!(interp.buffer.point(), interp.buffer.point_min());
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -12716,6 +12751,129 @@ fn native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts() 
 }
 
 #[test]
+fn native_keyboard_macro_family_publishes_gnu_status_messages() {
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    crate::lisp::primitives::set_echo_area_message(None);
+
+    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
+        .expect("start a fresh keyboard macro");
+    assert_eq!(
+        crate::lisp::primitives::echo_area_message().as_deref(),
+        Some("Defining kbd macro...")
+    );
+
+    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish the keyboard macro");
+    assert_eq!(
+        crate::lisp::primitives::echo_area_message().as_deref(),
+        Some("Keyboard macro defined")
+    );
+
+    call(
+        &mut interp,
+        "start-kbd-macro",
+        &[Value::T, Value::T],
+        &mut env,
+    )
+    .expect("append without replaying the previous macro");
+    assert_eq!(
+        crate::lisp::primitives::echo_area_message().as_deref(),
+        Some("Appending to kbd macro...")
+    );
+}
+
+#[test]
+fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.buffer.insert("xy");
+    interp.buffer.goto_char(1);
+    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
+        .expect("start keyboard macro recording");
+
+    crate::lisp::primitives::execute_command_binding(
+        &mut interp,
+        &mut env,
+        Value::Symbol("forward-char".into()),
+        &[Value::Integer(6)],
+        Value::Integer(6),
+    )
+    .expect("execute recorded command");
+    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+
+    assert_eq!(
+        interp.lookup_var("last-kbd-macro", &env),
+        Some(Value::list([
+            Value::Symbol("vector-literal".into()),
+            Value::Integer(6),
+        ]))
+    );
+    assert_eq!(
+        interp.lookup_var("last-input-event", &env),
+        Some(Value::Integer(6))
+    );
+    assert_eq!(
+        interp.lookup_var("last-nonmenu-event", &env),
+        Some(Value::Integer(6))
+    );
+}
+
+#[test]
+fn keyboard_macro_records_input_read_inside_a_command() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let definition =
+        Reader::new("(defun emaxx-test-read-char-command () (interactive) (read-char))")
+            .read()
+            .expect("nested-input command should parse")
+            .expect("nested-input command should exist");
+    interp
+        .eval(&definition, &mut env)
+        .expect("define nested-input command");
+    interp.set_variable(
+        "unread-command-events",
+        Value::list([Value::Integer(97)]),
+        &mut env,
+    );
+    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
+        .expect("start keyboard macro recording");
+
+    crate::lisp::primitives::execute_command_binding(
+        &mut interp,
+        &mut env,
+        Value::Symbol("emaxx-test-read-char-command".into()),
+        &[Value::Integer(3), Value::Integer(114)],
+        Value::Integer(114),
+    )
+    .expect("execute a command that reads another event");
+    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+
+    assert_eq!(
+        interp.lookup_var("last-kbd-macro", &env),
+        Some(Value::list([
+            Value::Symbol("vector-literal".into()),
+            Value::Integer(3),
+            Value::Integer(114),
+            Value::Integer(97),
+        ]))
+    );
+}
+
+#[test]
+fn file_attributes_nil_matches_gnu_missing_file_contract() {
+    assert_upstream_primitive_contract("(prin1 (file-attributes nil))", "nil");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    assert_eq!(
+        call(&mut interp, "file-attributes", &[Value::Nil], &mut env)
+            .expect("nil denotes an absent file"),
+        Value::Nil
+    );
+}
+
+#[test]
 fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
     let contracts = [
         (
@@ -14810,6 +14968,161 @@ fn tty_event_reader_does_not_preempt_queued_events() {
 }
 
 #[test]
+fn blocking_tty_event_read_redraws_after_a_due_timer() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq emaxx-test-timer-fired nil)
+           (run-at-time 0 nil (lambda () (setq emaxx-test-timer-fired t))))",
+    )
+    .expect("schedule an immediately due timer");
+
+    let polls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let poll_count = std::rc::Rc::clone(&polls);
+    set_tty_event_poller(Some(Box::new(move || {
+        let count = poll_count.get();
+        poll_count.set(count + 1);
+        Some((count > 0).then_some(Value::Integer(120)))
+    })));
+    let saw_timer = std::rc::Rc::new(std::cell::Cell::new(false));
+    let observed = std::rc::Rc::clone(&saw_timer);
+    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+        if interp
+            .lookup_var("emaxx-test-timer-fired", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            observed.set(true);
+        }
+    })));
+
+    let event = call(&mut interp, "read-event", &[], &mut env);
+    set_tty_frame_redraw(None);
+    set_tty_event_poller(None);
+    assert_eq!(
+        event.expect("the second poll supplies input"),
+        Value::Integer(120)
+    );
+    assert!(
+        saw_timer.get(),
+        "timer work performed inside read-event must reach redisplay"
+    );
+}
+
+#[test]
+fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    interp.set_variable(
+        "this-command",
+        Value::Symbol("outer-command".into()),
+        &mut env,
+    );
+    interp.set_variable(
+        "real-this-command",
+        Value::Symbol("outer-real-command".into()),
+        &mut env,
+    );
+    interp.set_variable(
+        "this-original-command",
+        Value::Symbol("outer-original-command".into()),
+        &mut env,
+    );
+    let script = std::rc::Rc::new(std::cell::RefCell::new(
+        "answer\r"
+            .chars()
+            .rev()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect::<Vec<_>>(),
+    ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+
+    let result = call(
+        &mut interp,
+        "read-from-minibuffer",
+        &[Value::String("Input: ".into())],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+
+    assert_eq!(
+        result.expect("live minibuffer submits"),
+        Value::String("answer".into())
+    );
+    assert_eq!(
+        interp.lookup_var("this-command", &env),
+        Some(Value::Symbol("outer-command".into()))
+    );
+    assert_eq!(
+        interp.lookup_var("real-this-command", &env),
+        Some(Value::Symbol("outer-real-command".into()))
+    );
+    assert_eq!(
+        interp.lookup_var("this-original-command", &env),
+        Some(Value::Symbol("outer-original-command".into()))
+    );
+}
+
+#[test]
+fn write_region_mustbenew_consumes_a_full_negative_answer() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-write-region-mustbenew-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create mustbenew fixture directory");
+    let path = directory.join("existing.dat");
+    std::fs::write(&path, b"existing bytes\n").expect("create mustbenew fixture file");
+
+    let script = std::rc::Rc::new(std::cell::RefCell::new(
+        "no\r"
+            .chars()
+            .rev()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect::<Vec<_>>(),
+    ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "write-region",
+        &[
+            Value::String("replacement bytes\n".into()),
+            Value::Nil,
+            Value::String(path.display().to_string().into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+
+    assert!(result.is_err(), "declining overwrite must signal");
+    assert!(
+        script.borrow().is_empty(),
+        "the overwrite prompt must consume the full `no RET` answer"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read declined-overwrite fixture"),
+        b"existing bytes\n"
+    );
+    std::fs::remove_dir_all(directory).expect("remove mustbenew fixture directory");
+}
+
+#[test]
 fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -14980,6 +15293,44 @@ fn tty_completing_read_completes_with_tab() {
     assert_eq!(
         result.expect("TAB completes the unique prefix"),
         Value::String("forward-char".into())
+    );
+}
+
+#[test]
+fn tty_read_buffer_formats_a_buffer_default_into_the_prompt() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let current = Value::buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    set_tty_event_reader(Some(Box::new(|| Some(Value::Integer(13)))));
+    let prompts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&prompts);
+    set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
+        if let Some(prompt) = interp.minibuffer_prompt_text() {
+            observed.borrow_mut().push(prompt.to_string());
+        }
+    })));
+
+    let result = call(
+        &mut interp,
+        "read-buffer",
+        &[Value::String("Kill buffer: ".into()), current, Value::T],
+        &mut env,
+    );
+    set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+
+    assert_eq!(
+        result.expect("empty input chooses the current buffer default"),
+        Value::String("*scratch*".into())
+    );
+    assert!(
+        prompts
+            .borrow()
+            .iter()
+            .any(|prompt| prompt == "Kill buffer (default *scratch*): "),
+        "read-buffer must publish GNU's formatted default prompt, got {:?}",
+        prompts.borrow()
     );
 }
 
@@ -15681,6 +16032,44 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
         "a modified buffer shows the ** flags, got {text:?}"
     );
     assert_eq!(format!("{pieces}"), "\"2|All|*scratch*\"");
+}
+
+#[test]
+fn mode_line_line_number_is_relative_to_the_accessible_region() {
+    let mut interp = crate::batch::initialize_interactive_interpreter()
+        .expect("interactive interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("one\ntwo\nthree\n".into())],
+        &mut env,
+    )
+    .expect("insert narrowed mode-line sample");
+    let point_max = interp.buffer.point_max();
+    call(
+        &mut interp,
+        "narrow-to-region",
+        &[Value::Integer(5), Value::Integer(point_max as i64)],
+        &mut env,
+    )
+    .expect("narrow to the second line");
+    call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env)
+        .expect("move to accessible start");
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: point_max,
+    }));
+    let line = call(
+        &mut interp,
+        "format-mode-line",
+        &[Value::String("%l".into())],
+        &mut env,
+    )
+    .expect("render narrowed line number");
+    set_interactive_window_metrics(None);
+    assert_eq!(line, Value::String("1".into()));
 }
 
 // ── Scroll, recenter, and mode-line contracts (round: paging + mode line) ──

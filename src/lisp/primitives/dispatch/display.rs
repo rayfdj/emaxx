@@ -1154,6 +1154,7 @@ pub(crate) fn window_face_spans(
         // region — must not pay a per-character property walk on every
         // redisplay.
         if !buffer.has_text_property_named("face")
+            && !buffer.has_text_property_named("category")
             && face_alias_names
                 .iter()
                 .all(|name| !buffer.has_text_property_named(name))
@@ -1167,16 +1168,18 @@ pub(crate) fn window_face_spans(
             return spans;
         }
         let face_at = |pos: usize| {
-            buffer
-                .text_property_at(pos, "face")
-                .filter(|face| !face.is_nil())
-                .or_else(|| {
-                    face_alias_names.iter().find_map(|name| {
-                        buffer
-                            .text_property_at(pos, name)
-                            .filter(|face| !face.is_nil())
-                    })
+            crate::lisp::primitives::strings::buffer_property_at_with_category(
+                interp, buffer, pos, "face",
+            )
+            .filter(|face| !face.is_nil())
+            .or_else(|| {
+                face_alias_names.iter().find_map(|name| {
+                    crate::lisp::primitives::strings::buffer_property_at_with_category(
+                        interp, buffer, pos, name,
+                    )
+                    .filter(|face| !face.is_nil())
                 })
+            })
         };
         let mut pos = from;
         while pos < to {
@@ -1606,6 +1609,13 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
     let outside_prev = window_link(interp, parent_id, WINDOW_PREV_SIBLING_SLOT);
     let outside_next = window_link(interp, parent_id, WINDOW_NEXT_SIBLING_SLOT);
     let parent_geometry = window_geometry(interp, parent_id);
+    let replacement = (interp.selected_window_id() == window_id).then(|| {
+        let point = window_slot_value(interp, sibling_id, WINDOW_POINT_SLOT)
+            .as_integer()
+            .unwrap_or(1)
+            .max(1) as usize;
+        (sibling_id, point)
+    });
 
     if let Some(grandparent_id) = grandparent
         && window_link(interp, grandparent_id, WINDOW_FIRST_CHILD_SLOT) == Some(parent_id)
@@ -1668,10 +1678,11 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
     if grandparent.is_none() {
         interp.set_root_window_id(sibling_id);
     }
-    if interp.selected_window_id() == window_id {
-        interp.set_selected_window_id(sibling_id);
-        if let Some(buffer_id) = window_buffer_id(interp, &Value::Record(sibling_id)) {
+    if let Some((replacement_id, point)) = replacement {
+        interp.set_selected_window_id(replacement_id);
+        if let Some(buffer_id) = window_buffer_id(interp, &Value::Record(replacement_id)) {
             interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
+            interp.buffer.goto_char(point);
         }
     }
     Ok(())
@@ -3083,6 +3094,7 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let window = args.get(1).filter(|value| !value.is_nil());
+                let window_id = live_window_id_or_selected(interp, window)?;
                 let buffer_id = if let Some(window) = window {
                     window_buffer_id(interp, window).ok_or_else(|| {
                         LispError::WrongTypeArgument("windowp".into(), window.clone())
@@ -3104,9 +3116,16 @@ define_dispatch!(
                 // down, not the raw line count away —
                 // org-subtree-end-visible-p decides whether org-cycle
                 // recenters on exactly this answer.
-                let limit = interactive_window_metrics()
-                    .map(|metrics| metrics.text_height)
-                    .unwrap_or(DEFAULT_SELECTED_WINDOW_HEIGHT);
+                // The global interactive metrics describe only the last
+                // redrawn selected window.  Help asks about its newly split,
+                // non-selected window before the next redisplay; reusing the
+                // old selected height falsely declared Help's point-max
+                // visible and changed help-window-display-message.  The live
+                // window tree already owns the queried window's exact body
+                // height.
+                let limit = (window_geometry(interp, window_id).1
+                    - window_non_body_height(interp, buffer_id, env))
+                .max(1) as usize;
                 let rows = {
                     let saved_buffer = interp.current_buffer_id();
                     let switched = saved_buffer != buffer_id
@@ -4662,7 +4681,21 @@ fn render_mode_line_element(
     }
     match element {
         value if value.is_string() => {
-            let text = string_text(value)?;
+            let string =
+                string_like(value).ok_or_else(|| wrong_type_argument("stringp", value.clone()))?;
+            let (text, display_offsets) = if glass && !string.props.is_empty() {
+                render_mode_line_string_display_properties(
+                    interp,
+                    env,
+                    &string.text,
+                    &string.props,
+                    offset,
+                )?
+            } else {
+                let length = string.text.chars().count();
+                (string.text, (0..=length).collect())
+            };
+            let expands_percent_constructs = !literal && text.contains('%');
             let rendered = if literal {
                 text
             } else {
@@ -4674,18 +4707,31 @@ fn render_mode_line_element(
             // the expansion.
             if let Value::StringObject(state) = value {
                 let state = state.borrow();
-                let len = state.text.chars().count();
-                if let Some(face) = state.props.iter().find_map(|span| {
-                    if span.start == 0 && span.end >= len {
-                        span.props
-                            .iter()
-                            .find(|(name, _)| name == "face")
-                            .map(|(_, face)| face.clone())
+                let source_length = state.text.chars().count();
+                for property_span in &state.props {
+                    let Some(face) = property_span
+                        .props
+                        .iter()
+                        .find(|(name, _)| name == "face")
+                        .map(|(_, face)| face.clone())
+                    else {
+                        continue;
+                    };
+                    if expands_percent_constructs {
+                        if property_span.start == 0 && property_span.end >= source_length {
+                            spans.push((offset, offset + rendered.chars().count(), face));
+                        }
                     } else {
-                        None
+                        let from = display_offsets
+                            .get(property_span.start.min(source_length))
+                            .copied()
+                            .unwrap_or(0);
+                        let to = display_offsets
+                            .get(property_span.end.min(source_length))
+                            .copied()
+                            .unwrap_or_else(|| rendered.chars().count());
+                        spans.push((offset + from, offset + to, face));
                     }
-                }) {
-                    spans.push((offset, offset + rendered.chars().count(), face));
                 }
             }
             Ok(rendered)
@@ -4862,6 +4908,65 @@ fn render_mode_line_element(
     }
 }
 
+fn render_mode_line_string_display_properties(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    text: &str,
+    properties: &[crate::buffer::TextPropertySpan],
+    offset: usize,
+) -> Result<(String, Vec<usize>), LispError> {
+    let mut rendered = String::new();
+    let mut display_offsets = Vec::with_capacity(text.chars().count() + 1);
+    display_offsets.push(0);
+    let mut column = offset;
+    for (index, character) in text.chars().enumerate() {
+        let display = properties
+            .iter()
+            .find(|span| span.start <= index && index < span.end)
+            .and_then(|span| {
+                span.props
+                    .iter()
+                    .find(|(name, _)| name == "display")
+                    .map(|(_, value)| value)
+            });
+        let align_to = display.and_then(|value| {
+            let items = value.to_vec().ok()?;
+            if !matches!(items.first(), Some(Value::Symbol(head)) if head == "space") {
+                return None;
+            }
+            let index = items
+                .iter()
+                .position(|item| matches!(item, Value::Symbol(name) if name == ":align-to"))?;
+            let target = items.get(index + 1)?;
+            match target {
+                Value::Integer(target) => usize::try_from(*target).ok(),
+                expression => crate::lisp::primitives::eval_impl(
+                    interp,
+                    std::slice::from_ref(expression),
+                    env,
+                )
+                .ok()
+                .and_then(|value| value.as_integer().ok())
+                .and_then(|target| usize::try_from(target).ok()),
+            }
+        });
+        if let Some(target) = align_to {
+            let padding = target.saturating_sub(column);
+            rendered.extend(std::iter::repeat_n(' ', padding));
+            column += padding;
+        } else {
+            rendered.push(character);
+            column += if character == '\t' {
+                8 - (column % 8)
+            } else {
+                1
+            };
+        }
+        display_offsets.push(rendered.chars().count());
+    }
+    Ok((rendered, display_offsets))
+}
+
 pub(super) fn render_mode_line_construct(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -4959,10 +5064,14 @@ fn decode_mode_line_spec(
             Ok(name) if name.is_string() => string_text(&name)?,
             _ => "F1".to_string(),
         },
-        'l' => interp
-            .buffer
-            .line_number_at_pos(interp.buffer.point())
-            .to_string(),
+        'l' => {
+            let point_line = interp.buffer.line_number_at_pos(interp.buffer.point());
+            let first_accessible_line = interp.buffer.line_number_at_pos(interp.buffer.point_min());
+            point_line
+                .saturating_sub(first_accessible_line)
+                .saturating_add(1)
+                .to_string()
+        }
         'c' | 'C' => {
             let column = super::call(interp, "current-column", &[], env)?
                 .as_integer()

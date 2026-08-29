@@ -367,8 +367,19 @@ impl Interpreter {
             .iter()
             .position(|(buffer_id, _)| *buffer_id == id)
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
-        let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
         let current_id = self.current_buffer_id;
+        let current_point = self.buffer.point();
+        if self.selected_window_buffer_id() == current_id
+            && let Some(window) = self.find_record_mut(self.selected_window_id)
+        {
+            if window.slots.len() <= primitives::WINDOW_POINT_SLOT {
+                window
+                    .slots
+                    .resize(primitives::WINDOW_POINT_SLOT + 1, Value::Nil);
+            }
+            window.slots[primitives::WINDOW_POINT_SLOT] = Value::Integer(current_point as i64);
+        }
+        let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
         self.current_buffer_id = id;
@@ -410,6 +421,9 @@ impl Interpreter {
         }
         if id != current_id {
             self.set_current_buffer_id(id)?;
+        }
+        if selected_window_already_displays_target {
+            return Ok(());
         }
         let point_min = self.buffer.point_min() as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
@@ -1162,8 +1176,24 @@ impl Interpreter {
         self.indirect_buffers
             .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if id == self.current_buffer_id {
+            // GNU replaces a killed current buffer from the visible buffer
+            // list (`other-buffer' policy), never from the interpreter's
+            // storage stack.  A recently used internal minibuffer is often
+            // last in that stack after an interactive prompt, but must not
+            // become the ordinary selected window's buffer.
+            let replacement_id = self
+                .buffer_list
+                .iter()
+                .find(|(buffer_id, name)| *buffer_id != id && !name.starts_with(' '))
+                .map(|(buffer_id, _)| *buffer_id);
             self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
-            if let Some((next_id, next_buffer)) = self.inactive_buffers.pop() {
+            if let Some((position, next_id)) = replacement_id.and_then(|next_id| {
+                self.inactive_buffers
+                    .iter()
+                    .position(|(buffer_id, _)| *buffer_id == next_id)
+                    .map(|position| (position, next_id))
+            }) {
+                let (_, next_buffer) = self.inactive_buffers.swap_remove(position);
                 self.buffer = next_buffer;
                 self.current_buffer_id = next_id;
             } else {

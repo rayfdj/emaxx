@@ -5882,6 +5882,110 @@ fn windows_preserve_independent_points_across_selection() {
 }
 
 #[test]
+fn deleting_the_selected_window_restores_the_replacement_windows_point() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"
+                (let* ((origin-window (selected-window))
+                       (origin-buffer
+                        (get-buffer-create "*delete-selected-origin*"))
+                       (popup-buffer
+                        (get-buffer-create "*delete-selected-popup*")))
+                  (switch-to-buffer origin-buffer)
+                  (erase-buffer)
+                  (insert "abcdef")
+                  (goto-char 5)
+                  (let ((popup
+                         (split-window-internal
+                          origin-window 12 nil 0.5)))
+                    (set-window-buffer popup popup-buffer)
+                    (select-window popup)
+                    (delete-window-internal popup)
+                    (list (eq (selected-window) origin-window)
+                          (eq (current-buffer) origin-buffer)
+                          (point))))
+                "#,
+        ),
+        Value::list([Value::T, Value::T, Value::Integer(5)])
+    );
+}
+
+#[test]
+fn changing_current_buffer_saves_the_selected_windows_point() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"
+                (let ((origin (get-buffer-create "*current-origin*"))
+                      (other (get-buffer-create "*current-other*"))
+                      (window (selected-window)))
+                  (switch-to-buffer origin)
+                  (erase-buffer)
+                  (insert "abcdef")
+                  (goto-char 5)
+                  (set-buffer other)
+                  (list (window-point window)
+                        (with-current-buffer origin (point))))
+                "#,
+        ),
+        Value::list([Value::Integer(5), Value::Integer(5)])
+    );
+}
+
+#[test]
+fn reselecting_a_window_showing_the_target_preserves_its_start() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"
+                (let ((origin (get-buffer-create "*reselect-origin*"))
+                      (other (get-buffer-create "*reselect-other*"))
+                      (window (selected-window)))
+                  (switch-to-buffer origin)
+                  (erase-buffer)
+                  (insert "a\nb\nc\nd\n")
+                  (goto-char 7)
+                  (set-window-start window 3)
+                  (set-buffer other)
+                  (select-window window)
+                  (list (eq (current-buffer) origin)
+                        (point)
+                        (window-start)))
+                "#,
+        ),
+        Value::list([Value::T, Value::Integer(7), Value::Integer(3),])
+    );
+}
+
+#[test]
+fn marked_files_popup_preserves_the_origin_window_point_and_start() {
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "dired",
+            r#"
+                (let ((buffer (get-buffer-create "*marked-popup-origin*")))
+                  (switch-to-buffer buffer)
+                  (erase-buffer)
+                  (dotimes (index 100)
+                    (insert (format "line-%03d\n" index)))
+                  (goto-char 401)
+                  (set-window-start nil 199)
+                  (dired-mark-pop-up
+                   nil 'copy '("alpha" "beta")
+                   (lambda () (list (point) (window-start))))
+                  (list (point) (window-start) (window-point)))
+                "#,
+        ),
+        Value::list([
+            Value::Integer(401),
+            Value::Integer(199),
+            Value::Integer(401),
+        ])
+    );
+}
+
+#[test]
 fn keyboard_macro_normalizes_shift_tab_and_selected_window_context() {
     assert_eq!(
         eval_str_with_upstream_batch(
@@ -5989,6 +6093,28 @@ fn pos_visible_in_window_p_respects_window_height() {
                   (set-window-start (selected-window) 1)
                   (list (pos-visible-in-window-p 1)
                         (pos-visible-in-window-p (point-max))))
+                "#
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn pos_visible_in_window_p_uses_the_queried_split_window_height() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((other-buffer (get-buffer-create "*visibility-other*"))
+                       (other-window
+                        (split-window-internal
+                         (selected-window) 12 nil 0.5)))
+                  (with-current-buffer other-buffer
+                    (dotimes (_ 20) (insert "line\n")))
+                  (set-window-buffer other-window other-buffer)
+                  (with-current-buffer other-buffer
+                    (list (< (window-body-height other-window) 20)
+                          (pos-visible-in-window-p
+                           (point-max) other-window t))))
                 "#
         ),
         Value::list([Value::T, Value::Nil])

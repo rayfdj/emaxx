@@ -5276,6 +5276,30 @@ fn killing_selected_window_buffer_moves_window_to_live_buffer() {
 }
 
 #[test]
+fn killing_current_buffer_ignores_recent_internal_minibuffer_as_replacement() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let* ((original (current-buffer))
+                    (victim (get-buffer-create \"kill-visible-victim\"))
+                    (minibuffer (get-buffer-create \" *Minibuf-1*\")))
+               (set-window-buffer nil victim)
+               (set-buffer victim)
+               ;; Reproduce the storage order left by an interactive read:
+               ;; the internal minibuffer was current most recently, while
+               ;; Vbuffer_alist still ranks ORIGINAL as the visible fallback.
+               (set-buffer minibuffer)
+               (set-buffer victim)
+               (kill-buffer victim)
+               (list (eq (current-buffer) original)
+                     (eq (window-buffer) original)))"
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn killing_buffer_replaces_it_in_every_window() {
     let mut interp = Interpreter::new();
     assert_eq!(
@@ -6165,6 +6189,101 @@ fn window_face_spans_layer_text_properties_region_and_overlays() {
 }
 
 #[test]
+fn window_face_spans_resolve_faces_inherited_from_text_categories() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"button text\")
+           (put 'sample-button-category 'face 'link)
+           (put-text-property 1 7 'category 'sample-button-category))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    let spans =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 12, true);
+    assert_eq!(
+        spans,
+        vec![(1, 7, Value::Symbol("link".into()))],
+        "redisplay inherits the face from a text button's category plist"
+    );
+}
+
+#[test]
+fn header_line_glass_honors_propertized_align_to_columns() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (list-buffers)
+           (set-window-buffer (selected-window) \"*Buffer List*\"))",
+    );
+    let mut env: Env = Vec::new();
+    let window_id = interp.selected_window_id();
+    let text = crate::lisp::primitives::render_window_header_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        crate::lisp::primitives::InteractiveWindowMetrics {
+            text_height: 10,
+            window_end: 1,
+        },
+    )
+    .expect("Buffer Menu header renders")
+    .0;
+    assert!(
+        text.starts_with("CRM Buffer                 Size Mode             File"),
+        "tabulated-list display properties align the header, got {text:?}"
+    );
+}
+
+#[test]
+fn header_line_glass_keeps_partial_sort_column_face() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (switch-to-buffer (get-buffer-create \"*tabulated header test*\"))
+           (tabulated-list-mode)
+           (setq tabulated-list-format
+                 [(\"Name\" 20 t) (\"Version\" 10 t)])
+           (setq tabulated-list-sort-key '(\"Name\" . nil))
+           (tabulated-list-init-header))",
+    );
+    let mut env: Env = Vec::new();
+    let window_id = interp.selected_window_id();
+    let (text, spans) = crate::lisp::primitives::render_window_header_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        crate::lisp::primitives::InteractiveWindowMetrics {
+            text_height: 10,
+            window_end: 1,
+        },
+    )
+    .expect("sortable tabulated-list header renders");
+    assert!(
+        text.contains("Name"),
+        "sortable header text is present: {text:?}"
+    );
+    assert!(
+        spans.iter().any(|(from, to, face)| {
+            face == &Value::Symbol("bold".into())
+                && from < to
+                && text
+                    .chars()
+                    .skip(*from)
+                    .take(to - from)
+                    .collect::<String>()
+                    .contains("Name")
+        }),
+        "the sortable Name column keeps its partial bold face, got {spans:?}"
+    );
+}
+
+#[test]
 fn propertized_messages_carry_face_spans_to_the_echo_area() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -6182,6 +6301,54 @@ fn propertized_messages_carry_face_spans_to_the_echo_area() {
     eval_str_with(&mut interp, "(message \"plain\")");
     let (_, spans) = crate::lisp::primitives::echo_area_message_with_spans().unwrap();
     assert!(spans.is_empty(), "plain messages carry no spans");
+}
+
+#[test]
+fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let prompt = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq minibuffer-prompt-properties
+                 '(read-only t face minibuffer-prompt))
+           (concat \"Proceed? (\"
+                   (propertize \"y\" 'face 'help-key-binding)
+                   \" or \"
+                   (propertize \"n\" 'face 'help-key-binding)
+                   \") \"))",
+    )
+    .expect("propertized prompt is constructed");
+    let active = crate::lisp::primitives::activate_minibuffer(
+        &mut interp,
+        &prompt,
+        "",
+        Value::Nil,
+        &mut env,
+    )
+    .expect("minibuffer accepts the propertized prompt");
+    assert_eq!(
+        interp.buffer.text_property_at(1, "face"),
+        Some(Value::Symbol("minibuffer-prompt".into()))
+    );
+    assert_eq!(
+        interp.buffer.text_property_at(11, "face"),
+        Some(Value::list([
+            Value::Symbol("help-key-binding".into()),
+            Value::Symbol("minibuffer-prompt".into()),
+        ])),
+        "the y key keeps its specific face before the appended prompt face"
+    );
+    assert_eq!(
+        interp.buffer.text_property_at(16, "face"),
+        Some(Value::list([
+            Value::Symbol("help-key-binding".into()),
+            Value::Symbol("minibuffer-prompt".into()),
+        ])),
+        "the n key keeps its specific face before the appended prompt face"
+    );
+    crate::lisp::primitives::restore_active_minibuffer(&mut interp, active);
 }
 
 #[test]
