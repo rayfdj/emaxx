@@ -4683,7 +4683,7 @@ fn render_mode_line_element(
         value if value.is_string() => {
             let string =
                 string_like(value).ok_or_else(|| wrong_type_argument("stringp", value.clone()))?;
-            let text = if glass && !string.props.is_empty() {
+            let (text, display_offsets) = if glass && !string.props.is_empty() {
                 render_mode_line_string_display_properties(
                     interp,
                     env,
@@ -4692,8 +4692,10 @@ fn render_mode_line_element(
                     offset,
                 )?
             } else {
-                string.text
+                let length = string.text.chars().count();
+                (string.text, (0..=length).collect())
             };
+            let expands_percent_constructs = !literal && text.contains('%');
             let rendered = if literal {
                 text
             } else {
@@ -4705,18 +4707,31 @@ fn render_mode_line_element(
             // the expansion.
             if let Value::StringObject(state) = value {
                 let state = state.borrow();
-                let len = state.text.chars().count();
-                if let Some(face) = state.props.iter().find_map(|span| {
-                    if span.start == 0 && span.end >= len {
-                        span.props
-                            .iter()
-                            .find(|(name, _)| name == "face")
-                            .map(|(_, face)| face.clone())
+                let source_length = state.text.chars().count();
+                for property_span in &state.props {
+                    let Some(face) = property_span
+                        .props
+                        .iter()
+                        .find(|(name, _)| name == "face")
+                        .map(|(_, face)| face.clone())
+                    else {
+                        continue;
+                    };
+                    if expands_percent_constructs {
+                        if property_span.start == 0 && property_span.end >= source_length {
+                            spans.push((offset, offset + rendered.chars().count(), face));
+                        }
                     } else {
-                        None
+                        let from = display_offsets
+                            .get(property_span.start.min(source_length))
+                            .copied()
+                            .unwrap_or(0);
+                        let to = display_offsets
+                            .get(property_span.end.min(source_length))
+                            .copied()
+                            .unwrap_or_else(|| rendered.chars().count());
+                        spans.push((offset + from, offset + to, face));
                     }
-                }) {
-                    spans.push((offset, offset + rendered.chars().count(), face));
                 }
             }
             Ok(rendered)
@@ -4899,8 +4914,10 @@ fn render_mode_line_string_display_properties(
     text: &str,
     properties: &[crate::buffer::TextPropertySpan],
     offset: usize,
-) -> Result<String, LispError> {
+) -> Result<(String, Vec<usize>), LispError> {
     let mut rendered = String::new();
+    let mut display_offsets = Vec::with_capacity(text.chars().count() + 1);
+    display_offsets.push(0);
     let mut column = offset;
     for (index, character) in text.chars().enumerate() {
         let display = properties
@@ -4945,8 +4962,9 @@ fn render_mode_line_string_display_properties(
                 1
             };
         }
+        display_offsets.push(rendered.chars().count());
     }
-    Ok(rendered)
+    Ok((rendered, display_offsets))
 }
 
 pub(super) fn render_mode_line_construct(
