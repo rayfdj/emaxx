@@ -367,8 +367,19 @@ impl Interpreter {
             .iter()
             .position(|(buffer_id, _)| *buffer_id == id)
             .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
-        let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
         let current_id = self.current_buffer_id;
+        let current_point = self.buffer.point();
+        if self.selected_window_buffer_id() == current_id
+            && let Some(window) = self.find_record_mut(self.selected_window_id)
+        {
+            if window.slots.len() <= primitives::WINDOW_POINT_SLOT {
+                window
+                    .slots
+                    .resize(primitives::WINDOW_POINT_SLOT + 1, Value::Nil);
+            }
+            window.slots[primitives::WINDOW_POINT_SLOT] = Value::Integer(current_point as i64);
+        }
+        let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
         self.current_buffer_id = id;
@@ -410,6 +421,9 @@ impl Interpreter {
         }
         if id != current_id {
             self.set_current_buffer_id(id)?;
+        }
+        if selected_window_already_displays_target {
+            return Ok(());
         }
         let point_min = self.buffer.point_min() as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {

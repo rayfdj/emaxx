@@ -1609,6 +1609,13 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
     let outside_prev = window_link(interp, parent_id, WINDOW_PREV_SIBLING_SLOT);
     let outside_next = window_link(interp, parent_id, WINDOW_NEXT_SIBLING_SLOT);
     let parent_geometry = window_geometry(interp, parent_id);
+    let replacement = (interp.selected_window_id() == window_id).then(|| {
+        let point = window_slot_value(interp, sibling_id, WINDOW_POINT_SLOT)
+            .as_integer()
+            .unwrap_or(1)
+            .max(1) as usize;
+        (sibling_id, point)
+    });
 
     if let Some(grandparent_id) = grandparent
         && window_link(interp, grandparent_id, WINDOW_FIRST_CHILD_SLOT) == Some(parent_id)
@@ -1671,10 +1678,11 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
     if grandparent.is_none() {
         interp.set_root_window_id(sibling_id);
     }
-    if interp.selected_window_id() == window_id {
-        interp.set_selected_window_id(sibling_id);
-        if let Some(buffer_id) = window_buffer_id(interp, &Value::Record(sibling_id)) {
+    if let Some((replacement_id, point)) = replacement {
+        interp.set_selected_window_id(replacement_id);
+        if let Some(buffer_id) = window_buffer_id(interp, &Value::Record(replacement_id)) {
             interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
+            interp.buffer.goto_char(point);
         }
     }
     Ok(())
