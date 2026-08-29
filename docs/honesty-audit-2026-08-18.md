@@ -74,6 +74,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 127 | supra-Unicode characters (private charset codepoints) cannot live in strings/buffers | OPEN (structural) |
 | 128 | encode substitution rules for the generic/charset arms never swept against the oracle | OPEN |
 | 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | OPEN |
+| 130 | a failed oracle load-path probe silently falls back to the manual tree walk, changing what the harness boots without a trace | OPEN (recorded 2026-08-29) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -2620,3 +2621,23 @@ present, so the old lib-src derivation was wrong twice.  The regression
 test sets a hostile EMACS_TEST_DIRECTORY at a fake repo layout and
 asserts nothing moves, then matches the whole family against the oracle
 row.
+
+
+## 2026-08-29 finding 130: the silent load-path fallback
+
+`emaxx_upstream_load_path' (compat.rs:461) asks the ORACLE BINARY for
+its load-path and, if that probe fails for any reason, silently falls
+back to `repo_local_elisp_load_path' -- a manual tree walk that does
+not produce the same list (it missed `language/misc-lang' outright).
+Discovered while standardizing the Linux gate environment: the
+unprivileged gate user had a 1024 open-file limit, the parallel suite
+exhausted it, oracle spawns failed with EMFILE, and four boot-heavy
+tests flaked with "Cannot open load file" -- the fallback had changed
+what the interpreter booted, with nothing in any log saying so.  The
+fallback itself is legitimate (the standalone editor boots through it
+when no oracle binary exists), but under the HARNESS a silent
+degradation of the boot tree is a measurement hazard: a subject that
+boots different Lisp than the oracle can mismatch or match for the
+wrong reasons.  Not fixed here; recorded for the harness-integrity
+queue.  The gate script now raises the fd limit, which removes the
+trigger but not the hazard.
