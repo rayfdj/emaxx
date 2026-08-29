@@ -616,6 +616,20 @@ impl Interpreter {
         self.terminal_coding.clone()
     }
 
+    /// Return the coder term.c uses when terminal output needs encoding.
+    /// A nil coder and coders that do not perform an encoding conversion use
+    /// GNU's safe US-ASCII fallback instead of passing multibyte text through.
+    pub fn effective_terminal_coding_system(&self) -> String {
+        self.terminal_coding_system()
+            .filter(|coding| {
+                !matches!(
+                    self.coding_system_kind_name(coding).as_deref(),
+                    Some("no-conversion" | "raw-text" | "undecided")
+                )
+            })
+            .unwrap_or_else(|| "us-ascii".into())
+    }
+
     pub fn set_terminal_coding_system(&mut self, coding: Option<String>) {
         self.terminal_coding = coding;
     }

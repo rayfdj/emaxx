@@ -2476,10 +2476,12 @@ fn native_font_at_and_info_match_the_headless_gnu_boundary() {
 #[test]
 fn native_font_backend_boundary_and_glyph_validation_match_gnu() {
     let program = r#"
-        (let* ((spec (font-spec))
-               (gstring
-                (composition-get-gstring 0 1 nil "a")))
-          (list
+        (progn
+          (set-terminal-coding-system-internal 'utf-8-unix)
+          (let* ((spec (font-spec))
+                 (gstring
+                  (composition-get-gstring 0 1 nil "a")))
+            (list
            (condition-case error-data
                (font-shape-gstring nil nil)
              (error error-data))
@@ -2548,7 +2550,7 @@ fn native_font_backend_boundary_and_glyph_validation_match_gnu() {
              (error error-data))
            (condition-case error-data
                (open-font nil nil t)
-             (error error-data))))"#;
+             (error error-data)))))"#;
     let expected = concat!(
         "((error \"Invalid glyph-string: \") ",
         "(error \"Invalid glyph-string: \" []) t ",
@@ -6919,7 +6921,9 @@ fn native_fringe_bitmap_registry_family_matches_gnu() {
 #[test]
 fn native_composite_c_family_and_text_property_identity_match_gnu() {
     let program = r#"
-        (list
+        (progn
+         (set-terminal-coding-system-internal 'no-conversion)
+         (list
          (clear-composition-cache)
          (composition-sort-rules
           (list [a 2 c] [d 5 f] [g 2 i]))
@@ -7001,7 +7005,7 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
              (find-composition-internal 9 nil "a" nil))
            (lambda ()
              (composition-sort-rules
-              (list [a -1 c] [b 1 d]))))))"#;
+              (list [a -1 c] [b 1 d])))))))"#;
     let expected = r#"
         (nil
          ([d 5 f] [a 2 c] [g 2 i])
@@ -7016,7 +7020,7 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
           (2 4 t))
          ((0 3 [65 12 66] nil ignore 2)
           (0 3 [88 89] t ignore 1))
-         [[utf-8-unix 101 769]
+         [[us-ascii 101 769]
           nil
           [0 0 101 101 1 0 1 1 0 nil]
           [1 1 769 769 0 0 0 1 0 nil]
@@ -7029,7 +7033,7 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
           (args-out-of-range "a")
           (error
            "Invalid composition rule in RULES argument")))"#;
-    let expected_printed = "(nil ([d 5 f] [a 2 c] [g 2 i]) (((2) . ignore) (1 3 t) (1 3 [98 99] t ignore 1) (0 2 [98 99] . ignore)) (1 nil t) ((1 2 [88] . ignore) (2 4 [88] t ignore 1) (2 4 t) (2 4 t)) ((0 3 [65 12 66] nil ignore 2) (0 3 [88 89] t ignore 1)) [[utf-8-unix 101 769] nil [0 0 101 101 1 0 1 1 0 nil] [1 1 769 769 0 0 0 1 0 nil] nil nil nil nil nil nil] nil ((args-out-of-range buffer) (wrong-type-argument vectorp) (error \"Attempt to shape zero-length text\") (wrong-type-argument terminal-live-p) (args-out-of-range \"a\") (error \"Invalid composition rule in RULES argument\")))";
+    let expected_printed = "(nil ([d 5 f] [a 2 c] [g 2 i]) (((2) . ignore) (1 3 t) (1 3 [98 99] t ignore 1) (0 2 [98 99] . ignore)) (1 nil t) ((1 2 [88] . ignore) (2 4 [88] t ignore 1) (2 4 t) (2 4 t)) ((0 3 [65 12 66] nil ignore 2) (0 3 [88 89] t ignore 1)) [[us-ascii 101 769] nil [0 0 101 101 1 0 1 1 0 nil] [1 1 769 769 0 0 0 1 0 nil] nil nil nil nil nil nil] nil ((args-out-of-range buffer) (wrong-type-argument vectorp) (error \"Attempt to shape zero-length text\") (wrong-type-argument terminal-live-p) (args-out-of-range \"a\") (error \"Invalid composition rule in RULES argument\")))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
@@ -7048,6 +7052,37 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "composite.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn composition_gstring_uses_the_effective_terminal_coding_system() {
+    let program = r#"
+        (let ((string (string 101 769)))
+          (list
+           (progn
+             (set-terminal-coding-system-internal nil)
+             (aref (aref (composition-get-gstring 0 2 nil string) 0) 0))
+           (progn
+             (set-terminal-coding-system-internal 'no-conversion)
+             (aref (aref (composition-get-gstring 0 2 nil string) 0) 0))
+           (progn
+             (set-terminal-coding-system-internal 'utf-8-unix)
+             (aref (aref (composition-get-gstring 0 2 nil string) 0) 0))))"#;
+    let expected = "(us-ascii us-ascii utf-8-unix)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("terminal gstring contract should parse")
+        .expect("terminal gstring contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("terminal gstring contract should evaluate")
+            .to_string(),
+        expected
     );
 }
 
