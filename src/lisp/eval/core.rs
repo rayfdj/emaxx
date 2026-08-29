@@ -232,6 +232,23 @@ pub(super) enum SourceLiteralKind {
 }
 
 impl Interpreter {
+    /// GNU treats a symbol-with-position in function position as its bare
+    /// symbol while `symbols-with-pos-enabled' is non-nil.  The byte compiler
+    /// enables that mode while macroexpanding source forms, so this is part of
+    /// ordinary evaluator dispatch rather than merely a predicate detail.
+    fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
+        if let Value::Symbol(name) = value {
+            return Some(name.clone());
+        }
+        if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+            && let Some((Value::Symbol(name), _)) =
+                crate::lisp::primitives::symbol_with_pos_parts(self, value)
+        {
+            return Some(name);
+        }
+        None
+    }
+
     fn source_form_analysis(&mut self, source: &Value) -> Result<SourceFormAnalysis, LispError> {
         let Some((source_anchor, _)) = source.cons_cells() else {
             return Err(LispError::WrongTypeArgument("listp".into(), source.clone()));
@@ -423,6 +440,25 @@ impl Interpreter {
             // evaluation put there (GNU strings are always heap objects).
             Value::String(_) => Ok(Self::stored_value(expr.clone())),
 
+            Value::Record(_)
+                if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+                    && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>
+            {
+                let Some((Value::Symbol(name), _)) =
+                    crate::lisp::primitives::symbol_with_pos_parts(self, expr)
+                else {
+                    unreachable!("guard accepted a positioned symbol without a symbol slot");
+                };
+                match self.lookup(&name, env) {
+                    Ok(value) => Ok(value),
+                    Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("void-variable".into()),
+                        expr.clone(),
+                    ]))),
+                    Err(error) => Err(error),
+                }
+            }
+
             Value::BuiltinFunc(_)
             | Value::Lambda(_)
             | Value::Buffer(_)
@@ -458,14 +494,26 @@ impl Interpreter {
                     SourceLiteralKind::None => {}
                 }
 
-                // Check for special forms first
-                if let Value::Symbol(ref name) = items[0] {
+                let callable_name = self.callable_symbol_name(&items[0], env);
+
+                // Check for special forms first.  Source analysis can cache
+                // this classification only for a bare symbol; positioned
+                // symbols depend on the current dynamic mode and are handled
+                // here on every evaluation.
+                if let Some(ref name) = callable_name {
+                    let direct_native_form = native_form.or_else(|| {
+                        (!matches!(items[0], Value::Symbol(_))
+                            && crate::lisp::primitives::generated_gnu_c_primitive_available(name)
+                                .is_some_and(|available| available))
+                        .then(|| NativeForm::for_name(name))
+                        .flatten()
+                    });
                     // Function aliases to special forms retain the target's
                     // unevaluated-argument calling convention.  GNU's
                     // `(defalias 'inline 'progn)' is the common case: treating
                     // INLINE as an ordinary function evaluates its forms and
                     // then attempts an invalid funcall of PROGN.
-                    let effective_native_form = native_form.or_else(|| {
+                    let effective_native_form = direct_native_form.or_else(|| {
                         let Value::BuiltinFunc(target) = self.lookup_function(name, env).ok()?
                         else {
                             return None;
@@ -564,7 +612,7 @@ impl Interpreter {
                 // expander can inspect state, perform side effects, or create
                 // fresh uninterned symbols.  Only the generation-stamped
                 // negative "not a macro" verdict is reusable here.
-                if let Value::Symbol(name) = &items[0]
+                if let Some(name) = callable_name.as_ref()
                     && !self.source_call_known_not_macro(&macro_calls)
                 {
                     if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
@@ -592,7 +640,8 @@ impl Interpreter {
         // Keep that observable ordering while retaining a direct native
         // verdict instead of materializing `BuiltinFunc' and throwing away
         // the name-facts cache on every ordinary source call.
-        let prepared = if let Value::Symbol(name) = &items[0] {
+        let callable_name = self.callable_symbol_name(&items[0], env);
+        let prepared = if let Some(name) = callable_name.as_ref() {
             self.resolve_source_symbol_call(name, env, source_resolution)?
         } else {
             FunctionResolution::Resolved(self.eval(&items[0], env)?)
@@ -600,7 +649,7 @@ impl Interpreter {
         // While the arguments evaluate, the call is visible in backtraces as
         // an in-progress frame with its unevaluated argument forms, the way
         // GNU records the eval of a list form.
-        let unevald_frame = matches!(&items[0], Value::Symbol(_));
+        let unevald_frame = callable_name.is_some();
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
         }
@@ -621,17 +670,17 @@ impl Interpreter {
         if let Some(error) = arg_error {
             return Err(error);
         }
-        match (&items[0], prepared) {
-            (Value::Symbol(name), FunctionResolution::DirectBuiltin(facts)) => {
+        match (callable_name.as_ref(), prepared) {
+            (Some(name), FunctionResolution::DirectBuiltin(facts)) => {
                 self.dispatch_named_builtin(name, facts, Some(CallName::Symbol(name)), &args, env)
             }
-            (Value::Symbol(name), FunctionResolution::Resolved(func)) => {
+            (Some(name), FunctionResolution::Resolved(func)) => {
                 self.call_function_value_named(func, Some(CallName::Symbol(name)), &args, env)
             }
-            (_, FunctionResolution::Resolved(func)) => {
+            (None, FunctionResolution::Resolved(func)) => {
                 self.call_function_value_named(func, None, &args, env)
             }
-            (_, FunctionResolution::DirectBuiltin(_)) => {
+            (None, FunctionResolution::DirectBuiltin(_)) => {
                 unreachable!("only a symbol callee can have a direct native verdict")
             }
         }
@@ -789,7 +838,16 @@ impl Interpreter {
             .unwrap_or(Value::Record(record_id));
         self.push_backtrace_frame(backtrace_function, args);
         self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
+        // A genuine byte-code function starts a new evaluator scope just as
+        // an interpreted lexical closure does.  Its Bvarbind opcodes update
+        // special value cells, so native calls made by the VM must not see a
+        // same-named lexical frame belonging to its caller first.  Advice
+        // wrappers happened to introduce this boundary, which is why merely
+        // advising `prin1' used to make package byte compilation work.
+        let previous_floor = self.special_scan_floor;
+        self.special_scan_floor = env.len();
         let result = crate::lisp::bytecode::vm::execute_record(self, record_id, args, env);
+        self.special_scan_floor = previous_floor;
         if let Err(error) = &result {
             self.capture_batch_error_backtrace(error, env);
         }
@@ -804,6 +862,13 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        // eval.c/bytecode.c use XBARE_SYMBOL for a positioned callee while
+        // the byte compiler's symbol-position mode is active.  This covers
+        // explicit `funcall'/`apply' as well as ordinary source dispatch.
+        let func = self
+            .callable_symbol_name(&func, env)
+            .map(Value::Symbol)
+            .unwrap_or(func);
         // A record with a cached program is a genuine byte-code function
         // (only execute_record populates the cache), so skip the
         // lambda/autoload probes and the record-type guards below.

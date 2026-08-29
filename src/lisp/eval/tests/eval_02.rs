@@ -1401,6 +1401,101 @@ fn byte_compile_file_loads_macro_expanded_function_bodies() {
 }
 
 #[test]
+fn byte_compile_file_evaluates_positioned_macro_conditions() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-positioned-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("positioned.el");
+    let dest_path = dir.join("positioned.elc");
+    std::fs::write(
+        &source_path,
+        ";;; -*- lexical-binding: t -*-\n\
+         (eval-when-compile\n\
+           (defmacro positioned-static-if (condition then-form &rest else-forms)\n\
+             (if (eval condition lexical-binding)\n\
+                 then-form\n\
+               (cons 'progn else-forms))))\n\
+         (defun positioned-static-result ()\n\
+           \"A § dynamic docstring also exercises the compiled file marker.\"\n\
+           (positioned-static-if (fboundp 'car) 41 9))\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((byte-compile-dest-file-function (lambda (_) {dest_path:?})))
+              (list (byte-compile-file {source_path:?})
+                    (progn
+                      (load {dest_path:?} nil 'nomessage)
+                      (positioned-static-result))))
+            "#,
+        source_path = source_path.display().to_string(),
+        dest_path = dest_path.display().to_string(),
+    );
+
+    let result = eval_str_with_upstream_batch_feature("bytecomp", &source);
+    let compiled = std::fs::read(&dest_path).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::list([Value::T, Value::Integer(41)]));
+    assert!(
+        compiled
+            .windows(b"(#$ . ".len())
+            .any(|bytes| bytes == b"(#$ . "),
+        "byte compiler must preserve GNU's #$ compiled-file substitution"
+    );
+    assert!(
+        compiled.windows(2).any(|bytes| bytes == [0xC2, 0xA7]),
+        "no-conversion must retain multibyte buffer text in utf-8-emacs form"
+    );
+}
+
+#[test]
+fn genuine_bytecode_special_bindings_hide_caller_lexicals() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (require 'bytecomp)
+           (defvar bytecode-special-scope-probe 'global)
+           (defun bytecode-special-scope-probe-fn (fresh)
+             (let ((bytecode-special-scope-probe fresh))
+               bytecode-special-scope-probe))
+           (byte-compile 'bytecode-special-scope-probe-fn))",
+    );
+    let mut caller_env = vec![
+        vec![(
+            "bytecode-special-scope-probe".into(),
+            Value::Symbol("stale-caller-lexical".into()),
+        )]
+        .into(),
+    ];
+
+    let actual = interp
+        .call_function_value(
+            Value::Symbol("bytecode-special-scope-probe-fn".into()),
+            Some("bytecode-special-scope-probe-fn"),
+            &[Value::Symbol("fresh-dynamic".into())],
+            &mut caller_env,
+        )
+        .expect("call compiled special-binding probe");
+
+    assert_eq!(actual, Value::Symbol("fresh-dynamic".into()));
+    assert_eq!(
+        interp
+            .symbol_value_cell("bytecode-special-scope-probe")
+            .expect("restored global binding"),
+        Value::Symbol("global".into())
+    );
+}
+
+#[test]
 fn package_upgrade_reloads_previously_loaded_library_before_compiling() {
     run_with_large_stack(|| {
         let unique = format!(
