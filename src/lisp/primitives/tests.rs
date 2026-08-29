@@ -14324,6 +14324,32 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
 }
 
 #[test]
+fn native_network_process_resolves_named_services_from_the_services_database() {
+    // process.c hands a non-numeric :service string to getaddrinfo /
+    // getservbyname ("domain" is udp+tcp port 53 in /etc/services); an
+    // unknown name signals the getaddrinfo diagnostic.  No packet is
+    // sent: only the resolved :remote address is observed.
+    let program = r#"(let ((dns (make-network-process
+                                :name "dns-client"
+                                :type 'datagram
+                                :host "127.0.0.1"
+                                :service "domain"
+                                :sentinel 'ignore)))
+                      (unwind-protect
+                          (list (process-contact dns :remote)
+                                (condition-case err
+                                    (make-network-process
+                                     :name "bogus-client"
+                                     :type 'datagram
+                                     :host "127.0.0.1"
+                                     :service "emaxx-no-such-service")
+                                  (error err)))
+                        (delete-process dns)))"#;
+    let expected = "([127 0 0 1 53] (error \"127.0.0.1/emaxx-no-such-service Servname not supported for ai_socktype\"))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+}
+
+#[test]
 fn native_datagram_addresses_track_udp_peer_state_and_contact_metadata() {
     let program = r#"(let
                          ((udp

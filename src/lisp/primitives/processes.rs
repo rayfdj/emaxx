@@ -1126,6 +1126,20 @@ pub(super) fn network_io_error_detail(error: &std::io::Error) -> String {
     }
 }
 
+/// process.c's service-name resolution: getservbyname consults
+/// /etc/services with the protocol chosen by the socket type, exactly
+/// as getaddrinfo does for its service argument.
+fn services_database_port(name: &str, datagram: bool) -> Option<i64> {
+    let service = std::ffi::CString::new(name).ok()?;
+    let protocol = std::ffi::CString::new(if datagram { "udp" } else { "tcp" }).ok()?;
+    let entry = unsafe { libc::getservbyname(service.as_ptr(), protocol.as_ptr()) };
+    if entry.is_null() {
+        return None;
+    }
+    let port = unsafe { (*entry).s_port };
+    Some(i64::from(u16::from_be(port as u16)))
+}
+
 pub(super) fn network_server_error(error: &std::io::Error) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("file-error"),
@@ -1293,6 +1307,28 @@ pub(crate) fn make_network_process(
             .is_some_and(|value| value.is_truthy());
     if host_local {
         host = Some(if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
+    }
+    // process.c resolves a non-numeric :service string through the
+    // services database — getaddrinfo when a host is in play,
+    // getservbyname otherwise, both keyed by the socket type (udp for
+    // datagrams).  A name the database does not know signals the
+    // getaddrinfo diagnostic with the host/service prefix (servers
+    // default the host to the loopback of their family).
+    if service.is_none()
+        && !family_local
+        && let Some(text) = service_path.as_deref()
+    {
+        match services_database_port(text, datagram) {
+            Some(port) => service = Some(port),
+            None => {
+                let host_text = host
+                    .clone()
+                    .unwrap_or_else(|| if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
+                return Err(LispError::Signal(format!(
+                    "{host_text}/{text} Servname not supported for ai_socktype"
+                )));
+            }
+        }
     }
     let (decoding, encoding) = process_creation_coding_systems(interp, env, &coding);
     let name = interp.unique_process_name(&name);

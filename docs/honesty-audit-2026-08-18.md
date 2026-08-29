@@ -2843,3 +2843,68 @@ recorded in the baseline doc's fix queue).  Environment note: the
 regeneration gates run rustfmt, which the unprivileged gate user could
 not reach — a latent gap the old always-refusing Linux path never
 exercised; rustfmt is now installed system-wide for the gate.
+
+
+## 2026-08-29 finding 133: where-is full-list ordering regressed by ae8f93b
+
+The first authoritative post-merge Darwin frozen run (7,633/7,883)
+carried exactly one regression against the pre-merge 7,620/263
+baseline: `test-non-key-events' in test/src/keymap-tests.el.  Diffing
+the two runs' artifacts proved everything else moved green (five files
+fully fixed, and `semantic-utest-ia-texi' — briefly suspected as a
+regression — was already failing pre-merge).
+
+Root cause: tty-round commit ae8f93b changed `where_is_binding_rank'
+from (length, symbolic) to (symbolic, length), citing keymap.c's
+`preferred_sequence_p' as if it ordered the FULL result list.  It does
+not: keymap.c's static where_is_internal walks Faccessible_keymaps
+breadth-first, so the full list is ordered by sequence length no
+matter what events a sequence carries (oracle: a symbolic [f7] answers
+before the two-character C-c 8), and `preferred_sequence_p' is
+consulted ONLY by the FIRSTONLY selection (where a character sequence
+does beat a shorter symbolic one).  The tty commit fixed its FIRSTONLY
+scenario by sorting the whole list — a mechanism misattribution the
+merge audit passed because it carried a plausible C anchor; the frozen
+run caught it within one cycle, which is the system working.
+
+Fix (this batch): rank restored to (length, symbolic-tiebreak) with
+the tie break now justified by the true mechanism (within one map the
+char-table sweep answers before the symbol alist), and
+`preferred_sequence_p' ported literally for the FIRSTONLY path
+(including its ~CHAR_META masking and the rank-2 early answer that
+makes a nil `where-is-preferred-modifier' still prefer character
+sequences).  Oracle-verified: full-list order, FIRSTONLY selection
+across lengths, nil-preferred-modifier selection, and the
+test-non-key-events replay are all byte-identical now.  Residual
+approximation, disclosed: same-length sequences from DIFFERENT prefix
+maps tie-break by the stable sort's collection order (depth-first)
+rather than GNU's breadth-first map order; no observed scenario
+distinguishes them yet.
+
+
+## 2026-08-29 finding 134: named :service strings resolved to port 0
+
+The first Linux frozen run ABORTED at test/src/process-tests.el: the
+file's top-level `(dns-query "google.com")' (dns.el passes
+`:service "domain"') hit emaxx's make-network-process, which parsed a
+non-numeric :service string with `.parse::<i64>().ok()' and fell back
+to port 0 — process-send-string then died with sendto's EINVAL,
+aborting the load, and frozen mode's outcome-coverage contract
+correctly refused to score a 0-outcome file (finding-115 discipline
+catching a real defect rather than hiding it).  GNU resolves service
+names through the services database (getaddrinfo with the socket type
+as hint when a host is given; getservbyname otherwise, process.c) and
+signals "HOST/SERVICE Servname not supported for ai_socktype" for a
+name the database does not know; emaxx silently built a
+port-0/random-port socket instead, on every platform — Darwin's run
+survived only because macOS's dns path happened not to explode the
+load there.
+
+Fix: :service strings that do not parse as integers now resolve via
+getservbyname with "udp"/"tcp" chosen by :type, and unknown names
+signal the getaddrinfo diagnostic (loopback-of-family host prefix when
+no :host, as GNU's server default produces).  Oracle-verified
+byte-identical: "domain" resolves to remote port 53, the unknown-name
+error text matches, and upstream process-tests.el now loads all 37
+tests.  The aborted Linux frozen run is rerun from scratch after this
+fix; no score from the aborted run is recorded anywhere.
