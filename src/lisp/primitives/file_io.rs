@@ -531,7 +531,7 @@ pub(crate) fn write_region_value_with_logical_path(
         } else {
             call_named_function(
                 interp,
-                "y-or-n-p",
+                "yes-or-no-p",
                 &[Value::String(
                     format!("File {logical_path} already exists; overwrite anyway? ").into(),
                 )],
@@ -555,14 +555,15 @@ pub(crate) fn write_region_value_with_logical_path(
     let lock_enabled = interp
         .lookup_var("create-lockfiles", env)
         .is_some_and(|value| value.is_truthy());
-    if lock_enabled {
-        call_named_function(
-            interp,
-            "lock-file",
-            &[Value::String(lock_path.clone().into())],
-            env,
-        )?;
-    }
+    // GNU always enters lock-file here: that function performs the
+    // supersession check even when `create-lockfiles' suppresses the actual
+    // lock artifact.
+    call_named_function(
+        interp,
+        "lock-file",
+        &[Value::String(lock_path.clone().into())],
+        env,
+    )?;
     let write_result = (|| {
         if let Some(offset) = args
             .get(3)
@@ -1537,18 +1538,51 @@ pub(crate) fn maybe_lock_current_buffer_file(
 }
 
 pub(crate) fn lock_file_path(
-    interp: &Interpreter,
-    env: &Env,
+    interp: &mut Interpreter,
+    env: &mut Env,
     logical_path: &str,
 ) -> Result<(), LispError> {
-    if !interp
+    let lock_enabled = interp
         .lookup_var("create-lockfiles", env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return Ok(());
-    }
+        .is_some_and(|value| value.is_truthy());
     let path = resolve_file_name_in_env(interp, env, logical_path);
     let lock_path = lock_path_for_file(&path);
+    let own_lock = lock_enabled
+        && fs::symlink_metadata(&lock_path)
+            .ok()
+            .and_then(|metadata| read_lock_info(&lock_path, &metadata))
+            .as_deref()
+            .and_then(lock_ownership)
+            .is_some_and(|owner| matches!(owner, LockOwnership::CurrentProcess));
+
+    // GNU checks the visited buffer for supersession even when lock-file
+    // creation is disabled.  `create-lockfiles' controls the filesystem
+    // notice, not whether an external rewrite may be silently overwritten.
+    if !own_lock {
+        let truename = canonical_file_name(&path);
+        let subject_id = interp.buffer_list.iter().find_map(|(id, _)| {
+            interp
+                .get_buffer_by_id(*id)
+                .and_then(|buffer| buffer.file_truename.as_deref())
+                .filter(|candidate| *candidate == truename)
+                .map(|_| *id)
+        });
+        if let Some(subject_id) = subject_id {
+            let saved_id = interp.current_buffer_id();
+            if subject_id != saved_id {
+                interp.set_current_buffer_id(subject_id)?;
+            }
+            let supersession = ensure_no_supersession_threat(interp, env);
+            if subject_id != saved_id && interp.has_buffer_id(saved_id) {
+                interp.set_current_buffer_id(saved_id)?;
+            }
+            supersession?;
+        }
+    }
+
+    if !lock_enabled {
+        return Ok(());
+    }
     match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
