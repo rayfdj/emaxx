@@ -217,9 +217,16 @@ define_dispatch!(
                     keymap_define_character_range(interp, &args[0], start, end, args[2].clone())?;
                     return Ok(args[2].clone());
                 }
-                let key = key_sequence_binding_text(&args[1])?;
-                let key_parts = key_sequence_keymap_parts(&args[1])?;
-                if args[2].is_nil() && args.get(3).is_some_and(Value::is_truthy) {
+                // keymap.c:Fdefine_key converts Lucid-style event lists in
+                // KEY through Fevent_convert_list, and a DEF vector opening
+                // with a cons ("an XEmacs-style keyboard macro") gets the
+                // same conversion, so `[(control meta shift kp-9)]' and
+                // `[C-M-S-kp-9]' name one binding.
+                let normalized_key = normalize_lucid_key_events(interp, &args[1])?;
+                let def = normalize_xemacs_macro_definition(interp, &args[2])?;
+                let key = key_sequence_binding_text(&normalized_key)?;
+                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
+                if def.is_nil() && args.get(3).is_some_and(Value::is_truthy) {
                     keymap_remove_binding(interp, &args[0], &key)?;
                 } else {
                     keymap_define_binding_with_placement(
@@ -227,15 +234,18 @@ define_dispatch!(
                         &args[0],
                         &key,
                         Some(key_parts),
-                        args[2].clone(),
+                        def.clone(),
                         false,
                     )?;
                 }
-                Ok(args[2].clone())
+                Ok(def)
             }
             "lookup-key" => {
                 need_arg_range(name, args, 2, 3)?;
-                let key_parts = key_sequence_keymap_parts(&args[1])?;
+                // keymap.c:lookup_key_1 applies the same Lucid event-list
+                // conversion as Fdefine_key.
+                let normalized_key = normalize_lucid_key_events(interp, &args[1])?;
+                let key_parts = key_sequence_keymap_parts(&normalized_key)?;
                 let result = keymap_lookup_sequence_value_with_default(
                     interp,
                     &args[0],
@@ -246,7 +256,7 @@ define_dispatch!(
                 if let Value::Integer(prefix_len) = result {
                     let prefix_len = usize::try_from(prefix_len).unwrap_or(0);
                     Ok(Value::Integer(
-                        key_sequence_prefix_event_count(&args[1], prefix_len)? as i64,
+                        key_sequence_prefix_event_count(&normalized_key, prefix_len)? as i64,
                     ))
                 } else {
                     Ok(result)

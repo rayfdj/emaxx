@@ -346,6 +346,9 @@ impl Interpreter {
             if self.coding_system_canonical_name(&alias_variant).is_none()
                 && self.coding_system_canonical_name(&target_variant).is_some()
             {
+                // coding.c reaches this via make_subsidiaries, which
+                // interns each subsidiary name in the standard obarray.
+                self.intern_symbol_name(&alias_variant);
                 self.coding_aliases.push((alias_variant, target_variant));
             }
         }
@@ -427,6 +430,14 @@ impl Interpreter {
         plist: Value,
         eol_type: Option<i64>,
     ) -> Result<(), LispError> {
+        if eol_type.is_none() {
+            // An undecided eol-type creates the three eol subsidiaries via
+            // coding.c's make_subsidiaries, which interns NAME-unix,
+            // NAME-dos and NAME-mac in the standard obarray.
+            for suffix in ["-unix", "-dos", "-mac"] {
+                self.intern_symbol_name(&format!("{name}{suffix}"));
+            }
+        }
         let kind_canonical = self
             .coding_system_canonical_name(kind)
             .unwrap_or_else(|| kind.to_string());

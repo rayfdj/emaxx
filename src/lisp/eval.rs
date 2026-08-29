@@ -5166,6 +5166,58 @@ impl Interpreter {
         for name in completed_startup_globals {
             interp.mark_special_variable(&name);
         }
+        // GNU's defsubr interns every C primitive's name in the standard
+        // obarray as the image is built (lread.c:defsubr -> intern_c_string),
+        // so a bare `emacs -Q -batch' answers `intern-soft' for names like
+        // `1-' or `decode-sjis-char' before any Lisp mentions them.  Emaxx
+        // dispatches those primitives by name without a per-name Lisp
+        // binding, so register the same committed DEFUN contract surface the
+        // dispatch layer is built and gated against (finding 112/#27).  An
+        // `arity: None' contract names a DEFUN outside the oracle build
+        // (another platform's *.c); the oracle never defsubrs those, so
+        // neither does this registration.
+        for contract in primitives::GNU_C_PRIMITIVES {
+            if contract.arity.is_some() {
+                interp.intern_symbol_name(contract.name);
+            }
+        }
+        // GNU's syms_of_* initializers likewise intern every DEFSYM
+        // (lisp.h:DEFSYM -> staticpro'd intern_c_string), covering names
+        // with neither a function nor a variable cell: process-attribute
+        // keys (`comm', `ctime'), GnuTLS constants, font keywords.  The
+        // DEFSYM manifest is a source contract over all of src/*.c; which
+        // files this image "compiles" comes from the DEFUN manifest's
+        // availability facts: a file registers its DEFSYMs when at least
+        // one of its DEFUNs is available in the oracle build.  Sources of
+        // other window systems (android*/w32*/haiku*/pgtk*, xfns.c,
+        // xmenu.c) reach that set only through DEFUN names shared across
+        // platforms, so they are excluded by name — the same platform
+        // taxonomy as docs/oracle-build-contract.md.
+        {
+            let compiled_files: std::collections::HashSet<&'static str> =
+                primitives::GNU_C_PRIMITIVES
+                    .iter()
+                    .filter(|contract| contract.arity.is_some())
+                    .flat_map(|contract| contract.origins.split(", "))
+                    .filter(|file| {
+                        !(file.starts_with("android")
+                            || file.starts_with("w32")
+                            || file.starts_with("haiku")
+                            || file.starts_with("pgtk")
+                            || *file == "xfns.c"
+                            || *file == "xmenu.c")
+                    })
+                    .collect();
+            for defsym in primitives::GNU_C_DEFSYMS {
+                if defsym
+                    .origins
+                    .split(", ")
+                    .any(|file| compiled_files.contains(file))
+                {
+                    interp.intern_symbol_name(defsym.name);
+                }
+            }
+        }
         interp
     }
 

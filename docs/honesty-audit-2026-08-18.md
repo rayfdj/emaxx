@@ -89,10 +89,10 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | FIXED 2026-08-28 - keymap.c:1657 rule ported; witness inert, 6 scenarios oracle-matched |
 | 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | FIXED 2026-08-28 - live reachability census; shape oracle-matched, counts are emaxx truth |
 | 111 | network-interface-info was a bare nil beside a real network-interface-list | FIXED (macOS) 2026-08-26 - real ioctls; still nil on other platforms |
-| 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | OPEN (measured) |
+| 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | FIXED 2026-08-29 - the mentioned-names hole is filled computed-not-copied; missing keywords 288 -> 7 (process.c socket-option table); see the obarray close-out |
 | 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
 | 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
-| 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | OPEN (measured) |
+| 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | FIXED 2026-08-29 - missing names 3,908 -> 124 vs the Linux oracle; four computed mechanisms; residual classes named in the close-out |
 | 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | FIXED 2026-08-29 - LANG=C is the gate standard; the five reds were real divergences and are fixed, not baselined |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | FIXED 2026-08-29 - manifest sha pin (item 21) + frozen superset check: run ⊆ manifest enforced per file, both runners |
@@ -2662,3 +2662,71 @@ those tests.  With the sha pin closing the "edited manifest" direction
 and this check closing the "stale manifest" direction, finding 115's
 regeneration-freshness gap is closed; the C-primitive and arities
 manifests keep their separate fresh-regeneration gates.
+
+
+## 2026-08-29 findings 112/121 closed: the obarray gap, by mechanism
+
+Measured by dumping both binaries' `mapatoms' output to files under
+LANG=C batch (never feeding those files back as expectations -- the
+worklists steered WHERE to look; every fix below is a mechanism ported
+from GNU source).  Starting point: 17,015 GNU names, 13,557 emaxx names,
+3,908 missing.  Four mechanisms:
+
+1. **Reader literals** (3,908 -> 1,925): `intern_symbols_in_value'
+   walked conses, symbols and string properties but no ReaderForm --
+   symbols living only inside `#[...]' compiled constant vectors,
+   `#s(...)' hash tables/records, char-tables, or circular labels were
+   interned on no path.  lread.c interns at every `read_symbol',
+   whatever literal it is inside.  This was finding 119's own disclosed
+   residue.
+2. **Coding-system subsidiaries** (-793): coding.c's make_subsidiaries
+   interns NAME-unix/-dos/-mac for every base coding system and alias
+   with undecided eol; emaxx's define-coding-system(-alias) now does the
+   same.
+3. **defsubr names**: lread.c's defsubr interns every C primitive's
+   name at image build; emaxx registers the same committed DEFUN
+   contract surface its dispatch is gated against (arity-Some entries
+   of generated_gnu_c_primitives.rs).
+4. **DEFSYM names** (net effect with 3: 1,132 -> 124): a new generated
+   manifest, generated_gnu_c_defsyms.rs, from the same source-contract
+   convention as the DEFUN manifest ("GNU Emacs 30.2 src/*.c DEFSYM
+   declarations", regeneration script in compat/).  Registration
+   filters to files the oracle build compiles, derived from the DEFUN
+   manifest's availability facts, with other window systems'
+   sources (android*/w32*/haiku*/pgtk*, xfns.c, xmenu.c) excluded by
+   the oracle-build-contract taxonomy.
+
+En route, two REAL event divergences surfaced and are fixed with
+oracle-probe verification (16-row table byte-identical):
+
+- `define-key'/`lookup-key' did not convert Lucid-style event lists:
+  `[(control meta shift kp-9)]' and `[C-M-S-kp-9]' named different
+  bindings (GNU: the same one, keymap.c Fdefine_key/lookup_key_1), and
+  a DEF vector opening with a cons (XEmacs-style macro) was stored
+  unconverted where GNU converts each event.  bindings.el's keypad
+  loop therefore produced a function-key-map unreachable by canonical
+  event symbols -- 245 modifier event names absent, and lookups
+  answering nil where GNU answers the translation.
+- `event-convert-list' dropped the control modifier where keyboard.c's
+  make_ctrl_char keeps it (C-9 = ?9 with the control bit, not bare
+  ?9), lost the shift bit when folding control onto a shifted letter,
+  and mis-folded `?', space and `@'.
+
+Residual 124 (0.7% of GNU's names), by class, all C intern-loops
+outside DEFSYM/DEFUN declarations: font.c style tables (weights,
+slants, widths: `extrabold', `demibold', ...), coding.c's
+`coding-category-*' name table, process.c's socket-option table (the 7
+remaining keywords), inotify/kqueue event names, native-comp unit
+names, and font family strings.  Each belongs to a subsystem port and
+is left OPEN as the successor entry to 121's number.
+
+Contract note: emaxx's image answers `(fboundp 'x-create-frame)' t per
+the Darwin oracle contract, so its loadup replay includes the
+`x-create-frame'-gated preloads (fringe, image, fontset, dnd,
+tool-bar, mwheel, scroll-bar); the Linux comparison oracle is a
+no-window-system build that skips them.  Their symbols therefore show
+as "extra" against the LINUX dump (749 names) while matching the
+pinned Darwin-image contract -- the same host-vs-contract policy
+question as mule-util (see docs/oracle-build-contract.md), not
+invented names: the original zz-/emaxx-contamination check stays
+clean.

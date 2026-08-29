@@ -63,14 +63,28 @@ fn modified_event_symbol_name(modifiers: i64, base: &str) -> String {
     name
 }
 
-fn control_event_code(code: i64) -> i64 {
-    match code {
-        0x3f => 0x7f,
-        0x20 | 0x40 => 0,
-        value if (b'a' as i64..=b'z' as i64).contains(&value) => value - 0x60,
-        value if (b'A' as i64..=b'_' as i64).contains(&value) => value - 0x40,
-        value => value,
+/// keyboard.c:make_ctrl_char.  The upper-case column folds to a control
+/// char (a shifted LETTER also gains the shift modifier), lower-case
+/// letters fold, and every other printable code keeps the control
+/// modifier bit because "the basic ASCII code can't indicate" it.
+fn make_ctrl_event_code(code: i64) -> i64 {
+    let upper = code & !0o177;
+    if !(0..128).contains(&code) {
+        return code | KEY_DESCRIPTION_CTRL_BIT;
     }
+    let mut c = code & 0o177;
+    if (0o100..0o140).contains(&c) {
+        let oc = c;
+        c ^= 0o100;
+        if (b'A' as i64..=b'Z' as i64).contains(&oc) {
+            c |= KEY_DESCRIPTION_SHIFT_BIT;
+        }
+    } else if (b'a' as i64..=b'z' as i64).contains(&c) {
+        c &= !0o140;
+    } else if c >= b' ' as i64 {
+        c |= KEY_DESCRIPTION_CTRL_BIT;
+    }
+    c | upper
 }
 
 pub(crate) fn event_convert_list_value(
@@ -113,7 +127,10 @@ pub(crate) fn event_convert_list_value(
                 modifiers &= !KEY_DESCRIPTION_SHIFT_BIT;
             }
             if modifiers & KEY_DESCRIPTION_CTRL_BIT != 0 {
-                code = control_event_code(code);
+                // keyboard.c:Fevent_convert_list: the control fold goes
+                // through make_ctrl_char, which may keep the control bit
+                // (C-9) or add a shift bit (control of a shifted letter).
+                code = make_ctrl_event_code(code);
                 modifiers &= !KEY_DESCRIPTION_CTRL_BIT;
             }
             Ok(Value::Integer(code | modifiers))
@@ -123,7 +140,15 @@ pub(crate) fn event_convert_list_value(
             if let Some(kind) = interp.get_symbol_property(&base, "event-kind") {
                 interp.put_symbol_property(&modified, "event-kind", kind);
             }
-            Ok(Value::Symbol(modified.into()))
+            // keyboard.c reaches this through apply_modifiers, which interns
+            // the modified symbol and stamps its parse cache
+            // (`event-symbol-element-mask'/`event-symbol-elements') --
+            // observable on any batch GNU after bindings.el's keypad
+            // `define-key' loop runs.
+            let modified = Value::Symbol(modified.into());
+            interp.intern_symbols_in_value(&modified);
+            parse_event_symbol_modifiers(interp, &modified)?;
+            Ok(modified)
         }
         _ => Err(LispError::Signal("Invalid base event".into())),
     }
@@ -349,10 +374,64 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
     Ok(parts)
 }
 
+/// keymap.c's Fdefine_key/lookup_key_1 convert each Lucid-style event
+/// description in a key vector through Fevent_convert_list before storing
+/// or traversing, so `[(control meta shift kp-9)]' and `[C-M-S-kp-9]' name
+/// the same binding.  Returns KEY unchanged when no element needs it.
+pub(crate) fn normalize_lucid_key_events(
+    interp: &mut Interpreter,
+    key: &Value,
+) -> Result<Value, LispError> {
+    let Ok(events) = vector_items(key) else {
+        return Ok(key.clone());
+    };
+    if !events.iter().any(lucid_event_type_list_p) {
+        return Ok(key.clone());
+    }
+    let mut converted = vec![Value::Symbol("vector-literal".into())];
+    for event in events {
+        converted.push(if lucid_event_type_list_p(&event) {
+            event_convert_list_value(interp, &event)?
+        } else {
+            event
+        });
+    }
+    Ok(Value::list(converted))
+}
+
+/// keymap.c's Fdefine_key: a DEF vector whose first element is a cons "is
+/// apparently an XEmacs-style keyboard macro" -- every Lucid event
+/// description in it is converted through Fevent_convert_list.
+pub(crate) fn normalize_xemacs_macro_definition(
+    interp: &mut Interpreter,
+    def: &Value,
+) -> Result<Value, LispError> {
+    let Ok(events) = vector_items(def) else {
+        return Ok(def.clone());
+    };
+    if !matches!(events.first(), Some(Value::Cons(_))) {
+        return Ok(def.clone());
+    }
+    let mut converted = vec![Value::Symbol("vector-literal".into())];
+    for event in events {
+        converted.push(if lucid_event_type_list_p(&event) {
+            event_convert_list_value(interp, &event)?
+        } else {
+            event
+        });
+    }
+    Ok(Value::list(converted))
+}
+
 /// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
 /// symbols whose head is not one of the posn-bearing pseudo-event kinds.
 fn lucid_event_type_list_p(event: &Value) -> bool {
     if !matches!(event, Value::Cons(_)) {
+        return false;
+    }
+    // GNU's CONSP is false for a real vector; Emaxx's vector-literal
+    // facade uses cons storage, so exclude it explicitly.
+    if crate::lisp::primitives::interactive::is_vector_value(event) {
         return false;
     }
     if matches!(
@@ -400,11 +479,15 @@ pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, Li
     // event-convert-list instead of taking their car.
     if let Ok(events) = vector_items(value)
         && events.iter().any(|event| {
-            matches!(event.car(), Ok(Value::Symbol(_))) && !lucid_event_type_list_p(event)
+            matches!(event.car(), Ok(Value::Symbol(_)))
+                && !lucid_event_type_list_p(event)
+                && !crate::lisp::primitives::interactive::is_vector_value(event)
         })
     {
         let heads = events.into_iter().map(|event| {
-            if lucid_event_type_list_p(&event) {
+            if lucid_event_type_list_p(&event)
+                || crate::lisp::primitives::interactive::is_vector_value(&event)
+            {
                 return event;
             }
             match event.car() {
