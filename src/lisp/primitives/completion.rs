@@ -1113,14 +1113,10 @@ fn activate_completing_read_minibuffer(
 ) -> Result<ActiveMinibuffer, LispError> {
     let prompt = args
         .first()
-        .and_then(string_like)
-        .ok_or_else(|| {
-            LispError::TypeError(
-                "string".into(),
-                args.first().map_or_else(|| "nil".into(), Value::type_name),
-            )
-        })?
-        .text;
+        .ok_or_else(|| LispError::TypeError("string".into(), "nil".into()))?;
+    if string_like(prompt).is_none() {
+        return Err(LispError::TypeError("string".into(), prompt.type_name()));
+    }
     let initial_input = completing_read_initial_input(args).unwrap_or_default();
     let require_match = args.get(3).is_some_and(Value::is_truthy);
     let map_name = if require_match {
@@ -1129,7 +1125,7 @@ fn activate_completing_read_minibuffer(
         "minibuffer-local-completion-map"
     };
     let local_map = interp.lookup_var(map_name, env).unwrap_or(Value::Nil);
-    let active = activate_minibuffer(interp, &prompt, &initial_input, local_map, env)?;
+    let active = activate_minibuffer(interp, prompt, &initial_input, local_map, env)?;
     let buffer_id = active.buffer_id;
 
     interp.set_buffer_local_value(
@@ -1157,11 +1153,14 @@ fn activate_completing_read_minibuffer(
 
 pub(crate) fn activate_minibuffer(
     interp: &mut Interpreter,
-    prompt: &str,
+    prompt: &Value,
     initial_input: &str,
     local_map: Value,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<ActiveMinibuffer, LispError> {
+    let prompt_string =
+        string_like(prompt).ok_or_else(|| wrong_type_argument("stringp", prompt.clone()))?;
+    let prompt_length = prompt_string.text.chars().count();
     let saved_windows = interp.snapshot_window_configuration();
     let depth = interp.minibuffer_depth().saturating_add(1);
     let buffer_id = interp
@@ -1200,41 +1199,59 @@ pub(crate) fn activate_minibuffer(
             .map_err(|error| LispError::Signal(error.to_string()))?;
     }
     interp.buffer.goto_char(interp.buffer.point_min());
-    interp.buffer.insert(prompt);
+    // minibuf.c inserts with `inhibit-modification-hooks' bound: copy the
+    // prompt's string intervals directly rather than entering ordinary
+    // buffer-change hooks.
+    interp.buffer.insert(&prompt_string.text);
+    for span in &prompt_string.props {
+        interp.buffer.add_text_properties(
+            1 + span.start,
+            1 + span.end.min(prompt_length),
+            &span.props,
+        );
+    }
+    interp
+        .buffer
+        .set_inserted_extended_chars(1, &prompt_string.extended_chars);
     // read_minibuf stamps the prompt: `minibuffer-prompt-properties'
     // (the read-only guard and the prompt face), plus the field and
     // stickiness controls that keep typed text from inheriting them —
     // the prompt is front-sticky and rear-nonsticky.
-    if !prompt.is_empty() {
-        let prompt_end = Value::Integer(1 + prompt.chars().count() as i64);
-        let mut prompt_env = Env::new();
+    if !prompt_string.text.is_empty() {
+        let prompt_end = Value::Integer(1 + prompt_length as i64);
         if let Some(properties) = interp
             .lookup_var("minibuffer-prompt-properties", env)
             .filter(|properties| !properties.is_nil())
         {
-            let _ = call_function_value(
-                interp,
-                &Value::Symbol("add-text-properties".into()),
-                &[Value::Integer(1), prompt_end.clone(), properties],
-                &mut prompt_env,
-            );
+            let properties = properties.to_vec().unwrap_or_default();
+            for pair in properties.chunks_exact(2) {
+                let name = pair[0].as_symbol()?;
+                if name == "face" {
+                    add_face_text_property(
+                        interp,
+                        "add-face-text-property",
+                        &[
+                            Value::Integer(1),
+                            prompt_end.clone(),
+                            pair[1].clone(),
+                            Value::T,
+                        ],
+                    )?;
+                } else {
+                    interp
+                        .buffer
+                        .put_text_property(1, 1 + prompt_length, name, pair[1].clone());
+                }
+            }
         }
         for (name, value) in [
             ("field", Value::T),
             ("front-sticky", Value::T),
             ("rear-nonsticky", Value::T),
         ] {
-            let _ = call_function_value(
-                interp,
-                &Value::Symbol("put-text-property".into()),
-                &[
-                    Value::Integer(1),
-                    prompt_end.clone(),
-                    Value::Symbol(name.into()),
-                    value,
-                ],
-                &mut prompt_env,
-            );
+            interp
+                .buffer
+                .put_text_property(1, 1 + prompt_length, name, value);
         }
     }
     if !initial_input.is_empty() {
@@ -1252,7 +1269,7 @@ pub(crate) fn activate_minibuffer(
     }
 
     let previous_runtime =
-        interp.begin_minibuffer_runtime(buffer_id, interp.selected_window_id(), prompt.to_string());
+        interp.begin_minibuffer_runtime(buffer_id, interp.selected_window_id(), prompt_string.text);
 
     Ok(ActiveMinibuffer {
         buffer_id,

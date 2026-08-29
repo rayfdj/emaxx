@@ -1501,6 +1501,57 @@ fn space_align_to_target(value: &Value) -> Option<usize> {
     }
 }
 
+/// Apply the current buffer's `glyphless-char-display' substitutions to a
+/// rendered string and keep its face spans in display-character offsets.
+/// Tabulated lists use this on text terminals to turn their GUI triangles
+/// into the configured ASCII `v'/`^' indicators without changing the Lisp
+/// header string shared with graphical frames.
+fn apply_glyphless_char_display(
+    interpreter: &Interpreter,
+    buffer_id: u64,
+    text: String,
+    spans: &mut Vec<(usize, usize, Value)>,
+) -> String {
+    let Some(Value::CharTable(table_id)) =
+        interpreter.buffer_local_value(buffer_id, "glyphless-char-display")
+    else {
+        return text;
+    };
+    let mut rendered = String::with_capacity(text.len());
+    let mut display_offsets = Vec::with_capacity(text.chars().count() + 1);
+    let mut replacement_spans = Vec::new();
+    display_offsets.push(0);
+    let mut display_chars = 0usize;
+    for character in text.chars() {
+        let value = interpreter
+            .char_table_get(table_id, u32::from(character))
+            .unwrap_or(Value::Nil);
+        let replacement = crate::lisp::primitives::string_like(&value)
+            .map(|string| string.text)
+            .or_else(|| {
+                value.cons_values().and_then(|(_, tail)| {
+                    crate::lisp::primitives::string_like(&tail).map(|string| string.text)
+                })
+            });
+        if let Some(replacement) = replacement {
+            let from = display_chars;
+            display_chars += replacement.chars().count();
+            rendered.push_str(&replacement);
+            replacement_spans.push((from, display_chars, Value::Symbol("escape-glyph".into())));
+        } else {
+            display_chars += 1;
+            rendered.push(character);
+        }
+        display_offsets.push(display_chars);
+    }
+    for (from, to, _) in spans.iter_mut() {
+        *from = display_offsets.get(*from).copied().unwrap_or(display_chars);
+        *to = display_offsets.get(*to).copied().unwrap_or(display_chars);
+    }
+    spans.extend(replacement_spans);
+    rendered
+}
+
 /// A visual line under invisibility: the laid-out text starting at the
 /// display line holding FIRST_LINE, with invisible runs skipped, the
 /// display-table ellipsis spliced where a run asks for it, and hidden
@@ -2306,6 +2357,7 @@ fn redraw_with_echo_policy(
         None;
     struct ModeLineJob {
         window_id: u64,
+        buffer_id: u64,
         point: usize,
         row: usize,
         left: usize,
@@ -2653,6 +2705,7 @@ fn redraw_with_echo_policy(
         }
         mode_line_jobs.push(ModeLineJob {
             window_id: info.window_id,
+            buffer_id: info.buffer_id,
             point: mode_line_point,
             row: info.top + info.height - 1,
             left: info.left,
@@ -2662,6 +2715,7 @@ fn redraw_with_echo_policy(
         if header_rows > 0 {
             header_line_jobs.push(ModeLineJob {
                 window_id: info.window_id,
+                buffer_id: info.buffer_id,
                 point: mode_line_point,
                 row: info.top,
                 left: info.left,
@@ -3023,7 +3077,7 @@ fn redraw_with_echo_policy(
             )
         });
     for job in &mode_line_jobs {
-        let (mut mode_line, spans) = match crate::lisp::primitives::render_window_mode_line(
+        let (mut mode_line, mut spans) = match crate::lisp::primitives::render_window_mode_line(
             interpreter,
             env,
             job.window_id,
@@ -3040,6 +3094,7 @@ fn redraw_with_echo_policy(
                 (format!("[mode-line render error: {error:?}]"), Vec::new())
             }
         };
+        mode_line = apply_glyphless_char_display(interpreter, job.buffer_id, mode_line, &mut spans);
         if mode_line.chars().count() < job.body_width {
             let missing = job.body_width - mode_line.chars().count();
             mode_line.extend(std::iter::repeat_n('-', missing));
@@ -3076,7 +3131,7 @@ fn redraw_with_echo_policy(
                 )
             });
         for job in &header_line_jobs {
-            let (mut header, spans) = match crate::lisp::primitives::render_window_header_line(
+            let (mut header, mut spans) = match crate::lisp::primitives::render_window_header_line(
                 interpreter,
                 env,
                 job.window_id,
@@ -3089,6 +3144,7 @@ fn redraw_with_echo_policy(
                     (format!("[header-line render error: {error:?}]"), Vec::new())
                 }
             };
+            header = apply_glyphless_char_display(interpreter, job.buffer_id, header, &mut spans);
             if header.chars().count() > job.body_width {
                 header = header.chars().take(job.body_width).collect();
             }
@@ -3650,6 +3706,37 @@ mod tests {
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn tabulated_list_glyphless_table_uses_tty_sort_indicators() {
+        let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn (require 'tabulated-list) (tabulated-list-mode))",
+        )
+        .read()
+        .expect("tabulated-list setup parses")
+        .expect("tabulated-list setup exists");
+        interpreter
+            .eval(&form, &mut env)
+            .expect("tabulated-list mode initializes");
+        let mut spans = vec![(0, 3, Value::Symbol("bold".into()))];
+        let rendered = apply_glyphless_char_display(
+            &interpreter,
+            interpreter.current_buffer_id(),
+            "a▼▲".to_string(),
+            &mut spans,
+        );
+        assert_eq!(rendered, "av^");
+        assert_eq!(
+            spans,
+            vec![
+                (0, 3, Value::Symbol("bold".into())),
+                (1, 2, Value::Symbol("escape-glyph".into())),
+                (2, 3, Value::Symbol("escape-glyph".into())),
+            ]
+        );
     }
 
     #[test]

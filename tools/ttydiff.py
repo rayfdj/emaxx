@@ -2649,6 +2649,91 @@ SCENARIOS += [
     ),
 ]
 
+PACKAGE_MENU_SCENARIO_NAMES = (
+    "package-menu-filter-install-cancel",
+    "package-menu-install-refresh-remove",
+)
+
+PACKAGE_MENU_SETUP = action(
+    "open-local-package-menu",
+    b"\x1b:(progn (require 'package) "
+    b'(unless (eq package-check-signature \'allow-unsigned) (error "signature policy")) '
+    b'(setq package-user-dir (expand-file-name "packages/" default-directory) '
+    b"package-archives (list (cons \"local\" "
+    b'(expand-file-name "archive/" default-directory)))) '
+    b"(package-initialize) (package-refresh-contents) (list-packages))\r",
+    settle=6.0,
+    quiet=1.0,
+)
+
+PACKAGE_MENU_OPTIONS = {
+    "target": "directory",
+    "separate_targets": True,
+    "extra_files": {
+        "archive/archive-contents": (
+            '(1 (ttydiff-package . [(1 0) nil "TTY package lifecycle fixture" '
+            "single]))\n"
+        ),
+        "archive/ttydiff-package-1.0.el": (
+            ";;; ttydiff-package.el --- TTY package lifecycle fixture "
+            "-*- lexical-binding: t; -*-\n"
+            ";; Version: 1.0\n"
+            ";;; Code:\n"
+            ";;;###autoload\n"
+            "(defun ttydiff-package-command () (interactive) (message \"TTY package active\"))\n"
+            "(provide 'ttydiff-package)\n"
+            ";;; ttydiff-package.el ends here\n"
+        ),
+    },
+}
+
+SCENARIOS += [
+    (
+        "package-menu-filter-install-cancel",
+        "",
+        [
+            PACKAGE_MENU_SETUP,
+            action("filter-by-package-name", b"/nttydiff-package\r"),
+            action("mark-package-install", b"i"),
+            action("show-install-confirmation", b"x"),
+            action("decline-install", b"n", settle=2.0, quiet=0.5),
+            action(
+                "verify-cancelled-install",
+                b"\x1b:(package-installed-p 'ttydiff-package)\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".dat",
+        PACKAGE_MENU_OPTIONS,
+    ),
+    (
+        "package-menu-install-refresh-remove",
+        "",
+        [
+            PACKAGE_MENU_SETUP,
+            action("filter-by-package-name", b"/nttydiff-package\r"),
+            action("mark-package-install", b"i"),
+            action("show-install-confirmation", b"x"),
+            action("confirm-install", b"y", settle=6.0, quiet=1.0),
+            action("refresh-package-menu", b"r", settle=6.0, quiet=1.0),
+            action("find-installed-package", b"\x13ttydiff-package\r"),
+            action("mark-package-delete", b"d"),
+            action("show-delete-confirmation", b"x"),
+            action("confirm-delete", b"y", settle=4.0, quiet=1.0),
+            action(
+                "verify-package-removal",
+                b"\x1b:(list (package-installed-p 'ttydiff-package) "
+                b"(eq package-check-signature 'allow-unsigned))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".dat",
+        PACKAGE_MENU_OPTIONS,
+    ),
+]
+
 FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
     "org-fieldnotes-todo-cycle",
     "org-fieldnotes-priority",

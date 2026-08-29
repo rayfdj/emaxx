@@ -281,7 +281,7 @@ fn active_minibuffer_text(interp: &mut Interpreter, env: &mut Env) -> Result<Str
 fn read_minibuffer_text_from_kbd_macro(
     interp: &mut Interpreter,
     env: &mut Env,
-    prompt: &str,
+    prompt: &Value,
     initial: &str,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
@@ -410,8 +410,8 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
     active_minibuffer_text(interp, env).map(Some)
 }
 
-fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispError> {
-    print!("{prompt}");
+fn read_minibuffer_text_from_batch_stdin(prompt: &Value) -> Result<String, LispError> {
+    print!("{}", string_text(prompt)?);
     std::io::stdout()
         .flush()
         .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -438,7 +438,7 @@ fn read_minibuffer_text_from_batch_stdin(prompt: &str) -> Result<String, LispErr
 fn read_minibuffer_text_without_queued_events(
     interp: &mut Interpreter,
     env: &mut Env,
-    prompt: &str,
+    prompt: &Value,
     initial: &str,
     local_map: &Value,
     history: Value,
@@ -469,7 +469,7 @@ fn read_minibuffer_text_without_queued_events(
 fn read_minibuffer_text_from_unread_events(
     interp: &mut Interpreter,
     env: &mut Env,
-    prompt: &str,
+    prompt: &Value,
     initial: &str,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
@@ -2022,7 +2022,10 @@ define_dispatch!(
                     .and_then(string_like)
                     .map(|string| string.text)
                     .unwrap_or_default();
-                let prompt = string_text(&args[0])?;
+                let prompt = args[0].clone();
+                if string_like(&prompt).is_none() {
+                    return Err(wrong_type_argument("stringp", prompt));
+                }
                 let local_map = args
                     .get(2)
                     .filter(|map| !map.is_nil())

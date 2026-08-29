@@ -549,7 +549,11 @@ pub fn repo_local_elisp_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, Str
             continue;
         }
         paths.push(canonicalize_path(&root)?);
-        for entry in WalkDir::new(&root).into_iter() {
+        let test_fixture_root = relative_root.starts_with("test");
+        for entry in WalkDir::new(&root)
+            .into_iter()
+            .filter_entry(|entry| !test_fixture_root || should_visit_test_support(entry, &root))
+        {
             let entry = entry.map_err(|err| format!("walk {}: {err}", root.display()))?;
             if entry.file_type().is_dir()
                 && entry
@@ -605,6 +609,10 @@ pub fn discover_test_files(repo_root: &Path, scope: Scope) -> Result<Vec<PathBuf
 }
 
 fn should_visit(entry: &DirEntry, test_root: &Path) -> bool {
+    should_visit_test_support(entry, test_root)
+}
+
+fn should_visit_test_support(entry: &DirEntry, test_root: &Path) -> bool {
     if entry.depth() == 0 {
         return true;
     }
@@ -1110,6 +1118,37 @@ impl<T> Pipe for T {}
 mod tests {
     use super::*;
     use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn repo_local_load_path_excludes_test_resource_trees() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("emaxx-load-path-{unique}"));
+        let helper = root.join("test/lisp/sample");
+        let resource = root.join("test/lisp/sample-resources/version-1");
+        let data = root.join("test/data/generated");
+        let library = root.join("lisp/sample");
+        for directory in [&helper, &resource, &data, &library] {
+            std::fs::create_dir_all(directory).expect("create load-path fixture directory");
+            std::fs::write(directory.join("sample.el"), "(provide 'sample)\n")
+                .expect("write load-path fixture");
+        }
+
+        let paths = repo_local_elisp_load_path(&root).expect("discover repo-local load path");
+        let helper = helper.canonicalize().expect("canonical helper path");
+        let resource = resource.canonicalize().expect("canonical resource path");
+        let data = data.canonicalize().expect("canonical data path");
+        let library = library.canonicalize().expect("canonical library path");
+        assert!(paths.contains(&helper));
+        assert!(paths.contains(&library));
+        assert!(!paths.contains(&resource));
+        assert!(!paths.contains(&data));
+
+        std::fs::remove_dir_all(root).expect("remove load-path fixture");
+    }
 
     #[test]
     fn selector_aliases_match_upstream_with_native_comp() {

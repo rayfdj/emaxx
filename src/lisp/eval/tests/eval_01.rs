@@ -6239,6 +6239,51 @@ fn header_line_glass_honors_propertized_align_to_columns() {
 }
 
 #[test]
+fn header_line_glass_keeps_partial_sort_column_face() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (switch-to-buffer (get-buffer-create \"*tabulated header test*\"))
+           (tabulated-list-mode)
+           (setq tabulated-list-format
+                 [(\"Name\" 20 t) (\"Version\" 10 t)])
+           (setq tabulated-list-sort-key '(\"Name\" . nil))
+           (tabulated-list-init-header))",
+    );
+    let mut env: Env = Vec::new();
+    let window_id = interp.selected_window_id();
+    let (text, spans) = crate::lisp::primitives::render_window_header_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        crate::lisp::primitives::InteractiveWindowMetrics {
+            text_height: 10,
+            window_end: 1,
+        },
+    )
+    .expect("sortable tabulated-list header renders");
+    assert!(
+        text.contains("Name"),
+        "sortable header text is present: {text:?}"
+    );
+    assert!(
+        spans.iter().any(|(from, to, face)| {
+            face == &Value::Symbol("bold".into())
+                && from < to
+                && text
+                    .chars()
+                    .skip(*from)
+                    .take(to - from)
+                    .collect::<String>()
+                    .contains("Name")
+        }),
+        "the sortable Name column keeps its partial bold face, got {spans:?}"
+    );
+}
+
+#[test]
 fn propertized_messages_carry_face_spans_to_the_echo_area() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -6256,6 +6301,54 @@ fn propertized_messages_carry_face_spans_to_the_echo_area() {
     eval_str_with(&mut interp, "(message \"plain\")");
     let (_, spans) = crate::lisp::primitives::echo_area_message_with_spans().unwrap();
     assert!(spans.is_empty(), "plain messages carry no spans");
+}
+
+#[test]
+fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let prompt = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq minibuffer-prompt-properties
+                 '(read-only t face minibuffer-prompt))
+           (concat \"Proceed? (\"
+                   (propertize \"y\" 'face 'help-key-binding)
+                   \" or \"
+                   (propertize \"n\" 'face 'help-key-binding)
+                   \") \"))",
+    )
+    .expect("propertized prompt is constructed");
+    let active = crate::lisp::primitives::activate_minibuffer(
+        &mut interp,
+        &prompt,
+        "",
+        Value::Nil,
+        &mut env,
+    )
+    .expect("minibuffer accepts the propertized prompt");
+    assert_eq!(
+        interp.buffer.text_property_at(1, "face"),
+        Some(Value::Symbol("minibuffer-prompt".into()))
+    );
+    assert_eq!(
+        interp.buffer.text_property_at(11, "face"),
+        Some(Value::list([
+            Value::Symbol("help-key-binding".into()),
+            Value::Symbol("minibuffer-prompt".into()),
+        ])),
+        "the y key keeps its specific face before the appended prompt face"
+    );
+    assert_eq!(
+        interp.buffer.text_property_at(16, "face"),
+        Some(Value::list([
+            Value::Symbol("help-key-binding".into()),
+            Value::Symbol("minibuffer-prompt".into()),
+        ])),
+        "the n key keeps its specific face before the appended prompt face"
+    );
+    crate::lisp::primitives::restore_active_minibuffer(&mut interp, active);
 }
 
 #[test]
