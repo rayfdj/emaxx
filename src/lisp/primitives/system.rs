@@ -479,45 +479,40 @@ pub(crate) enum UnameField {
     Machine,
 }
 
-pub(crate) fn compat_repo_root_from_test_directory(test_directory: &str) -> Option<PathBuf> {
-    PathBuf::from(test_directory)
-        .parent()
-        .map(Path::to_path_buf)
-}
-
-pub(crate) fn compat_data_directory() -> Option<String> {
-    if let Some(directory) = std::env::var("EMACS_TEST_DIRECTORY")
-        .ok()
-        .and_then(|test_directory| compat_repo_root_from_test_directory(&test_directory))
-        .map(|repo_root| path_to_directory_string(&repo_root.join("etc")))
-    {
-        return Some(directory);
+/// The pinned sibling GNU checkout as a canonical directory string, or None
+/// when PATH under it is missing.  Finding 102: GNU's Vdata_directory,
+/// Vdoc_directory and Vinstallation_directory are fixed when the binary is
+/// built (epaths.h), so like `source-directory' they name the checkout this
+/// image reconstructs and must never be derived from a harness variable
+/// such as EMACS_TEST_DIRECTORY.
+fn gnu_checkout_directory(relative: &str) -> Option<String> {
+    let path = crate::compat::project_root()
+        .join("../emacs")
+        .join(relative);
+    if !path.is_dir() {
+        return None;
     }
-    // Outside the compat harness, the pinned sibling GNU checkout supplies
-    // etc/ the same way it supplies the Lisp load path; its DOC database is
-    // what `Snarf-documentation' and `help-C-file-name' read in GNU.
-    let sibling = crate::compat::project_root().join("../emacs/etc");
-    sibling.is_dir().then(|| path_to_directory_string(&sibling))
+    crate::compat::canonicalize_path(&path)
+        .ok()
+        .map(|path| path_to_directory_string(&path))
 }
 
+/// GNU's Vdata_directory (= Vdoc_directory): the checkout's etc/ for an
+/// uninstalled build.  Its DOC database is what `Snarf-documentation' and
+/// `help-C-file-name' read in GNU.
+pub(crate) fn compat_data_directory() -> Option<String> {
+    gnu_checkout_directory("etc")
+}
+
+/// GNU's Vinstallation_directory: for an uninstalled build, the build
+/// tree's root -- the directory holding src/ and lisp/ (the oracle answers
+/// its checkout root).  The sibling checkout plays that role here.
 pub(crate) fn compat_installation_directory() -> Option<String> {
-    std::env::var("EMACS_TEST_DIRECTORY")
-        .ok()
-        .and_then(|test_directory| compat_repo_root_from_test_directory(&test_directory))
-        .map(|repo_root| path_to_directory_string(&repo_root))
-}
-
-pub(crate) fn compat_emacsclient_path_from_test_directory(test_directory: &str) -> Option<PathBuf> {
-    let repo_root = compat_repo_root_from_test_directory(test_directory)?;
-    let candidate = repo_root.join("lib-src").join("emacsclient");
-    candidate.exists().then_some(candidate)
-}
-
-pub(crate) fn compat_emacsclient_program_name() -> Option<String> {
-    std::env::var("EMACS_TEST_DIRECTORY")
-        .ok()
-        .and_then(|test_directory| compat_emacsclient_path_from_test_directory(&test_directory))
-        .map(|path| path.display().to_string())
+    let root = crate::compat::project_root().join("../emacs");
+    if !(root.join("src").is_dir() && root.join("lisp").is_dir()) {
+        return None;
+    }
+    gnu_checkout_directory(".")
 }
 
 pub(crate) fn current_invocation_name() -> Option<String> {

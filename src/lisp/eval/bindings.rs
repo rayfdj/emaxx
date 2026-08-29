@@ -630,11 +630,11 @@ impl Interpreter {
             "ctags-program-name" => Some(Value::String("ctags".into())),
             "etags-program-name" => Some(Value::String("etags".into())),
             "hexl-program-name" => Some(Value::String("hexl".into())),
-            "emacsclient-program-name" => Some(Value::String(
-                primitives::compat_emacsclient_program_name()
-                    .unwrap_or_else(|| "emacsclient".into())
-                    .into(),
-            )),
+            // The oracle's dumped default is the bare program name even in
+            // an uninstalled build with lib-src/emacsclient present; the
+            // old lib-src derivation rode on EMACS_TEST_DIRECTORY, which
+            // finding 102 bans for dumped path variables.
+            "emacsclient-program-name" => Some(Value::String("emacsclient".into())),
             "movemail-program-name" => Some(Value::String("movemail".into())),
             "ebrowse-program-name" => Some(Value::String("ebrowse".into())),
             "rcs2log-program-name" => Some(Value::String("rcs2log".into())),
@@ -814,6 +814,33 @@ impl Interpreter {
     pub fn has_macro_binding(&self, name: &str) -> bool {
         self.function_cell_macro_expander(name, &Env::new())
             .is_some()
+    }
+
+    /// `known_symbol_names' without materializing the names: the census
+    /// behind `garbage-collect' runs once per loaded file during the
+    /// loadup replay, and cloning ~40k Strings per call is pure waste.
+    pub(crate) fn known_symbol_count(&self) -> usize {
+        let mut seen: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
+            HashSet::with_capacity_and_hasher(
+                1 << 15,
+                crate::lisp::primitives::FnvBuildHasher::default(),
+            );
+        for name in ["nil", "t"]
+            .into_iter()
+            .chain(self.globals.iter().map(|(name, _)| name.as_str()))
+            .chain(self.variable_aliases.iter().map(|(name, _)| name.as_str()))
+            .chain(self.functions.iter().map(|(name, _)| name.as_str()))
+            .chain(self.symbol_properties.iter().map(|(name, _)| name.as_str()))
+            .chain(self.interned_symbols.iter().map(|name| name.as_str()))
+        {
+            if crate::lisp::types::visible_symbol_name(name) != name
+                || self.uninterned_standard_symbol_names.contains(name)
+            {
+                continue;
+            }
+            seen.insert(name);
+        }
+        seen.len()
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {

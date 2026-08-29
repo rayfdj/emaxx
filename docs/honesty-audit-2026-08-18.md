@@ -76,7 +76,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | OPEN |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
-| 102 | data-directory family derived from EMACS_TEST_DIRECTORY | OPEN |
+| 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
 | 103 | set-network-process-option fabricated success and never read the option | FIXED 2026-08-26 - real setsockopt, 20 cases oracle-matched |
 | 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
@@ -85,8 +85,8 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 106 | decode-coding-string falls back to identity for every unimplemented system | FIXED (euc-jp real; file reads consult the alist; one disclosed limit) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | FIXED 2026-08-28 (big5 twins included; two GNU crash/UB paths disclosed) |
 | 108 | file-name-case-insensitive-p constant nil made a self-comparing test pass trivially | FIXED 2026-08-26 - pathconf walk, 18 cases oracle-matched |
-| 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | OPEN |
-| 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | OPEN |
+| 109 | native keymap dispatch branches on add-keymap-witness, a symbol private to subr.el | FIXED 2026-08-28 - keymap.c:1657 rule ported; witness inert, 6 scenarios oracle-matched |
+| 110 | garbage-collect returns a correctly-shaped alist with every count fabricated as 0 | FIXED 2026-08-28 - live reachability census; shape oracle-matched, counts are emaxx truth |
 | 111 | network-interface-info was a bare nil beside a real network-interface-list | FIXED (macOS) 2026-08-26 - real ioctls; still nil on other platforms |
 | 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | OPEN (measured) |
 | 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
@@ -2559,3 +2559,64 @@ profile was quietly valuable in a codebase full of ported C index
 arithmetic -- are exactly what the new profile refuses to give up.
 Wall clock on that container: ~3 h 28 m -> ~53 m.  The gate script in
 docs/handover-2026-08-28.md now carries `--profile gate`.
+
+## 2026-08-28 5b closes out (findings 110, 109, 102)
+
+Finding 110, `garbage-collect': the fabricated zeros are replaced by
+allocator bookkeeping -- GNU's own mechanism (gcstat), not a heap walk.
+A first cut DID walk the reachable graph (the deep-clone root
+enumeration, read-only); it was honest but cost ~55 ms per call, and
+loadup.el runs `garbage-collect' after every file it loads, which
+doubled boot and the full gate.  The landed design keeps the books at
+the allocator instead: a live cons-cell counter maintained at
+construction and Drop (Rust ownership IS the sweep), and Weak
+registries of string allocations swept lazily at census time, with
+amortized self-pruning so a session that never calls gc holds at most
+~2x the live handles.  A census is ~5 ms; boot is within noise of the
+old fabricated-zeros build.  What the numbers mean, stated rather than
+implied:
+  - USED counts are live allocations on this thread -- emaxx's truth,
+    not GNU's heap state; no oracle row can pin them, so the regression
+    test pins the SHAPE against the oracle (nine rows, order, arities,
+    all integers) and the counts against sanity floors (a booted image
+    holds >10k conses).
+  - FREE columns are 0 truthfully: Rust ownership retains no free lists.
+  - SIZE columns are this binary's real layout constants
+    (size_of::<ConsCell>() and friends), so memory-report.el computes
+    emaxx-true totals.
+  - `floats' and `vectors'/`vector-slots' are 0 truthfully: emaxx
+    floats are immediate f64s and vectors ride on tagged cons chains,
+    so no float or vector HEAP OBJECTS exist -- their storage is cons
+    cells, counted under `conses'.  `intervals' counts text-property
+    spans (buffer and string).  Markers, overlays, frames, char-tables
+    and records are id-indexed host state with no row of their own;
+    records are never reclaimed, so what they reference stays counted.
+  - Every value lives on one thread (Rc is !Send), so thread-local
+    books are exact per interpreter thread.  All of this is in the code
+    comments too.
+
+Finding 109, keymap dispatch: the `add-keymap-witness' branch is gone.
+The probe that motivated it was WRONG twice over: GNU 30.2's
+current_active_maps (keymap.c:1657) never suppresses local or minor
+maps under overriding-terminal-local-map (it rides on top), and
+overriding-local-map suppresses them only while the terminal map is
+nil.  Both `key-binding' and read_key_sequence share that one
+construction (keymap.c:1840, keyboard.c:10200); where-is searches with
+the overriding maps out of force (keymap.c:2653), and command-remapping
+with them in force (keymap.c:1245).  Dispatch, the current-active-maps
+primitive (whose OLP argument was previously ignored), where-is and
+command-remapping now all route through one ported constructor, and the
+`local-map' text property stands in for the buffer's local map as
+get_local_map does.  Six scenarios oracle-matched, witness composition
+included.
+
+Finding 102, the directory family: data-directory, doc-directory and
+installation-directory are epaths-style constants derived from the
+pinned sibling GNU checkout -- the rule source-directory's own comment
+already stated -- and EMACS_TEST_DIRECTORY no longer reaches any dumped
+path variable.  emacsclient-program-name is the bare "emacsclient": the
+oracle answers that even in an uninstalled build with lib-src/emacsclient
+present, so the old lib-src derivation was wrong twice.  The regression
+test sets a hostile EMACS_TEST_DIRECTORY at a fake repo layout and
+asserts nothing moves, then matches the whole family against the oracle
+row.

@@ -3207,7 +3207,7 @@ pub(crate) fn describe_buffer_bindings(
     let mut seen = HashSet::new();
 
     let mut visited = HashSet::new();
-    for map in current_active_maps(interp, env, None)? {
+    for map in current_active_maps(interp, env, true, None)? {
         collect_described_keymap_bindings(
             interp,
             &map,
@@ -3587,13 +3587,31 @@ pub(crate) fn keymap_at_active_position(
     interp: &Interpreter,
     posn: Option<&Value>,
 ) -> Option<Value> {
+    text_property_keymap_at_active_position(interp, posn, "keymap")
+}
+
+/// The map a `local-map' text property puts in place of the buffer's local
+/// map (keymap.c:1707 reads it through get_local_map exactly where the
+/// `keymap' property is read; both ride the same position rules).
+pub(crate) fn local_map_at_active_position(
+    interp: &Interpreter,
+    posn: Option<&Value>,
+) -> Option<Value> {
+    text_property_keymap_at_active_position(interp, posn, "local-map")
+}
+
+fn text_property_keymap_at_active_position(
+    interp: &Interpreter,
+    posn: Option<&Value>,
+    category: &str,
+) -> Option<Value> {
     let buffer_keymap = |pos: usize| {
-        buffer_property_at_with_category(interp, &interp.buffer, pos, "keymap")
+        buffer_property_at_with_category(interp, &interp.buffer, pos, category)
             .filter(|value| is_keymap_value(interp, value))
     };
 
     let string_keymap = |value: &Value| {
-        string_property_at_with_category(interp, value, 0, "keymap")
+        string_property_at_with_category(interp, value, 0, category)
             .filter(|value| is_keymap_value(interp, value))
     };
 
@@ -3621,18 +3639,57 @@ pub(crate) fn keymap_at_active_position(
     }
 }
 
+/// keymap.c:1657 Fcurrent_active_maps: the active keymaps in precedence
+/// order, global map last.  OLP says whether the overriding maps apply.
+/// When it does, `overriding-local-map' -- consulted only while
+/// `overriding-terminal-local-map' is nil ("it seems clearer to use just
+/// one", keymap.c:1695) -- REPLACES the keymap-property, minor-mode and
+/// local maps entirely; `overriding-terminal-local-map' replaces nothing
+/// and rides on TOP of all of them.  A `local-map' text property stands in
+/// for the buffer's local map (get_local_map).  subr.el's
+/// `add-keymap-witness' marker is an inert keymap element here: keymap.c
+/// never consults it.  (Finding 109: dispatch used to suppress local and
+/// minor maps under overriding-terminal-local-map unless the witness was
+/// present -- a rule GNU does not have in either direction.)
 pub(crate) fn current_active_maps(
     interp: &Interpreter,
     env: &Env,
+    olp: bool,
+    posn: Option<&Value>,
+) -> Result<Vec<Value>, LispError> {
+    let mut maps = active_command_keymaps_for(interp, env, olp, posn)?;
+    let global_map = interp.current_global_map_value();
+    if is_keymap_value(interp, &global_map) {
+        maps.push(global_map);
+    }
+    Ok(maps)
+}
+
+/// `current_active_maps' without the trailing global map, for the callers
+/// that consult the global map through their own fallback path.
+pub(crate) fn active_command_keymaps_for(
+    interp: &Interpreter,
+    env: &Env,
+    olp: bool,
     posn: Option<&Value>,
 ) -> Result<Vec<Value>, LispError> {
     let mut maps = Vec::new();
-    if let Some(map) = interp.lookup_var("overriding-terminal-local-map", env)
-        && is_keymap_value(interp, &map)
+    let otlp = interp
+        .lookup_var("overriding-terminal-local-map", env)
+        .filter(Value::is_truthy);
+    if olp
+        && otlp.is_none()
+        && let Some(map) = interp
+            .lookup_var("overriding-local-map", env)
+            .filter(Value::is_truthy)
     {
-        maps.push(map);
+        if is_keymap_value(interp, &map) {
+            maps.push(map);
+        }
+        return Ok(maps);
     }
-    if let Some(map) = interp.lookup_var("overriding-local-map", env)
+    if olp
+        && let Some(map) = otlp
         && is_keymap_value(interp, &map)
     {
         maps.push(map);
@@ -3641,14 +3698,14 @@ pub(crate) fn current_active_maps(
         maps.push(map);
     }
     maps.extend(active_minor_mode_maps(interp, env)?);
-    if let Some(map) = interp.lookup_var("current-local-map", env)
+    if let Some(map) = local_map_at_active_position(interp, posn) {
+        maps.push(map);
+    } else if let Some(map) = interp
+        .lookup_var("current-local-map", env)
+        .filter(Value::is_truthy)
         && is_keymap_value(interp, &map)
     {
         maps.push(map);
-    }
-    let global_map = interp.current_global_map_value();
-    if is_keymap_value(interp, &global_map) {
-        maps.push(global_map);
     }
     Ok(maps)
 }
@@ -3658,11 +3715,13 @@ pub(crate) fn where_is_internal_maps(
     arg: Option<&Value>,
     env: &Env,
 ) -> Result<Vec<Value>, LispError> {
+    // keymap.c:2653: where-is searches Fcurrent_active_maps(Qnil, Qnil) --
+    // the overriding maps do NOT apply here.
     let Some(arg) = arg else {
-        return current_active_maps(interp, env, None);
+        return current_active_maps(interp, env, false, None);
     };
     if arg.is_nil() {
-        return current_active_maps(interp, env, None);
+        return current_active_maps(interp, env, false, None);
     }
     if is_keymap_value(interp, arg) {
         // A single keymap means that map followed by the global map.  A
@@ -3990,7 +4049,9 @@ pub(crate) fn command_remapping(
     };
     let maps = match keymaps {
         Some(keymaps) => where_is_internal_maps(interp, Some(keymaps), env)?,
-        None => current_active_maps(interp, env, None)?,
+        // Without KEYMAPS, GNU goes through `key-binding' on a [remap CMD]
+        // vector (keymap.c:1245), i.e. current_active_maps with OLP t.
+        None => current_active_maps(interp, env, true, None)?,
     };
     command_remapping_in_maps(interp, &command_name, &maps)
 }
@@ -4080,55 +4141,16 @@ fn remap_probe(
     }
 }
 
-// The keymaps consulted for command dispatch, in GNU order: the overriding
-// maps suppress minor-mode and local maps entirely; otherwise
-// minor-mode-overriding-map-alist entries replace the matching
-// minor-mode-map-alist entries, followed by the buffer's local map.
+// The keymaps consulted for command dispatch: keymap.c's
+// current_active_maps with OLP in force, minus the trailing global map
+// (dispatch callers consult the global map through their own fallback).
+// This is the same construction `key-binding' and read_key_sequence share
+// in GNU (keymap.c:1840, keyboard.c:10200).
 pub(crate) fn active_command_keymaps(
     interp: &Interpreter,
     env: &Env,
 ) -> Result<Vec<Value>, LispError> {
-    let mut maps = Vec::new();
-    if let Some(map) = interp
-        .lookup_var("overriding-terminal-local-map", env)
-        .filter(Value::is_truthy)
-    {
-        // `internal-push-keymap' marks transient compositions this way so an
-        // unbound key resumes the ordinary local-map search.
-        let add_active_maps = map.to_vec().ok().is_some_and(|items| {
-            items
-                .iter()
-                .any(|item| matches!(item, Value::Symbol(name) if name == "add-keymap-witness"))
-        });
-        if is_keymap_value(interp, &map) {
-            maps.push(map);
-        }
-        if !add_active_maps {
-            return Ok(maps);
-        }
-    }
-    if let Some(map) = interp
-        .lookup_var("overriding-local-map", env)
-        .filter(Value::is_truthy)
-    {
-        if is_keymap_value(interp, &map) {
-            maps.push(map);
-        }
-        return Ok(maps);
-    }
-    maps.extend(
-        active_minor_mode_bindings(interp, env)?
-            .into_iter()
-            .map(|(_, map)| map),
-    );
-    if let Some(map) = interp
-        .lookup_var("current-local-map", env)
-        .filter(Value::is_truthy)
-        && is_keymap_value(interp, &map)
-    {
-        maps.push(map);
-    }
-    Ok(maps)
+    active_command_keymaps_for(interp, env, true, None)
 }
 
 pub(crate) fn key_binding(
