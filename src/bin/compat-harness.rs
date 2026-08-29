@@ -22,15 +22,62 @@ use emaxx::compat::{
 
 const ADVANCE_COMPAT_PREFIX: &str = "Advance compatibility for ";
 const COMPAT_REGRESSION_MANIFEST_PATH: &str = "compat/compat_regressions.json";
-const FROZEN_COMPAT_MANIFEST_PATH: &str = "compat/oracle_tests_all.txt";
-const FROZEN_COMPAT_FILE_COUNT: usize = 518;
-const FROZEN_COMPAT_LOAD_ERROR_COUNT: usize = 1;
-const FROZEN_COMPAT_OUTCOME_COUNT: usize = 7_883;
-/// sha256 of compat/oracle_tests_all.txt.  The three counts above cannot
-/// detect a same-count substitution of test names, so the manifest's contents
-/// are pinned too; regenerating it is a deliberate constant bump.
-const FROZEN_COMPAT_MANIFEST_SHA256: &str =
-    "724913b78150495a73afb852a943f843a17245a96f3bda30f72c490889634353";
+
+/// One platform's frozen scoring contract: the pinned manifest and the
+/// counts/sha that freeze it.  Every platform scores exclusively against
+/// its own oracle's contract — selected by the oracle's reported
+/// `system-configuration', never by the host — and the numbers are never
+/// comparable across platforms.  The counts cannot detect a same-count
+/// substitution of test names, so the manifest bytes are pinned by sha256
+/// too; regenerating a manifest is a deliberate constant bump here.
+#[derive(Debug, PartialEq, Eq)]
+struct FrozenContract {
+    platform: &'static str,
+    manifest_path: &'static str,
+    file_count: usize,
+    load_error_count: usize,
+    outcome_count: usize,
+    manifest_sha256: &'static str,
+}
+
+const FROZEN_CONTRACT_DARWIN: FrozenContract = FrozenContract {
+    platform: "darwin",
+    manifest_path: "compat/oracle_tests_all.txt",
+    file_count: 518,
+    load_error_count: 1,
+    outcome_count: 7_883,
+    manifest_sha256: "724913b78150495a73afb852a943f843a17245a96f3bda30f72c490889634353",
+};
+
+// The Linux contract's universe is byte-identical to Darwin's under the
+// pinned selector (518/1/7,883; the manifests differ only in the absolute
+// path inside the one recorded load-error line), so the two platforms
+// score the same outcome set against their own oracles.  The sha embeds
+// that machine-local path, as Darwin's does.
+const FROZEN_CONTRACT_LINUX: FrozenContract = FrozenContract {
+    platform: "linux",
+    manifest_path: "compat/oracle_tests_all_linux.txt",
+    file_count: 518,
+    load_error_count: 1,
+    outcome_count: 7_883,
+    manifest_sha256: "167d6c865bd321220747dc6fb60081f0a41446e88236d8f4ecfcc007c4b7cc6c",
+};
+
+fn frozen_contract_for_configuration(
+    reported_configuration: &str,
+) -> Result<&'static FrozenContract, String> {
+    if reported_configuration.contains("apple-darwin") {
+        Ok(&FROZEN_CONTRACT_DARWIN)
+    } else if reported_configuration.contains("linux-gnu") {
+        Ok(&FROZEN_CONTRACT_LINUX)
+    } else {
+        Err(format!(
+            "no frozen contract for an oracle reporting `{reported_configuration}'; \
+             supported contracts are darwin and linux -- see \
+             docs/oracle-build-contract.md"
+        ))
+    }
+}
 const TARGET_OWNER_FILE: &str = ".emaxx-source-root";
 const SUBJECT_LOCK_FILE: &str = ".emaxx-compat.lock";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 180;
@@ -508,6 +555,7 @@ struct FrozenManifestEvidence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FrozenCompatibilityManifest {
+    contract: &'static FrozenContract,
     path: PathBuf,
     sha256: String,
     entries: BTreeMap<String, Vec<String>>,
@@ -515,18 +563,19 @@ struct FrozenCompatibilityManifest {
 }
 
 impl FrozenCompatibilityManifest {
-    fn load() -> Result<Self, String> {
-        let path = compat::compat_path(FROZEN_COMPAT_MANIFEST_PATH);
+    fn load(contract: &'static FrozenContract) -> Result<Self, String> {
+        let path = compat::compat_path(contract.manifest_path);
         let data = fs::read_to_string(&path)
             .map_err(|error| format!("read {}: {error}", path.display()))?;
-        Self::parse(
-            path,
-            sha256_file(&compat::compat_path(FROZEN_COMPAT_MANIFEST_PATH))?,
-            &data,
-        )
+        Self::parse(contract, path.clone(), sha256_file(&path)?, &data)
     }
 
-    fn parse(path: PathBuf, sha256: String, data: &str) -> Result<Self, String> {
+    fn parse(
+        contract: &'static FrozenContract,
+        path: PathBuf,
+        sha256: String,
+        data: &str,
+    ) -> Result<Self, String> {
         let header = Regex::new(r"^([^ ].*): discovered=([0-9]+) selected=([0-9]+)$")
             .map_err(|error| format!("compile frozen manifest header parser: {error}"))?;
         let load_error = Regex::new(r"^([^ ].*): load-error (.+)$")
@@ -596,29 +645,34 @@ impl FrozenCompatibilityManifest {
             }
         }
         let outcome_count = entries.values().map(Vec::len).sum::<usize>();
-        if sha256 != FROZEN_COMPAT_MANIFEST_SHA256 {
+        if sha256 != contract.manifest_sha256 {
             return Err(format!(
-                "frozen compatibility manifest {} has sha256 {sha256}, expected {FROZEN_COMPAT_MANIFEST_SHA256}; \
-                 regenerating the manifest requires bumping FROZEN_COMPAT_MANIFEST_SHA256",
-                path.display()
+                "frozen compatibility manifest {} has sha256 {sha256}, expected {} \
+                 for the {} contract; regenerating the manifest requires a \
+                 deliberate contract bump",
+                path.display(),
+                contract.manifest_sha256,
+                contract.platform
             ));
         }
-        if entries.len() != FROZEN_COMPAT_FILE_COUNT
-            || historical_load_errors.len() != FROZEN_COMPAT_LOAD_ERROR_COUNT
-            || outcome_count != FROZEN_COMPAT_OUTCOME_COUNT
+        if entries.len() != contract.file_count
+            || historical_load_errors.len() != contract.load_error_count
+            || outcome_count != contract.outcome_count
         {
             return Err(format!(
-                "frozen compatibility inventory drifted: files={} (expected {}), load_errors={} (expected {}), outcomes={} (expected {})",
+                "frozen compatibility inventory drifted for the {} contract: files={} (expected {}), load_errors={} (expected {}), outcomes={} (expected {})",
+                contract.platform,
                 entries.len(),
-                FROZEN_COMPAT_FILE_COUNT,
+                contract.file_count,
                 historical_load_errors.len(),
-                FROZEN_COMPAT_LOAD_ERROR_COUNT,
+                contract.load_error_count,
                 outcome_count,
-                FROZEN_COMPAT_OUTCOME_COUNT
+                contract.outcome_count
             ));
         }
 
         Ok(Self {
+            contract,
             path,
             sha256,
             entries,
@@ -636,7 +690,7 @@ impl FrozenCompatibilityManifest {
 
     fn evidence(&self, compared_outcomes: usize) -> FrozenManifestEvidence {
         FrozenManifestEvidence {
-            path: FROZEN_COMPAT_MANIFEST_PATH.into(),
+            path: self.contract.manifest_path.into(),
             sha256: self.sha256.clone(),
             recorded_files: self.entries.len(),
             executed_files: self
@@ -904,7 +958,11 @@ fn pin_oracle(args: PinArgs) -> Result<(), String> {
         compat::sha256_of_file(&emacs_binary)?,
     );
     let local = OracleLocalConfig::new(emacs_binary.clone(), emacs_repo.clone());
-    compat::write_oracle_lock(&lock)?;
+    // The lock lands in the file for the ORACLE's platform (the local
+    // config stays machine-local either way): pinning a Linux oracle can
+    // never overwrite the Darwin pin, nor the reverse.
+    let configuration = compat::oracle_reported_configuration(&emacs_binary)?;
+    compat::write_oracle_lock_for_configuration(&configuration, &lock)?;
     compat::write_oracle_local_config(&local)?;
     println!(
         "Pinned oracle {} at {} against {} ({}, system_type={}, native_compilation={})",
@@ -919,7 +977,9 @@ fn pin_oracle(args: PinArgs) -> Result<(), String> {
 }
 
 fn print_selectors() -> Result<(), String> {
-    let lock = compat::load_oracle_lock()?;
+    let local = compat::load_oracle_local_config()?;
+    let configuration = compat::oracle_reported_configuration(&local.emacs_binary)?;
+    let lock = compat::load_oracle_lock_for_configuration(&configuration)?;
     let aliases = lock.selector_aliases();
     println!("Pinned oracle selectors:");
     for (alias, expression) in aliases {
@@ -1057,7 +1117,13 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
     }
     enforce_anti_cheat_gates()?;
     let context = load_context()?;
-    let manifest = FrozenCompatibilityManifest::load()?;
+    // The score is a per-platform statement: the manifest, its pinned
+    // counts and sha are selected by the oracle's own reported
+    // configuration, so a Linux run can only ever score against the Linux
+    // contract and a Darwin run against the Darwin one.
+    let configuration = compat::oracle_reported_configuration(&context.local.emacs_binary)?;
+    let contract = frozen_contract_for_configuration(&configuration)?;
+    let manifest = FrozenCompatibilityManifest::load(contract)?;
     let selector = compat::resolve_selector(&context.lock, "default")?;
     let files = manifest.executable_files(&context.local.emacs_repo)?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
@@ -1725,8 +1791,8 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
                     "frozen manifest is stale for `{relative}`: the pinned selector now \
                      yields outcomes the manifest does not carry (GNU Emacs \
                      {unmanifested_oracle:?}; Emaxx {unmanifested_emaxx:?}); regenerate \
-                     compat/oracle_tests_all.txt (`compat-harness list --scope all`) and \
-                     re-pin the frozen counts"
+                     this platform's manifest (`compat-harness list --scope all`) and \
+                     re-pin its frozen contract"
                 ));
             }
             compared_outcomes += required_names.len();
@@ -1809,9 +1875,12 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         frozen_manifest: frozen_manifest.map(|manifest| manifest.evidence(compared_outcomes)),
         provenance: provenance.clone(),
     };
-    if frozen_manifest.is_some() && compared_outcomes != FROZEN_COMPAT_OUTCOME_COUNT {
+    if let Some(manifest) = frozen_manifest
+        && compared_outcomes != manifest.contract.outcome_count
+    {
         return Err(format!(
-            "frozen replay compared {compared_outcomes} outcomes; expected {FROZEN_COMPAT_OUTCOME_COUNT}"
+            "frozen replay compared {compared_outcomes} outcomes; the {} contract expects {}",
+            manifest.contract.platform, manifest.contract.outcome_count
         ));
     }
     println!(
@@ -2187,8 +2256,12 @@ struct Context {
 }
 
 fn load_context() -> Result<Context, String> {
-    let lock = compat::load_oracle_lock()?;
+    // The lock is per platform, keyed by the LOCAL oracle's own reported
+    // configuration: a Linux run validates against the Linux pin, a Darwin
+    // run against the Darwin pin, never each other's.
     let local = compat::load_oracle_local_config()?;
+    let configuration = compat::oracle_reported_configuration(&local.emacs_binary)?;
+    let lock = compat::load_oracle_lock_for_configuration(&configuration)?;
     compat::validate_oracle(&lock, &local)?;
     let (head, dirty) = git_state(&local.emacs_repo)?;
     if head.as_deref() != Some(lock.emacs_repo_commit.as_str()) || dirty != Some(false) {
@@ -3218,33 +3291,24 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_frozen_manifest_matches_the_pinned_counts() {
-        let manifest = FrozenCompatibilityManifest::load().expect("load frozen manifest");
-
-        assert_eq!(manifest.entries.len(), FROZEN_COMPAT_FILE_COUNT);
+    fn checked_in_frozen_manifests_match_their_pinned_counts() {
+        // Both platform contracts must load against their own pins; the
+        // parse itself enforces sha and counts, so a passing load IS the
+        // assertion.  The empty-entry expectation is Darwin-specific
+        // (57 of its 518 entries select nothing under the pinned selector:
+        // 53 hold only :expensive-test/:unstable tests, 4 define no tests).
+        let darwin = FrozenCompatibilityManifest::load(&FROZEN_CONTRACT_DARWIN)
+            .expect("load darwin frozen manifest");
         assert_eq!(
-            manifest.historical_load_errors.len(),
-            FROZEN_COMPAT_LOAD_ERROR_COUNT
-        );
-        assert_eq!(
-            manifest.entries.values().map(Vec::len).sum::<usize>(),
-            FROZEN_COMPAT_OUTCOME_COUNT
-        );
-        assert_eq!(
-            manifest
+            darwin
                 .entries
                 .values()
                 .filter(|names| !names.is_empty())
                 .count(),
-            // Not FILE_COUNT - LOAD_ERROR_COUNT: load errors are held
-            // separately from `entries', and 57 of the 518 entries load
-            // cleanly but select nothing under the pinned selector: 53 hold
-            // only :expensive-test/:unstable tests, and 4 define no tests at
-            // all (eshell-tests-helpers, gnus-tests, so-long-tests-helpers,
-            // spelling-tests).
-            // 518 - 57 = 461.
             461
         );
+        FrozenCompatibilityManifest::load(&FROZEN_CONTRACT_LINUX)
+            .expect("load linux frozen manifest");
     }
 
     #[test]
@@ -3252,6 +3316,7 @@ mod tests {
         let duplicate = "test/a.el: discovered=2 selected=2\n  same\n  same\n";
         assert!(
             FrozenCompatibilityManifest::parse(
+                &FROZEN_CONTRACT_DARWIN,
                 PathBuf::from("manifest.txt"),
                 "hash".into(),
                 duplicate
@@ -3263,6 +3328,7 @@ mod tests {
         let count_drift = "test/a.el: discovered=2 selected=2\n  one\n";
         assert!(
             FrozenCompatibilityManifest::parse(
+                &FROZEN_CONTRACT_DARWIN,
                 PathBuf::from("manifest.txt"),
                 "hash".into(),
                 count_drift

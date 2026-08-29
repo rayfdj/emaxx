@@ -339,7 +339,11 @@ pub fn oracle_helper_path() -> PathBuf {
 }
 
 pub fn load_oracle_lock() -> Result<OracleLock, String> {
-    let mut lock: OracleLock = read_json_file(&oracle_lock_path())?;
+    load_oracle_lock_at(&oracle_lock_path())
+}
+
+fn load_oracle_lock_at(path: &Path) -> Result<OracleLock, String> {
+    let mut lock: OracleLock = read_json_file(path)?;
     if lock.selector_aliases.is_empty() {
         lock.selector_aliases = lock.selector_aliases();
     }
@@ -347,6 +351,35 @@ pub fn load_oracle_lock() -> Result<OracleLock, String> {
         lock.format_version = 1;
     }
     Ok(lock)
+}
+
+/// The committed lock file that pins THIS platform's oracle, keyed by the
+/// oracle's own reported `system-configuration'.  The Darwin lock keeps
+/// the historical name; every other contracted platform pins a sibling
+/// file.  One lock per platform, one oracle per lock: runs never validate
+/// against another platform's pin.
+pub fn oracle_lock_path_for_configuration(configuration: &str) -> Result<PathBuf, String> {
+    if configuration.contains("apple-darwin") {
+        Ok(oracle_lock_path())
+    } else if configuration.contains("linux-gnu") {
+        Ok(compat_path("compat/oracle.lock.linux.json"))
+    } else {
+        Err(format!(
+            "no oracle lock for a `{configuration}' oracle; supported \
+             contracts are darwin and linux -- see docs/oracle-build-contract.md"
+        ))
+    }
+}
+
+pub fn load_oracle_lock_for_configuration(configuration: &str) -> Result<OracleLock, String> {
+    load_oracle_lock_at(&oracle_lock_path_for_configuration(configuration)?)
+}
+
+pub fn write_oracle_lock_for_configuration(
+    configuration: &str,
+    lock: &OracleLock,
+) -> Result<(), String> {
+    write_json_file(&oracle_lock_path_for_configuration(configuration)?, lock)
 }
 
 /// Serializes process-environment mutation against interpreter boots.
@@ -756,6 +789,31 @@ pub fn current_repo_commit(repo_root: &Path) -> Result<String, String> {
 
 pub fn current_emacs_version(emacs_binary: &Path) -> Result<String, String> {
     current_emacs_runtime(emacs_binary).map(|runtime| runtime.emacs_version)
+}
+
+/// The oracle's own reported `system-configuration' triple.  The
+/// per-platform contract machinery (anti-cheat regeneration gates, frozen
+/// manifest selection) keys on THIS answer, never on the host we happen to
+/// be running on, so a run can only be scored against the contract of the
+/// oracle actually in front of it.
+pub fn oracle_reported_configuration(emacs_binary: &Path) -> Result<String, String> {
+    let output = Command::new(emacs_binary)
+        .args(["-Q", "--batch", "--eval", "(princ system-configuration)"])
+        .output()
+        .map_err(|error| {
+            format!(
+                "query {} for system-configuration: {error}",
+                emacs_binary.display()
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} exited {:?} answering system-configuration",
+            emacs_binary.display(),
+            output.status.code()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
