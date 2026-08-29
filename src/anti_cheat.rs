@@ -543,37 +543,45 @@ pub(crate) fn tty_frontend_does_not_reintroduce_silent_fallback_fabrications() {
     }
 }
 
+/// The oracle's reported `system-configuration'.
+fn oracle_reported_configuration(oracle: &Path) -> String {
+    crate::compat::oracle_reported_configuration(oracle).expect("query oracle system-configuration")
+}
+
+/// The committed C-primitive manifest that is authoritative for the
+/// oracle build in front of us.  Each supported platform pins its own
+/// (docs/oracle-build-contract.md): the Darwin NS build's surface and a
+/// Linux no-window-system build's surface genuinely differ (ns-*, image
+/// and GUI subrs), so byte identity is only meaningful per platform.  An
+/// oracle from any other configuration is out of contract until its
+/// manifest is generated and pinned here.
+fn platform_c_manifest(reported_configuration: &str) -> &'static str {
+    if reported_configuration.contains("apple-darwin") {
+        "src/lisp/primitives/generated_gnu_c_primitives.rs"
+    } else if reported_configuration.contains("linux-gnu") {
+        "src/lisp/primitives/generated_gnu_c_primitives_linux.rs"
+    } else {
+        panic!(
+            "no pinned manifest for an oracle reporting \
+             `{reported_configuration}'; supported contracts are the Darwin \
+             NS build and the Linux build -- see docs/oracle-build-contract.md"
+        );
+    }
+}
+
 pub(crate) fn gnu_c_manifest_matches_fresh_regeneration() {
     // A hand edit to the generated manifest could reclassify an Elisp-owned
     // name as C-owned and unlock a native dispatch arm.  Regenerate from the
-    // pinned sibling checkout and require byte identity.
+    // pinned sibling checkout and require byte identity against THIS
+    // platform's committed manifest.
     let root = repo_root();
     let oracle = root.join("../emacs/src/emacs");
     assert!(
         oracle.exists(),
         "pinned GNU sibling checkout required for the manifest regeneration gate"
     );
-    // The manifest is a property of ONE build: the pinned Darwin NS oracle
-    // (see docs/oracle-build-contract.md).  A differently-configured
-    // emacs -- a Linux/X build, a --without-ns build -- exposes a different
-    // subr set, so regeneration legitimately differs and byte identity
-    // MUST fail.  Detect that case up front and say so, instead of dumping
-    // a raw manifest diff at someone whose only mistake is an
-    // out-of-contract oracle (second audit, B3b).
-    let reported_configuration = std::process::Command::new(&oracle)
-        .args(["-Q", "--batch", "--eval", "(princ system-configuration)"])
-        .output()
-        .expect("query oracle system-configuration");
-    let reported_configuration = String::from_utf8_lossy(&reported_configuration.stdout)
-        .trim()
-        .to_string();
-    assert!(
-        reported_configuration.contains("apple-darwin"),
-        "manifest regeneration requires the pinned Darwin NS oracle build; \
-         this oracle reports `{reported_configuration}'.  The committed manifest \
-         cannot match a differently-configured emacs -- see \
-         docs/oracle-build-contract.md"
-    );
+    let reported_configuration = oracle_reported_configuration(&oracle);
+    let committed_manifest = platform_c_manifest(&reported_configuration);
     let fresh_path =
         std::env::temp_dir().join(format!("emaxx-manifest-regen-{}.rs", std::process::id()));
     let status = std::process::Command::new(&oracle)
@@ -599,12 +607,12 @@ pub(crate) fn gnu_c_manifest_matches_fresh_regeneration() {
         .expect("run rustfmt on the regenerated manifest");
     assert!(fmt.success(), "rustfmt failed on the regenerated manifest");
     let fresh = fs::read_to_string(&fresh_path).expect("read regenerated manifest");
-    let committed =
-        fs::read_to_string(root.join("src/lisp/primitives/generated_gnu_c_primitives.rs"))
-            .expect("read committed manifest");
+    let committed = fs::read_to_string(root.join(committed_manifest))
+        .unwrap_or_else(|error| panic!("read committed manifest {committed_manifest}: {error}"));
     assert_eq!(
         fresh, committed,
-        "committed GNU C manifest does not match fresh regeneration from the pinned checkout"
+        "committed GNU C manifest {committed_manifest} does not match fresh \
+         regeneration from the pinned checkout ({reported_configuration})"
     );
     let _ = fs::remove_file(&fresh_path);
 }
@@ -661,17 +669,20 @@ pub(crate) fn builtin_arities_match_fresh_regeneration() {
         oracle.exists(),
         "pinned GNU sibling checkout required for the arities regeneration gate"
     );
-    let reported_configuration = std::process::Command::new(&oracle)
-        .args(["-Q", "--batch", "--eval", "(princ system-configuration)"])
-        .output()
-        .expect("query oracle system-configuration");
-    let reported_configuration = String::from_utf8_lossy(&reported_configuration.stdout)
-        .trim()
-        .to_string();
+    // The arities manifest is shared across the platform contracts: the
+    // names emaxx dispatches carry identical arities on the Darwin NS and
+    // Linux oracle builds (verified by generating from both and comparing
+    // byte-for-byte).  Regenerate against whichever contracted oracle is
+    // present and require identity with the one committed file; if the
+    // platforms ever drift, this gate fails loudly on one of them and the
+    // manifest splits per platform at that moment.  An oracle from any
+    // other configuration stays out of contract.
+    let reported_configuration = oracle_reported_configuration(&oracle);
     assert!(
-        reported_configuration.contains("apple-darwin"),
-        "arities regeneration requires the pinned Darwin NS oracle build; \
-         this oracle reports `{reported_configuration}'.  See \
+        reported_configuration.contains("apple-darwin")
+            || reported_configuration.contains("linux-gnu"),
+        "arities regeneration requires a contracted oracle build (Darwin NS \
+         or Linux); this oracle reports `{reported_configuration}'.  See \
          docs/oracle-build-contract.md"
     );
     let fresh_path =

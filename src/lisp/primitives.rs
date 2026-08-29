@@ -61,6 +61,13 @@ mod generated_gnu_c_primitives;
 pub(crate) use generated_gnu_c_primitives::{
     GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
 };
+// The Linux oracle build's own C-primitive contract.  Phase 1 of the
+// per-platform contracts: the anti-cheat regeneration gate compares a
+// Linux oracle against this file; dispatch still builds against the
+// Darwin-pinned surface above (host-faithful dispatch is the phase-2
+// work item).
+#[allow(dead_code)]
+mod generated_gnu_c_primitives_linux;
 mod hash_insert;
 mod hooks_overlays;
 mod interactive;
