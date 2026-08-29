@@ -109,3 +109,51 @@ runs test files in a disposable writable `default-directory`, as GNU's
 driver and the compat harness's isolated checkout both do), and the
 root-privilege trio `byte_compile_file…`/`file_writable_p…`/`save_buffer…`
 (red only under root, green for the unprivileged gate user).
+
+## 2026-08-29 second era: the feature-rich Linux oracle
+
+The Linux oracle was rebuilt (same pinned 30.2 source) as an X11/cairo
+build with HarfBuzz, tree-sitter, the full image stack
+(PNG/JPEG/GIF/TIFF/RSVG/WebP/XPM) and native-comp kept — the Linux
+peer of the Darwin NS oracle.  Everything above this heading describes
+the first (tty-only-oracle) era and is superseded.  Environment
+additions: /usr/local/bin/rustfmt must exist for the unprivileged gate
+user (the anti-cheat regeneration gates run rustfmt; installed
+self-contained under /usr/local/lib/emaxx-rustfmt).
+
+Baseline list (lib stage 2180 passed / 16 failed / 4 ignored; bins and
+integration fully green):
+
+Environmental (6):
+```
+lisp::eval::tests::eval_01::subprocess_exit_is_event_driven_and_notifies_newest_process_first_once
+lisp::eval::tests::eval_02::truncate_string_to_width_uses_display_columns
+lisp::eval::tests::eval_05::eshell_internal_command_feeds_external_pipeline_before_returning
+lisp::primitives::tests::accept_process_output_ignores_distractor_output_until_target_delivers
+lisp::primitives::tests::accept_process_output_without_timeout_waits_for_requested_process
+lisp::primitives::tests::make_network_process_ipv6_family_uses_an_ipv6_listener
+```
+The first passes 3/3 solo — the finding-117 load/timing cluster
+(task #25), joined by the two accept-process-output siblings and the
+eshell pipeline.  IPv6 is the container kernel.  truncate is the
+Darwin-image loadup contract (mule-util under the ns feature).
+
+Real divergences, newly measurable and queued for fixes (10) — the
+old oracle could not answer these probes at all; the rebuilt one
+answers and emaxx disagrees:
+```
+lisp::primitives::tests::native_composite_c_family_and_text_property_identity_match_gnu
+lisp::primitives::tests::native_font_backend_boundary_and_glyph_validation_match_gnu
+lisp::primitives::tests::native_gnutls_catalogs_and_error_diagnostics_use_the_host_library
+lisp::primitives::tests::native_gnutls_session_encrypts_process_io_and_closes_the_same_transport
+lisp::primitives::tests::native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch
+lisp::primitives::tests::native_gui_creation_tip_and_chooser_boundary_matches_gnu
+lisp::primitives::tests::native_image_variables_match_the_gnu_image_c_contract
+lisp::primitives::tests::native_treesit_runtime_capabilities_and_query_predicates_match_gnu
+lisp::primitives::tests::native_xfaces_lisp_face_registry_family_matches_gnu
+lisp::primitives::tests::set_network_process_option_applies_the_option_or_refuses
+```
+These are being fixed, not baselined away; each removal from this
+list must come with the fix that earned it.  Green flips vs the first
+era: both anti-cheat regeneration gates (per-platform contracts) and
+ten native_* probes.

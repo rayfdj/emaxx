@@ -2819,3 +2819,27 @@ utf-8 (mode-line `U') for a re-read file that emaxx leaves undecided
 `buffer-file-coding-system' from the decoded content.  Verified
 diverging pre-merge as well (at an earlier checkpoint, additionally
 masked by the %z renderer defect fixed in this batch).  OPEN.
+
+
+## 2026-08-29 per-platform oracle contracts (phase 1) and the oracle rebuild
+
+The single-platform scoring contract is closed: each platform now pins
+its own authoritative manifests, selected at gate time by the oracle's
+OWN reported `system-configuration' — a Linux run can only score
+against the Linux contract, a Darwin run against the Darwin one, and
+any other configuration refuses.  The Linux oracle was rebuilt (same
+pinned 30.2 source) from a tty-only build into an X11/cairo build with
+HarfBuzz, tree-sitter, the full image stack and native-comp — the
+honest Linux peer of the Darwin NS oracle — and the Linux C-primitive
+manifest was regenerated from it (1,446 available primitives; Darwin
+pins 1,420).  The arities manifest proved byte-identical when
+generated from either oracle, so it remains ONE shared file whose
+regeneration gate now runs on both platforms; if the platforms ever
+drift it fails loudly and the manifest splits at that moment.  Scores
+are per-platform and never comparable across platforms.  The gate
+baseline entered its second era: 30 -> 16, with ten native_* probes
+now real measurable divergences instead of oracle build gaps (each
+recorded in the baseline doc's fix queue).  Environment note: the
+regeneration gates run rustfmt, which the unprivileged gate user could
+not reach — a latent gap the old always-refusing Linux path never
+exercised; rustfmt is now installed system-wide for the gate.
