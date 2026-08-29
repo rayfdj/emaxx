@@ -14,6 +14,7 @@ from ttydiff import (
     FIELDNOTES_FIXTURE_PATH,
     FIELDNOTES_ADVANCED_SCENARIO_NAMES,
     FIELDNOTES_SCENARIO_NAMES,
+    FILE_LIFECYCLE_SCENARIO_NAMES,
     HELP_FILE_DIRED_SCENARIO_NAMES,
     HIGH_VALUE_COMMAND_SCENARIO_NAMES,
     SCENARIOS,
@@ -24,6 +25,7 @@ from ttydiff import (
     action_timing,
     command_dispatch_minimum,
     create_scenario_target_pair,
+    filesystem_snapshot,
     gnu_no_window_setup,
     normalize_action,
     remove_scenario_target,
@@ -83,8 +85,9 @@ class Vt100ScreenTests(unittest.TestCase):
             select_scenarios(["not-a-scenario"])
 
     def test_named_actions_checkpoint_but_legacy_chunks_do_not(self) -> None:
-        named = Action("forward-char", b"\x06")
+        named = Action("forward-char", b"\x06", filesystem=True)
         self.assertIs(normalize_action(named, 0), named)
+        self.assertTrue(named.filesystem)
         legacy = normalize_action(b"old scenario", 2)
         self.assertEqual(legacy.name, "step-3")
         self.assertFalse(legacy.checkpoint)
@@ -131,6 +134,7 @@ class Vt100ScreenTests(unittest.TestCase):
             FIELDNOTES_ADVANCED_SCENARIO_NAMES,
             UNDO_KILL_RING_SCENARIO_NAMES,
             REGEXP_SEARCH_REPLACE_SCENARIO_NAMES,
+            FILE_LIFECYCLE_SCENARIO_NAMES,
             SEEDED_SAFE_SCENARIO_NAMES,
         )
         for group in groups:
@@ -167,13 +171,19 @@ class Vt100ScreenTests(unittest.TestCase):
             "save-contract",
             "initial\n",
             ".txt",
-            {"separate_targets": True},
+            {
+                "separate_targets": True,
+                "extra_files": {"sibling.txt": "sibling\n"},
+            },
         )
         try:
             self.assertNotEqual(Path(gnu_path).parent, Path(emaxx_path).parent)
             self.assertEqual(Path(gnu_path).name, Path(emaxx_path).name)
             self.assertEqual(Path(gnu_path).read_text(), "initial\n")
             self.assertEqual(Path(emaxx_path).read_text(), "initial\n")
+            self.assertEqual(filesystem_snapshot(gnu_path), filesystem_snapshot(emaxx_path))
+            (Path(gnu_path).parent / "sibling.txt").write_text("changed\n")
+            self.assertNotEqual(filesystem_snapshot(gnu_path), filesystem_snapshot(emaxx_path))
         finally:
             for target in cleanup:
                 remove_scenario_target(target)

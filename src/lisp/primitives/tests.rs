@@ -14909,6 +14909,60 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
 }
 
 #[test]
+fn write_region_mustbenew_consumes_a_full_negative_answer() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-write-region-mustbenew-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create mustbenew fixture directory");
+    let path = directory.join("existing.dat");
+    std::fs::write(&path, b"existing bytes\n").expect("create mustbenew fixture file");
+
+    let script = std::rc::Rc::new(std::cell::RefCell::new(
+        "no\r"
+            .chars()
+            .rev()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect::<Vec<_>>(),
+    ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "write-region",
+        &[
+            Value::String("replacement bytes\n".into()),
+            Value::Nil,
+            Value::String(path.display().to_string().into()),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+
+    assert!(result.is_err(), "declining overwrite must signal");
+    assert!(
+        script.borrow().is_empty(),
+        "the overwrite prompt must consume the full `no RET` answer"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read declined-overwrite fixture"),
+        b"existing bytes\n"
+    );
+    std::fs::remove_dir_all(directory).expect("remove mustbenew fixture directory");
+}
+
+#[test]
 fn tty_events_answer_interactive_minibuffer_prompts() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

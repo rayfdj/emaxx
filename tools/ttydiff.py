@@ -33,6 +33,7 @@ import pty
 import random
 import select
 import shutil
+import stat
 import struct
 import sys
 import tempfile
@@ -75,11 +76,14 @@ class Action:
     checkpoint: bool = True
     settle: Optional[float] = None
     quiet: Optional[float] = None
+    filesystem: bool = False
 
 
-def action(name, keys, *, checkpoint=True, settle=None, quiet=None):
+def action(
+    name, keys, *, checkpoint=True, settle=None, quiet=None, filesystem=False
+):
     """Short spelling for declarative scenario entries."""
-    return Action(name, keys, checkpoint, settle, quiet)
+    return Action(name, keys, checkpoint, settle, quiet, filesystem)
 
 
 class Vt100Screen:
@@ -617,6 +621,46 @@ def report_comparison(label, gnu_screen, emaxx_screen):
     return True
 
 
+def filesystem_snapshot(target):
+    """Return a path-independent, byte-exact snapshot for one fixture root."""
+    target = Path(target)
+    root = target if target.is_dir() else target.parent
+    records = []
+    for path in [root] + sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        metadata = path.lstat()
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        mode = stat.S_IMODE(metadata.st_mode)
+        if path.is_symlink():
+            records.append((relative, "symlink", mode, os.readlink(path)))
+        elif path.is_dir():
+            records.append((relative, "directory", mode, None))
+        elif path.is_file():
+            records.append((relative, "file", mode, path.read_bytes()))
+        else:
+            records.append((relative, "other", mode, None))
+    return tuple(records)
+
+
+def report_filesystem_comparison(label, gnu_target, emaxx_target):
+    """Compare isolated fixture trees after a mutating user command."""
+    gnu_snapshot = filesystem_snapshot(gnu_target)
+    emaxx_snapshot = filesystem_snapshot(emaxx_target)
+    if gnu_snapshot == emaxx_snapshot:
+        print(f"MATCH [{label} filesystem]: isolated fixture trees identical")
+        return True
+    print(f"DIVERGE [{label} filesystem]: isolated fixture trees differ")
+    gnu_by_path = {record[0]: record[1:] for record in gnu_snapshot}
+    emaxx_by_path = {record[0]: record[1:] for record in emaxx_snapshot}
+    for relative in sorted(set(gnu_by_path) | set(emaxx_by_path))[:8]:
+        expected = repr(gnu_by_path.get(relative))
+        actual = repr(emaxx_by_path.get(relative))
+        if expected != actual:
+            print(f"  path {relative!r}:")
+            print(f"    gnu  : {expected[:240]}")
+            print(f"    emaxx: {actual[:240]}")
+    return False
+
+
 def normalize_action(item, index):
     """Accept old byte chunks alongside named checkpoint actions."""
     if isinstance(item, Action):
@@ -692,6 +736,7 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
         # transient, while dismissal waits for its post-RET frame redraw.
         commands = [normalize_action(item, index) for index, item in enumerate(keys)]
         final_label = scenario
+        final_command = None
         for index, command in enumerate(commands):
             final = index + 1 == len(keys)
             settle, quiet = action_timing(scenario, index, final, command)
@@ -716,11 +761,23 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
                     # The final drain below is part of this command's
                     # readiness contract; report it once, with its name.
                     final_label = checkpoint_label
-                elif not report_comparison(checkpoint_label, gnu.screen, emaxx.screen):
-                    return False
+                    final_command = command
+                else:
+                    if not report_comparison(checkpoint_label, gnu.screen, emaxx.screen):
+                        return False
+                    if command.filesystem and not report_filesystem_comparison(
+                        checkpoint_label, gnu_target, emaxx_target
+                    ):
+                        return False
         gnu.drain(1.0)
         emaxx.drain(1.0)
-        return report_comparison(final_label, gnu.screen, emaxx.screen)
+        if not report_comparison(final_label, gnu.screen, emaxx.screen):
+            return False
+        return not (
+            final_command
+            and final_command.filesystem
+            and not report_filesystem_comparison(final_label, gnu_target, emaxx_target)
+        )
     finally:
         gnu.close()
         emaxx.close()
@@ -2539,6 +2596,403 @@ SCENARIOS += [
     ),
 ]
 
+FILE_LIFECYCLE_SCENARIO_NAMES = (
+    "save-some-buffers-selective",
+    "overwrite-decline",
+    "overwrite-accept-revisit",
+    "overwrite-write-failure",
+    "supersession-decline",
+    "supersession-accept-revisit",
+    "find-alternate-file-success",
+    "find-alternate-file-cancel",
+    "find-alternate-file-missing-revisit",
+    "find-alternate-file-modified-decline",
+    "find-alternate-file-modified-accept",
+)
+
+FILE_LIFECYCLE_SETUP = action(
+    "disable-lockfiles-and-autosave",
+    b"\x1b:(progn (setq create-lockfiles nil auto-save-default nil) "
+    b"(auto-save-mode -1))\r",
+    checkpoint=False,
+)
+
+SCENARIOS += [
+    (
+        "save-some-buffers-selective",
+        "primary file\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action(
+                "prepare-two-modified-buffers",
+                b'\x1b:(let ((one (find-file-noselect "save-one.dat")) '
+                b'(two (find-file-noselect "save-two.dat"))) '
+                b'(with-current-buffer one (goto-char (point-max)) '
+                b'(auto-save-mode -1) (insert "saved one\\n")) '
+                b'(with-current-buffer two (goto-char (point-max)) '
+                b'(auto-save-mode -1) (insert "declined two\\n")) '
+                b'(switch-to-buffer one))\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "open-save-some-buffers",
+                b"\x1bxsave-some-buffers\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("save-first-buffer", b"y", checkpoint=False),
+            action(
+                "decline-second-buffer",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-selective-state",
+                b'\x1b:(list (buffer-modified-p '
+                b'(get-file-buffer (expand-file-name "save-one.dat"))) '
+                b'(buffer-modified-p '
+                b'(get-file-buffer (expand-file-name "save-two.dat"))))\r',
+                filesystem=True,
+            ),
+            action("kill-saved-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-saved-bytes",
+                b"\x18\x06\x01\x0bsave-one.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {
+            "separate_targets": True,
+            "extra_files": {
+                "save-one.dat": "one original\n",
+                "save-two.dat": "two original\n",
+            },
+        },
+    ),
+    (
+        "overwrite-decline",
+        "source original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"replacement "),
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action(
+                "choose-existing-destination",
+                b"\x01\x0bexisting.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-overwrite",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-declined-overwrite",
+                b'\x1b:(list (buffer-name) (buffer-modified-p))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"existing.dat": "keep me\n"}},
+    ),
+    (
+        "overwrite-accept-revisit",
+        "source original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"replacement "),
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action(
+                "choose-existing-destination",
+                b"\x01\x0bexisting.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-overwrite",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-overwritten-buffer",
+                b"\x1b:(list (buffer-name) (buffer-modified-p) "
+                b"(file-name-nondirectory buffer-file-name))\r",
+                filesystem=True,
+            ),
+            action("kill-overwritten-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-overwritten-bytes",
+                b"\x18\x06\x01\x0bexisting.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"existing.dat": "old bytes\n"}},
+    ),
+    (
+        "overwrite-write-failure",
+        "source original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"replacement "),
+            action("open-write-file", b"\x18\x17", checkpoint=False),
+            action(
+                "choose-unwritable-destination",
+                b"\x01\x0blocked/existing.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-unwritable-overwrite",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-write-failure-state",
+                b'\x1b:(list (buffer-name) (buffer-modified-p))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {
+            "separate_targets": True,
+            "extra_files": {"blocked/existing.dat": "protected\n"},
+            "modes": {"blocked/existing.dat": 0o400, "blocked": 0o500},
+        },
+    ),
+    (
+        "supersession-decline",
+        "disk original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("insert-local-change", b"local "),
+            action(
+                "replace-disk-externally",
+                b'\x1b:(let ((path buffer-file-name)) (with-temp-buffer '
+                b'(insert "external bytes\\n") '
+                b'(write-region (point-min) (point-max) path nil nil)))\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "request-save-after-external-change",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-supersession",
+                b"no\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-declined-supersession",
+                b'\x1b:(list (buffer-modified-p) '
+                b'(verify-visited-file-modtime))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "supersession-accept-revisit",
+        "disk original\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("insert-local-change", b"local "),
+            action(
+                "replace-disk-externally",
+                b'\x1b:(let ((path buffer-file-name)) (with-temp-buffer '
+                b'(insert "external bytes\\n") '
+                b'(write-region (point-min) (point-max) path nil nil)))\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "request-save-after-external-change",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "confirm-save-after-supersession",
+                b"yes\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-supersession",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-accepted-supersession",
+                b'\x1b:(list (buffer-modified-p) '
+                b'(verify-visited-file-modtime))\r',
+                filesystem=True,
+            ),
+            action("kill-saved-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-superseded-bytes",
+                b"\x18\x06\x01\x0bttydiff-supersession-accept-revisit.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "find-alternate-file-success",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "visit-alternate-file",
+                b"\x01\x0balternate.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+    (
+        "find-alternate-file-cancel",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action("type-alternate-name", b"\x01\x0balternate.dat", checkpoint=False),
+            action("cancel-alternate-file", b"\x07", filesystem=True),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+    (
+        "find-alternate-file-missing-revisit",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "visit-missing-alternate",
+                b"\x01\x0bmissing.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+            action("insert-new-file-bytes", b"created bytes\n"),
+            action(
+                "save-new-alternate",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("verify-created-file", b"\x01", filesystem=True),
+            action("kill-created-file", b"\x18k\r", checkpoint=False),
+            action(
+                "revisit-created-file",
+                b"\x18\x06\x01\x0bmissing.dat\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True},
+    ),
+    (
+        "find-alternate-file-modified-decline",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"unsaved "),
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "choose-alternate-file",
+                b"\x01\x0balternate.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-killing-modified-buffer",
+                b"no\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-modified-buffer-preserved",
+                b'\x1b:(list (buffer-name) (buffer-modified-p))\r',
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+    (
+        "find-alternate-file-modified-accept",
+        "source bytes\n",
+        [
+            FILE_LIFECYCLE_SETUP,
+            action("modify-source", b"discarded "),
+            action("open-find-alternate-file", b"\x18\x16", checkpoint=False),
+            action(
+                "choose-alternate-file",
+                b"\x01\x0balternate.dat\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-killing-modified-buffer",
+                b"yes\r",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        {"separate_targets": True, "extra_files": {"alternate.dat": "alternate bytes\n"}},
+    ),
+]
+
 SEEDED_SAFE_SCENARIO_NAMES = tuple(f"seeded-safe-{seed}" for seed, _ in SEEDED_SAFE_RUNS)
 SCENARIOS += [
     (
@@ -2596,6 +3050,14 @@ def create_scenario_target(name, contents, suffix=".dat", options=None):
 def remove_scenario_target(path):
     """Remove a target created by :func:`create_scenario_target`."""
     if os.path.isdir(path):
+        for root, directories, files in os.walk(path):
+            os.chmod(root, 0o700)
+            for name in directories:
+                os.chmod(os.path.join(root, name), 0o700)
+            for name in files:
+                candidate = os.path.join(root, name)
+                if not os.path.islink(candidate):
+                    os.chmod(candidate, 0o600)
         shutil.rmtree(path)
     else:
         os.unlink(path)
@@ -2634,6 +3096,15 @@ def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
         path = os.path.join(root, basename)
         with open(path, "w") as out:
             out.write(contents)
+        for relative, body in options.get("extra_files", {}).items():
+            extra = Path(root) / relative
+            extra.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(body, bytes):
+                extra.write_bytes(body)
+            else:
+                extra.write_text(body, encoding="utf-8")
+        for relative, mode in options.get("modes", {}).items():
+            os.chmod(Path(root) / relative, mode)
         targets.append(path)
     return tuple(targets), roots
 
