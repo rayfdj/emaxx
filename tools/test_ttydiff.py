@@ -11,6 +11,7 @@ from ttydiff import (
     ADVERSARIAL_COMMAND_SCENARIO_NAMES,
     COLS,
     CORE_FREQUENCY_SCENARIO_NAMES,
+    DIRED_BATCH_SCENARIO_NAMES,
     FIELDNOTES_FIXTURE_PATH,
     FIELDNOTES_ADVANCED_SCENARIO_NAMES,
     FIELDNOTES_SCENARIO_NAMES,
@@ -135,6 +136,7 @@ class Vt100ScreenTests(unittest.TestCase):
             UNDO_KILL_RING_SCENARIO_NAMES,
             REGEXP_SEARCH_REPLACE_SCENARIO_NAMES,
             FILE_LIFECYCLE_SCENARIO_NAMES,
+            DIRED_BATCH_SCENARIO_NAMES,
             SEEDED_SAFE_SCENARIO_NAMES,
         )
         for group in groups:
@@ -199,6 +201,9 @@ class Vt100ScreenTests(unittest.TestCase):
                 "target": "directory",
                 "separate_targets": True,
                 "padding_entries": 3,
+                "extra_files": {"subdir/nested.txt": "nested\n"},
+                "extra_directories": ("copy-dest",),
+                "modes": {"copy-dest": 0o500},
             },
         )
         try:
@@ -211,6 +216,13 @@ class Vt100ScreenTests(unittest.TestCase):
                 sorted(path.name for path in emaxx.iterdir()),
             )
             self.assertTrue((gnu / "00-padding-02.txt").is_file())
+            self.assertEqual((gnu / "subdir/nested.txt").read_text(), "nested\n")
+            self.assertEqual((gnu / "copy-dest").stat().st_mode & 0o777, 0o500)
+            self.assertEqual(gnu.stat().st_mtime_ns, emaxx.stat().st_mtime_ns)
+            self.assertEqual(
+                (gnu / "alpha.txt").stat().st_mtime_ns,
+                (emaxx / "alpha.txt").stat().st_mtime_ns,
+            )
             (gnu / "alpha.txt").write_text("GNU-only mutation\n")
             self.assertEqual((emaxx / "alpha.txt").read_text(), "alpha file\nsecond line\n")
         finally:

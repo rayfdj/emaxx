@@ -53,6 +53,7 @@ FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
 COMPLETIONS_DIR_NAME = "emaxxffcomp"
 COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
 FIELDNOTES_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fieldnotes.org"
+SCENARIO_MTIME = 946684800
 
 
 # (fg, bg, bold, underline, reverse): fg/bg are ANSI indexes or None for
@@ -2221,6 +2222,433 @@ SCENARIOS += [
     ),
 ]
 
+DIRED_BATCH_SCENARIO_NAMES = (
+    "dired-batch-copy-files",
+    "dired-batch-rename-files",
+    "dired-batch-delete-files",
+    "dired-batch-copy-mixed-tree",
+    "dired-batch-overwrite-decline",
+    "dired-batch-overwrite-accept",
+    "dired-batch-copy-cancel",
+    "dired-batch-copy-missing-target",
+    "dired-batch-copy-partial-failure",
+    "dired-batch-copy-permission-failure",
+    "dired-refresh-after-external-delete",
+)
+
+DIRED_BATCH_SETUP = action(
+    "stable-batch-listing",
+    b"\x1b:(progn (setq dired-recursive-copies 'always "
+    b"dired-recursive-deletes 'always delete-by-moving-to-trash nil) "
+    b'(dired-sort-other "-Al"))\r',
+    checkpoint=False,
+    settle=2.0,
+    quiet=0.5,
+)
+
+DIRED_BATCH_BASE_OPTIONS = {
+    "target": "directory",
+    "separate_targets": True,
+    "padding_entries": 32,
+}
+
+SCENARIOS += [
+    (
+        "dired-batch-copy-files",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-copy", b"C", checkpoint=False),
+            action(
+                "name-copy-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-batch-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-batch-copy",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("copy-dest",)),
+    ),
+    (
+        "dired-batch-rename-files",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-rename", b"R", checkpoint=False),
+            action(
+                "name-rename-directory",
+                b"\x01\x0brename-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-batch-rename",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-batch-rename",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("rename-dest",)),
+    ),
+    (
+        "dired-batch-delete-files",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-delete", b"D", checkpoint=False),
+            action(
+                "confirm-batch-delete",
+                b"yes\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-batch-delete",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        DIRED_BATCH_BASE_OPTIONS,
+    ),
+    (
+        "dired-batch-copy-mixed-tree",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-notes", b"\x13notes.org\r", checkpoint=False),
+            action("center-notes", b"\x0c"),
+            action("mark-notes", b"m"),
+            action("find-subdir", b"\x13subdir\r", checkpoint=False),
+            action("mark-subdir", b"m"),
+            action("open-mixed-copy", b"C", checkpoint=False),
+            action(
+                "name-tree-directory",
+                b"\x01\x0btree-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-mixed-copy",
+                b"\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-mixed-copy",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_directories=("tree-dest",),
+            extra_files={
+                "subdir/inside.txt": "nested file\n",
+                "subdir/deep/leaf.txt": "deep nested file\n",
+            },
+        ),
+    ),
+    (
+        "dired-batch-overwrite-decline",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-overwrite-copy", b"C", checkpoint=False),
+            action(
+                "name-overwrite-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "submit-overwrite-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-existing-file",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("dismiss-skip-log", b"\x181", checkpoint=False),
+            action(
+                "verify-overwrite-decline",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_files={"copy-dest/alpha.txt": "keep existing alpha\n"},
+        ),
+    ),
+    (
+        "dired-batch-overwrite-accept",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-overwrite-copy", b"C", checkpoint=False),
+            action(
+                "name-overwrite-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "submit-overwrite-copy",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "accept-existing-file",
+                b"y",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-overwrite-accept",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_files={"copy-dest/alpha.txt": "replace existing alpha\n"},
+        ),
+    ),
+    (
+        "dired-batch-copy-cancel",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-copy", b"C", checkpoint=False),
+            action(
+                "type-cancelled-destination",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action("cancel-batch-copy", b"\x07", checkpoint=False),
+            action(
+                "verify-cancelled-copy",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("copy-dest",)),
+    ),
+    (
+        "dired-batch-copy-missing-target",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-batch-copy", b"C", checkpoint=False),
+            action(
+                "name-missing-directory",
+                b"\x01\x0bmissing-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "submit-missing-directory",
+                b"\r",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "decline-create-directory",
+                b"n",
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-missing-target-failure",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        DIRED_BATCH_BASE_OPTIONS,
+    ),
+    (
+        "dired-batch-copy-partial-failure",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action(
+                "remove-beta-externally",
+                b'\x1b:(delete-file "beta.txt")\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("open-partial-copy", b"C", checkpoint=False),
+            action(
+                "name-partial-directory",
+                b"\x01\x0bcopy-dest/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-partial-copy",
+                b"\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("dismiss-partial-log", b"\x181", checkpoint=False),
+            action(
+                "verify-partial-failure",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(DIRED_BATCH_BASE_OPTIONS, extra_directories=("copy-dest",)),
+    ),
+    (
+        "dired-batch-copy-permission-failure",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-alpha", b"\x13alpha.txt\r", checkpoint=False),
+            action("center-alpha", b"\x0c"),
+            action("mark-alpha", b"m"),
+            action("mark-beta", b"m"),
+            action("open-protected-copy", b"C", checkpoint=False),
+            action(
+                "name-protected-directory",
+                b"\x01\x0bblocked/",
+                checkpoint=False,
+            ),
+            action(
+                "finish-protected-copy",
+                b"\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("dismiss-permission-log", b"\x181", checkpoint=False),
+            action(
+                "verify-permission-failure",
+                b"\x0c",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        dict(
+            DIRED_BATCH_BASE_OPTIONS,
+            extra_directories=("blocked",),
+            modes={"blocked": 0o500},
+        ),
+    ),
+    (
+        "dired-refresh-after-external-delete",
+        "",
+        [
+            DIRED_BATCH_SETUP,
+            action("find-beta", b"\x13beta.txt\r", checkpoint=False),
+            action("center-beta", b"\x0c"),
+            action("mark-beta", b"m"),
+            action(
+                "remove-beta-externally",
+                b'\x1b:(delete-file "beta.txt")\r',
+                checkpoint=False,
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "refresh-after-delete",
+                b"g",
+                settle=2.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        DIRED_BATCH_BASE_OPTIONS,
+    ),
+]
+
 FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
     "org-fieldnotes-todo-cycle",
     "org-fieldnotes-priority",
@@ -3018,7 +3446,13 @@ def select_scenarios(names):
     return [by_name[name] for name in names]
 
 
-def populate_scenario_directory(path, padding_entries=0):
+def populate_scenario_directory(
+    path,
+    padding_entries=0,
+    extra_files=None,
+    extra_directories=(),
+    modes=None,
+):
     """Populate one deterministic Dired fixture directory."""
     for index in range(padding_entries):
         with open(os.path.join(path, f"00-padding-{index:02}.txt"), "w") as out:
@@ -3031,6 +3465,24 @@ def populate_scenario_directory(path, padding_entries=0):
         with open(os.path.join(path, filename), "w") as out:
             out.write(body)
     os.mkdir(os.path.join(path, "subdir"))
+    for relative in extra_directories:
+        (Path(path) / relative).mkdir(parents=True, exist_ok=True)
+    for relative, body in (extra_files or {}).items():
+        extra = Path(path) / relative
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(body, bytes):
+            extra.write_bytes(body)
+        else:
+            extra.write_text(body, encoding="utf-8")
+    fixture_paths = sorted(
+        Path(path).rglob("*"),
+        key=lambda candidate: len(candidate.parts),
+        reverse=True,
+    )
+    for fixture_path in fixture_paths + [Path(path)]:
+        os.utime(fixture_path, (SCENARIO_MTIME, SCENARIO_MTIME))
+    for relative, mode in (modes or {}).items():
+        os.chmod(Path(path) / relative, mode)
 
 
 def create_scenario_target(name, contents, suffix=".dat", options=None):
@@ -3038,7 +3490,13 @@ def create_scenario_target(name, contents, suffix=".dat", options=None):
     options = options or {}
     if options.get("target") == "directory":
         path = tempfile.mkdtemp(prefix=f"ttydiff-{name}-")
-        populate_scenario_directory(path, options.get("padding_entries", 0))
+        populate_scenario_directory(
+            path,
+            options.get("padding_entries", 0),
+            options.get("extra_files"),
+            options.get("extra_directories", ()),
+            options.get("modes"),
+        )
         return path
 
     handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
@@ -3086,7 +3544,13 @@ def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
         for root in roots:
             path = os.path.join(root, basename)
             os.mkdir(path)
-            populate_scenario_directory(path, options.get("padding_entries", 0))
+            populate_scenario_directory(
+                path,
+                options.get("padding_entries", 0),
+                options.get("extra_files"),
+                options.get("extra_directories", ()),
+                options.get("modes"),
+            )
             targets.append(path)
         return tuple(targets), roots
 

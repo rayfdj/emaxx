@@ -3,7 +3,8 @@ use crate::lisp::reader::Reader;
 use std::io::Write;
 
 fn upstream_emacs_repo() -> PathBuf {
-    crate::compat::project_root().join("../emacs")
+    crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
+        .expect("canonical sibling GNU checkout")
 }
 
 /// Call NAME through the interpreter's function cell, exactly as GNU
