@@ -2403,16 +2403,31 @@ define_dispatch!(
                 // GNU 30.2 fns.c:Fput shares `get's CHECK_SYMBOL/XSYMBOL
                 // treatment of source-positioned symbols.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                let property = args[1].as_symbol()?;
+                let property_name = super::misc::bare_symbol_name(interp, env, &args[1]);
                 // GNU Elisp owns `ert-set-test' and `define-symbol-prop',
                 // including duplicate-definition policy and load-history
                 // provenance.  Mirror the final public property write into
                 // Emaxx's native runner index only when it is an actual ERT
                 // record; ordinary user properties remain ordinary `put'.
-                if property == "ert--test" && matches!(&args[2], Value::Record(_)) {
+                if property_name.as_deref() == Some("ert--test")
+                    && matches!(&args[2], Value::Record(_))
+                {
                     return interp.ert_set_test(&symbol, &args[2]);
                 }
-                interp.put_symbol_property(&symbol, property, args[2].clone());
+                let mut plist = interp.symbol_plist(&symbol).to_vec()?;
+                let mut replaced = false;
+                for pair in plist.chunks_exact_mut(2) {
+                    if values_eq_in_env(interp, &pair[0], &args[1], env) {
+                        pair[1] = args[2].clone();
+                        replaced = true;
+                        break;
+                    }
+                }
+                if !replaced {
+                    plist.push(args[1].clone());
+                    plist.push(args[2].clone());
+                }
+                interp.set_symbol_plist(&symbol, Value::list(plist))?;
                 Ok(args[2].clone())
             }
         }

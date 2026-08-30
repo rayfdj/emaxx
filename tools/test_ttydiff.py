@@ -21,6 +21,8 @@ from ttydiff import (
     GLYPHLESS_DISPLAY_SCENARIO_NAMES,
     HELP_FILE_DIRED_SCENARIO_NAMES,
     HIGH_VALUE_COMMAND_SCENARIO_NAMES,
+    MAGIT_PACKAGE_SETUP,
+    MAGIT_SCENARIO_NAMES,
     PACKAGE_MENU_SCENARIO_NAMES,
     SCENARIOS,
     REGEXP_SEARCH_REPLACE_SCENARIO_NAMES,
@@ -34,6 +36,7 @@ from ttydiff import (
     gnu_no_window_setup,
     normalize_action,
     remove_scenario_target,
+    run_git_fixture_command,
     screen_divergences,
     seeded_safe_actions,
     select_scenarios,
@@ -71,8 +74,11 @@ class Vt100ScreenTests(unittest.TestCase):
         screen.feed(b"before\x1b(Bafter")
         self.assertEqual(screen.lines()[0], "beforeafter")
 
-    def test_scenario_selection_defaults_to_all(self) -> None:
-        self.assertIs(select_scenarios([]), SCENARIOS)
+    def test_scenario_selection_defaults_to_built_in_battery(self) -> None:
+        self.assertEqual(
+            [entry[0] for entry in select_scenarios([])],
+            [entry[0] for entry in SCENARIOS if entry[0] not in MAGIT_SCENARIO_NAMES],
+        )
 
     def test_scenario_selection_preserves_requested_order(self) -> None:
         selected = select_scenarios(["page-past-end-error-echo", "type-one-line"])
@@ -242,6 +248,91 @@ class Vt100ScreenTests(unittest.TestCase):
             self.assertEqual(Path(gnu_path).parent.name, "project")
             self.assertEqual(Path(emaxx_path).parent.name, "project")
             self.assertEqual(filesystem_snapshot(gnu_path), filesystem_snapshot(emaxx_path))
+        finally:
+            for target in cleanup:
+                remove_scenario_target(target)
+
+    def test_magit_journeys_load_only_the_installed_package_root(self) -> None:
+        self.assertEqual(
+            MAGIT_SCENARIO_NAMES,
+            (
+                "magit-status-sections-stage",
+                "magit-diff-log-transient",
+                "magit-process-error",
+                "magit-repository-not-found",
+            ),
+        )
+        self.assertIn(b"package-initialize", MAGIT_PACKAGE_SETUP)
+        self.assertIn(b"(require 'magit)", MAGIT_PACKAGE_SETUP)
+        self.assertIn(b'MAGIT_GATE_ROOT', MAGIT_PACKAGE_SETUP)
+        self.assertNotIn(b"emaxx", MAGIT_PACKAGE_SETUP.lower())
+        scenarios = {entry[0]: entry for entry in SCENARIOS}
+        self.assertTrue(
+            set(MAGIT_SCENARIO_NAMES).isdisjoint(
+                entry[0] for entry in select_scenarios([])
+            )
+        )
+        self.assertEqual(
+            [entry[0] for entry in select_scenarios(MAGIT_SCENARIO_NAMES)],
+            list(MAGIT_SCENARIO_NAMES),
+        )
+        noncheckpoint_actions = []
+        for name in MAGIT_SCENARIO_NAMES:
+            options = scenarios[name][4]
+            self.assertEqual(
+                options["separate_targets"], name != "magit-repository-not-found"
+            )
+            self.assertTrue(options["magit_package_root"])
+            self.assertTrue(all(isinstance(item, Action) for item in scenarios[name][2]))
+            noncheckpoint_actions.extend(
+                item.name for item in scenarios[name][2] if not item.checkpoint
+            )
+        self.assertEqual(noncheckpoint_actions, ["find-unstaged-file"])
+        repository_actions = scenarios["magit-repository-not-found"][2]
+        self.assertEqual(
+            [item.name for item in repository_actions],
+            [
+                "load-installed-magit",
+                "request-status-outside-repository",
+                "decline-repository-creation",
+                "verify-no-repository-created",
+            ],
+        )
+        verification = repository_actions[-1]
+        self.assertTrue(repository_actions[-2].checkpoint)
+        self.assertTrue(verification.checkpoint)
+        self.assertIn(b'file-directory-p (expand-file-name ".git"', verification.keys)
+        self.assertIn(b"(magit-toplevel)", verification.keys)
+
+    def test_magit_repository_pair_has_identical_fixed_history_and_state(self) -> None:
+        (gnu_path, emaxx_path), cleanup = create_scenario_target_pair(
+            "magit-repository-contract",
+            "",
+            ".dat",
+            {
+                "target": "directory",
+                "separate_targets": True,
+                "include_default_files": False,
+                "git_repository": True,
+            },
+        )
+        try:
+            self.assertNotEqual(Path(gnu_path).parent, Path(emaxx_path).parent)
+            self.assertEqual(Path(gnu_path).name, Path(emaxx_path).name)
+            for arguments in (
+                ("rev-parse", "HEAD"),
+                ("branch", "--format=%(refname:short)"),
+                ("status", "--short"),
+                ("log", "--format=%H %aI %s", "--all"),
+            ):
+                self.assertEqual(
+                    run_git_fixture_command(gnu_path, *arguments),
+                    run_git_fixture_command(emaxx_path, *arguments),
+                )
+            status = run_git_fixture_command(gnu_path, "status", "--short")
+            self.assertIn("A  staged.txt", status)
+            self.assertIn(" M worktree.txt", status)
+            self.assertIn("?? untracked.txt", status)
         finally:
             for target in cleanup:
                 remove_scenario_target(target)

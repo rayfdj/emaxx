@@ -473,6 +473,41 @@ fn read_accepts_buffer_and_marker_streams() {
 }
 
 #[test]
+fn read_advances_buffer_and_marker_streams_across_trailing_comments_at_eof() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"(one)\\n;; trailing comment\")
+               (goto-char (point-min))
+               (let* ((marker (point-min-marker))
+                      (buffer-first (read (current-buffer)))
+                      (buffer-eof
+                       (condition-case nil
+                           (read (current-buffer))
+                         (end-of-file (list 'end-of-file (point)))))
+                      (marker-first (read marker))
+                      (marker-eof
+                       (condition-case nil
+                           (read marker)
+                         (end-of-file
+                          (list 'end-of-file (marker-position marker))))))
+                 (list buffer-first buffer-eof (point)
+                       marker-first marker-eof (marker-position marker)
+                       (point-max))))"
+        ),
+        Value::list([
+            Value::list([Value::symbol("one")]),
+            Value::list([Value::symbol("end-of-file"), Value::Integer(26)]),
+            Value::Integer(26),
+            Value::list([Value::symbol("one")]),
+            Value::list([Value::symbol("end-of-file"), Value::Integer(26)]),
+            Value::Integer(26),
+            Value::Integer(26),
+        ])
+    );
+}
+
+#[test]
 fn runtime_read_returns_raw_backquote_symbols_and_accepts_dot_comma() {
     assert_eq!(
         eval_str(
@@ -4404,6 +4439,38 @@ fn fboundp_obeys_gnu_check_symbol_for_positioned_symbols() {
 }
 
 #[test]
+fn get_and_put_use_gnu_eq_for_arbitrary_and_positioned_property_keys() {
+    assert_eq!(
+        eval_str(
+            "(let ((bare-owner (make-symbol \"bare-owner\"))
+                   (record-owner (make-symbol \"record-owner\"))
+                   (integer-owner (make-symbol \"integer-owner\"))
+                   (positioned (position-symbol 'rx-definition 7)))
+               (put bare-owner 'rx-definition 42)
+               (put integer-owner 9 81)
+               (list
+                (let ((symbols-with-pos-enabled nil))
+                  (get bare-owner positioned))
+                (let ((symbols-with-pos-enabled t))
+                  (get bare-owner positioned))
+                (let ((symbols-with-pos-enabled nil))
+                  (put record-owner positioned 12)
+                  (list (get record-owner positioned)
+                        (get record-owner 'rx-definition)
+                        (symbol-with-pos-p (car (symbol-plist record-owner)))))
+                (list (put integer-owner 9 82)
+                      (get integer-owner 9))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Integer(42),
+            Value::list([Value::Integer(12), Value::Nil, Value::T]),
+            Value::list([Value::Integer(82), Value::Integer(82)]),
+        ])
+    );
+}
+
+#[test]
 fn evaluator_dispatches_positioned_callees_only_while_enabled() {
     // GNU eval.c and bytecode.c strip the source position when a positioned
     // symbol occupies function position.  The upstream byte compiler relies
@@ -5396,6 +5463,31 @@ fn set_window_buffer_accepts_nil_for_selected_window() {
 }
 
 #[test]
+fn set_window_buffer_honors_keep_margins_and_default_reset() {
+    assert_eq!(
+        eval_str(
+            "(let ((buffer (get-buffer-create \" set-window-buffer-margins\")))
+               (with-current-buffer buffer
+                 (make-local-variable 'left-margin-width)
+                 (make-local-variable 'right-margin-width)
+                 (setq left-margin-width 1
+                       right-margin-width 2))
+               (set-window-margins nil 4 5)
+               (set-window-buffer nil buffer t)
+               (list
+                (window-margins)
+                (progn
+                  (set-window-buffer nil buffer nil)
+                  (window-margins))))"
+        ),
+        Value::list([
+            Value::cons(Value::Integer(4), Value::Integer(5)),
+            Value::cons(Value::Integer(1), Value::Integer(2)),
+        ])
+    );
+}
+
+#[test]
 fn window_parameters_round_trip_and_support_setf() {
     assert_eq!(
         eval_str_with_upstream_batch(
@@ -6307,6 +6399,57 @@ fn tty_face_attrs_resolve_through_the_face_machinery() {
 }
 
 #[test]
+fn tty_face_attrs_apply_buffer_local_face_remapping() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    interp.set_tty_display_colors(8);
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (tty-register-default-colors)
+           (defface sample-base-face '((t :underline t)) \"doc\")
+           (defface sample-remapped-face
+             '((t :foreground \"cyan\" :weight bold)) \"doc\")
+           (make-local-variable 'face-remapping-alist)
+           (setq face-remapping-alist
+                 '((sample-base-face sample-remapped-face sample-base-face))))",
+    );
+    let mut env: Env = Vec::new();
+    let attrs = crate::lisp::primitives::resolve_tty_face_attrs(
+        &mut interp,
+        &mut env,
+        &Value::Symbol("sample-base-face".into()),
+    );
+    assert_eq!(attrs.foreground, Some(6));
+    assert!(attrs.bold && attrs.underline);
+}
+
+#[test]
+fn tty_face_supports_conditions_merge_nested_face_references() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    interp.set_tty_display_colors(8);
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (setq noninteractive nil)
+               (tty-register-default-colors)
+               (list
+                (display-supports-face-attributes-p '(:box t))
+                (display-supports-face-attributes-p '((:box t)))
+                (face-spec-choose
+                 '((((supports (:box t))) :box t)
+                   (t :inverse-video t))
+                 nil)))",
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::list([Value::Symbol(":inverse-video".into()), Value::T]),
+        ])
+    );
+}
+
+#[test]
 fn window_face_spans_layer_text_properties_region_and_overlays() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -6364,6 +6507,26 @@ fn window_face_spans_resolve_faces_inherited_from_text_categories() {
         spans,
         vec![(1, 7, Value::Symbol("link".into()))],
         "redisplay inherits the face from a text button's category plist"
+    );
+}
+
+#[test]
+fn window_face_spans_honor_font_lock_face_aliases_on_overlays() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"overlay text\")
+           (make-local-variable 'char-property-alias-alist)
+           (setq char-property-alias-alist '((face font-lock-face)))
+           (let ((overlay (make-overlay 1 8)))
+             (overlay-put overlay 'font-lock-face 'highlight)))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    assert_eq!(
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 13, true,),
+        vec![(1, 8, Value::Symbol("highlight".into()))]
     );
 }
 

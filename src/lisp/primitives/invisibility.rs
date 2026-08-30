@@ -37,11 +37,15 @@ pub(crate) fn resolve_buffer_invisibility(
         .unwrap_or(Value::T);
     match &spec {
         Value::Nil => InvisibilitySpec::default(),
-        Value::Symbol(name) if name == "t" => InvisibilitySpec {
-            all: true,
-            entries: Vec::new(),
-            active: true,
-        },
+        value
+            if matches!(value, Value::T) || matches!(value, Value::Symbol(name) if name == "t") =>
+        {
+            InvisibilitySpec {
+                all: true,
+                entries: Vec::new(),
+                active: true,
+            }
+        }
         _ => {
             let entries = spec
                 .to_vec()

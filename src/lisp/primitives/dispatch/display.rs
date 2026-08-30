@@ -129,10 +129,12 @@ pub(crate) fn string_face_spans(value: &Value) -> EchoSpans {
         .props
         .iter()
         .filter_map(|span| {
-            span.props
+            let face = span
+                .props
                 .iter()
                 .find(|(name, _)| name == "face")
-                .map(|(_, face)| (span.start, span.end, face.clone()))
+                .or_else(|| span.props.iter().find(|(name, _)| name == "font-lock-face"));
+            face.map(|(_, face)| (span.start, span.end, face.clone()))
                 .filter(|(_, _, face)| !face.is_nil())
         })
         .collect()
@@ -840,15 +842,25 @@ fn tty_supports_face_attributes(
     attributes: &Value,
 ) -> Result<Value, LispError> {
     let mut pairs: Vec<(String, Value)> = Vec::new();
-    let mut rest = attributes.clone();
-    while let Value::Cons(_) = rest {
-        let Ok(key) = rest.car() else { break };
-        let Ok(tail) = rest.cdr() else { break };
-        let Value::Cons(_) = tail else { break };
-        let Ok(value) = tail.car() else { break };
-        rest = tail.cdr().unwrap_or(Value::Nil);
-        if let Ok(key) = key.as_symbol() {
-            pairs.push((key.to_string(), value));
+    // merge_face_ref accepts both a bare plist and a precedence-ordered
+    // list of face references.  `supports' display conditions pass their
+    // cdr verbatim, so the widespread `(supports (:box t))' spelling
+    // arrives here as the one-element face-reference list `((:box t))'.
+    // Walk those lists just as merge_face_ref does instead of mistaking an
+    // empty top-level plist for "every requested attribute is supported".
+    let mut pending = vec![attributes.clone()];
+    while let Some(reference) = pending.pop() {
+        let Ok(items) = reference.to_vec() else {
+            continue;
+        };
+        if !matches!(items.first(), Some(Value::Symbol(name)) if name.starts_with(':')) {
+            pending.extend(items.into_iter().rev());
+            continue;
+        }
+        for pair in items.chunks_exact(2) {
+            if let Value::Symbol(key) = &pair[0] {
+                pairs.push((key.to_string(), pair[1].clone()));
+            }
         }
     }
     let lookup = |wanted: &str| {
@@ -949,6 +961,32 @@ pub(crate) fn resolve_tty_face_attrs(
     env: &mut Env,
     face: &Value,
 ) -> TtyFaceAttrs {
+    // face-remap.el installs buffer-local substitutions such as Magit's
+    // `(header-line magit-header-line header-line)'.  Redisplay realizes
+    // the cdr as the effective precedence-ordered face list; the trailing
+    // base face is deliberately resolved without recursively remapping it.
+    if let Value::Symbol(requested) = face
+        && let Some(remapped) = interp
+            .lookup_var("face-remapping-alist", env)
+            .and_then(|alist| alist.to_vec().ok())
+            .and_then(|entries| {
+                entries.into_iter().find_map(|entry| {
+                    let key = entry.car().ok()?;
+                    matches!(&key, Value::Symbol(name) if name == requested)
+                        .then(|| entry.cdr().ok())?
+                })
+            })
+    {
+        let options = resolve_tty_face_reference_options(interp, env, &remapped, 0);
+        return TtyFaceAttrs {
+            foreground: options.foreground,
+            background: options.background,
+            bold: options.bold.unwrap_or(false),
+            underline: options.underline.unwrap_or(false),
+            reverse: options.reverse.unwrap_or(false),
+            extend: options.extend.unwrap_or(false),
+        };
+    }
     // xfaces.c merge_face_ref: a face reference may be a LIST of face
     // references, merged left to right with the entries nearer the
     // front taking precedence (comint's prompt carries
@@ -986,22 +1024,7 @@ pub(crate) fn resolve_tty_face_attrs(
             .filter(|value| !value.is_nil())
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
-        let name = value?;
-        if !name.is_string() {
-            return None;
-        }
-        // tty-color-translate is tty-colors.el Lisp: resolve through the
-        // full function channel so its autoload fires like any call.
-        interp
-            .call_function_value(
-                Value::Symbol("tty-color-translate".into()),
-                None,
-                &[name],
-                env,
-            )
-            .ok()
-            .and_then(|index| index.as_integer().ok())
-            .and_then(|index| u8::try_from(index).ok())
+        tty_face_color_index(interp, env, value.as_ref()?)
     };
     let foreground = attribute(interp, env, ":foreground");
     let background = attribute(interp, env, ":background");
@@ -1051,6 +1074,22 @@ fn merge_tty_face_options(base: &mut TtyFaceAttrOptions, overlay: TtyFaceAttrOpt
     }
 }
 
+/// Translate one realized tty face color through tty-colors.el's registered
+/// palette and approximation machinery.
+fn tty_face_color_index(interp: &mut Interpreter, env: &mut Env, value: &Value) -> Option<u8> {
+    string_text(value).ok()?;
+    interp
+        .call_function_value(
+            Value::Symbol("tty-color-translate".into()),
+            None,
+            std::slice::from_ref(value),
+            env,
+        )
+        .ok()
+        .and_then(|index| index.as_integer().ok())
+        .and_then(|index| u8::try_from(index).ok())
+}
+
 /// Resolve the named, precedence-ordered list, and anonymous attribute
 /// plist face-reference forms used by the TTY renderer.  Propertized
 /// strings use the last form heavily (Flymake wraps its compilation face
@@ -1088,19 +1127,7 @@ fn resolve_tty_face_reference_options(
     let mut merged = inherited
         .map(|value| resolve_tty_face_reference_options(interp, env, value, depth + 1))
         .unwrap_or_default();
-    let color_index = |interp: &mut Interpreter, env: &mut Env, value: &Value| {
-        value.is_string().then_some(())?;
-        interp
-            .call_function_value(
-                Value::Symbol("tty-color-translate".into()),
-                None,
-                std::slice::from_ref(value),
-                env,
-            )
-            .ok()
-            .and_then(|index| index.as_integer().ok())
-            .and_then(|index| u8::try_from(index).ok())
-    };
+    let color_index = tty_face_color_index;
     for pair in &mut pairs {
         let Value::Symbol(name) = &pair[0] else {
             continue;
@@ -1150,20 +1177,7 @@ fn resolve_tty_face_attr_options(
             .filter(|value| !matches!(value, Value::Symbol(s) if s == "unspecified"))
     };
     let color_index = |interp: &mut Interpreter, env: &mut Env, value: Option<Value>| {
-        let name = value?;
-        if !name.is_string() {
-            return None;
-        }
-        interp
-            .call_function_value(
-                Value::Symbol("tty-color-translate".into()),
-                None,
-                &[name],
-                env,
-            )
-            .ok()
-            .and_then(|index| index.as_integer().ok())
-            .and_then(|index| u8::try_from(index).ok())
+        tty_face_color_index(interp, env, value.as_ref()?)
     };
     let foreground = attribute(interp, env, ":foreground").filter(|value| !value.is_nil());
     let background = attribute(interp, env, ":background").filter(|value| !value.is_nil());
@@ -1274,6 +1288,13 @@ pub(crate) fn window_face_spans(
             let Some(face) = overlay
                 .get_prop(&Value::Symbol("face".into()))
                 .filter(|face| !face.is_nil())
+                .or_else(|| {
+                    face_alias_names.iter().find_map(|name| {
+                        overlay
+                            .get_prop(&Value::Symbol(name.clone().into()))
+                            .filter(|face| !face.is_nil())
+                    })
+                })
                 .cloned()
             else {
                 continue;
@@ -2273,23 +2294,16 @@ define_dispatch!(
                 {
                     return Err(LispError::SignalValue(signal));
                 }
-                // print.c's print_error_message: `error'/`user-error' with
-                // a single string datum prints the string alone; otherwise
-                // the condition's error-message property leads, and data
-                // follows after ": ", comma-separated (strings princ'ed,
-                // the rest prin1'ed).
+                // print.c's print_error_message: plain `error' promotes its
+                // first datum to the message; other conditions lead with
+                // their error-message property.  Remaining data is printed
+                // under the condition-specific princ/prin1 rule below.
                 let Ok(items) = args[0].to_vec() else {
                     return Ok(Value::String(args[0].to_string().into()));
                 };
                 let Some(Value::Symbol(condition)) = items.first() else {
                     return Ok(Value::String(args[0].to_string().into()));
                 };
-                if (condition == "error" || condition == "user-error")
-                    && items.len() == 2
-                    && let Some(message) = string_like(&items[1])
-                {
-                    return Ok(Value::String(message.text.into()));
-                }
                 // A file-error condition promotes its first datum to the
                 // message ("Opening input file: ...").
                 let file_error = interp
@@ -2300,30 +2314,46 @@ define_dispatch!(
                             |entry| matches!(entry, Value::Symbol(name) if name == "file-error"),
                         )
                     });
-                let (mut text, data) =
-                    if file_error && let Some(leading) = items.get(1).and_then(string_like) {
-                        (leading.text, &items[2..])
-                    } else {
-                        let message = interp
-                            .get_symbol_property(condition, "error-message")
-                            .as_ref()
-                            .and_then(string_like)
-                            .map(|message| message.text)
-                            .unwrap_or_else(|| "peculiar error".to_string());
-                        (message, &items[1..])
-                    };
+                let mut data = &items[1..];
+                let mut text = if condition == "error" {
+                    let message = data
+                        .first()
+                        .and_then(string_like)
+                        .map(|message| message.text)
+                        .unwrap_or_else(|| "peculiar error".to_string());
+                    data = data.get(1..).unwrap_or_default();
+                    message
+                } else {
+                    interp
+                        .get_symbol_property(condition, "error-message")
+                        .as_ref()
+                        .and_then(string_like)
+                        .map(|message| message.text)
+                        .unwrap_or_else(|| "peculiar error".to_string())
+                };
+                if file_error && !data.is_empty() {
+                    text =
+                        crate::lisp::primitives::print::render_princ_object(interp, &data[0], env)?;
+                    data = &data[1..];
+                }
                 if !data.is_empty() {
-                    text.push_str(": ");
-                    // print.c prin1's non-string data with the real printer;
-                    // the host Display impl leaked `#<record id:N>' shapes
-                    // GNU never prints (finding 57's message half).
+                    if !text.is_empty() {
+                        text.push_str(": ");
+                    }
+                    // print.c princ's file/end-of-file/user-error data and
+                    // prin1's every other condition's data.  The distinction
+                    // matters for custom conditions carrying strings: Magit's
+                    // multi-part git errors retain quotes and escaping.
+                    let use_princ =
+                        file_error || condition == "end-of-file" || condition == "user-error";
                     let mut rendered = Vec::with_capacity(data.len());
                     for datum in data {
-                        rendered.push(match string_like(datum) {
-                            Some(datum) => datum.text,
-                            None => crate::lisp::primitives::print::render_prin1_ephemeral(
+                        rendered.push(if use_princ {
+                            crate::lisp::primitives::print::render_princ_object(interp, datum, env)?
+                        } else {
+                            crate::lisp::primitives::print::render_prin1_ephemeral(
                                 interp, datum, env,
-                            )?,
+                            )?
                         });
                     }
                     text.push_str(&rendered.join(", "));
@@ -4086,6 +4116,7 @@ define_dispatch!(
             }
             "set-window-buffer" => {
                 need_arg_range(name, args, 2, 3)?;
+                let keep_margins = args.get(2).is_some_and(Value::is_truthy);
                 let window = if args[0].is_nil() {
                     interp.selected_window_value()
                 } else {
@@ -4171,22 +4202,23 @@ define_dispatch!(
                         Value::Nil,
                     )?;
                 }
-                // GNU's set-window-buffer refreshes the window's margin
-                // widths from the newly displayed buffer even when the
-                // window already shows that buffer.  Flymake relies on
-                // precisely that same-buffer refresh after setting its
-                // buffer-local TTY margin widths.
-                let margin_width = |name: &str| {
-                    interp
-                        .buffer_local_value(buffer_id, name)
-                        .and_then(|value| value.as_integer().ok())
-                        .filter(|width| *width > 0)
-                };
-                interp.set_window_margins(
-                    window_id,
-                    margin_width("left-margin-width"),
-                    margin_width("right-margin-width"),
-                );
+                if !keep_margins {
+                    // GNU resets margins from the displayed buffer by
+                    // default, including on a same-buffer refresh.  A true
+                    // KEEP-MARGINS third argument preserves the window's
+                    // explicit widths (Magit relies on that during refresh).
+                    let margin_width = |name: &str| {
+                        interp
+                            .buffer_local_value(buffer_id, name)
+                            .and_then(|value| value.as_integer().ok())
+                            .filter(|width| *width > 0)
+                    };
+                    interp.set_window_margins(
+                        window_id,
+                        margin_width("left-margin-width"),
+                        margin_width("right-margin-width"),
+                    );
+                }
                 Ok(Value::Nil)
             }
             "window-list" | "window-list-1" => {
@@ -4803,6 +4835,12 @@ fn render_mode_line_element(
                         .props
                         .iter()
                         .find(|(name, _)| name == "face")
+                        .or_else(|| {
+                            property_span
+                                .props
+                                .iter()
+                                .find(|(name, _)| name == "font-lock-face")
+                        })
                         .map(|(_, face)| face.clone())
                     else {
                         continue;

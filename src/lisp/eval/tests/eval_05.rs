@@ -557,6 +557,32 @@ fn read_positioning_symbols_preserves_eq_binding_through_byte_compile() {
 }
 
 #[test]
+fn position_symbol_accepts_an_existing_positioned_symbol_as_the_position_source() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((source (read-positioning-symbols "foo"))
+                      (positioned (position-symbol 'ignore source)))
+                 (list (symbol-with-pos-p positioned)
+                       (bare-symbol positioned)
+                       (symbol-with-pos-pos positioned)
+                       (condition-case error
+                           (position-symbol 'bad 'not-a-position)
+                         (error (list (car error) (cadr error) (caddr error))))))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("ignore".into()),
+            Value::Integer(0),
+            Value::list([
+                Value::Symbol("wrong-type-argument".into()),
+                Value::Symbol("fixnum-or-symbol-with-pos-p".into()),
+                Value::Symbol("not-a-position".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn condition_case_success_uses_arith_error_condition_value() {
     assert_eq!(
         eval_str(

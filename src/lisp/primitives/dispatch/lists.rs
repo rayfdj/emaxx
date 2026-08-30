@@ -1530,7 +1530,17 @@ define_dispatch!(
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
-                let position = args[1].as_integer()?;
+                let position = match &args[1] {
+                    Value::Integer(position) => *position,
+                    positioned => symbol_with_pos_parts(interp, positioned)
+                        .map(|(_, position)| position)
+                        .ok_or_else(|| {
+                            LispError::WrongTypeArgument(
+                                "fixnum-or-symbol-with-pos-p".into(),
+                                positioned.clone(),
+                            )
+                        })?,
+                };
                 Ok(interp.create_pseudovector(
                     crate::lisp::eval::RecordKind::SymbolWithPos,
                     "symbol-with-pos",

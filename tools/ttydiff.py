@@ -35,6 +35,7 @@ import select
 import shutil
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -2940,6 +2941,156 @@ SCENARIOS += [
     ),
 ]
 
+MAGIT_SCENARIO_NAMES = (
+    "magit-status-sections-stage",
+    "magit-diff-log-transient",
+    "magit-process-error",
+    "magit-repository-not-found",
+)
+
+MAGIT_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"MAGIT_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) (require 'magit) "
+    b"(setq magit-display-buffer-function "
+    b"#'magit-display-buffer-same-window-except-diff-v1) "
+)
+
+MAGIT_STATUS_SETUP = action(
+    "open-installed-magit-status",
+    b"\x1b:(progn "
+    + MAGIT_PACKAGE_SETUP
+    + b"(magit-status default-directory) nil)\r",
+    settle=12.0,
+    quiet=2.0,
+)
+
+MAGIT_REQUIRE_SETUP = action(
+    "load-installed-magit",
+    b"\x1b:(progn " + MAGIT_PACKAGE_SETUP + b"nil)\r",
+    settle=8.0,
+    quiet=1.0,
+)
+
+MAGIT_OPTIONS = {
+    "target": "directory",
+    "separate_targets": True,
+    "include_default_files": False,
+    "magit_package_root": True,
+    "git_repository": True,
+}
+
+MAGIT_NON_REPOSITORY_OPTIONS = {
+    "target": "directory",
+    # This journey declines repository creation and never mutates its target,
+    # so both editors can consume the exact same directory and path-bearing
+    # prompt instead of manufacturing different temporary parents.
+    "separate_targets": False,
+    "include_default_files": False,
+    "magit_package_root": True,
+}
+
+SCENARIOS += [
+    (
+        "magit-status-sections-stage",
+        "",
+        [
+            MAGIT_STATUS_SETUP,
+            action(
+                "find-unstaged-file",
+                b"\x13worktree.txt\r",
+                checkpoint=False,
+            ),
+            action("stage-worktree-file", b"s", settle=5.0, quiet=1.0),
+            action(
+                "verify-staged-state",
+                b"\x1b:(list (magit-staged-files) (magit-unstaged-files) "
+                b"(magit-untracked-files))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("unstage-worktree-file", b"u", settle=5.0, quiet=1.0),
+            action(
+                "verify-unstaged-state",
+                b"\x1b:(list (magit-staged-files) (magit-unstaged-files) "
+                b"(magit-untracked-files))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("expand-file-section", b"\t", settle=3.0, quiet=0.5),
+            action("collapse-file-section", b"\t", settle=3.0, quiet=0.5),
+            action("refresh-status", b"g", settle=5.0, quiet=1.0),
+        ],
+        ".dat",
+        MAGIT_OPTIONS,
+    ),
+    (
+        "magit-diff-log-transient",
+        "",
+        [
+            MAGIT_STATUS_SETUP,
+            action("open-diff-transient", b"d", settle=3.0, quiet=0.5),
+            action("show-unstaged-diff", b"u", settle=6.0, quiet=1.0),
+            action("next-diff-section", b"\x1bn", settle=3.0, quiet=0.5),
+            action("return-from-diff", b"q", settle=3.0, quiet=0.5),
+            action("open-log-transient", b"l", settle=3.0, quiet=0.5),
+            action("show-current-branch-log", b"l", settle=6.0, quiet=1.0),
+            action("next-log-entry", b"n", settle=3.0, quiet=0.5),
+            action("refresh-log", b"g", settle=5.0, quiet=1.0),
+        ],
+        ".dat",
+        MAGIT_OPTIONS,
+    ),
+    (
+        "magit-process-error",
+        "",
+        [
+            MAGIT_STATUS_SETUP,
+            action(
+                "run-invalid-git-command",
+                b"\x1b:(condition-case error "
+                b"(magit-git \"definitely-not-a-git-command\") "
+                b"(error (message \"%s\" (error-message-string error))))\r",
+                settle=6.0,
+                quiet=1.0,
+            ),
+            action("show-process-buffer", b"$", settle=5.0, quiet=1.0),
+            action("return-from-process-buffer", b"q", settle=3.0, quiet=0.5),
+        ],
+        ".dat",
+        MAGIT_OPTIONS,
+    ),
+    (
+        "magit-repository-not-found",
+        "",
+        [
+            MAGIT_REQUIRE_SETUP,
+            action(
+                "request-status-outside-repository",
+                b"\x1bxmagit-status\r\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action(
+                "decline-repository-creation",
+                b"n",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-no-repository-created",
+                b'\x1b:(list (file-directory-p (expand-file-name ".git" '
+                b'default-directory)) (magit-toplevel))\r',
+                settle=3.0,
+                quiet=0.5,
+            ),
+        ],
+        ".dat",
+        MAGIT_NON_REPOSITORY_OPTIONS,
+    ),
+]
+
 FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
     "org-fieldnotes-todo-cycle",
     "org-fieldnotes-priority",
@@ -3724,9 +3875,15 @@ SCENARIOS += [
 
 
 def select_scenarios(names):
-    """Return all scenarios, or the named subset in command-line order."""
+    """Return built-in scenarios, or the named subset in command-line order.
+
+    Magit is deliberately owned by ``magit_package_gate.py``: its scenarios
+    require the two clean installed package roots that gate supplies.  They
+    remain selectable by name but cannot poison a bare no-argument TTY run
+    that has no third-party package lifecycle.
+    """
     if not names:
-        return SCENARIOS
+        return [entry for entry in SCENARIOS if entry[0] not in MAGIT_SCENARIO_NAMES]
     by_name = {entry[0]: entry for entry in SCENARIOS}
     unknown = [name for name in names if name not in by_name]
     if unknown:
@@ -3743,19 +3900,21 @@ def populate_scenario_directory(
     extra_files=None,
     extra_directories=(),
     modes=None,
+    include_default_files=True,
 ):
     """Populate one deterministic Dired fixture directory."""
     for index in range(padding_entries):
         with open(os.path.join(path, f"00-padding-{index:02}.txt"), "w") as out:
             out.write(f"padding file {index:02}\n")
-    for filename, body in (
-        ("alpha.txt", "alpha file\nsecond line\n"),
-        ("beta.txt", "beta file\n"),
-        ("notes.org", "* Dired fixture\nbody\n"),
-    ):
-        with open(os.path.join(path, filename), "w") as out:
-            out.write(body)
-    os.mkdir(os.path.join(path, "subdir"))
+    if include_default_files:
+        for filename, body in (
+            ("alpha.txt", "alpha file\nsecond line\n"),
+            ("beta.txt", "beta file\n"),
+            ("notes.org", "* Dired fixture\nbody\n"),
+        ):
+            with open(os.path.join(path, filename), "w") as out:
+                out.write(body)
+        os.mkdir(os.path.join(path, "subdir"))
     for relative in extra_directories:
         (Path(path) / relative).mkdir(parents=True, exist_ok=True)
     for relative, body in (extra_files or {}).items():
@@ -3776,6 +3935,102 @@ def populate_scenario_directory(
         os.chmod(Path(path) / relative, mode)
 
 
+def git_fixture_environment():
+    """Return Git settings that ignore the invoking user's configuration."""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "LANG": "C",
+            "LC_ALL": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "TTY Oracle",
+            "GIT_AUTHOR_EMAIL": "tty-oracle@example.invalid",
+            "GIT_COMMITTER_NAME": "TTY Oracle",
+            "GIT_COMMITTER_EMAIL": "tty-oracle@example.invalid",
+        }
+    )
+    return environment
+
+
+def run_git_fixture_command(repository, *arguments, timestamp=None):
+    """Run one checked Git fixture command with fixed identity and dates."""
+    environment = git_fixture_environment()
+    if timestamp is not None:
+        environment["GIT_AUTHOR_DATE"] = timestamp
+        environment["GIT_COMMITTER_DATE"] = timestamp
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "git %s failed in %s:\nstdout: %s\nstderr: %s"
+            % (
+                " ".join(arguments),
+                repository,
+                completed.stdout,
+                completed.stderr,
+            )
+        )
+    return completed.stdout.strip()
+
+
+def initialize_magit_repository(path):
+    """Create the same fixed-history staged/unstaged repository on both sides."""
+    repository = Path(path)
+    run_git_fixture_command(repository, "init", "--quiet", "--initial-branch=main")
+    run_git_fixture_command(repository, "config", "user.name", "TTY Oracle")
+    run_git_fixture_command(
+        repository,
+        "config",
+        "user.email",
+        "tty-oracle@example.invalid",
+    )
+    run_git_fixture_command(repository, "config", "commit.gpgSign", "false")
+    run_git_fixture_command(repository, "config", "core.fileMode", "false")
+
+    (repository / "README.md").write_text("# deterministic Magit fixture\n")
+    (repository / "worktree.txt").write_text("base worktree line\n")
+    for name in ("README.md", "worktree.txt"):
+        os.utime(repository / name, (SCENARIO_MTIME, SCENARIO_MTIME))
+    run_git_fixture_command(repository, "add", "README.md", "worktree.txt")
+    run_git_fixture_command(
+        repository,
+        "commit",
+        "--quiet",
+        "-m",
+        "initial fixture",
+        timestamp="2000-01-01T00:00:00Z",
+    )
+    first_commit = run_git_fixture_command(repository, "rev-parse", "HEAD")
+
+    (repository / "history.txt").write_text("second deterministic commit\n")
+    os.utime(repository / "history.txt", (SCENARIO_MTIME + 60, SCENARIO_MTIME + 60))
+    run_git_fixture_command(repository, "add", "history.txt")
+    run_git_fixture_command(
+        repository,
+        "commit",
+        "--quiet",
+        "-m",
+        "main history",
+        timestamp="2000-01-02T00:00:00Z",
+    )
+    run_git_fixture_command(repository, "branch", "feature", first_commit)
+
+    (repository / "staged.txt").write_text("already staged\n")
+    os.utime(repository / "staged.txt", (SCENARIO_MTIME + 120, SCENARIO_MTIME + 120))
+    run_git_fixture_command(repository, "add", "staged.txt")
+    (repository / "worktree.txt").write_text("base worktree line\nunstaged line\n")
+    (repository / "untracked.txt").write_text("untracked line\n")
+    for name in ("worktree.txt", "untracked.txt"):
+        os.utime(repository / name, (SCENARIO_MTIME + 180, SCENARIO_MTIME + 180))
+
+
 def create_scenario_target(name, contents, suffix=".dat", options=None):
     """Create the disposable file or directory visited by both editors."""
     options = options or {}
@@ -3787,7 +4042,10 @@ def create_scenario_target(name, contents, suffix=".dat", options=None):
             options.get("extra_files"),
             options.get("extra_directories", ()),
             options.get("modes"),
+            options.get("include_default_files", True),
         )
+        if options.get("git_repository"):
+            initialize_magit_repository(path)
         return path
 
     handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
@@ -3841,7 +4099,10 @@ def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
                 options.get("extra_files"),
                 options.get("extra_directories", ()),
                 options.get("modes"),
+                options.get("include_default_files", True),
             )
+            if options.get("git_repository"):
+                initialize_magit_repository(path)
             targets.append(path)
         return tuple(targets), roots
 
@@ -3916,13 +4177,33 @@ def main():
             name, contents, suffix, options
         )
         try:
+            gnu_env = {}
+            emaxx_env = {"EMACSLOADPATH": load_path}
+            if options.get("magit_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_MAGIT_GNU_ROOT",
+                    "EMAXX_TTYDIFF_MAGIT_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                if not all(roots):
+                    print(
+                        "ERROR: Magit scenarios require %s"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print("ERROR: Magit package roots have no packages directory", file=sys.stderr)
+                    sys.exit(2)
+                gnu_env["MAGIT_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["MAGIT_GATE_ROOT"] = os.path.abspath(roots[1])
             ok = compare(
                 name,
                 keys,
                 [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, gnu_path],
                 [emaxx_binary, emaxx_path],
-                {},
-                {"EMACSLOADPATH": load_path},
+                gnu_env,
+                emaxx_env,
                 # Cold Lisp loading can exceed twenty seconds on a busy CI
                 # host.  This is only a readiness deadline: comparisons and
                 # per-command settle windows remain strict and unchanged.
