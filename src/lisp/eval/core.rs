@@ -900,8 +900,11 @@ impl Interpreter {
         let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
         let func = match func {
             Value::Cons(_) => {
-                let func = if is_lambda_form(&func) {
-                    self.eval(&func, env)?
+                let func = if is_lambda_form(self, &func, env) {
+                    let mut lambda = func.to_vec()?;
+                    lambda[0] = Value::symbol("lambda");
+                    let source = Value::list(lambda.clone());
+                    self.sf_lambda_from_source(&source, &lambda, env)?
                 } else {
                     func
                 };

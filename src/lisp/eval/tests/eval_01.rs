@@ -270,6 +270,124 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
 }
 
 #[test]
+fn make_process_stderr_buffer_creates_the_linked_gnu_pipe_process() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let* ((shell (executable-find "sh"))
+                         (name-holder
+                          (make-pipe-process
+                           :name "stderr-buffer-parent"
+                           :noquery t))
+                         (stderr-buffer (generate-new-buffer "*stderr-buffer-target*"))
+                         (before (process-list))
+                         (parent
+                          (make-process
+                           :name "stderr-buffer-parent"
+                           :command
+                           (list shell "-c" "cat >/dev/null; printf err >&2")
+                           :connection-type 'pipe
+                           :stderr stderr-buffer
+                           :noquery t))
+                         (created
+                          (seq-filter (lambda (process) (not (memq process before)))
+                                      (process-list)))
+                         (snapshot
+                          (mapcar
+                           (lambda (process)
+                             (list (process-name process)
+                                   (eq process parent)
+                                   (let ((buffer (process-buffer process)))
+                                     (and buffer (buffer-name buffer)))
+                                   (process-status process)
+                                   (process-query-on-exit-flag process)
+                                   (let ((command (process-command process)))
+                                     (and command
+                                          (cons (file-name-nondirectory (car command))
+                                                (cdr command))))))
+                           created)))
+                    (process-send-eof parent)
+                    (while (process-live-p parent)
+                      (accept-process-output parent 0.1))
+                    (accept-process-output nil 0.1)
+                    (list snapshot
+                          (with-current-buffer stderr-buffer
+                            (buffer-string))))"#,
+            ),
+            Value::list([
+                Value::list([
+                    Value::list([
+                        Value::String("stderr-buffer-parent<1>".into()),
+                        Value::T,
+                        Value::Nil,
+                        Value::Symbol("run".into()),
+                        Value::Nil,
+                        Value::list([
+                            Value::String("sh".into()),
+                            Value::String("-c".into()),
+                            Value::String("cat >/dev/null; printf err >&2".into()),
+                        ]),
+                    ]),
+                    Value::list([
+                        Value::String("stderr-buffer-parent stderr".into()),
+                        Value::Nil,
+                        Value::String("*stderr-buffer-target*".into()),
+                        Value::Symbol("open".into()),
+                        Value::Nil,
+                        Value::Nil,
+                    ]),
+                ]),
+                Value::String("err\nProcess stderr-buffer-parent stderr finished\n".into(),),
+            ])
+        );
+    });
+}
+
+#[test]
+fn accept_process_output_drains_the_gnu_post_delivery_readiness_window() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let* ((stdout-buffer (generate-new-buffer "*readiness-stdout*"))
+                         (stderr-buffer (generate-new-buffer "*readiness-stderr*"))
+                         (shell (executable-find "sh"))
+                         (process
+                          (make-process
+                           :name "readiness-window"
+                           :command
+                           (list shell "-c"
+                                 "printf early >&2; IFS= read -r line; printf late")
+                           :buffer stdout-buffer
+                           :stderr stderr-buffer
+                           :connection-type 'pipe
+                           :sentinel #'ignore
+                           :noquery t)))
+                    (let ((stderr-process (get-buffer-process stderr-buffer)))
+                      (set-process-sentinel stderr-process #'ignore)
+                      (set-process-filter
+                       stderr-process
+                       (lambda (stderr text)
+                         (with-current-buffer (process-buffer stderr)
+                           (goto-char (point-max))
+                           (insert text))
+                         ;; A zero-delay continuation releases stdout only
+                         ;; after the first descriptor was delivered.  A
+                         ;; caller that returns on that first delivery misses
+                         ;; it; GNU's readiness window pumps it on the next
+                         ;; cycle without a scheduler-sensitive sleep.
+                         (run-at-time
+                          0 nil
+                          (lambda () (process-send-string process "go\n"))))))
+                    (accept-process-output nil 1)
+                    (list (with-current-buffer stdout-buffer (buffer-string))
+                          (with-current-buffer stderr-buffer (buffer-string))))"#,
+            ),
+            Value::list([Value::String("late".into()), Value::String("early".into()),])
+        );
+    });
+}
+
+#[test]
 fn process_send_eof_keeps_linked_stderr_separate_from_stdout() {
     run_with_large_stack(|| {
         assert_eq!(

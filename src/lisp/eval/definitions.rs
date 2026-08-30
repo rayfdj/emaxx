@@ -225,7 +225,7 @@ impl Interpreter {
         if items.len() < 2 {
             return Err(LispError::Signal("lambda needs params".into()));
         }
-        let params = self.parse_params(&items[1])?;
+        let params = self.parse_source_params(&items[1], env)?;
         let (documentation, interactive, body) =
             self.normalize_interpreted_closure_body(&items[2..], env)?;
         let keep_full_context = body_closure_dont_trim_context(&body);

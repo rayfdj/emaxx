@@ -2607,6 +2607,17 @@ fn redraw_with_echo_policy(
         cursor_row: Option<usize>,
         rows: Vec<(usize, usize, usize, usize)>,
     }
+    // A string whose `display' property targets a window margin (most
+    // visibly Flymake's TTY diagnostic indicators).  The source string
+    // lives in an overlay before-string; the displayed payload and its
+    // faces paint into the reserved margin rather than the text body.
+    struct MarginStringJob {
+        row: usize,
+        left: usize,
+        width: usize,
+        value: Value,
+    }
+    let mut margin_string_jobs: Vec<MarginStringJob> = Vec::new();
     let mut line_number_jobs: Vec<LineNumberJob> = Vec::new();
     // GNU's overlay arrow on a tty: a variable in
     // `overlay-arrow-variable-list' holding a marker overlays its
@@ -2635,6 +2646,12 @@ fn redraw_with_echo_policy(
         // window's start line, which planning itself may move
         // (recentering); iterate until the width the plan was laid out
         // with matches the width its final top line asks for.
+        let (left_margin, right_margin) = interpreter.window_margins(info.window_id);
+        let left_margin = left_margin.unwrap_or(0).max(0) as usize;
+        let right_margin = right_margin.unwrap_or(0).max(0) as usize;
+        let left_margin = left_margin.min(body_width.saturating_sub(1));
+        let right_margin = right_margin.min(body_width.saturating_sub(left_margin + 1));
+        let text_body_width = body_width.saturating_sub(left_margin + right_margin).max(1);
         let lnum_for = |interpreter: &Interpreter, top_line: usize| {
             let buffer = if info.buffer_id == interpreter.current_buffer_id() {
                 Some(&interpreter.buffer)
@@ -2667,7 +2684,8 @@ fn redraw_with_echo_policy(
             .copied()
             .unwrap_or_default();
         let (geometry, plan, invisibility_active, chars_modiff) = loop {
-            let geometry = window_render_geometry(interpreter, env, info, body_width, cols, lnum);
+            let geometry =
+                window_render_geometry(interpreter, env, info, text_body_width, cols, lnum);
             let view = state.views.entry(info.window_id).or_default();
             let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
                 Some(&interpreter.buffer)
@@ -2686,7 +2704,7 @@ fn redraw_with_echo_policy(
                 info.start,
                 info.point,
                 text_rows,
-                body_width,
+                text_body_width,
                 geometry.truncate,
                 &geometry,
                 info.selected,
@@ -2784,7 +2802,7 @@ fn redraw_with_echo_policy(
             }
         }
         let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
-        let text_left = info.left + lnum_cols;
+        let text_left = info.left + left_margin + lnum_cols;
         for (row, (rendered, _, _, _, _)) in plan.rendered.iter().enumerate() {
             frame[text_top + row].blit(text_left, rendered, CellAttrs::default());
         }
@@ -2832,9 +2850,67 @@ fn redraw_with_echo_policy(
                     .unwrap_or_else(|| "=>".to_string());
                 let arrow: String = arrow
                     .chars()
-                    .take(body_width.saturating_sub(lnum_cols))
+                    .take(text_body_width.saturating_sub(lnum_cols))
                     .collect();
                 overlay_arrow_jobs.push((text_top + row, text_left, arrow));
+            }
+        }
+        {
+            let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
+                Some(&interpreter.buffer)
+            } else {
+                interpreter.get_buffer_by_id(info.buffer_id)
+            }) else {
+                continue 'windows;
+            };
+            for overlay in &buffer.overlays {
+                if overlay.is_dead() {
+                    continue;
+                }
+                let Some(before) = overlay.get_prop(&Value::Symbol("before-string".into())) else {
+                    continue;
+                };
+                let Some(display) =
+                    crate::lisp::primitives::string_property_at(before, 0, "display")
+                else {
+                    continue;
+                };
+                let Ok(parts) = display.to_vec() else {
+                    continue;
+                };
+                if parts.len() < 2 {
+                    continue;
+                }
+                let Ok(location) = parts[0].to_vec() else {
+                    continue;
+                };
+                if !matches!(location.first(), Some(Value::Symbol(name)) if name == "margin") {
+                    continue;
+                }
+                let side = location.get(1).and_then(|value| value.as_symbol().ok());
+                let (margin_left, margin_width) = match side {
+                    Some("left-margin") if left_margin > 0 => (info.left, left_margin),
+                    Some("right-margin") if right_margin > 0 => {
+                        (info.left + body_width - right_margin, right_margin)
+                    }
+                    _ => continue,
+                };
+                if crate::lisp::primitives::string_text(&parts[1]).is_err() {
+                    continue;
+                }
+                let line_start =
+                    buffer.line_start_at(overlay.beg.clamp(buffer.point_min(), buffer.point_max()));
+                let Some(row) = plan.rendered.iter().position(|(_, _, seg, start, _)| {
+                    *seg == 0 && *start != usize::MAX && *start == line_start
+                }) else {
+                    continue;
+                };
+                margin_string_jobs.push(MarginStringJob {
+                    row: text_top + row,
+                    left: margin_left,
+                    width: margin_width,
+                    value: parts[1].clone(),
+                });
             }
         }
         if let Some(layout) = geometry.lnum {
@@ -2842,10 +2918,10 @@ fn redraw_with_echo_policy(
                 buffer_id: info.buffer_id,
                 layout,
                 top: text_top,
-                left: info.left,
+                left: info.left + left_margin,
                 text_rows,
                 truncate: geometry.truncate,
-                text_width: body_width.saturating_sub(lnum_cols).max(1),
+                text_width: text_body_width.saturating_sub(lnum_cols).max(1),
                 point: info.point,
                 window_end: plan.window_end,
                 cursor_row: if info.selected {
@@ -2867,8 +2943,8 @@ fn redraw_with_echo_policy(
             left: text_left,
             lnum_cols,
             truncate: geometry.truncate,
-            body_width: body_width.saturating_sub(lnum_cols).max(1),
-            usable: body_width
+            body_width: text_body_width.saturating_sub(lnum_cols).max(1),
+            usable: text_body_width
                 .saturating_sub(lnum_cols)
                 .saturating_sub(1)
                 .max(1),
@@ -2892,7 +2968,7 @@ fn redraw_with_echo_policy(
         if info.selected {
             if let Some((row, col)) = plan.cursor {
                 cursor_position = (
-                    (info.left + col).min(cols - 1) as u16,
+                    (info.left + left_margin + col).min(cols - 1) as u16,
                     (text_top + row).min(frame_rows - 1) as u16,
                 );
             }
@@ -3145,6 +3221,25 @@ fn redraw_with_echo_policy(
 
     for (row, left, arrow) in &overlay_arrow_jobs {
         frame[*row].blit(*left, arrow, CellAttrs::default());
+    }
+
+    for job in &margin_string_jobs {
+        let Ok(text) = crate::lisp::primitives::string_text(&job.value) else {
+            continue;
+        };
+        let clipped: String = text.chars().take(job.width).collect();
+        frame[job.row].blit(job.left, &clipped, CellAttrs::default());
+        for (from, to, face) in crate::lisp::primitives::string_face_spans(&job.value) {
+            let key = format!("{face}");
+            let attrs = *state.face_cache.entry(key).or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+            });
+            frame[job.row].overlay(
+                job.left + from.min(job.width),
+                job.left + to.min(job.width),
+                attrs,
+            );
+        }
     }
 
     // The `display-line-numbers' columns (maybe_produce_line_number):

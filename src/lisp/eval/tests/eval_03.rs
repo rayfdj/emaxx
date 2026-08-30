@@ -1755,6 +1755,26 @@ fn buffer_file_name_accepts_explicit_buffer_argument() {
 }
 
 #[test]
+fn dead_buffer_objects_retain_their_visited_file_name() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((buffer (generate-new-buffer "*dead-file-buffer*")))
+                  (with-current-buffer buffer
+                    (setq buffer-file-name "/tmp/dead-file-buffer"))
+                  (kill-buffer buffer)
+                  (list (buffer-file-name buffer)
+                        (buffer-name buffer)
+                        (buffer-live-p buffer)))"#,
+        ),
+        Value::list([
+            Value::String("/tmp/dead-file-buffer".into()),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn headless_window_vscroll_is_zero() {
     assert_eq!(
         eval_str(
@@ -5852,6 +5872,25 @@ fn save_selected_window_does_not_rewind_the_selected_windows_live_point() {
 }
 
 #[test]
+fn same_buffer_window_refresh_applies_its_tty_margin_widths() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+                (with-temp-buffer
+                  (setq-local left-margin-width 2
+                              right-margin-width 3)
+                  (set-window-buffer nil (current-buffer))
+                  (list (window-margins) (window-body-width)))
+                "#
+        ),
+        Value::list([
+            Value::cons(Value::Integer(2), Value::Integer(3)),
+            Value::Integer(75),
+        ])
+    );
+}
+
+#[test]
 fn windows_preserve_independent_points_across_selection() {
     assert_eq!(
         eval_str_with_upstream_batch(
@@ -7356,6 +7395,41 @@ fn functionp_and_funcall_accept_quoted_lambdas_but_cl_functionp_does_not() {
                    (funcall '(lambda (value) (concat value \"bar\")) \"foo\"))"
         ),
         Value::list([Value::T, Value::Nil, Value::String("foobar".into())])
+    );
+}
+
+#[test]
+fn positioned_source_lambdas_obey_the_dynamic_callable_contract() {
+    assert_eq!(
+        eval_str_bare(
+            r#"(let ((form
+                      (read-positioning-symbols
+                       "(lambda (&optional ignored) '(\"some-executable\"))")))
+                 (list
+                  (let ((symbols-with-pos-enabled nil))
+                    (list
+                     (functionp form)
+                     (condition-case err
+                         (func-arity form)
+                       (invalid-function (car err)))
+                     (condition-case err
+                         (funcall form t)
+                       (invalid-function (car err)))))
+                  (let ((symbols-with-pos-enabled t))
+                    (list (functionp form) (func-arity form) (funcall form t)))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Nil,
+                Value::Symbol("invalid-function".into()),
+                Value::Symbol("invalid-function".into()),
+            ]),
+            Value::list([
+                Value::T,
+                Value::cons(Value::Integer(0), Value::Integer(1)),
+                Value::list([Value::String("some-executable".into())]),
+            ]),
+        ])
     );
 }
 

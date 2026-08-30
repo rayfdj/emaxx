@@ -666,6 +666,19 @@ impl Interpreter {
         }
     }
 
+    pub(crate) fn current_thread_process_output_delivery_count(&self) -> u64 {
+        self.process_states
+            .iter()
+            .filter(|process| {
+                process
+                    .thread_id
+                    .is_none_or(|thread_id| thread_id == self.active_thread_id)
+            })
+            .fold(0_u64, |total, process| {
+                total.saturating_add(process.output_delivery_count)
+            })
+    }
+
     /// GNU `process-command': child processes expose the program followed by
     /// its argument vector; pipe and network process records have no command.
     pub fn process_command_value(&self, record_id: u64) -> Option<Value> {

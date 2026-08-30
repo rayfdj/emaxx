@@ -2067,6 +2067,14 @@ pub(crate) fn read_tty_event_with_timeout(
             record_external_input_event(interp, &event, env);
             return Ok(Some(event));
         }
+        // A timed read is still wait_reading_process_output with keyboard
+        // input in the descriptor set.  In particular, subr.el's `sit-for'
+        // is the cancel-on-input wait used by jsonrpc/Eglot completion: a
+        // subprocess reply and the zero-delay continuation its filter
+        // schedules must run even when no key arrives.
+        crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
+        crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
+        interp.drive_threads(env, true)?;
         let cursor_in_echo_area = interp
             .lookup_var("cursor-in-echo-area", env)
             .is_some_and(|value| value.is_truthy());

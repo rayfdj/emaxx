@@ -258,6 +258,11 @@ The supported pass-through environment knobs are:
 
 ## Recommended Workflow
 
+The built-in Eglot contract has its own permanent upstream outcome inventory,
+deterministic JSON-RPC server, and strict interactive TTY journeys.  See
+[`docs/eglot-compatibility.md`](eglot-compatibility.md) for the exact oracle,
+commands, preserved failures/skips, and scope boundary.
+
 For normal development:
 
 1. `cargo test --lib`

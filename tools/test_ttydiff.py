@@ -12,6 +12,8 @@ from ttydiff import (
     COLS,
     CORE_FREQUENCY_SCENARIO_NAMES,
     DIRED_BATCH_SCENARIO_NAMES,
+    EGLOT_SCENARIO_NAMES,
+    FAKE_LSP_FIXTURE_PATH,
     FIELDNOTES_FIXTURE_PATH,
     FIELDNOTES_ADVANCED_SCENARIO_NAMES,
     FIELDNOTES_SCENARIO_NAMES,
@@ -141,6 +143,7 @@ class Vt100ScreenTests(unittest.TestCase):
             FILE_LIFECYCLE_SCENARIO_NAMES,
             DIRED_BATCH_SCENARIO_NAMES,
             PACKAGE_MENU_SCENARIO_NAMES,
+            EGLOT_SCENARIO_NAMES,
             SEEDED_SAFE_SCENARIO_NAMES,
         )
         for group in groups:
@@ -218,6 +221,27 @@ class Vt100ScreenTests(unittest.TestCase):
             self.assertEqual(filesystem_snapshot(gnu_path), filesystem_snapshot(emaxx_path))
             (Path(gnu_path).parent / "sibling.txt").write_text("changed\n")
             self.assertNotEqual(filesystem_snapshot(gnu_path), filesystem_snapshot(emaxx_path))
+        finally:
+            for target in cleanup:
+                remove_scenario_target(target)
+
+    def test_eglot_targets_are_isolated_same_named_project_roots(self) -> None:
+        self.assertTrue(FAKE_LSP_FIXTURE_PATH.is_file())
+        (gnu_path, emaxx_path), cleanup = create_scenario_target_pair(
+            "eglot-contract",
+            "int alpha = 1;\n",
+            ".c",
+            {
+                "separate_targets": True,
+                "target_parent": "project",
+                "extra_files": {"project/.ttydiff-project": "root\n"},
+            },
+        )
+        try:
+            self.assertNotEqual(Path(gnu_path).parents[1], Path(emaxx_path).parents[1])
+            self.assertEqual(Path(gnu_path).parent.name, "project")
+            self.assertEqual(Path(emaxx_path).parent.name, "project")
+            self.assertEqual(filesystem_snapshot(gnu_path), filesystem_snapshot(emaxx_path))
         finally:
             for target in cleanup:
                 remove_scenario_target(target)
