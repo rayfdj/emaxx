@@ -343,30 +343,48 @@ pub(crate) fn make_temp_file_internal(
     suffix: &str,
     text: Option<&Value>,
 ) -> Result<String, LispError> {
-    let mut attempt = 0u64;
-    loop {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-            .as_nanos();
-        let path = format!("{prefix}{stamp:x}{attempt:x}{suffix}");
+    // fileio.c Fmake_temp_file_internal -> gen_tempname: PREFIX plus the
+    // six-character [a-zA-Z0-9] segment plus SUFFIX, retried on collision;
+    // the entry is created atomically (O_EXCL file / mkdir) unless
+    // DIR-FLAG is 0, which only names it.
+    let mut last = String::new();
+    for _ in 0..62 * 62 {
+        let path = format!(
+            "{prefix}{}{suffix}",
+            crate::lisp::primitives::coding::random_temp_suffix()
+        );
         let candidate = PathBuf::from(&path);
-        if candidate.exists() {
-            attempt = attempt.saturating_add(1);
-            continue;
+        last = path;
+        if matches!(dir_flag, Value::Integer(0)) {
+            if candidate.exists() {
+                continue;
+            }
+            return Ok(last);
         }
         if dir_flag.is_nil() {
-            let mut file = fs::File::create(&candidate)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            if let Some(text) = text.and_then(string_like) {
-                file.write_all(text.text.as_bytes())
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(mut file) => {
+                    if let Some(text) = text.and_then(string_like) {
+                        file.write_all(text.text.as_bytes())
+                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                    }
+                    return Ok(last);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(LispError::Signal(error.to_string())),
             }
-        } else if !matches!(dir_flag, Value::Integer(0)) {
-            fs::create_dir(&candidate).map_err(|error| LispError::Signal(error.to_string()))?;
         }
-        return Ok(path);
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(last),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(LispError::Signal(error.to_string())),
+        }
     }
+    Ok(last)
 }
 
 pub(crate) fn decode_inserted_bytes(bytes: &[u8], multibyte: bool, literal: bool) -> String {

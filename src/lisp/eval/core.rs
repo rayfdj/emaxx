@@ -883,7 +883,22 @@ impl Interpreter {
         let mut owned_name: Option<SymbolName> = None;
         let func = match func {
             Value::Symbol(name) => {
-                let resolution = self.resolve_symbol_call(&name, env)?;
+                let resolution = match self.resolve_symbol_call(&name, env) {
+                    Ok(resolution) => resolution,
+                    Err(error) => {
+                        // eval.c's Ffuncall records the backtrace frame
+                        // BEFORE resolving the function cell, so a
+                        // void-function report carries the attempted call
+                        // itself (`foo(ARGS)') as its innermost frame.
+                        let function = original_name
+                            .map(|original| original.symbol_value(&name))
+                            .unwrap_or_else(|| Value::Symbol(name.clone()));
+                        self.push_backtrace_frame(function, args);
+                        self.capture_batch_error_backtrace(&error, env);
+                        self.pop_backtrace_frame();
+                        return Err(error);
+                    }
+                };
                 if original_name.is_none() {
                     owned_name = Some(name.clone());
                 }

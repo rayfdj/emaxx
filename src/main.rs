@@ -81,6 +81,16 @@ fn main() -> ExitCode {
 }
 
 fn try_main() -> Result<u8, String> {
+    // Latch the harness's trace knob, then scrub it: the compat harness
+    // sets EMAXX_TRACE_LOAD_ERRORS only on the measured emaxx runner
+    // (never on the GNU oracle), so Lisp `getenv' and any child emacs a
+    // test spawns must observe the same clean environment on both
+    // runners, while this process keeps its own diagnostics.
+    emaxx::lisp::latch_trace_load_errors();
+    if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+        // SAFETY: single-threaded startup, before Lisp or any subprocess.
+        unsafe { std::env::remove_var("EMAXX_TRACE_LOAD_ERRORS") };
+    }
     let args = normalize_gnu_single_dash_long_options(std::env::args_os());
     let matches = Cli::command().get_matches_from(args);
     let actions = ordered_batch_actions(&matches);

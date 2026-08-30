@@ -11,17 +11,39 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
     // GNU prin1 escapes only `"' and `\' by default: newlines, tabs and
     // other control characters print raw unless print-escape-newlines is
     // non-nil (Rust's {:?} formatting escapes them all, which is wrong).
+    // print.c:1635 escapes exactly `\n'/`\f' under print-escape-newlines,
+    // and octal-escapes control characters under
+    // print-escape-control-characters via octalout, whose width obeys the
+    // following-octal-digit guard.
+    let escape_control = interp
+        .lookup_var("print-escape-control-characters", env)
+        .is_some_and(|value| value.is_truthy());
     let mut rendered = String::with_capacity(text.len() + 2);
     rendered.push('"');
-    for ch in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
         match ch {
             '"' => rendered.push_str("\\\""),
             '\\' => rendered.push_str("\\\\"),
             '\n' if escape_newlines => rendered.push_str("\\n"),
-            '\r' if escape_newlines => rendered.push_str("\\r"),
-            '\t' if escape_newlines => rendered.push_str("\\t"),
-            '\u{0008}' if escape_newlines => rendered.push_str("\\b"),
             '\u{000C}' if escape_newlines => rendered.push_str("\\f"),
+            ch if escape_control && ((ch as u32) < 0x20 || ch as u32 == 0x7f) => {
+                let code = ch as u32;
+                let next_is_octal_digit =
+                    matches!(chars.peek(), Some(next) if ('0'..='7').contains(next));
+                let digits = if code > 0o77 || next_is_octal_digit {
+                    3
+                } else if code > 0o7 {
+                    2
+                } else {
+                    1
+                };
+                rendered.push('\\');
+                for shift in (0..digits).rev() {
+                    let digit = (code >> (3 * shift)) & 7;
+                    rendered.push(char::from(b'0' + digit as u8));
+                }
+            }
             // GNU print.c octal-escapes raw 8-bit bytes (`\300') whenever
             // they cannot be emitted as characters: always in multibyte
             // strings, and under `print-escape-nonascii' (auto-bound by

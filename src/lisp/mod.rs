@@ -209,6 +209,22 @@ use crate::compat::TestStatus;
 /// One test's outcome: name, passed, optional error message.
 pub type TestResult = (String, bool, Option<String>);
 
+/// EMAXX_TRACE_LOAD_ERRORS, latched once.  main() latches it at startup
+/// and then SCRUBS the variable from the environment: the compat harness
+/// sets the knob only on the measured emaxx runner (never on the GNU
+/// oracle), so Lisp `getenv' and any child emacs a test spawns must see
+/// the same clean environment on both runners, while this process keeps
+/// its own diagnostics.
+static TRACE_LOAD_ERRORS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn latch_trace_load_errors() {
+    let _ = TRACE_LOAD_ERRORS.set(std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some());
+}
+
+pub(crate) fn trace_load_errors_enabled() -> bool {
+    *TRACE_LOAD_ERRORS.get_or_init(|| std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some())
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SourceFileSettings {
     lexical_binding: bool,
@@ -902,7 +918,7 @@ pub fn load_file_strict(
         let forms = match source_reader.read_all() {
             Ok(forms) => forms,
             Err(error) => {
-                if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                if trace_load_errors_enabled() {
                     eprintln!(
                         "read error in {} at byte offset {}: {error:?}",
                         path.display(),
@@ -948,7 +964,7 @@ pub fn load_file_strict(
             let form = match interp.materialize_read_object_literals(form) {
                 Ok(form) => form,
                 Err(error) => {
-                    if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                    if trace_load_errors_enabled() {
                         eprintln!(
                             "literal materialization error in {} at form {}: {error:?}",
                             path.display(),
@@ -967,7 +983,7 @@ pub fn load_file_strict(
                 interp.eval(&form, &mut env)
             };
             if let Err(error) = result {
-                if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                if trace_load_errors_enabled() {
                     let head = form
                         .car()
                         .ok()
@@ -978,8 +994,10 @@ pub fn load_file_strict(
                         path.display(),
                         form_index + 1
                     );
-                    if let Some(snapshot) = interp.take_batch_error_backtrace() {
-                        for (_, function, _, _) in snapshot.frames.into_iter().take(20) {
+                    // Peek, never take: the toplevel batch reporter prints
+                    // the GNU-format backtrace from this same snapshot.
+                    if let Some(snapshot) = interp.peek_batch_error_backtrace() {
+                        for (_, function, _, _) in snapshot.frames.iter().take(20) {
                             eprintln!("  load frame: {function}");
                         }
                     }

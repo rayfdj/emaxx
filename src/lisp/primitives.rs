@@ -75,7 +75,7 @@ mod invisibility;
 mod keys;
 mod loading;
 mod numeric_time;
-mod print;
+pub(crate) mod print;
 mod processes;
 mod regexp;
 mod sequences;

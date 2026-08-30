@@ -1530,11 +1530,33 @@ define_dispatch!(
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
-                let position = args[1].as_integer()?;
+                // data.c Fposition_symbol: SYM may itself carry a position
+                // (its bare symbol is taken), and POS is a fixnum OR a
+                // symbol with position whose position is borrowed (cconv
+                // repositions `ignore' from the unused variable this way).
+                let bare = match &args[0] {
+                    Value::Symbol(_) => args[0].clone(),
+                    other => symbol_with_pos_parts(interp, other)
+                        .map(|(symbol, _)| symbol)
+                        .ok_or_else(|| {
+                            LispError::TypeError("symbolp".into(), args[0].type_name())
+                        })?,
+                };
+                let position = match &args[1] {
+                    Value::Integer(position) => *position,
+                    other => symbol_with_pos_parts(interp, other)
+                        .map(|(_, position)| position)
+                        .ok_or_else(|| {
+                            LispError::TypeError(
+                                "fixnum-or-symbol-with-pos-p".into(),
+                                args[1].type_name(),
+                            )
+                        })?,
+                };
                 Ok(interp.create_pseudovector(
                     crate::lisp::eval::RecordKind::SymbolWithPos,
                     "symbol-with-pos",
-                    vec![args[0].clone(), Value::Integer(position)],
+                    vec![bare, Value::Integer(position)],
                 ))
             }
             "symbol-with-pos-pos" => {

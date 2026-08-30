@@ -78,6 +78,13 @@ pub(crate) fn function_documentation(
     } else {
         value
     };
+    // doc.c Fdocumentation: an autoload's documentation is the third
+    // element of its (autoload FILE DOC INTERACTIVE TYPE) form, read
+    // without resolving the autoload (GNU does not load the file here).
+    if matches!(value.car(), Ok(Value::Symbol(ref name)) if name == "autoload") {
+        let items = value.to_vec().ok()?;
+        return items.get(2).filter(|doc| !doc.is_nil()).cloned();
+    }
     if let Value::Record(id) = value
         && let Some(record) = interp.find_record(id)
         && record.kind == crate::lisp::eval::RecordKind::Closure

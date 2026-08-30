@@ -2981,3 +2981,117 @@ kept the corrected rank (her branch had not touched it since
 ae8f93b), and the full 14-cell probe battery (non-key-events replay,
 mixed-length ordering, FIRSTONLY selections) reruns byte-identical to
 the oracle on the merged build.
+
+
+## 2026-08-30 finding 135: the load-error trace leaked into measured children
+
+Six gv-tests frozen mismatches (and suspect siblings in bytecomp,
+edebug, testcover, shortdoc — every test whose child process output is
+compared byte-for-byte) shared one injected stderr line: `bytecode
+operation Call(3) failed ... void: cl-no-applicable-method'.  The
+harness sets EMAXX_TRACE_LOAD_ERRORS=1 on the measured emaxx runner
+for its immutable-log diagnostics; test-spawned CHILD emaxx processes
+inherit it, and the VM trace printed for errors that an outer
+condition-case was about to absorb — errors GNU never shows.  The
+line fired on EVERY emaxx boot: during the loadup replay of
+cl-generic, a dispatch signals and is handled once per process
+(invisible without the knob).
+
+Fix: the trace now consults the active handler stack (GNU's
+handlerlist mirror) and speaks only for errors no live
+condition-case/handler-bind frame matches — errors headed to the
+toplevel report, which is what the knob exists to explain.  Verified:
+the boot line is gone under the knob, a genuinely unhandled load
+error still traces, and a condition-case-wrapped one stays silent.
+Disclosed tradeoff: a handler that matches but re-signals now
+suppresses the trace for that error; acceptable for a
+diagnostics-only channel.
+
+OPEN sub-item (135b): the traced bootstrap event is itself a real
+mechanism divergence.  GNU's cl-generic bootstrap resolves the
+combine-methods circularity through the memoized under-construction
+sentinel — cl--generic-build-combined-method signals
+`cl--generic-cyclic-definition', caught by its own condition-case
+(cl-generic.el:805-812) — while emaxx's dispatch concludes NO
+applicable method and calls the not-yet-defined
+cl-no-applicable-method, converging to the same built state by a
+different error path.  Same observable output today, but the
+dispatch/method-lookup difference that causes it is undiagnosed and
+could surface elsewhere.  Queued.
+
+
+## 2026-08-30 tractable-middle round 1: six mechanisms
+
+Worked from the frozen artifacts' per-test details; every fix is a
+GNU-source port verified against the oracle:
+
+1. Finding 135 completed: beyond the handler-stack gating recorded
+   above, main() now LATCHES EMAXX_TRACE_LOAD_ERRORS at startup and
+   scrubs it from the environment — the harness sets the knob only on
+   the measured emaxx runner, so Lisp getenv and child emacs processes
+   now see exactly what the oracle runner's world shows, while the
+   runner keeps its own diagnostics.  (EMAXX_DUMP_SOURCE_DIRECTORY is
+   the remaining single-runner variable of this class; queued.)
+2. Harness path-width artifact: ert explanations embed raw string
+   LENGTHS, and "checkout-oracle" was one byte longer than
+   "checkout-emaxx" — every length-sensitive explanation differed by
+   exactly that byte.  Runner temp tags are now width-padded; all
+   nine elisp-mode-tests xref mismatches were this and now match.
+3. documentation now reads doc.c's autoload branch (third element of
+   the autoload form, without resolving it) — shortdoc-tests' three
+   failures were split-string on the nil this returned for
+   `string-pad'; 5/5 matching now.
+4. position-symbol accepts a symbol-with-pos as POS (data.c), which
+   cconv's unused-variable rewrite relies on; the byte compiler's
+   run-hook-with-args lexical-var warnings (bytecomp's trio) emit
+   again because the compile no longer dies inside cconv.
+5. The batch unhandled-error report is now debug-early.el's:
+   "\nError: " + prin1 of symbol and data, then the backtrace under
+   print-escape-newlines/control-characters/nonascii binds,
+   bottoming out through load/command-line-1/command-line frames
+   with canonical flag spellings.  Supporting print.c fidelity:
+   octal control-character escapes now use octalout's exact width
+   rule (following-octal-digit guard); the stray \r/\t/\b
+   escape-newlines arms (GNU escapes only \n and \f there) are gone.
+   eval.c parity: the funcall backtrace frame is recorded BEFORE
+   function-cell resolution, so void-function reports carry the
+   attempted call as their innermost frame.  A gv-tests child's
+   entire failing-load output now diffs EMPTY against GNU's.
+6. The load-path trace diagnostic now PEEKS at the captured
+   backtrace instead of consuming it, so the toplevel report and the
+   trace can coexist.
+
+
+## 2026-08-30 round-1 self-audit (adversarial pass before the gate)
+
+Where this batch could cheat, and why it does not:
+
+- The harness's randomness canonicalization is the cheat-adjacent edge.
+  Rules: (1) the harness's OWN per-runner scratch directory names
+  (`emaxx-compat-<tag>-<pid>-<nanos>`) collapse to one token — these
+  name which runner produced the path, so no faithful implementation
+  could ever match on them; (2) `emacs-test-` followed by EXACTLY six
+  alphanumerics collapses to `emacs-test-xxxxxx` — gen_tempname's
+  shape, demanded of BOTH sides.  The second rule deliberately did NOT
+  fire for emaxx until make-temp-name/make-temp-file-internal were
+  ported to produce gen_tempname's six-character [a-zA-Z0-9] segment
+  (they emitted 17-hex names; the shape divergence stayed a scored
+  mismatch until the mechanism was fixed, which is the order the
+  discipline requires).  Both rules apply identically to both
+  runners' output; a wrong-shape name still scores as a divergence.
+- make-temp-file-internal also gained fileio.c's creation semantics:
+  O_EXCL-style create_new for files, mkdir-collision retry for
+  directories, name-only for DIR-FLAG 0.
+- The batch error reporter's bottom frames reconstruct command-line-1's
+  argument list with canonical flag spellings (-l/--eval/-f).  The
+  harness only ever passes those spellings; a user-typed variant
+  (--load=X) would render canonically — disclosed approximation.
+- The trace-knob scrub, pre-resolution backtrace frame, octalout port,
+  position-symbol POS contract and autoload documentation branch are
+  literal ports probed byte-identical against the oracle (the gv child
+  scenario's entire failing-load output diffs empty).
+- In-tree unit coverage for this batch is thin by design: the pinned
+  upstream files themselves are the regression tests (gv-tests 8/8,
+  elisp-mode 63/63, shortdoc 5/5 measured matching), and the oracle
+  probes above are reproducible from the ledger.  Dedicated lib tests
+  ride the next round.
