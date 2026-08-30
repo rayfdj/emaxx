@@ -464,7 +464,17 @@ define_dispatch!(
             }
             "buffer-file-name" => {
                 need_arg_range(name, args, 0, 1)?;
-                let buffer_id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
+                let requested = args.first().filter(|value| !value.is_nil());
+                if let Some(Value::Buffer(buffer)) = requested
+                    && !interp.has_buffer_id(buffer.id)
+                    && let Some(file) = interp.killed_buffer_file_name(buffer.id)
+                {
+                    return Ok(file
+                        .clone()
+                        .map(|value| Value::String(value.into()))
+                        .unwrap_or(Value::Nil));
+                }
+                let buffer_id = if let Some(buffer) = requested {
                     interp.resolve_buffer_id(buffer)?
                 } else {
                     interp.current_buffer_id()
@@ -2740,10 +2750,27 @@ fn make_process_value(
             &parsed.argv,
             env,
             parsed.connection_type.as_ref(),
-            parsed.stderr_process_id.is_some(),
+            parsed.stderr_process_id.is_some() || parsed.stderr_buffer_id.is_some(),
         )
     });
     let runtime = runtime.transpose()?;
+    if let Some(stderr_buffer_id) = parsed.stderr_buffer_id {
+        let requested_name = parsed
+            .name
+            .clone()
+            .or_else(|| parsed.program.clone())
+            .unwrap_or_default();
+        let stderr = interp.create_process(
+            Some(stderr_buffer_id),
+            None,
+            Vec::new(),
+            None,
+            Some(format!("{requested_name} stderr")),
+        )?;
+        let stderr_process_id = interp.resolve_process_id(&stderr)?;
+        interp.set_process_query_on_exit_flag(stderr_process_id, parsed.query_on_exit_flag)?;
+        parsed.stderr_process_id = Some(stderr_process_id);
+    }
     let process = interp.create_process(
         parsed.buffer_id,
         parsed.program,
@@ -2752,6 +2779,7 @@ fn make_process_value(
         parsed.name,
     )?;
     let process_id = interp.resolve_process_id(&process)?;
+    interp.set_process_query_on_exit_flag(process_id, parsed.query_on_exit_flag)?;
     interp.set_process_inherit_coding_system_flag(process_id, inherit_coding_system)?;
     interp.set_process_filter(process_id, parsed.filter)?;
     interp.set_process_sentinel(process_id, parsed.sentinel);

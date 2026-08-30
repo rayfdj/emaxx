@@ -1906,16 +1906,22 @@ pub(crate) fn resolve_callable(
     }
 }
 
-pub(crate) fn is_lambda_expression(value: &Value) -> bool {
+pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
-        matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda")
-            && items.get(1).is_some()
+        items.first().is_some_and(|head| {
+            matches!(head, Value::Symbol(name) if name == "lambda")
+                || (symbols_with_pos_enabled(interp, env)
+                    && matches!(
+                        symbol_with_pos_parts(interp, head),
+                        Some((Value::Symbol(name), _)) if name == "lambda"
+                    ))
+        }) && items.get(1).is_some()
     })
 }
 
-pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value) -> bool {
+pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
-        || is_lambda_expression(value)
+        || is_lambda_expression(interp, value, env)
         || matches!(
             value,
             Value::Record(id)

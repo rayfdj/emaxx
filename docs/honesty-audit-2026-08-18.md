@@ -3023,3 +3023,97 @@ the local pinned GNU oracle, evaluates the identical form in Emaxx, and
 compares the Lisp values without message normalization.  It covers a
 named UDP service, an unknown client service, and an unknown server
 service; all three rows match on Darwin after the correction.
+
+
+## 2026-08-30 finding 137: Eglot TTY contract exposed false-green runtime seams
+
+The issue-20 Eglot work was audited before its long gate.  The upstream replay
+is the pinned GNU 30.2 `eglot-tests.el`, not a rewritten local test: all 52
+selected outcomes match (39 pass, the same 6 fail, and the same 7 skip).  The
+interactive side uses an ordinary Content-Length-framed JSON-RPC subprocess
+with no editor branch.  GNU and Emaxx get isolated same-named projects and the
+TTY comparator checks exact cells, attributes, cursor, and requested fixture
+trees; it has no Eglot-specific screen or asynchronous normalization.
+
+Making those journeys real exposed eight general runtime gaps that a shallower
+fixture could have hidden:
+
+1. `make-process :stderr BUFFER` rejected the buffer instead of creating
+   GNU's separately observable linked pipe process, and `:noquery` was not
+   propagated.
+2. Killing a buffer discarded the visited filename even though a retained GNU
+   buffer object still exposes that slot; Eglot uses it while revisiting files.
+3. Positioned source lambdas were not callable or arity-readable through the
+   normal evaluator path.
+4. `accept-process-output nil` returned on the first ready descriptor rather
+   than continuing through GNU's 10 ms post-output readiness window.
+5. TTY window margins existed in the Lisp API but redisplay did not reserve
+   them or paint overlay `before-string` margin display specifications, so a
+   diagnostic could be logically present but invisible.
+6. Anonymous face plists and their nested inheritance resolved to the default
+   TTY face, erasing Flymake's visible warning attribute.
+7. A timed live-TTY `read-event` polled only the keyboard.  It did not pump
+   subprocess/network output and deferred timers, so JSON-RPC completion could
+   remain unread until another key arrived.
+8. `accept-process-output nil` counted an outputless process exit and its
+   sentinel as delivered output.  Eglot's synchronous reconnect wait therefore
+   returned before the replacement clangd process delivered its initialize
+   reply.
+
+The implementation fixes those mechanisms rather than recognizing Eglot,
+fixture text, response labels, or scenario names in production.  A source scan
+finds none of the fake server's `fake-lsp`, `fixture-warning`, hover, or
+completion literals under `src`.
+
+The adversarial pass then caught and corrected six defects in the first
+implementation/test draft:
+
+- A process test called `executable-find` but asserted this host's `/bin/sh`.
+  It now compares the portable command basename, and the readiness child also
+  uses the discovered executable.
+- The automatic stderr process name was derived from the already-uniquified
+  parent.  An oracle collision probe showed GNU creates `dup stderr` from the
+  requested name before naming the parent `dup<1>`; production and the
+  permanent regression now preserve that ordering and naming.
+- Positioned lambda heads were accepted even while
+  `symbols-with-pos-enabled` was nil, and the original test ran only Emaxx.
+  Direct GNU rows now pin both modes: disabled yields
+  `(nil invalid-function invalid-function)`, enabled yields
+  `(t (0 . 1) ("some-executable"))`.  The test reads the entire positioned
+  lambda, including its parameters and body, and `func-arity` now uses GNU's
+  `invalid-function` condition for an invalid cons form.
+- Strengthening that test from a positioned head to a fully positioned source
+  form then caught the lambda binder still rejecting positioned `&optional`
+  and parameter symbols.  Source-lambda construction now unwraps those
+  parameters only under the same dynamic flag; the fully positioned GNU row
+  passes through `functionp`, `func-arity`, and `funcall`.
+- The first readiness regression relied on a 1 ms child sleep and failed under
+  parallel load.  Its replacement is a deterministic causal handshake: the
+  stderr filter schedules a zero-delay timer that releases stdout, so only a
+  real post-delivery pump observes both streams.
+- Two test/comment names claimed more than they proved (that a root-isolation
+  unit itself launched the server, and that the TTY resolver handled every GNU
+  face-reference form).  The claims now name their exact narrower evidence;
+  the separate protocol test is what executes the fake server.
+
+The deliberately non-checkpointed TTY actions are not unmeasured outcomes.
+Each is preparation for the next strict state checkpoint: edits before
+completion/hover/xref, the didOpen notification race before a deterministic
+didChange, and a save message containing intentionally different temporary
+roots before an exact buffer-plus-filesystem check.  Connection itself is
+strict in the first and reconnect journeys.  These boundaries are documented
+beside the scenarios and in `docs/eglot-compatibility.md`.
+
+The final full upstream replay caught item 8 after the first audit: the log
+said "Reconnected!" but `eglot-current-server` was still nil because the
+numeric sync wait had returned on the old server's sentinel transition.  A
+direct portable oracle row now pins the underlying contract: an outputless
+child exit makes GNU `(accept-process-output nil 1)` return nil while exposing
+status `exit`; Emaxx previously returned t.  The event pump now maintains the
+separate distinction between "made progress" and "delivered process output".
+The permanent regression invokes the discovered `shell-file-name`, runs the
+same form in GNU and Emaxx, and contains no Eglot names or fixture responses.
+The post-fix audit also rejected a process-global first draft of the delivery
+counter: because GNU process descriptors belong to a Lisp thread, the counter
+now uses the same active-thread ownership filter as the event pump.  Output
+delivered by a different Lisp thread cannot fabricate success for this wait.

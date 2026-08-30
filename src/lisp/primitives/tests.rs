@@ -5638,6 +5638,32 @@ fn accept_process_output_ignores_distractor_output_until_target_delivers() {
 }
 
 #[test]
+fn accept_process_output_does_not_count_an_outputless_exit_as_delivery() {
+    let program = r#"(let ((process
+                            (make-process
+                             :name "quiet-exit"
+                             :command (list shell-file-name "-c" "exit 0")
+                             :noquery t
+                             :sentinel #'ignore)))
+                       (list (accept-process-output nil 1)
+                             (process-status process)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil exit)");
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("outputless-exit contract should parse")
+        .expect("outputless-exit contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("outputless-exit contract should evaluate"),
+        Value::list([Value::Nil, Value::symbol("exit")])
+    );
+}
+
+#[test]
 fn make_network_process_requires_the_gnu_name_contract() {
     let program = "(prin1 (list (make-network-process)\
                    (condition-case err (make-network-process :server t) (error err))\
@@ -15111,6 +15137,39 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
     assert!(
         saw_timer.get(),
         "timer work performed inside read-event must reach redisplay"
+    );
+}
+
+#[test]
+fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
+    crate::test_support::mark_process_test();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    set_tty_event_poller(Some(Box::new(|| Some(None))));
+    let result = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"
+          (let ((process
+                 (make-process
+                  :name "timed-tty-process-pump"
+                  :command (list (executable-find "sh") "-c" "printf ready")
+                  :noquery t
+                  :filter
+                  (lambda (_process _text)
+                    (run-at-time
+                     0 nil
+                     (lambda () (throw 'timed-tty-process-ready 'ready)))))))
+            (catch 'timed-tty-process-ready
+              (read-event nil t 1)
+              'timeout))
+        "#,
+    );
+    set_tty_event_poller(None);
+    assert_eq!(
+        result.expect("process callback interrupts the timed TTY wait"),
+        Value::symbol("ready")
     );
 }
 

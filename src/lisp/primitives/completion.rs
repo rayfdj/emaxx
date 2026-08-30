@@ -688,7 +688,7 @@ pub(crate) fn filtered_completion_matches(
 
     // A FUNCTION completion table answers (TABLE STRING PRED t) with the
     // list of matching completions itself.
-    if completion_table_is_function(interp, collection) {
+    if completion_table_is_function(interp, collection, env) {
         let all = call_function_value(
             interp,
             collection,
@@ -744,7 +744,7 @@ fn completion_collection_function(
 ) -> Result<Option<Value>, LispError> {
     let function = match collection {
         Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
-        _ if callable_value_p(interp, collection) => collection.clone(),
+        _ if callable_value_p(interp, collection, env) => collection.clone(),
         _ => return Ok(None),
     };
     Ok(Some(function))
@@ -1491,10 +1491,14 @@ pub(crate) fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
 }
 
 // Whether COLLECTION is a programmed completion table (a function).
-pub(crate) fn completion_table_is_function(interp: &Interpreter, collection: &Value) -> bool {
+pub(crate) fn completion_table_is_function(
+    interp: &Interpreter,
+    collection: &Value,
+    env: &Env,
+) -> bool {
     match collection {
         Value::Symbol(_) | Value::Lambda(_) | Value::BuiltinFunc(_) => true,
-        Value::Record(_) => callable_value_p(interp, collection),
+        Value::Record(_) => callable_value_p(interp, collection, env),
         Value::Cons(_) => matches!(
             collection.car(),
             Ok(Value::Symbol(head)) if head == "lambda" || head == "closure"

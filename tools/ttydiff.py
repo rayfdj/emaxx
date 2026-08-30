@@ -53,6 +53,7 @@ FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
 COMPLETIONS_DIR_NAME = "emaxxffcomp"
 COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
 FIELDNOTES_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fieldnotes.org"
+FAKE_LSP_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fake_lsp_server.py"
 SCENARIO_MTIME = 946684800
 
 
@@ -2785,6 +2786,160 @@ SCENARIOS += [
     ),
 ]
 
+EGLOT_SCENARIO_NAMES = (
+    "eglot-connect-diagnostics-completion-hover",
+    "eglot-xref-rename-edits",
+    "eglot-reconnect-shutdown",
+)
+
+_FAKE_LSP_LISP_PATH = json.dumps(str(FAKE_LSP_FIXTURE_PATH)).encode("utf-8")
+EGLOT_SETUP = action(
+    "connect-fake-language-server",
+    b"\x1b:(progn (require 'eglot) "
+    b"(setq eglot-sync-connect t eglot-autoreconnect t "
+    b"project-vc-extra-root-markers '(\".ttydiff-project\") "
+    b"eglot-server-programs (list (list 'c-mode (executable-find \"python3\") "
+    + _FAKE_LSP_LISP_PATH
+    + b"))) (call-interactively #'eglot) nil)\r",
+    settle=8.0,
+    quiet=1.0,
+)
+
+EGLOT_OPTIONS = {
+    "separate_targets": True,
+    "target_parent": "project",
+    "extra_files": {"project/.ttydiff-project": "fixture project root\n"},
+}
+
+EGLOT_SAMPLE = """int alpha = 1;
+int main(void) {
+  return alpha;
+}
+"""
+
+SCENARIOS += [
+    (
+        "eglot-connect-diagnostics-completion-hover",
+        EGLOT_SAMPLE,
+        [
+            EGLOT_SETUP,
+            action(
+                "visit-next-diagnostic",
+                b"\x1bg\x1bn",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action("append-completion-prefix", b"\x1b>alp", checkpoint=False),
+            action(
+                "complete-through-language-server",
+                b"\x1b\t",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action("find-hover-symbol", b"\x1b<\x13alpha\r\x1bb", checkpoint=False),
+            action(
+                "show-language-server-eldoc",
+                b"\x08.",
+                settle=4.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        EGLOT_OPTIONS,
+    ),
+    (
+        "eglot-xref-rename-edits",
+        EGLOT_SAMPLE,
+        [
+            # didOpen immediately publishes diagnostics, so sampling the setup
+            # frame here would compare which side of that genuine notification
+            # race each editor reached.  The first scenario compares connect
+            # strictly; here the following edit forces a deterministic
+            # didChange/diagnostic round trip before the first checkpoint.
+            action(
+                EGLOT_SETUP.name,
+                EGLOT_SETUP.keys,
+                checkpoint=False,
+                settle=EGLOT_SETUP.settle,
+                quiet=EGLOT_SETUP.quiet,
+            ),
+            action("edit-after-connect", b"\x1b>\ralpha", settle=3.0, quiet=1.0),
+            action(
+                "find-reference-symbol",
+                b"\x1b<\x13return alpha\r\x1bb",
+                checkpoint=False,
+            ),
+            action("xref-definition", b"\x1b.", settle=4.0, quiet=1.0),
+            action(
+                "open-language-server-rename",
+                b"\x1bxeglot-rename\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "rename-through-language-server",
+                b"renamed\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "save-renamed-document",
+                b"\x18\x13",
+                # The save message contains the deliberately different temp
+                # roots.  The next checkpoint compares buffer state and exact
+                # isolated fixture trees, so the save is not inferred from a
+                # normalized message or an unchecked side effect.
+                checkpoint=False,
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-saved-document",
+                b"\x1b:(buffer-modified-p)\r",
+                settle=3.0,
+                quiet=1.0,
+                filesystem=True,
+            ),
+        ],
+        ".c",
+        EGLOT_OPTIONS,
+    ),
+    (
+        "eglot-reconnect-shutdown",
+        EGLOT_SAMPLE,
+        [
+            EGLOT_SETUP,
+            action(
+                "interrupt-language-server",
+                b"\x1b:(delete-process (jsonrpc--process (eglot-current-server)))\r",
+                settle=8.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-reconnected-server",
+                b"\x1b:(and (eglot-current-server) "
+                b"(jsonrpc-running-p (eglot-current-server)))\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "shutdown-language-server",
+                b"\x1bxeglot-shutdown\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-server-stopped",
+                b"\x1b:(eglot-current-server)\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        EGLOT_OPTIONS,
+    ),
+]
+
 FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
     "org-fieldnotes-todo-cycle",
     "org-fieldnotes-priority",
@@ -3693,7 +3848,9 @@ def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
     basename = f"ttydiff-{name}{suffix}"
     targets = []
     for root in roots:
-        path = os.path.join(root, basename)
+        parent = Path(root) / options.get("target_parent", "")
+        parent.mkdir(parents=True, exist_ok=True)
+        path = str(parent / basename)
         with open(path, "w") as out:
             out.write(contents)
         for relative, body in options.get("extra_files", {}).items():

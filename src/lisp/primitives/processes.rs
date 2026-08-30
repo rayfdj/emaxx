@@ -454,6 +454,8 @@ pub(crate) struct MakeProcessArgs {
     pub(crate) coding: Option<(Value, Value)>,
     pub(crate) name: Option<String>,
     pub(crate) stderr_process_id: Option<u64>,
+    pub(crate) stderr_buffer_id: Option<u64>,
+    pub(crate) query_on_exit_flag: bool,
     pub(crate) file_handler: bool,
     pub(crate) connection_type: Option<Value>,
 }
@@ -476,6 +478,8 @@ pub(crate) fn parse_make_process_args(
     let mut coding = None;
     let mut name = None;
     let mut stderr_process_id = None;
+    let mut stderr_buffer_id = None;
+    let mut query_on_exit_flag = true;
     let mut file_handler = false;
     let mut connection_type = None;
 
@@ -494,8 +498,13 @@ pub(crate) fn parse_make_process_args(
             ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
             ":coding" => coding = Some(process_coding_pair(value)?),
             ":stderr" if !value.is_nil() => {
-                stderr_process_id = Some(interp.resolve_process_id(value)?);
+                if let Ok(process_id) = interp.resolve_process_id(value) {
+                    stderr_process_id = Some(process_id);
+                } else {
+                    stderr_buffer_id = process_buffer_target(interp, value)?;
+                }
             }
+            ":noquery" => query_on_exit_flag = !value.is_truthy(),
             ":file-handler" => file_handler = value.is_truthy(),
             ":connection-type" => connection_type = Some(value.clone()),
             _ => {}
@@ -511,6 +520,8 @@ pub(crate) fn parse_make_process_args(
         coding,
         name,
         stderr_process_id,
+        stderr_buffer_id,
+        query_on_exit_flag,
         file_handler,
         connection_type,
     })
@@ -2112,7 +2123,9 @@ fn run_process_log(
 /// sleeping blind.  While progress is being made the loop re-pumps
 /// immediately, so an in-process client/server exchange completes at full
 /// speed rather than one round-trip per wait call.  With RETURN_ON_DELIVERY
-/// (accept-process-output) the wait ends as soon as output was handled.
+/// (accept-process-output) the wait ends as soon as output was handled.  A
+/// status change or sentinel alone is progress, but GNU does not report it as
+/// delivered process output.
 /// Returns whether any process output was delivered.
 pub(crate) fn wait_pumping_processes(
     interp: &mut Interpreter,
@@ -2123,26 +2136,40 @@ pub(crate) fn wait_pumping_processes(
 ) -> Result<bool, LispError> {
     let deadline = total.map(|total| std::time::Instant::now() + total);
     let mut delivered = false;
+    let mut delivery_grace_deadline = None;
     let target_start =
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
+    let all_processes_start = interp.current_thread_process_output_delivery_count();
     loop {
         let mut progressed = pump_external_process_output(interp, env)?;
         progressed |= pump_connection_processes(interp, env)?;
-        delivered |= progressed;
+        let any_process_delivered =
+            interp.current_thread_process_output_delivery_count() != all_processes_start;
+        delivered |= any_process_delivered;
+        if return_on_delivery && target_process_id.is_none() && any_process_delivered {
+            // process.c:5657-5661 keeps waiting for up to one
+            // READ_OUTPUT_DELAY_INCREMENT (10ms) after some output.  This
+            // lets one readiness cycle drain sibling descriptors instead of
+            // returning on the first short stderr write while stdout is
+            // becoming readable (the ordinary JSON-RPC startup pattern).
+            delivery_grace_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
+        }
         interp.drive_threads(env, true)?;
         let requested_process_delivered = target_process_id.is_some_and(|process_id| {
             interp.process_output_delivery_count(process_id) != target_start
         });
-        if return_on_delivery
-            && if target_process_id.is_some() {
-                requested_process_delivered
-            } else {
-                delivered
-            }
-        {
+        if return_on_delivery && target_process_id.is_some() && requested_process_delivered {
             break;
         }
         let now = std::time::Instant::now();
+        if return_on_delivery
+            && target_process_id.is_none()
+            && delivered
+            && delivery_grace_deadline.is_some_and(|grace| now >= grace)
+        {
+            break;
+        }
         if deadline.is_some_and(|deadline| now >= deadline) {
             // Timer/thread callbacks above can consume the remainder of the
             // deadline while the requested child becomes readable.  Drain
@@ -2179,6 +2206,9 @@ pub(crate) fn wait_pumping_processes(
             .unwrap_or(std::time::Duration::from_millis(10));
         if let Some(due) = interp.next_timer_due() {
             nap = nap.min(due.saturating_duration_since(now));
+        }
+        if let Some(grace) = delivery_grace_deadline {
+            nap = nap.min(grace.saturating_duration_since(now));
         }
         nap = nap
             .min(std::time::Duration::from_millis(10))

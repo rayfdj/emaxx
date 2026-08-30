@@ -955,41 +955,16 @@ pub(crate) fn resolve_tty_face_attrs(
     // `(comint-highlight-prompt comint-highlight-prompt)').  Realize
     // each member and fold, letting an earlier member's set attributes
     // override a later one's.
-    if matches!(face, Value::Cons(_))
-        && let Ok(items) = face.to_vec()
-        && !items.is_empty()
-        && items
-            .iter()
-            .all(|item| matches!(item, Value::Symbol(name) if name != ":foreground" && name != ":background"))
-    {
-        // Merge per attribute with override semantics: an earlier
-        // member's EXPLICIT value wins even when it turns an attribute
-        // off — org-headline-done's `:bold nil' (its 8-color spec) must
-        // unbold the level face under it, exactly as merge_face_ref
-        // leaves unspecified attributes alone and takes specified ones.
-        let mut merged = TtyFaceAttrs::default();
-        for item in items.iter().rev() {
-            let options = resolve_tty_face_attr_options(interp, env, item);
-            if options.foreground.is_some() {
-                merged.foreground = options.foreground;
-            }
-            if options.background.is_some() {
-                merged.background = options.background;
-            }
-            if let Some(bold) = options.bold {
-                merged.bold = bold;
-            }
-            if let Some(underline) = options.underline {
-                merged.underline = underline;
-            }
-            if let Some(reverse) = options.reverse {
-                merged.reverse = reverse;
-            }
-            if let Some(extend) = options.extend {
-                merged.extend = extend;
-            }
-        }
-        return merged;
+    if matches!(face, Value::Cons(_)) {
+        let options = resolve_tty_face_reference_options(interp, env, face, 0);
+        return TtyFaceAttrs {
+            foreground: options.foreground,
+            background: options.background,
+            bold: options.bold.unwrap_or(false),
+            underline: options.underline.unwrap_or(false),
+            reverse: options.reverse.unwrap_or(false),
+            extend: options.extend.unwrap_or(false),
+        };
     }
     // `face-attribute' is GNU faces.el's; reach it through the ordinary
     // function cell, never the native dispatcher.
@@ -1045,6 +1020,7 @@ pub(crate) fn resolve_tty_face_attrs(
 /// `None' means the face leaves that attribute unspecified (inherit
 /// merged), a `Some' is an explicit value — explicit nil included, so
 /// a list merge can turn attributes off.
+#[derive(Default)]
 pub(crate) struct TtyFaceAttrOptions {
     pub(crate) foreground: Option<u8>,
     pub(crate) background: Option<u8>,
@@ -1052,6 +1028,104 @@ pub(crate) struct TtyFaceAttrOptions {
     pub(crate) underline: Option<bool>,
     pub(crate) reverse: Option<bool>,
     pub(crate) extend: Option<bool>,
+}
+
+fn merge_tty_face_options(base: &mut TtyFaceAttrOptions, overlay: TtyFaceAttrOptions) {
+    if overlay.foreground.is_some() {
+        base.foreground = overlay.foreground;
+    }
+    if overlay.background.is_some() {
+        base.background = overlay.background;
+    }
+    if overlay.bold.is_some() {
+        base.bold = overlay.bold;
+    }
+    if overlay.underline.is_some() {
+        base.underline = overlay.underline;
+    }
+    if overlay.reverse.is_some() {
+        base.reverse = overlay.reverse;
+    }
+    if overlay.extend.is_some() {
+        base.extend = overlay.extend;
+    }
+}
+
+/// Resolve the named, precedence-ordered list, and anonymous attribute
+/// plist face-reference forms used by the TTY renderer.  Propertized
+/// strings use the last form heavily (Flymake wraps its compilation face
+/// in `(:inherit ((FACE) default))').
+fn resolve_tty_face_reference_options(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    face: &Value,
+    depth: usize,
+) -> TtyFaceAttrOptions {
+    if depth >= 32 {
+        return TtyFaceAttrOptions::default();
+    }
+    let Value::Cons(_) = face else {
+        return resolve_tty_face_attr_options(interp, env, face);
+    };
+    let Ok(items) = face.to_vec() else {
+        return TtyFaceAttrOptions::default();
+    };
+    if !matches!(items.first(), Some(Value::Symbol(name)) if name.starts_with(':')) {
+        let mut merged = TtyFaceAttrOptions::default();
+        for item in items.iter().rev() {
+            let options = resolve_tty_face_reference_options(interp, env, item, depth + 1);
+            merge_tty_face_options(&mut merged, options);
+        }
+        return merged;
+    }
+
+    let mut pairs = items.chunks_exact(2);
+    let inherited = pairs
+        .clone()
+        .find(|pair| matches!(&pair[0], Value::Symbol(name) if name == ":inherit"))
+        .map(|pair| &pair[1])
+        .filter(|value| value.is_truthy());
+    let mut merged = inherited
+        .map(|value| resolve_tty_face_reference_options(interp, env, value, depth + 1))
+        .unwrap_or_default();
+    let color_index = |interp: &mut Interpreter, env: &mut Env, value: &Value| {
+        value.is_string().then_some(())?;
+        interp
+            .call_function_value(
+                Value::Symbol("tty-color-translate".into()),
+                None,
+                std::slice::from_ref(value),
+                env,
+            )
+            .ok()
+            .and_then(|index| index.as_integer().ok())
+            .and_then(|index| u8::try_from(index).ok())
+    };
+    for pair in &mut pairs {
+        let Value::Symbol(name) = &pair[0] else {
+            continue;
+        };
+        let value = &pair[1];
+        if matches!(value, Value::Symbol(name) if name == "unspecified") {
+            continue;
+        }
+        match name.as_ref() {
+            ":foreground" => merged.foreground = color_index(interp, env, value),
+            ":background" => merged.background = color_index(interp, env, value),
+            ":weight" => {
+                merged.bold = Some(matches!(value, Value::Symbol(weight)
+                    if weight == "bold"
+                        || weight == "semi-bold"
+                        || weight == "extra-bold"
+                        || weight == "ultra-bold"));
+            }
+            ":underline" => merged.underline = Some(value.is_truthy()),
+            ":inverse-video" => merged.reverse = Some(value.is_truthy()),
+            ":extend" => merged.extend = Some(value.is_truthy()),
+            _ => {}
+        }
+    }
+    merged
 }
 
 fn resolve_tty_face_attr_options(
@@ -4097,6 +4171,22 @@ define_dispatch!(
                         Value::Nil,
                     )?;
                 }
+                // GNU's set-window-buffer refreshes the window's margin
+                // widths from the newly displayed buffer even when the
+                // window already shows that buffer.  Flymake relies on
+                // precisely that same-buffer refresh after setting its
+                // buffer-local TTY margin widths.
+                let margin_width = |name: &str| {
+                    interp
+                        .buffer_local_value(buffer_id, name)
+                        .and_then(|value| value.as_integer().ok())
+                        .filter(|width| *width > 0)
+                };
+                interp.set_window_margins(
+                    window_id,
+                    margin_width("left-margin-width"),
+                    margin_width("right-margin-width"),
+                );
                 Ok(Value::Nil)
             }
             "window-list" | "window-list-1" => {
