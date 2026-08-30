@@ -2941,6 +2941,217 @@ SCENARIOS += [
     ),
 ]
 
+LSP_MODE_SCENARIO_NAMES = (
+    "lsp-mode-connect-diagnostics-completion-hover",
+    "lsp-mode-xref-rename-edits",
+    "lsp-mode-reconnect-shutdown",
+    "lsp-mode-ui-buffers",
+)
+
+LSP_MODE_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"LSP_MODE_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory) "
+    b"lsp-session-file (expand-file-name \"session-v1\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) (require 'lsp-mode) "
+    # lsp-mode intentionally renders the OS-assigned server PID in its
+    # lighter, session browser, and log-buffer name.  Its initialize request
+    # also embeds `(emacs-version)', whose build target and dump date differ
+    # between independently-built editor binaries.  Pin those presentation
+    # inputs on both sides just as TIME_PIN pins clocks; process lifecycle is
+    # still exercised through the real process object and process-live-p.
+    b"(setq system-configuration \"ttydiff-system\" emacs-build-time nil) "
+    b"(cl-defmethod lsp-process-id ((_process process)) 4242) "
+    b"(defalias 'emacs-pid (lambda () 4242)) "
+    b"(defalias 'format-time-string (lambda (&rest _) \"12:00:00 AM\")) "
+    b"(defalias 'float-time (lambda (&rest _) 0.0)) "
+)
+
+LSP_MODE_SETUP = action(
+    "connect-installed-lsp-mode-to-fake-server",
+    b"\x1b:(progn "
+    + LSP_MODE_PACKAGE_SETUP
+    + b"(when (file-exists-p lsp-session-file) (delete-file lsp-session-file)) "
+    + b"(setq project-vc-extra-root-markers '(\".ttydiff-project\") "
+    b"lsp-auto-guess-root t lsp-enable-file-watchers nil "
+    b"lsp-diagnostics-provider :flymake lsp-completion-provider :capf "
+    b"lsp-log-io t lsp-restart 'auto-restart "
+    b"lsp-enabled-clients '(ttydiff-fake)) "
+    b"(lsp-register-client "
+    b"(make-lsp-client :new-connection "
+    b"(lsp-stdio-connection (list (executable-find \"python3\") "
+    + _FAKE_LSP_LISP_PATH
+    + b")) :activation-fn (lsp-activate-on \"c\") :priority 100 "
+    b":multi-root nil :server-id 'ttydiff-fake)) "
+    b"(lsp) nil)\r",
+    checkpoint=False,
+    settle=10.0,
+    quiet=1.0,
+)
+
+LSP_MODE_OPTIONS = {
+    "separate_targets": True,
+    "target_parent": "project",
+    "extra_files": {"project/.ttydiff-project": "fixture project root\n"},
+    "lsp_mode_package_root": True,
+}
+
+LSP_MODE_SHARED_OPTIONS = {
+    "separate_targets": False,
+    "lsp_mode_package_root": True,
+}
+
+SCENARIOS += [
+    (
+        "lsp-mode-connect-diagnostics-completion-hover",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action(
+                "verify-installed-lsp-mode-connected",
+                b"\x1b:(list lsp-mode (length (lsp-workspaces)) major-mode "
+                b"(length (flymake-diagnostics)))\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            # Flymake deliberately does not claim generic `next-error' by
+            # default.  A fresh GNU package load also has a native-comp
+            # *Compile-Log*, so M-g M-n correctly navigates that unrelated
+            # buffer.  Exercise Flymake's public diagnostic command itself.
+            action(
+                "visit-next-lsp-mode-diagnostic",
+                b"\x1bxflymake-goto-next-error\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action("append-lsp-mode-completion-prefix", b"\x1b>alp", checkpoint=False),
+            action(
+                "complete-through-lsp-mode",
+                b"\x1b\t",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "find-lsp-mode-hover-symbol",
+                b"\x1b<\x13alpha\r\x1bb",
+                checkpoint=False,
+            ),
+            action(
+                "show-lsp-mode-hover-buffer",
+                b"\x1bxlsp-describe-thing-at-point\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        LSP_MODE_OPTIONS,
+    ),
+    (
+        "lsp-mode-xref-rename-edits",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action("edit-after-lsp-mode-connect", b"\x1b>\ralpha", settle=3.0, quiet=1.0),
+            action(
+                "find-lsp-mode-reference-symbol",
+                b"\x1b<\x13return alpha\r\x1bb",
+                checkpoint=False,
+            ),
+            action("lsp-mode-xref-definition", b"\x1b.", settle=4.0, quiet=1.0),
+            action(
+                "open-lsp-mode-rename",
+                b"\x1bxlsp-rename\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "rename-through-lsp-mode",
+                b"renamed\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action(
+                "save-lsp-mode-renamed-document",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-lsp-mode-saved-document",
+                b"\x1b:(buffer-modified-p)\r",
+                settle=3.0,
+                quiet=1.0,
+                filesystem=True,
+            ),
+        ],
+        ".c",
+        LSP_MODE_OPTIONS,
+    ),
+    (
+        "lsp-mode-reconnect-shutdown",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action(
+                "restart-lsp-mode-workspace",
+                b"\x1bxlsp-restart-workspace\r",
+                settle=10.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-restarted-lsp-mode-workspace",
+                b"\x1b:(and (= (length (lsp-workspaces)) 1) "
+                b"(process-live-p (lsp--workspace-cmd-proc "
+                b"(car (lsp-workspaces)))))\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "shutdown-lsp-mode-workspace",
+                b"\x1bxlsp-shutdown-workspace\r",
+                settle=6.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-lsp-mode-workspace-stopped",
+                b"\x1b:(lsp-workspaces)\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        # This journey is read-only.  Give both editors the same fixture so
+        # lsp-mode's genuine root-path status message remains directly
+        # comparable even after terminal-width clipping removes its prefix.
+        LSP_MODE_SHARED_OPTIONS,
+    ),
+    (
+        "lsp-mode-ui-buffers",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action(
+                "show-lsp-mode-session-browser",
+                b"\x1bxlsp-describe-session\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action("return-from-lsp-mode-session-browser", b"q", checkpoint=False),
+            action(
+                "show-lsp-mode-io-log",
+                b"\x1bxlsp-workspace-show-log\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action("next-lsp-mode-log-entry", b"\x1bn", settle=3.0, quiet=1.0),
+        ],
+        ".c",
+        LSP_MODE_SHARED_OPTIONS,
+    ),
+]
+
 MAGIT_SCENARIO_NAMES = (
     "magit-status-sections-stage",
     "magit-diff-log-transient",
@@ -3877,13 +4088,14 @@ SCENARIOS += [
 def select_scenarios(names):
     """Return built-in scenarios, or the named subset in command-line order.
 
-    Magit is deliberately owned by ``magit_package_gate.py``: its scenarios
-    require the two clean installed package roots that gate supplies.  They
-    remain selectable by name but cannot poison a bare no-argument TTY run
-    that has no third-party package lifecycle.
+    Third-party package scenarios are deliberately owned by their package
+    gates: they require the two clean installed roots those gates supply.
+    They remain selectable by name but cannot poison a bare no-argument TTY
+    run that has no third-party package lifecycle.
     """
     if not names:
-        return [entry for entry in SCENARIOS if entry[0] not in MAGIT_SCENARIO_NAMES]
+        package_scenarios = set(MAGIT_SCENARIO_NAMES + LSP_MODE_SCENARIO_NAMES)
+        return [entry for entry in SCENARIOS if entry[0] not in package_scenarios]
     by_name = {entry[0]: entry for entry in SCENARIOS}
     unknown = [name for name in names if name not in by_name]
     if unknown:
@@ -4197,6 +4409,27 @@ def main():
                     sys.exit(2)
                 gnu_env["MAGIT_GATE_ROOT"] = os.path.abspath(roots[0])
                 emaxx_env["MAGIT_GATE_ROOT"] = os.path.abspath(roots[1])
+            if options.get("lsp_mode_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_LSP_MODE_GNU_ROOT",
+                    "EMAXX_TTYDIFF_LSP_MODE_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                if not all(roots):
+                    print(
+                        "ERROR: lsp-mode scenarios require %s"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print(
+                        "ERROR: lsp-mode package roots have no packages directory",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                gnu_env["LSP_MODE_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["LSP_MODE_GATE_ROOT"] = os.path.abspath(roots[1])
             ok = compare(
                 name,
                 keys,

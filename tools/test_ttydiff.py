@@ -23,6 +23,8 @@ from ttydiff import (
     HIGH_VALUE_COMMAND_SCENARIO_NAMES,
     MAGIT_PACKAGE_SETUP,
     MAGIT_SCENARIO_NAMES,
+    LSP_MODE_PACKAGE_SETUP,
+    LSP_MODE_SCENARIO_NAMES,
     PACKAGE_MENU_SCENARIO_NAMES,
     SCENARIOS,
     REGEXP_SEARCH_REPLACE_SCENARIO_NAMES,
@@ -77,7 +79,11 @@ class Vt100ScreenTests(unittest.TestCase):
     def test_scenario_selection_defaults_to_built_in_battery(self) -> None:
         self.assertEqual(
             [entry[0] for entry in select_scenarios([])],
-            [entry[0] for entry in SCENARIOS if entry[0] not in MAGIT_SCENARIO_NAMES],
+            [
+                entry[0]
+                for entry in SCENARIOS
+                if entry[0] not in MAGIT_SCENARIO_NAMES + LSP_MODE_SCENARIO_NAMES
+            ],
         )
 
     def test_scenario_selection_preserves_requested_order(self) -> None:
@@ -336,6 +342,92 @@ class Vt100ScreenTests(unittest.TestCase):
         finally:
             for target in cleanup:
                 remove_scenario_target(target)
+
+    def test_lsp_mode_journeys_load_only_the_installed_package_root(self) -> None:
+        self.assertEqual(
+            LSP_MODE_SCENARIO_NAMES,
+            (
+                "lsp-mode-connect-diagnostics-completion-hover",
+                "lsp-mode-xref-rename-edits",
+                "lsp-mode-reconnect-shutdown",
+                "lsp-mode-ui-buffers",
+            ),
+        )
+        self.assertIn(b"package-initialize", LSP_MODE_PACKAGE_SETUP)
+        self.assertIn(b"(require 'lsp-mode)", LSP_MODE_PACKAGE_SETUP)
+        self.assertIn(b"LSP_MODE_GATE_ROOT", LSP_MODE_PACKAGE_SETUP)
+        self.assertNotIn(b"emaxx", LSP_MODE_PACKAGE_SETUP.lower())
+        scenarios = {entry[0]: entry for entry in SCENARIOS}
+        self.assertTrue(
+            set(LSP_MODE_SCENARIO_NAMES).isdisjoint(
+                entry[0] for entry in select_scenarios([])
+            )
+        )
+        self.assertEqual(
+            [entry[0] for entry in select_scenarios(LSP_MODE_SCENARIO_NAMES)],
+            list(LSP_MODE_SCENARIO_NAMES),
+        )
+        for name in LSP_MODE_SCENARIO_NAMES:
+            options = scenarios[name][4]
+            self.assertTrue(options["lsp_mode_package_root"])
+            self.assertEqual(
+                options["separate_targets"],
+                name
+                not in ("lsp-mode-reconnect-shutdown", "lsp-mode-ui-buffers"),
+            )
+            self.assertTrue(all(isinstance(item, Action) for item in scenarios[name][2]))
+            self.assertTrue(any(item.checkpoint for item in scenarios[name][2]))
+        checkpoints = {
+            name: {
+                item.name for item in scenarios[name][2] if item.checkpoint
+            }
+            for name in LSP_MODE_SCENARIO_NAMES
+        }
+        self.assertIn(
+            "verify-installed-lsp-mode-connected",
+            checkpoints["lsp-mode-connect-diagnostics-completion-hover"],
+        )
+        diagnostic = next(
+            item
+            for item in scenarios["lsp-mode-connect-diagnostics-completion-hover"][2]
+            if item.name == "visit-next-lsp-mode-diagnostic"
+        )
+        self.assertEqual(diagnostic.keys, b"\x1bxflymake-goto-next-error\r")
+        self.assertIn(
+            "complete-through-lsp-mode",
+            checkpoints["lsp-mode-connect-diagnostics-completion-hover"],
+        )
+        self.assertIn(
+            "show-lsp-mode-hover-buffer",
+            checkpoints["lsp-mode-connect-diagnostics-completion-hover"],
+        )
+        self.assertIn(
+            "rename-through-lsp-mode",
+            checkpoints["lsp-mode-xref-rename-edits"],
+        )
+        saved = next(
+            item
+            for item in scenarios["lsp-mode-xref-rename-edits"][2]
+            if item.name == "verify-lsp-mode-saved-document"
+        )
+        self.assertTrue(saved.checkpoint and saved.filesystem)
+        self.assertIn(
+            "verify-restarted-lsp-mode-workspace",
+            checkpoints["lsp-mode-reconnect-shutdown"],
+        )
+        self.assertIn(
+            "verify-lsp-mode-workspace-stopped",
+            checkpoints["lsp-mode-reconnect-shutdown"],
+        )
+        self.assertIn(
+            "show-lsp-mode-session-browser",
+            checkpoints["lsp-mode-ui-buffers"],
+        )
+        self.assertIn("show-lsp-mode-io-log", checkpoints["lsp-mode-ui-buffers"])
+        setup = scenarios[LSP_MODE_SCENARIO_NAMES[0]][2][0]
+        self.assertIn(str(FAKE_LSP_FIXTURE_PATH).encode(), setup.keys)
+        self.assertIn(b"lsp-stdio-connection", setup.keys)
+        self.assertIn(b"lsp-register-client", setup.keys)
 
     def test_mutating_dired_scenarios_get_isolated_same_named_directories(
         self,

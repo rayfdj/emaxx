@@ -576,6 +576,111 @@ impl Interpreter {
         }
     }
 
+    /// Give symbols produced by the Lisp reader the identity selected by the
+    /// dynamically active `obarray'.  The parser itself is intentionally
+    /// interpreter-free, so ordinary standard-obarray reads only need the
+    /// membership walk above.  A private obarray also requires replacing each
+    /// parsed symbol object with that table's identity-bearing value.
+    pub(crate) fn intern_read_symbols_in_value(
+        &mut self,
+        value: Value,
+        env: &Env,
+    ) -> Result<Value, LispError> {
+        let obarray = self.lookup_var("obarray", env).unwrap_or(Value::Nil);
+        if !matches!(&obarray, Value::Record(id) if !self.is_standard_obarray_id(*id)) {
+            self.intern_symbols_in_value(&value);
+            return Ok(value);
+        }
+        self.intern_read_symbols_in_obarray(value, &obarray, &mut HashSet::new())
+    }
+
+    fn intern_read_symbols_in_obarray(
+        &mut self,
+        value: Value,
+        obarray: &Value,
+        seen_cons_cells: &mut HashSet<usize>,
+    ) -> Result<Value, LispError> {
+        match value {
+            Value::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
+                crate::lisp::primitives::intern_in_obarray(self, obarray, &name)
+            }
+            Value::Cons(cell) => {
+                if seen_cons_cells.insert(crate::lisp::types::ConsCell::identity(&cell)) {
+                    let car = cell.car.borrow().clone();
+                    let cdr = cell.cdr.borrow().clone();
+                    let car = self.intern_read_symbols_in_obarray(car, obarray, seen_cons_cells)?;
+                    let cdr = self.intern_read_symbols_in_obarray(cdr, obarray, seen_cons_cells)?;
+                    *cell.car.borrow_mut() = car;
+                    *cell.cdr.borrow_mut() = cdr;
+                }
+                Ok(Value::Cons(cell))
+            }
+            Value::StringObject(state) => {
+                let mut borrowed = state.borrow_mut();
+                for span in &mut borrowed.props {
+                    for (_, property_value) in &mut span.props {
+                        *property_value = self.intern_read_symbols_in_obarray(
+                            property_value.clone(),
+                            obarray,
+                            seen_cons_cells,
+                        )?;
+                    }
+                }
+                drop(borrowed);
+                Ok(Value::StringObject(state))
+            }
+            Value::ReaderForm(form) => {
+                use crate::lisp::types::ReaderForm;
+
+                let mapped = match form.as_ref() {
+                    ReaderForm::CircularLabel { id, payload } => ReaderForm::CircularLabel {
+                        id: *id,
+                        payload: self.intern_read_symbols_in_obarray(
+                            payload.clone(),
+                            obarray,
+                            seen_cons_cells,
+                        )?,
+                    },
+                    ReaderForm::CircularReference(id) => ReaderForm::CircularReference(*id),
+                    ReaderForm::HashTable { fields } => ReaderForm::HashTable {
+                        fields: self.intern_read_symbol_fields(fields, obarray, seen_cons_cells)?,
+                    },
+                    ReaderForm::CharTable { fields } => ReaderForm::CharTable {
+                        fields: self.intern_read_symbol_fields(fields, obarray, seen_cons_cells)?,
+                    },
+                    ReaderForm::SubCharTable { fields } => ReaderForm::SubCharTable {
+                        fields: self.intern_read_symbol_fields(fields, obarray, seen_cons_cells)?,
+                    },
+                    ReaderForm::Record { slots } => ReaderForm::Record {
+                        slots: self.intern_read_symbol_fields(slots, obarray, seen_cons_cells)?,
+                    },
+                    ReaderForm::Closure { kind, slots } => ReaderForm::Closure {
+                        kind: *kind,
+                        slots: self.intern_read_symbol_fields(slots, obarray, seen_cons_cells)?,
+                    },
+                    ReaderForm::BoolVector { bits } => {
+                        ReaderForm::BoolVector { bits: bits.clone() }
+                    }
+                };
+                Ok(Value::ReaderForm(Rc::new(mapped)))
+            }
+            other => Ok(other),
+        }
+    }
+
+    fn intern_read_symbol_fields(
+        &mut self,
+        fields: &[Value],
+        obarray: &Value,
+        seen_cons_cells: &mut HashSet<usize>,
+    ) -> Result<Vec<Value>, LispError> {
+        fields
+            .iter()
+            .cloned()
+            .map(|field| self.intern_read_symbols_in_obarray(field, obarray, seen_cons_cells))
+            .collect()
+    }
+
     pub(crate) fn is_standard_obarray_id(&self, id: u64) -> bool {
         id == self.standard_obarray_id
     }

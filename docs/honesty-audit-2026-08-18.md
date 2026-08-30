@@ -3179,3 +3179,92 @@ initialization order, command-loop selected-buffer restoration,
 `set-window-buffer`'s `KEEP-MARGINS`, invisible-tail `window-end`, extending
 faces, and concrete inverse-color realization.  Production code contains no
 Magit command, fixture filename, repository state, or expected screen switch.
+
+## 2026-08-31 finding 139: lsp-mode package and TTY drafts exposed false-green seams
+
+The issue-22 gate constructs a disposable local archive from eight exact
+Stable MELPA and GNU ELPA tarballs, rehashes both cached and copied artifacts,
+and gives GNU Emacs and Emaxx separate empty package trees.  Both editors run
+the same `package-refresh-contents`, dependency transaction, installation,
+restart, autoload, and `require` forms.  The gate requires the exact
+eight-package transaction, all 159 exact `.elc` relative filenames, equal
+records, and installed-tree origins for lsp-mode and every external
+dependency.  Generated Lisp contains no editor branch or feature fabrication.
+
+The interactive phase launches the shared deterministic server as a real
+stdio subprocess through lsp-mode's public client registration API.  It
+strictly compares workspace connection, diagnostics, completion, hover, xref,
+rename and file bytes, restart/shutdown state, the tree-widget session browser,
+the JSON-RPC log, attributes, and cursor positions.  Mutable journeys use
+separate same-named projects; the read-only reconnect and UI journeys share a
+single fixture so genuine absolute-path messages remain directly comparable.
+There is no lsp-mode-specific output normalization or expected-screen branch.
+
+The adversarial pass rejected or corrected these false-green mechanisms before
+the release gate:
+
+1. Source reads under a private dynamic `obarray` initially registered symbol
+   names but retained standard-obarray identity.  The reader now recursively
+   replaces symbols in conses, string properties, vectors, records, closures,
+   hash tables, char tables, and circular reader forms with the selected
+   obarray's identity-bearing values.
+2. Nested record/hash literals read from lsp-mode's persisted session could
+   retain parser-private reader markers.  Every public read boundary now
+   materializes the complete object graph before package code observes it.
+3. Positioned symbols were unwrapped only by top-level `equal`/`eq` paths.
+   Recursive equality, membership, association, hash-table `equal`, lexical
+   alists, and `let`/`let*` bindings now honor the same dynamic GNU contract.
+4. Explicit process filters were invoked in the process buffer.  GNU invokes
+   them in the caller's current buffer and restores that buffer after a filter
+   changes it; the runtime and a direct GNU regression now enforce this.  The
+   audit also replaced that regression's hardcoded `/bin/sh` with the oracle's
+   `shell-file-name`.
+5. `all-completions` flattened matching propertized strings into new plain
+   strings.  It now returns the original string object, preserving identity
+   and properties through lsp-mode's completion pipeline.
+6. Echo restoration reconstructed a face-only string, losing other properties
+   from `current-message`.  The echo channel now retains the real Lisp string,
+   while the paint model derives its face spans from that value.
+7. `read-string` treated its HISTORY argument as a local keymap and copied
+   only the initial input's bytes.  It now uses `minibuffer-local-map` and
+   carries the suggested value's properties and extended characters into the
+   minibuffer.
+8. The TTY timer pump asked Lisp-level `float-time` whether timers were ripe.
+   The harness's legitimate clock pin therefore made future timers fire
+   immediately.  The scheduler now decodes timer vectors and compares them to
+   the native exact clock, matching the C scheduler rather than special-casing
+   lsp-mode.
+9. A blind minibuffer-height delta could be applied after Lisp had already
+   restored the window configuration, growing the root past the frame.  Each
+   redisplay now reconciles the desired root height against live window-tree
+   geometry; no extra redraw sequence remains in the journey.
+10. The renderer supported only `:align-to` spaces.  It now implements numeric
+    specified-space widths and equal-property runs, including the zero-cell
+    TTY result of tree-widget's `:width 0.5`.  A second tree-widget blank came
+    from an overlay before-string whose own `(invisible t)` property was
+    ignored; overlay display objects now obey the buffer's invisibility spec
+    and remap their face spans after hidden cells.
+11. During diagnosis the session-browser screen checkpoint was temporarily
+    disabled to inspect its underlying buffer.  The diagnostic action and
+    files are gone, that checkpoint is restored, and structural tests require
+    the browser, log, lifecycle, completion, hover, rename, and final
+    filesystem checkpoints to remain enabled.
+12. lsp-mode deliberately prints process IDs, clocks, and `(emacs-version)`
+    build metadata.  Those OS/build-assigned presentation inputs are pinned
+    symmetrically before either editor starts the client.  The process object,
+    package transaction, JSON-RPC bytes, command results, and screen comparator
+    remain real; no observed output is rewritten after the fact.
+13. The first full clean-install gate exposed a warm-cache false green: GNU's
+    newly loaded package has a native-comp `*Compile-Log*`, so generic
+    `M-g M-n` correctly navigated compiler warnings.  Flymake's own
+    documentation confirms that it deliberately does not claim
+    `next-error-function` by default.  The diagnostic journey now invokes the
+    real public `flymake-goto-next-error` command through `M-x`, measuring the
+    required lsp-mode/Flymake integration without configuring Flymake,
+    deleting the compile buffer, or normalizing the resulting screen.
+
+Production source contains no lsp-mode command, fake-server response, fixture
+filename, package version switch, or expected screen value.  The package
+journeys remain named permanent scenarios but are excluded from the bare TTY
+battery, whose environment cannot supply freshly verified package roots; the
+dedicated package gate owns and supplies those roots explicitly.

@@ -62,7 +62,7 @@ pub(crate) fn hash_table_key_matches(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     match test {
-        "equal" => Ok(values_equal(interp, left, right)),
+        "equal" => Ok(values_equal_in_env(interp, left, right, env)),
         "eq" => Ok(values_eq_in_env(interp, left, right, env)),
         "eql" => Ok(values_eql(left, right)),
         _ => {

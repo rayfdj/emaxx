@@ -205,12 +205,25 @@ impl Interpreter {
                         frame.push((name.to_string(), Value::Nil));
                     }
                 }
+                Value::Record(_)
+                    if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+                        && crate::lisp::primitives::symbol_with_pos_parts(self, binding)
+                            .is_some() =>
+                {
+                    let name = crate::lisp::primitives::checked_symbol_name(self, binding, env)?;
+                    Self::check_let_binding_name(&name)?;
+                    if self.binding_is_dynamic(&name, env) {
+                        special_bindings.push((name, Value::Nil));
+                    } else {
+                        frame.push((name, Value::Nil));
+                    }
+                }
                 Value::Cons(_) => {
                     let parts = binding.to_vec()?;
                     let Some(name_value) = parts.first() else {
                         return Err(LispError::ReadError("bad let binding".into()));
                     };
-                    let name = name_value.as_symbol()?.to_string();
+                    let name = crate::lisp::primitives::checked_symbol_name(self, name_value, env)?;
                     Self::check_let_binding_name(&name)?;
                     let val = if parts.len() > 1 {
                         self.eval(&parts[1], env)?
@@ -271,12 +284,23 @@ impl Interpreter {
                         Self::check_let_binding_name(name)?;
                         (name.to_string(), Value::Nil)
                     }
+                    Value::Record(_)
+                        if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+                            && crate::lisp::primitives::symbol_with_pos_parts(self, binding)
+                                .is_some() =>
+                    {
+                        let name =
+                            crate::lisp::primitives::checked_symbol_name(self, binding, env)?;
+                        Self::check_let_binding_name(&name)?;
+                        (name, Value::Nil)
+                    }
                     Value::Cons(_) => {
                         let parts = binding.to_vec()?;
                         let Some(name_value) = parts.first() else {
                             return Err(LispError::ReadError("bad let* binding".into()));
                         };
-                        let name = name_value.as_symbol()?.to_string();
+                        let name =
+                            crate::lisp::primitives::checked_symbol_name(self, name_value, env)?;
                         Self::check_let_binding_name(&name)?;
                         let value = if parts.len() > 1 {
                             self.eval(&parts[1], env)?

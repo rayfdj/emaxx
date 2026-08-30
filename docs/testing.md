@@ -270,6 +270,14 @@ journeys against deterministic Git repositories.  See
 [`docs/magit-compatibility.md`](magit-compatibility.md) for the exact command,
 scenario inventory, determinism boundary, and anti-cheat evidence.
 
+The third-party lsp-mode contract likewise installs a hash-pinned release and
+dependency closure through `package.el`, verifies the exact compiled payload
+after a clean restart, and exercises real stdio JSON-RPC workspaces through
+strict diagnostics, completion, hover, xref, rename, lifecycle, and UI-buffer
+TTY journeys.  See
+[`docs/lsp-mode-compatibility.md`](lsp-mode-compatibility.md) for the pinned
+inventory, commands, deterministic inputs, and scope boundary.
+
 For normal development:
 
 1. `cargo test --lib`

@@ -964,7 +964,15 @@ pub fn load_file_strict(
             // macroexpander.  Delaying source `#^[...]' materialization until eval
             // leaked a private ReaderForm into macroexp.el and made generated
             // Unicode tables look like source syntax instead of opaque values.
-            interp.intern_symbols_in_value(&form);
+            let form = match interp.intern_read_symbols_in_value(form, &env) {
+                Ok(form) => form,
+                Err(error) => {
+                    let _ =
+                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                    interp.set_current_load_file(previous);
+                    return Err(error);
+                }
+            };
             let form = match interp.materialize_read_object_literals(form) {
                 Ok(form) => form,
                 Err(error) => {

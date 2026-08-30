@@ -1167,26 +1167,30 @@ pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_secon
     if interp.lookup_function("timer-event-handler", env).is_err() {
         return false;
     }
-    let timer_seconds = |interp: &mut Interpreter, env: &mut Env, timer: &Value| {
-        let time = interp
-            .call_function_value(
-                Value::Symbol("timer--time".into()),
-                None,
-                std::slice::from_ref(timer),
-                env,
-            )
-            .ok()?;
-        interp
-            .call_function_value(
-                Value::Symbol("float-time".into()),
-                None,
-                std::slice::from_ref(&time),
-                env,
-            )
-            .ok()?
-            .as_float()
-            .ok()
+    // keyboard.c's decode_timer reads the timer vector and compares its
+    // exact timestamp against the C clock.  Going back through the Lisp
+    // accessors here is observably wrong: applications are free to advise or
+    // redefine `float-time' for presentation, and that must not make every
+    // delayed timer immediately ripe.
+    let decode_timer = |interp: &Interpreter, timer: &Value| {
+        let slots = vector_items(timer).ok()?;
+        if slots.len() < 9 {
+            return None;
+        }
+        let time = exact_time_from_old_style(
+            interp,
+            &[
+                slots[1].clone(),
+                slots[2].clone(),
+                slots[3].clone(),
+                slots[8].clone(),
+            ],
+        )
+        .ok()?;
+        Some((time, slots[0].is_truthy()))
     };
+    let wall_now = current_time_value().ok();
+    let idle_now = exact_time_from_float(idle_seconds).ok();
     let mut ran = false;
     for (list_name, idle) in [("timer-idle-list", true), ("timer-list", false)] {
         let Some(timers) = interp
@@ -1196,25 +1200,18 @@ pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_secon
             continue;
         };
         for timer in timers {
-            let Some(time) = timer_seconds(interp, env, &timer) else {
+            let Some((time, triggered)) = decode_timer(interp, &timer) else {
                 continue;
             };
             let due = if idle {
-                let triggered = interp
-                    .call_function_value(
-                        Value::Symbol("timer--triggered".into()),
-                        None,
-                        std::slice::from_ref(&timer),
-                        env,
-                    )
-                    .is_ok_and(|value| value.is_truthy());
-                time <= idle_seconds && !triggered
+                idle_now
+                    .as_ref()
+                    .is_some_and(|now| !exact_time_less(now, &time))
+                    && !triggered
             } else {
-                interp
-                    .call_function_value(Value::Symbol("float-time".into()), None, &[], env)
-                    .ok()
-                    .and_then(|now| now.as_float().ok())
-                    .is_some_and(|now| time <= now)
+                wall_now
+                    .as_ref()
+                    .is_some_and(|now| !exact_time_less(now, &time))
             };
             if due {
                 ran = true;

@@ -69,6 +69,56 @@ fn assq_and_rassq_obey_gnu_eq_for_positioned_symbols() {
 }
 
 #[test]
+fn structural_equality_and_searches_unwrap_positioned_symbols_only_while_enabled() {
+    // GNU 30.2 fns.c's recursive `equal' walk and the searches built on it
+    // see the underlying symbol while the byte compiler dynamically enables
+    // source positions.  Generated package code relies on this for keyword
+    // membership tests during macro expansion.
+    assert_eq!(
+        eval_str_bare(
+            r#"(let ((positioned (position-symbol :line 1)))
+                  (list
+                   (let ((symbols-with-pos-enabled nil))
+                     (list (equal positioned :line)
+                           (equal (list positioned) '(:line))
+                           (member positioned '(:line))
+                           (assoc positioned '((:line . found)))
+                           (rassoc positioned '((found . :line)))
+                           (member (list positioned) '((:line)))
+                           (equal (vector positioned) [:line])))
+                   (let ((symbols-with-pos-enabled t))
+                     (list (equal positioned :line)
+                           (equal (list positioned) '(:line))
+                           (if (member positioned '(:line)) t nil)
+                           (if (assoc positioned '((:line . found))) t nil)
+                           (if (rassoc positioned '((found . :line))) t nil)
+                           (if (member (list positioned) '((:line))) t nil)
+                           (equal (vector positioned) [:line])))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ]),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn feature_primitives_accept_positioned_symbols_while_enabled() {
     // GNU 30.2 fns.c implements all three entry points with CHECK_SYMBOL;
     // XSYMBOL then addresses the positioned object's underlying symbol.
@@ -119,6 +169,44 @@ fn read_positioning_symbols_positions_expanded_and_shorthand_exempt_symbols() {
         Value::list([
             Value::String("(#<symbol defun at 1> #<symbol long-target at 7> nil 42)".into()),
             Value::String("#<symbol s-raw at 2>".into()),
+        ])
+    );
+}
+
+#[test]
+fn read_positioning_symbols_materializes_hash_literals_before_macroexpansion() {
+    // bytecomp.el reads source with positions enabled.  GNU returns the real
+    // identity-bearing hash table, keeps its payload symbols bare, and still
+    // locates an ordinary source symbol after that opaque literal.
+    assert_eq!(
+        eval_str_bare(
+            r#"(let* ((form (read-positioning-symbols
+                            "(#s(hash-table data (foo bar)) tail)"))
+                       (table (car form))
+                       (tail (car (cdr form)))
+                       entry)
+                  (maphash (function
+                            (lambda (key value)
+                              (setq entry
+                                    (list (symbol-with-pos-p key)
+                                          (symbol-with-pos-p value)
+                                          key value))))
+                           table)
+                  (list (hash-table-p table)
+                        entry
+                        (symbol-with-pos-p tail)
+                        (format "%S" tail)))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Symbol("foo".into()),
+                Value::Symbol("bar".into()),
+            ]),
+            Value::T,
+            Value::String("#<symbol tail at 31>".into()),
         ])
     );
 }
@@ -6625,6 +6713,40 @@ fn propertized_messages_carry_face_spans_to_the_echo_area() {
 }
 
 #[test]
+fn current_message_preserves_properties_when_a_temporary_message_restores_it() {
+    let mut interp = Interpreter::new();
+    let properties = eval_str_with(
+        &mut interp,
+        "(progn
+           (message \"%s\"
+                    (concat \"Type \"
+                            (propertize \"q\" 'face 'help-key-binding
+                                             'font-lock-face 'help-key-binding)))
+           (let ((saved (current-message)))
+             (message \"temporary\")
+             (message \"%s\" saved))
+           (let ((restored (current-message)))
+             (list (get-text-property 5 'face restored)
+                   (get-text-property 5 'font-lock-face restored))))",
+    );
+    assert_eq!(
+        properties,
+        Value::list([
+            Value::Symbol("help-key-binding".into()),
+            Value::Symbol("help-key-binding".into()),
+        ]),
+        "current-message keeps the Lisp string's complete property set"
+    );
+    let (text, spans) = crate::lisp::primitives::echo_area_message_with_spans().unwrap();
+    assert_eq!(text, "Type q");
+    assert_eq!(
+        spans,
+        vec![(5, 6, Value::Symbol("help-key-binding".into()))],
+        "restoring through message keeps the face on the echo glass"
+    );
+}
+
+#[test]
 fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
@@ -6644,7 +6766,7 @@ fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
     let active = crate::lisp::primitives::activate_minibuffer(
         &mut interp,
         &prompt,
-        "",
+        &Value::String("".into()),
         Value::Nil,
         &mut env,
     )
