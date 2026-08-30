@@ -125,7 +125,11 @@ pub fn run_batch_with_actions(
                     // `emaxx --batch -l broken.el' failed with no diagnostic
                     // at all.  The report is for the harness; the message is
                     // for whoever ran the command.
-                    emit_unhandled_batch_error(&mut interpreter, &error);
+                    emit_unhandled_batch_error(
+                        &mut interpreter,
+                        &error,
+                        &command_line_bottom_frames(&actions, Some(&resolved)),
+                    );
                     return Ok(BatchRunOutcome::Exit(255));
                 }
                 if let Some(termination) = interpreter.take_pending_termination() {
@@ -159,7 +163,11 @@ pub fn run_batch_with_actions(
                         Ok(_) => {}
                         Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                         Err(error) => {
-                            emit_unhandled_batch_error(&mut interpreter, &error);
+                            emit_unhandled_batch_error(
+                                &mut interpreter,
+                                &error,
+                                &command_line_bottom_frames(&actions, None),
+                            );
                             return Ok(BatchRunOutcome::Exit(255));
                         }
                     }
@@ -174,7 +182,11 @@ pub fn run_batch_with_actions(
                     Ok(_) => {}
                     Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                     Err(error) => {
-                        emit_unhandled_batch_error(&mut interpreter, &error);
+                        emit_unhandled_batch_error(
+                            &mut interpreter,
+                            &error,
+                            &command_line_bottom_frames(&actions, None),
+                        );
                         return Ok(BatchRunOutcome::Exit(255));
                     }
                 }
@@ -207,7 +219,53 @@ pub fn run_batch_with_actions(
     Ok(BatchRunOutcome::Exit(0))
 }
 
-fn emit_unhandled_batch_error(interpreter: &mut Interpreter, error: &LispError) {
+/// GNU's batch backtrace bottoms out through the startup frames that ran
+/// the failing action: an optional `load' frame for `-l', then
+/// command-line-1 with the action arguments, command-line, and
+/// normal-top-level.  The argument list is reconstructed with canonical
+/// flag spellings, which is what the compat harness passes.
+fn command_line_bottom_frames(
+    actions: &[BatchAction],
+    load_target: Option<&Path>,
+) -> Vec<(String, Vec<Value>)> {
+    let mut frames = Vec::new();
+    if let Some(path) = load_target {
+        frames.push((
+            "load".to_string(),
+            vec![
+                Value::String(path.display().to_string().into()),
+                Value::Nil,
+                Value::T,
+            ],
+        ));
+    }
+    let mut cli_args = Vec::new();
+    for action in actions {
+        match action {
+            BatchAction::Load(target) => {
+                cli_args.push(Value::String("-l".into()));
+                cli_args.push(Value::String(target.clone().into()));
+            }
+            BatchAction::Eval(expression) => {
+                cli_args.push(Value::String("--eval".into()));
+                cli_args.push(Value::String(expression.clone().into()));
+            }
+            BatchAction::Funcall(function) => {
+                cli_args.push(Value::String("-f".into()));
+                cli_args.push(Value::String(function.clone().into()));
+            }
+        }
+    }
+    frames.push(("command-line-1".to_string(), vec![Value::list(cli_args)]));
+    frames.push(("command-line".to_string(), Vec::new()));
+    frames
+}
+
+fn emit_unhandled_batch_error(
+    interpreter: &mut Interpreter,
+    error: &LispError,
+    bottom_frames: &[(String, Vec<Value>)],
+) {
     eprintln!("{error}");
     let Some(backtrace) = interpreter.take_batch_error_backtrace() else {
         return;
@@ -215,33 +273,54 @@ fn emit_unhandled_batch_error(interpreter: &mut Interpreter, error: &LispError) 
     if !backtrace.enabled {
         return;
     }
+    // debug-early.el's debug--early: "\nError: " + prin1 of the error
+    // symbol and data under default print settings, then the frames under
+    // debug-early-backtrace's binds (print-escape-newlines,
+    // print-escape-control-characters, print-escape-nonascii all t).
+    let mut render_env: Env = Vec::new();
+    let prin1 = |interpreter: &mut Interpreter, env: &mut Env, value: &Value| {
+        lisp::primitives::print::render_prin1(interpreter, value, env)
+            .unwrap_or_else(|_| value.to_string())
+    };
     let condition = lisp::eval::error_condition_value(error);
     let rendered_condition = match condition.to_vec() {
         Ok(items) if !items.is_empty() => {
-            let kind = items[0].to_string();
+            let kind = prin1(interpreter, &mut render_env, &items[0]);
             let data = Value::list(items.into_iter().skip(1));
+            let data = prin1(interpreter, &mut render_env, &data);
             format!("{kind} {data}")
         }
-        _ => condition.to_string(),
+        _ => prin1(interpreter, &mut render_env, &condition),
     };
     eprintln!("\nError: {rendered_condition}");
+    for name in [
+        "print-escape-newlines",
+        "print-escape-control-characters",
+        "print-escape-nonascii",
+    ] {
+        lisp::primitives::print::set_env_binding(&mut render_env, name, Value::T);
+    }
     for (evald, function, args, _) in backtrace.frames {
+        let function = prin1(interpreter, &mut render_env, &function);
+        let args = args
+            .iter()
+            .map(|value| prin1(interpreter, &mut render_env, value))
+            .collect::<Vec<_>>()
+            .join(" ");
         if evald {
-            let args = args
-                .into_iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(" ");
             eprintln!("  {function}({args})");
         } else {
-            let args = args
-                .into_iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(" ");
             let separator = if args.is_empty() { "" } else { " " };
             eprintln!("  ({function}{separator}{args})");
         }
+    }
+    for (function, args) in bottom_frames {
+        let args = args
+            .iter()
+            .map(|value| prin1(interpreter, &mut render_env, value))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("  {function}({args})");
     }
     eprintln!("  normal-top-level()");
 }

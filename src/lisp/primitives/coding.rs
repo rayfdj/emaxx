@@ -557,14 +557,42 @@ pub(crate) fn bytes_to_shared_unibyte_value(bytes: &[u8]) -> Value {
     make_shared_string_value_with_multibyte(text, Vec::new(), false)
 }
 
-pub(crate) fn make_temp_name(prefix: &str) -> String {
+/// gen_tempname's random segment: exactly six characters from
+/// [a-zA-Z0-9].  Both `make-temp-name' and `make-temp-file-internal'
+/// draw from here; the SHAPE is observable (tests embed fixture paths in
+/// compared output), so the six-character form matters, not just
+/// uniqueness.
+pub(crate) fn random_temp_suffix() -> String {
+    const LETTERS: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let counter = TEMP_NAME_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let random = rand_simple().unsigned_abs();
-    format!("{prefix}{nanos:x}{counter:x}{random:x}")
+    let mut seed =
+        (nanos as u64) ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ rand_simple().unsigned_abs();
+    let mut suffix = String::with_capacity(6);
+    for _ in 0..6 {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        suffix.push(char::from(LETTERS[(seed >> 33) as usize % 62]));
+    }
+    suffix
+}
+
+pub(crate) fn make_temp_name(prefix: &str) -> String {
+    // fileio.c Fmake_temp_name -> gen_tempname (GT_NOCREATE): PREFIX plus
+    // the six-character random segment, regenerated while a file of that
+    // name exists.
+    let mut candidate = String::new();
+    for _ in 0..62 * 62 {
+        candidate = format!("{prefix}{}", random_temp_suffix());
+        if !std::path::Path::new(&candidate).exists() {
+            return candidate;
+        }
+    }
+    candidate
 }
 
 pub(crate) fn aset_vector_value(

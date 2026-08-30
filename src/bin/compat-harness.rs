@@ -326,7 +326,7 @@ struct IsolatedTestCheckout {
 
 impl IsolatedTestCheckout {
     fn clone(source: &Path, commit: &str, runner: &str) -> Result<Self, String> {
-        let root = unique_temp_path(&format!("checkout-{runner}"))?;
+        let root = unique_temp_path(&format!("checkout-{}", equal_width_runner_label(runner)))?;
         fs::create_dir(&root).map_err(|error| {
             format!("create isolated checkout root {}: {error}", root.display())
         })?;
@@ -1810,9 +1810,12 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         let emaxx_root = emaxx_checkout.checkout.display().to_string();
         let temp_root = std::env::temp_dir().display().to_string();
         let normalize = move |text: &str| {
-            text.replace(&oracle_root, "<checkout>")
-                .replace(&emaxx_root, "<checkout>")
-                .replace(&temp_root, "<tmp>")
+            canonicalize_temp_randomness(
+                &text
+                    .replace(&oracle_root, "<checkout>")
+                    .replace(&emaxx_root, "<checkout>")
+                    .replace(&temp_root, "<tmp>"),
+            )
         };
         let mut comparison =
             compat::compare_reports_normalized(&oracle_report, &emaxx_report, &normalize);
@@ -2529,6 +2532,74 @@ fn make_artifact_root(prefix: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Canonicalize OS-generated randomness that both runners legitimately
+/// embed in compared output, applied IDENTICALLY to both sides:
+///
+/// - each runner's isolated scratch directory
+///   (`emaxx-compat-<tag>-<pid>-<nanos>`) becomes `emaxx-compat-run` —
+///   the tag names which runner made the path and the numbers are
+///   per-invocation, so no faithful run can ever match on them;
+/// - `make-temp-name' randomness after ert-x's documented fixture prefix
+///   (`emacs-test-` + exactly six [A-Za-z0-9], gen_tempname's shape,
+///   which Emaxx now reproduces) becomes `emacs-test-``xxxxxx`.
+///
+/// Nothing else is touched: a name of the wrong SHAPE (length or
+/// alphabet) does not canonicalize and still scores as a divergence.
+fn canonicalize_temp_randomness(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &text[i..];
+        if let Some(tail) = rest.strip_prefix("emaxx-compat-") {
+            let mut consumed = None;
+            for tag in ["oracle-", "emaxx_-"] {
+                if let Some(after_tag) = tail.strip_prefix(tag) {
+                    let digits1 = after_tag.bytes().take_while(u8::is_ascii_digit).count();
+                    let after1 = &after_tag[digits1..];
+                    if digits1 > 0
+                        && let Some(after_dash) = after1.strip_prefix('-')
+                    {
+                        let digits2 = after_dash.bytes().take_while(u8::is_ascii_digit).count();
+                        if digits2 > 0 {
+                            consumed =
+                                Some("emaxx-compat-".len() + tag.len() + digits1 + 1 + digits2);
+                        }
+                    }
+                }
+            }
+            if let Some(length) = consumed {
+                out.push_str("emaxx-compat-run");
+                i += length;
+                continue;
+            }
+        }
+        if let Some(tail) = rest.strip_prefix("emacs-test-") {
+            let random = tail.bytes().take_while(u8::is_ascii_alphanumeric).count();
+            if random == 6 {
+                out.push_str("emacs-test-xxxxxx");
+                i += "emacs-test-".len() + 6;
+                continue;
+            }
+        }
+        let ch = rest.chars().next().expect("in-bounds char");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Runner tags padded to one width.  ERT's failure explanations embed raw
+/// string LENGTHS (`arrays-of-different-length 45 94 ...`); with
+/// "checkout-oracle" one byte longer than "checkout-emaxx", every
+/// length-sensitive explanation differed by exactly that byte after path
+/// normalization — a harness artifact scored as a mismatch.  Equal-width
+/// tags keep both runners' isolated paths the same length (the pid is
+/// shared and the nanosecond field has a fixed width in this era).
+fn equal_width_runner_label(runner: &str) -> String {
+    format!("{runner:_<6}")
+}
+
 fn unique_temp_path(label: &str) -> Result<PathBuf, String> {
     Ok(env::temp_dir().join(format!(
         "emaxx-compat-{label}-{}-{}",
@@ -2548,7 +2619,7 @@ fn configure_isolated_temp_directory(
     command: &mut Command,
     runner: &str,
 ) -> Result<RunnerTempDirectory, String> {
-    let temp_directory = unique_temp_path(runner)?;
+    let temp_directory = unique_temp_path(&equal_width_runner_label(runner))?;
     fs::create_dir(&temp_directory)
         .map_err(|error| format!("create {}: {error}", temp_directory.display()))?;
     // Keep each side independent of the developer's shared temp directory

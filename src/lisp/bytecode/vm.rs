@@ -147,12 +147,11 @@ struct Handler {
     registry_start: Option<usize>,
 }
 
-/// Whether `EMAXX_TRACE_LOAD_ERRORS' asks for VM dispatch traces, read
-/// once per process: `run_with_stack' consults it on every bytecode
-/// call, and a getenv there scans the whole environment block each time.
+/// Whether `EMAXX_TRACE_LOAD_ERRORS' asks for VM dispatch traces — the
+/// process-wide latch, taken before main() scrubs the variable from the
+/// environment so children and Lisp `getenv' stay oracle-clean.
 fn trace_load_errors() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some())
+    crate::lisp::trace_load_errors_enabled()
 }
 
 /// Materialize a constant still in reader form.  GNU's reader constructs
@@ -1459,7 +1458,16 @@ fn run_with_stack(
                     // cyclic widget graph in the payload overflowed the
                     // stack after gigabytes of trace (custom-tests.el under
                     // the harness), killing the child with no report.
-                    if trace_errors && !matches!(error, LispError::Throw(_, _)) {
+                    // An error a live condition-case/handler-bind frame is
+                    // about to absorb is invisible in GNU, so the trace
+                    // speaks only for errors headed to the toplevel report
+                    // (cl-generic's bootstrap raises and handles one on
+                    // every boot; a child process spawned by a test must
+                    // not leak that into its measured stderr).
+                    if trace_errors
+                        && !matches!(error, LispError::Throw(_, _))
+                        && !interp.some_active_handler_matches(&error)
+                    {
                         eprintln!(
                             "bytecode operation {op:?} failed at byte offset {offset}: {}",
                             crate::lisp::types::bounded_error_debug(&error)

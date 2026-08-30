@@ -1490,6 +1490,12 @@ impl Interpreter {
         self.batch_error_backtrace.take()
     }
 
+    /// Non-consuming view for diagnostics: the toplevel batch reporter
+    /// still needs the snapshot after a load-path trace peeked at it.
+    pub(crate) fn peek_batch_error_backtrace(&self) -> Option<&BatchErrorBacktrace> {
+        self.batch_error_backtrace.as_ref()
+    }
+
     pub(crate) fn clear_batch_error_backtrace(&mut self) {
         self.batch_error_backtrace = None;
     }
@@ -1661,6 +1667,27 @@ impl Interpreter {
             self.suspend_condition_case_count -= 1;
             true
         }
+    }
+
+    /// Whether an active `condition-case'/`handler-bind' frame would catch
+    /// an error of this condition type.  The EMAXX_TRACE_LOAD_ERRORS
+    /// diagnostic consults this: an error a live handler is about to
+    /// absorb is invisible in GNU, so the trace must stay silent for it
+    /// too and speak only for errors that will reach the toplevel report.
+    pub(crate) fn some_active_handler_matches(&mut self, error: &LispError) -> bool {
+        if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_)) {
+            return true;
+        }
+        let error_type = error.condition_type();
+        let condition_list = self.error_condition_names(&error_type);
+        self.active_handlers.iter().any(|handler| match handler {
+            ActiveHandler::Case(heads) => heads
+                .iter()
+                .any(|head| Self::clause_head_matches(head, &error_type, &condition_list)),
+            ActiveHandler::Bind(conditions, _) => conditions
+                .iter()
+                .any(|symbol| Self::condition_symbol_matches(symbol, &error_type, &condition_list)),
+        })
     }
 
     pub(crate) fn dispatch_handler_bindings(
