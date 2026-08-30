@@ -3324,19 +3324,48 @@ pub(crate) fn key_parts_to_sequence_value(parts: &[String]) -> Value {
     Value::list(items)
 }
 
-fn where_is_binding_rank(parts: &[String]) -> (bool, usize) {
+fn where_is_binding_rank(parts: &[String]) -> (usize, bool) {
     let events = key_parts_to_sequence_value(parts)
         .to_vec()
         .unwrap_or_default();
     let event_count = events.len().saturating_sub(1);
-    // keymap.c's preferred_sequence_p: a sequence of characters (C-x
-    // C-f) beats any sequence carrying a symbolic event ([open]), no
-    // matter their lengths — GNU returns the first preferred match.
+    // keymap.c's static where_is_internal walks Faccessible_keymaps
+    // breadth-first, so a shorter sequence answers before a longer one
+    // no matter what events it carries ([f7] before the two-character
+    // C-c 8), and within one keymap the char-table sweep answers before
+    // the symbol alist (M-f before ESC <right>).  The recursive
+    // collector here loses that order, so restore it: sequence length
+    // first, character-only entries ahead of symbolic ones as the tie
+    // break.  preferred_sequence_p plays no part in the full list; it
+    // only steers the FIRSTONLY selection below.
     let has_symbolic_event = events
         .iter()
         .skip(1)
         .any(|event| !matches!(event, Value::Integer(_)));
-    (has_symbolic_event, event_count)
+    (event_count, has_symbolic_event)
+}
+
+/// keymap.c's preferred_sequence_p: 0 when SEQ carries a symbolic event
+/// or a modifier other than the preferred one, 2 when some event's
+/// non-meta modifier bits equal the preferred bits exactly, 1 otherwise.
+/// Only the FIRSTONLY selection consults it.
+fn preferred_sequence_rank(parts: &[String], preferred_modifier_bits: i64) -> i64 {
+    let events = key_parts_to_sequence_value(parts)
+        .to_vec()
+        .unwrap_or_default();
+    let mut result = 1;
+    for event in events.iter().skip(1) {
+        let Value::Integer(code) = event else {
+            return 0;
+        };
+        let modifiers = code & (KEY_DESCRIPTION_MODIFIER_MASK & !KEY_DESCRIPTION_META_BIT);
+        if modifiers == preferred_modifier_bits {
+            result = 2;
+        } else if modifiers != 0 {
+            return 0;
+        }
+    }
+    result
 }
 
 pub(crate) fn accessible_keymaps(
@@ -3855,11 +3884,9 @@ pub(crate) fn where_is_internal(
     });
 
     // keymap.c builds the candidate stream in "shortest to longest"
-    // order, with character-only sequences visited before symbolic-event
-    // entries in a keymap.  That ordering is observable in Help's binding
-    // prose (`M-f' before `ESC <right>'), not only in FIRSTONLY selection.
-    // Runtime keymaps keep sparse and character storage separately, so
-    // restore the same preference order after collecting both surfaces.
+    // order (Faccessible_keymaps is breadth-first); runtime keymaps here
+    // keep sparse and character storage separately and collect depth
+    // first, so restore the traversal order after the fact.
     matches.sort_by_key(|parts| where_is_binding_rank(parts));
 
     let mut advertised_preferred = false;
@@ -3875,16 +3902,32 @@ pub(crate) fn where_is_internal(
         advertised_preferred = true;
     }
 
-    let preferred_modifier = preferred_modifier_name(interp, env);
-    if first_only
-        && !advertised_preferred
-        && let Some(preferred) = preferred_modifier.as_deref()
-        && let Some(index) = matches
+    if first_only && !advertised_preferred {
+        // keymap.c's FIRSTONLY selection: the scan returns the first
+        // sequence whose preferred_sequence_p is 2 outright; after the
+        // scan, a nonzero `where-is-preferred-modifier' takes the first
+        // sequence with a nonzero rank; otherwise the car answers.
+        let preferred_bits = preferred_modifier_name(interp, env)
+            .map(|name| solitary_event_modifier(&name))
+            .unwrap_or(0);
+        let chosen = matches
             .iter()
-            .position(|parts| parts_use_preferred_modifier(parts, preferred))
-    {
-        let preferred = matches.remove(index);
-        matches.insert(0, preferred);
+            .position(|parts| preferred_sequence_rank(parts, preferred_bits) == 2)
+            .or_else(|| {
+                (preferred_bits != 0)
+                    .then(|| {
+                        matches
+                            .iter()
+                            .position(|parts| preferred_sequence_rank(parts, preferred_bits) != 0)
+                    })
+                    .flatten()
+            });
+        if let Some(index) = chosen
+            && index != 0
+        {
+            let preferred = matches.remove(index);
+            matches.insert(0, preferred);
+        }
     }
 
     Ok(matches
@@ -3939,23 +3982,6 @@ fn preferred_modifier_name(interp: &Interpreter, env: &Env) -> Option<String> {
         Value::StringObject(state) => Some(state.borrow().text.clone()),
         _ => None,
     }
-}
-
-fn parts_use_preferred_modifier(parts: &[String], preferred: &str) -> bool {
-    let prefix = match preferred {
-        "alt" => "A-",
-        "meta" => "M-",
-        "control" | "ctrl" => "C-",
-        "hyper" => "H-",
-        "shift" => "S-",
-        "super" => "s-",
-        _ => return false,
-    };
-    parts.iter().any(|part| part.starts_with(prefix))
-        || matches!(preferred, "alt" | "meta")
-            && parts
-                .first()
-                .is_some_and(|part| canonical_key_part(part) == "esc")
 }
 
 pub(crate) struct WhereIsCollector<'a> {

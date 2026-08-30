@@ -21,7 +21,7 @@ const EVENT_CLICK_BIT: i64 = 1 << 3;
 const EVENT_DOUBLE_BIT: i64 = 1 << 4;
 const EVENT_TRIPLE_BIT: i64 = 1 << 5;
 
-fn solitary_event_modifier(name: &str) -> i64 {
+pub(crate) fn solitary_event_modifier(name: &str) -> i64 {
     match name {
         "A" | "alt" => KEY_DESCRIPTION_ALT_BIT,
         "C" | "ctrl" | "control" => KEY_DESCRIPTION_CTRL_BIT,

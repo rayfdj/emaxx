@@ -2868,3 +2868,158 @@ recorded in the baseline doc's fix queue).  Environment note: the
 regeneration gates run rustfmt, which the unprivileged gate user could
 not reach — a latent gap the old always-refusing Linux path never
 exercised; rustfmt is now installed system-wide for the gate.
+
+
+## 2026-08-29 finding 133: where-is full-list ordering regressed by ae8f93b
+
+The first authoritative post-merge Darwin frozen run (7,633/7,883)
+carried exactly one regression against the pre-merge 7,620/263
+baseline: `test-non-key-events' in test/src/keymap-tests.el.  Diffing
+the two runs' artifacts proved everything else moved green (five files
+fully fixed, and `semantic-utest-ia-texi' — briefly suspected as a
+regression — was already failing pre-merge).
+
+Root cause: tty-round commit ae8f93b changed `where_is_binding_rank'
+from (length, symbolic) to (symbolic, length), citing keymap.c's
+`preferred_sequence_p' as if it ordered the FULL result list.  It does
+not: keymap.c's static where_is_internal walks Faccessible_keymaps
+breadth-first, so the full list is ordered by sequence length no
+matter what events a sequence carries (oracle: a symbolic [f7] answers
+before the two-character C-c 8), and `preferred_sequence_p' is
+consulted ONLY by the FIRSTONLY selection (where a character sequence
+does beat a shorter symbolic one).  The tty commit fixed its FIRSTONLY
+scenario by sorting the whole list — a mechanism misattribution the
+merge audit passed because it carried a plausible C anchor; the frozen
+run caught it within one cycle, which is the system working.
+
+Fix (this batch): rank restored to (length, symbolic-tiebreak) with
+the tie break now justified by the true mechanism (within one map the
+char-table sweep answers before the symbol alist), and
+`preferred_sequence_p' ported literally for the FIRSTONLY path
+(including its ~CHAR_META masking and the rank-2 early answer that
+makes a nil `where-is-preferred-modifier' still prefer character
+sequences).  Oracle-verified: full-list order, FIRSTONLY selection
+across lengths, nil-preferred-modifier selection, and the
+test-non-key-events replay are all byte-identical now.  Residual
+approximation, disclosed: same-length sequences from DIFFERENT prefix
+maps tie-break by the stable sort's collection order (depth-first)
+rather than GNU's breadth-first map order; no observed scenario
+distinguishes them yet.
+
+
+## 2026-08-29 finding 134: named :service strings resolved to port 0
+
+The first Linux frozen run ABORTED at test/src/process-tests.el: the
+file's top-level `(dns-query "google.com")' (dns.el passes
+`:service "domain"') hit emaxx's make-network-process, which parsed a
+non-numeric :service string with `.parse::<i64>().ok()' and fell back
+to port 0 — process-send-string then died with sendto's EINVAL,
+aborting the load, and frozen mode's outcome-coverage contract
+correctly refused to score a 0-outcome file (finding-115 discipline
+catching a real defect rather than hiding it).  GNU resolves service
+names through the services database (getaddrinfo with the socket type
+as hint when a host is given; getservbyname otherwise, process.c) and
+signals "HOST/SERVICE Servname not supported for ai_socktype" for a
+name the database does not know; emaxx silently built a
+port-0/random-port socket instead, on every platform — Darwin's run
+survived only because macOS's dns path happened not to explode the
+load there.
+
+Fix: :service strings that do not parse as integers now resolve via
+getservbyname with "udp"/"tcp" chosen by :type, and unknown names
+signal the getaddrinfo diagnostic (loopback-of-family host prefix when
+no :host, as GNU's server default produces).  Oracle-verified
+byte-identical: "domain" resolves to remote port 53, the unknown-name
+error text matches, and upstream process-tests.el now loads all 37
+tests.  The aborted Linux frozen run is rerun from scratch after this
+fix; no score from the aborted run is recorded anywhere.
+
+
+## 2026-08-30 second tty merge audit (tty 169dd51 into main eb2ee6c)
+
+Three new substantive commits audited before merging, with finding
+133's lesson applied — C anchors verified against source and oracle,
+not trusted:
+
+- f7a7d3a (live package archive canaries): the canary tool is honest
+  by construction — opt-in `--live', never part of the deterministic
+  gate, both editors fed identical live inputs, drift categorized,
+  signature checking never disabled.  The bundled runtime work
+  verified faithful: the gnutls peer-certificate details match
+  gnutls.c exactly (gnutls_hex_string's colon-separated serial, UTC
+  %Y-%m-%d validity dates, live libgnutls calls throughout), and the
+  symbols-with-position evaluator dispatch was probed against the
+  oracle byte-identical in both enabled and disabled modes (call,
+  variable lookup, indirect-function).
+- 2197a35 (package-vc/use-package): runtime changes are GNU error
+  faithfulness ("Searching for program", "Setting current directory"
+  file-error prefixes) plus contract batteries.
+- 169dd51 (unencodable tty rendering): term.c's glyphless machinery —
+  the \u%04X / \U%06X hex-code split, acronym bracketing, method
+  names — matches produce_glyphless_glyph; scenarios are pinned by
+  live GNU PTY comparison.  Resolves the finding-132 item 4
+  (glyphless escapes) with its own close-out above.
+
+Merge-commit forensics (the check that exists because substantive
+changes can hide in merges): 3dbc9bf recomputes to its recorded tree
+exactly.  fa76ad1 does NOT — it embeds 49 lines beyond the mechanical
+merge: a DEFSYM-manifest fresh-regeneration anti-cheat gate.  The
+content STRENGTHENS enforcement (hand-editing
+generated_gnu_c_defsyms.rs could previously fabricate a GNU-owned
+symbol past the DEFUN and arity gates) and is accepted; the practice
+is flagged here — substantive code inside a merge commit evades
+commit-by-commit review and was caught only by merge-tree
+recomputation.  Open question carried to the gate: the new gate
+demands byte-identity of the DEFSYM scan against `../emacs' source,
+and the platforms pin different source commits (636f166c Darwin,
+6ee5c13 Linux); the Linux gate run on this merge decides whether the
+scan is cross-platform stable or the manifest must split per platform
+like the primitives manifest did.
+
+The finding-133 where-is fix survives the merge: the automatic merge
+kept the corrected rank (her branch had not touched it since
+ae8f93b), and the full 14-cell probe battery (non-key-events replay,
+mixed-length ordering, FIRSTONLY selections) reruns byte-identical to
+the oracle on the merged build.
+
+
+## 2026-08-30 finding 135: frozen-run scratch file committed at repository root
+
+The adversarial audit before merging main `81799ed` into tty found an
+unreferenced repository-root file named from a long punctuation string.
+Its contents are the `tramp-test33-file-name-substitute-in-file-name`
+input at `test/lisp/net/tramp-tests.el:7712-7715`, and it entered main in
+the Linux frozen-baseline commit `eb2ee6c` beside the intended baseline
+documents.  No source, test, manifest, or baseline refers to it.  It was
+a frozen-run scratch artifact swept up by broad staging, not a fixture.
+
+The tty merge removes the artifact before committing.  The baseline JSON
+and its documented provenance are left unchanged; neither depends on the
+scratch path or file.
+
+
+## 2026-08-30 finding 136: named-service fix hardcoded Linux and tested only GNU
+
+The same pre-merge audit reran finding 134's named-service test against
+the pinned Darwin oracle.  It failed before Emaxx was exercised because
+the expected unknown-service diagnostic was Linux's
+`Servname not supported for ai_socktype`; Darwin's `gai_strerror` says
+`nodename nor servname provided, or not known`.  Production contained
+the same Linux literal.  It also claimed to follow process.c's
+getaddrinfo/getservbyname split while calling getservbyname for every
+named service and resolving the host separately afterward.
+
+There was a second audit defect: the new test invoked only GNU and
+compared GNU with the hardcoded string.  It never evaluated the form in
+Emaxx, so a platform whose GNU happened to print the pinned words could
+pass even if the production result diverged.
+
+Fixed before the merge gate.  Internet-family calls now follow
+process.c's actual order: nil `:host` becomes the family loopback, then
+host and named service are resolved together with getaddrinfo using the
+socket type and family hints.  Resolver errors use the host platform's
+gai_strerror text.  The permanent test obtains the complete result from
+the local pinned GNU oracle, evaluates the identical form in Emaxx, and
+compares the Lisp values without message normalization.  It covers a
+named UDP service, an unknown client service, and an unknown server
+service; all three rows match on Darwin after the correction.

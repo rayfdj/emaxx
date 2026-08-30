@@ -127,23 +127,28 @@ integration fully green):
 Environmental (6):
 ```
 lisp::eval::tests::eval_01::subprocess_exit_is_event_driven_and_notifies_newest_process_first_once
-lisp::eval::tests::eval_02::truncate_string_to_width_uses_display_columns
 lisp::eval::tests::eval_05::eshell_internal_command_feeds_external_pipeline_before_returning
+lisp::primitives::tests::accept_process_output_honors_seconds_with_no_millis_argument
 lisp::primitives::tests::accept_process_output_ignores_distractor_output_until_target_delivers
 lisp::primitives::tests::accept_process_output_without_timeout_waits_for_requested_process
 lisp::primitives::tests::make_network_process_ipv6_family_uses_an_ipv6_listener
 ```
-The first passes 3/3 solo — the finding-117 load/timing cluster
-(task #25), joined by the two accept-process-output siblings and the
-eshell pipeline.  IPv6 is the container kernel.  truncate is the
-Darwin-image loadup contract (mule-util under the ns feature).
+The subprocess/accept names are the finding-117 delivery-ordering
+cluster (task #25), and they are BISTABLE, not merely flaky:
+`honors_seconds' fails 3/3 solo on an idle box (the printf child
+exits before accept-process-output runs, and emaxx batches the
+output and the exit sentinel into one delivery where GNU returns
+after the output batch) yet passed the load-heavy run that recorded
+the original second-era list — the load decides which side of the
+race the host lands on, in either direction, so a member of this
+cluster flapping between runs is the documented expectation until
+task #25 fixes the delivery ordering itself.  IPv6 is the container
+kernel.
 
-Real divergences, newly measurable and queued for fixes (10) — the
+Real divergences, newly measurable and queued for fixes (8) — the
 old oracle could not answer these probes at all; the rebuilt one
 answers and emaxx disagrees:
 ```
-lisp::primitives::tests::native_composite_c_family_and_text_property_identity_match_gnu
-lisp::primitives::tests::native_font_backend_boundary_and_glyph_validation_match_gnu
 lisp::primitives::tests::native_gnutls_catalogs_and_error_diagnostics_use_the_host_library
 lisp::primitives::tests::native_gnutls_session_encrypts_process_io_and_closes_the_same_transport
 lisp::primitives::tests::native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch
@@ -157,3 +162,23 @@ These are being fixed, not baselined away; each removal from this
 list must come with the fix that earned it.  Green flips vs the first
 era: both anti-cheat regeneration gates (per-platform contracts) and
 ten native_* probes.
+
+## 2026-08-30 removals, each with the fix that earned it
+
+Recorded from the fresh full gate on the second tty merge (lib 2197
+passed / 14 failed; bins and integration fully green; every failing
+name within the list above):
+
+- `truncate_string_to_width_uses_display_columns`: not environmental
+  after all — mule-util's absence from the tty image was a
+  dump-membership effect, and the test now loads the real GNU owner
+  before binding (tty round, second merge).  Removed from the
+  environmental list.
+- `native_composite_c_family...` and `native_font_backend...`: fixed
+  by the same round's terminal-coder work (composite and font glyph
+  strings now use term.c's effective terminal coder).  Removed from
+  the real-divergences queue, leaving 8.
+- The two finding-117 timing siblings (`subprocess_exit...once`,
+  `accept_process_output_honors_seconds...`) failed TOGETHER in this
+  run — consistent with the bistability triage above; both remain
+  listed until task #25.

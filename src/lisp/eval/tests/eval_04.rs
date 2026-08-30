@@ -5804,6 +5804,8 @@ fn where_is_first_prefers_a_short_character_binding() {
 
 #[test]
 fn where_is_all_orders_character_bindings_before_symbolic_events() {
+    // Same map, same length: esc-map's char-table (M-f) answers before
+    // its symbol alist (ESC <right>).
     assert_eq!(
         eval_str_with_upstream_batch(
             r#"(mapcar #'key-description
@@ -5812,6 +5814,69 @@ fn where_is_all_orders_character_bindings_before_symbolic_events() {
         Value::list([
             Value::String("M-f".into()),
             Value::String("ESC <right>".into()),
+        ]),
+    );
+}
+
+#[test]
+fn where_is_all_orders_sequences_shortest_first_across_maps() {
+    // keymap.c walks Faccessible_keymaps breadth-first: the symbolic
+    // <f7> (one event, directly in the global map) answers before the
+    // two-character C-c 8, and FIRSTONLY still prefers a character
+    // sequence over the shorter symbolic one (preferred_sequence_p).
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(progn
+                 (defun emaxx-where-is-order-command () (interactive))
+                 (global-set-key "\C-y" 'emaxx-where-is-order-command)
+                 (global-set-key [f7] 'emaxx-where-is-order-command)
+                 (global-set-key (kbd "C-c 8") 'emaxx-where-is-order-command)
+                 (defun emaxx-where-is-select-command () (interactive))
+                 (global-set-key [f9] 'emaxx-where-is-select-command)
+                 (global-set-key (kbd "C-x t") 'emaxx-where-is-select-command)
+                 (list
+                  (mapcar #'key-description
+                          (where-is-internal 'emaxx-where-is-order-command))
+                  (mapcar #'key-description
+                          (where-is-internal 'emaxx-where-is-select-command))
+                  (key-description
+                   (where-is-internal 'emaxx-where-is-select-command nil t))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::String("C-y".into()),
+                Value::String("<f7>".into()),
+                Value::String("C-c 8".into()),
+            ]),
+            Value::list([Value::String("<f9>".into()), Value::String("C-x t".into()),]),
+            Value::String("C-x t".into()),
+        ]),
+    );
+}
+
+#[test]
+fn where_is_ranks_a_direct_symbolic_binding_before_a_prefixed_pair() {
+    // test/src/keymap-tests.el's test-non-key-events: the single-event
+    // symbolic binding leads the list, and marking it as a non-key
+    // event removes it from the answer.
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(progn
+                 (keymap-set global-map "C-c g" #'emaxx-non-key-command)
+                 (keymap-set global-map "<emaxx-nonkey-event>"
+                             #'emaxx-non-key-command)
+                 (let ((before (where-is-internal 'emaxx-non-key-command)))
+                   (make-non-key-event 'emaxx-nonkey-event)
+                   (list (mapcar #'key-description before)
+                         (mapcar #'key-description
+                                 (where-is-internal 'emaxx-non-key-command)))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::String("<emaxx-nonkey-event>".into()),
+                Value::String("C-c g".into()),
+            ]),
+            Value::list([Value::String("C-c g".into())]),
         ]),
     );
 }
