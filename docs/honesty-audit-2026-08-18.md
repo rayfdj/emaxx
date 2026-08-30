@@ -3117,3 +3117,65 @@ The post-fix audit also rejected a process-global first draft of the delivery
 counter: because GNU process descriptors belong to a Lisp thread, the counter
 now uses the same active-thread ownership filter as the event pump.  Output
 delivered by a different Lisp thread cannot fabricate success for this wait.
+
+## 2026-08-30 finding 138: Magit package and TTY drafts had false-green seams
+
+The issue-21 work was audited before its release gate.  The final package
+journey builds a disposable local archive from eight exact GNU ELPA and NonGNU
+ELPA release tarballs, rehashes cached and copied artifacts, and gives separate
+empty roots to GNU Emacs and Emaxx.  Both run the same real
+`package-refresh-contents`, transaction, installation, restart, and `require`
+forms.  There is no editor branch in the generated Lisp.  The gate requires
+the exact seven-package external transaction, exact 58 `.elc` relative
+filenames, generated autoloads, equal records, and installed-tree origins for
+every external library.  The bundled `seq` satisfies that dependency on both
+editors; its pinned tarball remains available in the archive but is correctly
+absent from both transactions.
+
+The interactive side creates fixed-history Git repositories with host Git
+configuration disabled and compares text, attributes, cursor, and strict
+post-mutation Magit queries.  It contains no Magit-specific output
+normalization.  Mutating journeys use separate same-named repositories.  The
+non-mutating repository-not-found journey shares one empty target so both
+editors receive the same visible absolute path, then compares the decline
+screen and proves that neither `.git` nor a Magit top-level was created.
+
+The adversarial pass rejected and fixed these false-green or misleading
+drafts before the gate:
+
+1. The first Diff journey typed `d d`, which only left the transient prompt
+   open.  It now types `d u`, selects the real unstaged-diff suffix, enters the
+   diff buffer, navigates it, and returns.
+2. An early attempt used unrelated temporary paths for a path-bearing prompt.
+   The final read-only journey shares its non-mutated target; no path or screen
+   bytes are rewritten.  Mutable repositories remain honestly isolated.
+3. Declining repository creation was initially a non-checkpoint followed only
+   by a strict state query.  The immediate decline screen now also matches GNU
+   exactly; the state query remains as independent outcome evidence.
+4. Byte compilation was initially pinned only by per-package counts.  Equal
+   counts could hide one missing and one unexpected file, so the gate now
+   requires all 58 exact relative filenames.
+5. Restart provenance initially checked only Magit, Transient, and With-Editor.
+   It now checks the origin of every library in the external closure: Compat,
+   Cond-Let, Llama, Magit, Magit-Section, Transient, and With-Editor.
+6. Adding the third-party journeys to `ttydiff.py`'s bare no-argument battery
+   would have made that built-in battery fail late without installed package
+   roots.  The dedicated package gate now owns those journeys and supplies
+   both freshly verified roots explicitly; named selection remains permanent.
+7. The face-support parser treated `((:box t))` as an empty plist and selected
+   a graphical box alternative.  The runtime now walks nested face-reference
+   lists generally and correctly rejects the unsupported box on a TTY.
+8. A draft fix painted the terminal's default foreground over every glyph to
+   obtain one margin attribute.  Oracle probes exposed extra attributes on
+   ordinary rows.  That draft was removed; the final behavior is confined to
+   the separate margin-glyph mechanism while preserving an extending row
+   background.
+
+The other runtime corrections are likewise mechanism-level: multiline local
+variable forms, source-stream EOF position, positioned property keys, true
+invisibility specs, overlay display strings, `font-lock-face` aliases,
+buffer-local face remapping, condition-specific error printing, terminal
+initialization order, command-loop selected-buffer restoration,
+`set-window-buffer`'s `KEEP-MARGINS`, invisible-tail `window-end`, extending
+faces, and concrete inverse-color realization.  Production code contains no
+Magit command, fixture filename, repository state, or expected screen switch.

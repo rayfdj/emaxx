@@ -16373,6 +16373,36 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
 }
 
 #[test]
+fn glass_mode_line_honors_font_lock_face_string_properties() {
+    let mut interp = crate::batch::initialize_interactive_interpreter()
+        .expect("interactive interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let form = Reader::new(
+        "(setq mode-line-format
+               (list (propertize \" git failed\"
+                                'font-lock-face 'error)))",
+    )
+    .read()
+    .expect("mode-line form parses")
+    .expect("mode-line form exists");
+    interp.eval(&form, &mut env).expect("mode-line form runs");
+    let window_id = interp.selected_window_id();
+    let (_, spans) = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        InteractiveWindowMetrics {
+            text_height: 22,
+            window_end: 1,
+        },
+    )
+    .expect("mode line renders");
+    assert_eq!(spans, vec![(0, 11, Value::Symbol("error".into()))]);
+}
+
+#[test]
 fn undo_file_marker_records_the_visited_modtime() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
@@ -16524,6 +16554,23 @@ fn error_message_strings_match_the_oracle() {
         \"|\"))
         (princ contract-out))";
     let answer = "Quit|Beginning of buffer|boom|Wrong type argument: listp, t|No further undo information|Opening input file: No such file, /tmp/x";
+    assert_upstream_primitive_contract(program, answer);
+    assert_eq!(emaxx_batch_output(program), answer);
+}
+
+#[test]
+fn error_message_strings_use_gnu_condition_specific_data_quoting() {
+    let program = r#"(progn
+      (put 'magit-like-error 'error-conditions '(magit-like-error error))
+      (put 'magit-like-error 'error-message "Git error")
+      (setq contract-out
+            (prin1-to-string
+             (list
+              (error-message-string '(magit-like-error "one" "two"))
+              (error-message-string '(error "lead" "tail"))
+              (error-message-string '(end-of-file "one" "two")))))
+      (princ contract-out))"#;
+    let answer = r#"("Git error: \"one\", \"two\"" "lead: \"tail\"" "End of file during parsing: one, two")"#;
     assert_upstream_primitive_contract(program, answer);
     assert_eq!(emaxx_batch_output(program), answer);
 }

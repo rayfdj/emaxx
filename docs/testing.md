@@ -263,6 +263,13 @@ deterministic JSON-RPC server, and strict interactive TTY journeys.  See
 [`docs/eglot-compatibility.md`](eglot-compatibility.md) for the exact oracle,
 commands, preserved failures/skips, and scope boundary.
 
+The third-party Magit contract installs a hash-pinned release and its complete
+external dependency closure through real `package.el`, restarts both editors,
+checks the installed origins and compiled inventory, and then runs strict TTY
+journeys against deterministic Git repositories.  See
+[`docs/magit-compatibility.md`](magit-compatibility.md) for the exact command,
+scenario inventory, determinism boundary, and anti-cheat evidence.
+
 For normal development:
 
 1. `cargo test --lib`
