@@ -23,10 +23,32 @@ pub(crate) fn resolve_buffer_invisibility(
 ) -> InvisibilitySpec {
     let has_source = buffer.has_text_property_named("invisible")
         || buffer.overlays.iter().any(|overlay| {
-            !overlay.is_dead()
-                && overlay
-                    .get_prop(&Value::Symbol("invisible".into()))
-                    .is_some_and(|value| !value.is_nil())
+            if overlay.is_dead() {
+                return false;
+            }
+            if overlay
+                .get_prop(&Value::Symbol("invisible".into()))
+                .is_some_and(|value| !value.is_nil())
+            {
+                return true;
+            }
+            // Overlay before/after strings are independent display
+            // objects.  Their own `invisible' properties are interpreted
+            // under the window buffer's invisibility spec just like a
+            // buffer character's property (tree-widget uses this to hide
+            // its half-cell icon padding on text terminals).
+            ["before-string", "after-string"].iter().any(|name| {
+                let Some(value) = overlay.get_prop(&Value::Symbol((*name).into())) else {
+                    return false;
+                };
+                let Ok(text) = super::string_text(value) else {
+                    return false;
+                };
+                (0..text.chars().count()).any(|position| {
+                    super::string_property_at(value, position, "invisible")
+                        .is_some_and(|property| !property.is_nil())
+                })
+            })
         });
     if !has_source {
         return InvisibilitySpec::default();

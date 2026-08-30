@@ -5331,6 +5331,50 @@ fn signal_process_preserves_os_signal_status_and_sentinel_event() {
 
 #[cfg(unix)]
 #[test]
+fn explicit_process_filter_uses_and_restores_the_callers_current_buffer() {
+    let program = r#"(let* ((observed nil)
+                            (origin (current-buffer))
+                            (other (get-buffer-create "*filter-other*"))
+                            (process-buffer
+                             (get-buffer-create "*filter-process*"))
+                            (process
+                            (make-process
+                              :name "filter-current-buffer"
+                              :buffer process-buffer
+                              :command (list shell-file-name "-c" "printf x")
+                              :connection-type 'pipe
+                              :filter
+                              (lambda (_process _output)
+                                (setq observed (current-buffer))
+                                (set-buffer other)))))
+                       (while (process-live-p process)
+                         (accept-process-output process 0.1))
+                       (accept-process-output process 0.1)
+                       (list (eq observed origin)
+                             (eq (current-buffer) origin)
+                             (eq (process-buffer process) process-buffer)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t)");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("process filter buffer contract should parse")
+        .expect("process filter buffer contract should contain a form");
+    let expected = Reader::new("(t t t)")
+        .read()
+        .expect("expected filter buffer result should parse")
+        .expect("expected filter buffer result should exist");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("process filter buffer contract should evaluate"),
+        expected
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn deleted_process_is_not_returned_for_buffer() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();
@@ -11832,6 +11876,33 @@ fn completion_predicates_preserve_string_list_membership() {
 }
 
 #[test]
+fn all_completions_preserves_propertized_string_candidate_identity() {
+    let program = r#"(let* ((candidate (propertize "alphaValue" 'payload 7))
+                            (matches (all-completions "alp" (list candidate))))
+                       (list (eq (car matches) candidate)
+                             (equal (car matches) candidate)
+                             (get-text-property 0 'payload (car matches))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t 7)");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("propertized completion identity contract should parse")
+        .expect("propertized completion identity contract should contain a form");
+    let expected = Reader::new("(t t 7)")
+        .read()
+        .expect("expected completion identity result should parse")
+        .expect("expected completion identity result should exist");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("propertized completion identity contract should evaluate"),
+        expected
+    );
+}
+
+#[test]
 fn completion_results_accept_text_properties() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -15141,6 +15212,30 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 }
 
 #[test]
+fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq timer-list nil timer-idle-list nil emaxx-test-timer-fired nil)
+           (run-at-time 60 nil (lambda () (setq emaxx-test-timer-fired t)))
+           (defalias 'float-time (lambda (&rest _) 0.0)))",
+    )
+    .expect("schedule a delayed timer before pinning the presentation clock");
+
+    assert!(
+        !run_due_timers(&mut interp, &mut env, 0.0),
+        "redefining float-time must not make a future timer ripe"
+    );
+    assert_eq!(
+        interp.lookup_var("emaxx-test-timer-fired", &env),
+        Some(Value::Nil)
+    );
+}
+
+#[test]
 fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
     crate::test_support::mark_process_test();
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
@@ -15309,6 +15404,54 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
     assert_eq!(
         result.expect("tty events answer the prompt"),
         Value::String("answer.txt".into())
+    );
+}
+
+#[test]
+fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(setq issue22-initial-face nil
+               minibuffer-setup-hook
+               (list (lambda ()
+                       (setq issue22-initial-face
+                             (get-text-property (minibuffer-prompt-end) 'face)))))",
+    )
+    .expect("install the initial-input observer");
+    let initial = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(propertize \"alpha\" 'face 'lsp-face-highlight-textual)",
+    )
+    .expect("construct propertized initial input");
+
+    let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "read-string",
+        &[
+            Value::String("Rename to: ".into()),
+            initial,
+            Value::Symbol("lsp-rename-history".into()),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+
+    assert_eq!(
+        result.expect("RET exits a read-string with a history symbol"),
+        Value::String("alpha".into())
+    );
+    assert_eq!(
+        interp.lookup_var("issue22-initial-face", &env),
+        Some(Value::Symbol("lsp-face-highlight-textual".into())),
+        "read-string copies the suggested value's face into the minibuffer"
     );
 }
 

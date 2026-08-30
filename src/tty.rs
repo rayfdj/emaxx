@@ -1039,20 +1039,22 @@ fn command_loop(
         let prefix_pending = interpreter
             .lookup_var("prefix-arg", env)
             .is_some_and(|prefix| prefix.is_truthy());
-        let state = &mut *shared_state.borrow_mut();
-        if prefix_pending {
-            state.echo = append_prefix_echo(&state.echo, &describe_keys(&keys));
-            state.prefix_active = true;
-        } else {
-            state.prefix_active = false;
-            state.echo.clear();
+        {
+            let state = &mut *shared_state.borrow_mut();
+            if prefix_pending {
+                state.echo = append_prefix_echo(&state.echo, &describe_keys(&keys));
+                state.prefix_active = true;
+            } else {
+                state.prefix_active = false;
+                state.echo.clear();
+            }
+            if let Some(text) = command_error {
+                state.echo = text;
+            }
+            // A blocking reader may have painted the echo row outside the
+            // matrix; repaint it against fresh state next frame.
+            state.painted_echo = Vec::new();
         }
-        if let Some(text) = command_error {
-            state.echo = text;
-        }
-        // A blocking reader may have painted the echo row outside the
-        // matrix; repaint it against fresh state next frame.
-        state.painted_echo = Vec::new();
     }
 }
 
@@ -1553,6 +1555,44 @@ fn space_align_to_target(value: &Value) -> Option<usize> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SpecifiedSpace {
+    Width(usize),
+    AlignTo(usize),
+}
+
+/// Decode the TTY-supported dimensions of a `(space ...)' display spec.
+/// xdisp computes numeric widths in canonical-character units and truncates
+/// the resulting pixel count to an integer.  On a terminal the canonical
+/// width is one cell, so `:width 0.5' is deliberately a zero-cell stretch.
+fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
+    let items = value.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(head)) if head == "space") {
+        return None;
+    }
+    if let Some(position) = items
+        .iter()
+        .position(|item| matches!(item, Value::Symbol(name) if name == ":width"))
+        && let Some(width) = items
+            .get(position + 1)
+            .and_then(|value| value.as_float().ok())
+            .filter(|width| width.is_finite())
+    {
+        let columns = if width < 0.0 {
+            1
+        } else {
+            width.trunc().min(usize::MAX as f64) as usize
+        };
+        return Some(SpecifiedSpace::Width(columns));
+    }
+    if let Some(target) = space_align_to_target(value) {
+        return Some(SpecifiedSpace::AlignTo(target));
+    }
+    // A malformed or dimensionless space spec falls back to one canonical
+    // cell; it still replaces the source character with a blank.
+    Some(SpecifiedSpace::Width(1))
+}
+
 /// Decode a string `display' property of the form
 /// `((margin SIDE) PAYLOAD)'.  The string's source characters do not enter
 /// the text body; PAYLOAD is rendered in the requested window margin.
@@ -1745,6 +1785,70 @@ struct VisualLine {
     display_face_spans: Vec<(usize, usize, Value)>,
 }
 
+/// Render an overlay before/after string under the window buffer's
+/// invisibility spec, retaining a raw-string to displayed-string boundary
+/// map so its face spans follow the surviving cells.  These strings are
+/// separate xdisp objects: their own `invisible' text property governs each
+/// character even though the property is not present in the buffer text.
+fn visible_overlay_string(
+    value: &Value,
+    spec: &InvisibilitySpec,
+) -> (String, Vec<(usize, usize, Value)>) {
+    let raw = crate::lisp::primitives::string_text(value).unwrap_or_default();
+    let characters: Vec<char> = raw.chars().collect();
+    let mut rendered = String::new();
+    let mut map = Vec::with_capacity(characters.len() + 1);
+    let mut display_chars = 0usize;
+    let class_at = |position: usize| {
+        crate::lisp::primitives::string_property_at(value, position, "invisible")
+            .map(|property| crate::lisp::primitives::invisible_value_class(spec, &property))
+            .unwrap_or(0)
+    };
+    let mut position = 0usize;
+    while position < characters.len() {
+        let class = class_at(position);
+        if class == 0 {
+            map.push(display_chars);
+            rendered.push(characters[position]);
+            display_chars += 1;
+            position += 1;
+        } else {
+            let start = position;
+            let ellipsis_start = display_chars;
+            let mut last_class = class;
+            while position < characters.len() {
+                let next = class_at(position);
+                if next == 0 {
+                    break;
+                }
+                last_class = next;
+                position += 1;
+            }
+            if last_class == 2 {
+                rendered.push_str("...");
+                display_chars += 3;
+            }
+            for hidden in start..position {
+                map.push(if hidden == start {
+                    ellipsis_start
+                } else {
+                    display_chars
+                });
+            }
+        }
+    }
+    map.push(display_chars);
+    let spans = crate::lisp::primitives::string_face_spans(value)
+        .into_iter()
+        .filter_map(|(from, to, face)| {
+            let from = map.get(from).copied().unwrap_or(display_chars);
+            let to = map.get(to).copied().unwrap_or(display_chars);
+            (from < to).then_some((from, to, face))
+        })
+        .collect();
+    (rendered, spans)
+}
+
 fn visual_line_at(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
@@ -1812,21 +1916,21 @@ fn visual_line_at(
             if window_margin_display(value).is_some() {
                 continue;
             }
-            let Ok(string) = crate::lisp::primitives::string_text(value) else {
+            if crate::lisp::primitives::string_text(value).is_err() {
                 continue;
-            };
+            }
             overlay_strings.push((
                 if after { overlay.end } else { overlay.beg },
                 after,
                 overlay.id,
-                string,
-                crate::lisp::primitives::string_face_spans(value),
+                value.clone(),
             ));
         }
     }
-    overlay_strings.sort_by_key(|(position, after, id, _, _)| (*position, *after, *id));
+    overlay_strings.sort_by_key(|(position, after, id, _)| (*position, *after, *id));
     let mut overlay_string_index = 0usize;
     let mut string_run: Option<String> = None;
+    let mut space_run: Option<Value> = None;
     let mut pos = line_begin;
     while pos < end {
         while overlay_strings
@@ -1835,11 +1939,11 @@ fn visual_line_at(
         {
             overlay_string_index += 1;
         }
-        while let Some((position, _, _, string, spans)) = overlay_strings.get(overlay_string_index)
-        {
+        while let Some((position, _, _, value)) = overlay_strings.get(overlay_string_index) {
             if *position != pos {
                 break;
             }
+            let (string, spans) = visible_overlay_string(value, spec);
             let start = display_chars;
             for character in string.chars() {
                 text.push(character);
@@ -1855,13 +1959,14 @@ fn visual_line_at(
             }
             display_face_spans.extend(
                 spans
-                    .iter()
-                    .map(|(from, to, face)| (start + from, start + to, face.clone())),
+                    .into_iter()
+                    .map(|(from, to, face)| (start + from, start + to, face)),
             );
             overlay_string_index += 1;
         }
         if let Some((run_end, ellipsis)) = invisible_run_at(buffer, spec, pos) {
             string_run = None;
+            space_run = None;
             lines_spanned += buffer
                 .buffer_substring(pos, run_end)
                 .map(|hidden| hidden.matches('\n').count())
@@ -1918,25 +2023,32 @@ fn visual_line_at(
                 }
             }
             string_run = Some(replacement);
+            space_run = None;
             pos += 1;
             continue;
         }
         string_run = None;
-        let align_target = if has_display_prop {
-            display.and_then(|value| space_align_to_target(&value))
-        } else {
-            None
-        };
-        if let Some(target) = align_target {
+        let space = display.as_ref().and_then(specified_space);
+        if let Some(space) = space {
             map.push(display_chars);
-            let pad = target.saturating_sub(col);
-            for _ in 0..pad {
-                text.push(' ');
-                raw_of_display.push(offset);
-                display_chars += 1;
+            let same_run = space_run
+                .as_ref()
+                .is_some_and(|previous| display.as_ref() == Some(previous));
+            if !same_run {
+                let pad = match space {
+                    SpecifiedSpace::Width(width) => width,
+                    SpecifiedSpace::AlignTo(target) => target.saturating_sub(col),
+                };
+                for _ in 0..pad {
+                    text.push(' ');
+                    raw_of_display.push(offset);
+                    display_chars += 1;
+                }
+                col += pad;
             }
-            col += pad;
+            space_run = display;
         } else {
+            space_run = None;
             map.push(display_chars);
             text.push(ch);
             raw_of_display.push(offset);
@@ -2044,6 +2156,7 @@ fn displayed_line_with_map(
     // (handle_single_display_spec; grep's --null separator renders as
     // ":" this way).
     let mut string_run: Option<String> = None;
+    let mut space_run: Option<Value> = None;
     for (offset, ch) in raw.chars().enumerate() {
         map.push(expanded_chars);
         let display = buffer.text_property_at(line_begin + offset, "display");
@@ -2068,23 +2181,35 @@ fn displayed_line_with_map(
                 }
             }
             string_run = Some(replacement);
+            space_run = None;
             continue;
         }
         string_run = None;
-        let target = display.and_then(|value| space_align_to_target(&value));
-        if let Some(target) = target {
+        let space = display.as_ref().and_then(specified_space);
+        if let Some(space) = space {
             changed = true;
-            let pad = target.saturating_sub(col);
-            for _ in 0..pad {
-                expanded.push(' ');
+            let same_run = space_run
+                .as_ref()
+                .is_some_and(|previous| display.as_ref() == Some(previous));
+            if !same_run {
+                let pad = match space {
+                    SpecifiedSpace::Width(width) => width,
+                    SpecifiedSpace::AlignTo(target) => target.saturating_sub(col),
+                };
+                for _ in 0..pad {
+                    expanded.push(' ');
+                }
+                expanded_chars += pad;
+                col += pad;
             }
-            expanded_chars += pad;
-            col += pad;
+            space_run = display;
         } else if ch == '\t' {
+            space_run = None;
             expanded.push(ch);
             expanded_chars += 1;
             col += 8 - (col % 8);
         } else {
+            space_run = None;
             expanded.push(ch);
             expanded_chars += 1;
             col += 1;
@@ -2579,6 +2704,8 @@ fn redraw_with_echo_policy(
     if interpreter.frame_width() != cols as i64 || interpreter.frame_height() != rows as i64 {
         interpreter.set_tty_frame_size(cols as i64, rows as i64);
     }
+    // Rows above the window tree belong to the frame's menu bar.
+    let menu_lines = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1) as usize;
     // The mini window's height comes first: a tall message shrinks the
     // window tree above it (GNU's resize_mini_window, grow-only policy).
     let max_mini = max_mini_window_rows(interpreter, rows);
@@ -2595,7 +2722,6 @@ fn redraw_with_echo_policy(
     let echo_empty = echo_paint.len() == 1
         && echo_paint[0].text.iter().all(|c| *c == ' ')
         && !echo_from_minibuffer;
-    let previous_echo_rows = state.echo_rows;
     state.echo_rows = if echo_empty {
         1
     } else if exact_echo && !echo_from_minibuffer {
@@ -2607,38 +2733,47 @@ fn redraw_with_echo_policy(
     } else {
         state.echo_rows.max(echo_paint.len()).min(max_mini.max(1))
     };
-    if state.echo_rows != previous_echo_rows {
-        // GNU's grow_mini_window/shrink_mini_window resize the real
-        // window tree: window.el's own resizer stages new sizes for the
-        // windows above the mini window, and the staged sizes apply --
-        // window-height and friends answer the shrunken sizes while the
-        // echo area is grown.  The render-level clamp below stays as
-        // the safety net if the Lisp resizer declines.
-        let delta = state.echo_rows as i64 - previous_echo_rows as i64;
-        let _ = (|interpreter: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
-            let root = call(interpreter, env, "frame-root-window", &[])?;
-            let grow = call(
+    // GNU's grow_mini_window/shrink_mini_window resize the real window
+    // tree.  Reconcile against the tree's live height, rather than applying
+    // the change in frontend echo rows as a blind delta: restoring a
+    // minibuffer window configuration restores the root geometry before
+    // redisplay, while the frontend still remembers the formerly tall
+    // minibuffer.  Applying that stale delta grows the root past the frame
+    // and makes the next split too tall.
+    let desired_root_height = rows
+        .saturating_sub(state.echo_rows)
+        .saturating_sub(menu_lines)
+        .max(1) as i64;
+    let _ = (|interpreter: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
+        let root = call(interpreter, env, "frame-root-window", &[])?;
+        let current = call(
+            interpreter,
+            env,
+            "window-total-height",
+            std::slice::from_ref(&root),
+        )?
+        .as_integer()?;
+        let delta = desired_root_height - current;
+        if delta == 0 {
+            return Ok(());
+        }
+        let recovered = call(
+            interpreter,
+            env,
+            "window--resize-root-window-vertically",
+            &[root, Value::Integer(delta), Value::T],
+        )?;
+        if recovered.as_integer().unwrap_or(0) != 0 {
+            call(
                 interpreter,
                 env,
-                "window--resize-root-window-vertically",
-                &[root, Value::Integer(-delta), Value::T],
+                "window-resize-apply",
+                &[Value::Nil, Value::Nil],
             )?;
-            if grow.as_integer().unwrap_or(0) != 0 {
-                call(
-                    interpreter,
-                    env,
-                    "window-resize-apply",
-                    &[Value::Nil, Value::Nil],
-                )?;
-            }
-            Ok(())
-        })(interpreter, env);
-    }
+        }
+        Ok(())
+    })(interpreter, env);
     let frame_rows = rows - state.echo_rows; // everything above the echo area
-    // The rows the frame keeps above the window tree are the menu bar's
-    // (GNU's FRAME_MENU_BAR_LINES); `menu-bar-mode' drives the count
-    // through the `menu-bar-lines' frame parameter.
-    let menu_lines = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1) as usize;
     let full_repaint = state.painted_size != (cols, rows);
     if full_repaint {
         // A resize changes the wrap geometry under every saved segment
@@ -4683,6 +4818,33 @@ mod tests {
     }
 
     #[test]
+    fn width_display_specs_use_tty_cells_and_collapse_equal_runs() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let forms = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"aXbYcZZd\\n\")
+               (put-text-property 2 3 'display '(space :width 0.5))
+               (put-text-property 4 5 'display '(space :width 1.9))
+               (put-text-property 6 8 'display '(space :width 2)))",
+        )
+        .read_all()
+        .expect("read specified-width probe");
+        for form in &forms {
+            interp
+                .eval(form, &mut env)
+                .expect("evaluate specified-width probe");
+        }
+
+        let (text, map) = displayed_line_with_map(&interp.buffer, 1);
+        assert_eq!(text, "ab c  d");
+        assert_eq!(
+            map.expect("display widths changed the line"),
+            vec![0, 1, 1, 2, 3, 4, 6, 6, 7]
+        );
+    }
+
+    #[test]
     fn propertized_string_display_specs_replace_the_covered_text() {
         let mut interp = Interpreter::new();
         let mut env: Env = Vec::new();
@@ -4799,6 +4961,29 @@ mod tests {
                 (4, 5, Value::Symbol("bold".into()))
             ]
         );
+    }
+
+    #[test]
+    fn invisible_properties_on_overlay_strings_remove_their_tty_cells() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"[-] root\\n\")
+               (let ((button (make-overlay 1 4)))
+                 (overlay-put button 'before-string
+                              (propertize \" \" 'invisible t))))",
+        )
+        .read()
+        .expect("read invisible overlay-string probe")
+        .expect("invisible overlay-string probe exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate invisible overlay-string probe");
+        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        let spec = resolve_buffer_invisibility(&interp, &interp.buffer, interp.current_buffer_id());
+        assert!(spec.active && spec.all);
+        assert_eq!(visual_line_at(&interp.buffer, &spec, 1).text, "[-] root");
     }
 
     #[test]

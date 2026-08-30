@@ -354,9 +354,7 @@ define_dispatch!(
                 let slice: String = chars[start..end].iter().collect();
                 match read_one_form_in_env(interp, &slice, env) {
                     Ok((val, consumed)) => {
-                        let materialized = materialize_read_hash_table_literals(interp, &val)?;
-                        let materialized =
-                            materialize_read_char_table_literals(interp, &materialized)?;
+                        let materialized = interp.materialize_read_object_literals(val)?;
                         interp.intern_symbols_in_value(&materialized);
                         Ok(Value::cons(
                             materialized,

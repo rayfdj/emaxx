@@ -1615,6 +1615,26 @@ fn eval_accepts_explicit_lexical_alist() {
 }
 
 #[test]
+fn eval_accepts_positioned_let_bindings_with_an_explicit_lexical_alist() {
+    // GNU's byte compiler evaluates macro bodies read with source positions
+    // enabled.  Binding names in those bodies are symbol-with-position
+    // objects and must use their underlying symbols throughout let/let*.
+    assert_eq!(
+        eval_str(
+            r#"(let* ((symbols-with-pos-enabled t)
+                       (form
+                        (read-positioning-symbols
+                         "(let* ((num1 (1+ num))
+                                  (face-name
+                                   (intern (format \"face-%s\" num1))))
+                            (list num1 face-name))")))
+                  (eval form '((num . 0))))"#,
+        ),
+        Value::list([Value::Integer(1), Value::Symbol("face-1".into())])
+    );
+}
+
+#[test]
 fn eval_t_preserves_gnu_local_defvar_environment_and_macro_dynvars() {
     assert_eq!(
         eval_str(

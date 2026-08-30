@@ -551,9 +551,6 @@ pub(crate) fn deliver_process_output_decoded(
     // The process buffer may have been killed before straggler output is
     // delivered (epg-reset kills it right after completion); GNU discards
     // such output rather than erroring.
-    let target_buffer_id = interp
-        .process_buffer_id(process_id)
-        .filter(|buffer_id| interp.get_buffer_by_id(*buffer_id).is_some());
     if let Some(filter) = interp.process_filter(process_id) {
         // GNU uses t as a flow-control sentinel: the descriptor is removed
         // from the read set until a real/default filter is installed again.
@@ -562,13 +559,11 @@ pub(crate) fn deliver_process_output_decoded(
         if filter == Value::T {
             return Ok(());
         }
+        // read_process_output_call invokes an explicit filter in the buffer
+        // that was current when output delivery began, not in the process
+        // buffer.  It still protects that current-buffer choice against a
+        // filter which calls set-buffer itself.
         let saved_buffer_id = interp.current_buffer_id();
-        let switched = target_buffer_id.is_some_and(|buffer_id| buffer_id != saved_buffer_id);
-        if let Some(buffer_id) = target_buffer_id
-            && switched
-        {
-            interp.set_current_buffer_id(buffer_id)?;
-        }
         // GNU hands the filter an ordinary mutable string; filters such as
         // eshell's propertize it in place, so the value must carry live
         // text-property state.
@@ -585,7 +580,7 @@ pub(crate) fn deliver_process_output_decoded(
             ],
             env,
         );
-        if switched {
+        if interp.current_buffer_id() != saved_buffer_id {
             interp.set_current_buffer_id(saved_buffer_id)?;
         }
         result?;

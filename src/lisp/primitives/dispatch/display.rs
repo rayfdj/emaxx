@@ -14,6 +14,11 @@ pub(crate) type EchoSpans = FaceSpans;
 thread_local! {
     static ECHO_AREA_MESSAGE: std::cell::RefCell<Option<(String, EchoSpans)>> =
         const { std::cell::RefCell::new(None) };
+    /// The Lisp string behind the current echo message.  `current-message'
+    /// returns this value with its text properties intact; with-temp-message
+    /// saves and later re-formats it when restoring a message.
+    static ECHO_AREA_MESSAGE_VALUE: std::cell::RefCell<Option<Value>> =
+        const { std::cell::RefCell::new(None) };
     /// GNU's echo_area_buffer[1]: the last message shown on the glass.
     /// `redisplay' from Lisp is redisplay_preserve_echo_area — when the
     /// current message was wiped by input arrival, it re-displays this
@@ -45,6 +50,10 @@ pub(crate) fn echo_area_message_tick() -> u64 {
 pub(crate) fn set_echo_area_message(text: Option<String>) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     bump_echo_message_tick();
+    let value = text
+        .as_ref()
+        .map(|text| crate::lisp::primitives::strings::string_like_value(text.clone(), Vec::new()));
+    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = value);
     let message = text.map(|text| (text, Vec::new()));
     // message3 displays right away: the new message (or, for a clear,
     // nothing) becomes the last-displayed one too.
@@ -57,9 +66,31 @@ pub(crate) fn set_echo_area_message(text: Option<String>) {
 pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     bump_echo_message_tick();
+    let props = spans
+        .iter()
+        .map(|(start, end, face)| crate::buffer::TextPropertySpan {
+            start: *start,
+            end: *end,
+            props: vec![("face".into(), face.clone())],
+        })
+        .collect();
+    let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props);
+    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(value));
     let message = Some((text, spans));
     ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
+}
+
+fn set_echo_area_message_value(value: Value) -> Result<(), LispError> {
+    let text = string_text(&value)?;
+    let spans = string_face_spans(&value);
+    ECHO_FROM_PRINT.with(|flag| flag.set(false));
+    bump_echo_message_tick();
+    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = Some(value));
+    let message = Some((text, spans));
+    ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| slot.clone_from(&message));
+    ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = message);
+    Ok(())
 }
 
 /// keyboard.c read_char's wipe when the next input event arrives: the
@@ -69,6 +100,7 @@ pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
 pub(crate) fn expire_echo_area_message() {
     ECHO_FROM_PRINT.with(|flag| flag.set(false));
     ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = None);
+    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = None);
 }
 
 /// Printing to the `t' stream in an interactive session displays in the
@@ -83,11 +115,22 @@ pub(crate) fn echo_area_print(text: &str) {
     });
     ECHO_AREA_LAST_DISPLAYED
         .with_borrow_mut(|slot| *slot = ECHO_AREA_MESSAGE.with_borrow(|current| current.clone()));
+    ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| {
+        *slot = ECHO_AREA_MESSAGE.with_borrow(|current| {
+            current.as_ref().map(|(text, _)| {
+                crate::lisp::primitives::strings::string_like_value(text.clone(), Vec::new())
+            })
+        })
+    });
     ECHO_FROM_PRINT.with(|flag| flag.set(true));
 }
 
 pub(crate) fn echo_area_message() -> Option<String> {
     ECHO_AREA_MESSAGE.with_borrow(|slot| slot.as_ref().map(|(text, _)| text.clone()))
+}
+
+fn echo_area_message_value() -> Option<Value> {
+    ECHO_AREA_MESSAGE_VALUE.with_borrow(|slot| slot.clone())
 }
 
 #[cfg(test)]
@@ -2129,16 +2172,12 @@ define_dispatch!(
             }
             // ── Output ──
             "message" => {
-                let (text, text_spans, formatted) =
+                let (text, formatted) =
                     if args.is_empty() || args.first().is_some_and(Value::is_nil) {
-                        (String::new(), Vec::new(), None)
+                        (String::new(), None)
                     } else {
                         let formatted = super::call(interp, "format", args, env)?;
-                        (
-                            string_text(&formatted)?,
-                            string_face_spans(&formatted),
-                            Some(formatted),
-                        )
+                        (string_text(&formatted)?, Some(formatted))
                     };
                 let buffer_name = interp
                     .lookup_var("messages-buffer-name", env)
@@ -2218,7 +2257,7 @@ define_dispatch!(
                         // replace the string or consume it entirely
                         // (set-minibuffer-message displays it inside the
                         // active minibuffer instead of the echo area).
-                        let mut display = Some((text.clone(), text_spans));
+                        let mut display = formatted.clone();
                         if let Some(function) = interp
                             .lookup_var("set-message-function", env)
                             .filter(|function| !function.is_nil())
@@ -2230,15 +2269,14 @@ define_dispatch!(
                                 interp.call_function_value(function, None, &[string], env)
                             {
                                 if result.is_string() {
-                                    display =
-                                        Some((string_text(&result)?, string_face_spans(&result)));
+                                    display = Some(result);
                                 } else if result.is_truthy() {
                                     display = None;
                                 }
                             }
                         }
-                        if let Some((text, spans)) = display {
-                            set_echo_area_message_with_spans(text, spans);
+                        if let Some(value) = display {
+                            set_echo_area_message_value(value)?;
                         }
                     }
                 }
@@ -2260,7 +2298,7 @@ define_dispatch!(
                 if args.first().is_some_and(Value::is_nil) {
                     Ok(Value::Nil)
                 } else {
-                    Ok(Value::String(text.into()))
+                    Ok(formatted.unwrap_or_else(|| Value::String(text.into())))
                 }
             }
             "message-box" | "message-or-box" => {
@@ -2283,9 +2321,7 @@ define_dispatch!(
                 // The interactive echo area is authoritative: unlike the
                 // *Messages* tail it reflects `(message nil)' clears and
                 // messages suppressed from the log by `message-log-max'.
-                Ok(echo_area_message()
-                    .map(|text| Value::String(text.into()))
-                    .unwrap_or(Value::Nil))
+                Ok(echo_area_message_value().unwrap_or(Value::Nil))
             }
             "error-message-string" => {
                 need_args(name, args, 1)?;

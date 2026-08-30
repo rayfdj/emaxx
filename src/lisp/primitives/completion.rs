@@ -5,7 +5,15 @@ pub(crate) const OBARRAY_RECORD_TYPE: &str = "obarray";
 #[derive(Clone)]
 pub(crate) struct CompletionCandidate {
     name: String,
+    result: Value,
     predicate_args: Vec<Value>,
+}
+
+fn completion_result_value(value: &Value, name: &str) -> Value {
+    match value {
+        Value::String(_) | Value::StringObject(_) => value.clone(),
+        _ => make_shared_string_value_with_multibyte(name.to_string(), Vec::new(), false),
+    }
 }
 
 pub(crate) fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
@@ -526,13 +534,17 @@ pub(crate) fn completion_list_candidates(
                 let item = ensure_completion_list_item_identity(&ConsSlot::car(&cons_cell))?;
                 if matches!(item, Value::Cons(_)) {
                     let key = item.car()?;
+                    let name = completion_display_name(&key)?;
                     candidates.push(CompletionCandidate {
-                        name: completion_display_name(&key)?,
+                        result: completion_result_value(&key, &name),
+                        name,
                         predicate_args: vec![item],
                     });
                 } else {
+                    let name = completion_display_name(&item)?;
                     candidates.push(CompletionCandidate {
-                        name: completion_display_name(&item)?,
+                        result: completion_result_value(&item, &name),
+                        name,
                         predicate_args: vec![item],
                     });
                 }
@@ -557,8 +569,10 @@ pub(crate) fn completion_candidates(
         return entries
             .into_iter()
             .map(|(key, value)| {
+                let name = completion_display_name(&key)?;
                 Ok(CompletionCandidate {
-                    name: completion_display_name(&key)?,
+                    result: completion_result_value(&key, &name),
+                    name,
                     predicate_args: vec![key, value],
                 })
             })
@@ -569,8 +583,10 @@ pub(crate) fn completion_candidates(
             return symbols
                 .into_iter()
                 .map(|symbol| {
+                    let name = completion_display_name(&symbol)?;
                     Ok(CompletionCandidate {
-                        name: completion_display_name(&symbol)?,
+                        result: completion_result_value(&symbol, &name),
+                        name,
                         predicate_args: vec![symbol],
                     })
                 })
@@ -700,8 +716,10 @@ pub(crate) fn filtered_completion_matches(
             env,
         )?;
         for name in all.to_vec().unwrap_or_default() {
-            let name = completion_display_name(&name)?;
+            let value = name;
+            let name = completion_display_name(&value)?;
             matches.push(CompletionCandidate {
+                result: completion_result_value(&value, &name),
                 name,
                 predicate_args: Vec::new(),
             });
@@ -855,9 +873,7 @@ pub(crate) fn all_completions(
     Ok(Value::list(
         filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?
             .into_iter()
-            .map(|candidate| {
-                make_shared_string_value_with_multibyte(candidate.name, Vec::new(), false)
-            }),
+            .map(|candidate| candidate.result),
     ))
 }
 
@@ -1117,7 +1133,11 @@ fn activate_completing_read_minibuffer(
     if string_like(prompt).is_none() {
         return Err(LispError::TypeError("string".into(), prompt.type_name()));
     }
-    let initial_input = completing_read_initial_input(args).unwrap_or_default();
+    let initial_input = Value::String(
+        completing_read_initial_input(args)
+            .unwrap_or_default()
+            .into(),
+    );
     let require_match = args.get(3).is_some_and(Value::is_truthy);
     let map_name = if require_match {
         "minibuffer-local-must-match-map"
@@ -1154,13 +1174,20 @@ fn activate_completing_read_minibuffer(
 pub(crate) fn activate_minibuffer(
     interp: &mut Interpreter,
     prompt: &Value,
-    initial_input: &str,
+    initial_input: &Value,
     local_map: Value,
     env: &mut Env,
 ) -> Result<ActiveMinibuffer, LispError> {
     let prompt_string =
         string_like(prompt).ok_or_else(|| wrong_type_argument("stringp", prompt.clone()))?;
     let prompt_length = prompt_string.text.chars().count();
+    let initial_string = string_like(initial_input).unwrap_or_else(|| StringLike {
+        text: String::new(),
+        props: Vec::new(),
+        multibyte: false,
+        extended_chars: Vec::new(),
+    });
+    let initial_length = initial_string.text.chars().count();
     let saved_windows = interp.snapshot_window_configuration();
     let depth = interp.minibuffer_depth().saturating_add(1);
     let buffer_id = interp
@@ -1254,8 +1281,19 @@ pub(crate) fn activate_minibuffer(
                 .put_text_property(1, 1 + prompt_length, name, value);
         }
     }
-    if !initial_input.is_empty() {
-        interp.buffer.insert(initial_input);
+    if !initial_string.text.is_empty() {
+        let initial_start = 1 + prompt_length;
+        interp.buffer.insert(&initial_string.text);
+        for span in &initial_string.props {
+            interp.buffer.set_text_properties(
+                initial_start + span.start,
+                initial_start + span.end.min(initial_length),
+                &span.props,
+            );
+        }
+        interp
+            .buffer
+            .set_inserted_extended_chars(initial_start, &initial_string.extended_chars);
     }
     interp.buffer.goto_char(interp.buffer.point_max());
 

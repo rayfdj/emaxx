@@ -1295,6 +1295,7 @@ pub(crate) fn read_one_form_in_env(
         Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
         None => return Err(LispError::EndOfInput),
     };
+    let value = interp.intern_read_symbols_in_value(value, env)?;
     interp.set_variable(
         "lread--unescaped-character-literals",
         Value::list(reader.unescaped_character_literals().map(Value::Integer)),
@@ -1404,6 +1405,11 @@ fn read_one_positioned_form(
     base_position: i64,
 ) -> Result<(Value, usize), LispError> {
     let (value, consumed) = read_one_form_in_env(interp, text, env)?;
+    // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
+    // before read-positioning-symbols returns.  In particular, the byte
+    // compiler must receive an actual hash table constant rather than
+    // Emaxx's parser-private ReaderForm marker.
+    let value = interp.materialize_read_object_literals(value)?;
     // GNU 30.2 lread.c:read0 interns every ordinary symbol even when
     // LOCATE_SYMS asks it to return a `symbol-with-pos' wrapper.
     interp.intern_symbols_in_value(&value);
@@ -1422,6 +1428,9 @@ fn position_symbols_in_value(
 ) -> Value {
     match value {
         Value::Symbol(symbol) => {
+            while matches!(tokens.front(), Some((token, _)) if token != &symbol) {
+                tokens.pop_front();
+            }
             if matches!(tokens.front(), Some((token, _)) if token == &symbol)
                 && let Some((_, position)) = tokens.pop_front()
             {
@@ -1602,7 +1611,6 @@ pub(crate) fn read_from_lisp_source(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let value = read_from_lisp_source_raw(interp, source, env)?;
-    interp.intern_symbols_in_value(&value);
     let value = interp.materialize_read_record_literals(&value)?;
     let value = materialize_read_hash_table_literals(interp, &value)?;
     materialize_read_char_table_literals(interp, &value)
@@ -2052,7 +2060,7 @@ fn materialize_hash_table_literals_inner(
 fn hash_table_from_literal_fields(
     interp: &mut Interpreter,
     fields: &[Value],
-    seen: &mut HashSet<usize>,
+    _seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     let mut test = "eql".to_string();
     let mut size = Value::Integer(65);
@@ -2079,9 +2087,9 @@ fn hash_table_from_literal_fields(
                 let mut cursor = 0usize;
                 while cursor + 1 < items.len() {
                     let entry_key =
-                        materialize_hash_table_literals_inner(interp, &items[cursor], seen)?;
+                        interp.materialize_read_object_literals(items[cursor].clone())?;
                     let entry_value =
-                        materialize_hash_table_literals_inner(interp, &items[cursor + 1], seen)?;
+                        interp.materialize_read_object_literals(items[cursor + 1].clone())?;
                     entries.push((entry_key, entry_value));
                     cursor += 2;
                 }
