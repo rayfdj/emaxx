@@ -1151,6 +1151,87 @@ pub(super) fn network_io_error_detail(error: &std::io::Error) -> String {
     }
 }
 
+/// Resolve HOST and a named SERVICE together, as process.c does when
+/// `:host' is non-nil.  Besides selecting the service's port, this preserves
+/// the host platform's `gai_strerror' diagnostic instead of baking one
+/// operating system's wording into the runtime.
+fn host_service_database_port(
+    host: &str,
+    service: &str,
+    datagram: bool,
+    family_ipv4: bool,
+    family_ipv6: bool,
+) -> Result<i64, LispError> {
+    // Emacs passes SSDATA directly to the C resolver, so an embedded NUL
+    // terminates the host or service as it would for any other C string.
+    let c_string_prefix = |text: &str| {
+        let prefix = text
+            .as_bytes()
+            .split(|byte| *byte == 0)
+            .next()
+            .unwrap_or_default();
+        std::ffi::CString::new(prefix).expect("NUL-free C string prefix")
+    };
+    let host_c = c_string_prefix(host);
+    let service_c = c_string_prefix(service);
+    let mut hints = unsafe { std::mem::zeroed::<libc::addrinfo>() };
+    hints.ai_family = if family_ipv4 {
+        libc::AF_INET
+    } else if family_ipv6 {
+        libc::AF_INET6
+    } else {
+        libc::AF_UNSPEC
+    };
+    hints.ai_socktype = if datagram {
+        libc::SOCK_DGRAM
+    } else {
+        libc::SOCK_STREAM
+    };
+    let mut addresses = std::ptr::null_mut();
+    let status =
+        unsafe { libc::getaddrinfo(host_c.as_ptr(), service_c.as_ptr(), &hints, &mut addresses) };
+    if status != 0 {
+        let detail = unsafe {
+            let message = libc::gai_strerror(status);
+            if message.is_null() {
+                format!("getaddrinfo error {status}")
+            } else {
+                std::ffi::CStr::from_ptr(message)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        return Err(LispError::Signal(format!("{host}/{service} {detail}")));
+    }
+
+    let mut current = addresses;
+    let mut port = None;
+    while !current.is_null() {
+        let entry = unsafe { &*current };
+        port = match entry.ai_family {
+            libc::AF_INET if !entry.ai_addr.is_null() => {
+                let address = unsafe { &*(entry.ai_addr.cast::<libc::sockaddr_in>()) };
+                Some(i64::from(u16::from_be(address.sin_port)))
+            }
+            libc::AF_INET6 if !entry.ai_addr.is_null() => {
+                let address = unsafe { &*(entry.ai_addr.cast::<libc::sockaddr_in6>()) };
+                Some(i64::from(u16::from_be(address.sin6_port)))
+            }
+            _ => None,
+        };
+        if port.is_some() {
+            break;
+        }
+        current = entry.ai_next;
+    }
+    unsafe { libc::freeaddrinfo(addresses) };
+    port.ok_or_else(|| {
+        LispError::Signal(format!(
+            "make-network-process: no matching address for {host}"
+        ))
+    })
+}
+
 pub(super) fn network_server_error(error: &std::io::Error) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("file-error"),
@@ -1318,6 +1399,23 @@ pub(crate) fn make_network_process(
             .is_some_and(|value| value.is_truthy());
     if host_local {
         host = Some(if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
+    }
+    // process.c supplies an explicit loopback host when :host is nil, then
+    // resolves that host and a non-numeric :service together through
+    // getaddrinfo with the socket type as a hint.  This is observable in
+    // both the selected port and the platform's error wording.
+    if service.is_none()
+        && !family_local
+        && let Some(text) = service_path.as_deref()
+    {
+        let default_host = if family_ipv6 { "::1" } else { "127.0.0.1" };
+        service = Some(host_service_database_port(
+            host.as_deref().unwrap_or(default_host),
+            text,
+            datagram,
+            family_ipv4,
+            family_ipv6,
+        )?);
     }
     let (decoding, encoding) = process_creation_coding_systems(interp, env, &coding);
     let name = interp.unique_process_name(&name);

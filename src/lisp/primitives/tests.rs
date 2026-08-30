@@ -20,7 +20,7 @@ fn call_via_lisp(
     interp.call_function_value(function, Some(name), args, env)
 }
 
-fn assert_upstream_primitive_contract(program: &str, expected: &str) {
+fn upstream_primitive_contract_output(program: &str) -> String {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
     let program = crate::test_support::oracle_program_ascii(program);
@@ -38,8 +38,12 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
         "primitive-contract oracle failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn assert_upstream_primitive_contract(program: &str, expected: &str) {
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
+        upstream_primitive_contract_output(program),
         expected,
         "oracle disagreed; program sent was:\n{program}"
     );
@@ -14369,6 +14373,56 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
         .expect("read serial process output from PTY master");
     assert_eq!(&output, b"from-emaxx");
     call(&mut interp, "delete-process", &[process], &mut env).expect("delete serial process");
+}
+
+#[test]
+fn native_network_process_resolves_named_services_from_the_services_database() {
+    // process.c normalizes a nil Internet host to loopback, then hands the
+    // host and non-numeric :service to getaddrinfo ("domain" is UDP+TCP
+    // port 53 in the services database).  An unknown name exposes the
+    // platform's getaddrinfo diagnostic.  No packet is sent: only the
+    // resolved :remote address is observed.
+    let program = r#"(let ((dns (make-network-process
+                                :name "dns-client"
+                                :type 'datagram
+                                :host "127.0.0.1"
+                                :service "domain"
+                                :sentinel 'ignore)))
+                      (unwind-protect
+                          (list (process-contact dns :remote)
+                                (condition-case err
+                                    (make-network-process
+                                     :name "bogus-client"
+                                     :type 'datagram
+                                     :host "127.0.0.1"
+                                     :service "emaxx-no-such-service")
+                                  (error err))
+                                (condition-case err
+                                    (make-network-process
+                                     :name "bogus-server"
+                                     :server t
+                                     :service "emaxx-no-such-service")
+                                  (error err)))
+                        (delete-process dns)))"#;
+    let expected = upstream_primitive_contract_output(&format!("(prin1 {program})"));
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("named-service contract should parse")
+        .expect("named-service contract should contain a form");
+    let expected_value = Reader::new(&expected)
+        .read()
+        .expect("named-service oracle output should parse")
+        .expect("named-service oracle output should contain a value");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("named-service contract should evaluate");
+    assert!(
+        values_equal(&interp, &actual, &expected_value),
+        "named-service result differs from GNU:\nactual: {actual:?}\nexpected: {expected_value:?}"
+    );
 }
 
 #[test]
