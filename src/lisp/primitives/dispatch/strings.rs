@@ -740,7 +740,9 @@ define_dispatch!(
                     let start = result.chars().count();
                     result.push_str(&formatted);
                     result_props.extend(shift_string_props(
-                        &merge_string_props(formatted_props),
+                        &crate::lisp::primitives::strings::flatten_overlapping_string_props(
+                            formatted_props,
+                        ),
                         start,
                     ));
                 }

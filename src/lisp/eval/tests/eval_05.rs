@@ -297,7 +297,10 @@ fn read_buffer_simulation_enforces_its_predicate_and_accepts_default() {
             "(progn
                (get-buffer-create \"#chan\")
                (get-buffer-create \"#fake\")
-               (let ((predicate (lambda (name) (string= name \"#chan\"))))
+               ;; minibuf.c completes over (NAME . BUFFER) conses, so the
+               ;; PREDICATE receives the pair (oracle probe rbuf2.el; a
+               ;; name-string predicate makes GNU refuse every candidate).
+               (let ((predicate (lambda (entry) (string= (car entry) \"#chan\"))))
                  (list
                   (let ((unread-command-events
                          (append (kbd \"#chan C-m\")

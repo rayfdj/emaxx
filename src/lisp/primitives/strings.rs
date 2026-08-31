@@ -826,6 +826,48 @@ pub(crate) fn slice_string_props(
     merge_string_props(sliced)
 }
 
+/// editfns.c styled_format's property layering: the format string's
+/// properties cover each substituted span, and the argument string's own
+/// properties are then ADDED over them (add-text-properties semantics:
+/// shared keys take the argument's value, and the argument's keys print
+/// first).  The format builder records these as OVERLAPPING spans in
+/// arrival order (argument spans first, the covering spec span last);
+/// flatten them into disjoint spans whose plists carry the union, with
+/// the earliest covering span winning each key.
+pub(crate) fn flatten_overlapping_string_props(
+    spans: Vec<TextPropertySpan>,
+) -> Vec<TextPropertySpan> {
+    let mut bounds: Vec<usize> = spans
+        .iter()
+        .filter(|span| span.start < span.end)
+        .flat_map(|span| [span.start, span.end])
+        .collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let mut result = Vec::new();
+    for window in bounds.windows(2) {
+        let (start, end) = (window[0], window[1]);
+        let mut plist: Vec<(String, Value)> = Vec::new();
+        for span in &spans {
+            if span.start <= start && end <= span.end {
+                for (key, value) in &span.props {
+                    if !plist.iter().any(|(existing, _)| existing == key) {
+                        plist.push((key.clone(), value.clone()));
+                    }
+                }
+            }
+        }
+        if !plist.is_empty() {
+            result.push(TextPropertySpan {
+                start,
+                end,
+                props: plist,
+            });
+        }
+    }
+    merge_string_props(result)
+}
+
 pub(crate) fn merge_string_props(mut props: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {
     props.retain(|span| span.start < span.end && !span.props.is_empty());
     props.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));

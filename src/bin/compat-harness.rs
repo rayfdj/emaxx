@@ -94,6 +94,9 @@ struct CompatRunPlan<'a> {
     subject: &'a SubjectBuild,
     provenance: &'a RunProvenance,
     frozen_manifest: Option<&'a FrozenCompatibilityManifest>,
+    /// A prior artifact root from the SAME commit whose completed per-file
+    /// comparisons may be reused instead of re-executed (frozen resume).
+    resume_root: Option<&'a PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -125,6 +128,12 @@ struct FrozenArgs {
     /// Per setup and test phase.  This is recorded in summary provenance.
     #[arg(long)]
     timeout_seconds: Option<u64>,
+    /// A prior frozen artifact root to resume from.  Only per-file
+    /// comparisons recorded for the SAME commit (its head.json) are
+    /// reused; anything else re-runs, so the score stays
+    /// commit-addressable.
+    #[arg(long)]
+    resume: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -730,6 +739,15 @@ struct FileTiming {
     emaxx_at_least_twice_as_slow: bool,
 }
 
+/// The readable twin of `TimedComparison', for `--resume' (same flattened
+/// shape on disk).
+#[derive(Serialize, Deserialize)]
+struct StoredTimedComparison {
+    #[serde(flatten)]
+    comparison: compat::ComparisonReport,
+    timing: FileTiming,
+}
+
 #[derive(Serialize)]
 struct TimedComparison<'a> {
     #[serde(flatten)]
@@ -1090,6 +1108,7 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
             subject: &subject,
             provenance: &provenance,
             frozen_manifest: None,
+            resume_root: None,
         },
     )
 }
@@ -1109,12 +1128,13 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
                 .into(),
         );
     }
-    let (_, dirty) = git_state(&compat::project_root())?;
+    let (head, dirty) = git_state(&compat::project_root())?;
     if dirty != Some(false) {
         return Err("frozen mode requires a clean working tree so the score is \
              commit-addressable; commit or stash first"
             .into());
     }
+    let head = head.ok_or("frozen mode requires a resolvable HEAD commit")?;
     enforce_anti_cheat_gates()?;
     let context = load_context()?;
     // The score is a per-platform statement: the manifest, its pinned
@@ -1131,6 +1151,28 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
     // manifest was 7,080, then 7,595, now 7,883, and a stamped-in number
     // becomes a lie in machine-readable provenance the moment it changes.
     let artifact_root = make_artifact_root("frozen")?;
+    // The head marker makes an interrupted run resumable WITHOUT losing
+    // commit-addressability: --resume refuses any artifact root recorded
+    // for a different commit.
+    write_json(
+        &artifact_root.join("head.json"),
+        &serde_json::json!({ "commit": head }),
+        "frozen head marker",
+    )?;
+    if let Some(resume) = &args.resume {
+        let marker = resume.join("head.json");
+        let recorded = fs::read_to_string(&marker)
+            .map_err(|error| format!("read resume marker {}: {error}", marker.display()))?;
+        let recorded: serde_json::Value = serde_json::from_str(&recorded)
+            .map_err(|error| format!("parse resume marker {}: {error}", marker.display()))?;
+        if recorded.get("commit").and_then(|value| value.as_str()) != Some(head.as_str()) {
+            return Err(format!(
+                "refusing to resume from {}: it was recorded for commit {:?}, HEAD is {head}",
+                resume.display(),
+                recorded.get("commit")
+            ));
+        }
+    }
     let subject = ensure_emaxx_binary(args.subject_root.as_deref())?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
@@ -1148,6 +1190,7 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
             subject: &subject,
             provenance: &provenance,
             frozen_manifest: Some(&manifest),
+            resume_root: args.resume.as_ref(),
         },
     )
 }
@@ -1493,6 +1536,7 @@ fn run_landed_compat(args: LandedArgs) -> Result<u8, String> {
             subject: &subject,
             provenance: &provenance,
             frozen_manifest: None,
+            resume_root: None,
         },
     )
 }
@@ -1555,6 +1599,7 @@ fn run_regressions_audit(args: RegressionRunArgs) -> Result<u8, String> {
                 subject: &subject,
                 provenance: &provenance,
                 frozen_manifest: None,
+                resume_root: None,
             },
         )?;
         if run_status != 0 {
@@ -1591,6 +1636,7 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
             subject: &subject,
             provenance: &provenance,
             frozen_manifest: None,
+            resume_root: None,
         },
     )?;
     if status != 0 {
@@ -1694,6 +1740,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         subject,
         provenance,
         frozen_manifest,
+        resume_root,
     } = plan;
     let mut matching_files = 0usize;
     let mut matching_outcomes = 0usize;
@@ -1720,6 +1767,45 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         let per_file_dir = per_file_artifact_dir(artifact_root, &relative);
         fs::create_dir_all(&per_file_dir)
             .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
+
+        // Resume: a completed per-file comparison recorded for this same
+        // commit (head.json equality was checked before the loop) is a
+        // finished measurement of an identical subject and oracle; reuse
+        // it rather than re-executing hours of work after an interrupted
+        // run.  An absent or unreadable record simply re-runs the file.
+        if let Some(resume_root) = resume_root
+            && let Ok(stored) = fs::read_to_string(
+                per_file_artifact_dir(resume_root, &relative).join("comparison.json"),
+            )
+            && let Ok(stored) = serde_json::from_str::<StoredTimedComparison>(&stored)
+        {
+            write_json(
+                &per_file_dir.join("comparison.json"),
+                &stored,
+                "resumed comparison report",
+            )?;
+            matching_outcomes += stored.comparison.matching_outcomes;
+            mismatching_outcomes += stored.comparison.mismatching_outcomes;
+            if frozen_manifest.is_some() {
+                compared_outcomes +=
+                    stored.comparison.matching_outcomes + stored.comparison.mismatching_outcomes;
+            }
+            if stored.comparison.matches {
+                matching_files += 1;
+                println!("PASS {relative} (resumed)");
+            } else {
+                mismatches.push(relative.clone());
+                println!("FAIL {relative} (resumed)");
+                for issue in &stored.comparison.issues {
+                    println!("  [{}] {}", issue.kind, issue.detail);
+                }
+            }
+            if stored.timing.emaxx_at_least_twice_as_slow {
+                performance_regressions.push(relative.clone());
+            }
+            timings.push(stored.timing);
+            continue;
+        }
 
         oracle_checkout.restore()?;
         let oracle = run_oracle(
