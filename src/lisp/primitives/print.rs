@@ -595,8 +595,10 @@ pub(crate) fn render_prin1_with_context(
             return Ok(print_ref_placeholder(outer_depth));
         }
         // print.c:2249: printing without `print-circle' gives up past
-        // PRINT_CIRCLE levels rather than exhausting the C stack.
-        if depth >= PRINT_CIRCLE_DEPTH_LIMIT {
+        // PRINT_CIRCLE levels rather than exhausting the C stack; with
+        // `print-circle' non-nil GNU prints ANY depth (its object walk
+        // is explicitly iterative), so the guard must not fire there.
+        if !context.options.circle && depth >= PRINT_CIRCLE_DEPTH_LIMIT {
             return Err(LispError::Signal(
                 "Apparently circular structure being printed".into(),
             ));
@@ -1381,26 +1383,16 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             Ok(value)
         }
         Value::BuiltinFunc(_) | Value::Lambda(_) => {
+            // A function stream yields characters with no stable source
+            // text, so GNU has no positions to attach either.
             let value = read_from_callable_source(interp, source, env)?;
-            // GNU's `read0' interns a symbol before wrapping it in the
-            // position-bearing pseudovector.  Emaxx parses independently of
-            // its obarray, so preserve that C-owned reader side effect
-            // explicitly before replacing ordinary symbols with records.
             interp.intern_symbols_in_value(&value);
-            Ok(position_symbols_in_value(
-                interp,
-                value,
-                &mut VecDeque::new(),
-            ))
+            Ok(value)
         }
         Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
             let value = read_from_callable_source(interp, source, env)?;
             interp.intern_symbols_in_value(&value);
-            Ok(position_symbols_in_value(
-                interp,
-                value,
-                &mut VecDeque::new(),
-            ))
+            Ok(value)
         }
         _ => {
             let text = string_text(source)?;
@@ -1415,124 +1407,91 @@ fn read_one_positioned_form(
     text: &str,
     base_position: i64,
 ) -> Result<(Value, usize), LispError> {
-    let (value, consumed) = read_one_form_in_env(interp, text, env)?;
+    // read0 with LOCATE_SYMS: the reader itself wraps each symbol
+    // occurrence with its character position (the retired token-stream
+    // zip desynced on any non-symbol token — a number, `t' — and then
+    // silently dropped every later position; bytecomp warnings inherited
+    // the enclosing defun's position instead of the offending form's).
+    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let mut reader = crate::lisp::reader::Reader::with_positioned_symbols(
+        text,
+        symbol_shorthands,
+        base_position,
+    );
+    let value = match reader.read()? {
+        Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
+        None => return Err(LispError::EndOfInput),
+    };
+    interp.set_variable(
+        "lread--unescaped-character-literals",
+        Value::list(reader.unescaped_character_literals().map(Value::Integer)),
+        env,
+    );
+    let consumed = text[..reader.position()].chars().count();
     // GNU 30.2 lread.c:read0 interns every ordinary symbol even when
     // LOCATE_SYMS asks it to return a `symbol-with-pos' wrapper.
     interp.intern_symbols_in_value(&value);
-    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let mut tokens = symbol_tokens_with_positions(text, base_position, &symbol_shorthands);
-    Ok((
-        position_symbols_in_value(interp, value, &mut tokens),
-        consumed,
-    ))
+    let mut seen = std::collections::HashSet::new();
+    let value = materialize_positioned_symbols(interp, value, &mut seen);
+    Ok((value, consumed))
 }
 
-fn position_symbols_in_value(
+/// Replace each `ReaderForm::PositionedSymbol' the positioning reader
+/// emitted with a real `symbol-with-pos' pseudovector.  Mutates cons
+/// cells in place (a cycle-safe walk over possibly shared structure).
+fn materialize_positioned_symbols(
     interp: &mut Interpreter,
     value: Value,
-    tokens: &mut VecDeque<(String, i64)>,
+    seen: &mut std::collections::HashSet<*const crate::lisp::types::ConsCell>,
 ) -> Value {
     match value {
-        Value::Symbol(symbol) => {
-            if matches!(tokens.front(), Some((token, _)) if token == &symbol)
-                && let Some((_, position)) = tokens.pop_front()
-            {
+        Value::ReaderForm(form) => match form.as_ref() {
+            crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
+                let bare = match name.as_str() {
+                    "t" => Value::T,
+                    _ => Value::Symbol(name.clone().into()),
+                };
+                interp.intern_symbols_in_value(&bare);
                 interp.create_pseudovector(
                     crate::lisp::eval::RecordKind::SymbolWithPos,
                     "symbol-with-pos",
-                    vec![Value::Symbol(symbol), Value::Integer(position)],
+                    vec![bare, Value::Integer(*pos)],
                 )
-            } else {
-                Value::Symbol(symbol)
             }
-        }
-        Value::Cons(cons_cell) => {
-            let car = &cons_cell.car;
-            let cdr = &cons_cell.cdr;
-            let positioned_car = position_symbols_in_value(interp, car.borrow().clone(), tokens);
-            let positioned_cdr = position_symbols_in_value(interp, cdr.borrow().clone(), tokens);
-            Value::cons(positioned_car, positioned_cdr)
+            crate::lisp::types::ReaderForm::Record { slots } => {
+                let slots = slots
+                    .iter()
+                    .map(|slot| materialize_positioned_symbols(interp, slot.clone(), seen))
+                    .collect();
+                Value::ReaderForm(std::rc::Rc::new(crate::lisp::types::ReaderForm::Record {
+                    slots,
+                }))
+            }
+            crate::lisp::types::ReaderForm::HashTable { fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| materialize_positioned_symbols(interp, field.clone(), seen))
+                    .collect();
+                Value::ReaderForm(std::rc::Rc::new(
+                    crate::lisp::types::ReaderForm::HashTable { fields },
+                ))
+            }
+            _ => Value::ReaderForm(form),
+        },
+        Value::Cons(cell) => {
+            let pointer = std::rc::Rc::as_ptr(&cell);
+            if seen.insert(pointer) {
+                let car = cell.car.borrow().clone();
+                let car = materialize_positioned_symbols(interp, car, seen);
+                *cell.car.borrow_mut() = car;
+                let cdr = cell.cdr.borrow().clone();
+                let cdr = materialize_positioned_symbols(interp, cdr, seen);
+                *cell.cdr.borrow_mut() = cdr;
+            }
+            Value::Cons(cell)
         }
         other => other,
     }
-}
-
-fn symbol_tokens_with_positions(
-    text: &str,
-    base_position: i64,
-    symbol_shorthands: &[(String, String)],
-) -> VecDeque<(String, i64)> {
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
-    let mut tokens = VecDeque::new();
-    let mut idx = 0usize;
-    while idx < chars.len() {
-        let (_, ch) = chars[idx];
-        if ch.is_whitespace() {
-            idx += 1;
-            continue;
-        }
-        if ch == ';' {
-            idx += 1;
-            while idx < chars.len() && chars[idx].1 != '\n' {
-                idx += 1;
-            }
-            continue;
-        }
-        if ch == '"' {
-            idx += 1;
-            let mut escaped = false;
-            while idx < chars.len() {
-                let current = chars[idx].1;
-                idx += 1;
-                if escaped {
-                    escaped = false;
-                } else if current == '\\' {
-                    escaped = true;
-                } else if current == '"' {
-                    break;
-                }
-            }
-            continue;
-        }
-        let skip_shorthand = ch == '#' && chars.get(idx + 1).is_some_and(|(_, next)| *next == '_');
-        if skip_shorthand {
-            idx += 2;
-        } else if is_reader_delimiter(ch) {
-            idx += 1;
-            continue;
-        }
-
-        let start = idx;
-        let start_char_pos = text[..chars[start].0].chars().count() as i64;
-        let mut token = String::new();
-        while idx < chars.len() {
-            let current = chars[idx].1;
-            if current.is_whitespace() || is_reader_delimiter(current) || current == ';' {
-                break;
-            }
-            if current == '\\' && idx + 1 < chars.len() {
-                idx += 1;
-                token.push(chars[idx].1);
-                idx += 1;
-                continue;
-            }
-            token.push(current);
-            idx += 1;
-        }
-        if !token.is_empty() && token != "." {
-            let token = if skip_shorthand {
-                token
-            } else {
-                crate::lisp::reader::apply_symbol_shorthands_to_token(token, symbol_shorthands)
-            };
-            tokens.push_back((token, base_position + start_char_pos));
-        }
-    }
-    tokens
-}
-
-fn is_reader_delimiter(ch: char) -> bool {
-    matches!(ch, '(' | ')' | '[' | ']' | '\'' | '`' | ',' | '"' | '#')
 }
 
 pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
@@ -1615,9 +1574,13 @@ pub(crate) fn read_from_lisp_source(
 ) -> Result<Value, LispError> {
     let value = read_from_lisp_source_raw(interp, source, env)?;
     interp.intern_symbols_in_value(&value);
-    let value = interp.materialize_read_record_literals(&value)?;
-    let value = materialize_read_hash_table_literals(interp, &value)?;
-    materialize_read_char_table_literals(interp, &value)
+    // GNU's reader constructs every object literal before returning —
+    // records, hash tables, char tables, AND `#[...]' byte-code objects
+    // (with `#N=' labels into them).  Route through the same full
+    // materializer the load path uses; the partial record/hash/char pass
+    // left `#<reader-form>' placeholders in `#[...]' data for `read'
+    // consumers (pp-tests--sanity).
+    interp.materialize_read_object_literals(value)
 }
 
 // GNU's reader constructs real hash tables for `#s(hash-table ...)' input;

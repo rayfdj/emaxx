@@ -1098,7 +1098,17 @@ pub struct CharTableState {
     pub entries: Vec<CharTableEntry>,
     pub category_docs: Vec<(u32, String)>,
     ascii_entry_indices: Option<Box<[usize; 128]>>,
+    /// Lazily-built non-overlapping view of `entries': each map key is a
+    /// range start, the payload its inclusive end plus the index of the
+    /// newest log entry covering it.  The log itself must stay append-only
+    /// (printing and `equal' compare it verbatim), so this is an index over
+    /// it, kept incrementally current by `push_entry' and dropped whenever
+    /// the log is replaced wholesale.
+    resolved_ranges: std::cell::RefCell<Option<ResolvedCharRanges>>,
 }
+
+/// Range start -> (inclusive range end, newest covering entry index).
+type ResolvedCharRanges = std::collections::BTreeMap<u32, (u32, usize)>;
 
 #[derive(Clone, Debug)]
 pub struct CharTableEntry {
@@ -1146,6 +1156,7 @@ impl CharTableState {
             entries,
             category_docs: Vec::new(),
             ascii_entry_indices,
+            resolved_ranges: std::cell::RefCell::new(None),
         }
     }
 
@@ -1168,6 +1179,9 @@ impl CharTableState {
         let start = entry.start;
         let end = entry.end;
         self.entries.push(entry);
+        if let Some(map) = self.resolved_ranges.get_mut().as_mut() {
+            Self::overlay_resolved_range(map, start, end, index);
+        }
         if start >= 128 {
             return;
         }
@@ -1182,11 +1196,48 @@ impl CharTableState {
     pub(crate) fn replace_entries(&mut self, entries: Vec<CharTableEntry>) {
         self.ascii_entry_indices = Self::build_ascii_entry_indices(&entries);
         self.entries = entries;
+        *self.resolved_ranges.get_mut() = None;
     }
 
     pub(crate) fn clear_entries(&mut self) {
         self.entries.clear();
         self.ascii_entry_indices = None;
+        *self.resolved_ranges.get_mut() = None;
+    }
+
+    /// Overlay `[start, end] -> index' onto a non-overlapping range map,
+    /// trimming or splitting whatever older ranges it eclipses.
+    fn overlay_resolved_range(map: &mut ResolvedCharRanges, start: u32, end: u32, index: usize) {
+        if let Some((&prev_start, &(prev_end, prev_index))) = map.range(..start).next_back()
+            && prev_end >= start
+        {
+            map.insert(prev_start, (start - 1, prev_index));
+            if prev_end > end {
+                map.insert(end + 1, (prev_end, prev_index));
+            }
+        }
+        let eclipsed: Vec<u32> = map.range(start..=end).map(|(&s, _)| s).collect();
+        for eclipsed_start in eclipsed {
+            let (eclipsed_end, eclipsed_index) = map
+                .remove(&eclipsed_start)
+                .expect("resolved range vanished mid-overlay");
+            if eclipsed_end > end {
+                map.insert(end + 1, (eclipsed_end, eclipsed_index));
+            }
+        }
+        map.insert(start, (end, index));
+    }
+
+    fn with_resolved_ranges<R>(&self, read: impl FnOnce(&ResolvedCharRanges) -> R) -> R {
+        let mut borrow = self.resolved_ranges.borrow_mut();
+        let map = borrow.get_or_insert_with(|| {
+            let mut map = ResolvedCharRanges::new();
+            for (index, entry) in self.entries.iter().enumerate() {
+                Self::overlay_resolved_range(&mut map, entry.start, entry.end, index);
+            }
+            map
+        });
+        read(map)
     }
 
     pub(crate) fn explicit_entry(&self, key: u32) -> Option<&CharTableEntry> {
@@ -1196,10 +1247,29 @@ impl CharTableState {
                 .then_some(index)
                 .and_then(|index| self.entries.get(index));
         }
-        self.entries
-            .iter()
-            .rev()
-            .find(|entry| entry.start <= key && key <= entry.end)
+        self.with_resolved_ranges(|map| {
+            let (_, &(end, index)) = map.range(..=key).next_back()?;
+            (end >= key).then_some(index)
+        })
+        .and_then(|index| self.entries.get(index))
+    }
+
+    /// The effective explicit ranges in ascending character order: newer log
+    /// entries mask older ones, and nil writes mask without being reported
+    /// as values.
+    pub(crate) fn effective_ranges(&self) -> Vec<CharTableEntry> {
+        self.with_resolved_ranges(|map| {
+            map.iter()
+                .filter_map(|(&start, &(end, index))| {
+                    let value = &self.entries[index].value;
+                    (!value.is_nil()).then(|| CharTableEntry {
+                        start,
+                        end,
+                        value: value.clone(),
+                    })
+                })
+                .collect()
+        })
     }
 }
 
@@ -2270,6 +2340,12 @@ impl ImageGraphCopier {
                     }
                     crate::lisp::types::ReaderForm::BoolVector { bits } => {
                         crate::lisp::types::ReaderForm::BoolVector { bits: bits.clone() }
+                    }
+                    crate::lisp::types::ReaderForm::PositionedSymbol { name, pos } => {
+                        crate::lisp::types::ReaderForm::PositionedSymbol {
+                            name: name.clone(),
+                            pos: *pos,
+                        }
                     }
                 }));
                 self.reader_forms.insert(key, copied.clone());
@@ -3406,6 +3482,29 @@ impl Interpreter {
                 (
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
+                ),
+                // emacs.c set_initial_environment builds BOTH lists once
+                // from environ at startup; process-environment is an
+                // ordinary Lisp list afterwards, so a let-binding plus
+                // setenv-internal's delq splice one shared cons chain
+                // exactly as GNU's do.  (A fresh list synthesized on every
+                // lookup broke that sharing: python-tests' unset-inside-let
+                // reverted on unwind where GNU's stays spliced out.)
+                (
+                    "initial-environment".into(),
+                    Value::list(
+                        std::env::vars()
+                            .map(|(name, value)| Value::String(format!("{name}={value}").into()))
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                (
+                    "process-environment".into(),
+                    Value::list(
+                        std::env::vars()
+                            .map(|(name, value)| Value::String(format!("{name}={value}").into()))
+                            .collect::<Vec<_>>(),
+                    ),
                 ),
                 ("cpp-font-lock-keywords".into(), Value::Nil),
                 ("current-load-list".into(), Value::Nil),
@@ -5320,6 +5419,21 @@ impl Interpreter {
     /// this owner rather than reconstructing a partial slot layout.
     pub(crate) fn interpreted_closure_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
         let environment = if let Some(environment) = &lambda.public_environment {
+            // A captured variable mutated after a merge-path call can live
+            // only in `lexical_cell_updates' (the write-back replaced this
+            // closure's frames, detaching them from the alist).  Fold those
+            // updates into the cached alist's own conses, so `aref' and
+            // `byte-compile' see current values through GNU's cons
+            // identities (the alist conses ARE the storage in GNU).
+            for frame in lambda.env.borrow().iter() {
+                if let Some(updates) = Self::frame_identity(frame)
+                    .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id))
+                {
+                    for (name, value) in updates {
+                        bindings::set_lisp_environment_binding(environment, name, value.clone());
+                    }
+                }
+            }
             environment.clone()
         } else {
             let mut environment = Vec::new();

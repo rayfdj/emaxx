@@ -1221,6 +1221,63 @@ fn compare_strings_matches_fns_expectations() {
     );
 }
 
+// GNU/Linux collates for real (fns.c under __STDC_ISO_10646__, sysdep.c
+// str_collate): a non-string LOCALE is a wrong-type-argument and POSIX
+// collation orders "XYZZY" before "xyzzy".
+#[cfg(target_os = "linux")]
+#[test]
+fn collation_functions_collate_through_the_libc_locale() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+
+    assert!(
+        call(
+            &mut interp,
+            "string-collate-equalp",
+            &[
+                Value::String("xyzzy".into()),
+                Value::String("xyzzy".into()),
+                Value::T
+            ],
+            &mut env,
+        )
+        .is_err(),
+        "a non-string locale must signal like GNU's CHECK_STRING"
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-collate-lessp",
+            &[
+                Value::String("XYZZY".into()),
+                Value::String("xyzzy".into()),
+                Value::String("POSIX".into()),
+            ],
+            &mut env,
+        )
+        .expect("POSIX collation ordering should succeed"),
+        Value::T
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "string-collate-equalp",
+            &[
+                Value::String("xyzzy".into()),
+                Value::String("XYZZY".into()),
+                Value::Nil,
+                Value::T,
+            ],
+            &mut env,
+        )
+        .expect("case-folded collation equality should succeed"),
+        Value::T
+    );
+}
+
+// Without __STDC_ISO_10646__ (Darwin), GNU itself falls back to the
+// lexicographic comparison and ignores the locale's collation order.
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn collation_functions_fall_back_to_lexicographic_comparison() {
     let mut interp = Interpreter::new();

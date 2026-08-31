@@ -463,8 +463,13 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     interpreter.set_prefer_compiled_loads(prefer_compiled_loads);
     // The reconstruction below is GNU's pre-dump build phase.  Its Loading
     // chatter and cus-start's "Note, built-in variable" messages belong to
-    // the build log, never to a running session's stderr — a dumped GNU
-    // binary starts silently.
+    // the build log, never to a running session's stderr OR its *Messages*
+    // buffer — a dumped GNU binary starts with an empty one (loaddefs.el's
+    // own `(load "theme-loaddefs.el" t)' was leaking a Loading line there).
+    let saved_message_log_max = interpreter
+        .lookup_var("message-log-max", &Vec::new())
+        .unwrap_or(Value::Nil);
+    interpreter.set_variable("message-log-max", Value::Nil, &mut Vec::new());
     interpreter.set_variable("inhibit-message", Value::T, &mut Vec::new());
     let reconstruction = (|interpreter: &mut Interpreter| -> Result<(), String> {
         preload_batch_compat_libraries(interpreter)?;
@@ -488,6 +493,7 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     // Restore before propagating: a failed reconstruction must not leave the
     // session muted, or its own diagnostics would be swallowed too.
     interpreter.set_variable("inhibit-message", Value::Nil, &mut Vec::new());
+    interpreter.set_variable("message-log-max", saved_message_log_max, &mut Vec::new());
     reconstruction?;
     // The image is built; now the session's own `load-path' applies, with the
     // user's `-L' entries ahead of the installation directories.

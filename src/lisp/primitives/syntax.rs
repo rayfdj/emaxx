@@ -1215,9 +1215,13 @@ fn scan_entry(
     }
 }
 
-// GNU SYNTAX_FLAGS_COMMENT_STYLE over a one- or two-char sequence.
+// GNU SYNTAX_FLAGS_COMMENT_STYLE: style b comes ONLY from the marker's
+// main char (the second of a starter, the first of an ender); style c
+// from either char.  Taking b from either char mislabeled C's `/*' as
+// style b whenever `/' also opens `//' style-b line comments, so the
+// `*/' ender (style a) never matched its own comment.
 fn scan_comment_style(first: &SyntaxEntry, second: Option<&SyntaxEntry>) -> u8 {
-    u8::from(first.style_b || second.is_some_and(|entry| entry.style_b))
+    u8::from(first.style_b)
         | (u8::from(first.style_c || second.is_some_and(|entry| entry.style_c)) << 1)
 }
 
@@ -2144,6 +2148,75 @@ pub(super) fn parse_forward(
     // Whether we are inside a word/symbol token; token STARTS record the
     // level's last-sexp position (parse state element 2).
     let mut in_symbol = false;
+
+    // scan_sexps_forward's restart entry (in_2char_comment_start): when
+    // OLDSTATE comes from a parse that stopped between the two characters
+    // of a comment opener, the first char of this range completes the
+    // opener and the parse continues inside the comment.  GNU carries the
+    // previous char's syntax in state element 10; emaxx re-reads the char
+    // before FROM, which is identical for a state handed back from a parse
+    // ending at FROM (the documented OLDSTATE contract).
+    if oldstate.is_some()
+        && state.comment.is_none()
+        && state.string.is_none()
+        && idx < end
+        && from >= 2
+        && let Some(prev_ch) = chars.get(from - 2).copied()
+    {
+        let prev_entry = scan.entry_at(interp, prev_ch, from - 1);
+        let cur_entry = scan.entry_at(interp, chars[idx], idx + 1);
+        if prev_entry.start_first
+            && cur_entry.start_second
+            && let Some(start) = comment_start_at(interp, &mut scan, &chars, from - 2)
+            && start.len == 2
+        {
+            state.comment = Some(CommentState {
+                kind: start.kind,
+                style: start.style,
+                start_pos: from - 1,
+                depth: 1,
+            });
+            idx += 1;
+            if commentstop != CommentStop::No {
+                interp.buffer.goto_char(idx + 1);
+                return Ok(encode_parse_state(&state));
+            }
+        }
+    } else if let Some(comment) = state.comment
+        && oldstate.is_some()
+        && idx < end
+        && from >= 2
+        && let CommentKind::Block {
+            end_first,
+            end_second,
+            ..
+        } = comment.kind
+        && chars.get(from - 2).copied() == Some(end_first)
+        && chars[idx] == end_second
+    {
+        // forw_comment enters its loop in the middle for the same reason:
+        // a restart between the two characters of the comment ender
+        // completes it.
+        let first = scan.entry_at(interp, end_first, from - 1);
+        let second = scan.entry_at(interp, chars[idx], idx + 1);
+        if scan_comment_style(&first, Some(&second)) == comment.style
+            && !(comment_end_can_be_escaped && preceded_by_odd_backslashes(&chars, from - 2))
+        {
+            if let Some(comment) = state.comment.as_mut()
+                && comment.depth > 1
+            {
+                comment.depth -= 1;
+                idx += 1;
+            } else {
+                idx += 1;
+                state.comment = None;
+                if commentstop != CommentStop::No {
+                    interp.buffer.goto_char(idx + 1);
+                    return Ok(encode_parse_state(&state));
+                }
+            }
+        }
+    }
 
     while idx < end {
         if let Some(string) = state.string {

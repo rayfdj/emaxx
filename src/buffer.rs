@@ -92,6 +92,11 @@ pub struct Buffer {
     /// When true, don't record undo entries.
     undo_disabled: bool,
 
+    /// keyboard.c's `point_before_last_command_or_undo' as `undo-boundary'
+    /// stores it: where point stood when the newest boundary was laid
+    /// down, recorded into the first change after that boundary.
+    point_before_last_boundary: Option<usize>,
+
     /// Overlays attached to this buffer.
     pub overlays: Vec<crate::overlay::Overlay>,
 
@@ -293,6 +298,7 @@ impl Buffer {
             undo_list: Vec::new(),
             undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
+            point_before_last_boundary: None,
             overlays: Vec::new(),
             text_properties: Vec::new(),
             extended_chars: Vec::new(),
@@ -327,6 +333,7 @@ impl Buffer {
             undo_list: Vec::new(),
             undo_list_view: UndoListViewCache::default(),
             undo_disabled: false,
+            point_before_last_boundary: None,
             overlays: Vec::new(),
             text_properties: Vec::new(),
             extended_chars: Vec::new(),
@@ -1034,7 +1041,7 @@ impl Buffer {
 
         let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
-        self.record_first_change_for_undo();
+        self.record_point_for_undo(insert_at);
         self.text.insert(idx0, s);
         self.invalidate_char_cache();
 
@@ -1085,7 +1092,7 @@ impl Buffer {
         let from0 = from - 1;
         let to0 = to - 1;
         if !self.undo_disabled && !noundo {
-            self.record_first_change_for_undo();
+            self.record_point_for_undo(from);
             let old: String = self.text.slice(from0..to0).to_string();
             let props = self.substring_property_spans(from, to);
             let extended_chars = self.substring_extended_chars(from, to);
@@ -1139,7 +1146,7 @@ impl Buffer {
         let nchars = to - from;
 
         if !self.undo_disabled {
-            self.record_first_change_for_undo();
+            self.record_point_for_undo(from);
             self.push_undo_entry(UndoEntry::Delete {
                 pos: from,
                 point_after: self.pt == to,
@@ -1366,6 +1373,12 @@ impl Buffer {
         });
     }
 
+    /// Whether `buffer-undo-list' is t: insdel.c's run_undoable_change
+    /// consults exactly this before notifying `undo-auto--undoable-change'.
+    pub fn undo_recording_disabled(&self) -> bool {
+        self.undo_disabled
+    }
+
     pub fn push_undo_entry(&mut self, entry: UndoEntry) {
         let entry_value = undo_entry_lisp_value(&entry);
         self.undo_list.push(entry);
@@ -1474,6 +1487,26 @@ impl Buffer {
         if !self.undo_list.is_empty() && !matches!(self.undo_list.last(), Some(UndoEntry::Boundary))
         {
             self.push_undo_entry(UndoEntry::Boundary);
+        }
+        // Fundo_boundary always refreshes the recorded point/buffer pair,
+        // whether or not a boundary was actually pushed.
+        self.point_before_last_boundary = Some(self.pt);
+    }
+
+    /// undo.c's `record_point': the first change after a boundary records
+    /// the position point had when that boundary was laid down (a bare
+    /// integer entry `primitive-undo' replays with `goto-char'), unless
+    /// the change begins exactly there.  The at-boundary check reads the
+    /// list before any first-change `(t . TIME)' marker is pushed.
+    fn record_point_for_undo(&mut self, beg: usize) {
+        let record = !self.undo_disabled
+            && matches!(self.undo_list.last(), None | Some(UndoEntry::Boundary))
+            && self
+                .point_before_last_boundary
+                .is_some_and(|stored| stored != beg);
+        self.record_first_change_for_undo();
+        if record && let Some(stored) = self.point_before_last_boundary {
+            self.push_undo_entry(UndoEntry::Opaque(Value::Integer(stored as i64)));
         }
     }
 
@@ -1986,6 +2019,15 @@ impl Buffer {
                 self.set_unmodified();
                 Ok(())
             }
+            // primitive-undo's FIXNUM entry: "Handle an integer by setting
+            // point to that value" (simple.el).
+            UndoEntry::Opaque(Value::Integer(position)) => {
+                let target = usize::try_from(*position)
+                    .unwrap_or(self.begv)
+                    .clamp(self.begv, self.zv);
+                self.goto_char(target);
+                Ok(())
+            }
             UndoEntry::Opaque(value) => Err(BufferError::UnrecognizedUndoEntry(format!("{value}"))),
             UndoEntry::Boundary => Ok(()),
         }
@@ -2177,6 +2219,14 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Value::Float(left), Value::Float(right)) => left == right,
         (Value::Symbol(left), Value::Symbol(right))
         | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
+        // GNU's interval code compares property values with EQ, so a range
+        // propertized with ONE string object is a single run.  Emaxx string
+        // clones share their backing store, preserving that identity; the
+        // missing arm here fell to `false' and fragmented every
+        // string-valued span per character (shr-zoom-image's
+        // next-single-property-change saw a "change" at every char of the
+        // alt text and replaced two characters of a twenty-char image).
+        (Value::String(left), Value::String(right)) => left.ptr_eq(right),
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => {

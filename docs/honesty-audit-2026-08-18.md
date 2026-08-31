@@ -3095,3 +3095,480 @@ Where this batch could cheat, and why it does not:
   elisp-mode 63/63, shortdoc 5/5 measured matching), and the oracle
   probes above are reproducible from the ledger.  Dedicated lib tests
   ride the next round.
+
+
+## 2026-08-30 finding 134 corrected by collaborator audit (134b)
+
+The named-:service port recorded above was mechanism-approximate in
+two ways the round-1 self-audit missed, caught by the tty
+collaborator's independent audit:
+
+1. Production resolves the service via getservbyname UNCONDITIONALLY.
+   GNU's split: with a host present, getaddrinfo resolves host and
+   service together (fileio has no say); only the no-host path parses
+   numerically and falls back to getservbyname.  The two agree on
+   this box, which is how the shortcut survived its probes.
+2. The unknown-name diagnostic is SYNTHESIZED from glibc's wording
+   and the permanent unit test pins that literal — verified
+   byte-identical against the Linux oracle only, where both sides
+   are glibc.  Darwin's gai_strerror words EAI_SERVICE differently,
+   so the test is Linux-blind and the message is not the live
+   library's.  Same failure class as the Darwin-only contracts this
+   project just dismantled, committed while dismantling them.
+
+Fix ownership: the collaborator is implementing the
+host-present/host-absent split with the live gai_strerror text and a
+platform-oracle-driven test (no message normalization).  Audited on
+arrival like any other commit; no parallel fix here.  Lesson recorded
+for future self-audits: "byte-identical against the oracle" is only
+evidence for the platform that oracle runs on — a pinned literal must
+be platform-derived or the mechanism must produce it live.
+
+## 2026-08-30 tractable-middle round 2 (mechanism ledger)
+
+All items below are C-mechanism ports probed against the GNU oracle
+before and after; none seed expectations from oracle runtime answers
+alone.  Verified flips are listed with their harness counts.
+
+1. Boot *Messages* leak: theme-loaddefs "Loading" line logged during
+   echo-area reconstruction; `message-log-max' is bound nil around the
+   reconstruction (xdisp.c's suppressed logging), restored after.
+2. read-from-string reader-form leak: `#[...]'/`#s(...)' literals now
+   materialize through the full reader-object materializer (intern
+   first), not the partial record/hash/char passes.
+3. `documentation' delegates to the Lisp `function-documentation'
+   generic when fboundp (doc.c:361), native offset path kept for
+   BuiltinFunc; bootstrap fallback unchanged.
+4. called-interactively-p frame shape: funcall-interactively and
+   call-interactively call through the SYMBOL (not a pre-resolved
+   function object), restoring GNU's backtrace frame shape.
+5. undo-auto--undoable-change fires per-change from the
+   before-change-functions hook site when undo is enabled (insdel.c's
+   run_undoable_change), not per-command.
+6. Legacy vector obarrays: `(make-vector N 0)' coerced by storing a
+   real obarray in slot 0 on first intern/unintern (check_obarray_slow);
+   completion walks skip non-string/symbol candidates and stop at
+   non-cons tails (minibuf.c's skip rules).  semantic-utest-ia texi
+   flipped.
+7. beginning-of-buffer/end-of-buffer are proper CONDITIONS: the
+   BufferError conversion and the forward-char/backward-char/
+   delete-char sites signal `(beginning-of-buffer)' with nil data
+   (cmds.c xsignal0) instead of a plain error string, so simple.el's
+   condition-case handlers catch them.  Probe byte-identical; note
+   point was already clamped to the boundary before signaling
+   (matching SET_PT-then-xsignal0).  kill-whole-line-invisible root
+   cause #1.
+8. line-end-position/pos-eol backward shortage: a backward scan that
+   runs out of newlines yields BEGV itself (search.c
+   find_before_next_newline), not the first line's end.  This was
+   kill-whole-line-invisible's real trigger: org-fold-heading's
+   `(line-end-position 0)' on line 1 must give point-min, else
+   hide-sublevels folds the first headline and org-fold's :fragile
+   revealer backward-chars at bob.  simple-tests flip verified.
+9. Central maximum-arity enforcement for C builtins: eval.c's
+   funcall_subr rejects calls beyond the subr's declared maximum;
+   per-impl need_args only policed minimums, so e.g. (car 1 2) and
+   (safe-length 1 2 3) silently ignored extras — and the byte
+   optimizer const-folded the latter, hiding GNU's compile warning.
+   The generated GNU arity manifest is the authority (max_args cached
+   in NameFacts; MANY/UNEVALLED exempt).  bytecomp warn tests flip.
+   KNOWN RESIDUAL: wrong-number-of-arguments data for LAMBDA calls
+   still prints emaxx's "byte-code function" name where GNU embeds
+   the arity cons (e.g. ((2 . 2) 3)); separate item.
+10. Byte-op backtrace frames: bytecode.c records the signaling op
+    (car/cdr/nth/elt/aref/aset/setcar/setcdr only) as a backtrace
+    frame before signaling, visible to handler-bind handlers; the VM
+    pushes the frame on those ops' error paths, an in-frame
+    condition-case unwinds it, and `run' balances whatever remains
+    after handler dispatch.  bytecomp--byte-op-error-backtrace flips.
+11. read-positioning-symbols moved INTO the reader (read0's
+    LOCATE_SYMS): every symbol occurrence (t included, nil and
+    numbers excluded) is wrapped with its character position at parse
+    time.  The retired token-stream zip desynced on any non-symbol
+    token — a number, t — and silently dropped every later position;
+    bytecomp warnings inherited the enclosing defun's position
+    (fun-attr-warn's 212:4 vs 215:4).  Structure-kind atoms consumed
+    by reader syntax (`#s(' kind, `#:') read bare.  Probes
+    byte-identical incl. t-wrapping; lread-tests 52/52, bytecomp
+    100/100, elisp-mode 63/63.
+12. Interpreted-closure staleness (bytecomp-reify-function): a
+    captured variable mutated after a merge-path call could live only
+    in the lexical_cell_updates overlay (the call write-back replaced
+    the closure's frames, detaching the public alist).  The cached
+    `aref'-visible environment now folds pending updates into its own
+    alist conses — values current, GNU cons identity preserved.
+    KNOWN RESIDUAL: emaxx's materialized closure env carries a
+    trailing `t' entry GNU does not print in this shape; cosmetic,
+    queued.
+13. `equal' signals `(circular-list LIST)' on a cycling spine
+    (fns.c FOR_EACH_TAIL) after the shared-tail EQ escape; the
+    internal non-signaling equality (which answers t for isomorphic
+    cycles) remains for host-side uses.  testcover's circular-list
+    marks depend on the signal being IGNORED, which requires it to
+    exist.  KNOWN RESIDUAL: cycles nested inside records/hash-tables
+    still take the non-signaling path.
+14. eval-buffer/eval-region evaluate in a FRESH interpreter
+    environment (readevalloop's internal-interpreter-environment
+    specbind): eval-buffer picks lexical/dynamic from the buffer's
+    OWN cookie (Feval_buffer + lisp_file_lexical_cookie), eval-region
+    from the buffer-local `lexical-binding'.  Previously the caller's
+    lexical frames leaked into the evaluated top level, so a
+    cookie-less buffer's defuns became lexical when evaluated from
+    inside a lexical closure — testcover's driver is exactly that
+    caller (vector-in-macro-spec void-variable val).  testcover-tests
+    31/31.
+15. --seccomp on GNU/Linux: emacs.c's maybe_load_seccomp/load_seccomp
+    ported — argv scanned before any other startup work, BPF file
+    validated with GNU's exact size/regularity checks and error
+    texts, prctl(PR_SET_NO_NEW_PRIVS) + seccomp(SET_MODE_FILTER,
+    TSYNC) install the filter for real (verified with a live
+    allow-all filter).  system-configuration-features on Linux is now
+    "SECCOMP" — a feature listed only because the capability exists;
+    Darwin remains "".  emacs-tests 7/7.
+16. Invalid `#N' read syntax datum is the buffered token text
+    ("#5)"), lread.c's INVALID_SYNTAX_WITH_BUFFER, replacing a
+    synthesized message.  eieio-persist's two no-backward-compat
+    tests depend on the exact datum.
+17. print-deeply-nested: the "Apparently circular structure" depth
+    guard fires only when print-circle is nil (print.c:2249's NILP
+    check); with print-circle GNU prints any depth.
+18. input-pending-p with non-nil CHECK-TIMERS runs ripe timers
+    (keyboard.c READABLE_EVENTS_DO_TIMERS_NOW); sit-for's
+    zero-second path depends on it.  timer-tests-sit-for flips.
+19. record_point (undo.c): `undo-boundary' stores point; the first
+    change after a boundary records that position as a bare integer
+    undo entry unless the change begins there, and the native replay
+    goto-chars it (primitive-undo's FIXNUM case).  Undo list now
+    byte-identical for the bug#21722 shape.  APPROXIMATION: GNU's
+    point_before_last_command_or_undo is also refreshed by the
+    interactive command loop; emaxx refreshes at undo-boundary (and
+    the tty loop), per-buffer.  KNOWN RESIDUAL: the
+    undo-inhibit-record-point variable is not consulted (no test
+    exercises it; queued).
+
+Documented as OPEN (not silently skipped):
+- print-tests-continuous-numbering-cl-print: an expected-failure test
+  whose recorded message differs; matching it needs print.c's
+  print_preprocess two-stage number table (t → negative-number
+  promotion) persisted across calls under print-continuous-numbering,
+  interleaved with cl-print's own table.  Analysis in session notes;
+  deferred.
+- simple-tests-async-shell-command-30280: the test requires the child
+  emacs to produce output within accept-process-output's 4-second
+  window; emaxx's boot is ~6.4s even in the gate profile, so this is
+  boot-speed-bound, not semantics.  Expected to resolve with the
+  pdumper-equivalent work; no dodge will be attempted.
+- edebug-tests: 4 failures under investigation this round
+  (backtrace-goto-source, error-stepping-into-subr,
+  error-trying-to-set-breakpoint-in-uninstrumented-code,
+  trace-showing-results-at-breakpoints).  RESOLVED later in round 2 —
+  file verified 46/46; see the round-2 closing addendum below.
+- nadvice filter-args error data (closure printing) parked as before;
+  emacs-lisp/comp prune-cache trio is native-comp feature boundary.
+
+Round-2 self-audit residual (recorded before commit): the signaling
+`equal' distinguishes plain conses from emaxx's vector-literal tagged
+conses by their tag symbol; a user list whose car is literally
+`vector-literal' takes the non-signaling comparison path.  This is the
+representation's pre-existing ambiguity surfacing in one more place,
+not a new shortcut; the honest fix is a typed vector representation.
+
+Round-2 addendum (edebug four, root cause): the native kbd-macro
+command loops caught command errors without REGISTERING that fact, so
+`signal_or_quit's handler scan (emaxx's boundary dispatch) saw a
+handler-bind outside the loop — ert's test wrapper — as the nearest
+handler and ran it; ert's debugger continuation throws, so the error
+the loop would have reported to `command-error-function' aborted the
+test instead.  GNU's recursive edit enters command_loop_2 under
+internal_condition_case(`error'), and Fexecute_kbd_macro's loop under
+`minibuffer-quit'; those frames now register as active Case handlers
+for the loops' duration.  Residual (pre-existing, now recorded): the
+boundary-dispatch approximation can run a handler-bind handler more
+than once while an error crosses several native frames where GNU runs
+it exactly once at signal time; the new Case frames mask this for
+command-loop errors.
+
+Round-2 closing addendum (edebug 46/46, three further mechanisms):
+1. `eq'/`eql' were non-reflexive on emaxx's opaque ReaderForm values
+   (the match in values_eq_in_env/values_eql fell to the `_ => false'
+   arm), so edebug-unwrap*'s fixed point `(while (not (eq sexp (setq
+   sexp (edebug-unwrap sexp)))))' spun forever when a raw reader form
+   reached a backtrace frame — the whole file timed out at 0/46 after
+   the Case-frame fix let backtrace-goto-source get that far.  eq now
+   answers Rc identity for ReaderForm, matching the PartialEq impl.
+2. `append' rejected closures: fns.c concat_to_list accepts CLOSUREP
+   args and flattens them to their slots via Flength/AREF, which
+   edebug-unwrap* relies on to rebuild compiled closures with
+   `(nthcdr 3 (append fn ()))'.  Oracle probe (bcapp.el) byte-identical
+   for aref/append/length/nthcdr/unwrap* on a byte-compiled closure.
+   Residual: for a non-sequence argument emaxx's append still signals
+   listp where GNU signals sequencep (pre-existing shape divergence,
+   unreachable in the closure path).
+3. `this-single-command-keys' stayed stale after a keyboard macro
+   finished: GNU's command_loop_1 zeroes this_command_key_count after
+   every executed command, so the read that reports end-of-macro leaves
+   the key state empty; emaxx kept the macro's last multi-key sequence.
+   kmacro-call-macro keys its repeat-map offer on `(> (length
+   (this-single-command-keys)) 1)', so emaxx armed a phantom transient
+   repeat map ("(Type b to repeat macro)") that swallowed the first key
+   of the next macro — self-insert into edebug's read-only source
+   buffer (trace-showing-results-at-breakpoints).  Oracle probe
+   (tsck.el) byte-identical after zeroing the key state at macro end.
+
+Round-2 note (dev-profile-only artifact, recorded 2026-08-30):
+simple-test-undo-extra-boundary-in-tex fails ONLY in a dev-profile
+whole-file run: by test 38 the wall clock crosses an
+undo-auto--boundary-timer 10-second tick inside the test's kbd macro,
+recording the extra boundary the test exists to reject.  GNU runs the
+same timer but finishes the whole file in ~3.4s.  Gate-profile run:
+52/53 with the tex test passing (only boot-bound async-shell-30280
+remains).  Same class as async-shell: execution speed, not semantics.
+
+Round-3 mechanisms (small-file sweep, 2026-08-30; every item probed
+against the oracle before and after, byte-identical):
+1. string-collate-lessp/equalp collate for real on GNU/Linux: sysdep.c
+   str_collate ported over libc newlocale/wcscoll_l/towlower_l
+   (LC_COLLATE|LC_CTYPE), invalid locale signals GNU's exact "Invalid
+   locale ...: <strerror>", non-string locale signals stringp, symbol
+   arguments collate by print name.  Non-Linux keeps the lexicographic
+   fallback because Darwin lacks __STDC_ISO_10646__ and GNU itself
+   falls back there.  fns-tests 81/81 (was 78/81).  Residual: with a
+   locale argument of nil emaxx collates in the process's current
+   locale via wcscoll, like GNU; the harness always runs LANG=C.
+2. bare-symbol/position-symbol accept nil and t (they ARE symbols);
+   bare-symbol signals (wrong-type-argument (symbolp
+   symbol-with-pos-p) VALUE) on non-symbols where
+   remove-pos-from-symbol stays lenient (data.c trio); error data now
+   carries the value, not a type name.  data-tests 57/57.
+3. map-keymap reported every full-keymap character binding twice
+   (emaxx keeps a char-table facade AND direct bindings for the same
+   store; keymap.c map_keymap_internal walks ONE store, with
+   map_char_table yielding maximal merged ranges).  The walk now merges
+   the two stores into one segment list, reporting each binding once,
+   coalescing adjacent equal values.  keymap-canonicalize (subr.el)
+   stops duplicating char ranges, so describe-map matches GNU;
+   help-tests 31/31 (was 29/31), keymap-tests still 46/46.
+4. md5 without CODING encoded text through Rust UTF-8 String bytes:
+   sentinel-carrying unibyte strings and eight-bit chars hashed wrongly
+   (rfc2104-hash md5 HMAC differed).  It now extracts bytes exactly as
+   secure-hash does (fns.c extract_data_from_object), and the shared
+   string path encodes an eight-bit char as its verbatim byte
+   (character.h BYTE8_TO_CHAR: 0x3FFF00 + B), matching GNU's
+   preferred-coding-system (utf-8 under LANG=C) encoding.  Residual:
+   emaxx does not consult preferred-coding-system dynamically; a user
+   who reconfigures it away from utf-8 would still get utf-8-shaped
+   hashing bytes for multibyte strings.
+5. oclosure-test, timer-tests-sit-for, pp-tests--sanity, and
+   warnings-tests' minimum-level failure message verified flipped by
+   round-2 mechanisms (function-documentation delegation,
+   input-pending-p timer run, full reader materializer, and the
+   *Messages* boot-leak fix respectively).
+6. Comment style of a two-char marker took style b from EITHER char;
+   GNU's SYNTAX_FLAGS_COMMENT_STYLE takes b ONLY from the marker's main
+   char (second of a starter, first of an ender), c from either.  C's
+   `/*' was mislabeled style b whenever `/' also opens `//' style-b
+   line comments, so `*/' (style a) never matched its own comment and
+   back_comment's lossage decode rejected the forward parse
+   (syntax-comments-c-b6).  syntax-tests 100/100 after.
+7. parse-partial-sexp with OLDSTATE now continues over the middle of a
+   two-char comment marker, entering the comment when the char before
+   FROM is a starter-first pairing with the first char of the range
+   (scan_sexps_forward's in_2char_comment_start) and closing it when
+   an in-comment restart sits between the two chars of the ender
+   (forw_comment's mid-loop entry).  Residual (disclosed): GNU carries
+   the pre-FROM syntax in state element 10 and emaxx re-reads the
+   buffer char before FROM -- identical for a state handed back from a
+   parse ending at FROM (the documented contract), divergent only for
+   synthetic states; emaxx's element 10 remains its internal
+   continuation blob, not GNU's prev-syntax fixnum (pre-existing
+   public-shape divergence, now recorded).
+8. libxml-parse-html-region/-xml-region called through the libxml
+   crate's parse_string_with_options, which passes a DANGLING pointer
+   for the encoding name (the CString is built and dropped inside a
+   match arm) -- every parse after a session's first read reused heap
+   as the encoding and failed nondeterministically on non-ASCII input
+   (shr's nonbr.html truncated at its first no-break space).  The
+   parse now calls htmlReadMemory/xmlReadMemory directly with xml.c's
+   exact option flags and an owned "utf-8" string.
+9. Text-property change detection compared string-valued properties
+   with a missing match arm (always "different"), so a range
+   propertized with one string object fragmented into per-character
+   runs; GNU's interval code compares property values with EQ, and one
+   string object over a range is a single run.  String values now
+   compare by backing-store identity (emaxx clones share it), which is
+   exactly GNU's EQ.  This is what broke shr-zoom-image: with a long
+   alt text, next-single-property-change reported a boundary after ONE
+   character, so the zoom replaced two characters of a twenty-char
+   image region and left the unsliced remnant the test rejects.
+   Environment note (recorded for the frozen run): as root,
+   HOME=/nonexistent IS writable, and shr-image-fetched's
+   url-store-in-cache leaves /nonexistent/.emacs.d/url/cache behind --
+   both oracle and emaxx see it on later runs.  The probe and
+   verification runs remove it; it must be removed before the final
+   frozen run too.
+
+10. process-environment/initial-environment are now ordinary Lisp
+    lists built ONCE at startup (emacs.c set_initial_environment)
+    instead of being resynthesized from the OS environment on every
+    unstored lookup.  setenv-internal's delq now splices the same cons
+    chain a let-binding shares, so removing a variable inside `(let
+    ((process-environment process-environment)) ...)' persists after
+    the unwind exactly as in GNU (python-tests' unset-inside-let test
+    depends on it; the container exports PYTHONUNBUFFERED=1, which the
+    resynthesized list kept resurrecting).  python-tests 366/366.
+11. map-charset-chars only knew ascii and unicode; every legacy-charset
+    rule in characters.el (CJK "_" symbol rows, category entries)
+    silently mapped nothing.  charset.c map_charset_chars is now ported
+    over the existing charset-map machinery: MAP charsets walk their
+    encoder as maximal unicode-ascending runs, unified OFFSET charsets
+    walk their unify map and append the raw code-offset range, plain
+    OFFSET charsets yield the arithmetic range, SUBSET/SUPERSET
+    recurse.  This is how GNU's standard syntax table gives U+20AC
+    symbol syntax (the euro sits in korean-ksc5601's "_" rows), which
+    [[:word:]] then excludes (cperl-test-identifier-rx).  Residuals:
+    callback granularity may split ranges differently than GNU's
+    char-table walk (invisible to side-effecting callers); dev-profile
+    boot grew ~19s from the real map parsing and range application.
+
+Round-3 documented-open (investigated, out of tractable scope):
+- em-prompt-tests next-previous-prompt (2): eshell error output lacks
+  the output-field text properties GNU's print path applies, so field
+  extraction around prompts includes the error text.  Eshell
+  field/print plumbing.
+- thread-tests thread-list (2): emaxx mutex-lock does not block a
+  thread that contends a held mutex (the contender runs to completion),
+  so no thread is ever listed "Blocked ... mutex1".  True blocking
+  threads are machinery beyond this round.
+- kmacro step-edit-with-quoted-insert (1): both sides fail; the
+  failure messages differ in how far the step-editor replays
+  quoted-insert input.  Step-edit emulation depth.
+- process-tests (7): stderr-buffer/pty wiring (wrong-type-argument on
+  stderr buffers) and stop/hints internals.
+- semantic-utest-ia C/C++ analyzer completions (6): the texi case
+  flipped with the round-2 minibuf.c completion rules (11/17, was
+  10/17); the rest fail inside CEDET's C/C++ type analysis, beyond
+  this round.  emacs-tests verified 7/7 (the seccomp port flipped all
+  six).
+
+12. The signaling `equal' (round-2 item) lacked internal_equal's depth
+    layer and blew the Rust stack on car-circular graphs (the gate's
+    lib stage aborted on equal_compares_circular_cons_graphs).  Ported:
+    past depth 10 a seen-pair memo answers t for a revisited (o1, o2)
+    cons pair -- how GNU compares car-circular graphs -- and depth 200
+    signals (error "Stack overflow in equal").  Oracle probe circeq2.el
+    byte-identical on graphs/(t t nil), 300-deep error, 150-deep t, and
+    the cdr-circle circular-list signal.  Residual: the depth-200 error
+    fires only on the cons path; a >200-deep pure-vector nest returns
+    normally where GNU errors (vector compares ride the non-signaling
+    fallback).
+
+Environment note (container change, 2026-08-30): the execution
+container was restarted mid-banking and its toolchain differs from the
+one earlier rounds ran on.  Two in-repo test groups pinned old-container
+behavior and failed AT THE COMMITTED BASE (verified by a full-stash
+run), not from this round's diff:
+- accept-process-output tests assumed output and the exit sentinel
+  always arrive in separate accept calls; the oracle on THIS container
+  (probe apo1.el) delivers them in ONE call 4 runs of 5.  The tests now
+  accept the sentinel line as optional, which is GNU's actual contract.
+- the eshell external-pipeline test pinned "rab\n"; this container's
+  rev (util-linux 2.39) preserves the missing trailing newline, and GNU
+  here writes "rab" (probe esh1.el).  The expectation is now derived
+  LIVE from the host's own `printf bar | rev' (finding 134b:
+  platform-derived, not hand-pinned).
+
+Round-2 pre-gate audit residuals (fine-grained, recorded 2026-08-30):
+- run_change_hooks' undo-auto--undoable-change call discards a signal
+  from that function where GNU's call0 would propagate it; the function
+  body only registers the buffer and arms a timer, so no known path
+  signals, but the swallow is a shape divergence.
+- `documentation' keeps the native doc-offset path for BuiltinFunc even
+  when the `function-documentation' generic is available, so a user
+  method specializing on subrs would be bypassed; GNU routes subrs
+  through the generic too.
+
+13. Gate performance regression from item round-3/11 (map_charset_chars):
+    the charset port fills syntax/category/case char tables with
+    thousands of real CJK range entries, and emaxx's char-table reads
+    were linear over the append-only write log (explicit_entry did a
+    reverse scan; char_table_effective_ranges re-derived masking
+    quadratically per call).  The gate's lib stage spun for hours inside
+    char_table_get under bytecode frames (gdb-verified on the live
+    binary).  Fixed with a lazily-built BTreeMap interval index over the
+    unchanged log (newest-wins, non-overlapping; incrementally
+    maintained by push_entry, dropped on wholesale replacement).  This
+    is emaxx-internal indexing only -- resolution order, masking, nil
+    semantics, and map-char-table fragmentation are unchanged.  Oracle
+    probe chartab1.el (overlapping writes, nil masking, single-char
+    splits, ASCII/non-ASCII boundary): aref and char-table-range
+    sections byte-identical; map-char-table emits the same 13
+    ranges/values in the same order as GNU.
+
+Documented-open (discovered by chartab1.el, pre-existing, unrelated to
+the index): GNU's map-char-table passes ONE shared cons as the range
+key and destructively reuses it call-to-call, so a function that saves
+the key sees every saved cons mutated to the scan's final state
+((last-end+1 . 4194303) in the probe); emaxx allocates a fresh cons per
+call.  chartab.c map_char_table's XSETCAR/XSETCDR reuse is the
+mechanism.  No frozen test exercises saved-key identity; left open and
+disclosed rather than ported blind mid-banking.
+
+Environment note round 2 (oracle rebuild fallout, 2026-08-31): gate
+attempt 5 was the first run to reach the m/n alphabet range of the lib
+suite on the NEW container (attempts 3 and 4 died earlier in the
+alphabet), and it exposed nine pre-existing tests -- none touched by
+this round's diff -- whose pinned expectations transcribed a PREVIOUS
+container's oracle build or host stack.  All were repaired by deriving
+the expectation from the thing itself rather than re-pinning:
+- native_gnutls_catalogs: the cipher/mac catalogues are properties of
+  the host libgnutls that BOTH runtimes dlopen; compared live-to-live
+  (the gnutls-digests pattern), with structural anchors.
+- native_treesit_runtime: treesit-library-abi-version reports the ABI
+  of the library each build links; the oracle's is fetched live, Emaxx's
+  comes from its tree-sitter crate constants (host lib is ABI 14 here,
+  crate is 15); every other element stays a shared pinned contract.
+- native_image_variables: x-bitmap-file-path is epaths.h PATH_BITMAPS,
+  a configure-time constant; the oracle is asked for its own build's
+  value live.
+- native_gui_creation, native_xfaces: x-file-dialog / x-select-font /
+  x-load-color-file exist only in X-compiled builds; the oracle's
+  fboundp is probed live and the expectation follows its build.
+- set_network_process_option: the SO_BINDTODEVICE rows pinned a Darwin
+  oracle ("lo0", "Device not configured"); the device is now the host's
+  own loopback name, the bind row catches whatever the kernel answers
+  (privilege-dependent on Linux), and the whole result is live-to-live
+  with anchors on the platform-free finding-103 discriminators.
+- make_network_process_ipv6, native_gnutls_session, native_gnutls_x509:
+  this container has no IPv6 stack and no gnutls-serv; the tests now
+  skip exactly where GNU's own suites put skip-unless guards.
+- marker_adjustments_stay_adjacent: stale in-repo expectation predating
+  the round-2 undo.c record_point port -- GNU's real list (oracle probe
+  undomk.el, byte-identical with Emaxx) carries the point entry `9'
+  between the marker rider and the (t . TIME) cell; the test now pins
+  GNU's shape.
+
+Documented-open (build-model divergence, disclosed): Emaxx models the
+X-compiled headless GNU build -- x-file-dialog, x-select-font, and
+x-load-color-file are defined and refuse or work without a display, and
+x-bitmap-file-path is (".") -- while THIS container's oracle was
+configured without the X chooser/color machinery (those functions are
+unbound there) yet with X headers on the bitmap path.  Which functions a
+build DEFUNs is a configure-time fact with no single honest answer
+across differently-configured oracles; the tests check each side against
+its own build and this note records that Emaxx's modeled build is not
+this container's.
+
+14. The live-to-live conversion of set_network_process_option (environment
+    note round 2) immediately caught two real GNU/Linux divergences the
+    pinned Darwin expectation had been hiding:
+    - SO_BINDTODEVICE was hardcoded to Darwin's 0x1134 on every platform,
+      so Linux setsockopt answered ENOPROTOOPT ("Protocol not available")
+      where GNU binds; the constant is now the platform's own
+      (libc::SO_BINDTODEVICE = 25 on Linux, 0x1134 kept for Darwin).
+    - process.c:2846's `:priority' row (compiled under #ifdef SO_PRIORITY,
+      which GNU/Linux defines and Darwin does not) was missing entirely,
+      answering "Unknown or unsupported option" where GNU applies it.
+      Ported as SOPT_INT: an int-ranged fixnum reaches the kernel,
+      anything else is "Bad option value" before the syscall.  Oracle
+      probe sopri.el (root and unprivileged, identical): applied t,
+      recorded 3, and the three bad-value shapes.

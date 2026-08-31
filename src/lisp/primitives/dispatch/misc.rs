@@ -331,10 +331,11 @@ define_dispatch!(
                 let slice: String = chars[start..end].iter().collect();
                 match read_one_form_in_env(interp, &slice, env) {
                     Ok((val, consumed)) => {
-                        let materialized = materialize_read_hash_table_literals(interp, &val)?;
-                        let materialized =
-                            materialize_read_char_table_literals(interp, &materialized)?;
-                        interp.intern_symbols_in_value(&materialized);
+                        interp.intern_symbols_in_value(&val);
+                        // The full object materializer, as `read' and the
+                        // load path use: byte-code literals and labeled
+                        // references included.
+                        let materialized = interp.materialize_read_object_literals(val)?;
                         Ok(Value::cons(
                             materialized,
                             Value::Integer((start + consumed) as i64),
@@ -345,9 +346,9 @@ define_dispatch!(
             }
             "md5" => {
                 need_arg_range(name, args, 1, 4)?;
-                let text = md5_source_text(interp, &args[0], args.get(1), args.get(2))?;
                 let bytes = match args.get(3) {
                     Some(coding) if !coding.is_nil() => {
+                        let text = md5_source_text(interp, &args[0], args.get(1), args.get(2))?;
                         let inhibit_eol_conversion = interp
                             .lookup_var("inhibit-eol-conversion", env)
                             .is_some_and(|value| value.is_truthy());
@@ -358,7 +359,17 @@ define_dispatch!(
                             inhibit_eol_conversion,
                         )?
                     }
-                    _ => text.into_bytes(),
+                    // fns.c extract_data_from_object: without CODING a
+                    // unibyte string contributes its bytes verbatim and a
+                    // multibyte one its internal (utf-8-emacs) encoding --
+                    // the same bytes secure-hash digests (rfc2104-hash
+                    // feeds md5 raw digest bytes through this path).
+                    _ => crate::lisp::primitives::text::secure_hash_source_bytes(
+                        interp,
+                        &args[0],
+                        args.get(1),
+                        args.get(2),
+                    )?,
                 };
                 Ok(Value::String(format!("{:x}", md5::compute(bytes)).into()))
             }
@@ -1812,18 +1823,42 @@ fn documentation(
     }
 
     let function = resolve_callable(interp, &args[0], env)?;
-    let mut doc = match &function {
-        Value::BuiltinFunc(name) => {
-            let offset = ensure_builtin_doc_offset(interp, name, env)?;
-            if offset == 0 {
-                fallback_function_documentation(interp, name)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil)
-            } else {
-                resolve_doc_reference(interp, &Value::Integer(offset), env)?.unwrap_or(Value::Nil)
+    // doc.c Fdocumentation: a macro's documentation lives on the function
+    // inside its (macro . FUNCTION) cons, unwrapped before the dispatch.
+    let function = if matches!(function.car(), Ok(Value::Symbol(ref name)) if name == "macro") {
+        function.cdr()?
+    } else {
+        function
+    };
+    // doc.c delegates to the Lisp generic `function-documentation'
+    // (simple.el), which oclosure accessors and advice types specialize.
+    // The native reading below serves only the bootstrap window before
+    // simple.el defines the generic.
+    let generic_available = interp
+        .lookup_function("function-documentation", env)
+        .is_ok();
+    let mut doc = if generic_available && !matches!(function, Value::BuiltinFunc(_)) {
+        interp.call_function_value(
+            Value::symbol("function-documentation"),
+            Some("function-documentation"),
+            std::slice::from_ref(&function),
+            env,
+        )?
+    } else {
+        match &function {
+            Value::BuiltinFunc(name) => {
+                let offset = ensure_builtin_doc_offset(interp, name, env)?;
+                if offset == 0 {
+                    fallback_function_documentation(interp, name)
+                        .map(|value| Value::String(value.into()))
+                        .unwrap_or(Value::Nil)
+                } else {
+                    resolve_doc_reference(interp, &Value::Integer(offset), env)?
+                        .unwrap_or(Value::Nil)
+                }
             }
+            _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
         }
-        _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
     };
     if doc.is_nil()
         && let Value::Symbol(symbol) = &args[0]

@@ -55,6 +55,9 @@ pub(crate) struct NameFacts {
     pub(crate) prefer_override: bool,
     file_name_handler: Option<FileNameHandlerOperation>,
     module: DispatchModule,
+    /// The GNU subr's declared maximum argument count; None for MANY,
+    /// UNEVALLED, and names outside the generated C manifest.
+    max_args: Option<u16>,
 }
 
 macro_rules! define_dispatch_modules {
@@ -165,6 +168,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         prefer_override: native_owner && module.prefer_builtin(name),
         file_name_handler: file_name_handler_operation(name),
         module,
+        max_args: super::generated_builtin_arities::generated_builtin_arity(name)
+            .and_then(|(_, maximum)| u16::try_from(maximum).ok()),
     }
 }
 
@@ -244,6 +249,16 @@ pub(crate) fn call_with_facts(
 ) -> Result<Value, LispError> {
     if !facts.builtin && !facts.special_form {
         return Err(LispError::Signal(format!("Unknown function: {name}")));
+    }
+    // eval.c's funcall_subr rejects a call beyond the subr's declared
+    // maximum before the primitive body runs; the per-impl need_args
+    // checks only police the minimum, which let extra arguments slip
+    // through (and even get const-folded away by the byte optimizer).
+    if !facts.special_form
+        && let Some(maximum) = facts.max_args
+        && args.len() > usize::from(maximum)
+    {
+        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
     if let Some(specification) = facts.file_name_handler
         && let Some(result) = dispatch_file_name_handler(interp, env, name, specification, args)?

@@ -2328,6 +2328,15 @@ define_dispatch!(
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
+                // keyboard.c's Finput_pending_p: a non-nil CHECK-TIMERS
+                // runs ripe timers (READABLE_EVENTS_DO_TIMERS_NOW) before
+                // answering — sit-for's zero-second path depends on it.
+                if args.first().is_some_and(Value::is_truthy) {
+                    let idle = crate::lisp::primitives::tty_current_idle_duration()
+                        .map(|duration| duration.as_secs_f64())
+                        .unwrap_or(0.0);
+                    crate::lisp::primitives::run_due_timers(interp, env, idle);
+                }
                 Ok(
                     if unread_command_events(interp, env)?.is_empty()
                         && !crate::lisp::primitives::tty_input_pending()
