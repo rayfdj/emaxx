@@ -83,8 +83,9 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                 ReaderForm::Record { slots } | ReaderForm::Closure { slots, .. } => {
                     pending.extend(slots.iter().cloned());
                 }
-                // A bool vector holds no sub-objects to scan.
-                ReaderForm::BoolVector { .. } => {}
+                // A bool vector holds no sub-objects to scan; a
+                // positioned symbol is a leaf.
+                ReaderForm::BoolVector { .. } | ReaderForm::PositionedSymbol { .. } => {}
                 ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                     return true;
                 }
@@ -265,8 +266,13 @@ fn resolve_circular_read_syntax_inner(
                     kind: *kind,
                     slots: resolve_fields(slots, labels)?,
                 },
-                // Bits carry no reader labels to resolve.
+                // Bits carry no reader labels to resolve; a positioned
+                // symbol is a leaf.
                 ReaderForm::BoolVector { bits } => ReaderForm::BoolVector { bits: bits.clone() },
+                ReaderForm::PositionedSymbol { name, pos } => ReaderForm::PositionedSymbol {
+                    name: name.clone(),
+                    pos: *pos,
+                },
                 ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
                     unreachable!("circular reader forms are handled before structural descent")
                 }
@@ -362,6 +368,15 @@ pub struct Reader<'a> {
     backquote_depth: usize,
     raw_quote_symbols: bool,
     unescaped_character_literals: BTreeSet<u8>,
+    /// read0's LOCATE_SYMS: wrap each symbol occurrence (t included, nil
+    /// excluded) in a position-bearing `ReaderForm::PositionedSymbol'.
+    locate_symbols: bool,
+    /// Added to each recorded character offset (a buffer read reports
+    /// buffer positions, a string read zero-based string offsets).
+    position_base: i64,
+    /// Monotonic byte→char cursor so positions cost O(n) over the input.
+    position_cursor_byte: usize,
+    position_cursor_char: i64,
 }
 
 impl<'a> Reader<'a> {
@@ -383,7 +398,24 @@ impl<'a> Reader<'a> {
             // registered under those names.
             raw_quote_symbols: true,
             unescaped_character_literals: BTreeSet::new(),
+            locate_symbols: false,
+            position_base: 0,
+            position_cursor_byte: 0,
+            position_cursor_char: 0,
         }
+    }
+
+    /// `read-positioning-symbols': record each symbol occurrence's
+    /// character position, offset by BASE.
+    pub fn with_positioned_symbols(
+        input: &'a str,
+        symbol_shorthands: Vec<(String, String)>,
+        position_base: i64,
+    ) -> Self {
+        let mut reader = Self::with_symbol_shorthands(input, symbol_shorthands);
+        reader.locate_symbols = true;
+        reader.position_base = position_base;
+        reader
     }
 
     pub fn with_raw_quote_symbols(input: &'a str) -> Self {
@@ -1414,7 +1446,7 @@ impl<'a> Reader<'a> {
             }
             Some(b':') => {
                 self.advance();
-                let symbol = self.read_atom()?.ok_or(LispError::EndOfInput)?;
+                let symbol = self.read_bare_atom()?.ok_or(LispError::EndOfInput)?;
                 let Value::Symbol(base) = symbol else {
                     return Err(LispError::ReadError(
                         "invalid uninterned symbol syntax".into(),
@@ -1476,9 +1508,14 @@ impl<'a> Reader<'a> {
                         ))));
                     }
                     _ => {
-                        return Err(LispError::ReadError(
-                            "unsupported # syntax after numeric prefix".into(),
-                        ));
+                        // lread.c's INVALID_SYNTAX_WITH_BUFFER: the datum is
+                        // the buffered token text — `#', the digits, and the
+                        // character the dispatch choked on ("#5)").
+                        let offender = self
+                            .peek_char()
+                            .map(|ch| ch.to_string())
+                            .unwrap_or_default();
+                        return Err(LispError::ReadError(format!("#{base}{offender}")));
                     }
                 };
                 Ok(Some(self.read_radix_integer(radix)?))
@@ -1575,7 +1612,13 @@ impl<'a> Reader<'a> {
                 }
                 self.advance(); // consume '('
                 self.skip_whitespace_and_comments();
-                let Some(kind) = self.read()? else {
+                // The structure kind is dispatch syntax (`hash-table' vs a
+                // record type); read it bare so positioning cannot hide it.
+                let saved_locate = self.locate_symbols;
+                self.locate_symbols = false;
+                let kind = self.read()?;
+                self.locate_symbols = saved_locate;
+                let Some(kind) = kind else {
                     return Err(LispError::EndOfInput);
                 };
                 let mut fields = Vec::new();
@@ -1687,10 +1730,42 @@ impl<'a> Reader<'a> {
         self.read_atom_with_shorthands(true)
     }
 
+    /// An atom the reader consumes for its own syntax (`#:', `#s(') —
+    /// never positioned, whatever LOCATE_SYMS says.
+    fn read_bare_atom(&mut self) -> Result<Option<Value>, LispError> {
+        let saved = self.locate_symbols;
+        self.locate_symbols = false;
+        let result = self.read_atom();
+        self.locate_symbols = saved;
+        result
+    }
+
+    /// Character position of BYTE, amortized O(1) over a monotone scan.
+    fn character_position(&mut self, byte: usize) -> i64 {
+        let byte = byte.max(self.position_cursor_byte);
+        let span = &self.input[self.position_cursor_byte..byte];
+        self.position_cursor_char += std::str::from_utf8(span)
+            .map(|text| text.chars().count() as i64)
+            .unwrap_or(span.len() as i64);
+        self.position_cursor_byte = byte;
+        self.position_base + self.position_cursor_char
+    }
+
+    /// read0's LOCATE_SYMS wrap: every symbol occurrence (`t' included,
+    /// `nil' excluded) becomes a position-bearing wrapper the caller
+    /// materializes into a real `symbol-with-pos'.
+    fn positioned_symbol_value(&mut self, start_byte: usize, name: String) -> Value {
+        let pos = self.character_position(start_byte);
+        Value::ReaderForm(std::rc::Rc::new(
+            crate::lisp::types::ReaderForm::PositionedSymbol { name, pos },
+        ))
+    }
+
     fn read_atom_with_shorthands(
         &mut self,
         apply_shorthands: bool,
     ) -> Result<Option<Value>, LispError> {
+        let token_start = self.pos;
         let mut token = String::new();
         let mut saw_escape = false;
         while let Some(ch) = self.peek() {
@@ -1755,6 +1830,7 @@ impl<'a> Reader<'a> {
             };
             return Ok(Some(match token.as_str() {
                 "nil" => Value::Nil,
+                _ if self.locate_symbols => self.positioned_symbol_value(token_start, token),
                 "t" => Value::T,
                 _ => Value::Symbol(token.into()),
             }));
@@ -1788,6 +1864,7 @@ impl<'a> Reader<'a> {
         // Special atoms
         match token.as_str() {
             "nil" => Ok(Some(Value::Nil)),
+            _ if self.locate_symbols => Ok(Some(self.positioned_symbol_value(token_start, token))),
             "t" => Ok(Some(Value::T)),
             _ => Ok(Some(Value::Symbol(token.into()))),
         }

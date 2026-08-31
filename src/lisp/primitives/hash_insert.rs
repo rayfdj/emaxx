@@ -325,27 +325,52 @@ pub(crate) fn parse_html_region(html: &str, discard_comments: bool) -> Value {
 /// GNU's recovery behavior for malformed HTML instead of substituting HTML5's
 /// different adoption-agency rules.
 fn parse_libxml_region(source: &str, discard_comments: bool, html: bool) -> Value {
-    let parser = if html {
-        LibxmlParser::default_html()
-    } else {
-        LibxmlParser::default()
+    use libxml::bindings;
+    // xml.c parse_region's exact htmlReadMemory/xmlReadMemory calls, made
+    // directly so the "utf-8" encoding string stays OWNED across the call:
+    // the libxml crate's parse_string_with_options builds its encoding
+    // CString inside a match arm and passes the pointer after the CString
+    // is dropped (use-after-free), so every parse after the first read a
+    // reused heap block as the encoding name and failed on non-ASCII input
+    // nondeterministically (shr-tests' nonbr.html stopped at its first
+    // no-break space on the second parse in a session).
+    let encoding = std::ffi::CString::new("utf-8").expect("static text has no NUL");
+    let doc_ptr = unsafe {
+        bindings::xmlInitParser();
+        if html {
+            bindings::htmlReadMemory(
+                source.as_ptr() as *const std::os::raw::c_char,
+                std::os::raw::c_int::try_from(source.len()).unwrap_or(std::os::raw::c_int::MAX),
+                std::ptr::null(),
+                encoding.as_ptr(),
+                (bindings::htmlParserOption_HTML_PARSE_RECOVER
+                    | bindings::htmlParserOption_HTML_PARSE_NONET
+                    | bindings::htmlParserOption_HTML_PARSE_NOWARNING
+                    | bindings::htmlParserOption_HTML_PARSE_NOERROR
+                    | bindings::htmlParserOption_HTML_PARSE_NOBLANKS)
+                    as std::os::raw::c_int,
+            )
+        } else {
+            bindings::xmlReadMemory(
+                source.as_ptr() as *const std::os::raw::c_char,
+                std::os::raw::c_int::try_from(source.len()).unwrap_or(std::os::raw::c_int::MAX),
+                std::ptr::null(),
+                encoding.as_ptr(),
+                (bindings::xmlParserOption_XML_PARSE_NONET
+                    | bindings::xmlParserOption_XML_PARSE_NOWARNING
+                    | bindings::xmlParserOption_XML_PARSE_NOBLANKS
+                    | bindings::xmlParserOption_XML_PARSE_NOERROR)
+                    as std::os::raw::c_int,
+            )
+        }
     };
-    let Ok(document) = parser.parse_string_with_options(
-        source.as_bytes(),
-        LibxmlParserOptions {
-            recover: html,
-            no_error: true,
-            no_warning: true,
-            no_blanks: true,
-            no_net: true,
-            encoding: Some("utf-8"),
-            ..LibxmlParserOptions::default()
-        },
-    ) else {
+    drop(encoding);
+    if doc_ptr.is_null() {
         // `xmlReadMemory' and `htmlReadMemory' return NULL on failure, which
         // GNU exposes as nil rather than as a Lisp signal.
         return Value::Nil;
-    };
+    }
+    let document = libxml::tree::Document::new_ptr(doc_ptr);
     let Some(root) = document.get_root_element() else {
         return Value::Nil;
     };

@@ -1764,7 +1764,15 @@ pub(crate) fn charset_ranges_for(
                 None
             }
         }
-        _ => None,
+        // Every other charset resolves through charset.c's
+        // map_charset_chars port: map files, code offsets, unify maps,
+        // and subset/superset relations (coding.rs).
+        _ => {
+            return Ok(crate::lisp::primitives::coding::map_charset_char_ranges(
+                interp, &canonical, lower, upper,
+            )
+            .unwrap_or_default());
+        }
     };
     Ok(range.into_iter().collect())
 }

@@ -19,6 +19,93 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
     values_equal_recursive(interp, left, right, &mut HashSet::new())
 }
 
+/// fns.c's Fequal cons walk: FOR_EACH_TAIL iterates the left spine with
+/// cycle detection and signals `(circular-list LIST)' on a loop, after
+/// taking the shared-tail EQ escape.  The internal non-signaling
+/// `values_equal' instead answers `t' for isomorphic cycles, which
+/// testcover relies on GNU NOT doing (its circular-list marks come from
+/// the ignored signal).
+pub(crate) fn values_equal_signaling(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+) -> Result<bool, LispError> {
+    values_equal_signaling_depth(interp, left, right, 0, &mut HashMap::new())
+}
+
+fn values_equal_signaling_depth(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    depth: usize,
+    memo: &mut HashMap<usize, Vec<usize>>,
+) -> Result<bool, LispError> {
+    fn plain_cons(value: &Value) -> bool {
+        matches!(value, Value::Cons(cell)
+            if !matches!(&*cell.car.borrow(), Value::Symbol(tag) if tag == "vector-literal"))
+    }
+    if !plain_cons(left) || !plain_cons(right) {
+        return Ok(values_equal(interp, left, right));
+    }
+    // fns.c internal_equal: past depth 10 a seen-pair table answers true
+    // for a revisited (o1, o2) pair -- how car-circular graphs compare
+    // equal -- and depth 200 is a hard error, not a crash.
+    if depth > 10 {
+        if depth > 200 {
+            return Err(LispError::Signal("Stack overflow in equal".into()));
+        }
+        if let (Value::Cons(lc), Value::Cons(rc)) = (left, right) {
+            let left_key = Rc::as_ptr(lc) as usize;
+            let right_key = Rc::as_ptr(rc) as usize;
+            let entry = memo.entry(left_key).or_default();
+            if entry.contains(&right_key) {
+                return Ok(true);
+            }
+            entry.push(right_key);
+        }
+    }
+    let mut l = left.clone();
+    let mut r = right.clone();
+    let mut tortoise = left.clone();
+    let mut steps = 0usize;
+    let mut limit = 2usize;
+    loop {
+        let Value::Cons(lc) = l.clone() else { break };
+        let Value::Cons(rc) = r.clone() else {
+            return Ok(false);
+        };
+        let left_car = lc.car.borrow().clone();
+        let right_car = rc.car.borrow().clone();
+        if !values_equal_signaling_depth(interp, &left_car, &right_car, depth + 1, memo)? {
+            return Ok(false);
+        }
+        let left_cdr = lc.cdr.borrow().clone();
+        let right_cdr = rc.cdr.borrow().clone();
+        if let (Value::Cons(a), Value::Cons(b)) = (&left_cdr, &right_cdr)
+            && Rc::ptr_eq(a, b)
+        {
+            return Ok(true);
+        }
+        l = left_cdr;
+        r = right_cdr;
+        if let (Value::Cons(current), Value::Cons(lagging)) = (&l, &tortoise)
+            && Rc::ptr_eq(current, lagging)
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("circular-list".into()),
+                left.clone(),
+            ])));
+        }
+        steps += 1;
+        if steps == limit {
+            tortoise = l.clone();
+            steps = 0;
+            limit *= 2;
+        }
+    }
+    Ok(values_equal(interp, &l, &r))
+}
+
 pub(crate) fn keymap_records_equal(
     interp: &Interpreter,
     left_id: u64,
@@ -383,6 +470,8 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         | (Value::Terminal(left_id), Value::Terminal(right_id))
         | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        // eql on non-numbers is eq; identity must be reflexive here too.
+        (Value::ReaderForm(left), Value::ReaderForm(right)) => Rc::ptr_eq(left, right),
         _ => false,
     }
 }
@@ -429,6 +518,10 @@ pub(crate) fn values_eq_in_env(
         | (Value::Terminal(left_id), Value::Terminal(right_id))
         | (Value::Record(left_id), Value::Record(right_id))
         | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        // eq must be reflexive on every object: edebug-unwrap*'s fixed point
+        // `(while (not (eq sexp (setq sexp (edebug-unwrap sexp)))))' spins
+        // forever when an opaque form is never eq to itself.
+        (Value::ReaderForm(left), Value::ReaderForm(right)) => Rc::ptr_eq(left, right),
         _ => false,
     }
 }

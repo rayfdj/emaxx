@@ -253,6 +253,9 @@ pub(crate) fn string_compare_codes(
         .collect())
 }
 
+// Only the non-Linux string-collate fallback compares this way; the
+// GNU/Linux build collates through str_collate below.
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn string_compare_ordering(
     left: &Value,
     right: &Value,
@@ -297,6 +300,145 @@ pub(crate) fn compare_strings_value(
     }
 }
 
+// sysdep.c str_collate exists only under __STDC_ISO_10646__ (wchar_t is
+// ISO 10646 code points), which GNU/Linux defines and Darwin does not:
+// on Darwin GNU itself falls back to plain string-lessp/string-equal,
+// which is the non-Linux path below.
+#[cfg(target_os = "linux")]
+mod collate_ffi {
+    // glibc locale.h: LC_CTYPE is category 0 and LC_COLLATE category 3;
+    // each *_MASK is 1 << category.
+    pub(super) const LC_CTYPE_MASK: libc::c_int = 1 << 0;
+    pub(super) const LC_COLLATE_MASK: libc::c_int = 1 << 3;
+    // glibc bits/types/wint_t.h: wint_t is unsigned int.
+    pub(super) type WintT = libc::c_uint;
+    unsafe extern "C" {
+        pub(super) fn wcscoll_l(
+            left: *const libc::wchar_t,
+            right: *const libc::wchar_t,
+            locale: libc::locale_t,
+        ) -> libc::c_int;
+        pub(super) fn towlower_l(ch: WintT, locale: libc::locale_t) -> WintT;
+        pub(super) fn wcscoll(
+            left: *const libc::wchar_t,
+            right: *const libc::wchar_t,
+        ) -> libc::c_int;
+        pub(super) fn towlower(ch: WintT) -> WintT;
+    }
+}
+
+/// fns.c Fstring_collate_lessp/equalp: symbol arguments (nil and t
+/// included) collate by their print names.
+#[cfg(target_os = "linux")]
+fn collate_operand_codes(value: &Value) -> Result<Vec<i64>, LispError> {
+    let named;
+    let value = match value {
+        Value::Symbol(name) => {
+            named = Value::String(name.to_string().into());
+            &named
+        }
+        Value::Nil => {
+            named = Value::String("nil".into());
+            &named
+        }
+        Value::T => {
+            named = Value::String("t".into());
+            &named
+        }
+        other => other,
+    };
+    string_compare_codes(value, None, None, false, false)
+}
+
+/// sysdep.c str_collate (GNU/Linux): widen both strings to code-point
+/// arrays, lowercase them with towlower_l/towlower when IGNORE-CASE, and
+/// compare with wcscoll_l in LOCALE (newlocale of LC_COLLATE|LC_CTYPE;
+/// an unresolvable locale signals "Invalid locale ...") or with wcscoll
+/// in the process's current locale when LOCALE is nil.
+#[cfg(target_os = "linux")]
+pub(crate) fn str_collate(
+    left: &Value,
+    right: &Value,
+    locale: Option<&Value>,
+    ignore_case: bool,
+) -> Result<Ordering, LispError> {
+    let mut left_wide: Vec<libc::wchar_t> = collate_operand_codes(left)?
+        .into_iter()
+        .map(|code| code as libc::wchar_t)
+        .chain(std::iter::once(0))
+        .collect();
+    let mut right_wide: Vec<libc::wchar_t> = collate_operand_codes(right)?
+        .into_iter()
+        .map(|code| code as libc::wchar_t)
+        .chain(std::iter::once(0))
+        .collect();
+    // GNU's case fold walks each wide string up to its NUL terminator.
+    fn fold(codes: &mut [libc::wchar_t], lower: impl Fn(collate_ffi::WintT) -> collate_ffi::WintT) {
+        for code in codes {
+            if *code == 0 {
+                break;
+            }
+            *code = lower(*code as collate_ffi::WintT) as libc::wchar_t;
+        }
+    }
+    let result = match locale.filter(|value| !value.is_nil()) {
+        Some(locale_value) => {
+            let Some(_) = string_like(locale_value) else {
+                // fns.c: `if (!NILP (locale)) CHECK_STRING (locale)'.
+                return Err(LispError::WrongTypeArgument(
+                    "stringp".into(),
+                    locale_value.clone(),
+                ));
+            };
+            let locale_text = string_text(locale_value)?;
+            // C sees the bytes up to the first NUL.
+            let locale_c =
+                std::ffi::CString::new(locale_text.split('\0').next().unwrap_or_default())
+                    .expect("NUL split above");
+            let loc = unsafe {
+                libc::newlocale(
+                    collate_ffi::LC_COLLATE_MASK | collate_ffi::LC_CTYPE_MASK,
+                    locale_c.as_ptr(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if loc.is_null() {
+                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                let strerror = unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) };
+                return Err(LispError::Signal(format!(
+                    "Invalid locale {locale_text}: {}",
+                    strerror.to_string_lossy()
+                )));
+            }
+            if ignore_case {
+                fold(&mut left_wide, |code| unsafe {
+                    collate_ffi::towlower_l(code, loc)
+                });
+                fold(&mut right_wide, |code| unsafe {
+                    collate_ffi::towlower_l(code, loc)
+                });
+            }
+            let result =
+                unsafe { collate_ffi::wcscoll_l(left_wide.as_ptr(), right_wide.as_ptr(), loc) };
+            unsafe { libc::freelocale(loc) };
+            result
+        }
+        None => {
+            if ignore_case {
+                fold(&mut left_wide, |code| unsafe {
+                    collate_ffi::towlower(code)
+                });
+                fold(&mut right_wide, |code| unsafe {
+                    collate_ffi::towlower(code)
+                });
+            }
+            unsafe { collate_ffi::wcscoll(left_wide.as_ptr(), right_wide.as_ptr()) }
+        }
+    };
+    Ok(result.cmp(&0))
+}
+
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn validate_collation_locale(locale: Option<&Value>) -> Result<(), LispError> {
     if locale.is_some_and(|value| {
         !(value.is_nil() || matches!(value, Value::T) || string_like(value).is_some())

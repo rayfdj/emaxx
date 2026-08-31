@@ -8186,6 +8186,20 @@ fn eshell_internal_command_feeds_external_pipeline_before_returning() {
     run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-extpipe-tests.el");
 
+        // The file carries whatever the HOST's `rev' emits for the
+        // unterminated "bar" the internal echo pipes in -- util-linux
+        // 2.39 preserves the missing trailing newline where older
+        // versions appended one -- so derive the expectation live from
+        // the same binary the pipeline runs (oracle probe esh1.el on
+        // this container agrees: GNU's file is "rab", no newline).
+        let expected_file = String::from_utf8(
+            std::process::Command::new("sh")
+                .args(["-c", "printf bar | rev"])
+                .output()
+                .expect("host rev runs")
+                .stdout,
+        )
+        .expect("rev output is UTF-8");
         assert_eq!(
             eval_str_with(
                 &mut interp,
@@ -8201,7 +8215,7 @@ fn eshell_internal_command_feeds_external_pipeline_before_returning() {
             ),
             Value::list([
                 Value::String(String::new().into()),
-                Value::String("rab\n".into()),
+                Value::String(expected_file.into()),
             ])
         );
     });

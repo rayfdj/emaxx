@@ -712,7 +712,7 @@ fn source_settings(source: &str) -> Result<SourceFileSettings, types::LispError>
     })
 }
 
-fn extract_mode_line_variable(source: &str, variable: &str) -> Option<String> {
+pub(crate) fn extract_mode_line_variable(source: &str, variable: &str) -> Option<String> {
     for line in source.lines().take(2) {
         let Some(start) = line.find("-*-") else {
             continue;

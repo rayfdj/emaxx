@@ -993,6 +993,14 @@ pub enum ReaderForm {
     BoolVector {
         bits: Vec<bool>,
     },
+    /// A symbol occurrence read with `read-positioning-symbols': lread.c's
+    /// read0 wraps every symbol it reads in a `symbol-with-pos' when
+    /// LOCATE_SYMS is set.  The reader has no Interpreter to allocate the
+    /// pseudovector in, so the name and character position wait here.
+    PositionedSymbol {
+        name: String,
+        pos: i64,
+    },
 }
 
 /// A Lisp value. This covers the subset we need for ERT tests.
@@ -2031,7 +2039,19 @@ impl std::error::Error for LispError {}
 
 impl From<crate::buffer::BufferError> for LispError {
     fn from(e: crate::buffer::BufferError) -> Self {
-        LispError::Signal(e.to_string())
+        // cmds.c signals the boundary conditions with `xsignal0': the
+        // error object is `(beginning-of-buffer)' with nil data, so
+        // condition-case handlers on those symbols can catch it (the
+        // message comes from the condition's `error-message' property).
+        match e {
+            crate::buffer::BufferError::BeginningOfBuffer => {
+                LispError::SignalValue(Value::list([Value::Symbol("beginning-of-buffer".into())]))
+            }
+            crate::buffer::BufferError::EndOfBuffer => {
+                LispError::SignalValue(Value::list([Value::Symbol("end-of-buffer".into())]))
+            }
+            other => LispError::Signal(other.to_string()),
+        }
     }
 }
 

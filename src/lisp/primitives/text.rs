@@ -74,7 +74,16 @@ pub(crate) fn secure_hash_source_bytes(
             let mut bytes = Vec::new();
             for code in &codes[start..end] {
                 if string.multibyte {
-                    push_emacs_multibyte_char(&mut bytes, *code as u32)?;
+                    // fns.c extract_data_from_object encodes a multibyte
+                    // string with the preferred coding system (utf-8 under
+                    // the gate's LANG=C), where an eight-bit char encodes
+                    // as its verbatim byte -- not its 2-byte internal form.
+                    if (0x3F_FF80..=0x3F_FFFF).contains(code) {
+                        // character.h BYTE8_TO_CHAR: byte B is 0x3FFF00 + B.
+                        bytes.push((*code - 0x3F_FF00) as u8);
+                    } else {
+                        push_emacs_multibyte_char(&mut bytes, *code as u32)?;
+                    }
                 } else if (0..=0xFF).contains(code) {
                     bytes.push(*code as u8);
                 } else {

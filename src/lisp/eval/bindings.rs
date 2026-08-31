@@ -567,7 +567,12 @@ impl Interpreter {
             // and none of GNU's feature-flag compile gates.  Empty strings
             // are the honest values; they are a disclosed divergence from
             // the NS oracle's lists, and no environment variable may dress
-            // them up (finding 65).
+            // them up (finding 65).  A feature is listed only once the
+            // capability actually exists: `--seccomp' (emacs.c's
+            // load_seccomp) is implemented on GNU/Linux.
+            #[cfg(target_os = "linux")]
+            "system-configuration-features" => Some(Value::String("SECCOMP".into())),
+            #[cfg(not(target_os = "linux"))]
             "system-configuration-features" => Some(Value::String("".into())),
             "system-configuration-options" => Some(Value::String("".into())),
             "charset-list" => Some(Value::list(
@@ -638,11 +643,10 @@ impl Interpreter {
             "movemail-program-name" => Some(Value::String("movemail".into())),
             "ebrowse-program-name" => Some(Value::String("ebrowse".into())),
             "rcs2log-program-name" => Some(Value::String("rcs2log".into())),
-            "process-environment" | "initial-environment" => Some(Value::list(
-                std::env::vars()
-                    .map(|(name, value)| Value::String(format!("{name}={value}").into()))
-                    .collect::<Vec<_>>(),
-            )),
+            // process-environment and initial-environment are stored
+            // eagerly at Interpreter::new (emacs.c set_initial_environment)
+            // so their cons chains keep GNU's structural identity; no lazy
+            // fallback may resynthesize them.
             _ if name.starts_with(':') => Some(Value::Symbol(name.to_string().into())),
             _ => None,
         }

@@ -577,7 +577,9 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let equal = match symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env) {
                     Some(equal) => equal,
-                    None => values_equal(interp, &args[0], &args[1]),
+                    None => {
+                        super::super::values::values_equal_signaling(interp, &args[0], &args[1])?
+                    }
                 };
                 Ok(if equal { Value::T } else { Value::Nil })
             }
@@ -662,35 +664,72 @@ define_dispatch!(
             }
             "string-collate-equalp" => {
                 need_arg_range(name, args, 2, 4)?;
-                validate_collation_locale(args.get(2))?;
-                Ok(
-                    if string_compare_ordering(
+                // GNU/Linux defines __STDC_ISO_10646__, so fns.c collates
+                // through sysdep.c str_collate; Darwin does not, and GNU
+                // itself falls back to the lexicographic comparison there.
+                #[cfg(target_os = "linux")]
+                {
+                    let ordering = crate::lisp::primitives::strings::str_collate(
                         &args[0],
                         &args[1],
+                        args.get(2),
                         args.get(3).is_some_and(Value::is_truthy),
-                    )? == Ordering::Equal
-                    {
+                    )?;
+                    Ok(if ordering == Ordering::Equal {
                         Value::T
                     } else {
                         Value::Nil
-                    },
-                )
+                    })
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    validate_collation_locale(args.get(2))?;
+                    Ok(
+                        if string_compare_ordering(
+                            &args[0],
+                            &args[1],
+                            args.get(3).is_some_and(Value::is_truthy),
+                        )? == Ordering::Equal
+                        {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                    )
+                }
             }
             "string-collate-lessp" => {
                 need_arg_range(name, args, 2, 4)?;
-                validate_collation_locale(args.get(2))?;
-                Ok(
-                    if string_compare_ordering(
+                #[cfg(target_os = "linux")]
+                {
+                    let ordering = crate::lisp::primitives::strings::str_collate(
                         &args[0],
                         &args[1],
+                        args.get(2),
                         args.get(3).is_some_and(Value::is_truthy),
-                    )? == Ordering::Less
-                    {
+                    )?;
+                    Ok(if ordering == Ordering::Less {
                         Value::T
                     } else {
                         Value::Nil
-                    },
-                )
+                    })
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    validate_collation_locale(args.get(2))?;
+                    Ok(
+                        if string_compare_ordering(
+                            &args[0],
+                            &args[1],
+                            args.get(3).is_some_and(Value::is_truthy),
+                        )? == Ordering::Less
+                        {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                    )
+                }
             }
             "string-search" => {
                 if args.len() < 2 || args.len() > 3 {

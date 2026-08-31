@@ -45,6 +45,27 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
     );
 }
 
+/// Ask the pinned oracle a question and return its stdout verbatim.  For
+/// contract elements that are properties of the oracle's OWN build or host
+/// libraries (configure-time paths, linked-library versions, per-build
+/// fboundp), the honest expectation is the oracle's live answer, not a
+/// literal transcribed from whichever container the test was written on.
+fn upstream_oracle_stdout(program: &str) -> String {
+    crate::test_support::mark_process_test();
+    let binary = upstream_emacs_repo().join("src/emacs");
+    let program = crate::test_support::oracle_program_ascii(program);
+    let output = std::process::Command::new(&binary)
+        .args(["--batch", "-Q", "--eval", &program])
+        .output()
+        .unwrap_or_else(|error| panic!("run oracle probe {}: {error}", binary.display()));
+    assert!(
+        output.status.success(),
+        "oracle probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, expected: &str) {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
@@ -5511,7 +5532,15 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
             interp.process_output_delivery_count(process_id),
         );
     }
-    assert_eq!(interp.buffer.full_buffer_string(), "ready");
+    // GNU's own contract here is timing-dependent (oracle probe apo1.el,
+    // this container: 4/5 runs deliver the exit sentinel in the SAME
+    // accept-process-output call as the output, 1/5 split them), so the
+    // sentinel line is accepted but not required.
+    let text = interp.buffer.full_buffer_string();
+    let text = text
+        .strip_suffix("\nProcess accept-output-test finished\n")
+        .unwrap_or(&text);
+    assert_eq!(text, "ready");
     assert_eq!(
         wait_duration(&[Value::Integer(10)]).expect("ten-second wait should be valid"),
         std::time::Duration::from_secs(10)
@@ -5559,7 +5588,15 @@ fn accept_process_output_without_timeout_waits_for_requested_process() {
         .expect("accept-process-output should wait without an explicit deadline"),
         Value::T
     );
-    assert_eq!(interp.buffer.full_buffer_string(), "ready");
+    // GNU's own contract here is timing-dependent (oracle probe apo1.el,
+    // this container: 4/5 runs deliver the exit sentinel in the SAME
+    // accept-process-output call as the output, 1/5 split them), so the
+    // sentinel line is accepted but not required.
+    let text = interp.buffer.full_buffer_string();
+    let text = text
+        .strip_suffix("\nProcess accept-output-no-timeout finished\n")
+        .unwrap_or(&text);
+    assert_eq!(text, "ready");
 }
 
 #[test]
@@ -5624,13 +5661,18 @@ fn accept_process_output_ignores_distractor_output_until_target_delivers() {
         .expect("wait for requested process"),
         Value::T
     );
-    assert_eq!(
-        interp
-            .get_buffer_by_id(target_buffer_id)
-            .expect("live target buffer")
-            .full_buffer_string(),
-        "target"
-    );
+    // GNU's own contract here is timing-dependent (oracle probe apo1.el,
+    // this container: 4/5 runs deliver the exit sentinel in the SAME
+    // accept-process-output call as the output, 1/5 split them), so the
+    // sentinel line is accepted but not required.
+    let text = interp
+        .get_buffer_by_id(target_buffer_id)
+        .expect("live target buffer")
+        .full_buffer_string();
+    let text = text
+        .strip_suffix("\nProcess accept-target finished\n")
+        .unwrap_or(&text);
+    assert_eq!(text, "target");
 }
 
 #[test]
@@ -5723,6 +5765,14 @@ fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
 
 #[test]
 fn make_network_process_ipv6_family_uses_an_ipv6_listener() {
+    // GNU's network suites guard IPv6 scenarios with `skip-unless' on a
+    // trial bind; some containers have no IPv6 stack at all, and GNU
+    // itself cannot bind there either ("Address family not supported by
+    // protocol").  Probe the host live and skip the same way.
+    if std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_err() {
+        eprintln!("skipping: this host cannot bind an IPv6 loopback listener");
+        return;
+    }
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     let process = call(
@@ -6797,8 +6847,18 @@ fn native_image_variables_match_the_gnu_image_c_contract() {
                      image-scaling-factor))
            (let ((image-scaling-factor 2.0))
              (emaxx-test-image-scaling-factor))))"#;
-    let expected = "(t 10.0 nil (\".\") 300 auto (t t t t t t) 2.0)";
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    // `x-bitmap-file-path' is decode_env_path over epaths.h's PATH_BITMAPS,
+    // a configure-time constant: it is ("/usr/include/X11/bitmaps") when the
+    // oracle's configure found X headers and (".") when it did not.  The
+    // oracle is asked for its own build's value live; Emaxx models the
+    // X-less batch build and keeps (".") — the divergence is recorded in
+    // docs/honesty-audit-2026-08-18.md.
+    let oracle_bitmap_path = upstream_oracle_stdout("(prin1 x-bitmap-file-path)");
+    let expected_with_path = |path: &str| format!("(t 10.0 nil {path} 300 auto (t t t t t t) 2.0)");
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        &expected_with_path(oracle_bitmap_path.trim()),
+    );
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();
@@ -6810,7 +6870,7 @@ fn native_image_variables_match_the_gnu_image_c_contract() {
         interp
             .eval(&form, &mut env)
             .expect("native image variables should match image.c"),
-        Reader::new(expected)
+        Reader::new(&expected_with_path("(\".\")"))
             .read()
             .expect("expected image variable result should parse")
             .expect("expected image variable result should exist")
@@ -7372,7 +7432,25 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
          t nil
          (wrong-type-argument error error error error))"#;
     let expected_printed = "(20 face t t t t t emaxx-native-face \"red\" nil emaxx-native-face-copy \"red\" t \"blue\" (120 unspecified) default (20 unspecified 1.5 \"cyan\" unspecified) (t nil t 150 3.0 \"black\" \"white\") ((t nil) nil) (t t nil nil) (t t nil t nil) ((italic bold) nil) nil ((Foo Bar)) ((\"iso\" \"foo\")) (emaxx-native-face 140) (nil \"purple\") nil error ((\"two words\" . 16711696) (\"alpha\" . 66051)) t nil (wrong-type-argument error error error error))";
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+    // `x-load-color-file' is DEFUNed only in builds whose configure compiled
+    // the X color machinery; on an oracle built without it the rest of this
+    // family still holds, so that one element is stubbed out of the oracle's
+    // program while Emaxx (which models the X-compiled headless build) keeps
+    // parsing the color file — recorded in docs/honesty-audit-2026-08-18.md.
+    let oracle_loads_color_files = upstream_oracle_stdout("(prin1 (fboundp 'x-load-color-file))");
+    let color_file_call = format!("(x-load-color-file {color_file})");
+    let color_file_rows = "((\"two words\" . 16711696) (\"alpha\" . 66051))";
+    if oracle_loads_color_files.trim() == "t" {
+        assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+    } else {
+        assert_upstream_primitive_contract(
+            &format!(
+                "(prin1 {})",
+                program.replace(&color_file_call, "'emaxx-oracle-lacks-x-load-color-file")
+            ),
+            &expected_printed.replace(color_file_rows, "emaxx-oracle-lacks-x-load-color-file"),
+        );
+    }
 
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();
@@ -7746,59 +7824,36 @@ fn native_gnutls_catalogs_and_error_diagnostics_use_the_host_library() {
                   (error error-data)))
               errors)
              (mapcar #'gnutls-error-string errors))))"#;
-    let expected = concat!(
-        "((44 (RC2-40 :cipher-id 17 :type gnutls-symmetric-cipher ",
-        ":cipher-aead-capable nil :cipher-tagsize 0 :cipher-blocksize 8 ",
-        ":cipher-keysize 5 :cipher-ivsize 8) (AES-256-CBC :cipher-id 5 ",
-        ":type gnutls-symmetric-cipher :cipher-aead-capable nil ",
-        ":cipher-tagsize 0 :cipher-blocksize 16 :cipher-keysize 32 ",
-        ":cipher-ivsize 16) (CHACHA20-POLY1305 :cipher-id 23 :type ",
-        "gnutls-symmetric-cipher :cipher-aead-capable t :cipher-tagsize 16 ",
-        ":cipher-blocksize 64 :cipher-keysize 32 :cipher-ivsize 12) ",
-        "(AES-128-GCM :cipher-id 10 :type gnutls-symmetric-cipher ",
-        ":cipher-aead-capable t :cipher-tagsize 16 :cipher-blocksize 16 ",
-        ":cipher-keysize 16 :cipher-ivsize 12)) (21 (PBMAC1 ",
-        ":mac-algorithm-id 213 :type gnutls-mac-algorithm ",
-        ":mac-algorithm-length 0 :mac-algorithm-keysize 0 ",
-        ":mac-algorithm-noncesize 0) (SHA1 :mac-algorithm-id 3 :type ",
-        "gnutls-mac-algorithm :mac-algorithm-length 20 ",
-        ":mac-algorithm-keysize 20 :mac-algorithm-noncesize 0) ",
-        "(AES-GMAC-128 :mac-algorithm-id 205 :type gnutls-mac-algorithm ",
-        ":mac-algorithm-length 16 :mac-algorithm-keysize 16 ",
-        ":mac-algorithm-noncesize 12) (SHA256 :mac-algorithm-id 6 :type ",
-        "gnutls-mac-algorithm :mac-algorithm-length 32 ",
-        ":mac-algorithm-keysize 32 :mac-algorithm-noncesize 0)) ",
-        "(nil t nil nil t nil nil ",
-        "(error \"Symbol has no numeric gnutls-code property\") ",
-        "(error \"Not an error symbol or code\") ",
-        "(error \"Not an error symbol or code\")) ",
-        "(\"Not an error\" ",
-        "\"The specified session has been invalidated for some reason.\" ",
-        "\"Resource temporarily unavailable, try again.\" \"Success.\" ",
-        "\"The specified session has been invalidated for some reason.\" ",
-        "\"Resource temporarily unavailable, try again.\" \"Success.\" ",
-        "\"Symbol has no numeric gnutls-code property\" ",
-        "\"Not an error symbol or code\" \"Not an error symbol or code\"))"
-    );
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
-
+    // Compared live-to-live, like gnutls_digests_are_queried_from_the_library
+    // below: both runtimes dlopen the SAME host libgnutls, so the cipher and
+    // mac catalogues (their length included) are properties of that library,
+    // not constants to transcribe from whichever container the test was
+    // written on.  Emaxx renders its answer and the oracle must print the
+    // identical text; the anchors underneath keep the answer from being
+    // trivially empty.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();
-    let form = Reader::new(program)
+    let form = Reader::new(&format!("(prin1-to-string {program})"))
         .read()
         .expect("GnuTLS catalog and error contract should parse")
         .expect("GnuTLS catalog and error contract should contain a form");
-    let actual = interp
+    let rendered = interp
         .eval(&form, &mut env)
         .expect("host GnuTLS catalog and error contract should evaluate");
-    let expected = Reader::new(expected)
-        .read()
-        .expect("GnuTLS catalog and error result should parse")
-        .expect("GnuTLS catalog and error result should exist");
-    assert!(
-        values_equal(&interp, &actual, &expected),
-        "host GnuTLS catalog/error result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
-    );
+    let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), &rendered);
+    for anchor in [
+        ":cipher-aead-capable",
+        ":mac-algorithm-id",
+        "\"Symbol has no numeric gnutls-code property\"",
+        "\"Not an error symbol or code\"",
+        "(nil t nil nil t nil nil ",
+    ] {
+        assert!(
+            rendered.contains(anchor),
+            "expected {anchor} inside the GnuTLS catalog/error result, got {rendered}"
+        );
+    }
 }
 
 #[test]
@@ -8216,8 +8271,18 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("gnutls-serv is required for the transport regression");
+        .spawn();
+    // GNU guards its gnutls-serv scenarios with `skip-unless
+    // (executable-find "gnutls-serv")'; skip the same way on a host
+    // without the tool instead of failing on the missing binary.
+    let child = match child {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping: gnutls-serv is not installed on this host");
+            return;
+        }
+        Err(error) => panic!("spawn gnutls-serv: {error}"),
+    };
     let mut server = Server(child);
     wait_for_local_test_server(&mut server.0, port, "GnuTLS test server");
 
@@ -8398,8 +8463,17 @@ fn native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch() {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("gnutls-serv is required for the X.509 regression");
+        .spawn();
+    // Same `skip-unless (executable-find "gnutls-serv")' discipline as the
+    // transport regression above.
+    let child = match child {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipping: gnutls-serv is not installed on this host");
+            return;
+        }
+        Err(error) => panic!("spawn gnutls-serv: {error}"),
+    };
     let mut server = Server(child);
     wait_for_local_test_server(&mut server.0, port, "X.509 server");
 
@@ -9523,7 +9597,21 @@ fn set_network_process_option_applies_the_option_or_refuses() {
     //
     // The `:unknown' row is the one that discriminates: fabricated success
     // returns t there where GNU signals.
-    let program = r#"
+    // SO_BINDTODEVICE reaches the real kernel, and what comes back is the
+    // host's answer: the loopback's name, whether this caller may bind to
+    // it (Linux wants CAP_NET_RAW), and the errno text all vary by
+    // platform and privilege.  Those rows are wrapped so both runtimes
+    // catch the same outcome, the device is the host's own loopback name,
+    // and the result is compared live-to-live instead of pinning one
+    // container's socket behavior; the anchors underneath hold the
+    // platform-free discriminating rows (finding 103) in place.
+    let loopback = if cfg!(target_os = "linux") {
+        "lo"
+    } else {
+        "lo0"
+    };
+    let program = format!(
+        r#"
         (let ((server (make-network-process
                        :name "emaxx-sockopt" :server t :host 'local
                        :service t :family 'ipv4)))
@@ -9548,7 +9636,13 @@ fn set_network_process_option_applies_the_option_or_refuses() {
                     ;; SO_BINDTODEVICE is defined on this platform and GNU
                     ;; accepts it; omitting it regressed the option to an
                     ;; error, which the old cheat had matched by accident.
-                    (set-network-process-option server :bindtodevice "lo0")
+                    ;; Whether THIS caller may bind to the loopback is the
+                    ;; kernel's decision (Linux wants CAP_NET_RAW), so both
+                    ;; runtimes catch the same outcome instead of pinning it.
+                    (condition-case error
+                        (set-network-process-option
+                         server :bindtodevice "{loopback}")
+                      (error (list 'refused (car error))))
                     (plist-get (process-contact server t) :bindtodevice)
                     (condition-case error
                         (set-network-process-option server :bindtodevice 42)
@@ -9559,6 +9653,18 @@ fn set_network_process_option_applies_the_option_or_refuses() {
                         (set-network-process-option
                          server :bindtodevice "nosuchdev0")
                       (error error))
+                    ;; process.c:2846 compiles :priority only where
+                    ;; SO_PRIORITY exists (GNU/Linux yes, Darwin no), so the
+                    ;; same rows read "applied" on one platform and "Unknown
+                    ;; or unsupported option" on the other -- which is
+                    ;; exactly what live-to-live comparison verifies.
+                    (condition-case error
+                        (set-network-process-option server :priority 3)
+                      (error (cadr error)))
+                    (plist-get (process-contact server t) :priority)
+                    (condition-case error
+                        (set-network-process-option server :priority "x")
+                      (error (cadr error)))
                     ;; Out-of-int-range linger: GNU ignores it rather than
                     ;; truncating it into the kernel.
                     (set-network-process-option server :linger 3000000000)
@@ -9581,25 +9687,41 @@ fn set_network_process_option_applies_the_option_or_refuses() {
                           (set-network-process-option server key "nosuchdev0")
                         (file-error (list (eq (nth 3 error) key)
                                           (eq (nth 3 error) :bindtodevice))))))
-            (delete-process server)))"#;
-    let expected = concat!(
-        "(t t \"Unknown or unsupported option\" nil ",
-        "wrong-number-of-arguments wrong-type-argument t t \"lo0\" ",
-        "\"Bad option value for :bindtodevice\" ",
-        "(file-error \"Cannot set network option\" \"Device not configured\" ",
-        ":bindtodevice \"nosuchdev0\") t t nil (t nil))"
+            (delete-process server)))"#
     );
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let form = Reader::new(program)
+    let form = Reader::new(&program)
         .read_all()
         .expect("read socket-option program")
         .remove(0);
     let result = interp
         .eval(&form, &mut Vec::new())
         .expect("evaluate socket-option program");
-    assert_eq!(result.to_string(), expected);
+    let rendered = result.to_string();
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), &rendered);
+    assert!(
+        rendered.starts_with(
+            "(t t \"Unknown or unsupported option\" nil \
+             wrong-number-of-arguments wrong-type-argument t "
+        ),
+        "platform-free socket-option rows changed shape: {rendered}"
+    );
+    assert!(
+        rendered.contains("\"Bad option value for :bindtodevice\""),
+        "SOPT_STR type check row changed shape: {rendered}"
+    );
+    assert!(
+        rendered.ends_with(" t t nil (t nil))"),
+        "identity and linger rows changed shape: {rendered}"
+    );
+    // GNU/Linux compiles SO_PRIORITY in; oracle probe sopri.el pins the
+    // applied/recorded/refused triple for this platform.
+    #[cfg(target_os = "linux")]
+    assert!(
+        rendered.contains(" t 3 \"Bad option value for :priority\" "),
+        "SO_PRIORITY rows changed shape: {rendered}"
+    );
 }
 
 #[test]
@@ -13613,16 +13735,40 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
          (condition-case error-data
              (x-select-font)
            (error error-data)))"#;
-    let expected = concat!(
-        "((wrong-type-argument listp 1) error ",
-        "(wrong-type-argument stringp 1) ",
-        "(wrong-type-argument frame-live-p t) ",
-        "(error \"Window system frame should be used\") ",
-        "(error \"Window system is not in use or not initialized\") ",
-        "(wrong-type-argument frame-live-p t) ",
-        "(error \"Window system frame should be used\"))"
+    // `x-file-dialog' and `x-select-font' are DEFUNed only in builds whose
+    // configure compiled the X chooser code; a build without it leaves them
+    // unbound and the condition-case catches plain `void-function'.  The
+    // oracle is asked which build it is live; Emaxx models the X-compiled
+    // headless build (the choosers exist and refuse without a display) —
+    // the divergence is recorded in docs/honesty-audit-2026-08-18.md.
+    let expected_with_choosers = |with_choosers: bool| {
+        let chooser_rows = if with_choosers {
+            concat!(
+                "(error \"Window system is not in use or not initialized\") ",
+                "(wrong-type-argument frame-live-p t) ",
+                "(error \"Window system frame should be used\")"
+            )
+        } else {
+            concat!(
+                "(void-function x-file-dialog) ",
+                "(void-function x-select-font) ",
+                "(void-function x-select-font)"
+            )
+        };
+        format!(
+            "((wrong-type-argument listp 1) error \
+             (wrong-type-argument stringp 1) \
+             (wrong-type-argument frame-live-p t) \
+             (error \"Window system frame should be used\") \
+             {chooser_rows})"
+        )
+    };
+    let oracle_has_choosers =
+        upstream_oracle_stdout("(prin1 (and (fboundp 'x-file-dialog) (fboundp 'x-select-font) t))");
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        &expected_with_choosers(oracle_has_choosers.trim() == "t"),
     );
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -13633,7 +13779,7 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
     let actual = interp
         .eval(&form, &mut env)
         .expect("headless GUI action failures should be catchable");
-    let expected = Reader::new(expected)
+    let expected = Reader::new(&expected_with_choosers(true))
         .read()
         .expect("headless GUI action expected value should parse")
         .expect("headless GUI action expected value should exist");
@@ -13847,15 +13993,41 @@ fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
                (treesit-parser-create 'emaxx-definitely-missing)
              (error (list (car error-data) (cadr error-data))))
            (treesit-parser-list)))"#;
-    let expected = r#"
-        (t 15 13 nil nil nil (nil not-found)
-         nil nil nil t t nil nil
-         t t emaxx-definitely-missing t treesit-load-language-error
-         (wrong-type-argument treesit-compiled-query-p)
-         (wrong-type-argument treesit-node-p)
-         (treesit-load-language-error not-found) nil)"#;
-    let expected_printed = "(t 15 13 nil nil nil (nil not-found) nil nil nil t t nil nil t t emaxx-definitely-missing t treesit-load-language-error (wrong-type-argument treesit-compiled-query-p) (wrong-type-argument treesit-node-p) (treesit-load-language-error not-found) nil)";
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+    // treesit.c's Ftreesit_library_abi_version reports the ABI of the
+    // tree-sitter library THAT BUILD links: the oracle answers for the
+    // host's libtree-sitter, Emaxx for its linked tree-sitter crate, and
+    // the two libraries can legitimately differ in version.  Each side is
+    // therefore checked against its own library's constants — the oracle's
+    // fetched live, Emaxx's taken from the crate — while every other
+    // element stays a shared pinned contract.
+    let expected_with_abi = |abi: i64, min_abi: i64| {
+        format!(
+            "(t {abi} {min_abi} nil nil nil (nil not-found) nil nil nil t t nil nil t t \
+             emaxx-definitely-missing t treesit-load-language-error \
+             (wrong-type-argument treesit-compiled-query-p) \
+             (wrong-type-argument treesit-node-p) \
+             (treesit-load-language-error not-found) nil)"
+        )
+    };
+    let oracle_abi = upstream_oracle_stdout(
+        "(prin1 (list (treesit-library-abi-version) (treesit-library-abi-version t)))",
+    );
+    let mut oracle_abi_numbers = oracle_abi
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split_whitespace()
+        .map(|number| number.parse::<i64>().expect("oracle ABI numbers"));
+    let oracle_abi = oracle_abi_numbers.next().expect("oracle library ABI");
+    let oracle_min_abi = oracle_abi_numbers.next().expect("oracle minimum ABI");
+    assert_upstream_primitive_contract(
+        &format!("(prin1 {program})"),
+        &expected_with_abi(oracle_abi, oracle_min_abi),
+    );
+    let expected = expected_with_abi(
+        tree_sitter::LANGUAGE_VERSION as i64,
+        tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION as i64,
+    );
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
@@ -13867,7 +14039,7 @@ fn native_treesit_runtime_capabilities_and_query_predicates_match_gnu() {
         interp
             .eval(&form, &mut env)
             .expect("Tree-sitter runtime introspection should evaluate"),
-        Reader::new(expected)
+        Reader::new(&expected)
             .read()
             .expect("Tree-sitter capability result should parse")
             .expect("Tree-sitter capability result should exist")
@@ -15822,9 +15994,11 @@ fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
         .expect("undo list")
         .to_vec()
         .expect("list entries");
-    // undo.c's order: the deletion record first, its marker adjustment
-    // directly after, the first-change (t . TIME) entry below both —
-    // primitive-undo consumes marker riders only by that adjacency.
+    // undo.c's order (oracle probe undomk.el): the deletion record first,
+    // its marker adjustment directly after — primitive-undo consumes marker
+    // riders only by that adjacency — then record_point's plain point entry
+    // (point sat at 9, away from the deletion), with the first-change
+    // (t . TIME) entry below all three.
     let deletion = undo_list[0].cons_values().expect("deletion entry");
     assert!(deletion.0.is_string(), "car is the deleted text");
     let rider = undo_list[1].cons_values().expect("marker rider");
@@ -15834,7 +16008,12 @@ fn marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list() {
         undo_list[1]
     );
     assert_eq!(rider.1, Value::Integer(-3));
-    let first_change = undo_list[2].cons_values().expect("first-change entry");
+    assert_eq!(
+        undo_list[2],
+        Value::Integer(9),
+        "record_point's entry sits between the rider and the first-change cell"
+    );
+    let first_change = undo_list[3].cons_values().expect("first-change entry");
     assert_eq!(first_change.0, Value::T, "the (t . TIME) entry sits below");
 }
 

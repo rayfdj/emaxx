@@ -19,22 +19,23 @@ fn map_keymap_direct_value(
         Value::CharTable(id) => Some(id),
         _ => None,
     });
+    // GNU stores a full keymap's character bindings in ONE place (the
+    // char-table), and keymap.c map_keymap_internal walks that store once,
+    // with map_char_table reporting maximal ranges of equal values.  Emaxx
+    // keeps a char-table facade AND direct bindings for the same keys, so
+    // the walk must merge the two stores into one segment list -- reporting
+    // each binding once -- instead of walking both (describe-map printed
+    // every char range twice through keymap-canonicalize's map-keymap).
+    let mut segments: Vec<(i64, i64, Value)> = Vec::new();
     if let Some(table_id) = full_table {
         for entry in interp
             .char_table_effective_ranges(table_id)
             .unwrap_or_default()
         {
-            let event = if entry.start == entry.end {
-                Value::Integer(i64::from(entry.start))
-            } else {
-                Value::cons(
-                    Value::Integer(i64::from(entry.start)),
-                    Value::Integer(i64::from(entry.end)),
-                )
-            };
-            interp.call_function_value(function.clone(), None, &[event, entry.value], env)?;
+            segments.push((i64::from(entry.start), i64::from(entry.end), entry.value));
         }
     }
+    segments.sort_by_key(|(start, _, _)| *start);
 
     let bindings = keymap_direct_bindings(interp, keymap)?;
     let mut character_bindings = Vec::new();
@@ -49,17 +50,27 @@ fn map_keymap_direct_value(
             sparse_bindings.push((event, binding.value.clone()));
         }
     }
-    character_bindings.sort_by_key(|(code, _)| *code);
+    // A direct character binding duplicating its char-table facade entry is
+    // the same stored binding seen through the second store; only bindings
+    // the char-table does not carry are additional.
+    character_bindings.retain(|(code, value)| {
+        !segments.iter().any(|(start, end, stored)| {
+            start <= code && code <= end && values_equal(interp, stored, value)
+        })
+    });
+    for (code, value) in character_bindings {
+        segments.push((code, code, value));
+    }
+    segments.sort_by_key(|(start, _, _)| *start);
     let mut index = 0;
-    while index < character_bindings.len() {
-        let (start, value) = character_bindings[index].clone();
-        let mut end = start;
-        while let Some((next, next_value)) = character_bindings.get(index + 1) {
-            if *next != end.saturating_add(1) || !values_equal(interp, &value, next_value) {
+    while index < segments.len() {
+        let (start, mut end, value) = segments[index].clone();
+        while let Some((next_start, next_end, next_value)) = segments.get(index + 1) {
+            if *next_start != end.saturating_add(1) || !values_equal(interp, &value, next_value) {
                 break;
             }
+            end = *next_end;
             index += 1;
-            end = *next;
         }
         let event = if start == end {
             Value::Integer(start)

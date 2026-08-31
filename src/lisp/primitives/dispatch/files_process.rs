@@ -3018,11 +3018,12 @@ fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
 /// "Unknown or unsupported option" (or nil under NO-ERROR).
 ///
 /// The table mirrors process.c:2839.  SO_PRIORITY is the only entry GNU
-/// compiles out on this platform, so asking for it is genuinely unsupported
-/// rather than unimplemented; SO_BINDTODEVICE IS defined here (macOS
-/// sys/socket.h:190, 0x1134) and GNU accepts it, so omitting it would be a
-/// regression -- verified against the oracle, which returns t and records
-/// "lo0" on the contact plist.
+/// compiles out on Darwin, so asking for it is genuinely unsupported there
+/// rather than unimplemented; SO_BINDTODEVICE is defined on both platforms
+/// (each under its own number -- see the constant below) and GNU accepts
+/// it, so omitting it would be a regression -- verified against the
+/// oracle, which returns t and records the loopback name on the contact
+/// plist.
 fn set_socket_option(
     fd: std::os::fd::RawFd,
     option: &str,
@@ -3033,6 +3034,8 @@ fn set_socket_option(
 
     enum Kind {
         Bool,
+        #[cfg(target_os = "linux")]
+        Int,
         Linger,
         IfName,
     }
@@ -3044,6 +3047,12 @@ fn set_socket_option(
         ":reuseaddr" => Some((libc::SO_REUSEADDR, Kind::Bool)),
         ":linger" => Some((libc::SO_LINGER, Kind::Linger)),
         ":bindtodevice" => Some((SO_BINDTODEVICE, Kind::IfName)),
+        // process.c:2846 compiles this row under #ifdef SO_PRIORITY,
+        // which GNU/Linux defines and Darwin does not (oracle probe
+        // sopri.el: :priority 3 answers t and lands on the contact
+        // plist; any non-fixnum is "Bad option value for :priority").
+        #[cfg(target_os = "linux")]
+        ":priority" => Some((libc::SO_PRIORITY, Kind::Int)),
         _ => None,
     };
     let Some((optnum, kind)) = entry else {
@@ -3069,11 +3078,41 @@ fn set_socket_option(
         None
     };
 
+    // process.c:2907 SOPT_INT: only an int-ranged fixnum reaches the
+    // kernel; anything else is "Bad option value" BEFORE the syscall.
+    #[cfg(target_os = "linux")]
+    let int_value = if let Kind::Int = kind {
+        match value {
+            Value::Integer(count) => match libc::c_int::try_from(*count) {
+                Ok(count) => Some(count),
+                Err(_) => {
+                    return Err(LispError::Signal(format!("Bad option value for {option}")));
+                }
+            },
+            _ => {
+                return Err(LispError::Signal(format!("Bad option value for {option}")));
+            }
+        }
+    } else {
+        None
+    };
+
     // SAFETY: `fd' is a live descriptor owned by the process record, and each
     // arm passes a pointer to a correctly sized local of the type the option
     // expects.
     let applied = unsafe {
         match kind {
+            #[cfg(target_os = "linux")]
+            Kind::Int => {
+                let optval: libc::c_int = int_value.expect("int option value vetted above");
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    optnum,
+                    std::ptr::addr_of!(optval).cast::<c_void>(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            }
             Kind::Bool => {
                 let optval: libc::c_int = if value.is_nil() { 0 } else { 1 };
                 libc::setsockopt(
@@ -3151,5 +3190,12 @@ fn set_socket_option(
     Ok(true)
 }
 
+/// The kernel's own SO_BINDTODEVICE where libc exposes it (Linux: 25).
+/// Hardcoding one platform's number sent Linux setsockopt an unknown
+/// option (0x1134 is Darwin's) and every bind came back ENOPROTOOPT.
+#[cfg(target_os = "linux")]
+const SO_BINDTODEVICE: libc::c_int = libc::SO_BINDTODEVICE;
+
 /// macOS sys/socket.h:190.  The libc crate does not expose this for Darwin.
+#[cfg(not(target_os = "linux"))]
 const SO_BINDTODEVICE: libc::c_int = 0x1134;

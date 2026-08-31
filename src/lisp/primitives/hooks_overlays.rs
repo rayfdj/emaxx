@@ -18,6 +18,25 @@ pub(crate) fn run_change_hooks(
     if interp.change_hooks_are_running() {
         return Ok(());
     }
+    // insdel.c's run_undoable_change: every prepare-to-modify of a buffer
+    // with undo enabled calls the Lisp `undo-auto--undoable-change' (which
+    // registers the buffer in undo-auto--undoably-changed-buffers and arms
+    // the auto-boundary timer), independent of any change hooks being
+    // registered.  The function itself never modifies buffer text, so the
+    // reentrancy guard above cannot be tripped by it.
+    if hook_name == "before-change-functions"
+        && !interp.buffer.undo_recording_disabled()
+        && interp
+            .lookup_function("undo-auto--undoable-change", env)
+            .is_ok()
+    {
+        let _ = interp.call_function_value(
+            Value::Symbol("undo-auto--undoable-change".into()),
+            Some("undo-auto--undoable-change"),
+            &[],
+            env,
+        );
+    }
     let hooks = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
     let combining = interp
         .lookup_var("combine-after-change-calls", env)

@@ -342,9 +342,26 @@ fn bound_and_true_p_checks_binding_before_value() {
 
 #[test]
 fn numeric_comparisons_support_variadic_chains() {
+    // data.c: the ordering comparisons are variadic, but `/=' is
+    // exactly binary (DEFUN "/=" ... 2, 2) -- GNU signals
+    // wrong-number-of-arguments for (/= 1 2 1).
     assert_eq!(
-        eval_str("(list (<= 33 77 47) (<= 33 40 47) (< 32 65 91) (/= 1 2 1))"),
-        Value::list([Value::Nil, Value::T, Value::T, Value::Nil])
+        eval_str(
+            "(list (<= 33 77 47) (<= 33 40 47) (< 32 65 91)
+                   (condition-case e (/= 1 2 1)
+                     (wrong-number-of-arguments
+                      (list 'ERR (car e) (cdr e)))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::list([
+                Value::Symbol("ERR".into()),
+                Value::Symbol("wrong-number-of-arguments".into()),
+                Value::list([Value::Symbol("/=".into()), Value::Integer(3)]),
+            ]),
+        ])
     );
 }
 

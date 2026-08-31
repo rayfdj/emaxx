@@ -98,6 +98,12 @@ fn execute_kbd_macro(
                 events: events.clone(),
                 index: 0,
             });
+        // Fexecute_kbd_macro's command loop handles only `minibuffer-quit'
+        // (see execute_kbd_macro_command); register that frame so outer
+        // handler-binds see the same handler landscape GNU's
+        // signal_or_quit does.
+        let handler_start =
+            interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
         let iteration = match run_kbd_macro_events(interp, env) {
             // GNU's outermost command loop catches `top-level`, terminating
             // the keyboard macro without propagating an error.
@@ -106,6 +112,7 @@ fn execute_kbd_macro(
             }
             other => other,
         };
+        interp.pop_handler_bindings(handler_start);
         interp.kbd_macro_executions.pop();
         if let Err(error) = iteration {
             result = Err(error);
@@ -617,6 +624,20 @@ fn advance_kbd_macro_index(interp: &mut Interpreter, count: usize, env: &mut Env
 // out.  `recursive-edit` re-enters this loop on the same shared cursor, so a
 // command that stops in a recursive edit (like Edebug) keeps consuming the
 // same macro until `exit-recursive-edit` throws back out.
+// data.c Fbare_symbol: the expected-predicate slot of the signal carries
+// BOTH accepted predicates -- (wrong-type-argument (symbolp
+// symbol-with-pos-p) VALUE).
+fn bare_symbol_type_error(value: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("wrong-type-argument".into()),
+        Value::list([
+            Value::Symbol("symbolp".into()),
+            Value::Symbol("symbol-with-pos-p".into()),
+        ]),
+        value.clone(),
+    ]))
+}
+
 fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let mut pending_keys: Vec<String> = Vec::new();
     let mut pending_events = Vec::new();
@@ -632,6 +653,12 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             // read_key_sequence increments this counter before reporting the
             // end of a keyboard macro to the command loop.
             increment_num_input_keys(interp, env);
+            // command_loop_1 zeroes this_command_key_count after each command,
+            // so the end-of-macro read leaves this-single-command-keys empty.
+            // kmacro-call-macro keys its repeat-map offer on that emptiness;
+            // a stale multi-key sequence here armed a phantom repeat map that
+            // swallowed the first key of the next macro.
+            set_command_key_state(interp, Vec::new(), Vec::new(), env);
             return Ok(());
         };
         let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
@@ -746,6 +773,12 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
             Some(interp.current_buffer_id()),
         )
     };
+    // GNU's recursive edit runs command_loop_2 under
+    // internal_condition_case with `error': signal_or_quit stops its
+    // handler-bind scan at that frame, so a handler-bind OUTSIDE the
+    // recursive edit (ert's test wrapper) must not fire for a command
+    // error this loop is about to report itself.
+    let handler_start = interp.push_condition_case_handler(vec![Value::Symbol("error".into())]);
     let result = entry_hooks
         .and_then(|()| run_recursive_kbd_command_loop(interp, env))
         // With no more events to dispatch the command loop goes idle, which
@@ -755,6 +788,7 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         // both representations just like the other event-waiting paths.
         .and_then(|()| interp.run_pending_file_notifications(env))
         .and_then(|()| interp.run_pending_timer_events(env));
+    interp.pop_handler_bindings(handler_start);
     interp.command_loop_recursion_depth -= 1;
     match result {
         Err(LispError::Throw(tag, value)) if matches!(&tag, Value::Symbol(symbol) if symbol == "exit") => {
@@ -786,7 +820,7 @@ fn run_recursive_kbd_command_loop(
     loop {
         match run_kbd_macro_events(interp, env) {
             Ok(()) => return Ok(()),
-            Err(error @ LispError::Throw(_, _)) => return Err(error),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
             Err(error) if error_matches_condition(interp, &error, "error") => {
                 report_kbd_command_error(interp, &error, env)?;
                 safe_run_named_hooks(
@@ -864,7 +898,7 @@ fn execute_kbd_macro_command(
         // `minibuffer-quit' as its sole condition handler.  A customized
         // reporter changes how that one condition is displayed; it does not
         // turn the command loop into a catch-all for ordinary command errors.
-        if matches!(error, LispError::Throw(_, _))
+        if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_))
             || !error_matches_condition(interp, &error, "minibuffer-quit")
         {
             return Err(error);
@@ -1119,6 +1153,24 @@ define_dispatch!(
                     if is_vector_like_value(interp, a) {
                         items.extend(sequence_values(interp, a)?);
                         continue;
+                    }
+                    // fns.c concat_to_list: CLOSUREP args flatten to their
+                    // slots (edebug-unwrap* rebuilds compiled closures with
+                    // `(nthcdr 3 (append fn ()))').
+                    match a {
+                        Value::Lambda(lambda) => {
+                            items.extend(interp.interpreted_closure_slots(lambda));
+                            continue;
+                        }
+                        Value::Record(id) => {
+                            if let Some(record) = interp.find_record(*id)
+                                && record.kind == crate::lisp::eval::RecordKind::Closure
+                            {
+                                items.extend(record.slots.iter().cloned());
+                                continue;
+                            }
+                        }
+                        _ => {}
                     }
                     items.extend(a.to_vec()?);
                 }
@@ -1530,26 +1582,25 @@ define_dispatch!(
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
-                // data.c Fposition_symbol: SYM may itself carry a position
-                // (its bare symbol is taken), and POS is a fixnum OR a
-                // symbol with position whose position is borrowed (cconv
+                // data.c Fposition_symbol: SYM goes through Fbare_symbol
+                // (any bare symbol passes, nil and t included; a symbol
+                // with position yields its symbol), and POS is a fixnum OR
+                // a symbol with position whose position is borrowed (cconv
                 // repositions `ignore' from the unused variable this way).
                 let bare = match &args[0] {
-                    Value::Symbol(_) => args[0].clone(),
+                    Value::Symbol(_) | Value::Nil | Value::T => args[0].clone(),
                     other => symbol_with_pos_parts(interp, other)
                         .map(|(symbol, _)| symbol)
-                        .ok_or_else(|| {
-                            LispError::TypeError("symbolp".into(), args[0].type_name())
-                        })?,
+                        .ok_or_else(|| bare_symbol_type_error(&args[0]))?,
                 };
                 let position = match &args[1] {
                     Value::Integer(position) => *position,
                     other => symbol_with_pos_parts(interp, other)
                         .map(|(_, position)| position)
                         .ok_or_else(|| {
-                            LispError::TypeError(
+                            LispError::WrongTypeArgument(
                                 "fixnum-or-symbol-with-pos-p".into(),
-                                args[1].type_name(),
+                                args[1].clone(),
                             )
                         })?,
                 };
@@ -1566,11 +1617,24 @@ define_dispatch!(
                 })?;
                 Ok(Value::Integer(position))
             }
-            "remove-pos-from-symbol" | "bare-symbol" => {
+            "remove-pos-from-symbol" => {
+                // data.c Fremove_pos_from_symbol: any non-symbol-with-pos
+                // argument comes back unchanged, no type check.
                 need_args(name, args, 1)?;
                 Ok(symbol_with_pos_parts(interp, &args[0])
                     .map(|(symbol, _)| symbol)
                     .unwrap_or_else(|| args[0].clone()))
+            }
+            "bare-symbol" => {
+                // data.c Fbare_symbol: unlike remove-pos-from-symbol, a
+                // non-symbol argument signals wrong-type-argument.
+                need_args(name, args, 1)?;
+                match &args[0] {
+                    Value::Symbol(_) | Value::Nil | Value::T => Ok(args[0].clone()),
+                    other => symbol_with_pos_parts(interp, other)
+                        .map(|(symbol, _)| symbol)
+                        .ok_or_else(|| bare_symbol_type_error(&args[0])),
+                }
             }
             "apply" => {
                 if args.is_empty() {
@@ -1636,8 +1700,12 @@ define_dispatch!(
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), 0));
                 }
-                let func = resolve_callable(interp, &args[0], env)?;
-                invoke_function_value(interp, &func, &args[1..], env)
+                // callint.c Ffuncall_interactively just funcalls its
+                // arguments: the advised symbol's own backtrace frame is
+                // recorded by the ordinary call path, which is the exact
+                // shape nadvice's called-interactively-p skip walks
+                // (lambda, apply, SYMBOL, funcall-interactively).
+                interp.call_function_value(args[0].clone(), None, &args[1..], env)
             }
             "call-interactively" => call_interactively_impl(interp, args, env),
 

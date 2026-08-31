@@ -1434,6 +1434,20 @@ impl Interpreter {
         }
     }
 
+    pub fn backtrace_frames_len(&self) -> usize {
+        self.backtrace_frames.len()
+    }
+
+    /// Pop frames down to LEN.  The bytecode VM records a signaling byte
+    /// op as a frame (bytecode.c's record_in_backtrace) that outlives the
+    /// op itself; the VM balances the stack with this once the signal has
+    /// been dispatched.
+    pub fn truncate_backtrace_frames(&mut self, len: usize) {
+        while self.backtrace_frames.len() > len {
+            self.pop_backtrace_frame();
+        }
+    }
+
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.debug_on_exit = enabled;

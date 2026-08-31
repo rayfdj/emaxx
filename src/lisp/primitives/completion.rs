@@ -86,6 +86,21 @@ pub(crate) fn obarray_symbols(
     interp: &Interpreter,
     obarray: &Value,
 ) -> Result<Vec<Value>, LispError> {
+    // Read-only face of check_obarray_slow's legacy-vector rule: a vector
+    // already carrying an obarray in slot 0 reads through it, and an
+    // untouched one (slot 0 still the fixnum 0) reads as empty.
+    if is_vector_value(obarray) {
+        let slots = vector_slot_refs(obarray)?;
+        if let Some(first) = slots.first() {
+            let current = first.borrow().clone();
+            if is_obarray_like_value(interp, &current) {
+                return obarray_symbols(interp, &current);
+            }
+            if matches!(current, Value::Integer(0)) {
+                return Ok(Vec::new());
+            }
+        }
+    }
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument(
             "obarrayp".into(),
@@ -133,11 +148,46 @@ pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
         )
 }
 
+/// lread.c check_obarray_slow: a legacy VECTOR obarray whose first slot
+/// is the fixnum 0 receives a real obarray object stored there on first
+/// use (the rest of the vector stays unused), and a vector already
+/// carrying one answers with it.  Everything else of vector shape is
+/// still not an obarray.
+pub(crate) fn coerce_legacy_vector_obarray(
+    interp: &mut Interpreter,
+    obarray: &Value,
+) -> Result<Value, LispError> {
+    if !is_vector_value(obarray) {
+        return Ok(obarray.clone());
+    }
+    let slots = vector_slot_refs(obarray)?;
+    let Some(first) = slots.first() else {
+        return Err(LispError::WrongTypeArgument(
+            "obarrayp".into(),
+            obarray.clone(),
+        ));
+    };
+    let current = first.borrow().clone();
+    if is_obarray_like_value(interp, &current) {
+        return Ok(current);
+    }
+    if matches!(current, Value::Integer(0)) {
+        let fresh = make_obarray(interp);
+        *first.borrow_mut() = fresh.clone();
+        return Ok(fresh);
+    }
+    Err(LispError::WrongTypeArgument(
+        "obarrayp".into(),
+        obarray.clone(),
+    ))
+}
+
 pub(crate) fn intern_in_obarray(
     interp: &mut Interpreter,
     obarray: &Value,
     symbol_name: &str,
 ) -> Result<Value, LispError> {
+    let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument(
             "obarrayp".into(),
@@ -225,6 +275,7 @@ pub(crate) fn unintern_from_obarray(
     target: &Value,
     env: &Env,
 ) -> Result<bool, LispError> {
+    let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument(
             "obarrayp".into(),
@@ -524,27 +575,26 @@ pub(crate) fn completion_list_candidates(
                     ])));
                 }
                 let item = ensure_completion_list_item_identity(&ConsSlot::car(&cons_cell))?;
-                if matches!(item, Value::Cons(_)) {
-                    let key = item.car()?;
-                    candidates.push(CompletionCandidate {
-                        name: completion_display_name(&key)?,
-                        predicate_args: vec![item],
-                    });
+                // minibuf.c: an element that is neither a string nor a
+                // symbol "is not a possible completion" — it is skipped,
+                // never an error (semantic's texi tables carry characters).
+                let key = if matches!(item, Value::Cons(_)) {
+                    item.car()?
                 } else {
+                    item.clone()
+                };
+                if let Ok(name) = completion_display_name(&key) {
                     candidates.push(CompletionCandidate {
-                        name: completion_display_name(&item)?,
+                        name,
                         predicate_args: vec![item],
                     });
                 }
                 current = cdr.borrow().clone();
             }
-            Value::Integer(_) => return Ok(candidates),
-            _ => {
-                return Err(LispError::WrongTypeArgument(
-                    "listp".into(),
-                    current.clone(),
-                ));
-            }
+            // minibuf.c iterates `for (tail = collection; CONSP (tail);
+            // tail = XCDR (tail))': any non-cons tail simply ends the
+            // walk, dotted lists included.
+            _ => return Ok(candidates),
         }
     }
 }
@@ -556,12 +606,17 @@ pub(crate) fn completion_candidates(
     if let Some((_, entries)) = json::hash_table_entries(interp, collection) {
         return entries
             .into_iter()
-            .map(|(key, value)| {
-                Ok(CompletionCandidate {
-                    name: completion_display_name(&key)?,
-                    predicate_args: vec![key, value],
-                })
+            .filter_map(|(key, value)| {
+                // Same skip rule as the list walk: only string/symbol
+                // hash keys are possible completions.
+                completion_display_name(&key)
+                    .ok()
+                    .map(|name| CompletionCandidate {
+                        name,
+                        predicate_args: vec![key, value],
+                    })
             })
+            .map(Ok)
             .collect();
     }
     match obarray_symbols(interp, collection) {

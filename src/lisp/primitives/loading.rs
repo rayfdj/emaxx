@@ -134,7 +134,17 @@ pub(crate) fn call_interactively_impl(
         Value::Symbol("funcall-interactively".into()),
         &interactive_args,
     );
-    let result = invoke_function_value(interp, &func, &interactive_args, env);
+    // Call through the SYMBOL when one was given, as GNU's
+    // Ffuncall_interactively does: the advised command's own frame is
+    // then recorded between funcall-interactively and the advice
+    // machinery — the exact shape nadvice's called-interactively-p
+    // skip function walks.
+    let call_target = if args[0].as_symbol().is_ok() {
+        args[0].clone()
+    } else {
+        func.clone()
+    };
+    let result = interp.call_function_value(call_target, None, &interactive_args, env);
     interp.pop_backtrace_frame();
     interp.pop_interactive_call();
     let result = result?;
@@ -318,7 +328,13 @@ pub(crate) fn eval_region_impl(
         )?);
     }
 
-    let mut result = (|| -> Result<Value, LispError> {
+    // readevalloop reads the buffer-local `lexical-binding' and runs the
+    // forms in a fresh interpreter environment — the caller's lexical
+    // frames never leak into the evaluated region's top level.
+    let lexical = interp
+        .lookup_var("lexical-binding", env)
+        .is_some_and(|value| value.is_truthy());
+    let mut result = with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
         if let Some(read_function) = read_function {
             return eval_region_via_read_function(
                 interp,
@@ -327,7 +343,7 @@ pub(crate) fn eval_region_impl(
                 end,
                 &read_function,
                 &print_flag,
-                env,
+                eval_env,
             );
         }
         let text = interp
@@ -338,18 +354,18 @@ pub(crate) fn eval_region_impl(
         let mut result = Value::Nil;
         for form in forms {
             interp.intern_symbols_in_value(&form);
-            result = eager_expand_eval(interp, &form, env)?;
+            result = eager_expand_eval(interp, &form, eval_env)?;
             if !print_flag.is_nil() {
                 let _ = crate::lisp::primitives::call(
                     interp,
                     "print",
                     &[result.clone(), print_flag.clone()],
-                    env,
+                    eval_env,
                 )?;
             }
         }
         Ok(result)
-    })();
+    });
 
     if interp.current_buffer_id() == buffer_id {
         interp
@@ -420,22 +436,60 @@ fn eval_buffer_forms(
     let load_read = interp
         .lookup_var("load-read-function", env)
         .unwrap_or_else(|| Value::Symbol("read".into()));
-    if !matches!(&load_read, Value::Symbol(symbol) if symbol == "read") {
-        // A customized reader (like `edebug--read') reads from the buffer
-        // itself, form by form, moving point like `readevalloop' does.
-        return eval_buffer_via_load_read_function(interp, buffer_id, &load_read, env);
-    }
     let text = interp
         .get_buffer_by_id(buffer_id)
         .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
         .buffer_string();
-    let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
-    let mut result = Value::Nil;
-    for form in forms {
-        interp.intern_symbols_in_value(&form);
-        result = eager_expand_eval(interp, &form, env)?;
+    // Feval_buffer binds `lexical-binding' from the buffer's own file
+    // cookie, and readevalloop then evaluates every form in a FRESH
+    // interpreter environment (nil, or the empty lexical `(t)').  The
+    // caller's lexical frames must never leak into a buffer's top level:
+    // a cookie-less buffer's defuns are dynamic even when `eval-buffer'
+    // is called from inside a lexical closure (testcover's
+    // instrumentation runner is exactly that caller).
+    let lexical = crate::lisp::extract_mode_line_variable(&text, "lexical-binding")
+        .is_some_and(|value| value != "nil");
+    if !matches!(&load_read, Value::Symbol(symbol) if symbol == "read") {
+        // A customized reader (like `edebug--read') reads from the buffer
+        // itself, form by form, moving point like `readevalloop' does.
+        return with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
+            eval_buffer_via_load_read_function(interp, buffer_id, &load_read, eval_env)
+        });
     }
-    Ok(result)
+    let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
+    with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
+        let mut result = Value::Nil;
+        for form in forms {
+            interp.intern_symbols_in_value(&form);
+            result = eager_expand_eval(interp, &form, eval_env)?;
+        }
+        Ok(result)
+    })
+}
+
+/// readevalloop's `internal-interpreter-environment' specbind: run BODY
+/// with a fresh top-level environment — the empty lexical `(t)' frame
+/// when LEXICAL, a plain dynamic scope otherwise.
+fn with_fresh_eval_environment<T>(
+    interp: &mut Interpreter,
+    lexical: bool,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> T,
+) -> T {
+    let mut eval_env = if lexical {
+        vec![EnvFrame::with_lisp_environment_and_identity(
+            Vec::new(),
+            Value::list([Value::T]),
+            Interpreter::fresh_frame_identity(),
+        )]
+    } else {
+        Vec::new()
+    };
+    interp.push_lambda_eval_context(lexical, false);
+    let previous_activation = interp.enter_activation();
+    let result = body(interp, &mut eval_env);
+    interp.leave_activation(previous_activation);
+    interp.pop_lambda_capture_override();
+    result
 }
 
 // GNU readevalloop eagerly macroexpands each top-level form read from

@@ -388,7 +388,12 @@ fn run(
     let mut stack = interp.vm_stack_pool.pop().unwrap_or_default();
     stack.clear();
     stack.reserve(object.stack_depth.max(8));
+    let frames_at_entry = interp.backtrace_frames_len();
     let result = run_with_stack(interp, object, args, env, &mut stack);
+    // A signaling byte op recorded itself as a backtrace frame
+    // (bytecode.c's record_in_backtrace) so handler-bind handlers saw it;
+    // the handlers have run by now, so unwind it like GNU's specpdl does.
+    interp.truncate_backtrace_frames(frames_at_entry);
     stack.clear();
     if interp.vm_stack_pool.len() < 256 {
         interp.vm_stack_pool.push(stack);
@@ -504,6 +509,10 @@ fn run_with_stack(
     let mut handlers: Vec<Handler> = Vec::new();
     let mut pc = 0usize;
     let trace_errors = trace_load_errors();
+    // Frames pushed by signaling byte ops (record_in_backtrace); an
+    // in-frame condition-case that catches must unwind them, and the
+    // caller (`run') balances whatever is left after handler dispatch.
+    let mut op_error_frames = 0usize;
 
     macro_rules! pop {
         () => {
@@ -1287,7 +1296,24 @@ fn run_with_stack(
                         Op::Fset => "fset",
                         _ => "nconc",
                     };
-                    let value = prim(interp, name, &[a, b], env)?;
+                    let call_args = [a, b];
+                    let value = match prim(interp, name, &call_args, env) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            // bytecode.c's record_in_backtrace covers
+                            // exactly nth/elt/aref/setcar/setcdr here.
+                            if matches!(op, Op::Nth | Op::Elt | Op::Aref | Op::Setcar | Op::Setcdr)
+                                && !matches!(
+                                    error,
+                                    LispError::Throw(_, _) | LispError::Terminate(_)
+                                )
+                            {
+                                interp.push_backtrace_frame(Value::Symbol(name.into()), &call_args);
+                                op_error_frames += 1;
+                            }
+                            return Err(error);
+                        }
+                    };
                     stack.push(value);
                 }
                 // One-argument ops with inline fast paths.
@@ -1305,7 +1331,26 @@ fn run_with_stack(
                         (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => stack.push(Value::Nil),
                         _ => {
                             let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
-                            let value = prim(interp, name, &[a], env)?;
+                            let call_args = [a];
+                            let value = match prim(interp, name, &call_args, env) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    // bytecode.c records the signaling op
+                                    // itself as a frame so handlers see
+                                    // e.g. `(car a)' innermost.
+                                    if !matches!(
+                                        error,
+                                        LispError::Throw(_, _) | LispError::Terminate(_)
+                                    ) {
+                                        interp.push_backtrace_frame(
+                                            Value::Symbol(name.into()),
+                                            &call_args,
+                                        );
+                                        op_error_frames += 1;
+                                    }
+                                    return Err(error);
+                                }
+                            };
                             stack.push(value);
                         }
                     }
@@ -1378,7 +1423,22 @@ fn run_with_stack(
                         Op::Substring => "substring",
                         _ => "concat",
                     };
-                    let value = prim(interp, name, &[a, b, c], env)?;
+                    let call_args = [a, b, c];
+                    let value = match prim(interp, name, &call_args, env) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            if matches!(op, Op::Aset)
+                                && !matches!(
+                                    error,
+                                    LispError::Throw(_, _) | LispError::Terminate(_)
+                                )
+                            {
+                                interp.push_backtrace_frame(Value::Symbol(name.into()), &call_args);
+                                op_error_frames += 1;
+                            }
+                            return Err(error);
+                        }
+                    };
                     stack.push(value);
                 }
                 Op::Concat4 => {
@@ -1436,6 +1496,12 @@ fn run_with_stack(
                     if let Some(value) = matched_value {
                         if matches!(handler.kind, HandlerKind::ConditionCase(_)) {
                             interp.clear_batch_error_backtrace();
+                        }
+                        // A caught signal unwinds the frame its byte op
+                        // recorded (GNU unbinds specpdl to the handler).
+                        while op_error_frames > 0 {
+                            interp.pop_backtrace_frame();
+                            op_error_frames -= 1;
                         }
                         while unwinds.len() > handler.unwind_len {
                             match unwinds.pop() {

@@ -2414,3 +2414,103 @@ pub(crate) fn decode_coding_text(
         ))
     }
 }
+
+// charset.c CODE_POINT_TO_INDEX'd bounds of the charset's :code-space:
+// the smallest and largest valid code points.
+fn charset_code_bounds(interp: &Interpreter, charset: &str) -> Option<(u32, u32)> {
+    let bounds = charset_code_space(interp, charset)?;
+    let mut min_code = 0u32;
+    let mut max_code = 0u32;
+    for (dimension, (min, max)) in bounds.iter().enumerate() {
+        min_code |= min << (8 * dimension);
+        max_code |= max << (8 * dimension);
+    }
+    Some((min_code, max_code))
+}
+
+fn push_sorted_char_ranges(chars: &mut Vec<u32>, ranges: &mut Vec<(i64, i64)>) {
+    chars.sort_unstable();
+    chars.dedup();
+    let mut index = 0;
+    while index < chars.len() {
+        let start = chars[index];
+        let mut end = start;
+        while index + 1 < chars.len() && chars[index + 1] == end + 1 {
+            index += 1;
+            end = chars[index];
+        }
+        ranges.push((i64::from(start), i64::from(end)));
+        index += 1;
+    }
+}
+
+/// charset.c map_charset_chars: the character ranges FUNCTION receives for
+/// codes FROM..TO of CHARSET.  A MAP charset walks its encoder -- maximal
+/// unicode-ascending runs of the mapped characters; a unified OFFSET
+/// charset walks its deunifier the same way and then appends the raw
+/// code-offset range; a plain OFFSET charset yields the arithmetic range;
+/// SUBSET and SUPERSET charsets recurse through their relatives.
+/// (characters.el's CJK syntax/category rules run through this: the "_"
+/// rows of korean-ksc5601 carry the euro sign among others, which is how
+/// GNU's standard syntax table gives U+20AC symbol syntax.)
+pub(crate) fn map_charset_char_ranges(
+    interp: &Interpreter,
+    charset: &str,
+    from: i64,
+    to: i64,
+) -> Option<Vec<(i64, i64)>> {
+    let canonical = interp.charset_canonical_name(charset)?;
+    let mut ranges = Vec::new();
+
+    if let Some((child, min, max, offset)) = charset_subset(interp, &canonical) {
+        let from = (from - offset).max(min);
+        let to = (to - offset).min(max);
+        if from <= to {
+            ranges.extend(map_charset_char_ranges(interp, &child, from, to)?);
+        }
+        return Some(ranges);
+    }
+    if let Some(children) = charset_superset(interp, &canonical) {
+        for (child, offset) in children {
+            let Some((child_min, child_max)) = charset_code_bounds(interp, &child) else {
+                continue;
+            };
+            let from = (from - offset).max(i64::from(child_min));
+            let to = (to - offset).min(i64::from(child_max));
+            if from <= to
+                && let Some(child_ranges) = map_charset_char_ranges(interp, &child, from, to)
+            {
+                ranges.extend(child_ranges);
+            }
+        }
+        return Some(ranges);
+    }
+
+    let (min_code, max_code) = charset_code_bounds(interp, &canonical)?;
+    let from = u32::try_from(from.max(i64::from(min_code))).ok()?;
+    let to = u32::try_from(to.min(i64::from(max_code))).ok()?;
+    if from > to {
+        return Some(ranges);
+    }
+
+    let offset = charset_plist_property(interp, &canonical, ":code-offset")
+        .and_then(|value| value.as_integer().ok());
+    let has_direct_map = charset_plist_property(interp, &canonical, ":map").is_some();
+    let unified = interp.charset_is_unified(&canonical) && offset.is_some();
+    if (has_direct_map || unified)
+        && let Some(map) = charset_map(interp, &canonical)
+    {
+        let mut chars: Vec<u32> = map
+            .iter()
+            .filter(|(code, _)| (from..=to).contains(code))
+            .map(|(_, character)| *character)
+            .collect();
+        push_sorted_char_ranges(&mut chars, &mut ranges);
+    }
+    if let Some(offset) = offset.filter(|_| !has_direct_map) {
+        let from_index = charset_code_to_index(interp, &canonical, from)?;
+        let to_index = charset_code_to_index(interp, &canonical, to)?;
+        ranges.push((i64::from(from_index) + offset, i64::from(to_index) + offset));
+    }
+    Some(ranges)
+}

@@ -550,7 +550,7 @@ define_dispatch!(
                 };
                 match interp.buffer.forward_char(n as isize) {
                     Ok(_) => Ok(Value::Nil),
-                    Err(e) => Err(LispError::Signal(e.to_string())),
+                    Err(e) => Err(e.into()),
                 }
             }
             "forward-word" => {
@@ -594,7 +594,7 @@ define_dispatch!(
                 };
                 match interp.buffer.forward_char(-(n as isize)) {
                     Ok(_) => Ok(Value::Nil),
-                    Err(e) => Err(LispError::Signal(e.to_string())),
+                    Err(e) => Err(e.into()),
                 }
             }
             "beginning-of-line" => {
@@ -1200,7 +1200,7 @@ define_dispatch!(
                 if n >= 0 {
                     let to = point + n as usize;
                     if to > interp.buffer.point_max() {
-                        Err(LispError::Signal("End of buffer".into()))
+                        Err(crate::buffer::BufferError::EndOfBuffer.into())
                     } else {
                         delete_region_with_hooks(interp, point, to, env)?;
                         Ok(Value::Nil)
@@ -1208,7 +1208,7 @@ define_dispatch!(
                 } else {
                     let count = (-n) as usize;
                     if point < interp.buffer.point_min() + count {
-                        Err(LispError::Signal("Beginning of buffer".into()))
+                        Err(crate::buffer::BufferError::BeginningOfBuffer.into())
                     } else {
                         delete_region_with_hooks(interp, point - count, point, env)?;
                         Ok(Value::Nil)
@@ -1509,11 +1509,20 @@ define_dispatch!(
                 };
                 let saved = interp.buffer.point();
                 let count = (n - 1) as isize;
-                if count != 0 {
-                    interp.buffer.forward_line(count);
-                }
-                interp.buffer.end_of_line();
-                let mut result = interp.buffer.point();
+                let shortage = if count != 0 {
+                    interp.buffer.forward_line(count)
+                } else {
+                    0
+                };
+                // search.c's find_before_next_newline: a backward scan that
+                // runs out of newlines yields BEGV itself, not the end of
+                // the first accessible line.
+                let mut result = if count < 0 && shortage != 0 {
+                    interp.buffer.point_min()
+                } else {
+                    interp.buffer.end_of_line();
+                    interp.buffer.point()
+                };
                 interp.buffer.goto_char(saved);
                 // GNU's `pos-eol' ignores fields; `line-end-position'
                 // constrains with ONLY-IN-LINE set (Fline_end_position).

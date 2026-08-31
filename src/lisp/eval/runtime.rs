@@ -1767,45 +1767,7 @@ impl Interpreter {
     /// table.  Newer writes mask older ones; nil writes mask without being
     /// reported as values.
     pub(crate) fn char_table_effective_ranges(&self, id: u64) -> Option<Vec<CharTableEntry>> {
-        let entries = &self.find_char_table(id)?.entries;
-        let mut covered = Vec::<(u32, u32)>::new();
-        let mut effective = Vec::new();
-
-        for entry in entries.iter().rev() {
-            let mut pieces = vec![(entry.start, entry.end)];
-            for &(covered_start, covered_end) in &covered {
-                let mut remaining = Vec::with_capacity(pieces.len() + 1);
-                for (piece_start, piece_end) in pieces {
-                    if covered_end < piece_start || covered_start > piece_end {
-                        remaining.push((piece_start, piece_end));
-                    } else {
-                        if piece_start < covered_start {
-                            remaining.push((piece_start, covered_start - 1));
-                        }
-                        if piece_end > covered_end {
-                            remaining.push((covered_end + 1, piece_end));
-                        }
-                    }
-                }
-                pieces = remaining;
-                if pieces.is_empty() {
-                    break;
-                }
-            }
-            for &(start, end) in &pieces {
-                covered.push((start, end));
-                if !entry.value.is_nil() {
-                    effective.push(CharTableEntry {
-                        start,
-                        end,
-                        value: entry.value.clone(),
-                    });
-                }
-            }
-        }
-
-        effective.sort_by_key(|entry| (entry.start, entry.end));
-        Some(effective)
+        Some(self.find_char_table(id)?.effective_ranges())
     }
 
     pub fn char_table_subtype(&self, id: u64) -> Option<Option<String>> {
