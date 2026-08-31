@@ -202,7 +202,14 @@ define_dispatch!(
             }
             "functionp" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol().ok();
+                let symbol_value = if symbols_with_pos_enabled(interp, env) {
+                    symbol_with_pos_parts(interp, &args[0])
+                        .map(|(symbol, _)| symbol)
+                        .unwrap_or_else(|| args[0].clone())
+                } else {
+                    args[0].clone()
+                };
+                let symbol = symbol_value.as_symbol().ok();
                 if symbol.is_some_and(|symbol| {
                     crate::lisp::primitives::name_facts(symbol).special_form
                         || interp.has_macro_binding(symbol)
