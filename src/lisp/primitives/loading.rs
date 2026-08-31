@@ -160,7 +160,7 @@ pub(crate) fn call_interactively_impl(
 pub(crate) fn eval_impl(
     interp: &mut Interpreter,
     args: &[Value],
-    _env: &mut Env,
+    caller_env: &mut Env,
 ) -> Result<Value, LispError> {
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
@@ -178,7 +178,7 @@ pub(crate) fn eval_impl(
                 )],
             ),
             Value::Cons(_) => {
-                let frame = lexical_alist_frame(lexical)?;
+                let frame = lexical_alist_frame(interp, lexical, caller_env)?;
                 (true, true, vec![frame.into()])
             }
             _ => (
@@ -216,14 +216,18 @@ pub(crate) fn eval_impl(
     }
 }
 
-fn lexical_alist_frame(value: &Value) -> Result<Vec<(String, Value)>, LispError> {
+fn lexical_alist_frame(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<Vec<(String, Value)>, LispError> {
     let mut frame = Vec::new();
     for entry in value.to_vec()? {
         let Some((key, val)) = entry.cons_values() else {
             continue;
         };
-        if let Value::Symbol(name) = key {
-            frame.push((name.to_string(), val));
+        if let Ok(name) = checked_symbol_name(interp, &key, env) {
+            frame.push((name, val));
         }
     }
     Ok(frame)
@@ -353,7 +357,10 @@ pub(crate) fn eval_region_impl(
         let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
         let mut result = Value::Nil;
         for form in forms {
-            interp.intern_symbols_in_value(&form);
+            // lread.c reads through the dynamically active `obarray', so a
+            // let-bound private obarray owns the parsed symbols; evaluation
+            // still happens in the fresh readevalloop environment.
+            let form = interp.intern_read_symbols_in_value(form, eval_env)?;
             result = eager_expand_eval(interp, &form, eval_env)?;
             if !print_flag.is_nil() {
                 let _ = crate::lisp::primitives::call(
@@ -460,7 +467,9 @@ fn eval_buffer_forms(
     with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
         let mut result = Value::Nil;
         for form in forms {
-            interp.intern_symbols_in_value(&form);
+            // lread.c reads through the dynamically active `obarray', so a
+            // let-bound private obarray owns the parsed symbols.
+            let form = interp.intern_read_symbols_in_value(form, eval_env)?;
             result = eager_expand_eval(interp, &form, eval_env)?;
         }
         Ok(result)

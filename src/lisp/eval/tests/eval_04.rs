@@ -5225,6 +5225,29 @@ fn intern_primitives_honor_the_dynamically_bound_obarray() {
 }
 
 #[test]
+fn read_honors_the_dynamically_bound_obarray_for_nested_symbols() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((private (obarray-make))
+                       (read-back
+                        (let ((obarray private))
+                          (read "(:line (:character :line))")))
+                       (line (car read-back)))
+                  (list
+                   (not (eq line :line))
+                   (eq line (intern ":line" private))
+                   (eq (car (cadr read-back))
+                       (intern ":character" private))
+                   (not (null (member (intern ":line" private)
+                                      (cadr read-back))))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn standard_obarray_intern_soft_stays_indexed_at_scale() {
     let mut interp = Interpreter::new();
     for index in 0..5_000 {

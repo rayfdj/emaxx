@@ -35,6 +35,7 @@ import select
 import shutil
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -53,6 +54,7 @@ FIXTURE_PATH = "/tmp/emaxxff-fixture.dat"
 COMPLETIONS_DIR_NAME = "emaxxffcomp"
 COMPLETIONS_DIR = f"/tmp/{COMPLETIONS_DIR_NAME}"
 FIELDNOTES_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fieldnotes.org"
+FAKE_LSP_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "fake_lsp_server.py"
 SCENARIO_MTIME = 946684800
 
 
@@ -78,13 +80,26 @@ class Action:
     settle: Optional[float] = None
     quiet: Optional[float] = None
     filesystem: bool = False
+    #: Text BOTH editors must render before the journey may continue — an
+    #: absolute liveness assertion, not a relative comparison.  A journey
+    #: whose precondition silently failed on both sides (no python3, no
+    #: server) would otherwise diff two identical failure screens and
+    #: report MATCH while proving nothing.
+    require_text: Optional[str] = None
 
 
 def action(
-    name, keys, *, checkpoint=True, settle=None, quiet=None, filesystem=False
+    name,
+    keys,
+    *,
+    checkpoint=True,
+    settle=None,
+    quiet=None,
+    filesystem=False,
+    require_text=None,
 ):
     """Short spelling for declarative scenario entries."""
-    return Action(name, keys, checkpoint, settle, quiet, filesystem)
+    return Action(name, keys, checkpoint, settle, quiet, filesystem, require_text)
 
 
 class Vt100Screen:
@@ -756,6 +771,18 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
                 quiet=quiet,
                 explicit_settle=explicit_settle,
             )
+            if command.require_text is not None:
+                for editor, session in (("gnu", gnu), ("emaxx", emaxx)):
+                    try:
+                        session.wait_for_screen_text(
+                            command.require_text, max(settle or 0.0, 8.0)
+                        )
+                    except Exception as error:
+                        print(
+                            f"REQUIRED {scenario}::{index + 1}:{command.name}: "
+                            f"{editor} never rendered {command.require_text!r}: {error}"
+                        )
+                        return False
             if command.checkpoint:
                 checkpoint_label = f"{scenario}::{index + 1}:{command.name}"
                 if final:
@@ -2785,6 +2812,763 @@ SCENARIOS += [
     ),
 ]
 
+EGLOT_SCENARIO_NAMES = (
+    "eglot-connect-diagnostics-completion-hover",
+    "eglot-xref-rename-edits",
+    "eglot-reconnect-shutdown",
+)
+
+_FAKE_LSP_LISP_PATH = json.dumps(str(FAKE_LSP_FIXTURE_PATH)).encode("utf-8")
+EGLOT_SETUP = action(
+    "connect-fake-language-server",
+    b"\x1b:(progn (require 'eglot) "
+    b"(setq eglot-sync-connect t eglot-autoreconnect t "
+    b"project-vc-extra-root-markers '(\".ttydiff-project\") "
+    b"eglot-server-programs (list (list 'c-mode (executable-find \"python3\") "
+    + _FAKE_LSP_LISP_PATH
+    + b"))) (call-interactively #'eglot) nil)\r",
+    settle=8.0,
+    quiet=1.0,
+)
+
+# An absolute liveness gate for every Eglot journey: both editors must
+# show a LIVE server before any relative comparison counts.  Without it a
+# journey whose server never started (python3 missing, connect refused)
+# compares two identical failure screens and proves nothing.
+EGLOT_LIVENESS = action(
+    "require-live-language-server",
+    b"\x1b:(message \"eglot-live=%s\" (and (eglot-current-server) "
+    b"(jsonrpc-running-p (eglot-current-server)) t))\r",
+    settle=3.0,
+    require_text="eglot-live=t",
+)
+
+EGLOT_OPTIONS = {
+    "separate_targets": True,
+    "target_parent": "project",
+    "extra_files": {"project/.ttydiff-project": "fixture project root\n"},
+}
+
+EGLOT_SAMPLE = """int alpha = 1;
+int main(void) {
+  return alpha;
+}
+"""
+
+SCENARIOS += [
+    (
+        "eglot-connect-diagnostics-completion-hover",
+        EGLOT_SAMPLE,
+        [
+            EGLOT_SETUP,
+            EGLOT_LIVENESS,
+            action(
+                "visit-next-diagnostic",
+                b"\x1bg\x1bn",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action("append-completion-prefix", b"\x1b>alp", checkpoint=False),
+            action(
+                "complete-through-language-server",
+                b"\x1b\t",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action("find-hover-symbol", b"\x1b<\x13alpha\r\x1bb", checkpoint=False),
+            action(
+                "show-language-server-eldoc",
+                b"\x08.",
+                settle=4.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        EGLOT_OPTIONS,
+    ),
+    (
+        "eglot-xref-rename-edits",
+        EGLOT_SAMPLE,
+        [
+            # didOpen immediately publishes diagnostics, so sampling the setup
+            # frame here would compare which side of that genuine notification
+            # race each editor reached.  The first scenario compares connect
+            # strictly; here the following edit forces a deterministic
+            # didChange/diagnostic round trip before the first checkpoint.
+            action(
+                EGLOT_SETUP.name,
+                EGLOT_SETUP.keys,
+                checkpoint=False,
+                settle=EGLOT_SETUP.settle,
+                quiet=EGLOT_SETUP.quiet,
+            ),
+            EGLOT_LIVENESS,
+            action("edit-after-connect", b"\x1b>\ralpha", settle=3.0, quiet=1.0),
+            action(
+                "find-reference-symbol",
+                b"\x1b<\x13return alpha\r\x1bb",
+                checkpoint=False,
+            ),
+            action("xref-definition", b"\x1b.", settle=4.0, quiet=1.0),
+            action(
+                "open-language-server-rename",
+                b"\x1bxeglot-rename\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "rename-through-language-server",
+                b"renamed\r",
+                # The applied edit triggers a full asynchronous round trip
+                # (idle-timer didChange -> server -> publishDiagnostics ->
+                # flymake clearing the margin) before this frame is stable;
+                # hosts complete it at different speeds, so the settle
+                # absorbs the asynchrony while the comparison stays exact.
+                settle=8.0,
+                quiet=1.0,
+            ),
+            action(
+                "save-renamed-document",
+                b"\x18\x13",
+                # The save message contains the deliberately different temp
+                # roots.  The next checkpoint compares buffer state and exact
+                # isolated fixture trees, so the save is not inferred from a
+                # normalized message or an unchecked side effect.
+                checkpoint=False,
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-saved-document",
+                b"\x1b:(buffer-modified-p)\r",
+                settle=3.0,
+                quiet=1.0,
+                filesystem=True,
+            ),
+        ],
+        ".c",
+        EGLOT_OPTIONS,
+    ),
+    (
+        "eglot-reconnect-shutdown",
+        EGLOT_SAMPLE,
+        [
+            EGLOT_SETUP,
+            EGLOT_LIVENESS,
+            action(
+                "interrupt-language-server",
+                b"\x1b:(delete-process (jsonrpc--process (eglot-current-server)))\r",
+                settle=8.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-reconnected-server",
+                b"\x1b:(and (eglot-current-server) "
+                b"(jsonrpc-running-p (eglot-current-server)))\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "shutdown-language-server",
+                b"\x1bxeglot-shutdown\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-server-stopped",
+                b"\x1b:(eglot-current-server)\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        EGLOT_OPTIONS,
+    ),
+]
+
+LSP_MODE_SCENARIO_NAMES = (
+    "lsp-mode-connect-diagnostics-completion-hover",
+    "lsp-mode-xref-rename-edits",
+    "lsp-mode-reconnect-shutdown",
+    "lsp-mode-ui-buffers",
+)
+
+LSP_MODE_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"LSP_MODE_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory) "
+    b"lsp-session-file (expand-file-name \"session-v1\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) (require 'lsp-mode) "
+    # lsp-mode intentionally renders the OS-assigned server PID in its
+    # lighter, session browser, and log-buffer name.  Its initialize request
+    # also embeds `(emacs-version)', whose build target and dump date differ
+    # between independently-built editor binaries.  Pin those presentation
+    # inputs on both sides just as TIME_PIN pins clocks; process lifecycle is
+    # still exercised through the real process object and process-live-p.
+    b"(setq system-configuration \"ttydiff-system\" emacs-build-time nil) "
+    b"(cl-defmethod lsp-process-id ((_process process)) 4242) "
+    b"(defalias 'emacs-pid (lambda () 4242)) "
+    b"(defalias 'format-time-string (lambda (&rest _) \"12:00:00 AM\")) "
+    b"(defalias 'float-time (lambda (&rest _) 0.0)) "
+)
+
+LSP_MODE_SETUP = action(
+    "connect-installed-lsp-mode-to-fake-server",
+    b"\x1b:(progn "
+    + LSP_MODE_PACKAGE_SETUP
+    + b"(when (file-exists-p lsp-session-file) (delete-file lsp-session-file)) "
+    + b"(setq project-vc-extra-root-markers '(\".ttydiff-project\") "
+    b"lsp-auto-guess-root t lsp-enable-file-watchers nil "
+    b"lsp-diagnostics-provider :flymake lsp-completion-provider :capf "
+    b"lsp-log-io t lsp-restart 'auto-restart "
+    b"lsp-enabled-clients '(ttydiff-fake)) "
+    b"(lsp-register-client "
+    b"(make-lsp-client :new-connection "
+    b"(lsp-stdio-connection (list (executable-find \"python3\") "
+    + _FAKE_LSP_LISP_PATH
+    + b")) :activation-fn (lsp-activate-on \"c\") :priority 100 "
+    b":multi-root nil :server-id 'ttydiff-fake)) "
+    b"(lsp) nil)\r",
+    checkpoint=False,
+    settle=10.0,
+    quiet=1.0,
+)
+
+LSP_MODE_OPTIONS = {
+    "separate_targets": True,
+    "target_parent": "project",
+    "extra_files": {"project/.ttydiff-project": "fixture project root\n"},
+    "lsp_mode_package_root": True,
+}
+
+LSP_MODE_SHARED_OPTIONS = {
+    "separate_targets": False,
+    "lsp_mode_package_root": True,
+}
+
+SCENARIOS += [
+    (
+        "lsp-mode-connect-diagnostics-completion-hover",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action(
+                "verify-installed-lsp-mode-connected",
+                b"\x1b:(list lsp-mode (length (lsp-workspaces)) major-mode "
+                b"(length (flymake-diagnostics)))\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            # Flymake deliberately does not claim generic `next-error' by
+            # default.  A fresh GNU package load also has a native-comp
+            # *Compile-Log*, so M-g M-n correctly navigates that unrelated
+            # buffer.  Exercise Flymake's public diagnostic command itself.
+            action(
+                "visit-next-lsp-mode-diagnostic",
+                b"\x1bxflymake-goto-next-error\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action("append-lsp-mode-completion-prefix", b"\x1b>alp", checkpoint=False),
+            action(
+                "complete-through-lsp-mode",
+                b"\x1b\t",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "find-lsp-mode-hover-symbol",
+                b"\x1b<\x13alpha\r\x1bb",
+                checkpoint=False,
+            ),
+            action(
+                "show-lsp-mode-hover-buffer",
+                b"\x1bxlsp-describe-thing-at-point\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        LSP_MODE_OPTIONS,
+    ),
+    (
+        "lsp-mode-xref-rename-edits",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action("edit-after-lsp-mode-connect", b"\x1b>\ralpha", settle=3.0, quiet=1.0),
+            action(
+                "find-lsp-mode-reference-symbol",
+                b"\x1b<\x13return alpha\r\x1bb",
+                checkpoint=False,
+            ),
+            action("lsp-mode-xref-definition", b"\x1b.", settle=4.0, quiet=1.0),
+            action(
+                "open-lsp-mode-rename",
+                b"\x1bxlsp-rename\r",
+                checkpoint=False,
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "rename-through-lsp-mode",
+                b"renamed\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action(
+                "save-lsp-mode-renamed-document",
+                b"\x18\x13",
+                checkpoint=False,
+                settle=3.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-lsp-mode-saved-document",
+                b"\x1b:(buffer-modified-p)\r",
+                settle=3.0,
+                quiet=1.0,
+                filesystem=True,
+            ),
+        ],
+        ".c",
+        LSP_MODE_OPTIONS,
+    ),
+    (
+        "lsp-mode-reconnect-shutdown",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action(
+                "restart-lsp-mode-workspace",
+                b"\x1bxlsp-restart-workspace\r",
+                settle=10.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-restarted-lsp-mode-workspace",
+                b"\x1b:(and (= (length (lsp-workspaces)) 1) "
+                b"(process-live-p (lsp--workspace-cmd-proc "
+                b"(car (lsp-workspaces)))))\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "shutdown-lsp-mode-workspace",
+                b"\x1bxlsp-shutdown-workspace\r",
+                settle=6.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-lsp-mode-workspace-stopped",
+                b"\x1b:(lsp-workspaces)\r",
+                settle=3.0,
+                quiet=1.0,
+            ),
+        ],
+        ".c",
+        # This journey is read-only.  Give both editors the same fixture so
+        # lsp-mode's genuine root-path status message remains directly
+        # comparable even after terminal-width clipping removes its prefix.
+        LSP_MODE_SHARED_OPTIONS,
+    ),
+    (
+        "lsp-mode-ui-buffers",
+        EGLOT_SAMPLE,
+        [
+            LSP_MODE_SETUP,
+            action(
+                "show-lsp-mode-session-browser",
+                b"\x1bxlsp-describe-session\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action("return-from-lsp-mode-session-browser", b"q", checkpoint=False),
+            action(
+                "show-lsp-mode-io-log",
+                b"\x1bxlsp-workspace-show-log\r",
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action("next-lsp-mode-log-entry", b"\x1bn", settle=3.0, quiet=1.0),
+        ],
+        ".c",
+        LSP_MODE_SHARED_OPTIONS,
+    ),
+]
+
+FLYCHECK_SCENARIO_NAMES = (
+    "flycheck-diagnostics-navigation",
+    "flycheck-clean-idle-teardown",
+    "flycheck-malformed-missing-tool",
+    "flycheck-cancellation",
+)
+
+FLYCHECK_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"FLYCHECK_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) (require 'flycheck) "
+    b"(let ((checker (getenv \"FLYCHECK_FIXTURE_CHECKER\")) "
+    b"(patterns '((info line-start line \"\:\" column \"\: info \" "
+    b"(id (one-or-more (not (any \"\:\")))) \"\: \" (message) line-end) "
+    b"(warning line-start line \"\:\" column \"\: warning \" "
+    b"(id (one-or-more (not (any \"\:\")))) \"\: \" (message) line-end) "
+    b"(error line-start line \"\:\" column \"\: error \" "
+    b"(id (one-or-more (not (any \"\:\")))) \"\: \" (message) line-end)))) "
+    b"(dolist (definition `((ttydiff-content \"content\") "
+    b"(ttydiff-clean \"clean\") (ttydiff-malformed \"malformed\") "
+    b"(ttydiff-wait \"wait\"))) "
+    b"(flycheck-define-command-checker "
+    b"(car definition) \"Deterministic ttydiff checker.\" "
+    b":command (list \"python3\" checker (cadr definition) 'source) "
+    b":error-patterns patterns :modes '(text-mode))) "
+    b"(flycheck-define-command-checker "
+    b"'ttydiff-missing \"Missing ttydiff checker.\" "
+    b":command '(\"ttydiff-definitely-missing-executable\" source) "
+    b":error-patterns patterns :modes '(text-mode))) "
+)
+
+
+def flycheck_setup_action(checker, extra=b""):
+    """Load the pinned package and enable one deterministic checker."""
+    return action(
+        "load-installed-flycheck-" + checker.decode("ascii"),
+        b"\x1b:(progn "
+        + FLYCHECK_PACKAGE_SETUP
+        + b"(setq-local flycheck-checker '"
+        + checker
+        + b") "
+        + extra
+        + b"(flycheck-mode 1) nil)\r",
+        checkpoint=False,
+        settle=4.0,
+        quiet=0.5,
+    )
+
+
+FLYCHECK_OPTIONS = {
+    "separate_targets": False,
+    "flycheck_package_root": True,
+}
+
+FLYCHECK_SAMPLE = """plain line
+INFO token
+WARN token
+ERROR token
+last line
+"""
+
+SCENARIOS += [
+    (
+        "flycheck-diagnostics-navigation",
+        FLYCHECK_SAMPLE,
+        [
+            flycheck_setup_action(b"ttydiff-content"),
+            action("check-buffer-manually", b"\x03!c", settle=6.0, quiet=1.0),
+            action(
+                "inspect-diagnostics",
+                b"\x1b:(mapcar (lambda (error) "
+                b"(list (flycheck-error-level error) "
+                b"(flycheck-error-line error) (flycheck-error-column error) "
+                b"(flycheck-error-id error) (flycheck-error-message error))) "
+                b"flycheck-current-errors)\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "inspect-diagnostic-overlays",
+                b"\x1b:(mapcar (lambda (overlay) "
+                b"(list (overlay-start overlay) (overlay-end overlay) "
+                b"(overlay-get overlay 'face) "
+                b"(flycheck-error-level "
+                b"(overlay-get overlay 'flycheck-error)))) "
+                b"(flycheck-overlays-in (point-min) (point-max)))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("show-flycheck-error-list", b"\x03!l", settle=4.0, quiet=1.0),
+            action("close-error-list", b"\x181", checkpoint=False),
+            action("visit-first-diagnostic", b"\x03!n", settle=2.0, quiet=0.5),
+            action("visit-next-diagnostic", b"\x03!n", settle=2.0, quiet=0.5),
+            action("visit-previous-diagnostic", b"\x03!p", settle=2.0, quiet=0.5),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+    (
+        "flycheck-clean-idle-teardown",
+        "clean line\n",
+        [
+            flycheck_setup_action(
+                b"ttydiff-clean",
+                b"(setq-local flycheck-check-syntax-automatically "
+                b"'(idle-change) flycheck-idle-change-delay 0.05) ",
+            ),
+            action("trigger-idle-check", b"\x1b>x", settle=4.0, quiet=1.0),
+            action(
+                "inspect-clean-idle-result",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(length flycheck-current-errors) "
+                b"(length (flycheck-overlays-in (point-min) (point-max))) "
+                b"(null flycheck--idle-trigger-timer) "
+                b"(flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("repeat-clean-check-manually", b"\x03!c", settle=4.0, quiet=1.0),
+            action("disable-flycheck-mode", b"\x1bxflycheck-mode\r", settle=2.0, quiet=0.5),
+            action(
+                "inspect-flycheck-teardown",
+                b"\x1b:(list flycheck-mode flycheck-last-status-change "
+                b"(length flycheck-current-errors) "
+                b"(length (flycheck-overlays-in (point-min) (point-max))) "
+                b"flycheck--idle-trigger-timer flycheck-current-syntax-check)\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+    (
+        "flycheck-malformed-missing-tool",
+        "malformed checker input\n",
+        [
+            flycheck_setup_action(b"ttydiff-malformed"),
+            action("run-malformed-checker", b"\x03!c", settle=5.0, quiet=1.0),
+            action(
+                "inspect-malformed-result",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(length flycheck-current-errors) (flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "select-missing-checker",
+                b"\x1b:(setq-local flycheck-checker 'ttydiff-missing)\r",
+                checkpoint=False,
+            ),
+            action("run-missing-checker", b"\x03!c", settle=4.0, quiet=1.0),
+            action(
+                "inspect-missing-tool-result",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(length flycheck-current-errors) (flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+    (
+        "flycheck-cancellation",
+        "cancellation checker input\n",
+        [
+            flycheck_setup_action(b"ttydiff-wait"),
+            action("start-long-running-checker", b"\x03!c", settle=2.0, quiet=0.5),
+            action(
+                "inspect-running-checker",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "cancel-running-checker",
+                b"\x1b:(flycheck-stop)\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "inspect-cancelled-checker",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(flycheck-running-p) (length flycheck-current-errors) "
+                b"(length (flycheck-overlays-in (point-min) (point-max))))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+]
+
+MAGIT_SCENARIO_NAMES = (
+    "magit-status-sections-stage",
+    "magit-diff-log-transient",
+    "magit-process-error",
+    "magit-repository-not-found",
+)
+
+MAGIT_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"MAGIT_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) (require 'magit) "
+    b"(setq magit-display-buffer-function "
+    b"#'magit-display-buffer-same-window-except-diff-v1) "
+)
+
+MAGIT_STATUS_SETUP = action(
+    "open-installed-magit-status",
+    b"\x1b:(progn "
+    + MAGIT_PACKAGE_SETUP
+    + b"(magit-status default-directory) nil)\r",
+    settle=12.0,
+    quiet=2.0,
+)
+
+MAGIT_REQUIRE_SETUP = action(
+    "load-installed-magit",
+    b"\x1b:(progn " + MAGIT_PACKAGE_SETUP + b"nil)\r",
+    settle=8.0,
+    quiet=1.0,
+)
+
+MAGIT_OPTIONS = {
+    "target": "directory",
+    "separate_targets": True,
+    "include_default_files": False,
+    "magit_package_root": True,
+    "git_repository": True,
+}
+
+MAGIT_NON_REPOSITORY_OPTIONS = {
+    "target": "directory",
+    # Each editor gets its OWN directory: with a shared one, an editor that
+    # wrongly created `.git' would contaminate the other's later checks and
+    # the divergence could never surface.  The price is that the two
+    # path-bearing prompt frames cannot be compared cell-for-cell; the
+    # journey instead verifies the outcome with path-free state and a
+    # byte-exact per-editor filesystem snapshot, which is precisely the
+    # check that catches an unwanted repository.
+    "separate_targets": True,
+    "include_default_files": False,
+    "magit_package_root": True,
+}
+
+SCENARIOS += [
+    (
+        "magit-status-sections-stage",
+        "",
+        [
+            MAGIT_STATUS_SETUP,
+            action(
+                "find-unstaged-file",
+                b"\x13worktree.txt\r",
+                checkpoint=False,
+            ),
+            action("stage-worktree-file", b"s", settle=5.0, quiet=1.0),
+            action(
+                "verify-staged-state",
+                b"\x1b:(list (magit-staged-files) (magit-unstaged-files) "
+                b"(magit-untracked-files))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("unstage-worktree-file", b"u", settle=5.0, quiet=1.0),
+            action(
+                "verify-unstaged-state",
+                b"\x1b:(list (magit-staged-files) (magit-unstaged-files) "
+                b"(magit-untracked-files))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("expand-file-section", b"\t", settle=3.0, quiet=0.5),
+            action("collapse-file-section", b"\t", settle=3.0, quiet=0.5),
+            action("refresh-status", b"g", settle=5.0, quiet=1.0),
+        ],
+        ".dat",
+        MAGIT_OPTIONS,
+    ),
+    (
+        "magit-diff-log-transient",
+        "",
+        [
+            MAGIT_STATUS_SETUP,
+            action("open-diff-transient", b"d", settle=3.0, quiet=0.5),
+            action("show-unstaged-diff", b"u", settle=6.0, quiet=1.0),
+            action("next-diff-section", b"\x1bn", settle=3.0, quiet=0.5),
+            action("return-from-diff", b"q", settle=3.0, quiet=0.5),
+            action("open-log-transient", b"l", settle=3.0, quiet=0.5),
+            action("show-current-branch-log", b"l", settle=6.0, quiet=1.0),
+            action("next-log-entry", b"n", settle=3.0, quiet=0.5),
+            action("refresh-log", b"g", settle=5.0, quiet=1.0),
+        ],
+        ".dat",
+        MAGIT_OPTIONS,
+    ),
+    (
+        "magit-process-error",
+        "",
+        [
+            MAGIT_STATUS_SETUP,
+            action(
+                "run-invalid-git-command",
+                b"\x1b:(condition-case error "
+                b"(magit-git \"definitely-not-a-git-command\") "
+                b"(error (message \"%s\" (error-message-string error))))\r",
+                settle=6.0,
+                quiet=1.0,
+            ),
+            action("show-process-buffer", b"$", settle=5.0, quiet=1.0),
+            action("return-from-process-buffer", b"q", settle=3.0, quiet=0.5),
+        ],
+        ".dat",
+        MAGIT_OPTIONS,
+    ),
+    (
+        "magit-repository-not-found",
+        "",
+        [
+            # With isolated targets the dired view, the creation prompt,
+            # and the declined message all render each editor's own path;
+            # those frames cannot be compared cell-for-cell.  The journey's
+            # contract lives in the path-free closing checks below.
+            action(
+                MAGIT_REQUIRE_SETUP.name,
+                MAGIT_REQUIRE_SETUP.keys,
+                checkpoint=False,
+                settle=MAGIT_REQUIRE_SETUP.settle,
+                quiet=MAGIT_REQUIRE_SETUP.quiet,
+            ),
+            action(
+                "request-status-outside-repository",
+                b"\x1bxmagit-status\r\r",
+                checkpoint=False,
+                settle=5.0,
+                quiet=1.0,
+            ),
+            action(
+                "decline-repository-creation",
+                b"n",
+                checkpoint=False,
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "leave-path-bearing-buffer",
+                b"\x1b:(progn (setq ttydiff--target default-directory) "
+                b"(switch-to-buffer \"*scratch*\") nil)\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "verify-no-repository-created",
+                b'\x1b:(list (file-directory-p (expand-file-name ".git" '
+                b"ttydiff--target)) (let ((default-directory ttydiff--target)) "
+                b"(and (magit-toplevel) t)))\r",
+                settle=3.0,
+                quiet=0.5,
+                filesystem=True,
+            ),
+        ],
+        ".dat",
+        MAGIT_NON_REPOSITORY_OPTIONS,
+    ),
+]
+
 FIELDNOTES_ADVANCED_SCENARIO_NAMES = (
     "org-fieldnotes-todo-cycle",
     "org-fieldnotes-priority",
@@ -3569,9 +4353,18 @@ SCENARIOS += [
 
 
 def select_scenarios(names):
-    """Return all scenarios, or the named subset in command-line order."""
+    """Return built-in scenarios, or the named subset in command-line order.
+
+    Third-party package scenarios are deliberately owned by their package
+    gates: they require the two clean installed roots those gates supply.
+    They remain selectable by name but cannot poison a bare no-argument TTY
+    run that has no third-party package lifecycle.
+    """
     if not names:
-        return SCENARIOS
+        package_scenarios = set(
+            MAGIT_SCENARIO_NAMES + LSP_MODE_SCENARIO_NAMES + FLYCHECK_SCENARIO_NAMES
+        )
+        return [entry for entry in SCENARIOS if entry[0] not in package_scenarios]
     by_name = {entry[0]: entry for entry in SCENARIOS}
     unknown = [name for name in names if name not in by_name]
     if unknown:
@@ -3588,19 +4381,21 @@ def populate_scenario_directory(
     extra_files=None,
     extra_directories=(),
     modes=None,
+    include_default_files=True,
 ):
     """Populate one deterministic Dired fixture directory."""
     for index in range(padding_entries):
         with open(os.path.join(path, f"00-padding-{index:02}.txt"), "w") as out:
             out.write(f"padding file {index:02}\n")
-    for filename, body in (
-        ("alpha.txt", "alpha file\nsecond line\n"),
-        ("beta.txt", "beta file\n"),
-        ("notes.org", "* Dired fixture\nbody\n"),
-    ):
-        with open(os.path.join(path, filename), "w") as out:
-            out.write(body)
-    os.mkdir(os.path.join(path, "subdir"))
+    if include_default_files:
+        for filename, body in (
+            ("alpha.txt", "alpha file\nsecond line\n"),
+            ("beta.txt", "beta file\n"),
+            ("notes.org", "* Dired fixture\nbody\n"),
+        ):
+            with open(os.path.join(path, filename), "w") as out:
+                out.write(body)
+        os.mkdir(os.path.join(path, "subdir"))
     for relative in extra_directories:
         (Path(path) / relative).mkdir(parents=True, exist_ok=True)
     for relative, body in (extra_files or {}).items():
@@ -3621,6 +4416,102 @@ def populate_scenario_directory(
         os.chmod(Path(path) / relative, mode)
 
 
+def git_fixture_environment():
+    """Return Git settings that ignore the invoking user's configuration."""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "LANG": "C",
+            "LC_ALL": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "TTY Oracle",
+            "GIT_AUTHOR_EMAIL": "tty-oracle@example.invalid",
+            "GIT_COMMITTER_NAME": "TTY Oracle",
+            "GIT_COMMITTER_EMAIL": "tty-oracle@example.invalid",
+        }
+    )
+    return environment
+
+
+def run_git_fixture_command(repository, *arguments, timestamp=None):
+    """Run one checked Git fixture command with fixed identity and dates."""
+    environment = git_fixture_environment()
+    if timestamp is not None:
+        environment["GIT_AUTHOR_DATE"] = timestamp
+        environment["GIT_COMMITTER_DATE"] = timestamp
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "git %s failed in %s:\nstdout: %s\nstderr: %s"
+            % (
+                " ".join(arguments),
+                repository,
+                completed.stdout,
+                completed.stderr,
+            )
+        )
+    return completed.stdout.strip()
+
+
+def initialize_magit_repository(path):
+    """Create the same fixed-history staged/unstaged repository on both sides."""
+    repository = Path(path)
+    run_git_fixture_command(repository, "init", "--quiet", "--initial-branch=main")
+    run_git_fixture_command(repository, "config", "user.name", "TTY Oracle")
+    run_git_fixture_command(
+        repository,
+        "config",
+        "user.email",
+        "tty-oracle@example.invalid",
+    )
+    run_git_fixture_command(repository, "config", "commit.gpgSign", "false")
+    run_git_fixture_command(repository, "config", "core.fileMode", "false")
+
+    (repository / "README.md").write_text("# deterministic Magit fixture\n")
+    (repository / "worktree.txt").write_text("base worktree line\n")
+    for name in ("README.md", "worktree.txt"):
+        os.utime(repository / name, (SCENARIO_MTIME, SCENARIO_MTIME))
+    run_git_fixture_command(repository, "add", "README.md", "worktree.txt")
+    run_git_fixture_command(
+        repository,
+        "commit",
+        "--quiet",
+        "-m",
+        "initial fixture",
+        timestamp="2000-01-01T00:00:00Z",
+    )
+    first_commit = run_git_fixture_command(repository, "rev-parse", "HEAD")
+
+    (repository / "history.txt").write_text("second deterministic commit\n")
+    os.utime(repository / "history.txt", (SCENARIO_MTIME + 60, SCENARIO_MTIME + 60))
+    run_git_fixture_command(repository, "add", "history.txt")
+    run_git_fixture_command(
+        repository,
+        "commit",
+        "--quiet",
+        "-m",
+        "main history",
+        timestamp="2000-01-02T00:00:00Z",
+    )
+    run_git_fixture_command(repository, "branch", "feature", first_commit)
+
+    (repository / "staged.txt").write_text("already staged\n")
+    os.utime(repository / "staged.txt", (SCENARIO_MTIME + 120, SCENARIO_MTIME + 120))
+    run_git_fixture_command(repository, "add", "staged.txt")
+    (repository / "worktree.txt").write_text("base worktree line\nunstaged line\n")
+    (repository / "untracked.txt").write_text("untracked line\n")
+    for name in ("worktree.txt", "untracked.txt"):
+        os.utime(repository / name, (SCENARIO_MTIME + 180, SCENARIO_MTIME + 180))
+
+
 def create_scenario_target(name, contents, suffix=".dat", options=None):
     """Create the disposable file or directory visited by both editors."""
     options = options or {}
@@ -3632,7 +4523,10 @@ def create_scenario_target(name, contents, suffix=".dat", options=None):
             options.get("extra_files"),
             options.get("extra_directories", ()),
             options.get("modes"),
+            options.get("include_default_files", True),
         )
+        if options.get("git_repository"):
+            initialize_magit_repository(path)
         return path
 
     handle, path = tempfile.mkstemp(suffix=suffix, prefix=f"ttydiff-{name}-")
@@ -3686,14 +4580,19 @@ def create_scenario_target_pair(name, contents, suffix=".dat", options=None):
                 options.get("extra_files"),
                 options.get("extra_directories", ()),
                 options.get("modes"),
+                options.get("include_default_files", True),
             )
+            if options.get("git_repository"):
+                initialize_magit_repository(path)
             targets.append(path)
         return tuple(targets), roots
 
     basename = f"ttydiff-{name}{suffix}"
     targets = []
     for root in roots:
-        path = os.path.join(root, basename)
+        parent = Path(root) / options.get("target_parent", "")
+        parent.mkdir(parents=True, exist_ok=True)
+        path = str(parent / basename)
         with open(path, "w") as out:
             out.write(contents)
         for relative, body in options.get("extra_files", {}).items():
@@ -3759,13 +4658,81 @@ def main():
             name, contents, suffix, options
         )
         try:
+            gnu_env = {}
+            emaxx_env = {"EMACSLOADPATH": load_path}
+            if options.get("magit_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_MAGIT_GNU_ROOT",
+                    "EMAXX_TTYDIFF_MAGIT_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                if not all(roots):
+                    print(
+                        "ERROR: Magit scenarios require %s"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print("ERROR: Magit package roots have no packages directory", file=sys.stderr)
+                    sys.exit(2)
+                gnu_env["MAGIT_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["MAGIT_GATE_ROOT"] = os.path.abspath(roots[1])
+            if options.get("lsp_mode_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_LSP_MODE_GNU_ROOT",
+                    "EMAXX_TTYDIFF_LSP_MODE_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                if not all(roots):
+                    print(
+                        "ERROR: lsp-mode scenarios require %s"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print(
+                        "ERROR: lsp-mode package roots have no packages directory",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                gnu_env["LSP_MODE_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["LSP_MODE_GATE_ROOT"] = os.path.abspath(roots[1])
+            if options.get("flycheck_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_FLYCHECK_GNU_ROOT",
+                    "EMAXX_TTYDIFF_FLYCHECK_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                checker = os.environ.get("EMAXX_TTYDIFF_FLYCHECK_CHECKER")
+                if not all(roots) or not checker:
+                    print(
+                        "ERROR: Flycheck scenarios require %s and checker path"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print(
+                        "ERROR: Flycheck package roots have no packages directory",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not Path(checker).is_file():
+                    print("ERROR: Flycheck fixture checker is missing", file=sys.stderr)
+                    sys.exit(2)
+                gnu_env["FLYCHECK_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["FLYCHECK_GATE_ROOT"] = os.path.abspath(roots[1])
+                gnu_env["FLYCHECK_FIXTURE_CHECKER"] = os.path.abspath(checker)
+                emaxx_env["FLYCHECK_FIXTURE_CHECKER"] = os.path.abspath(checker)
             ok = compare(
                 name,
                 keys,
                 [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, gnu_path],
                 [emaxx_binary, emaxx_path],
-                {},
-                {"EMACSLOADPATH": load_path},
+                gnu_env,
+                emaxx_env,
                 # Cold Lisp loading can exceed twenty seconds on a busy CI
                 # host.  This is only a readiness deadline: comparisons and
                 # per-command settle windows remain strict and unchanged.

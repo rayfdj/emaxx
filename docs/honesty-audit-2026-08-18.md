@@ -2983,6 +2983,7 @@ mixed-length ordering, FIRSTONLY selections) reruns byte-identical to
 the oracle on the merged build.
 
 
+
 ## 2026-08-30 finding 135: the load-error trace leaked into measured children
 
 Six gv-tests frozen mismatches (and suspect siblings in bytecomp,
@@ -3572,3 +3573,399 @@ this container's.
       anything else is "Bad option value" before the syscall.  Oracle
       probe sopri.el (root and unprivileged, identical): applied t,
       recorded 3, and the three bad-value shapes.
+
+## Numbering note (merge of main and tty audit tracks, 2026-08-31)
+
+The main track and the tty track allocated finding numbers
+independently while apart: main's findings 135-136 (load-error trace,
+and the round-2/3 ledgers above) and tty's findings 135-139 below are
+DIFFERENT findings that happen to share numbers.  Cross-references in
+commit messages use each track's own numbering.  New findings after
+this merge continue from 140.
+
+## 2026-08-30 finding 135: frozen-run scratch file committed at repository root
+
+The adversarial audit before merging main `81799ed` into tty found an
+unreferenced repository-root file named from a long punctuation string.
+Its contents are the `tramp-test33-file-name-substitute-in-file-name`
+input at `test/lisp/net/tramp-tests.el:7712-7715`, and it entered main in
+the Linux frozen-baseline commit `eb2ee6c` beside the intended baseline
+documents.  No source, test, manifest, or baseline refers to it.  It was
+a frozen-run scratch artifact swept up by broad staging, not a fixture.
+
+The tty merge removes the artifact before committing.  The baseline JSON
+and its documented provenance are left unchanged; neither depends on the
+scratch path or file.
+
+
+## 2026-08-30 finding 136: named-service fix hardcoded Linux and tested only GNU
+
+The same pre-merge audit reran finding 134's named-service test against
+the pinned Darwin oracle.  It failed before Emaxx was exercised because
+the expected unknown-service diagnostic was Linux's
+`Servname not supported for ai_socktype`; Darwin's `gai_strerror` says
+`nodename nor servname provided, or not known`.  Production contained
+the same Linux literal.  It also claimed to follow process.c's
+getaddrinfo/getservbyname split while calling getservbyname for every
+named service and resolving the host separately afterward.
+
+There was a second audit defect: the new test invoked only GNU and
+compared GNU with the hardcoded string.  It never evaluated the form in
+Emaxx, so a platform whose GNU happened to print the pinned words could
+pass even if the production result diverged.
+
+Fixed before the merge gate.  Internet-family calls now follow
+process.c's actual order: nil `:host` becomes the family loopback, then
+host and named service are resolved together with getaddrinfo using the
+socket type and family hints.  Resolver errors use the host platform's
+gai_strerror text.  The permanent test obtains the complete result from
+the local pinned GNU oracle, evaluates the identical form in Emaxx, and
+compares the Lisp values without message normalization.  It covers a
+named UDP service, an unknown client service, and an unknown server
+service; all three rows match on Darwin after the correction.
+
+
+## 2026-08-30 finding 137: Eglot TTY contract exposed false-green runtime seams
+
+The issue-20 Eglot work was audited before its long gate.  The upstream replay
+is the pinned GNU 30.2 `eglot-tests.el`, not a rewritten local test: all 52
+selected outcomes match (39 pass, the same 6 fail, and the same 7 skip).  The
+interactive side uses an ordinary Content-Length-framed JSON-RPC subprocess
+with no editor branch.  GNU and Emaxx get isolated same-named projects and the
+TTY comparator checks exact cells, attributes, cursor, and requested fixture
+trees; it has no Eglot-specific screen or asynchronous normalization.
+
+Making those journeys real exposed eight general runtime gaps that a shallower
+fixture could have hidden:
+
+1. `make-process :stderr BUFFER` rejected the buffer instead of creating
+   GNU's separately observable linked pipe process, and `:noquery` was not
+   propagated.
+2. Killing a buffer discarded the visited filename even though a retained GNU
+   buffer object still exposes that slot; Eglot uses it while revisiting files.
+3. Positioned source lambdas were not callable or arity-readable through the
+   normal evaluator path.
+4. `accept-process-output nil` returned on the first ready descriptor rather
+   than continuing through GNU's 10 ms post-output readiness window.
+5. TTY window margins existed in the Lisp API but redisplay did not reserve
+   them or paint overlay `before-string` margin display specifications, so a
+   diagnostic could be logically present but invisible.
+6. Anonymous face plists and their nested inheritance resolved to the default
+   TTY face, erasing Flymake's visible warning attribute.
+7. A timed live-TTY `read-event` polled only the keyboard.  It did not pump
+   subprocess/network output and deferred timers, so JSON-RPC completion could
+   remain unread until another key arrived.
+8. `accept-process-output nil` counted an outputless process exit and its
+   sentinel as delivered output.  Eglot's synchronous reconnect wait therefore
+   returned before the replacement clangd process delivered its initialize
+   reply.
+
+The implementation fixes those mechanisms rather than recognizing Eglot,
+fixture text, response labels, or scenario names in production.  A source scan
+finds none of the fake server's `fake-lsp`, `fixture-warning`, hover, or
+completion literals under `src`.
+
+The adversarial pass then caught and corrected six defects in the first
+implementation/test draft:
+
+- A process test called `executable-find` but asserted this host's `/bin/sh`.
+  It now compares the portable command basename, and the readiness child also
+  uses the discovered executable.
+- The automatic stderr process name was derived from the already-uniquified
+  parent.  An oracle collision probe showed GNU creates `dup stderr` from the
+  requested name before naming the parent `dup<1>`; production and the
+  permanent regression now preserve that ordering and naming.
+- Positioned lambda heads were accepted even while
+  `symbols-with-pos-enabled` was nil, and the original test ran only Emaxx.
+  Direct GNU rows now pin both modes: disabled yields
+  `(nil invalid-function invalid-function)`, enabled yields
+  `(t (0 . 1) ("some-executable"))`.  The test reads the entire positioned
+  lambda, including its parameters and body, and `func-arity` now uses GNU's
+  `invalid-function` condition for an invalid cons form.
+- Strengthening that test from a positioned head to a fully positioned source
+  form then caught the lambda binder still rejecting positioned `&optional`
+  and parameter symbols.  Source-lambda construction now unwraps those
+  parameters only under the same dynamic flag; the fully positioned GNU row
+  passes through `functionp`, `func-arity`, and `funcall`.
+- The first readiness regression relied on a 1 ms child sleep and failed under
+  parallel load.  Its replacement is a deterministic causal handshake: the
+  stderr filter schedules a zero-delay timer that releases stdout, so only a
+  real post-delivery pump observes both streams.
+- Two test/comment names claimed more than they proved (that a root-isolation
+  unit itself launched the server, and that the TTY resolver handled every GNU
+  face-reference form).  The claims now name their exact narrower evidence;
+  the separate protocol test is what executes the fake server.
+
+The deliberately non-checkpointed TTY actions are not unmeasured outcomes.
+Each is preparation for the next strict state checkpoint: edits before
+completion/hover/xref, the didOpen notification race before a deterministic
+didChange, and a save message containing intentionally different temporary
+roots before an exact buffer-plus-filesystem check.  Connection itself is
+strict in the first and reconnect journeys.  These boundaries are documented
+beside the scenarios and in `docs/eglot-compatibility.md`.
+
+The final full upstream replay caught item 8 after the first audit: the log
+said "Reconnected!" but `eglot-current-server` was still nil because the
+numeric sync wait had returned on the old server's sentinel transition.  A
+direct portable oracle row now pins the underlying contract: an outputless
+child exit makes GNU `(accept-process-output nil 1)` return nil while exposing
+status `exit`; Emaxx previously returned t.  The event pump now maintains the
+separate distinction between "made progress" and "delivered process output".
+The permanent regression invokes the discovered `shell-file-name`, runs the
+same form in GNU and Emaxx, and contains no Eglot names or fixture responses.
+The post-fix audit also rejected a process-global first draft of the delivery
+counter: because GNU process descriptors belong to a Lisp thread, the counter
+now uses the same active-thread ownership filter as the event pump.  Output
+delivered by a different Lisp thread cannot fabricate success for this wait.
+
+## 2026-08-30 finding 138: Magit package and TTY drafts had false-green seams
+
+The issue-21 work was audited before its release gate.  The final package
+journey builds a disposable local archive from eight exact GNU ELPA and NonGNU
+ELPA release tarballs, rehashes cached and copied artifacts, and gives separate
+empty roots to GNU Emacs and Emaxx.  Both run the same real
+`package-refresh-contents`, transaction, installation, restart, and `require`
+forms.  There is no editor branch in the generated Lisp.  The gate requires
+the exact seven-package external transaction, exact 58 `.elc` relative
+filenames, generated autoloads, equal records, and installed-tree origins for
+every external library.  The bundled `seq` satisfies that dependency on both
+editors; its pinned tarball remains available in the archive but is correctly
+absent from both transactions.
+
+The interactive side creates fixed-history Git repositories with host Git
+configuration disabled and compares text, attributes, cursor, and strict
+post-mutation Magit queries.  It contains no Magit-specific output
+normalization.  Mutating journeys use separate same-named repositories.  The
+non-mutating repository-not-found journey shares one empty target so both
+editors receive the same visible absolute path, then compares the decline
+screen and proves that neither `.git` nor a Magit top-level was created.
+
+The adversarial pass rejected and fixed these false-green or misleading
+drafts before the gate:
+
+1. The first Diff journey typed `d d`, which only left the transient prompt
+   open.  It now types `d u`, selects the real unstaged-diff suffix, enters the
+   diff buffer, navigates it, and returns.
+2. An early attempt used unrelated temporary paths for a path-bearing prompt.
+   The final read-only journey shares its non-mutated target; no path or screen
+   bytes are rewritten.  Mutable repositories remain honestly isolated.
+3. Declining repository creation was initially a non-checkpoint followed only
+   by a strict state query.  The immediate decline screen now also matches GNU
+   exactly; the state query remains as independent outcome evidence.
+4. Byte compilation was initially pinned only by per-package counts.  Equal
+   counts could hide one missing and one unexpected file, so the gate now
+   requires all 58 exact relative filenames.
+5. Restart provenance initially checked only Magit, Transient, and With-Editor.
+   It now checks the origin of every library in the external closure: Compat,
+   Cond-Let, Llama, Magit, Magit-Section, Transient, and With-Editor.
+6. Adding the third-party journeys to `ttydiff.py`'s bare no-argument battery
+   would have made that built-in battery fail late without installed package
+   roots.  The dedicated package gate now owns those journeys and supplies
+   both freshly verified roots explicitly; named selection remains permanent.
+7. The face-support parser treated `((:box t))` as an empty plist and selected
+   a graphical box alternative.  The runtime now walks nested face-reference
+   lists generally and correctly rejects the unsupported box on a TTY.
+8. A draft fix painted the terminal's default foreground over every glyph to
+   obtain one margin attribute.  Oracle probes exposed extra attributes on
+   ordinary rows.  That draft was removed; the final behavior is confined to
+   the separate margin-glyph mechanism while preserving an extending row
+   background.
+
+The other runtime corrections are likewise mechanism-level: multiline local
+variable forms, source-stream EOF position, positioned property keys, true
+invisibility specs, overlay display strings, `font-lock-face` aliases,
+buffer-local face remapping, condition-specific error printing, terminal
+initialization order, command-loop selected-buffer restoration,
+`set-window-buffer`'s `KEEP-MARGINS`, invisible-tail `window-end`, extending
+faces, and concrete inverse-color realization.  Production code contains no
+Magit command, fixture filename, repository state, or expected screen switch.
+
+## 2026-08-31 finding 139: lsp-mode package and TTY drafts exposed false-green seams
+
+The issue-22 gate constructs a disposable local archive from eight exact
+Stable MELPA and GNU ELPA tarballs, rehashes both cached and copied artifacts,
+and gives GNU Emacs and Emaxx separate empty package trees.  Both editors run
+the same `package-refresh-contents`, dependency transaction, installation,
+restart, autoload, and `require` forms.  The gate requires the exact
+eight-package transaction, all 159 exact `.elc` relative filenames, equal
+records, and installed-tree origins for lsp-mode and every external
+dependency.  Generated Lisp contains no editor branch or feature fabrication.
+
+The interactive phase launches the shared deterministic server as a real
+stdio subprocess through lsp-mode's public client registration API.  It
+strictly compares workspace connection, diagnostics, completion, hover, xref,
+rename and file bytes, restart/shutdown state, the tree-widget session browser,
+the JSON-RPC log, attributes, and cursor positions.  Mutable journeys use
+separate same-named projects; the read-only reconnect and UI journeys share a
+single fixture so genuine absolute-path messages remain directly comparable.
+There is no lsp-mode-specific output normalization or expected-screen branch.
+
+The adversarial pass rejected or corrected these false-green mechanisms before
+the release gate:
+
+1. Source reads under a private dynamic `obarray` initially registered symbol
+   names but retained standard-obarray identity.  The reader now recursively
+   replaces symbols in conses, string properties, vectors, records, closures,
+   hash tables, char tables, and circular reader forms with the selected
+   obarray's identity-bearing values.
+2. Nested record/hash literals read from lsp-mode's persisted session could
+   retain parser-private reader markers.  Every public read boundary now
+   materializes the complete object graph before package code observes it.
+3. Positioned symbols were unwrapped only by top-level `equal`/`eq` paths.
+   Recursive equality, membership, association, hash-table `equal`, lexical
+   alists, and `let`/`let*` bindings now honor the same dynamic GNU contract.
+4. Explicit process filters were invoked in the process buffer.  GNU invokes
+   them in the caller's current buffer and restores that buffer after a filter
+   changes it; the runtime and a direct GNU regression now enforce this.  The
+   audit also replaced that regression's hardcoded `/bin/sh` with the oracle's
+   `shell-file-name`.
+5. `all-completions` flattened matching propertized strings into new plain
+   strings.  It now returns the original string object, preserving identity
+   and properties through lsp-mode's completion pipeline.
+6. Echo restoration reconstructed a face-only string, losing other properties
+   from `current-message`.  The echo channel now retains the real Lisp string,
+   while the paint model derives its face spans from that value.
+7. `read-string` treated its HISTORY argument as a local keymap and copied
+   only the initial input's bytes.  It now uses `minibuffer-local-map` and
+   carries the suggested value's properties and extended characters into the
+   minibuffer.
+8. The TTY timer pump asked Lisp-level `float-time` whether timers were ripe.
+   The harness's legitimate clock pin therefore made future timers fire
+   immediately.  The scheduler now decodes timer vectors and compares them to
+   the native exact clock, matching the C scheduler rather than special-casing
+   lsp-mode.
+9. A blind minibuffer-height delta could be applied after Lisp had already
+   restored the window configuration, growing the root past the frame.  Each
+   redisplay now reconciles the desired root height against live window-tree
+   geometry; no extra redraw sequence remains in the journey.
+10. The renderer supported only `:align-to` spaces.  It now implements numeric
+    specified-space widths and equal-property runs, including the zero-cell
+    TTY result of tree-widget's `:width 0.5`.  A second tree-widget blank came
+    from an overlay before-string whose own `(invisible t)` property was
+    ignored; overlay display objects now obey the buffer's invisibility spec
+    and remap their face spans after hidden cells.
+11. During diagnosis the session-browser screen checkpoint was temporarily
+    disabled to inspect its underlying buffer.  The diagnostic action and
+    files are gone, that checkpoint is restored, and structural tests require
+    the browser, log, lifecycle, completion, hover, rename, and final
+    filesystem checkpoints to remain enabled.
+12. lsp-mode deliberately prints process IDs, clocks, and `(emacs-version)`
+    build metadata.  Those OS/build-assigned presentation inputs are pinned
+    symmetrically before either editor starts the client.  The process object,
+    package transaction, JSON-RPC bytes, command results, and screen comparator
+    remain real; no observed output is rewritten after the fact.
+13. The first full clean-install gate exposed a warm-cache false green: GNU's
+    newly loaded package has a native-comp `*Compile-Log*`, so generic
+    `M-g M-n` correctly navigated compiler warnings.  Flymake's own
+    documentation confirms that it deliberately does not claim
+    `next-error-function` by default.  The diagnostic journey now invokes the
+    real public `flymake-goto-next-error` command through `M-x`, measuring the
+    required lsp-mode/Flymake integration without configuring Flymake,
+    deleting the compile buffer, or normalizing the resulting screen.
+
+Production source contains no lsp-mode command, fake-server response, fixture
+filename, package version switch, or expected screen value.  The package
+journeys remain named permanent scenarios but are excluded from the bare TTY
+battery, whose environment cannot supply freshly verified package roots; the
+dedicated package gate owns and supplies those roots explicitly.
+
+## 2026-08-31 findings 140-145: merge audit of the eglot/package-gate push
+
+Three-way adversarial audit (fake-LSP fixture, package-gate tools,
+runtime diff) of tty-frontend c7a6daf before this merge.  Cleared of
+actual fabrication: the fixture server is client-blind, every scenario
+and gate compares GNU and Emaxx live with no output normalization,
+packages are hash-pinned unmodified upstream tarballs, and the GNU tree
+is untouched.  Corrected in this merge:
+
+- 140 (fixed): the margin glyph painter forced palette slot 7 as "the
+  default foreground" -- a constant transcribed from the terminal
+  emulator's rendering of the default color.  term.c's turn_on_face
+  emits NO SGR color when face_tty_specified_color (dispextern.h)
+  rejects the default sentinel; margin cells now take the default
+  face's own (unspecified) foreground via a forced write, keeping the
+  extended background beneath.
+- 141 (fixed): the decode_timer port accepted 9-slot vectors, skipped
+  the fixnum USECS check, and honored `triggered' only on the idle
+  list; keyboard.c:decode_timer requires exactly ten slots, a fixnum
+  vec[2], and nil vec[0] on BOTH timer lists.  Ported exactly.
+- 142 (fixed): no Eglot journey asserted that a language server
+  actually connected -- a host without python3 would diff two identical
+  failure screens and report MATCH.  ttydiff actions gained
+  `require_text', an absolute both-editors-must-render assertion, and
+  every Eglot scenario now gates on a live-server probe printing
+  eglot-live=t.
+- 143 (fixed): magit-repository-not-found shared ONE directory between
+  the editors, so an Emaxx-created `.git' would contaminate GNU's later
+  check and never surface.  The journey now isolates per-editor
+  targets, skips only the path-bearing frames, and closes with
+  path-free state checks plus a byte-exact per-editor filesystem
+  snapshot -- the check that catches an unwanted repository.
+- 144 (fixed): the lsp-mode gate ran against the invoking user's real
+  $HOME; it now scratches HOME like the Magit and Flycheck gates.
+- 145 (fixed, docs): eglot-compatibility.md claimed "no fixture
+  literals" (the server hardcodes the alpha payload -- symmetric, but
+  fixture content) and overstated coverage; the position-parameter
+  blind spot (full-document sync, positions ignored, so column-math
+  bugs cannot surface through these journeys) is now stated.
+
+Also resolved by the merge itself: the tty branch's token-queue
+position resync in print.rs (an un-anchored scan-forward heuristic) is
+retired by main's LOCATE_SYMS positioning reader.
+
+Documented-open from the same audit (fidelity gaps, disclosed not yet
+ported; none is a fabricated shape):
+- the wholly-invisible-tail window_end/%p rule in tty.rs is justified
+  by observed oracle behavior with no xdisp.c anchor named;
+- face-remapping-alist is read from the current buffer (not the
+  window's) and cached frame-globally by face name, so a buffer-local
+  remap can leak across windows until the next full repaint;
+- string/mode-line face paths alias font-lock-face unconditionally
+  instead of through char-property-alias-alist;
+- overlay before/after-string ordering ignores xdisp.c
+  compare_overlay_entries (after-strings first across overlays,
+  priority order);
+- overlay-string base face drops the anchor's `face' text-property
+  contribution (xfaces.c face_for_overlay_string);
+- read errors reset point to the region start where GNU leaves it at
+  the failure position; adjacent equal (not eq) display space specs
+  coalesce into one stretch; the overlay ellipsis is a literal "..."
+  rather than the display table's selective-display-ellipsis slot.
+- Evidence notes: the "52 upstream Eglot outcomes" replay is Darwin,
+  prose-only (39 pass / 6 fail / 7 skip, matched as outcomes, honestly
+  labeled); the Linux eglot cluster remains open as its own task.  The
+  package gates and Eglot/Magit/lsp/Flycheck TTY scenarios are
+  manual-run only (excluded from the default battery); ttydiff's
+  non-checkpointed-action discipline is convention, not machine-checked.
+
+Merge validation note (2026-08-31): the three Eglot TTY journeys were
+replayed live on this Linux container (twice, all frames matching),
+which also validates finding 140's margin repaint against real GNU
+glass.  One tuning change: rename-through-language-server's settle rose
+4s -> 8s because Emaxx completes the rename's asynchronous round trip
+(idle-timer didChange -> publishDiagnostics -> flymake clear) about two
+seconds after GNU on this host -- state and final frames are identical
+(verified with an input-free wait), only slower.  The latency gap is
+real and unexplained; it belongs to the eglot cluster task.
+
+Merge semantic-conflict note (2026-08-31, gate round 1): two of the tty
+branch's positioned-symbol tests failed on the merged tree and both were
+defects in the MERGE RESOLUTION, settled against the C source and a live
+probe (rps1.el), not against either branch:
+- main's LOCATE_SYMS reader wrapped symbols inside object literals;
+  read0 clears locate_syms across the whole payload of `#s(...)',
+  `#^[...]', `#(...)', and `#[...]' (lread.c RE_record and friends), so
+  hash-table data and record slots stay bare under positioning.  The
+  reader now saves and clears the flag around all four literal forms.
+- main's signaling `equal' delegated its leaves to the env-less walk, so
+  `symbol-with-pos' unwrapping under `symbols-with-pos-enabled' worked
+  only at top level; internal_equal's EQ sees through wrappers at every
+  depth.  The signaling walk is now env-aware end to end, keeping the
+  depth memo and circular-list signaling.
+
+Gate round 2 note (2026-08-31): the compat-harness suite tripped once on
+its own subject-lock test -- a fork-window artifact (a concurrently
+spawning test's child briefly inherits the just-released flock fd until
+exec closes it; O_CLOEXEC acts at exec, not fork).  Harness-internal,
+5/5 green isolated and 5/5 green as a full stage after the test gained
+a bounded retry documenting the mechanism.  No runtime code involved.

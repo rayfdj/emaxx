@@ -16,7 +16,16 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
         }
         _ => {}
     }
-    values_equal_recursive(interp, left, right, &mut HashSet::new())
+    values_equal_recursive_with_env(interp, left, right, &mut HashSet::new(), None)
+}
+
+pub(crate) fn values_equal_in_env(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> bool {
+    values_equal_recursive_with_env(interp, left, right, &mut HashSet::new(), Some(env))
 }
 
 /// fns.c's Fequal cons walk: FOR_EACH_TAIL iterates the left spine with
@@ -29,14 +38,16 @@ pub(crate) fn values_equal_signaling(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
+    env: &Env,
 ) -> Result<bool, LispError> {
-    values_equal_signaling_depth(interp, left, right, 0, &mut HashMap::new())
+    values_equal_signaling_depth(interp, left, right, Some(env), 0, &mut HashMap::new())
 }
 
 fn values_equal_signaling_depth(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
+    env: Option<&Env>,
     depth: usize,
     memo: &mut HashMap<usize, Vec<usize>>,
 ) -> Result<bool, LispError> {
@@ -45,7 +56,16 @@ fn values_equal_signaling_depth(
             if !matches!(&*cell.car.borrow(), Value::Symbol(tag) if tag == "vector-literal"))
     }
     if !plain_cons(left) || !plain_cons(right) {
-        return Ok(values_equal(interp, left, right));
+        // Leaves take the same env-aware walk `equal' uses everywhere
+        // else: internal_equal's EQ sees through `symbol-with-pos'
+        // wrappers while `symbols-with-pos-enabled' is set, at any depth.
+        return Ok(values_equal_recursive_with_env(
+            interp,
+            left,
+            right,
+            &mut HashSet::new(),
+            env,
+        ));
     }
     // fns.c internal_equal: past depth 10 a seen-pair table answers true
     // for a revisited (o1, o2) pair -- how car-circular graphs compare
@@ -76,7 +96,7 @@ fn values_equal_signaling_depth(
         };
         let left_car = lc.car.borrow().clone();
         let right_car = rc.car.borrow().clone();
-        if !values_equal_signaling_depth(interp, &left_car, &right_car, depth + 1, memo)? {
+        if !values_equal_signaling_depth(interp, &left_car, &right_car, env, depth + 1, memo)? {
             return Ok(false);
         }
         let left_cdr = lc.cdr.borrow().clone();
@@ -103,7 +123,13 @@ fn values_equal_signaling_depth(
             limit *= 2;
         }
     }
-    Ok(values_equal(interp, &l, &r))
+    Ok(values_equal_recursive_with_env(
+        interp,
+        &l,
+        &r,
+        &mut HashSet::new(),
+        env,
+    ))
 }
 
 pub(crate) fn keymap_records_equal(
@@ -111,6 +137,7 @@ pub(crate) fn keymap_records_equal(
     left_id: u64,
     right_id: u64,
     seen: &mut HashSet<(usize, usize)>,
+    env: Option<&Env>,
 ) -> bool {
     let pair = (left_id as usize, right_id as usize);
     if !seen.insert(pair) {
@@ -129,7 +156,7 @@ pub(crate) fn keymap_records_equal(
         || !left_items
             .iter()
             .zip(right_items.iter())
-            .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+            .all(|(left, right)| values_equal_recursive_with_env(interp, left, right, seen, env))
     {
         return false;
     }
@@ -142,7 +169,7 @@ pub(crate) fn keymap_records_equal(
         .find_record(right_id)
         .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
         .unwrap_or(Value::Nil);
-    values_equal_recursive(interp, &left_parent, &right_parent, seen)
+    values_equal_recursive_with_env(interp, &left_parent, &right_parent, seen, env)
 }
 
 fn char_tables_equal(
@@ -150,6 +177,7 @@ fn char_tables_equal(
     left_id: u64,
     right_id: u64,
     seen: &mut HashSet<(usize, usize)>,
+    env: Option<&Env>,
 ) -> bool {
     if left_id == right_id {
         return true;
@@ -170,13 +198,13 @@ fn char_tables_equal(
         return false;
     };
     left.subtype == right.subtype
-        && values_equal_recursive(interp, &left.default, &right.default, seen)
+        && values_equal_recursive_with_env(interp, &left.default, &right.default, seen, env)
         && left.extra_slots.len() == right.extra_slots.len()
         && left
             .extra_slots
             .iter()
             .zip(&right.extra_slots)
-            .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+            .all(|(left, right)| values_equal_recursive_with_env(interp, left, right, seen, env))
         && left.entries.len() == right.entries.len()
         && left
             .entries
@@ -185,12 +213,18 @@ fn char_tables_equal(
             .all(|(left_entry, right_entry)| {
                 left_entry.start == right_entry.start
                     && left_entry.end == right_entry.end
-                    && values_equal_recursive(interp, &left_entry.value, &right_entry.value, seen)
+                    && values_equal_recursive_with_env(
+                        interp,
+                        &left_entry.value,
+                        &right_entry.value,
+                        seen,
+                        env,
+                    )
             })
         && left.category_docs == right.category_docs
         && match (left.parent, right.parent) {
             (None, None) => true,
-            (Some(left), Some(right)) => char_tables_equal(interp, left, right, seen),
+            (Some(left), Some(right)) => char_tables_equal(interp, left, right, seen, env),
             _ => false,
         }
 }
@@ -200,6 +234,7 @@ pub(crate) fn keymap_record_equals_list(
     keymap_id: u64,
     list: &Value,
     seen: &mut HashSet<(usize, usize)>,
+    env: Option<&Env>,
 ) -> bool {
     let keymap_value = Value::Record(keymap_id);
     let Ok(Some(items)) = keymap_list_items(interp, &keymap_value) else {
@@ -212,7 +247,7 @@ pub(crate) fn keymap_record_equals_list(
         && items
             .iter()
             .zip(list_items.iter())
-            .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+            .all(|(left, right)| values_equal_recursive_with_env(interp, left, right, seen, env))
 }
 
 pub(crate) fn record_equals_record_literal_form(
@@ -220,6 +255,7 @@ pub(crate) fn record_equals_record_literal_form(
     record_id: u64,
     form: &Value,
     seen: &mut HashSet<(usize, usize)>,
+    env: Option<&Env>,
 ) -> bool {
     let Some(record) = interp.find_record(record_id) else {
         return false;
@@ -248,16 +284,23 @@ pub(crate) fn record_equals_record_literal_form(
             .zip(actual_fields.iter())
             .all(|(left, right)| {
                 let right_value = record_literal_slot_data(right);
-                values_equal_recursive(interp, left, &right_value, seen)
+                values_equal_recursive_with_env(interp, left, &right_value, seen, env)
             })
 }
 
-pub(crate) fn values_equal_recursive(
+fn values_equal_recursive_with_env(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
     seen: &mut HashSet<(usize, usize)>,
+    env: Option<&Env>,
 ) -> bool {
+    if let Some(env) = env
+        && (matches!(left, Value::Record(_)) || matches!(right, Value::Record(_)))
+        && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
+    {
+        return equal;
+    }
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
         return left_string.text == right_string.text
             && left_string.extended_chars == right_string.extended_chars;
@@ -285,7 +328,9 @@ pub(crate) fn values_equal_recursive(
             && left_items
                 .iter()
                 .zip(right_items.iter())
-                .all(|(left, right)| values_equal_recursive(interp, left, right, seen));
+                .all(|(left, right)| {
+                    values_equal_recursive_with_env(interp, left, right, seen, env)
+                });
     }
     match (left, right) {
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
@@ -315,9 +360,9 @@ pub(crate) fn values_equal_recursive(
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Buffer(a), Value::Buffer(b)) => a.id == b.id,
         (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
-        (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b, seen),
+        (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b, seen, env),
         (Value::CharTable(left_id), Value::CharTable(right_id)) => {
-            char_tables_equal(interp, *left_id, *right_id, seen)
+            char_tables_equal(interp, *left_id, *right_id, seen, env)
         }
         (Value::Frame(left_id), Value::Frame(right_id)) => left_id == right_id,
         (Value::Terminal(left_id), Value::Terminal(right_id)) => left_id == right_id,
@@ -329,21 +374,21 @@ pub(crate) fn values_equal_recursive(
                     .find_record(*right_id)
                     .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
-            keymap_records_equal(interp, *left_id, *right_id, seen)
+            keymap_records_equal(interp, *left_id, *right_id, seen, env)
         }
         (Value::Record(left_id), Value::Cons(_))
             if interp
                 .find_record(*left_id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
-            keymap_record_equals_list(interp, *left_id, right, seen)
+            keymap_record_equals_list(interp, *left_id, right, seen, env)
         }
         (Value::Cons(_), Value::Record(right_id))
             if interp
                 .find_record(*right_id)
                 .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Keymap) =>
         {
-            keymap_record_equals_list(interp, *right_id, left, seen)
+            keymap_record_equals_list(interp, *right_id, left, seen, env)
         }
         (Value::Record(left_id), Value::Record(right_id)) => {
             if left_id == right_id {
@@ -391,19 +436,26 @@ pub(crate) fn values_equal_recursive(
             if !seen.insert(pair) {
                 return true;
             }
-            values_equal_recursive(interp, &left_record.type_tag, &right_record.type_tag, seen)
-                && left_record.slots.len() == right_record.slots.len()
+            values_equal_recursive_with_env(
+                interp,
+                &left_record.type_tag,
+                &right_record.type_tag,
+                seen,
+                env,
+            ) && left_record.slots.len() == right_record.slots.len()
                 && left_record
                     .slots
                     .iter()
                     .zip(right_record.slots.iter())
-                    .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+                    .all(|(left, right)| {
+                        values_equal_recursive_with_env(interp, left, right, seen, env)
+                    })
         }
         (Value::Record(left_id), _) if record_literal_items(right).is_some() => {
-            record_equals_record_literal_form(interp, *left_id, right, seen)
+            record_equals_record_literal_form(interp, *left_id, right, seen, env)
         }
         (_, Value::Record(right_id)) if record_literal_items(left).is_some() => {
-            record_equals_record_literal_form(interp, *right_id, left, seen)
+            record_equals_record_literal_form(interp, *right_id, left, seen, env)
         }
         (Value::Cons(_), Value::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
@@ -422,8 +474,8 @@ pub(crate) fn values_equal_recursive(
             let Some((b_car, b_cdr)) = right.cons_values() else {
                 return false;
             };
-            values_equal_recursive(interp, &a_car, &b_car, seen)
-                && values_equal_recursive(interp, &a_cdr, &b_cdr, seen)
+            values_equal_recursive_with_env(interp, &a_car, &b_car, seen, env)
+                && values_equal_recursive_with_env(interp, &a_cdr, &b_cdr, seen, env)
         }
         (Value::Lambda(left), Value::Lambda(right)) => {
             let left_ptr = Rc::as_ptr(left) as usize;
@@ -439,7 +491,9 @@ pub(crate) fn values_equal_recursive(
             left_slots
                 .iter()
                 .zip(right_slots.iter())
-                .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+                .all(|(left, right)| {
+                    values_equal_recursive_with_env(interp, left, right, seen, env)
+                })
         }
         _ => left == right,
     }
@@ -1951,6 +2005,7 @@ pub(crate) fn overlays_equal(
     left_id: u64,
     right_id: u64,
     seen: &mut HashSet<(usize, usize)>,
+    env: Option<&Env>,
 ) -> bool {
     // fns.c internal_equal memoizes objects it has descended into (the
     // depth>10 eq hash table) and assumes equality on revisit, so cyclic
@@ -1979,8 +2034,14 @@ pub(crate) fn overlays_equal(
             && left.plist.len() == right.plist.len()
             && left.plist.iter().zip(&right.plist).all(
                 |((left_key, left_value), (right_key, right_value))| {
-                    values_equal_recursive(interp, left_key, right_key, seen)
-                        && values_equal_recursive(interp, left_value, right_value, seen)
+                    values_equal_recursive_with_env(interp, left_key, right_key, seen, env)
+                        && values_equal_recursive_with_env(
+                            interp,
+                            left_value,
+                            right_value,
+                            seen,
+                            env,
+                        )
                 },
             )
     })();
@@ -1993,22 +2054,35 @@ pub(crate) fn resolve_callable(
     value: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
-    match value {
+    let callable = if symbols_with_pos_enabled(interp, env) {
+        symbol_with_pos_parts(interp, value)
+            .map(|(symbol, _)| symbol)
+            .unwrap_or_else(|| value.clone())
+    } else {
+        value.clone()
+    };
+    match &callable {
         Value::Symbol(name) => interp.lookup_function(name, env),
-        _ => Ok(value.clone()),
+        _ => Ok(callable),
     }
 }
 
-pub(crate) fn is_lambda_expression(value: &Value) -> bool {
+pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     value.to_vec().ok().is_some_and(|items| {
-        matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda")
-            && items.get(1).is_some()
+        items.first().is_some_and(|head| {
+            matches!(head, Value::Symbol(name) if name == "lambda")
+                || (symbols_with_pos_enabled(interp, env)
+                    && matches!(
+                        symbol_with_pos_parts(interp, head),
+                        Some((Value::Symbol(name), _)) if name == "lambda"
+                    ))
+        }) && items.get(1).is_some()
     })
 }
 
-pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value) -> bool {
+pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
     matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
-        || is_lambda_expression(value)
+        || is_lambda_expression(interp, value, env)
         || matches!(
             value,
             Value::Record(id)
@@ -2030,7 +2104,7 @@ pub(crate) fn value_matches_with_test(
         Some(Value::Symbol(name)) | Some(Value::BuiltinFunc(name)) => match name.as_str() {
             "eq" => Ok(values_eq_in_env(interp, left, right, env)),
             "eql" => Ok(values_eql(left, right)),
-            "equal" => Ok(values_equal(interp, left, right)),
+            "equal" => Ok(values_equal_in_env(interp, left, right, env)),
             _ => {
                 let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
                 Ok(

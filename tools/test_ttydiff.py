@@ -12,6 +12,8 @@ from ttydiff import (
     COLS,
     CORE_FREQUENCY_SCENARIO_NAMES,
     DIRED_BATCH_SCENARIO_NAMES,
+    EGLOT_SCENARIO_NAMES,
+    FAKE_LSP_FIXTURE_PATH,
     FIELDNOTES_FIXTURE_PATH,
     FIELDNOTES_ADVANCED_SCENARIO_NAMES,
     FIELDNOTES_SCENARIO_NAMES,
@@ -19,6 +21,11 @@ from ttydiff import (
     GLYPHLESS_DISPLAY_SCENARIO_NAMES,
     HELP_FILE_DIRED_SCENARIO_NAMES,
     HIGH_VALUE_COMMAND_SCENARIO_NAMES,
+    MAGIT_PACKAGE_SETUP,
+    MAGIT_SCENARIO_NAMES,
+    LSP_MODE_PACKAGE_SETUP,
+    LSP_MODE_SCENARIO_NAMES,
+    FLYCHECK_SCENARIO_NAMES,
     PACKAGE_MENU_SCENARIO_NAMES,
     SCENARIOS,
     REGEXP_SEARCH_REPLACE_SCENARIO_NAMES,
@@ -32,6 +39,7 @@ from ttydiff import (
     gnu_no_window_setup,
     normalize_action,
     remove_scenario_target,
+    run_git_fixture_command,
     screen_divergences,
     seeded_safe_actions,
     select_scenarios,
@@ -69,8 +77,18 @@ class Vt100ScreenTests(unittest.TestCase):
         screen.feed(b"before\x1b(Bafter")
         self.assertEqual(screen.lines()[0], "beforeafter")
 
-    def test_scenario_selection_defaults_to_all(self) -> None:
-        self.assertIs(select_scenarios([]), SCENARIOS)
+    def test_scenario_selection_defaults_to_built_in_battery(self) -> None:
+        self.assertEqual(
+            [entry[0] for entry in select_scenarios([])],
+            [
+                entry[0]
+                for entry in SCENARIOS
+                if entry[0]
+                not in MAGIT_SCENARIO_NAMES
+                + LSP_MODE_SCENARIO_NAMES
+                + FLYCHECK_SCENARIO_NAMES
+            ],
+        )
 
     def test_scenario_selection_preserves_requested_order(self) -> None:
         selected = select_scenarios(["page-past-end-error-echo", "type-one-line"])
@@ -141,6 +159,7 @@ class Vt100ScreenTests(unittest.TestCase):
             FILE_LIFECYCLE_SCENARIO_NAMES,
             DIRED_BATCH_SCENARIO_NAMES,
             PACKAGE_MENU_SCENARIO_NAMES,
+            EGLOT_SCENARIO_NAMES,
             SEEDED_SAFE_SCENARIO_NAMES,
         )
         for group in groups:
@@ -221,6 +240,215 @@ class Vt100ScreenTests(unittest.TestCase):
         finally:
             for target in cleanup:
                 remove_scenario_target(target)
+
+    def test_eglot_targets_are_isolated_same_named_project_roots(self) -> None:
+        self.assertTrue(FAKE_LSP_FIXTURE_PATH.is_file())
+        (gnu_path, emaxx_path), cleanup = create_scenario_target_pair(
+            "eglot-contract",
+            "int alpha = 1;\n",
+            ".c",
+            {
+                "separate_targets": True,
+                "target_parent": "project",
+                "extra_files": {"project/.ttydiff-project": "root\n"},
+            },
+        )
+        try:
+            self.assertNotEqual(Path(gnu_path).parents[1], Path(emaxx_path).parents[1])
+            self.assertEqual(Path(gnu_path).parent.name, "project")
+            self.assertEqual(Path(emaxx_path).parent.name, "project")
+            self.assertEqual(filesystem_snapshot(gnu_path), filesystem_snapshot(emaxx_path))
+        finally:
+            for target in cleanup:
+                remove_scenario_target(target)
+
+    def test_magit_journeys_load_only_the_installed_package_root(self) -> None:
+        self.assertEqual(
+            MAGIT_SCENARIO_NAMES,
+            (
+                "magit-status-sections-stage",
+                "magit-diff-log-transient",
+                "magit-process-error",
+                "magit-repository-not-found",
+            ),
+        )
+        self.assertIn(b"package-initialize", MAGIT_PACKAGE_SETUP)
+        self.assertIn(b"(require 'magit)", MAGIT_PACKAGE_SETUP)
+        self.assertIn(b'MAGIT_GATE_ROOT', MAGIT_PACKAGE_SETUP)
+        self.assertNotIn(b"emaxx", MAGIT_PACKAGE_SETUP.lower())
+        scenarios = {entry[0]: entry for entry in SCENARIOS}
+        self.assertTrue(
+            set(MAGIT_SCENARIO_NAMES).isdisjoint(
+                entry[0] for entry in select_scenarios([])
+            )
+        )
+        self.assertEqual(
+            [entry[0] for entry in select_scenarios(MAGIT_SCENARIO_NAMES)],
+            list(MAGIT_SCENARIO_NAMES),
+        )
+        noncheckpoint_actions = []
+        for name in MAGIT_SCENARIO_NAMES:
+            options = scenarios[name][4]
+            # Every Magit journey now isolates per-editor targets; sharing
+            # one directory let a wrongly created repository contaminate
+            # the other editor's checks (finding 143).
+            self.assertTrue(options["separate_targets"])
+            self.assertTrue(options["magit_package_root"])
+            self.assertTrue(all(isinstance(item, Action) for item in scenarios[name][2]))
+            noncheckpoint_actions.extend(
+                item.name for item in scenarios[name][2] if not item.checkpoint
+            )
+        self.assertEqual(
+            noncheckpoint_actions,
+            [
+                "find-unstaged-file",
+                # The isolated-target journey's path-bearing frames
+                # (finding 143): dired banner, creation prompt, declined
+                # message all render per-editor paths.
+                "load-installed-magit",
+                "request-status-outside-repository",
+                "decline-repository-creation",
+            ],
+        )
+        repository_actions = scenarios["magit-repository-not-found"][2]
+        self.assertEqual(
+            [item.name for item in repository_actions],
+            [
+                "load-installed-magit",
+                "request-status-outside-repository",
+                "decline-repository-creation",
+                "leave-path-bearing-buffer",
+                "verify-no-repository-created",
+            ],
+        )
+        verification = repository_actions[-1]
+        self.assertTrue(repository_actions[-2].checkpoint)
+        self.assertTrue(verification.checkpoint)
+        # The closing check is path-free, strict, and byte-compares each
+        # editor's own fixture tree, which is what catches an unwanted
+        # repository under isolated targets.
+        self.assertTrue(verification.filesystem)
+        self.assertIn(b'file-directory-p (expand-file-name ".git"', verification.keys)
+        self.assertIn(b"(magit-toplevel)", verification.keys)
+
+    def test_magit_repository_pair_has_identical_fixed_history_and_state(self) -> None:
+        (gnu_path, emaxx_path), cleanup = create_scenario_target_pair(
+            "magit-repository-contract",
+            "",
+            ".dat",
+            {
+                "target": "directory",
+                "separate_targets": True,
+                "include_default_files": False,
+                "git_repository": True,
+            },
+        )
+        try:
+            self.assertNotEqual(Path(gnu_path).parent, Path(emaxx_path).parent)
+            self.assertEqual(Path(gnu_path).name, Path(emaxx_path).name)
+            for arguments in (
+                ("rev-parse", "HEAD"),
+                ("branch", "--format=%(refname:short)"),
+                ("status", "--short"),
+                ("log", "--format=%H %aI %s", "--all"),
+            ):
+                self.assertEqual(
+                    run_git_fixture_command(gnu_path, *arguments),
+                    run_git_fixture_command(emaxx_path, *arguments),
+                )
+            status = run_git_fixture_command(gnu_path, "status", "--short")
+            self.assertIn("A  staged.txt", status)
+            self.assertIn(" M worktree.txt", status)
+            self.assertIn("?? untracked.txt", status)
+        finally:
+            for target in cleanup:
+                remove_scenario_target(target)
+
+    def test_lsp_mode_journeys_load_only_the_installed_package_root(self) -> None:
+        self.assertEqual(
+            LSP_MODE_SCENARIO_NAMES,
+            (
+                "lsp-mode-connect-diagnostics-completion-hover",
+                "lsp-mode-xref-rename-edits",
+                "lsp-mode-reconnect-shutdown",
+                "lsp-mode-ui-buffers",
+            ),
+        )
+        self.assertIn(b"package-initialize", LSP_MODE_PACKAGE_SETUP)
+        self.assertIn(b"(require 'lsp-mode)", LSP_MODE_PACKAGE_SETUP)
+        self.assertIn(b"LSP_MODE_GATE_ROOT", LSP_MODE_PACKAGE_SETUP)
+        self.assertNotIn(b"emaxx", LSP_MODE_PACKAGE_SETUP.lower())
+        scenarios = {entry[0]: entry for entry in SCENARIOS}
+        self.assertTrue(
+            set(LSP_MODE_SCENARIO_NAMES).isdisjoint(
+                entry[0] for entry in select_scenarios([])
+            )
+        )
+        self.assertEqual(
+            [entry[0] for entry in select_scenarios(LSP_MODE_SCENARIO_NAMES)],
+            list(LSP_MODE_SCENARIO_NAMES),
+        )
+        for name in LSP_MODE_SCENARIO_NAMES:
+            options = scenarios[name][4]
+            self.assertTrue(options["lsp_mode_package_root"])
+            self.assertEqual(
+                options["separate_targets"],
+                name
+                not in ("lsp-mode-reconnect-shutdown", "lsp-mode-ui-buffers"),
+            )
+            self.assertTrue(all(isinstance(item, Action) for item in scenarios[name][2]))
+            self.assertTrue(any(item.checkpoint for item in scenarios[name][2]))
+        checkpoints = {
+            name: {
+                item.name for item in scenarios[name][2] if item.checkpoint
+            }
+            for name in LSP_MODE_SCENARIO_NAMES
+        }
+        self.assertIn(
+            "verify-installed-lsp-mode-connected",
+            checkpoints["lsp-mode-connect-diagnostics-completion-hover"],
+        )
+        diagnostic = next(
+            item
+            for item in scenarios["lsp-mode-connect-diagnostics-completion-hover"][2]
+            if item.name == "visit-next-lsp-mode-diagnostic"
+        )
+        self.assertEqual(diagnostic.keys, b"\x1bxflymake-goto-next-error\r")
+        self.assertIn(
+            "complete-through-lsp-mode",
+            checkpoints["lsp-mode-connect-diagnostics-completion-hover"],
+        )
+        self.assertIn(
+            "show-lsp-mode-hover-buffer",
+            checkpoints["lsp-mode-connect-diagnostics-completion-hover"],
+        )
+        self.assertIn(
+            "rename-through-lsp-mode",
+            checkpoints["lsp-mode-xref-rename-edits"],
+        )
+        saved = next(
+            item
+            for item in scenarios["lsp-mode-xref-rename-edits"][2]
+            if item.name == "verify-lsp-mode-saved-document"
+        )
+        self.assertTrue(saved.checkpoint and saved.filesystem)
+        self.assertIn(
+            "verify-restarted-lsp-mode-workspace",
+            checkpoints["lsp-mode-reconnect-shutdown"],
+        )
+        self.assertIn(
+            "verify-lsp-mode-workspace-stopped",
+            checkpoints["lsp-mode-reconnect-shutdown"],
+        )
+        self.assertIn(
+            "show-lsp-mode-session-browser",
+            checkpoints["lsp-mode-ui-buffers"],
+        )
+        self.assertIn("show-lsp-mode-io-log", checkpoints["lsp-mode-ui-buffers"])
+        setup = scenarios[LSP_MODE_SCENARIO_NAMES[0]][2][0]
+        self.assertIn(str(FAKE_LSP_FIXTURE_PATH).encode(), setup.keys)
+        self.assertIn(b"lsp-stdio-connection", setup.keys)
+        self.assertIn(b"lsp-register-client", setup.keys)
 
     def test_mutating_dired_scenarios_get_isolated_same_named_directories(
         self,

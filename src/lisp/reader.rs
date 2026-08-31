@@ -1328,7 +1328,12 @@ impl<'a> Reader<'a> {
                 if self.peek() != Some(b'[') {
                     return Err(LispError::ReadError("invalid-read-syntax".into()));
                 }
-                let fields = self.read_bracketed_fields()?;
+                // read0 clears locate_syms across a char-table literal.
+                let saved_locate = self.locate_symbols;
+                self.locate_symbols = false;
+                let fields = self.read_bracketed_fields();
+                self.locate_symbols = saved_locate;
+                let fields = fields?;
                 if !sub_table {
                     if fields.len() < 68 {
                         return Err(LispError::ReadError("invalid size char-table".into()));
@@ -1359,21 +1364,29 @@ impl<'a> Reader<'a> {
             }
             Some(b'[') => {
                 self.advance();
-                let mut fields = Vec::new();
-                loop {
-                    self.skip_whitespace_and_comments();
-                    match self.peek() {
-                        None => return Err(LispError::EndOfInput),
-                        Some(b']') => {
-                            self.advance();
-                            break;
-                        }
-                        _ => {
-                            let value = self.read()?.ok_or(LispError::EndOfInput)?;
-                            fields.push(value);
+                // read0 clears locate_syms across a `#[...]' literal.
+                let saved_locate = self.locate_symbols;
+                self.locate_symbols = false;
+                let fields = (|| {
+                    let mut fields = Vec::new();
+                    loop {
+                        self.skip_whitespace_and_comments();
+                        match self.peek() {
+                            None => return Err(LispError::EndOfInput),
+                            Some(b']') => {
+                                self.advance();
+                                break;
+                            }
+                            _ => {
+                                let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                                fields.push(value);
+                            }
                         }
                     }
-                }
+                    Ok(fields)
+                })();
+                self.locate_symbols = saved_locate;
+                let fields = fields?;
                 // GNU uses the same `#[...]' syntax for both kinds of
                 // closure pseudovector.  Byte-compiled functions have a
                 // string in the code slot and at least four fields, while an
@@ -1459,23 +1472,31 @@ impl<'a> Reader<'a> {
             }
             Some(b'(') => {
                 // #(...) — either a self-evaluating vector literal or a
-                // string literal with text properties.
+                // string literal with text properties.  read0 clears
+                // locate_syms across the literal (lread.c RE_string_props).
                 self.advance(); // consume '('
-                let mut items = Vec::new();
-                loop {
-                    self.skip_whitespace_and_comments();
-                    match self.peek() {
-                        None => return Err(LispError::EndOfInput),
-                        Some(b')') => {
-                            self.advance();
-                            break;
-                        }
-                        _ => {
-                            let val = self.read()?.ok_or(LispError::EndOfInput)?;
-                            items.push(val);
+                let saved_locate = self.locate_symbols;
+                self.locate_symbols = false;
+                let items = (|| {
+                    let mut items = Vec::new();
+                    loop {
+                        self.skip_whitespace_and_comments();
+                        match self.peek() {
+                            None => return Err(LispError::EndOfInput),
+                            Some(b')') => {
+                                self.advance();
+                                break;
+                            }
+                            _ => {
+                                let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                                items.push(val);
+                            }
                         }
                     }
-                }
+                    Ok(items)
+                })();
+                self.locate_symbols = saved_locate;
+                let items = items?;
                 if let Some(string) = self.try_read_string_literal_with_properties(&items)? {
                     Ok(Some(string))
                 } else {
@@ -1612,30 +1633,34 @@ impl<'a> Reader<'a> {
                 }
                 self.advance(); // consume '('
                 self.skip_whitespace_and_comments();
-                // The structure kind is dispatch syntax (`hash-table' vs a
-                // record type); read it bare so positioning cannot hide it.
+                // read0 clears locate_syms for the ENTIRE `#s(...)' payload
+                // (lread.c RE_record push), so a positioned read keeps
+                // record slots and hash-table data bare.
                 let saved_locate = self.locate_symbols;
                 self.locate_symbols = false;
-                let kind = self.read()?;
-                self.locate_symbols = saved_locate;
-                let Some(kind) = kind else {
-                    return Err(LispError::EndOfInput);
-                };
-                let mut fields = Vec::new();
-                loop {
-                    self.skip_whitespace_and_comments();
-                    match self.peek() {
-                        None => return Err(LispError::EndOfInput),
-                        Some(b')') => {
-                            self.advance();
-                            break;
-                        }
-                        _ => {
-                            let value = self.read()?.ok_or(LispError::EndOfInput)?;
-                            fields.push(value);
+                let result = (|| {
+                    let Some(kind) = self.read()? else {
+                        return Err(LispError::EndOfInput);
+                    };
+                    let mut fields = Vec::new();
+                    loop {
+                        self.skip_whitespace_and_comments();
+                        match self.peek() {
+                            None => return Err(LispError::EndOfInput),
+                            Some(b')') => {
+                                self.advance();
+                                break;
+                            }
+                            _ => {
+                                let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                                fields.push(value);
+                            }
                         }
                     }
-                }
+                    Ok((kind, fields))
+                })();
+                self.locate_symbols = saved_locate;
+                let (kind, fields) = result?;
                 if matches!(&kind, Value::Symbol(kind_name) if kind_name == "hash-table") {
                     Ok(Some(Value::ReaderForm(Rc::new(ReaderForm::HashTable {
                         fields,

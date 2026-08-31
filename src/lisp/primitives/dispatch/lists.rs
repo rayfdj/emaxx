@@ -290,6 +290,7 @@ fn read_minibuffer_text_from_kbd_macro(
     env: &mut Env,
     prompt: &Value,
     initial: &str,
+    initial_value: &Value,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
     if interp.kbd_macro_executions.is_empty() {
@@ -297,7 +298,8 @@ fn read_minibuffer_text_from_kbd_macro(
     }
     let saved_buffer_id = prepare_kbd_macro_minibuffer_entry(interp, env)?;
     let result = (|| {
-        let minibuffer = activate_minibuffer(interp, prompt, initial, local_map.clone(), env)?;
+        let minibuffer =
+            activate_minibuffer(interp, prompt, initial_value, local_map.clone(), env)?;
         run_active_minibuffer(interp, env, minibuffer, |interp, env| {
             read_minibuffer_text_from_kbd_macro_inner(interp, env, initial)
         })
@@ -447,10 +449,11 @@ fn read_minibuffer_text_without_queued_events(
     env: &mut Env,
     prompt: &Value,
     initial: &str,
+    initial_value: &Value,
     local_map: &Value,
     history: Value,
 ) -> Result<String, LispError> {
-    let minibuffer = activate_minibuffer(interp, prompt, initial, local_map.clone(), env)?;
+    let minibuffer = activate_minibuffer(interp, prompt, initial_value, local_map.clone(), env)?;
     run_active_minibuffer(interp, env, minibuffer, |interp, env| {
         if interp
             .lookup_var("noninteractive", env)
@@ -478,6 +481,7 @@ fn read_minibuffer_text_from_unread_events(
     env: &mut Env,
     prompt: &Value,
     initial: &str,
+    initial_value: &Value,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
     if crate::lisp::primitives::unread_command_events(interp, env)?.is_empty() {
@@ -489,7 +493,8 @@ fn read_minibuffer_text_from_unread_events(
     let saved_buffer_id = interp.current_buffer_id();
     let restore = interp.bind_special_dynamic("current-prefix-arg", Value::Nil, env)?;
     let result = (|| {
-        let minibuffer = activate_minibuffer(interp, prompt, initial, local_map.clone(), env)?;
+        let minibuffer =
+            activate_minibuffer(interp, prompt, initial_value, local_map.clone(), env)?;
         run_active_minibuffer(interp, env, minibuffer, |interp, env| {
             read_minibuffer_text_from_unread_events_inner(interp, env, initial)
         })
@@ -1274,7 +1279,9 @@ define_dispatch!(
                             let matches = {
                                 let item = car.borrow();
                                 match test {
-                                    MemTest::Equal => values_equal(interp, &item, &args[0]),
+                                    MemTest::Equal => {
+                                        values_equal_in_env(interp, &item, &args[0], env)
+                                    }
                                     MemTest::Eql => values_eql(&item, &args[0]),
                                     MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
                                 }
@@ -1287,7 +1294,7 @@ define_dispatch!(
                         Value::Nil => return Ok(Value::Nil),
                         other => {
                             let matches = match name {
-                                "member" => values_equal(interp, other, &args[0]),
+                                "member" => values_equal_in_env(interp, other, &args[0], env),
                                 "memql" => values_eql(other, &args[0]),
                                 _ => values_eq_in_env(interp, other, &args[0], env),
                             };
@@ -1404,7 +1411,7 @@ define_dispatch!(
                             }
                             let item = car.borrow().clone();
                             if matches!(item, Value::Cons(_))
-                                && values_equal(interp, &item.cdr()?, &args[0])
+                                && values_equal_in_env(interp, &item.cdr()?, &args[0], env)
                             {
                                 return Ok(item);
                             }
@@ -1449,7 +1456,7 @@ define_dispatch!(
                                     )?
                                     .is_truthy()
                                 } else {
-                                    values_equal(interp, &item.car()?, &args[0])
+                                    values_equal_in_env(interp, &item.car()?, &args[0], env)
                                 }
                             {
                                 return Ok(item);
@@ -2107,27 +2114,35 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), 0));
                 }
                 ensure_interaction_allowed(interp, env)?;
-                let initial = args
-                    .get(1)
-                    .and_then(string_like)
+                let initial_value = args.get(1).cloned().unwrap_or(Value::Nil);
+                let initial = string_like(&initial_value)
                     .map(|string| string.text)
                     .unwrap_or_default();
                 let prompt = args[0].clone();
                 if string_like(&prompt).is_none() {
                     return Err(wrong_type_argument("stringp", prompt));
                 }
-                let local_map = args
-                    .get(2)
-                    .filter(|map| !map.is_nil())
-                    .cloned()
+                let local_map = (name == "read-from-minibuffer")
+                    .then(|| args.get(2).filter(|map| !map.is_nil()).cloned())
+                    .flatten()
                     .or_else(|| interp.lookup_var("minibuffer-local-map", env))
                     .unwrap_or(Value::Nil);
                 let mut contents = read_minibuffer_text_from_unread_events(
-                    interp, env, &prompt, &initial, &local_map,
+                    interp,
+                    env,
+                    &prompt,
+                    &initial,
+                    &initial_value,
+                    &local_map,
                 )?;
                 if contents.is_none() {
                     contents = read_minibuffer_text_from_kbd_macro(
-                        interp, env, &prompt, &initial, &local_map,
+                        interp,
+                        env,
+                        &prompt,
+                        &initial,
+                        &initial_value,
+                        &local_map,
                     )?;
                 }
                 if contents.is_none() {
@@ -2140,7 +2155,13 @@ define_dispatch!(
                         _ => Value::T,
                     };
                     contents = Some(read_minibuffer_text_without_queued_events(
-                        interp, env, &prompt, &initial, &local_map, history,
+                        interp,
+                        env,
+                        &prompt,
+                        &initial,
+                        &initial_value,
+                        &local_map,
+                        history,
                     )?);
                 }
                 if let Some(contents) = contents {

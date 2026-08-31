@@ -1319,6 +1319,7 @@ pub(crate) fn read_one_form_in_env(
         Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
         None => return Err(LispError::EndOfInput),
     };
+    let value = interp.intern_read_symbols_in_value(value, env)?;
     interp.set_variable(
         "lread--unescaped-character-literals",
         Value::list(reader.unescaped_character_literals().map(Value::Integer)),
@@ -1350,11 +1351,16 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 )
             };
-            let (value, consumed) = read_one_positioned_form(interp, env, &text, start as i64)?;
+            let result = read_one_positioned_form(interp, env, &text, start as i64);
+            let consumed = match &result {
+                Ok((_, consumed)) => *consumed,
+                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(_) => 0,
+            };
             if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
-            Ok(value)
+            result.map(|(value, _)| value)
         }
         Value::Marker(id) => {
             let (buffer_id, start) = {
@@ -1378,9 +1384,14 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
-            let (value, consumed) = read_one_positioned_form(interp, env, &text, start as i64)?;
+            let result = read_one_positioned_form(interp, env, &text, start as i64);
+            let consumed = match &result {
+                Ok((_, consumed)) => *consumed,
+                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(_) => 0,
+            };
             interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
-            Ok(value)
+            result.map(|(value, _)| value)
         }
         Value::BuiltinFunc(_) | Value::Lambda(_) => {
             // A function stream yields characters with no stable source
@@ -1433,6 +1444,11 @@ fn read_one_positioned_form(
     interp.intern_symbols_in_value(&value);
     let mut seen = std::collections::HashSet::new();
     let value = materialize_positioned_symbols(interp, value, &mut seen);
+    // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
+    // before read-positioning-symbols returns.  In particular, the byte
+    // compiler must receive an actual hash table constant rather than
+    // Emaxx's parser-private ReaderForm marker.
+    let value = interp.materialize_read_object_literals(value)?;
     Ok((value, consumed))
 }
 
@@ -2027,7 +2043,7 @@ fn materialize_hash_table_literals_inner(
 fn hash_table_from_literal_fields(
     interp: &mut Interpreter,
     fields: &[Value],
-    seen: &mut HashSet<usize>,
+    _seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     let mut test = "eql".to_string();
     let mut size = Value::Integer(65);
@@ -2054,9 +2070,9 @@ fn hash_table_from_literal_fields(
                 let mut cursor = 0usize;
                 while cursor + 1 < items.len() {
                     let entry_key =
-                        materialize_hash_table_literals_inner(interp, &items[cursor], seen)?;
+                        interp.materialize_read_object_literals(items[cursor].clone())?;
                     let entry_value =
-                        materialize_hash_table_literals_inner(interp, &items[cursor + 1], seen)?;
+                        interp.materialize_read_object_literals(items[cursor + 1].clone())?;
                     entries.push((entry_key, entry_value));
                     cursor += 2;
                 }
@@ -2102,11 +2118,16 @@ fn read_from_lisp_source_raw(
                         .map_err(|error| LispError::Signal(error.to_string()))?,
                 )
             };
-            let (value, consumed) = read_one_form_in_env(interp, &text, env)?;
+            let result = read_one_form_in_env(interp, &text, env);
+            let consumed = match &result {
+                Ok((_, consumed)) => *consumed,
+                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(_) => 0,
+            };
             if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
-            Ok(value)
+            result.map(|(value, _)| value)
         }
         Value::Marker(id) => {
             let (buffer_id, start) = {
@@ -2130,9 +2151,14 @@ fn read_from_lisp_source_raw(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
-            let (value, consumed) = read_one_form_in_env(interp, &text, env)?;
+            let result = read_one_form_in_env(interp, &text, env);
+            let consumed = match &result {
+                Ok((_, consumed)) => *consumed,
+                Err(LispError::EndOfInput) => text.chars().count(),
+                Err(_) => 0,
+            };
             interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
-            Ok(value)
+            result.map(|(value, _)| value)
         }
         Value::BuiltinFunc(_) | Value::Lambda(_) => read_from_callable_source(interp, source, env),
         Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {

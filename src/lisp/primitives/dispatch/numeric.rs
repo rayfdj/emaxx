@@ -577,9 +577,9 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let equal = match symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env) {
                     Some(equal) => equal,
-                    None => {
-                        super::super::values::values_equal_signaling(interp, &args[0], &args[1])?
-                    }
+                    None => super::super::values::values_equal_signaling(
+                        interp, &args[0], &args[1], env,
+                    )?,
                 };
                 Ok(if equal { Value::T } else { Value::Nil })
             }

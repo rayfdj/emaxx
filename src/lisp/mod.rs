@@ -734,28 +734,48 @@ pub(crate) fn extract_mode_line_variable(source: &str, variable: &str) -> Option
 }
 
 fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
-    let mut inside_block = false;
-    for line in source.lines().rev() {
+    let mut current_block = None;
+    let mut last_block = None;
+    for line in source.lines() {
         let trimmed = line.trim_start();
-        let comment_text = trimmed.trim_start_matches(';').trim_start();
-        if comment_text == "End:" {
-            inside_block = true;
+        let comment_text = trimmed.trim_start_matches(';');
+        let comment_text = comment_text.strip_prefix(' ').unwrap_or(comment_text);
+        if comment_text.trim() == "Local Variables:" {
+            current_block = Some(Vec::new());
             continue;
         }
-        if !inside_block {
+        if comment_text.trim() == "End:" {
+            if let Some(block) = current_block.take() {
+                last_block = Some(block);
+            }
             continue;
         }
-        if comment_text == "Local Variables:" {
-            break;
-        }
-        let Some((name, value)) = comment_text.split_once(':') else {
-            continue;
-        };
-        if name.trim() == variable {
-            return Some(value.trim().to_string());
+        if let Some(block) = current_block.as_mut() {
+            block.push(comment_text.to_string());
         }
     }
-    None
+
+    let declaration = format!("{variable}:");
+    let mut value = None;
+    for line in last_block? {
+        if value.is_none() {
+            let Some(first_line) = line.strip_prefix(&declaration) else {
+                continue;
+            };
+            value = Some(first_line.trim().to_string());
+        } else if let Some(value) = value.as_mut() {
+            value.push('\n');
+            value.push_str(&line);
+        }
+
+        let candidate = value.as_ref().expect("file-local value was initialized");
+        match reader::Reader::new(candidate).read() {
+            Ok(Some(_)) => return value,
+            Err(types::LispError::EndOfInput) | Ok(None) => {}
+            Err(_) => return value,
+        }
+    }
+    value
 }
 
 fn parse_shorthand_string(value: &types::Value) -> Result<String, types::LispError> {
@@ -960,7 +980,15 @@ pub fn load_file_strict(
             // macroexpander.  Delaying source `#^[...]' materialization until eval
             // leaked a private ReaderForm into macroexp.el and made generated
             // Unicode tables look like source syntax instead of opaque values.
-            interp.intern_symbols_in_value(&form);
+            let form = match interp.intern_read_symbols_in_value(form, &env) {
+                Ok(form) => form,
+                Err(error) => {
+                    let _ =
+                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                    interp.set_current_load_file(previous);
+                    return Err(error);
+                }
+            };
             let form = match interp.materialize_read_object_literals(form) {
                 Ok(form) => form,
                 Err(error) => {
@@ -1196,6 +1224,30 @@ mod tests {
                 .expect("source settings should parse file-local symbol shorthands")
                 .read_symbol_shorthands,
             vec![("ft-".into(), "fns-tests-".into())]
+        );
+    }
+
+    #[test]
+    fn parses_multiline_read_symbol_shorthands_from_magit_style_blocks() {
+        let source = r#"
+(provide 'sample)
+
+;; Local Variables:
+;; indent-tabs-mode: nil
+;; read-symbol-shorthands: (
+;;   ("and$"     . "cond-let--and$")
+;;   ("when-let" . "cond-let--when-let"))
+;; End:
+"#;
+
+        assert_eq!(
+            source_settings(source)
+                .expect("multiline file-local symbol shorthands should parse")
+                .read_symbol_shorthands,
+            vec![
+                ("and$".into(), "cond-let--and$".into()),
+                ("when-let".into(), "cond-let--when-let".into()),
+            ]
         );
     }
 
