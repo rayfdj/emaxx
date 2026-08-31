@@ -3969,3 +3969,17 @@ spawning test's child briefly inherits the just-released flock fd until
 exec closes it; O_CLOEXEC acts at exec, not fork).  Harness-internal,
 5/5 green isolated and 5/5 green as a full stage after the test gained
 a bounded retry documenting the mechanism.  No runtime code involved.
+
+## 2026-08-31 eglot cluster closed on Linux (task record)
+
+On the merged tree, test/lisp/progmodes/eglot-tests.el compares 52/52
+matching.  Without a C language server the composition was 16 passed /
+5 failed / 31 skipped on BOTH runtimes; clangd 18.1.3 was installed on
+this container (environment change, disclosed) and the composition
+became 40 passed / 5 failed / 7 skipped, still matched per test: the
+31 clangd-gated scenarios now exercise live LSP behavior end to end
+rather than matching as skips.  The five failures are rust-analyzer
+tests GNU itself fails identically here (server version drift, matched
+failure conditions -- these are honest matches, not Emaxx successes);
+the seven skips want eclipse-jdt, typescript/deno, and yasnippet,
+absent on both sides.
