@@ -3152,6 +3152,203 @@ SCENARIOS += [
     ),
 ]
 
+FLYCHECK_SCENARIO_NAMES = (
+    "flycheck-diagnostics-navigation",
+    "flycheck-clean-idle-teardown",
+    "flycheck-malformed-missing-tool",
+    "flycheck-cancellation",
+)
+
+FLYCHECK_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"FLYCHECK_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) (require 'flycheck) "
+    b"(let ((checker (getenv \"FLYCHECK_FIXTURE_CHECKER\")) "
+    b"(patterns '((info line-start line \"\:\" column \"\: info \" "
+    b"(id (one-or-more (not (any \"\:\")))) \"\: \" (message) line-end) "
+    b"(warning line-start line \"\:\" column \"\: warning \" "
+    b"(id (one-or-more (not (any \"\:\")))) \"\: \" (message) line-end) "
+    b"(error line-start line \"\:\" column \"\: error \" "
+    b"(id (one-or-more (not (any \"\:\")))) \"\: \" (message) line-end)))) "
+    b"(dolist (definition `((ttydiff-content \"content\") "
+    b"(ttydiff-clean \"clean\") (ttydiff-malformed \"malformed\") "
+    b"(ttydiff-wait \"wait\"))) "
+    b"(flycheck-define-command-checker "
+    b"(car definition) \"Deterministic ttydiff checker.\" "
+    b":command (list \"python3\" checker (cadr definition) 'source) "
+    b":error-patterns patterns :modes '(text-mode))) "
+    b"(flycheck-define-command-checker "
+    b"'ttydiff-missing \"Missing ttydiff checker.\" "
+    b":command '(\"ttydiff-definitely-missing-executable\" source) "
+    b":error-patterns patterns :modes '(text-mode))) "
+)
+
+
+def flycheck_setup_action(checker, extra=b""):
+    """Load the pinned package and enable one deterministic checker."""
+    return action(
+        "load-installed-flycheck-" + checker.decode("ascii"),
+        b"\x1b:(progn "
+        + FLYCHECK_PACKAGE_SETUP
+        + b"(setq-local flycheck-checker '"
+        + checker
+        + b") "
+        + extra
+        + b"(flycheck-mode 1) nil)\r",
+        checkpoint=False,
+        settle=4.0,
+        quiet=0.5,
+    )
+
+
+FLYCHECK_OPTIONS = {
+    "separate_targets": False,
+    "flycheck_package_root": True,
+}
+
+FLYCHECK_SAMPLE = """plain line
+INFO token
+WARN token
+ERROR token
+last line
+"""
+
+SCENARIOS += [
+    (
+        "flycheck-diagnostics-navigation",
+        FLYCHECK_SAMPLE,
+        [
+            flycheck_setup_action(b"ttydiff-content"),
+            action("check-buffer-manually", b"\x03!c", settle=6.0, quiet=1.0),
+            action(
+                "inspect-diagnostics",
+                b"\x1b:(mapcar (lambda (error) "
+                b"(list (flycheck-error-level error) "
+                b"(flycheck-error-line error) (flycheck-error-column error) "
+                b"(flycheck-error-id error) (flycheck-error-message error))) "
+                b"flycheck-current-errors)\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "inspect-diagnostic-overlays",
+                b"\x1b:(mapcar (lambda (overlay) "
+                b"(list (overlay-start overlay) (overlay-end overlay) "
+                b"(overlay-get overlay 'face) "
+                b"(flycheck-error-level "
+                b"(overlay-get overlay 'flycheck-error)))) "
+                b"(flycheck-overlays-in (point-min) (point-max)))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("show-flycheck-error-list", b"\x03!l", settle=4.0, quiet=1.0),
+            action("close-error-list", b"\x181", checkpoint=False),
+            action("visit-first-diagnostic", b"\x03!n", settle=2.0, quiet=0.5),
+            action("visit-next-diagnostic", b"\x03!n", settle=2.0, quiet=0.5),
+            action("visit-previous-diagnostic", b"\x03!p", settle=2.0, quiet=0.5),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+    (
+        "flycheck-clean-idle-teardown",
+        "clean line\n",
+        [
+            flycheck_setup_action(
+                b"ttydiff-clean",
+                b"(setq-local flycheck-check-syntax-automatically "
+                b"'(idle-change) flycheck-idle-change-delay 0.05) ",
+            ),
+            action("trigger-idle-check", b"\x1b>x", settle=4.0, quiet=1.0),
+            action(
+                "inspect-clean-idle-result",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(length flycheck-current-errors) "
+                b"(length (flycheck-overlays-in (point-min) (point-max))) "
+                b"(null flycheck--idle-trigger-timer) "
+                b"(flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action("repeat-clean-check-manually", b"\x03!c", settle=4.0, quiet=1.0),
+            action("disable-flycheck-mode", b"\x1bxflycheck-mode\r", settle=2.0, quiet=0.5),
+            action(
+                "inspect-flycheck-teardown",
+                b"\x1b:(list flycheck-mode flycheck-last-status-change "
+                b"(length flycheck-current-errors) "
+                b"(length (flycheck-overlays-in (point-min) (point-max))) "
+                b"flycheck--idle-trigger-timer flycheck-current-syntax-check)\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+    (
+        "flycheck-malformed-missing-tool",
+        "malformed checker input\n",
+        [
+            flycheck_setup_action(b"ttydiff-malformed"),
+            action("run-malformed-checker", b"\x03!c", settle=5.0, quiet=1.0),
+            action(
+                "inspect-malformed-result",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(length flycheck-current-errors) (flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "select-missing-checker",
+                b"\x1b:(setq-local flycheck-checker 'ttydiff-missing)\r",
+                checkpoint=False,
+            ),
+            action("run-missing-checker", b"\x03!c", settle=4.0, quiet=1.0),
+            action(
+                "inspect-missing-tool-result",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(length flycheck-current-errors) (flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+    (
+        "flycheck-cancellation",
+        "cancellation checker input\n",
+        [
+            flycheck_setup_action(b"ttydiff-wait"),
+            action("start-long-running-checker", b"\x03!c", settle=2.0, quiet=0.5),
+            action(
+                "inspect-running-checker",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(flycheck-running-p))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+            action(
+                "cancel-running-checker",
+                b"\x1b:(flycheck-stop)\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "inspect-cancelled-checker",
+                b"\x1b:(list flycheck-last-status-change "
+                b"(flycheck-running-p) (length flycheck-current-errors) "
+                b"(length (flycheck-overlays-in (point-min) (point-max))))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        FLYCHECK_OPTIONS,
+    ),
+]
+
 MAGIT_SCENARIO_NAMES = (
     "magit-status-sections-stage",
     "magit-diff-log-transient",
@@ -4094,7 +4291,9 @@ def select_scenarios(names):
     run that has no third-party package lifecycle.
     """
     if not names:
-        package_scenarios = set(MAGIT_SCENARIO_NAMES + LSP_MODE_SCENARIO_NAMES)
+        package_scenarios = set(
+            MAGIT_SCENARIO_NAMES + LSP_MODE_SCENARIO_NAMES + FLYCHECK_SCENARIO_NAMES
+        )
         return [entry for entry in SCENARIOS if entry[0] not in package_scenarios]
     by_name = {entry[0]: entry for entry in SCENARIOS}
     unknown = [name for name in names if name not in by_name]
@@ -4430,6 +4629,33 @@ def main():
                     sys.exit(2)
                 gnu_env["LSP_MODE_GATE_ROOT"] = os.path.abspath(roots[0])
                 emaxx_env["LSP_MODE_GATE_ROOT"] = os.path.abspath(roots[1])
+            if options.get("flycheck_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_FLYCHECK_GNU_ROOT",
+                    "EMAXX_TTYDIFF_FLYCHECK_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                checker = os.environ.get("EMAXX_TTYDIFF_FLYCHECK_CHECKER")
+                if not all(roots) or not checker:
+                    print(
+                        "ERROR: Flycheck scenarios require %s and checker path"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print(
+                        "ERROR: Flycheck package roots have no packages directory",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not Path(checker).is_file():
+                    print("ERROR: Flycheck fixture checker is missing", file=sys.stderr)
+                    sys.exit(2)
+                gnu_env["FLYCHECK_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["FLYCHECK_GATE_ROOT"] = os.path.abspath(roots[1])
+                gnu_env["FLYCHECK_FIXTURE_CHECKER"] = os.path.abspath(checker)
+                emaxx_env["FLYCHECK_FIXTURE_CHECKER"] = os.path.abspath(checker)
             ok = compare(
                 name,
                 keys,

@@ -4527,6 +4527,24 @@ fn fboundp_obeys_gnu_check_symbol_for_positioned_symbols() {
 }
 
 #[test]
+fn delete_and_delete_dups_obey_positioned_symbol_equality() {
+    // `let-alist' uses `delete-dups' while macroexpanding forms read by the
+    // byte compiler.  Distinct source occurrences of the same symbol must
+    // therefore compare as equal while symbols-with-pos-enabled is active.
+    assert_eq!(
+        eval_str(
+            r#"(let* ((symbols-with-pos-enabled t)
+                       (symbols (read-positioning-symbols "(foo foo)"))
+                       (first (car symbols))
+                       (second (cadr symbols)))
+                  (list (length (delete second (list first second)))
+                        (length (delete-dups (list first second)))))"#
+        ),
+        Value::list([Value::Integer(0), Value::Integer(1)])
+    );
+}
+
+#[test]
 fn get_and_put_use_gnu_eq_for_arbitrary_and_positioned_property_keys() {
     assert_eq!(
         eval_str(
@@ -6599,6 +6617,28 @@ fn window_face_spans_resolve_faces_inherited_from_text_categories() {
 }
 
 #[test]
+fn window_face_spans_resolve_faces_inherited_from_overlay_categories() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"diagnostic text\")
+           (put 'sample-diagnostic-category 'face 'error)
+           (let ((overlay (make-overlay 1 11)))
+             (overlay-put overlay 'category 'sample-diagnostic-category)))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    let spans =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 16, true);
+    assert_eq!(
+        spans,
+        vec![(1, 11, Value::Symbol("error".into()))],
+        "redisplay inherits an overlay face from its category plist"
+    );
+}
+
+#[test]
 fn window_face_spans_honor_font_lock_face_aliases_on_overlays() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -6689,6 +6729,35 @@ fn header_line_glass_keeps_partial_sort_column_face() {
                     .contains("Name")
         }),
         "the sortable Name column keeps its partial bold face, got {spans:?}"
+    );
+}
+
+#[test]
+fn tab_line_glass_evaluates_per_buffer_format() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(setq-local tab-line-format
+                     '(:eval (propertize \" Group: M-1 flat\"
+                                         'face 'bold)))",
+    );
+    let mut env: Env = Vec::new();
+    let window_id = interp.selected_window_id();
+    let (text, spans) = crate::lisp::primitives::render_window_tab_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        crate::lisp::primitives::InteractiveWindowMetrics {
+            text_height: 10,
+            window_end: 1,
+        },
+    )
+    .expect("tab line renders");
+    assert_eq!(text, " Group: M-1 flat");
+    assert_eq!(
+        spans,
+        vec![(0, text.chars().count(), Value::Symbol("bold".into()))]
     );
 }
 

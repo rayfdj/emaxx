@@ -7434,6 +7434,26 @@ fn positioned_source_lambdas_obey_the_dynamic_callable_contract() {
 }
 
 #[test]
+fn functionp_resolves_positioned_function_symbols_while_enabled() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defmacro positioned-functionp-macro () nil)
+                 (let ((function (read-positioning-symbols "identity"))
+                       (special (read-positioning-symbols "if"))
+                       (macro (read-positioning-symbols
+                               "positioned-functionp-macro")))
+                   (list
+                    (let ((symbols-with-pos-enabled nil)) (functionp function))
+                    (let ((symbols-with-pos-enabled t)) (functionp function))
+                    (let ((symbols-with-pos-enabled t)) (functionp special))
+                    (let ((symbols-with-pos-enabled t)) (functionp macro)))))"#
+        ),
+        Value::list([Value::Nil, Value::T, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
 fn functionp_accepts_function_autoload_symbols_but_not_macros_or_special_forms() {
     assert_eq!(
         eval_str(

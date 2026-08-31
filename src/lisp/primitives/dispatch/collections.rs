@@ -47,7 +47,9 @@ fn delete_from_list(
                     DeleteListComparison::Eq => {
                         values_eq_in_env(interp, &cell.car.borrow(), elt, env)
                     }
-                    DeleteListComparison::Equal => values_equal(interp, elt, &cell.car.borrow()),
+                    DeleteListComparison::Equal => {
+                        values_equal_in_env(interp, elt, &cell.car.borrow(), env)
+                    }
                 };
                 if matches {
                     if let Some(previous) = &previous {

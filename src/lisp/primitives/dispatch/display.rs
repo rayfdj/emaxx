@@ -1328,24 +1328,25 @@ pub(crate) fn window_face_spans(
             if overlay.is_dead() || overlay.beg >= to || overlay.end <= from {
                 continue;
             }
-            let Some(face) = overlay
-                .get_prop(&Value::Symbol("face".into()))
-                .filter(|face| !face.is_nil())
-                .or_else(|| {
-                    face_alias_names.iter().find_map(|name| {
-                        overlay
-                            .get_prop(&Value::Symbol(name.clone().into()))
-                            .filter(|face| !face.is_nil())
-                    })
+            let Some(face) = crate::lisp::primitives::strings::overlay_property_with_category(
+                interp, overlay, "face",
+            )
+            .filter(|face| !face.is_nil())
+            .or_else(|| {
+                face_alias_names.iter().find_map(|name| {
+                    crate::lisp::primitives::strings::overlay_property_with_category(
+                        interp, overlay, name,
+                    )
+                    .filter(|face| !face.is_nil())
                 })
-                .cloned()
-            else {
+            }) else {
                 continue;
             };
-            let priority = overlay
-                .get_prop(&Value::Symbol("priority".into()))
-                .and_then(|priority| priority.as_integer().ok())
-                .unwrap_or(0);
+            let priority = crate::lisp::primitives::strings::overlay_property_with_category(
+                interp, overlay, "priority",
+            )
+            .and_then(|priority| priority.as_integer().ok())
+            .unwrap_or(0);
             overlay_spans.push((
                 priority,
                 overlay.id,
@@ -1415,6 +1416,18 @@ pub(crate) fn render_window_header_line(
     metrics: InteractiveWindowMetrics,
 ) -> Result<(String, FaceSpans), LispError> {
     render_window_line_with_format(interp, env, window_id, point, metrics, "header-line-format")
+}
+
+/// The window's tab line, rendered above its header and text through the
+/// same display-mode-line machinery as GNU's `tab-line-format'.
+pub(crate) fn render_window_tab_line(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    point: usize,
+    metrics: InteractiveWindowMetrics,
+) -> Result<(String, FaceSpans), LispError> {
+    render_window_line_with_format(interp, env, window_id, point, metrics, "tab-line-format")
 }
 
 fn render_window_line_with_format(

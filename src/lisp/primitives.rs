@@ -227,8 +227,9 @@ pub(crate) use dispatch::{
 };
 pub(crate) use dispatch::{
     LineNumberLayout, LineNumberMode, TtyFaceAttrs, WindowRenderInfo, render_window_header_line,
-    render_window_mode_line, resolve_tty_face_attrs, store_window_hscroll_state, window_face_spans,
-    window_hscroll_state, window_line_number_layout, window_render_layout,
+    render_window_mode_line, render_window_tab_line, resolve_tty_face_attrs,
+    store_window_hscroll_state, window_face_spans, window_hscroll_state, window_line_number_layout,
+    window_render_layout,
 };
 pub use dispatch::{call, is_builtin};
 

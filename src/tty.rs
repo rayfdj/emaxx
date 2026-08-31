@@ -2860,10 +2860,10 @@ fn redraw_with_echo_policy(
         metrics: crate::lisp::primitives::InteractiveWindowMetrics,
     }
     let mut mode_line_jobs: Vec<ModeLineJob> = Vec::new();
-    // A window whose buffer sets `header-line-format' spends its first
-    // body row on the header (xdisp.c window_wants_header_line); the
-    // header renders through the mode-line machinery in the
-    // `header-line' face, padded with spaces.
+    // A tab line and header line consume body rows above the window text,
+    // in that order.  Both render through display-mode-line machinery in
+    // their respective faces and leave at least one text row visible.
+    let mut tab_line_jobs: Vec<ModeLineJob> = Vec::new();
     let mut header_line_jobs: Vec<ModeLineJob> = Vec::new();
     // Face spans over window text apply after the text lands (their
     // resolution evaluates Lisp, which the buffer borrow above forbids).
@@ -2933,9 +2933,14 @@ fn redraw_with_echo_policy(
             .buffer_local_value(info.buffer_id, "header-line-format")
             .or_else(|| interpreter.default_value("header-line-format"))
             .is_some_and(|format| format.is_truthy());
-        let header_rows = usize::from(has_header_line && info.height > 2);
-        let text_top = info.top + header_rows;
-        let text_rows = info.height - 1 - header_rows;
+        let has_tab_line = interpreter
+            .buffer_local_value(info.buffer_id, "tab-line-format")
+            .or_else(|| interpreter.default_value("tab-line-format"))
+            .is_some_and(|format| format.is_truthy());
+        let tab_rows = usize::from(has_tab_line && info.height > 2);
+        let header_rows = usize::from(has_header_line && info.height > 2 + tab_rows);
+        let text_top = info.top + tab_rows + header_rows;
+        let text_rows = info.height - 1 - tab_rows - header_rows;
         // `display-line-numbers': the column's width follows the
         // window's start line, which planning itself may move
         // (recentering); iterate until the width the plan was laid out
@@ -3275,6 +3280,17 @@ fn redraw_with_echo_policy(
         });
         if header_rows > 0 {
             header_line_jobs.push(ModeLineJob {
+                window_id: info.window_id,
+                buffer_id: info.buffer_id,
+                point: mode_line_point,
+                row: info.top + tab_rows,
+                left: info.left,
+                body_width,
+                metrics,
+            });
+        }
+        if tab_rows > 0 {
+            tab_line_jobs.push(ModeLineJob {
                 window_id: info.window_id,
                 buffer_id: info.buffer_id,
                 point: mode_line_point,
@@ -3862,6 +3878,56 @@ fn redraw_with_echo_policy(
             let from = job.left + from.min(job.body_width);
             let to = job.left + to.min(job.body_width);
             frame[job.row].overlay(from, to, attrs);
+        }
+    }
+
+    // Tab lines sit above header lines and use the `tab-line' face.  A
+    // package can install an evaluated per-buffer format here without
+    // enabling the global tab-bar UI (Flycheck's grouping controls do so).
+    if !tab_line_jobs.is_empty() {
+        let tab_attrs = *state
+            .face_cache
+            .entry("tab-line".into())
+            .or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(
+                    interpreter,
+                    env,
+                    &Value::Symbol("tab-line".into()),
+                )
+            });
+        for job in &tab_line_jobs {
+            let (mut tab, mut spans) = match crate::lisp::primitives::render_window_tab_line(
+                interpreter,
+                env,
+                job.window_id,
+                job.point,
+                job.metrics,
+            ) {
+                Ok((text, spans)) => (text, spans),
+                Err(error) => {
+                    debug_log(&format!("tab-line render: {error:?}"));
+                    (format!("[tab-line render error: {error:?}]"), Vec::new())
+                }
+            };
+            tab = apply_glyphless_char_display(interpreter, job.buffer_id, tab, &mut spans);
+            if tab.chars().count() > job.body_width {
+                tab = tab.chars().take(job.body_width).collect();
+            }
+            let mut padded = tab.clone();
+            padded.extend(std::iter::repeat_n(
+                ' ',
+                job.body_width.saturating_sub(tab.chars().count()),
+            ));
+            frame[job.row].blit(job.left, &padded, tab_attrs);
+            for (from, to, face) in spans {
+                let key = format!("{face}");
+                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
+                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+                });
+                let from = job.left + from.min(job.body_width);
+                let to = job.left + to.min(job.body_width);
+                frame[job.row].overlay(from, to, attrs);
+            }
         }
     }
 

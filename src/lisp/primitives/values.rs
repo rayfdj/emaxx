@@ -1944,9 +1944,16 @@ pub(crate) fn resolve_callable(
     value: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
-    match value {
+    let callable = if symbols_with_pos_enabled(interp, env) {
+        symbol_with_pos_parts(interp, value)
+            .map(|(symbol, _)| symbol)
+            .unwrap_or_else(|| value.clone())
+    } else {
+        value.clone()
+    };
+    match &callable {
         Value::Symbol(name) => interp.lookup_function(name, env),
-        _ => Ok(value.clone()),
+        _ => Ok(callable),
     }
 }
 
