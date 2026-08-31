@@ -2976,6 +2976,11 @@ pub struct Interpreter {
     terminal_live: bool,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::buffer::Buffer)>,
+    /// File names retained by dead buffer objects.  GNU kills the buffer's
+    /// text but keeps these buffer slots readable through the Lisp object;
+    /// Eglot relies on `(buffer-file-name BUFFER)' after killing BUFFER in
+    /// order to revisit the same file.
+    killed_buffer_file_names: HashMap<u64, Option<String>>,
     /// Known buffers: (id, name) pairs.
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
@@ -3782,6 +3787,7 @@ impl Interpreter {
             terminal_parameters: Vec::new(),
             terminal_live: true,
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
+            killed_buffer_file_names: HashMap::new(),
             // GNU's batch `buffer-list' is (*scratch* " *Minibuf-0*"
             // *Messages*); *Messages* joins the list once the minibuffer
             // buffer exists, below.
@@ -6133,11 +6139,17 @@ fn is_vector_literal(value: &Value) -> bool {
     )
 }
 
-fn is_lambda_form(value: &Value) -> bool {
-    value
-        .to_vec()
-        .ok()
-        .is_some_and(|items| matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda"))
+fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {
+    value.to_vec().ok().is_some_and(|items| {
+        items.first().is_some_and(|head| {
+            matches!(head, Value::Symbol(name) if name == "lambda")
+                || (crate::lisp::primitives::symbols_with_pos_enabled(interp, env)
+                    && matches!(
+                        crate::lisp::primitives::symbol_with_pos_parts(interp, head),
+                        Some((Value::Symbol(name), _)) if name == "lambda"
+                    ))
+        })
+    })
 }
 
 fn wrong_type_argument(predicate: &str, value: Value) -> LispError {

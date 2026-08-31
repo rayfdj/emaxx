@@ -19,6 +19,34 @@ impl Interpreter {
         }
     }
 
+    pub(super) fn parse_source_params(
+        &self,
+        spec: &Value,
+        env: &Env,
+    ) -> Result<Vec<String>, LispError> {
+        let items = spec.to_vec()?;
+        let positioned = crate::lisp::primitives::symbols_with_pos_enabled(self, env);
+        let normalized = items
+            .into_iter()
+            .map(|item| match item {
+                Value::Symbol(_) => Ok(item),
+                _ if positioned => crate::lisp::primitives::symbol_with_pos_parts(self, &item)
+                    .map(|(symbol, _)| symbol)
+                    .ok_or_else(|| invalid_function(spec.clone())),
+                _ => Err(invalid_function(spec.clone())),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_lambda_list(spec, &normalized)?;
+        normalized
+            .into_iter()
+            .map(|item| {
+                item.as_symbol()
+                    .map(str::to_string)
+                    .map_err(|_| invalid_function(spec.clone()))
+            })
+            .collect()
+    }
+
     pub(super) fn sf_while(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         // GNU eval.c's Fwhile takes an unevalled `args' whose car is TEST;
         // `(while)' therefore signals wrong-number-of-arguments rather than

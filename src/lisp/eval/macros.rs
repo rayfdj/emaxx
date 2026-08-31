@@ -84,12 +84,17 @@ impl Interpreter {
             };
             let mut materialized = Vec::with_capacity(slots.len());
             for slot in slots {
-                materialized.push(self.materialize_read_record_literals_inner(
+                let value = self.materialize_read_record_literals_inner(
                     slot,
                     seen_cons,
                     active_reader_forms,
                     records,
-                )?);
+                )?;
+                let value =
+                    crate::lisp::primitives::materialize_read_hash_table_literals(self, &value)?;
+                let value =
+                    crate::lisp::primitives::materialize_read_char_table_literals(self, &value)?;
+                materialized.push(value);
             }
             let record = match closure_kind {
                 Some(ReaderClosureKind::Interpreted) => {

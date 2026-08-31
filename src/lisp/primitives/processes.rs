@@ -454,6 +454,8 @@ pub(crate) struct MakeProcessArgs {
     pub(crate) coding: Option<(Value, Value)>,
     pub(crate) name: Option<String>,
     pub(crate) stderr_process_id: Option<u64>,
+    pub(crate) stderr_buffer_id: Option<u64>,
+    pub(crate) query_on_exit_flag: bool,
     pub(crate) file_handler: bool,
     pub(crate) connection_type: Option<Value>,
 }
@@ -476,6 +478,8 @@ pub(crate) fn parse_make_process_args(
     let mut coding = None;
     let mut name = None;
     let mut stderr_process_id = None;
+    let mut stderr_buffer_id = None;
+    let mut query_on_exit_flag = true;
     let mut file_handler = false;
     let mut connection_type = None;
 
@@ -494,8 +498,13 @@ pub(crate) fn parse_make_process_args(
             ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
             ":coding" => coding = Some(process_coding_pair(value)?),
             ":stderr" if !value.is_nil() => {
-                stderr_process_id = Some(interp.resolve_process_id(value)?);
+                if let Ok(process_id) = interp.resolve_process_id(value) {
+                    stderr_process_id = Some(process_id);
+                } else {
+                    stderr_buffer_id = process_buffer_target(interp, value)?;
+                }
             }
+            ":noquery" => query_on_exit_flag = !value.is_truthy(),
             ":file-handler" => file_handler = value.is_truthy(),
             ":connection-type" => connection_type = Some(value.clone()),
             _ => {}
@@ -511,6 +520,8 @@ pub(crate) fn parse_make_process_args(
         coding,
         name,
         stderr_process_id,
+        stderr_buffer_id,
+        query_on_exit_flag,
         file_handler,
         connection_type,
     })
@@ -540,9 +551,6 @@ pub(crate) fn deliver_process_output_decoded(
     // The process buffer may have been killed before straggler output is
     // delivered (epg-reset kills it right after completion); GNU discards
     // such output rather than erroring.
-    let target_buffer_id = interp
-        .process_buffer_id(process_id)
-        .filter(|buffer_id| interp.get_buffer_by_id(*buffer_id).is_some());
     if let Some(filter) = interp.process_filter(process_id) {
         // GNU uses t as a flow-control sentinel: the descriptor is removed
         // from the read set until a real/default filter is installed again.
@@ -551,13 +559,11 @@ pub(crate) fn deliver_process_output_decoded(
         if filter == Value::T {
             return Ok(());
         }
+        // read_process_output_call invokes an explicit filter in the buffer
+        // that was current when output delivery began, not in the process
+        // buffer.  It still protects that current-buffer choice against a
+        // filter which calls set-buffer itself.
         let saved_buffer_id = interp.current_buffer_id();
-        let switched = target_buffer_id.is_some_and(|buffer_id| buffer_id != saved_buffer_id);
-        if let Some(buffer_id) = target_buffer_id
-            && switched
-        {
-            interp.set_current_buffer_id(buffer_id)?;
-        }
         // GNU hands the filter an ordinary mutable string; filters such as
         // eshell's propertize it in place, so the value must carry live
         // text-property state.
@@ -574,7 +580,7 @@ pub(crate) fn deliver_process_output_decoded(
             ],
             env,
         );
-        if switched {
+        if interp.current_buffer_id() != saved_buffer_id {
             interp.set_current_buffer_id(saved_buffer_id)?;
         }
         result?;
@@ -1151,18 +1157,85 @@ pub(super) fn network_io_error_detail(error: &std::io::Error) -> String {
     }
 }
 
-/// process.c's service-name resolution: getservbyname consults
-/// /etc/services with the protocol chosen by the socket type, exactly
-/// as getaddrinfo does for its service argument.
-fn services_database_port(name: &str, datagram: bool) -> Option<i64> {
-    let service = std::ffi::CString::new(name).ok()?;
-    let protocol = std::ffi::CString::new(if datagram { "udp" } else { "tcp" }).ok()?;
-    let entry = unsafe { libc::getservbyname(service.as_ptr(), protocol.as_ptr()) };
-    if entry.is_null() {
-        return None;
+/// Resolve HOST and a named SERVICE together, as process.c does when
+/// `:host' is non-nil.  Besides selecting the service's port, this preserves
+/// the host platform's `gai_strerror' diagnostic instead of baking one
+/// operating system's wording into the runtime.
+fn host_service_database_port(
+    host: &str,
+    service: &str,
+    datagram: bool,
+    family_ipv4: bool,
+    family_ipv6: bool,
+) -> Result<i64, LispError> {
+    // Emacs passes SSDATA directly to the C resolver, so an embedded NUL
+    // terminates the host or service as it would for any other C string.
+    let c_string_prefix = |text: &str| {
+        let prefix = text
+            .as_bytes()
+            .split(|byte| *byte == 0)
+            .next()
+            .unwrap_or_default();
+        std::ffi::CString::new(prefix).expect("NUL-free C string prefix")
+    };
+    let host_c = c_string_prefix(host);
+    let service_c = c_string_prefix(service);
+    let mut hints = unsafe { std::mem::zeroed::<libc::addrinfo>() };
+    hints.ai_family = if family_ipv4 {
+        libc::AF_INET
+    } else if family_ipv6 {
+        libc::AF_INET6
+    } else {
+        libc::AF_UNSPEC
+    };
+    hints.ai_socktype = if datagram {
+        libc::SOCK_DGRAM
+    } else {
+        libc::SOCK_STREAM
+    };
+    let mut addresses = std::ptr::null_mut();
+    let status =
+        unsafe { libc::getaddrinfo(host_c.as_ptr(), service_c.as_ptr(), &hints, &mut addresses) };
+    if status != 0 {
+        let detail = unsafe {
+            let message = libc::gai_strerror(status);
+            if message.is_null() {
+                format!("getaddrinfo error {status}")
+            } else {
+                std::ffi::CStr::from_ptr(message)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        return Err(LispError::Signal(format!("{host}/{service} {detail}")));
     }
-    let port = unsafe { (*entry).s_port };
-    Some(i64::from(u16::from_be(port as u16)))
+
+    let mut current = addresses;
+    let mut port = None;
+    while !current.is_null() {
+        let entry = unsafe { &*current };
+        port = match entry.ai_family {
+            libc::AF_INET if !entry.ai_addr.is_null() => {
+                let address = unsafe { &*(entry.ai_addr.cast::<libc::sockaddr_in>()) };
+                Some(i64::from(u16::from_be(address.sin_port)))
+            }
+            libc::AF_INET6 if !entry.ai_addr.is_null() => {
+                let address = unsafe { &*(entry.ai_addr.cast::<libc::sockaddr_in6>()) };
+                Some(i64::from(u16::from_be(address.sin6_port)))
+            }
+            _ => None,
+        };
+        if port.is_some() {
+            break;
+        }
+        current = entry.ai_next;
+    }
+    unsafe { libc::freeaddrinfo(addresses) };
+    port.ok_or_else(|| {
+        LispError::Signal(format!(
+            "make-network-process: no matching address for {host}"
+        ))
+    })
 }
 
 pub(super) fn network_server_error(error: &std::io::Error) -> LispError {
@@ -1333,27 +1406,22 @@ pub(crate) fn make_network_process(
     if host_local {
         host = Some(if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
     }
-    // process.c resolves a non-numeric :service string through the
-    // services database — getaddrinfo when a host is in play,
-    // getservbyname otherwise, both keyed by the socket type (udp for
-    // datagrams).  A name the database does not know signals the
-    // getaddrinfo diagnostic with the host/service prefix (servers
-    // default the host to the loopback of their family).
+    // process.c supplies an explicit loopback host when :host is nil, then
+    // resolves that host and a non-numeric :service together through
+    // getaddrinfo with the socket type as a hint.  This is observable in
+    // both the selected port and the platform's error wording.
     if service.is_none()
         && !family_local
         && let Some(text) = service_path.as_deref()
     {
-        match services_database_port(text, datagram) {
-            Some(port) => service = Some(port),
-            None => {
-                let host_text = host
-                    .clone()
-                    .unwrap_or_else(|| if family_ipv6 { "::1" } else { "127.0.0.1" }.into());
-                return Err(LispError::Signal(format!(
-                    "{host_text}/{text} Servname not supported for ai_socktype"
-                )));
-            }
-        }
+        let default_host = if family_ipv6 { "::1" } else { "127.0.0.1" };
+        service = Some(host_service_database_port(
+            host.as_deref().unwrap_or(default_host),
+            text,
+            datagram,
+            family_ipv4,
+            family_ipv6,
+        )?);
     }
     let (decoding, encoding) = process_creation_coding_systems(interp, env, &coding);
     let name = interp.unique_process_name(&name);
@@ -2050,7 +2118,9 @@ fn run_process_log(
 /// sleeping blind.  While progress is being made the loop re-pumps
 /// immediately, so an in-process client/server exchange completes at full
 /// speed rather than one round-trip per wait call.  With RETURN_ON_DELIVERY
-/// (accept-process-output) the wait ends as soon as output was handled.
+/// (accept-process-output) the wait ends as soon as output was handled.  A
+/// status change or sentinel alone is progress, but GNU does not report it as
+/// delivered process output.
 /// Returns whether any process output was delivered.
 pub(crate) fn wait_pumping_processes(
     interp: &mut Interpreter,
@@ -2061,26 +2131,40 @@ pub(crate) fn wait_pumping_processes(
 ) -> Result<bool, LispError> {
     let deadline = total.map(|total| std::time::Instant::now() + total);
     let mut delivered = false;
+    let mut delivery_grace_deadline = None;
     let target_start =
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
+    let all_processes_start = interp.current_thread_process_output_delivery_count();
     loop {
         let mut progressed = pump_external_process_output(interp, env)?;
         progressed |= pump_connection_processes(interp, env)?;
-        delivered |= progressed;
+        let any_process_delivered =
+            interp.current_thread_process_output_delivery_count() != all_processes_start;
+        delivered |= any_process_delivered;
+        if return_on_delivery && target_process_id.is_none() && any_process_delivered {
+            // process.c:5657-5661 keeps waiting for up to one
+            // READ_OUTPUT_DELAY_INCREMENT (10ms) after some output.  This
+            // lets one readiness cycle drain sibling descriptors instead of
+            // returning on the first short stderr write while stdout is
+            // becoming readable (the ordinary JSON-RPC startup pattern).
+            delivery_grace_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
+        }
         interp.drive_threads(env, true)?;
         let requested_process_delivered = target_process_id.is_some_and(|process_id| {
             interp.process_output_delivery_count(process_id) != target_start
         });
-        if return_on_delivery
-            && if target_process_id.is_some() {
-                requested_process_delivered
-            } else {
-                delivered
-            }
-        {
+        if return_on_delivery && target_process_id.is_some() && requested_process_delivered {
             break;
         }
         let now = std::time::Instant::now();
+        if return_on_delivery
+            && target_process_id.is_none()
+            && delivered
+            && delivery_grace_deadline.is_some_and(|grace| now >= grace)
+        {
+            break;
+        }
         if deadline.is_some_and(|deadline| now >= deadline) {
             // Timer/thread callbacks above can consume the remainder of the
             // deadline while the requested child becomes readable.  Drain
@@ -2117,6 +2201,9 @@ pub(crate) fn wait_pumping_processes(
             .unwrap_or(std::time::Duration::from_millis(10));
         if let Some(due) = interp.next_timer_due() {
             nap = nap.min(due.saturating_duration_since(now));
+        }
+        if let Some(grace) = delivery_grace_deadline {
+            nap = nap.min(grace.saturating_duration_since(now));
         }
         nap = nap
             .min(std::time::Duration::from_millis(10))

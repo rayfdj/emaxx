@@ -3805,7 +3805,20 @@ mod tests {
         let error = acquire_subject_lock(&root).unwrap_err();
         assert!(error.contains("another compatibility run"));
         drop(first);
-        acquire_subject_lock(&root).unwrap();
+        // A concurrently running test that spawns a child in the instant
+        // the lock is held leaves the child a fork-window duplicate of the
+        // lock fd (O_CLOEXEC closes it at exec, not at fork), so the
+        // release can take a beat to become visible.  The release itself
+        // is real; a bounded retry absorbs the window.
+        let mut reacquired = acquire_subject_lock(&root);
+        for _ in 0..40 {
+            if reacquired.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            reacquired = acquire_subject_lock(&root);
+        }
+        reacquired.unwrap();
 
         fs::remove_dir_all(&root).unwrap();
     }

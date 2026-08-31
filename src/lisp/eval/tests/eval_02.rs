@@ -7638,6 +7638,33 @@ fn read_from_string_makes_record_literals_record_like() {
 }
 
 #[test]
+fn read_from_string_materializes_persisted_records_with_nested_hash_tables() {
+    // Third-party packages persist cl-defstruct records with `#s(...)' and
+    // consume them through read-from-string.  GNU's reader returns the real
+    // record and nested hash tables, never a parser-private placeholder.
+    assert_eq!(
+        eval_str(
+            r##"(let ((session
+                       (car
+                        (read-from-string
+                         "#s(lsp-session nil nil #s(hash-table test equal) #s(hash-table test equal) #s(hash-table test equal))"))))
+                  (list (recordp session)
+                        (type-of session)
+                        (length session)
+                        (hash-table-p (aref session 3))
+                        (hash-table-test (aref session 3))))"##,
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("lsp-session".into()),
+            Value::Integer(6),
+            Value::T,
+            Value::Symbol("equal".into()),
+        ])
+    );
+}
+
+#[test]
 fn read_from_string_nested_record_step_shrinks() {
     assert_eq!(
         eval_str(

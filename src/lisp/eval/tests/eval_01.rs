@@ -69,6 +69,56 @@ fn assq_and_rassq_obey_gnu_eq_for_positioned_symbols() {
 }
 
 #[test]
+fn structural_equality_and_searches_unwrap_positioned_symbols_only_while_enabled() {
+    // GNU 30.2 fns.c's recursive `equal' walk and the searches built on it
+    // see the underlying symbol while the byte compiler dynamically enables
+    // source positions.  Generated package code relies on this for keyword
+    // membership tests during macro expansion.
+    assert_eq!(
+        eval_str_bare(
+            r#"(let ((positioned (position-symbol :line 1)))
+                  (list
+                   (let ((symbols-with-pos-enabled nil))
+                     (list (equal positioned :line)
+                           (equal (list positioned) '(:line))
+                           (member positioned '(:line))
+                           (assoc positioned '((:line . found)))
+                           (rassoc positioned '((found . :line)))
+                           (member (list positioned) '((:line)))
+                           (equal (vector positioned) [:line])))
+                   (let ((symbols-with-pos-enabled t))
+                     (list (equal positioned :line)
+                           (equal (list positioned) '(:line))
+                           (if (member positioned '(:line)) t nil)
+                           (if (assoc positioned '((:line . found))) t nil)
+                           (if (rassoc positioned '((found . :line))) t nil)
+                           (if (member (list positioned) '((:line))) t nil)
+                           (equal (vector positioned) [:line])))))"#,
+        ),
+        Value::list([
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ]),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn feature_primitives_accept_positioned_symbols_while_enabled() {
     // GNU 30.2 fns.c implements all three entry points with CHECK_SYMBOL;
     // XSYMBOL then addresses the positioned object's underlying symbol.
@@ -119,6 +169,44 @@ fn read_positioning_symbols_positions_expanded_and_shorthand_exempt_symbols() {
         Value::list([
             Value::String("(#<symbol defun at 1> #<symbol long-target at 7> nil 42)".into()),
             Value::String("#<symbol s-raw at 2>".into()),
+        ])
+    );
+}
+
+#[test]
+fn read_positioning_symbols_materializes_hash_literals_before_macroexpansion() {
+    // bytecomp.el reads source with positions enabled.  GNU returns the real
+    // identity-bearing hash table, keeps its payload symbols bare, and still
+    // locates an ordinary source symbol after that opaque literal.
+    assert_eq!(
+        eval_str_bare(
+            r#"(let* ((form (read-positioning-symbols
+                            "(#s(hash-table data (foo bar)) tail)"))
+                       (table (car form))
+                       (tail (car (cdr form)))
+                       entry)
+                  (maphash (function
+                            (lambda (key value)
+                              (setq entry
+                                    (list (symbol-with-pos-p key)
+                                          (symbol-with-pos-p value)
+                                          key value))))
+                           table)
+                  (list (hash-table-p table)
+                        entry
+                        (symbol-with-pos-p tail)
+                        (format "%S" tail)))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Symbol("foo".into()),
+                Value::Symbol("bar".into()),
+            ]),
+            Value::T,
+            Value::String("#<symbol tail at 31>".into()),
         ])
     );
 }
@@ -270,6 +358,124 @@ fn subprocess_exit_is_event_driven_and_notifies_newest_process_first_once() {
 }
 
 #[test]
+fn make_process_stderr_buffer_creates_the_linked_gnu_pipe_process() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let* ((shell (executable-find "sh"))
+                         (name-holder
+                          (make-pipe-process
+                           :name "stderr-buffer-parent"
+                           :noquery t))
+                         (stderr-buffer (generate-new-buffer "*stderr-buffer-target*"))
+                         (before (process-list))
+                         (parent
+                          (make-process
+                           :name "stderr-buffer-parent"
+                           :command
+                           (list shell "-c" "cat >/dev/null; printf err >&2")
+                           :connection-type 'pipe
+                           :stderr stderr-buffer
+                           :noquery t))
+                         (created
+                          (seq-filter (lambda (process) (not (memq process before)))
+                                      (process-list)))
+                         (snapshot
+                          (mapcar
+                           (lambda (process)
+                             (list (process-name process)
+                                   (eq process parent)
+                                   (let ((buffer (process-buffer process)))
+                                     (and buffer (buffer-name buffer)))
+                                   (process-status process)
+                                   (process-query-on-exit-flag process)
+                                   (let ((command (process-command process)))
+                                     (and command
+                                          (cons (file-name-nondirectory (car command))
+                                                (cdr command))))))
+                           created)))
+                    (process-send-eof parent)
+                    (while (process-live-p parent)
+                      (accept-process-output parent 0.1))
+                    (accept-process-output nil 0.1)
+                    (list snapshot
+                          (with-current-buffer stderr-buffer
+                            (buffer-string))))"#,
+            ),
+            Value::list([
+                Value::list([
+                    Value::list([
+                        Value::String("stderr-buffer-parent<1>".into()),
+                        Value::T,
+                        Value::Nil,
+                        Value::Symbol("run".into()),
+                        Value::Nil,
+                        Value::list([
+                            Value::String("sh".into()),
+                            Value::String("-c".into()),
+                            Value::String("cat >/dev/null; printf err >&2".into()),
+                        ]),
+                    ]),
+                    Value::list([
+                        Value::String("stderr-buffer-parent stderr".into()),
+                        Value::Nil,
+                        Value::String("*stderr-buffer-target*".into()),
+                        Value::Symbol("open".into()),
+                        Value::Nil,
+                        Value::Nil,
+                    ]),
+                ]),
+                Value::String("err\nProcess stderr-buffer-parent stderr finished\n".into(),),
+            ])
+        );
+    });
+}
+
+#[test]
+fn accept_process_output_drains_the_gnu_post_delivery_readiness_window() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(let* ((stdout-buffer (generate-new-buffer "*readiness-stdout*"))
+                         (stderr-buffer (generate-new-buffer "*readiness-stderr*"))
+                         (shell (executable-find "sh"))
+                         (process
+                          (make-process
+                           :name "readiness-window"
+                           :command
+                           (list shell "-c"
+                                 "printf early >&2; IFS= read -r line; printf late")
+                           :buffer stdout-buffer
+                           :stderr stderr-buffer
+                           :connection-type 'pipe
+                           :sentinel #'ignore
+                           :noquery t)))
+                    (let ((stderr-process (get-buffer-process stderr-buffer)))
+                      (set-process-sentinel stderr-process #'ignore)
+                      (set-process-filter
+                       stderr-process
+                       (lambda (stderr text)
+                         (with-current-buffer (process-buffer stderr)
+                           (goto-char (point-max))
+                           (insert text))
+                         ;; A zero-delay continuation releases stdout only
+                         ;; after the first descriptor was delivered.  A
+                         ;; caller that returns on that first delivery misses
+                         ;; it; GNU's readiness window pumps it on the next
+                         ;; cycle without a scheduler-sensitive sleep.
+                         (run-at-time
+                          0 nil
+                          (lambda () (process-send-string process "go\n"))))))
+                    (accept-process-output nil 1)
+                    (list (with-current-buffer stdout-buffer (buffer-string))
+                          (with-current-buffer stderr-buffer (buffer-string))))"#,
+            ),
+            Value::list([Value::String("late".into()), Value::String("early".into()),])
+        );
+    });
+}
+
+#[test]
 fn process_send_eof_keeps_linked_stderr_separate_from_stdout() {
     run_with_large_stack(|| {
         assert_eq!(
@@ -350,6 +556,41 @@ fn read_accepts_buffer_and_marker_streams() {
             Value::list([Value::Integer(1), Value::Integer(2)]),
             Value::Integer(6),
             Value::list([Value::Integer(1), Value::Integer(2)]),
+        ])
+    );
+}
+
+#[test]
+fn read_advances_buffer_and_marker_streams_across_trailing_comments_at_eof() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"(one)\\n;; trailing comment\")
+               (goto-char (point-min))
+               (let* ((marker (point-min-marker))
+                      (buffer-first (read (current-buffer)))
+                      (buffer-eof
+                       (condition-case nil
+                           (read (current-buffer))
+                         (end-of-file (list 'end-of-file (point)))))
+                      (marker-first (read marker))
+                      (marker-eof
+                       (condition-case nil
+                           (read marker)
+                         (end-of-file
+                          (list 'end-of-file (marker-position marker))))))
+                 (list buffer-first buffer-eof (point)
+                       marker-first marker-eof (marker-position marker)
+                       (point-max))))"
+        ),
+        Value::list([
+            Value::list([Value::symbol("one")]),
+            Value::list([Value::symbol("end-of-file"), Value::Integer(26)]),
+            Value::Integer(26),
+            Value::list([Value::symbol("one")]),
+            Value::list([Value::symbol("end-of-file"), Value::Integer(26)]),
+            Value::Integer(26),
+            Value::Integer(26),
         ])
     );
 }
@@ -4286,6 +4527,56 @@ fn fboundp_obeys_gnu_check_symbol_for_positioned_symbols() {
 }
 
 #[test]
+fn delete_and_delete_dups_obey_positioned_symbol_equality() {
+    // `let-alist' uses `delete-dups' while macroexpanding forms read by the
+    // byte compiler.  Distinct source occurrences of the same symbol must
+    // therefore compare as equal while symbols-with-pos-enabled is active.
+    assert_eq!(
+        eval_str(
+            r#"(let* ((symbols-with-pos-enabled t)
+                       (symbols (read-positioning-symbols "(foo foo)"))
+                       (first (car symbols))
+                       (second (cadr symbols)))
+                  (list (length (delete second (list first second)))
+                        (length (delete-dups (list first second)))))"#
+        ),
+        Value::list([Value::Integer(0), Value::Integer(1)])
+    );
+}
+
+#[test]
+fn get_and_put_use_gnu_eq_for_arbitrary_and_positioned_property_keys() {
+    assert_eq!(
+        eval_str(
+            "(let ((bare-owner (make-symbol \"bare-owner\"))
+                   (record-owner (make-symbol \"record-owner\"))
+                   (integer-owner (make-symbol \"integer-owner\"))
+                   (positioned (position-symbol 'rx-definition 7)))
+               (put bare-owner 'rx-definition 42)
+               (put integer-owner 9 81)
+               (list
+                (let ((symbols-with-pos-enabled nil))
+                  (get bare-owner positioned))
+                (let ((symbols-with-pos-enabled t))
+                  (get bare-owner positioned))
+                (let ((symbols-with-pos-enabled nil))
+                  (put record-owner positioned 12)
+                  (list (get record-owner positioned)
+                        (get record-owner 'rx-definition)
+                        (symbol-with-pos-p (car (symbol-plist record-owner)))))
+                (list (put integer-owner 9 82)
+                      (get integer-owner 9))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Integer(42),
+            Value::list([Value::Integer(12), Value::Nil, Value::T]),
+            Value::list([Value::Integer(82), Value::Integer(82)]),
+        ])
+    );
+}
+
+#[test]
 fn evaluator_dispatches_positioned_callees_only_while_enabled() {
     // GNU eval.c and bytecode.c strip the source position when a positioned
     // symbol occupies function position.  The upstream byte compiler relies
@@ -5278,6 +5569,31 @@ fn set_window_buffer_accepts_nil_for_selected_window() {
 }
 
 #[test]
+fn set_window_buffer_honors_keep_margins_and_default_reset() {
+    assert_eq!(
+        eval_str(
+            "(let ((buffer (get-buffer-create \" set-window-buffer-margins\")))
+               (with-current-buffer buffer
+                 (make-local-variable 'left-margin-width)
+                 (make-local-variable 'right-margin-width)
+                 (setq left-margin-width 1
+                       right-margin-width 2))
+               (set-window-margins nil 4 5)
+               (set-window-buffer nil buffer t)
+               (list
+                (window-margins)
+                (progn
+                  (set-window-buffer nil buffer nil)
+                  (window-margins))))"
+        ),
+        Value::list([
+            Value::cons(Value::Integer(4), Value::Integer(5)),
+            Value::cons(Value::Integer(1), Value::Integer(2)),
+        ])
+    );
+}
+
+#[test]
 fn window_parameters_round_trip_and_support_setf() {
     assert_eq!(
         eval_str_with_upstream_batch(
@@ -6189,6 +6505,57 @@ fn tty_face_attrs_resolve_through_the_face_machinery() {
 }
 
 #[test]
+fn tty_face_attrs_apply_buffer_local_face_remapping() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    interp.set_tty_display_colors(8);
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (tty-register-default-colors)
+           (defface sample-base-face '((t :underline t)) \"doc\")
+           (defface sample-remapped-face
+             '((t :foreground \"cyan\" :weight bold)) \"doc\")
+           (make-local-variable 'face-remapping-alist)
+           (setq face-remapping-alist
+                 '((sample-base-face sample-remapped-face sample-base-face))))",
+    );
+    let mut env: Env = Vec::new();
+    let attrs = crate::lisp::primitives::resolve_tty_face_attrs(
+        &mut interp,
+        &mut env,
+        &Value::Symbol("sample-base-face".into()),
+    );
+    assert_eq!(attrs.foreground, Some(6));
+    assert!(attrs.bold && attrs.underline);
+}
+
+#[test]
+fn tty_face_supports_conditions_merge_nested_face_references() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    interp.set_tty_display_colors(8);
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (setq noninteractive nil)
+               (tty-register-default-colors)
+               (list
+                (display-supports-face-attributes-p '(:box t))
+                (display-supports-face-attributes-p '((:box t)))
+                (face-spec-choose
+                 '((((supports (:box t))) :box t)
+                   (t :inverse-video t))
+                 nil)))",
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::list([Value::Symbol(":inverse-video".into()), Value::T]),
+        ])
+    );
+}
+
+#[test]
 fn window_face_spans_layer_text_properties_region_and_overlays() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -6246,6 +6613,48 @@ fn window_face_spans_resolve_faces_inherited_from_text_categories() {
         spans,
         vec![(1, 7, Value::Symbol("link".into()))],
         "redisplay inherits the face from a text button's category plist"
+    );
+}
+
+#[test]
+fn window_face_spans_resolve_faces_inherited_from_overlay_categories() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"diagnostic text\")
+           (put 'sample-diagnostic-category 'face 'error)
+           (let ((overlay (make-overlay 1 11)))
+             (overlay-put overlay 'category 'sample-diagnostic-category)))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    let spans =
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 16, true);
+    assert_eq!(
+        spans,
+        vec![(1, 11, Value::Symbol("error".into()))],
+        "redisplay inherits an overlay face from its category plist"
+    );
+}
+
+#[test]
+fn window_face_spans_honor_font_lock_face_aliases_on_overlays() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (insert \"overlay text\")
+           (make-local-variable 'char-property-alias-alist)
+           (setq char-property-alias-alist '((face font-lock-face)))
+           (let ((overlay (make-overlay 1 8)))
+             (overlay-put overlay 'font-lock-face 'highlight)))",
+    );
+    let mut env: Env = Vec::new();
+    let buffer_id = interp.current_buffer_id();
+    assert_eq!(
+        crate::lisp::primitives::window_face_spans(&mut interp, &mut env, buffer_id, 1, 13, true,),
+        vec![(1, 8, Value::Symbol("highlight".into()))]
     );
 }
 
@@ -6324,6 +6733,35 @@ fn header_line_glass_keeps_partial_sort_column_face() {
 }
 
 #[test]
+fn tab_line_glass_evaluates_per_buffer_format() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    eval_str_with(
+        &mut interp,
+        "(setq-local tab-line-format
+                     '(:eval (propertize \" Group: M-1 flat\"
+                                         'face 'bold)))",
+    );
+    let mut env: Env = Vec::new();
+    let window_id = interp.selected_window_id();
+    let (text, spans) = crate::lisp::primitives::render_window_tab_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        crate::lisp::primitives::InteractiveWindowMetrics {
+            text_height: 10,
+            window_end: 1,
+        },
+    )
+    .expect("tab line renders");
+    assert_eq!(text, " Group: M-1 flat");
+    assert_eq!(
+        spans,
+        vec![(0, text.chars().count(), Value::Symbol("bold".into()))]
+    );
+}
+
+#[test]
 fn propertized_messages_carry_face_spans_to_the_echo_area() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -6341,6 +6779,40 @@ fn propertized_messages_carry_face_spans_to_the_echo_area() {
     eval_str_with(&mut interp, "(message \"plain\")");
     let (_, spans) = crate::lisp::primitives::echo_area_message_with_spans().unwrap();
     assert!(spans.is_empty(), "plain messages carry no spans");
+}
+
+#[test]
+fn current_message_preserves_properties_when_a_temporary_message_restores_it() {
+    let mut interp = Interpreter::new();
+    let properties = eval_str_with(
+        &mut interp,
+        "(progn
+           (message \"%s\"
+                    (concat \"Type \"
+                            (propertize \"q\" 'face 'help-key-binding
+                                             'font-lock-face 'help-key-binding)))
+           (let ((saved (current-message)))
+             (message \"temporary\")
+             (message \"%s\" saved))
+           (let ((restored (current-message)))
+             (list (get-text-property 5 'face restored)
+                   (get-text-property 5 'font-lock-face restored))))",
+    );
+    assert_eq!(
+        properties,
+        Value::list([
+            Value::Symbol("help-key-binding".into()),
+            Value::Symbol("help-key-binding".into()),
+        ]),
+        "current-message keeps the Lisp string's complete property set"
+    );
+    let (text, spans) = crate::lisp::primitives::echo_area_message_with_spans().unwrap();
+    assert_eq!(text, "Type q");
+    assert_eq!(
+        spans,
+        vec![(5, 6, Value::Symbol("help-key-binding".into()))],
+        "restoring through message keeps the face on the echo glass"
+    );
 }
 
 #[test]
@@ -6363,7 +6835,7 @@ fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
     let active = crate::lisp::primitives::activate_minibuffer(
         &mut interp,
         &prompt,
-        "",
+        &Value::String("".into()),
         Value::Nil,
         &mut env,
     )

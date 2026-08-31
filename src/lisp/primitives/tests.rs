@@ -20,7 +20,7 @@ fn call_via_lisp(
     interp.call_function_value(function, Some(name), args, env)
 }
 
-fn assert_upstream_primitive_contract(program: &str, expected: &str) {
+fn upstream_primitive_contract_output(program: &str) -> String {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
     let program = crate::test_support::oracle_program_ascii(program);
@@ -38,8 +38,12 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
         "primitive-contract oracle failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn assert_upstream_primitive_contract(program: &str, expected: &str) {
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
+        upstream_primitive_contract_output(program),
         expected,
         "oracle disagreed; program sent was:\n{program}"
     );
@@ -5348,6 +5352,50 @@ fn signal_process_preserves_os_signal_status_and_sentinel_event() {
 
 #[cfg(unix)]
 #[test]
+fn explicit_process_filter_uses_and_restores_the_callers_current_buffer() {
+    let program = r#"(let* ((observed nil)
+                            (origin (current-buffer))
+                            (other (get-buffer-create "*filter-other*"))
+                            (process-buffer
+                             (get-buffer-create "*filter-process*"))
+                            (process
+                            (make-process
+                              :name "filter-current-buffer"
+                              :buffer process-buffer
+                              :command (list shell-file-name "-c" "printf x")
+                              :connection-type 'pipe
+                              :filter
+                              (lambda (_process _output)
+                                (setq observed (current-buffer))
+                                (set-buffer other)))))
+                       (while (process-live-p process)
+                         (accept-process-output process 0.1))
+                       (accept-process-output process 0.1)
+                       (list (eq observed origin)
+                             (eq (current-buffer) origin)
+                             (eq (process-buffer process) process-buffer)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t t)");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("process filter buffer contract should parse")
+        .expect("process filter buffer contract should contain a form");
+    let expected = Reader::new("(t t t)")
+        .read()
+        .expect("expected filter buffer result should parse")
+        .expect("expected filter buffer result should exist");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("process filter buffer contract should evaluate"),
+        expected
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn deleted_process_is_not_returned_for_buffer() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();
@@ -5673,6 +5721,32 @@ fn accept_process_output_ignores_distractor_output_until_target_delivers() {
         .strip_suffix("\nProcess accept-target finished\n")
         .unwrap_or(&text);
     assert_eq!(text, "target");
+}
+
+#[test]
+fn accept_process_output_does_not_count_an_outputless_exit_as_delivery() {
+    let program = r#"(let ((process
+                            (make-process
+                             :name "quiet-exit"
+                             :command (list shell-file-name "-c" "exit 0")
+                             :noquery t
+                             :sentinel #'ignore)))
+                       (list (accept-process-output nil 1)
+                             (process-status process)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil exit)");
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("outputless-exit contract should parse")
+        .expect("outputless-exit contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("outputless-exit contract should evaluate"),
+        Value::list([Value::Nil, Value::symbol("exit")])
+    );
 }
 
 #[test]
@@ -11924,6 +11998,33 @@ fn completion_predicates_preserve_string_list_membership() {
 }
 
 #[test]
+fn all_completions_preserves_propertized_string_candidate_identity() {
+    let program = r#"(let* ((candidate (propertize "alphaValue" 'payload 7))
+                            (matches (all-completions "alp" (list candidate))))
+                       (list (eq (car matches) candidate)
+                             (equal (car matches) candidate)
+                             (get-text-property 0 'payload (car matches))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(t t 7)");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("propertized completion identity contract should parse")
+        .expect("propertized completion identity contract should contain a form");
+    let expected = Reader::new("(t t 7)")
+        .read()
+        .expect("expected completion identity result should parse")
+        .expect("expected completion identity result should exist");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("propertized completion identity contract should evaluate"),
+        expected
+    );
+}
+
+#[test]
 fn completion_results_accept_text_properties() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -14545,10 +14646,11 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
 
 #[test]
 fn native_network_process_resolves_named_services_from_the_services_database() {
-    // process.c hands a non-numeric :service string to getaddrinfo /
-    // getservbyname ("domain" is udp+tcp port 53 in /etc/services); an
-    // unknown name signals the getaddrinfo diagnostic.  No packet is
-    // sent: only the resolved :remote address is observed.
+    // process.c normalizes a nil Internet host to loopback, then hands the
+    // host and non-numeric :service to getaddrinfo ("domain" is UDP+TCP
+    // port 53 in the services database).  An unknown name exposes the
+    // platform's getaddrinfo diagnostic.  No packet is sent: only the
+    // resolved :remote address is observed.
     let program = r#"(let ((dns (make-network-process
                                 :name "dns-client"
                                 :type 'datagram
@@ -14563,10 +14665,33 @@ fn native_network_process_resolves_named_services_from_the_services_database() {
                                      :type 'datagram
                                      :host "127.0.0.1"
                                      :service "emaxx-no-such-service")
+                                  (error err))
+                                (condition-case err
+                                    (make-network-process
+                                     :name "bogus-server"
+                                     :server t
+                                     :service "emaxx-no-such-service")
                                   (error err)))
                         (delete-process dns)))"#;
-    let expected = "([127 0 0 1 53] (error \"127.0.0.1/emaxx-no-such-service Servname not supported for ai_socktype\"))";
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let expected = upstream_primitive_contract_output(&format!("(prin1 {program})"));
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("named-service contract should parse")
+        .expect("named-service contract should contain a form");
+    let expected_value = Reader::new(&expected)
+        .read()
+        .expect("named-service oracle output should parse")
+        .expect("named-service oracle output should contain a value");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("named-service contract should evaluate");
+    assert!(
+        values_equal(&interp, &actual, &expected_value),
+        "named-service result differs from GNU:\nactual: {actual:?}\nexpected: {expected_value:?}"
+    );
 }
 
 #[test]
@@ -15259,6 +15384,63 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 }
 
 #[test]
+fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq timer-list nil timer-idle-list nil emaxx-test-timer-fired nil)
+           (run-at-time 60 nil (lambda () (setq emaxx-test-timer-fired t)))
+           (defalias 'float-time (lambda (&rest _) 0.0)))",
+    )
+    .expect("schedule a delayed timer before pinning the presentation clock");
+
+    assert!(
+        !run_due_timers(&mut interp, &mut env, 0.0),
+        "redefining float-time must not make a future timer ripe"
+    );
+    assert_eq!(
+        interp.lookup_var("emaxx-test-timer-fired", &env),
+        Some(Value::Nil)
+    );
+}
+
+#[test]
+fn timed_tty_event_read_pumps_process_output_and_deferred_callbacks() {
+    crate::test_support::mark_process_test();
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    set_tty_event_poller(Some(Box::new(|| Some(None))));
+    let result = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"
+          (let ((process
+                 (make-process
+                  :name "timed-tty-process-pump"
+                  :command (list (executable-find "sh") "-c" "printf ready")
+                  :noquery t
+                  :filter
+                  (lambda (_process _text)
+                    (run-at-time
+                     0 nil
+                     (lambda () (throw 'timed-tty-process-ready 'ready)))))))
+            (catch 'timed-tty-process-ready
+              (read-event nil t 1)
+              'timeout))
+        "#,
+    );
+    set_tty_event_poller(None);
+    assert_eq!(
+        result.expect("process callback interrupts the timed TTY wait"),
+        Value::symbol("ready")
+    );
+}
+
+#[test]
 fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
@@ -15394,6 +15576,54 @@ fn tty_events_answer_interactive_minibuffer_prompts() {
     assert_eq!(
         result.expect("tty events answer the prompt"),
         Value::String("answer.txt".into())
+    );
+}
+
+#[test]
+fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(setq issue22-initial-face nil
+               minibuffer-setup-hook
+               (list (lambda ()
+                       (setq issue22-initial-face
+                             (get-text-property (minibuffer-prompt-end) 'face)))))",
+    )
+    .expect("install the initial-input observer");
+    let initial = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(propertize \"alpha\" 'face 'lsp-face-highlight-textual)",
+    )
+    .expect("construct propertized initial input");
+
+    let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "read-string",
+        &[
+            Value::String("Rename to: ".into()),
+            initial,
+            Value::Symbol("lsp-rename-history".into()),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+
+    assert_eq!(
+        result.expect("RET exits a read-string with a history symbol"),
+        Value::String("alpha".into())
+    );
+    assert_eq!(
+        interp.lookup_var("issue22-initial-face", &env),
+        Some(Value::Symbol("lsp-face-highlight-textual".into())),
+        "read-string copies the suggested value's face into the minibuffer"
     );
 }
 
@@ -16465,6 +16695,36 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
 }
 
 #[test]
+fn glass_mode_line_honors_font_lock_face_string_properties() {
+    let mut interp = crate::batch::initialize_interactive_interpreter()
+        .expect("interactive interpreter initializes");
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let form = Reader::new(
+        "(setq mode-line-format
+               (list (propertize \" git failed\"
+                                'font-lock-face 'error)))",
+    )
+    .read()
+    .expect("mode-line form parses")
+    .expect("mode-line form exists");
+    interp.eval(&form, &mut env).expect("mode-line form runs");
+    let window_id = interp.selected_window_id();
+    let (_, spans) = crate::lisp::primitives::render_window_mode_line(
+        &mut interp,
+        &mut env,
+        window_id,
+        1,
+        InteractiveWindowMetrics {
+            text_height: 22,
+            window_end: 1,
+        },
+    )
+    .expect("mode line renders");
+    assert_eq!(spans, vec![(0, 11, Value::Symbol("error".into()))]);
+}
+
+#[test]
 fn undo_file_marker_records_the_visited_modtime() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
@@ -16616,6 +16876,23 @@ fn error_message_strings_match_the_oracle() {
         \"|\"))
         (princ contract-out))";
     let answer = "Quit|Beginning of buffer|boom|Wrong type argument: listp, t|No further undo information|Opening input file: No such file, /tmp/x";
+    assert_upstream_primitive_contract(program, answer);
+    assert_eq!(emaxx_batch_output(program), answer);
+}
+
+#[test]
+fn error_message_strings_use_gnu_condition_specific_data_quoting() {
+    let program = r#"(progn
+      (put 'magit-like-error 'error-conditions '(magit-like-error error))
+      (put 'magit-like-error 'error-message "Git error")
+      (setq contract-out
+            (prin1-to-string
+             (list
+              (error-message-string '(magit-like-error "one" "two"))
+              (error-message-string '(error "lead" "tail"))
+              (error-message-string '(end-of-file "one" "two")))))
+      (princ contract-out))"#;
+    let answer = r#"("Git error: \"one\", \"two\"" "lead: \"tail\"" "End of file during parsing: one, two")"#;
     assert_upstream_primitive_contract(program, answer);
     assert_eq!(emaxx_batch_output(program), answer);
 }

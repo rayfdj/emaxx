@@ -557,6 +557,32 @@ fn read_positioning_symbols_preserves_eq_binding_through_byte_compile() {
 }
 
 #[test]
+fn position_symbol_accepts_an_existing_positioned_symbol_as_the_position_source() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((source (read-positioning-symbols "foo"))
+                      (positioned (position-symbol 'ignore source)))
+                 (list (symbol-with-pos-p positioned)
+                       (bare-symbol positioned)
+                       (symbol-with-pos-pos positioned)
+                       (condition-case error
+                           (position-symbol 'bad 'not-a-position)
+                         (error (list (car error) (cadr error) (caddr error))))))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("ignore".into()),
+            Value::Integer(0),
+            Value::list([
+                Value::Symbol("wrong-type-argument".into()),
+                Value::Symbol("fixnum-or-symbol-with-pos-p".into()),
+                Value::Symbol("not-a-position".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn condition_case_success_uses_arith_error_condition_value() {
     assert_eq!(
         eval_str(
@@ -1585,6 +1611,26 @@ fn eval_accepts_explicit_lexical_alist() {
     assert_eq!(
         eval_str("(eval '(+ x y) '((x . 1) (y . 2)))"),
         Value::Integer(3)
+    );
+}
+
+#[test]
+fn eval_accepts_positioned_let_bindings_with_an_explicit_lexical_alist() {
+    // GNU's byte compiler evaluates macro bodies read with source positions
+    // enabled.  Binding names in those bodies are symbol-with-position
+    // objects and must use their underlying symbols throughout let/let*.
+    assert_eq!(
+        eval_str(
+            r#"(let* ((symbols-with-pos-enabled t)
+                       (form
+                        (read-positioning-symbols
+                         "(let* ((num1 (1+ num))
+                                  (face-name
+                                   (intern (format \"face-%s\" num1))))
+                            (list num1 face-name))")))
+                  (eval form '((num . 0))))"#,
+        ),
+        Value::list([Value::Integer(1), Value::Symbol("face-1".into())])
     );
 }
 

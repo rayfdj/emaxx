@@ -21,7 +21,8 @@ use crossterm::{cursor, event, execute, queue, style, terminal};
 use crate::batch;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::{
-    InvisibilitySpec, invisible_run_at, resolve_buffer_invisibility, visual_line_first_line,
+    InvisibilitySpec, invisible_class_at, invisible_run_at, resolve_buffer_invisibility,
+    visual_line_first_line,
 };
 use crate::lisp::types::{Env, LispError, Value};
 
@@ -149,11 +150,42 @@ impl PaintRow {
         }
     }
 
+    fn blit_text(&mut self, col: usize, text: &str) {
+        for (offset, character) in text.chars().enumerate() {
+            let Some(cell) = self.text.get_mut(col + offset) else {
+                break;
+            };
+            *cell = character;
+        }
+    }
+
     /// Layer FACE attributes over the cells in [FROM, TO): attributes the
     /// face leaves unspecified keep what the cell already shows.
     fn overlay(&mut self, from: usize, to: usize, attrs: CellAttrs) {
         for at in from..to.min(self.attrs.len()) {
             self.attrs[at] = merge_cell_attrs(self.attrs[at], attrs);
+        }
+    }
+
+    /// Force the foreground of the cells in [FROM, TO), `None' meaning the
+    /// terminal's own default.  A separate glyph object realized with the
+    /// default face carries that face's (unspecified) foreground rather
+    /// than whatever color the underlying cell already shows; term.c's
+    /// turn_on_face emits no SGR color at all when
+    /// `face_tty_specified_color' (dispextern.h) rejects the default
+    /// sentinel.
+    fn force_foreground(&mut self, from: usize, to: usize, foreground: Option<u8>) {
+        for at in from..to.min(self.attrs.len()) {
+            self.attrs[at].foreground = foreground;
+        }
+    }
+
+    /// Start a separate display object's face stack in [FROM, TO).  Overlay
+    /// before/after strings do not inherit attributes from the buffer glyph
+    /// at their anchor, so their default face replaces that underlying cell.
+    fn replace_attrs(&mut self, from: usize, to: usize, attrs: CellAttrs) {
+        for at in from..to.min(self.attrs.len()) {
+            self.attrs[at] = attrs;
         }
     }
 }
@@ -238,26 +270,6 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     let mut env: Env = Vec::new();
     interpreter.set_variable("noninteractive", Value::Nil, &mut env);
     initialize_session_buffers(&mut interpreter, &mut env)?;
-    if let Some(path) = initial_file {
-        let path = path.display().to_string();
-        let find_file = call(
-            &mut interpreter,
-            &mut env,
-            "find-file",
-            &[Value::String(path.clone().into())],
-        );
-        if let Err(error) = &find_file {
-            // The real files.el `find-file' is the only honest visit path;
-            // fabricating a native visit here would keep the screen
-            // plausible while hiding the breakage.
-            panic!("find-file {path} failed: {error:?}");
-        }
-        debug_log(&format!(
-            "startup buffer={:?} point={}",
-            interpreter.buffer.name,
-            interpreter.buffer.point()
-        ));
-    }
 
     // Publish the terminal's color capability before the first redraw, then
     // recompute every face from its spec exactly as GNU's set_tty_color_mode
@@ -339,6 +351,41 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
         let queue = queue.clone();
         move || queue.input_pending()
     })));
+    // startup.el runs the terminal library before command-line file
+    // visitation.  Besides key definitions, term/xterm installs the palette
+    // and capability answers used when later packages realize display-
+    // dependent faces.  Skipping this left ordinary colors and `supports'
+    // defface alternatives frozen against the pre-terminal frame.
+    let terminal_init = crate::lisp::reader::Reader::new(
+        "(tty-run-terminal-initialization (selected-frame) nil t)",
+    )
+    .read()
+    .map_err(|error| format!("read terminal initialization form: {error}"))?
+    .ok_or_else(|| "terminal initialization form is empty".to_string())?;
+    interpreter
+        .eval(&terminal_init, &mut env)
+        .map_err(|error| format!("run terminal initialization: {error}"))?;
+
+    if let Some(path) = initial_file {
+        let path = path.display().to_string();
+        let find_file = call(
+            &mut interpreter,
+            &mut env,
+            "find-file",
+            &[Value::String(path.clone().into())],
+        );
+        if let Err(error) = &find_file {
+            // The real files.el `find-file' is the only honest visit path;
+            // fabricating a native visit here would keep the screen
+            // plausible while hiding the breakage.
+            panic!("find-file {path} failed: {error:?}");
+        }
+        debug_log(&format!(
+            "startup buffer={:?} point={}",
+            interpreter.buffer.name,
+            interpreter.buffer.point()
+        ));
+    }
     // startup.el's display-startup-echo-area-message: the startup hint
     // sits in the echo area until the first command replaces it (F10's
     // menu leaves it visible, as GNU does).
@@ -829,6 +876,13 @@ fn command_loop(
     shared_state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> Result<i32, String> {
     loop {
+        // keyboard.c's command_loop_1 reselects the selected window's
+        // buffer at the top of every command cycle.  A display action can
+        // replace the selected window's buffer while `save-current-buffer'
+        // restores the command's former current buffer (Magit does exactly
+        // this when opening a log).  Key lookup and the next command must
+        // operate in what the selected window shows, not that stale buffer.
+        select_command_loop_buffer(interpreter).map_err(|error| error.to_string())?;
         // GNU redisplays only when the input queue is quiet; a key burst
         // paints once at the end.
         if !queue.input_pending() {
@@ -998,21 +1052,33 @@ fn command_loop(
         let prefix_pending = interpreter
             .lookup_var("prefix-arg", env)
             .is_some_and(|prefix| prefix.is_truthy());
-        let state = &mut *shared_state.borrow_mut();
-        if prefix_pending {
-            state.echo = append_prefix_echo(&state.echo, &describe_keys(&keys));
-            state.prefix_active = true;
-        } else {
-            state.prefix_active = false;
-            state.echo.clear();
+        {
+            let state = &mut *shared_state.borrow_mut();
+            if prefix_pending {
+                state.echo = append_prefix_echo(&state.echo, &describe_keys(&keys));
+                state.prefix_active = true;
+            } else {
+                state.prefix_active = false;
+                state.echo.clear();
+            }
+            if let Some(text) = command_error {
+                state.echo = text;
+            }
+            // A blocking reader may have painted the echo row outside the
+            // matrix; repaint it against fresh state next frame.
+            state.painted_echo = Vec::new();
         }
-        if let Some(text) = command_error {
-            state.echo = text;
-        }
-        // A blocking reader may have painted the echo row outside the
-        // matrix; repaint it against fresh state next frame.
-        state.painted_echo = Vec::new();
     }
+}
+
+fn select_command_loop_buffer(interpreter: &mut Interpreter) -> Result<(), LispError> {
+    let selected_buffer = interpreter.selected_window_buffer_id();
+    if selected_buffer != interpreter.current_buffer_id()
+        && interpreter.has_buffer_id(selected_buffer)
+    {
+        interpreter.set_current_buffer_id(selected_buffer)?;
+    }
+    Ok(())
 }
 
 use crate::lisp::primitives::KeyResolution as Resolution;
@@ -1502,6 +1568,60 @@ fn space_align_to_target(value: &Value) -> Option<usize> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SpecifiedSpace {
+    Width(usize),
+    AlignTo(usize),
+}
+
+/// Decode the TTY-supported dimensions of a `(space ...)' display spec.
+/// xdisp computes numeric widths in canonical-character units and truncates
+/// the resulting pixel count to an integer.  On a terminal the canonical
+/// width is one cell, so `:width 0.5' is deliberately a zero-cell stretch.
+fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
+    let items = value.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(head)) if head == "space") {
+        return None;
+    }
+    if let Some(position) = items
+        .iter()
+        .position(|item| matches!(item, Value::Symbol(name) if name == ":width"))
+        && let Some(width) = items
+            .get(position + 1)
+            .and_then(|value| value.as_float().ok())
+            .filter(|width| width.is_finite())
+    {
+        let columns = if width < 0.0 {
+            1
+        } else {
+            width.trunc().min(usize::MAX as f64) as usize
+        };
+        return Some(SpecifiedSpace::Width(columns));
+    }
+    if let Some(target) = space_align_to_target(value) {
+        return Some(SpecifiedSpace::AlignTo(target));
+    }
+    // A malformed or dimensionless space spec falls back to one canonical
+    // cell; it still replaces the source character with a blank.
+    Some(SpecifiedSpace::Width(1))
+}
+
+/// Decode a string `display' property of the form
+/// `((margin SIDE) PAYLOAD)'.  The string's source characters do not enter
+/// the text body; PAYLOAD is rendered in the requested window margin.
+fn window_margin_display(value: &Value) -> Option<(String, Value)> {
+    let display = crate::lisp::primitives::string_property_at(value, 0, "display")?;
+    let parts = display.to_vec().ok()?;
+    let location = parts.first()?.to_vec().ok()?;
+    if !matches!(location.first(), Some(Value::Symbol(name)) if name == "margin") {
+        return None;
+    }
+    let side = location.get(1)?.as_symbol().ok()?.to_string();
+    let payload = parts.get(1)?.clone();
+    crate::lisp::primitives::string_text(&payload).ok()?;
+    Some((side, payload))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum GlyphlessDisplayMethod {
     ZeroWidth,
@@ -1674,6 +1794,72 @@ struct VisualLine {
     ellipses: Vec<usize>,
     /// Display char ranges produced by `glyphless-char-display'.
     glyphless_spans: Vec<(usize, usize)>,
+    /// Faces carried by overlay before/after strings, in display indexes.
+    display_face_spans: Vec<(usize, usize, Value)>,
+}
+
+/// Render an overlay before/after string under the window buffer's
+/// invisibility spec, retaining a raw-string to displayed-string boundary
+/// map so its face spans follow the surviving cells.  These strings are
+/// separate xdisp objects: their own `invisible' text property governs each
+/// character even though the property is not present in the buffer text.
+fn visible_overlay_string(
+    value: &Value,
+    spec: &InvisibilitySpec,
+) -> (String, Vec<(usize, usize, Value)>) {
+    let raw = crate::lisp::primitives::string_text(value).unwrap_or_default();
+    let characters: Vec<char> = raw.chars().collect();
+    let mut rendered = String::new();
+    let mut map = Vec::with_capacity(characters.len() + 1);
+    let mut display_chars = 0usize;
+    let class_at = |position: usize| {
+        crate::lisp::primitives::string_property_at(value, position, "invisible")
+            .map(|property| crate::lisp::primitives::invisible_value_class(spec, &property))
+            .unwrap_or(0)
+    };
+    let mut position = 0usize;
+    while position < characters.len() {
+        let class = class_at(position);
+        if class == 0 {
+            map.push(display_chars);
+            rendered.push(characters[position]);
+            display_chars += 1;
+            position += 1;
+        } else {
+            let start = position;
+            let ellipsis_start = display_chars;
+            let mut last_class = class;
+            while position < characters.len() {
+                let next = class_at(position);
+                if next == 0 {
+                    break;
+                }
+                last_class = next;
+                position += 1;
+            }
+            if last_class == 2 {
+                rendered.push_str("...");
+                display_chars += 3;
+            }
+            for hidden in start..position {
+                map.push(if hidden == start {
+                    ellipsis_start
+                } else {
+                    display_chars
+                });
+            }
+        }
+    }
+    map.push(display_chars);
+    let spans = crate::lisp::primitives::string_face_spans(value)
+        .into_iter()
+        .filter_map(|(from, to, face)| {
+            let from = map.get(from).copied().unwrap_or(display_chars);
+            let to = map.get(to).copied().unwrap_or(display_chars);
+            (from < to).then_some((from, to, face))
+        })
+        .collect();
+    (rendered, spans)
 }
 
 fn visual_line_at(
@@ -1681,7 +1867,15 @@ fn visual_line_at(
     spec: &InvisibilitySpec,
     first_line: usize,
 ) -> VisualLine {
-    if !spec.active {
+    let has_overlay_strings = buffer.overlays.iter().any(|overlay| {
+        !overlay.is_dead()
+            && ["before-string", "after-string"].iter().any(|name| {
+                overlay
+                    .get_prop(&Value::Symbol((*name).into()))
+                    .is_some_and(Value::is_string)
+            })
+    });
+    if !spec.active && !has_overlay_strings {
         let (text, display_map) = displayed_line_with_map(buffer, first_line);
         let display_count = text.chars().count();
         let map = display_map.unwrap_or_else(|| (0..=display_count).collect());
@@ -1709,6 +1903,7 @@ fn visual_line_at(
             lines_spanned: 1,
             ellipses: Vec::new(),
             glyphless_spans: Vec::new(),
+            display_face_spans: Vec::new(),
         };
     }
     let line_begin = buffer.line_start_of(first_line);
@@ -1721,11 +1916,70 @@ fn visual_line_at(
     let mut col = 0usize;
     let mut lines_spanned = 1usize;
     let mut ellipses: Vec<usize> = Vec::new();
+    let mut display_face_spans: Vec<(usize, usize, Value)> = Vec::new();
+    let mut overlay_strings = Vec::new();
+    for overlay in &buffer.overlays {
+        if overlay.is_dead() {
+            continue;
+        }
+        for (name, after) in [("before-string", false), ("after-string", true)] {
+            let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
+                continue;
+            };
+            if window_margin_display(value).is_some() {
+                continue;
+            }
+            if crate::lisp::primitives::string_text(value).is_err() {
+                continue;
+            }
+            overlay_strings.push((
+                if after { overlay.end } else { overlay.beg },
+                after,
+                overlay.id,
+                value.clone(),
+            ));
+        }
+    }
+    overlay_strings.sort_by_key(|(position, after, id, _)| (*position, *after, *id));
+    let mut overlay_string_index = 0usize;
     let mut string_run: Option<String> = None;
+    let mut space_run: Option<Value> = None;
     let mut pos = line_begin;
     while pos < end {
+        while overlay_strings
+            .get(overlay_string_index)
+            .is_some_and(|(position, ..)| *position < pos)
+        {
+            overlay_string_index += 1;
+        }
+        while let Some((position, _, _, value)) = overlay_strings.get(overlay_string_index) {
+            if *position != pos {
+                break;
+            }
+            let (string, spans) = visible_overlay_string(value, spec);
+            let start = display_chars;
+            for character in string.chars() {
+                text.push(character);
+                raw_of_display.push(pos - line_begin);
+                display_chars += 1;
+                col += if character == '\t' { 8 - (col % 8) } else { 1 };
+            }
+            // Before/after strings are independent display objects.  They
+            // do not inherit the buffer character's face merely because
+            // their insertion point lies inside that face's span.
+            if start < display_chars {
+                display_face_spans.push((start, display_chars, Value::Symbol("default".into())));
+            }
+            display_face_spans.extend(
+                spans
+                    .into_iter()
+                    .map(|(from, to, face)| (start + from, start + to, face)),
+            );
+            overlay_string_index += 1;
+        }
         if let Some((run_end, ellipsis)) = invisible_run_at(buffer, spec, pos) {
             string_run = None;
+            space_run = None;
             lines_spanned += buffer
                 .buffer_substring(pos, run_end)
                 .map(|hidden| hidden.matches('\n').count())
@@ -1782,25 +2036,32 @@ fn visual_line_at(
                 }
             }
             string_run = Some(replacement);
+            space_run = None;
             pos += 1;
             continue;
         }
         string_run = None;
-        let align_target = if has_display_prop {
-            display.and_then(|value| space_align_to_target(&value))
-        } else {
-            None
-        };
-        if let Some(target) = align_target {
+        let space = display.as_ref().and_then(specified_space);
+        if let Some(space) = space {
             map.push(display_chars);
-            let pad = target.saturating_sub(col);
-            for _ in 0..pad {
-                text.push(' ');
-                raw_of_display.push(offset);
-                display_chars += 1;
+            let same_run = space_run
+                .as_ref()
+                .is_some_and(|previous| display.as_ref() == Some(previous));
+            if !same_run {
+                let pad = match space {
+                    SpecifiedSpace::Width(width) => width,
+                    SpecifiedSpace::AlignTo(target) => target.saturating_sub(col),
+                };
+                for _ in 0..pad {
+                    text.push(' ');
+                    raw_of_display.push(offset);
+                    display_chars += 1;
+                }
+                col += pad;
             }
-            col += pad;
+            space_run = display;
         } else {
+            space_run = None;
             map.push(display_chars);
             text.push(ch);
             raw_of_display.push(offset);
@@ -1818,6 +2079,7 @@ fn visual_line_at(
         lines_spanned,
         ellipses,
         glyphless_spans: Vec::new(),
+        display_face_spans,
     }
 }
 
@@ -1868,6 +2130,10 @@ fn glyphless_visual_line_at(
     for offset in &mut visual.ellipses {
         *offset = old_to_new.get(*offset).copied().unwrap_or(display_chars);
     }
+    for (from, to, _) in &mut visual.display_face_spans {
+        *from = old_to_new.get(*from).copied().unwrap_or(display_chars);
+        *to = old_to_new.get(*to).copied().unwrap_or(display_chars);
+    }
     visual.text = rendered;
     visual.raw_of_display = raw_of_display;
     visual.glyphless_spans = glyphless_spans;
@@ -1903,6 +2169,7 @@ fn displayed_line_with_map(
     // (handle_single_display_spec; grep's --null separator renders as
     // ":" this way).
     let mut string_run: Option<String> = None;
+    let mut space_run: Option<Value> = None;
     for (offset, ch) in raw.chars().enumerate() {
         map.push(expanded_chars);
         let display = buffer.text_property_at(line_begin + offset, "display");
@@ -1927,23 +2194,35 @@ fn displayed_line_with_map(
                 }
             }
             string_run = Some(replacement);
+            space_run = None;
             continue;
         }
         string_run = None;
-        let target = display.and_then(|value| space_align_to_target(&value));
-        if let Some(target) = target {
+        let space = display.as_ref().and_then(specified_space);
+        if let Some(space) = space {
             changed = true;
-            let pad = target.saturating_sub(col);
-            for _ in 0..pad {
-                expanded.push(' ');
+            let same_run = space_run
+                .as_ref()
+                .is_some_and(|previous| display.as_ref() == Some(previous));
+            if !same_run {
+                let pad = match space {
+                    SpecifiedSpace::Width(width) => width,
+                    SpecifiedSpace::AlignTo(target) => target.saturating_sub(col),
+                };
+                for _ in 0..pad {
+                    expanded.push(' ');
+                }
+                expanded_chars += pad;
+                col += pad;
             }
-            expanded_chars += pad;
-            col += pad;
+            space_run = display;
         } else if ch == '\t' {
+            space_run = None;
             expanded.push(ch);
             expanded_chars += 1;
             col += 8 - (col % 8);
         } else {
+            space_run = None;
             expanded.push(ch);
             expanded_chars += 1;
             col += 1;
@@ -2131,16 +2410,31 @@ fn plan_window_text(
     }
 
     // Fetch only the window: redisplay cost must follow the screen size,
-    // never the buffer size.  Each visual line yields at least one row,
-    // so text_rows visual lines always cover the window.
+    // never the buffer size.  A wholly invisible tail contributes no glyph
+    // row; every other visual line contributes at least one.
     let last_line = buffer.line_number_at_pos(buffer.point_max());
     let mut rendered: Vec<(String, usize, usize, usize, usize)> = Vec::with_capacity(text_rows);
     // First row past the window, as (line, segment): the window's end.
     let mut past_window: Option<(usize, usize)> = None;
+    let mut invisible_tail_start: Option<usize> = None;
     let mut fill_line = view.top_line;
     let mut first_fill = true;
     'fill: while rendered.len() < text_rows && fill_line <= last_line {
         let visual = glyphless_visual_line_at(buffer, spec, fill_line, glyphless);
+        let line_start = buffer.line_start_of(fill_line);
+        if visual.text.is_empty()
+            && line_start < buffer.point_max()
+            && invisible_class_at(buffer, spec, line_start) != 0
+            && visual.raw_of_display.last().copied()
+                == Some(buffer.point_max().saturating_sub(line_start))
+        {
+            // No glyph represents a non-ellipsis invisible tail.  GNU's
+            // window-end remains at the first hidden position even though
+            // the buffer has no later visible row (and %p therefore says
+            // "Top", not "All").
+            invisible_tail_start = Some(line_start);
+            break;
+        }
         // `auto-hscroll-mode' `current-line': the row showing point
         // hscrolls by the window's hscroll, every other row keeps the
         // explicit minimum.
@@ -2199,7 +2493,7 @@ fn plan_window_text(
         // newline has no line beyond its last).
         Some((line, _)) if line > last_line => buffer.point_max(),
         Some((line, seg)) => position_of_visual_row(buffer, spec, glyphless, line, seg, usable),
-        None => buffer.point_max(),
+        None => invisible_tail_start.unwrap_or_else(|| buffer.point_max()),
     };
     WindowPlan {
         rendered,
@@ -2423,6 +2717,8 @@ fn redraw_with_echo_policy(
     if interpreter.frame_width() != cols as i64 || interpreter.frame_height() != rows as i64 {
         interpreter.set_tty_frame_size(cols as i64, rows as i64);
     }
+    // Rows above the window tree belong to the frame's menu bar.
+    let menu_lines = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1) as usize;
     // The mini window's height comes first: a tall message shrinks the
     // window tree above it (GNU's resize_mini_window, grow-only policy).
     let max_mini = max_mini_window_rows(interpreter, rows);
@@ -2439,7 +2735,6 @@ fn redraw_with_echo_policy(
     let echo_empty = echo_paint.len() == 1
         && echo_paint[0].text.iter().all(|c| *c == ' ')
         && !echo_from_minibuffer;
-    let previous_echo_rows = state.echo_rows;
     state.echo_rows = if echo_empty {
         1
     } else if exact_echo && !echo_from_minibuffer {
@@ -2451,38 +2746,51 @@ fn redraw_with_echo_policy(
     } else {
         state.echo_rows.max(echo_paint.len()).min(max_mini.max(1))
     };
-    if state.echo_rows != previous_echo_rows {
-        // GNU's grow_mini_window/shrink_mini_window resize the real
-        // window tree: window.el's own resizer stages new sizes for the
-        // windows above the mini window, and the staged sizes apply --
-        // window-height and friends answer the shrunken sizes while the
-        // echo area is grown.  The render-level clamp below stays as
-        // the safety net if the Lisp resizer declines.
-        let delta = state.echo_rows as i64 - previous_echo_rows as i64;
-        let _ = (|interpreter: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
-            let root = call(interpreter, env, "frame-root-window", &[])?;
-            let grow = call(
+    // GNU's grow_mini_window/shrink_mini_window resize the real window
+    // tree.  Reconcile against the tree's live height, rather than applying
+    // the change in frontend echo rows as a blind delta: restoring a
+    // minibuffer window configuration restores the root geometry before
+    // redisplay, while the frontend still remembers the formerly tall
+    // minibuffer.  Applying that stale delta grows the root past the frame
+    // and makes the next split too tall.
+    let desired_root_height = rows
+        .saturating_sub(state.echo_rows)
+        .saturating_sub(menu_lines)
+        .max(1) as i64;
+    // Failures from the Lisp resizer are deliberately not propagated: the
+    // render-level clamp below stays as the safety net when window.el's
+    // resizer declines (grow_mini_window likewise gives up quietly when
+    // the root cannot shrink).
+    let _ = (|interpreter: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
+        let root = call(interpreter, env, "frame-root-window", &[])?;
+        let current = call(
+            interpreter,
+            env,
+            "window-total-height",
+            std::slice::from_ref(&root),
+        )?
+        .as_integer()?;
+        let delta = desired_root_height - current;
+        if delta == 0 {
+            return Ok(());
+        }
+        let recovered = call(
+            interpreter,
+            env,
+            "window--resize-root-window-vertically",
+            &[root, Value::Integer(delta), Value::T],
+        )?;
+        if recovered.as_integer().unwrap_or(0) != 0 {
+            call(
                 interpreter,
                 env,
-                "window--resize-root-window-vertically",
-                &[root, Value::Integer(-delta), Value::T],
+                "window-resize-apply",
+                &[Value::Nil, Value::Nil],
             )?;
-            if grow.as_integer().unwrap_or(0) != 0 {
-                call(
-                    interpreter,
-                    env,
-                    "window-resize-apply",
-                    &[Value::Nil, Value::Nil],
-                )?;
-            }
-            Ok(())
-        })(interpreter, env);
-    }
+        }
+        Ok(())
+    })(interpreter, env);
     let frame_rows = rows - state.echo_rows; // everything above the echo area
-    // The rows the frame keeps above the window tree are the menu bar's
-    // (GNU's FRAME_MENU_BAR_LINES); `menu-bar-mode' drives the count
-    // through the `menu-bar-lines' frame parameter.
-    let menu_lines = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1) as usize;
     let full_repaint = state.painted_size != (cols, rows);
     if full_repaint {
         // A resize changes the wrap geometry under every saved segment
@@ -2569,10 +2877,10 @@ fn redraw_with_echo_policy(
         metrics: crate::lisp::primitives::InteractiveWindowMetrics,
     }
     let mut mode_line_jobs: Vec<ModeLineJob> = Vec::new();
-    // A window whose buffer sets `header-line-format' spends its first
-    // body row on the header (xdisp.c window_wants_header_line); the
-    // header renders through the mode-line machinery in the
-    // `header-line' face, padded with spaces.
+    // A tab line and header line consume body rows above the window text,
+    // in that order.  Both render through display-mode-line machinery in
+    // their respective faces and leave at least one text row visible.
+    let mut tab_line_jobs: Vec<ModeLineJob> = Vec::new();
     let mut header_line_jobs: Vec<ModeLineJob> = Vec::new();
     // Face spans over window text apply after the text lands (their
     // resolution evaluates Lisp, which the buffer borrow above forbids).
@@ -2585,6 +2893,9 @@ fn redraw_with_echo_policy(
         lnum_cols: usize,
         truncate: bool,
         body_width: usize,
+        /// Reserved cells immediately after the text body.  An `:extend'
+        /// face covering the newline paints through this margin too.
+        right_margin: usize,
         usable: usize,
         start: usize,
         window_end: usize,
@@ -2607,6 +2918,17 @@ fn redraw_with_echo_policy(
         cursor_row: Option<usize>,
         rows: Vec<(usize, usize, usize, usize)>,
     }
+    // A string whose `display' property targets a window margin (most
+    // visibly Flymake's TTY diagnostic indicators).  The source string
+    // lives in an overlay before-string; the displayed payload and its
+    // faces paint into the reserved margin rather than the text body.
+    struct MarginStringJob {
+        row: usize,
+        left: usize,
+        width: usize,
+        value: Value,
+    }
+    let mut margin_string_jobs: Vec<MarginStringJob> = Vec::new();
     let mut line_number_jobs: Vec<LineNumberJob> = Vec::new();
     // GNU's overlay arrow on a tty: a variable in
     // `overlay-arrow-variable-list' holding a marker overlays its
@@ -2628,13 +2950,24 @@ fn redraw_with_echo_policy(
             .buffer_local_value(info.buffer_id, "header-line-format")
             .or_else(|| interpreter.default_value("header-line-format"))
             .is_some_and(|format| format.is_truthy());
-        let header_rows = usize::from(has_header_line && info.height > 2);
-        let text_top = info.top + header_rows;
-        let text_rows = info.height - 1 - header_rows;
+        let has_tab_line = interpreter
+            .buffer_local_value(info.buffer_id, "tab-line-format")
+            .or_else(|| interpreter.default_value("tab-line-format"))
+            .is_some_and(|format| format.is_truthy());
+        let tab_rows = usize::from(has_tab_line && info.height > 2);
+        let header_rows = usize::from(has_header_line && info.height > 2 + tab_rows);
+        let text_top = info.top + tab_rows + header_rows;
+        let text_rows = info.height - 1 - tab_rows - header_rows;
         // `display-line-numbers': the column's width follows the
         // window's start line, which planning itself may move
         // (recentering); iterate until the width the plan was laid out
         // with matches the width its final top line asks for.
+        let (left_margin, right_margin) = interpreter.window_margins(info.window_id);
+        let left_margin = left_margin.unwrap_or(0).max(0) as usize;
+        let right_margin = right_margin.unwrap_or(0).max(0) as usize;
+        let left_margin = left_margin.min(body_width.saturating_sub(1));
+        let right_margin = right_margin.min(body_width.saturating_sub(left_margin + 1));
+        let text_body_width = body_width.saturating_sub(left_margin + right_margin).max(1);
         let lnum_for = |interpreter: &Interpreter, top_line: usize| {
             let buffer = if info.buffer_id == interpreter.current_buffer_id() {
                 Some(&interpreter.buffer)
@@ -2667,7 +3000,8 @@ fn redraw_with_echo_policy(
             .copied()
             .unwrap_or_default();
         let (geometry, plan, invisibility_active, chars_modiff) = loop {
-            let geometry = window_render_geometry(interpreter, env, info, body_width, cols, lnum);
+            let geometry =
+                window_render_geometry(interpreter, env, info, text_body_width, cols, lnum);
             let view = state.views.entry(info.window_id).or_default();
             let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
                 Some(&interpreter.buffer)
@@ -2686,7 +3020,7 @@ fn redraw_with_echo_policy(
                 info.start,
                 info.point,
                 text_rows,
-                body_width,
+                text_body_width,
                 geometry.truncate,
                 &geometry,
                 info.selected,
@@ -2784,7 +3118,7 @@ fn redraw_with_echo_policy(
             }
         }
         let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
-        let text_left = info.left + lnum_cols;
+        let text_left = info.left + left_margin + lnum_cols;
         for (row, (rendered, _, _, _, _)) in plan.rendered.iter().enumerate() {
             frame[text_top + row].blit(text_left, rendered, CellAttrs::default());
         }
@@ -2832,9 +3166,51 @@ fn redraw_with_echo_policy(
                     .unwrap_or_else(|| "=>".to_string());
                 let arrow: String = arrow
                     .chars()
-                    .take(body_width.saturating_sub(lnum_cols))
+                    .take(text_body_width.saturating_sub(lnum_cols))
                     .collect();
                 overlay_arrow_jobs.push((text_top + row, text_left, arrow));
+            }
+        }
+        {
+            let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
+                Some(&interpreter.buffer)
+            } else {
+                interpreter.get_buffer_by_id(info.buffer_id)
+            }) else {
+                continue 'windows;
+            };
+            for overlay in &buffer.overlays {
+                if overlay.is_dead() {
+                    continue;
+                }
+                for name in ["before-string", "after-string"] {
+                    let Some(value) = overlay.get_prop(&Value::Symbol(name.into())) else {
+                        continue;
+                    };
+                    let Some((side, payload)) = window_margin_display(value) else {
+                        continue;
+                    };
+                    let (margin_left, margin_width) = match side.as_str() {
+                        "left-margin" if left_margin > 0 => (info.left, left_margin),
+                        "right-margin" if right_margin > 0 => {
+                            (info.left + body_width - right_margin, right_margin)
+                        }
+                        _ => continue,
+                    };
+                    let line_start = buffer
+                        .line_start_at(overlay.beg.clamp(buffer.point_min(), buffer.point_max()));
+                    let Some(row) = plan.rendered.iter().position(|(_, _, seg, start, _)| {
+                        *seg == 0 && *start != usize::MAX && *start == line_start
+                    }) else {
+                        continue;
+                    };
+                    margin_string_jobs.push(MarginStringJob {
+                        row: text_top + row,
+                        left: margin_left,
+                        width: margin_width,
+                        value: payload,
+                    });
+                }
             }
         }
         if let Some(layout) = geometry.lnum {
@@ -2842,10 +3218,10 @@ fn redraw_with_echo_policy(
                 buffer_id: info.buffer_id,
                 layout,
                 top: text_top,
-                left: info.left,
+                left: info.left + left_margin,
                 text_rows,
                 truncate: geometry.truncate,
-                text_width: body_width.saturating_sub(lnum_cols).max(1),
+                text_width: text_body_width.saturating_sub(lnum_cols).max(1),
                 point: info.point,
                 window_end: plan.window_end,
                 cursor_row: if info.selected {
@@ -2867,8 +3243,9 @@ fn redraw_with_echo_policy(
             left: text_left,
             lnum_cols,
             truncate: geometry.truncate,
-            body_width: body_width.saturating_sub(lnum_cols).max(1),
-            usable: body_width
+            body_width: text_body_width.saturating_sub(lnum_cols).max(1),
+            right_margin,
+            usable: text_body_width
                 .saturating_sub(lnum_cols)
                 .saturating_sub(1)
                 .max(1),
@@ -2892,7 +3269,7 @@ fn redraw_with_echo_policy(
         if info.selected {
             if let Some((row, col)) = plan.cursor {
                 cursor_position = (
-                    (info.left + col).min(cols - 1) as u16,
+                    (info.left + left_margin + col).min(cols - 1) as u16,
                     (text_top + row).min(frame_rows - 1) as u16,
                 );
             }
@@ -2920,6 +3297,17 @@ fn redraw_with_echo_policy(
         });
         if header_rows > 0 {
             header_line_jobs.push(ModeLineJob {
+                window_id: info.window_id,
+                buffer_id: info.buffer_id,
+                point: mode_line_point,
+                row: info.top + tab_rows,
+                left: info.left,
+                body_width,
+                metrics,
+            });
+        }
+        if tab_rows > 0 {
+            tab_line_jobs.push(ModeLineJob {
                 window_id: info.window_id,
                 buffer_id: info.buffer_id,
                 point: mode_line_point,
@@ -2976,6 +3364,38 @@ fn redraw_with_echo_policy(
                     &Value::Symbol("glyphless-char".into()),
                 )
             });
+        state.face_cache.entry("default".into()).or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs(
+                interpreter,
+                env,
+                &Value::Symbol("default".into()),
+            )
+        });
+        let overlay_string_faces: Vec<Value> = {
+            let source = if job.buffer_id == interpreter.current_buffer_id() {
+                Some(&interpreter.buffer)
+            } else {
+                interpreter.get_buffer_by_id(job.buffer_id)
+            };
+            source
+                .into_iter()
+                .flat_map(|buffer| &buffer.overlays)
+                .filter(|overlay| !overlay.is_dead())
+                .flat_map(|overlay| {
+                    ["before-string", "after-string"]
+                        .into_iter()
+                        .filter_map(|name| overlay.get_prop(&Value::Symbol(name.into())))
+                        .flat_map(crate::lisp::primitives::string_face_spans)
+                        .map(|(_, _, face)| face)
+                })
+                .collect()
+        };
+        for face in overlay_string_faces {
+            let key = format!("{face}");
+            state.face_cache.entry(key).or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+            });
+        }
         let buffer = if job.buffer_id == interpreter.current_buffer_id() {
             &interpreter.buffer
         } else {
@@ -3070,14 +3490,23 @@ fn redraw_with_echo_policy(
                 // the window edge, GNU's whole-row highlight.
                 let line_chars = visual.map.len().saturating_sub(1);
                 let mut to_col = col_of(end);
+                let covers_newline = end > begin && buffer.char_at(end - 1) == Some('\n');
+                let extends_row =
+                    attrs.extend && (covers_newline || end.saturating_sub(line_begin) > line_chars);
                 if end.saturating_sub(line_begin) > line_chars {
                     to_col = if attrs.extend {
-                        job.body_width
+                        job.body_width + job.right_margin
                     } else {
                         to_col + 1
                     };
+                } else if covers_newline && attrs.extend {
+                    to_col = job.body_width + job.right_margin;
                 }
-                let to_col = to_col.min(col_cap);
+                let to_col = to_col.min(if extends_row {
+                    job.body_width + job.right_margin
+                } else {
+                    col_cap
+                });
                 if from_col >= to_col {
                     continue;
                 }
@@ -3115,6 +3544,40 @@ fn redraw_with_echo_policy(
                     );
                 }
             }
+            for (span_begin, span_end, face) in &visual.display_face_spans {
+                let attrs = state
+                    .face_cache
+                    .get(&format!("{face}"))
+                    .copied()
+                    .unwrap_or_default();
+                let begin_column = display_column(&line_text, *span_begin);
+                let end_column = display_column(&line_text, *span_end);
+                let (from_col, to_col) = if *row_hscroll > 0 {
+                    (
+                        hscroll_layout
+                            .screen_column(begin_column)
+                            .unwrap_or(hscroll_layout.screen_start),
+                        hscroll_layout
+                            .screen_column(end_column)
+                            .unwrap_or(hscroll_layout.screen_start),
+                    )
+                } else {
+                    (
+                        begin_column.saturating_sub(segment_start),
+                        end_column.saturating_sub(segment_start),
+                    )
+                };
+                let from_col = from_col.min(col_cap);
+                let to_col = to_col.min(col_cap);
+                if from_col < to_col {
+                    let row = &mut frame[job.top + index];
+                    if matches!(face, Value::Symbol(name) if name == "default") {
+                        row.replace_attrs(job.left + from_col, job.left + to_col, attrs);
+                    } else {
+                        row.overlay(job.left + from_col, job.left + to_col, attrs);
+                    }
+                }
+            }
             // The ellipsis takes the face of the text before it
             // (display_ellipsis draws with the iterator's saved face):
             // copy the preceding cell's attributes over the dots.
@@ -3145,6 +3608,49 @@ fn redraw_with_echo_policy(
 
     for (row, left, arrow) in &overlay_arrow_jobs {
         frame[*row].blit(*left, arrow, CellAttrs::default());
+    }
+
+    for job in &margin_string_jobs {
+        let Ok(text) = crate::lisp::primitives::string_text(&job.value) else {
+            continue;
+        };
+        let clipped: String = text.chars().take(job.width).collect();
+        // Margin glyphs are separate display objects, but an extending
+        // selection face already painted over the complete row remains the
+        // base beneath them.  Replace characters without erasing that base,
+        // then merge the margin string's own faces.
+        frame[job.row].blit_text(job.left, &clipped);
+        // A margin string is a separate glyph object.  Its unpropertized
+        // cells carry the default foreground, while an extending face from
+        // the buffer row remains the background beneath it.
+        let default = *state.face_cache.entry("default".into()).or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs(
+                interpreter,
+                env,
+                &Value::Symbol("default".into()),
+            )
+        });
+        // The margin string is its own glyph object realized over the
+        // default face: its cells take the default foreground (the
+        // terminal's own default when the face leaves it unspecified —
+        // term.c emits no SGR color for the default sentinel), while the
+        // extending background from the buffer row remains beneath.
+        frame[job.row].force_foreground(
+            job.left,
+            job.left + clipped.chars().count(),
+            default.foreground,
+        );
+        for (from, to, face) in crate::lisp::primitives::string_face_spans(&job.value) {
+            let key = format!("{face}");
+            let attrs = *state.face_cache.entry(key).or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+            });
+            frame[job.row].overlay(
+                job.left + from.min(job.width),
+                job.left + to.min(job.width),
+                attrs,
+            );
+        }
     }
 
     // The `display-line-numbers' columns (maybe_produce_line_number):
@@ -3386,6 +3892,56 @@ fn redraw_with_echo_policy(
             let from = job.left + from.min(job.body_width);
             let to = job.left + to.min(job.body_width);
             frame[job.row].overlay(from, to, attrs);
+        }
+    }
+
+    // Tab lines sit above header lines and use the `tab-line' face.  A
+    // package can install an evaluated per-buffer format here without
+    // enabling the global tab-bar UI (Flycheck's grouping controls do so).
+    if !tab_line_jobs.is_empty() {
+        let tab_attrs = *state
+            .face_cache
+            .entry("tab-line".into())
+            .or_insert_with(|| {
+                crate::lisp::primitives::resolve_tty_face_attrs(
+                    interpreter,
+                    env,
+                    &Value::Symbol("tab-line".into()),
+                )
+            });
+        for job in &tab_line_jobs {
+            let (mut tab, mut spans) = match crate::lisp::primitives::render_window_tab_line(
+                interpreter,
+                env,
+                job.window_id,
+                job.point,
+                job.metrics,
+            ) {
+                Ok((text, spans)) => (text, spans),
+                Err(error) => {
+                    debug_log(&format!("tab-line render: {error:?}"));
+                    (format!("[tab-line render error: {error:?}]"), Vec::new())
+                }
+            };
+            tab = apply_glyphless_char_display(interpreter, job.buffer_id, tab, &mut spans);
+            if tab.chars().count() > job.body_width {
+                tab = tab.chars().take(job.body_width).collect();
+            }
+            let mut padded = tab.clone();
+            padded.extend(std::iter::repeat_n(
+                ' ',
+                job.body_width.saturating_sub(tab.chars().count()),
+            ));
+            frame[job.row].blit(job.left, &padded, tab_attrs);
+            for (from, to, face) in spans {
+                let key = format!("{face}");
+                let attrs = *state.face_cache.entry(key).or_insert_with(|| {
+                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+                });
+                let from = job.left + from.min(job.body_width);
+                let to = job.left + to.min(job.body_width);
+                frame[job.row].overlay(from, to, attrs);
+            }
         }
     }
 
@@ -3733,6 +4289,18 @@ fn compose_echo_row(
 
 /// The SGR sequence selecting ATTRS from a reset state.
 fn sgr_sequence(attrs: &CellAttrs) -> String {
+    // term.c selects colors through the opposite foreground/background
+    // capability while standout is active.  Once both colors are concrete,
+    // that is the same terminal state as swapping them without retaining the
+    // reverse flag; GNU's Magit highlight is a visible example.  A face with
+    // either terminal-default color still needs actual reverse video.
+    let (foreground, background, reverse) =
+        match (attrs.foreground, attrs.background, attrs.reverse) {
+            (Some(foreground), Some(background), true) => {
+                (Some(background), Some(foreground), false)
+            }
+            _ => (attrs.foreground, attrs.background, attrs.reverse),
+        };
     let mut codes: Vec<String> = vec!["0".into()];
     if attrs.bold {
         codes.push("1".into());
@@ -3740,17 +4308,17 @@ fn sgr_sequence(attrs: &CellAttrs) -> String {
     if attrs.underline {
         codes.push("4".into());
     }
-    if attrs.reverse {
+    if reverse {
         codes.push("7".into());
     }
-    if let Some(fg) = attrs.foreground {
+    if let Some(fg) = foreground {
         codes.push(if fg < 8 {
             format!("{}", 30 + fg)
         } else {
             format!("38;5;{fg}")
         });
     }
-    if let Some(bg) = attrs.background {
+    if let Some(bg) = background {
         codes.push(if bg < 8 {
             format!("{}", 40 + bg)
         } else {
@@ -4090,6 +4658,7 @@ mod tests {
             lines_spanned: 1,
             ellipses: Vec::new(),
             glyphless_spans: Vec::new(),
+            display_face_spans: Vec::new(),
         }
     }
 
@@ -4329,6 +4898,33 @@ mod tests {
     }
 
     #[test]
+    fn width_display_specs_use_tty_cells_and_collapse_equal_runs() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let forms = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"aXbYcZZd\\n\")
+               (put-text-property 2 3 'display '(space :width 0.5))
+               (put-text-property 4 5 'display '(space :width 1.9))
+               (put-text-property 6 8 'display '(space :width 2)))",
+        )
+        .read_all()
+        .expect("read specified-width probe");
+        for form in &forms {
+            interp
+                .eval(form, &mut env)
+                .expect("evaluate specified-width probe");
+        }
+
+        let (text, map) = displayed_line_with_map(&interp.buffer, 1);
+        assert_eq!(text, "ab c  d");
+        assert_eq!(
+            map.expect("display widths changed the line"),
+            vec![0, 1, 1, 2, 3, 4, 6, 6, 7]
+        );
+    }
+
+    #[test]
     fn propertized_string_display_specs_replace_the_covered_text() {
         let mut interp = Interpreter::new();
         let mut env: Env = Vec::new();
@@ -4391,6 +4987,123 @@ mod tests {
         assert_eq!(visual.text, "head...next");
         assert_eq!(visual.map[4], 4, "run start maps before the ellipsis");
         assert_eq!(visual.map[5], 7, "the hidden interior maps after it");
+    }
+
+    #[test]
+    fn canonical_t_invisibility_spec_hides_true_overlay_regions() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"head\\nhidden\\nnext\\n\")
+               (let ((overlay (make-overlay 5 13)))
+                 (overlay-put overlay 'invisible t)))",
+        )
+        .read()
+        .expect("read true-overlay invisibility probe")
+        .expect("true-overlay invisibility form exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate true-overlay invisibility probe");
+        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        let spec = resolve_buffer_invisibility(&interp, &interp.buffer, interp.current_buffer_id());
+        assert!(spec.all, "canonical Value::T means every non-nil source");
+        assert_eq!(visual_line_at(&interp.buffer, &spec, 1).text, "headnext");
+    }
+
+    #[test]
+    fn window_overlay_after_strings_splice_before_hidden_newlines_with_faces() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"head\\nhidden\\nnext\\n\")
+               (let ((hidden (make-overlay 5 13))
+                     (indicator (make-overlay 4 5)))
+                 (overlay-put hidden 'invisible t)
+                 (overlay-put indicator 'after-string
+                              (propertize \"…\" 'font-lock-face 'bold))))",
+        )
+        .read()
+        .expect("read window overlay-string probe")
+        .expect("window overlay-string form exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate window overlay-string probe");
+        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        let spec = resolve_buffer_invisibility(&interp, &interp.buffer, interp.current_buffer_id());
+        let visual = visual_line_at(&interp.buffer, &spec, 1);
+        assert_eq!(visual.text, "head…next");
+        assert_eq!(
+            visual.display_face_spans,
+            vec![
+                (4, 5, Value::Symbol("default".into())),
+                (4, 5, Value::Symbol("bold".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn invisible_properties_on_overlay_strings_remove_their_tty_cells() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"[-] root\\n\")
+               (let ((button (make-overlay 1 4)))
+                 (overlay-put button 'before-string
+                              (propertize \" \" 'invisible t))))",
+        )
+        .read()
+        .expect("read invisible overlay-string probe")
+        .expect("invisible overlay-string probe exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate invisible overlay-string probe");
+        interp.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        let spec = resolve_buffer_invisibility(&interp, &interp.buffer, interp.current_buffer_id());
+        assert!(spec.active && spec.all);
+        assert_eq!(visual_line_at(&interp.buffer, &spec, 1).text, "[-] root");
+    }
+
+    #[test]
+    fn window_margin_display_strings_do_not_enter_the_text_body() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"Recent commits\n\")
+               (let ((indicator (make-overlay 2 15)))
+                 (overlay-put
+                  indicator 'before-string
+                  (propertize \"o\" 'display
+                              '((margin right-margin) \"date\")))))",
+        )
+        .read()
+        .expect("read margin overlay-string probe")
+        .expect("margin overlay-string probe exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate margin overlay-string probe");
+        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        assert_eq!(visual.text, "Recent commits");
+        assert!(visual.display_face_spans.is_empty());
+    }
+
+    #[test]
+    fn command_cycle_reselects_the_selected_windows_displayed_buffer() {
+        let mut interp = Interpreter::new();
+        let original = interp.current_buffer_id();
+        let (displayed, _) = interp.create_buffer("*command-cycle-displayed*");
+        interp.set_selected_window_buffer_id(displayed);
+        assert_eq!(
+            interp.current_buffer_id(),
+            original,
+            "set-window-buffer itself does not change the current buffer"
+        );
+        select_command_loop_buffer(&mut interp).expect("command-cycle buffer selection succeeds");
+        assert_eq!(interp.current_buffer_id(), displayed);
+        assert_eq!(interp.selected_window_buffer_id(), displayed);
     }
 
     #[test]
@@ -4745,6 +5458,52 @@ mod tests {
     }
 
     #[test]
+    fn window_end_stops_before_a_wholly_invisible_buffer_tail() {
+        let mut interpreter = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"head\nhidden\nmore\n\")
+               (let ((tail (make-overlay 6 (point-max))))
+                 (overlay-put tail 'invisible t)))",
+        )
+        .read()
+        .expect("read invisible-tail window probe")
+        .expect("invisible-tail window probe exists");
+        interpreter
+            .eval(&form, &mut env)
+            .expect("evaluate invisible-tail window probe");
+        interpreter.set_variable("buffer-invisibility-spec", Value::T, &mut env);
+        let spec = resolve_buffer_invisibility(
+            &interpreter,
+            &interpreter.buffer,
+            interpreter.current_buffer_id(),
+        );
+        let mut view = WindowView::default();
+        let plan = plan_window_text(
+            &interpreter.buffer,
+            &spec,
+            None,
+            &mut view,
+            1,
+            1,
+            10,
+            80,
+            false,
+            &RenderGeometry {
+                truncate: false,
+                hscroll: 0,
+                current_line_only: false,
+                min_hscroll: 0,
+                lnum: None,
+            },
+            false,
+        );
+        assert_eq!(plan.rendered[0].0, "head");
+        assert_eq!(plan.window_end, 6);
+    }
+
+    #[test]
     fn non_selected_windows_render_from_their_start_without_recentering() {
         let mut interpreter = Interpreter::new();
         for n in 1..=60 {
@@ -4883,6 +5642,46 @@ mod tests {
     }
 
     #[test]
+    fn text_only_blits_preserve_an_extending_base_face() {
+        let selected = CellAttrs {
+            background: Some(7),
+            extend: true,
+            ..CellAttrs::default()
+        };
+        let mut row = PaintRow::blank(8);
+        row.overlay(0, 8, selected);
+        row.blit_text(3, "date");
+        assert_eq!(row.text.iter().collect::<String>(), "   date ");
+        assert!(row.attrs.iter().all(|attrs| *attrs == selected));
+    }
+
+    #[test]
+    fn margin_default_foreground_preserves_an_extending_background() {
+        let selected = CellAttrs {
+            background: Some(7),
+            extend: true,
+            ..CellAttrs::default()
+        };
+        let mut row = PaintRow::blank(8);
+        row.overlay(0, 8, selected);
+        row.blit_text(3, "date");
+        row.overlay(
+            3,
+            7,
+            CellAttrs {
+                foreground: Some(7),
+                ..CellAttrs::default()
+            },
+        );
+        assert_eq!(row.text.iter().collect::<String>(), "   date ");
+        for attrs in &row.attrs[3..7] {
+            assert_eq!(attrs.foreground, Some(7));
+            assert_eq!(attrs.background, Some(7));
+            assert!(attrs.extend);
+        }
+    }
+
+    #[test]
     fn sgr_sequences_reset_then_select_each_attribute() {
         assert_eq!(sgr_sequence(&CellAttrs::default()), "\x1b[0m");
         assert_eq!(
@@ -4903,8 +5702,17 @@ mod tests {
                 reverse: true,
                 extend: false,
             }),
-            "\x1b[0;1;4;7;38;5;250;48;5;238m",
-            "colors past the base palette select through 38;5/48;5"
+            "\x1b[0;1;4;38;5;238;48;5;250m",
+            "concrete inverse colors swap through the 38;5/48;5 channels"
+        );
+        assert_eq!(
+            sgr_sequence(&CellAttrs {
+                foreground: Some(6),
+                reverse: true,
+                ..CellAttrs::default()
+            }),
+            "\x1b[0;7;36m",
+            "inverse remains active while either color is terminal-default"
         );
     }
 

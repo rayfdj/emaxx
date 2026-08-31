@@ -162,7 +162,7 @@ fn destroy_fringe_bitmap(
 /// Bare name of VALUE when it is a symbol, or a positioned symbol while
 /// `symbols-with-pos-enabled' is non-nil — the same view GNU's `eq' takes
 /// inside `assq'/`plist-get' during byte compilation.
-fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -> Option<String> {
+pub(super) fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -> Option<String> {
     if let Ok(symbol) = value.as_symbol() {
         return Some(symbol.to_string());
     }
@@ -171,6 +171,29 @@ fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -> Option<St
         && let Ok(symbol) = bare.as_symbol()
     {
         return Some(symbol.to_string());
+    }
+    None
+}
+
+fn symbol_property_by_eq(
+    interp: &Interpreter,
+    env: &Env,
+    symbol: &str,
+    property: &Value,
+) -> Option<Value> {
+    let mut tail = interp.symbol_plist(symbol);
+    let mut guard = crate::lisp::types::CycleGuard::new();
+    while let Value::Cons(ref cell) = tail {
+        if guard.step(crate::lisp::types::ConsCell::identity(cell)) {
+            return None;
+        }
+        let key = tail.car().ok()?;
+        let rest = tail.cdr().ok()?;
+        let value = rest.car().ok()?;
+        if values_eq_in_env(interp, &key, property, env) {
+            return Some(value);
+        }
+        tail = rest.cdr().ok()?;
     }
     None
 }
@@ -331,11 +354,13 @@ define_dispatch!(
                 let slice: String = chars[start..end].iter().collect();
                 match read_one_form_in_env(interp, &slice, env) {
                     Ok((val, consumed)) => {
-                        interp.intern_symbols_in_value(&val);
                         // The full object materializer, as `read' and the
                         // load path use: byte-code literals and labeled
-                        // references included.
+                        // references included.  Interning runs on the
+                        // materialized value so symbols inside expanded
+                        // literals (byte-code constant vectors) are covered.
                         let materialized = interp.materialize_read_object_literals(val)?;
+                        interp.intern_symbols_in_value(&materialized);
                         Ok(Value::cons(
                             materialized,
                             Value::Integer((start + consumed) as i64),
@@ -955,18 +980,22 @@ define_dispatch!(
                 // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
                 // XSYMBOL to the same underlying bare symbol.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                let property = args[1].as_symbol()?;
+                let property = bare_symbol_name(interp, env, &args[1]);
                 // GNU fns.c:Fget consults `overriding-plist-environment'
                 // (populated by bytecomp's compile-time handler for top-level
                 // `function-put'/`define-symbol-prop') before the symbol's
                 // own plist, returning the first non-nil hit.
-                if let Some(overriding) = overriding_plist_property(interp, env, &symbol, property)
-                {
-                    return Ok(overriding);
+                if let Some(property) = property.as_deref() {
+                    if let Some(overriding) =
+                        overriding_plist_property(interp, env, &symbol, property)
+                    {
+                        return Ok(overriding);
+                    }
+                    return Ok(interp
+                        .get_symbol_property(&symbol, property)
+                        .unwrap_or(Value::Nil));
                 }
-                Ok(interp
-                    .get_symbol_property(&symbol, property)
-                    .unwrap_or(Value::Nil))
+                Ok(symbol_property_by_eq(interp, env, &symbol, &args[1]).unwrap_or(Value::Nil))
             }
             "makunbound" => {
                 need_args(name, args, 1)?;

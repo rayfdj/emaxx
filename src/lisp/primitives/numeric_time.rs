@@ -238,6 +238,24 @@ pub(crate) fn function_arity_value(
                 .ok_or_else(|| invalid_function_arity(function))?;
             closure_arity_value(argument_spec, function)
         }
+        value if is_lambda_expression(interp, value, env) => {
+            let items = value.to_vec()?;
+            let parameters = items[1]
+                .to_vec()?
+                .into_iter()
+                .map(|parameter| {
+                    parameter.as_symbol().map(str::to_string).or_else(|_| {
+                        symbols_with_pos_enabled(interp, env)
+                            .then(|| symbol_with_pos_parts(interp, &parameter))
+                            .flatten()
+                            .and_then(|(symbol, _)| symbol.as_symbol().ok().map(str::to_string))
+                            .ok_or_else(|| invalid_function_arity(function))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(lambda_arity_value(&parameters))
+        }
+        Value::Cons(_) => Err(invalid_function_arity(function)),
         _ => Err(LispError::WrongTypeArgument(
             "functionp".into(),
             function.clone(),
