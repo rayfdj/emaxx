@@ -39,3 +39,7 @@ test.elc
 /foo
 /bar
 .claude/
+
+# tramp-tests writes this fixture name into CWD during harness runs
+# (see the honesty ledger, finding 135 on the tty track).
+baz;<foo>bar<baz>(foo)bar(baz)\[foo\]bar\[baz\]{foo}bar{baz}

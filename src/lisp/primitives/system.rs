@@ -1504,6 +1504,56 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
     Some(specification)
 }
 
+/// fileio.c expand_cp_target: a directory-name NEWNAME resolves to
+/// NEWNAME/(file-name-nondirectory FILE); anything else expands plainly.
+fn expand_cp_target(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: &str,
+    newname: &str,
+) -> Result<String, LispError> {
+    if directory_name_p(newname) {
+        expand_file_name_runtime(interp, env, &file_name_nondirectory(file), Some(newname))
+    } else {
+        expand_file_name_runtime(interp, env, newname, None)
+    }
+}
+
+fn normalize_copy_family_args(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    operation: &str,
+    args: &[Value],
+) -> Result<Option<Vec<Value>>, LispError> {
+    let (expand_first, basename_source_is_dir_stripped) = match operation {
+        "copy-file" | "add-name-to-file" => (true, false),
+        "rename-file" => (true, true),
+        "make-symbolic-link" => (false, false),
+        _ => return Ok(None),
+    };
+    let (Some(first), Some(second)) = (args.first(), args.get(1)) else {
+        return Ok(None);
+    };
+    let (Some(first_text), Some(second_text)) = (string_like(first), string_like(second)) else {
+        return Ok(None);
+    };
+    let file = if expand_first {
+        expand_file_name_runtime(interp, env, &first_text.text, None)?
+    } else {
+        first_text.text.clone()
+    };
+    let basename_source = if basename_source_is_dir_stripped {
+        directory_file_name(&file)
+    } else {
+        file.clone()
+    };
+    let newname = expand_cp_target(interp, env, &basename_source, &second_text.text)?;
+    let mut normalized = args.to_vec();
+    normalized[0] = Value::string(&file);
+    normalized[1] = Value::string(&newname);
+    Ok(Some(normalized))
+}
+
 pub(crate) fn dispatch_file_name_handler(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1511,6 +1561,14 @@ pub(crate) fn dispatch_file_name_handler(
     specification: FileNameHandlerOperation,
     args: &[Value],
 ) -> Result<Option<Value>, LispError> {
+    // fileio.c normalizes the copy-family arguments BEFORE the handler
+    // lookup, so a Lisp handler (Tramp) receives the already-joined
+    // target: Fcopy_file and Fadd_name_to_file expand FILE and run
+    // expand_cp_target (a directory NEWNAME becomes NEWNAME/basename);
+    // Frename_file feeds directory-file-name FILE to expand_cp_target;
+    // Fmake_symbolic_link leaves TARGET verbatim and joins only LINKNAME.
+    let normalized = normalize_copy_family_args(interp, env, operation, args)?;
+    let args = normalized.as_deref().unwrap_or(args);
     let mut candidates = specification
         .string_indices
         .iter()

@@ -638,11 +638,40 @@ pub(crate) fn insert_text_with_hooks(
         interp.insert_current_buffer(text);
     }
     for span in props {
-        // Freshly inserted text: graft the string's plist verbatim so the
-        // stored order matches GNU (add_text_properties would reverse it).
-        interp
-            .buffer
-            .set_text_properties(start + span.start, start + span.end, &span.props);
+        if inherit {
+            // graft_intervals_into_buffer with inherit: the string's own
+            // intervals are grafted MERGED with what the insertion point
+            // inherited -- the string's keys win, inherited keys the
+            // string does not define stay (format-spec relies on a
+            // propertized replacement keeping the spec region's face).
+            // The string's plist order leads, inherited keys follow.
+            let (span_start, span_end) = (start + span.start, start + span.end);
+            let mut position = span_start;
+            while position < span_end {
+                let existing = interp.buffer.text_properties_at(position);
+                let mut run_end = position + 1;
+                while run_end < span_end && interp.buffer.text_properties_at(run_end) == existing {
+                    run_end += 1;
+                }
+                let mut merged = span.props.clone();
+                for (key, value) in existing {
+                    if !merged.iter().any(|(present, _)| *present == key) {
+                        merged.push((key, value));
+                    }
+                }
+                interp
+                    .buffer
+                    .set_text_properties(position, run_end, &merged);
+                position = run_end;
+            }
+        } else {
+            // Freshly inserted text: graft the string's plist verbatim so
+            // the stored order matches GNU (add_text_properties would
+            // reverse it).
+            interp
+                .buffer
+                .set_text_properties(start + span.start, start + span.end, &span.props);
+        }
     }
     interp.set_inserted_extended_chars(start, extended_chars);
     let end = start + text.chars().count();

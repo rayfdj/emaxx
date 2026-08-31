@@ -1659,7 +1659,7 @@ fn partial_completion_expand(
 /// validation and blank-input default handling (GNU's
 /// `minibuffer-complete-and-exit' contract).  `None' means the input was
 /// rejected and the minibuffer keeps reading.
-fn minibuffer_submission(
+pub(crate) fn minibuffer_submission(
     interp: &mut Interpreter,
     env: &mut Env,
     contents: &[char],

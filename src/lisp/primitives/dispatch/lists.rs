@@ -546,6 +546,51 @@ fn read_minibuffer_text_from_unread_events_inner(
         }
         let code = event.as_integer().ok();
         if pending_keys.is_empty() && matches!(code, Some(10 | 13)) {
+            // GNU dispatches RET through the active completion keymap:
+            // minibuffer-local-must-match-map binds it to
+            // minibuffer-complete-and-exit, which refuses input that
+            // test-completion rejects and keeps reading (ERC's
+            // switch-to-buffer journeys clear the input and retry after
+            // exactly such a refusal).  Blank input falls through: the
+            // default's substitution belongs to completing-read-default.
+            if interp
+                .lookup_var("minibuffer--require-match", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                // The prompt occupies the buffer front (minibuffer-prompt-end);
+                // the submission validates only the user's input after it.
+                let prompt_length = interp
+                    .minibuffer_prompt_text()
+                    .map(|prompt| prompt.chars().count())
+                    .unwrap_or(0);
+                let contents: Vec<char> = interp
+                    .buffer
+                    .buffer_string()
+                    .chars()
+                    .skip(prompt_length)
+                    .collect();
+                if !contents.is_empty() {
+                    let collection = interp
+                        .lookup_var("minibuffer-completion-table", env)
+                        .unwrap_or(Value::Nil);
+                    let predicate = interp
+                        .lookup_var("minibuffer-completion-predicate", env)
+                        .filter(|value| !value.is_nil());
+                    if crate::lisp::primitives::completion::minibuffer_submission(
+                        interp,
+                        env,
+                        &contents,
+                        &collection,
+                        predicate.as_ref(),
+                        true,
+                        None,
+                    )?
+                    .is_none()
+                    {
+                        continue;
+                    }
+                }
+            }
             break;
         }
         pending_keys.push(event_key);
@@ -2246,12 +2291,19 @@ define_dispatch!(
                         }
                     })?
                 };
+                // minibuf.c's read_buffer completes over Vbuffer_alist:
+                // (NAME . BUFFER) conses, so a PREDICATE receives the pair
+                // and can inspect the buffer object (ERC's foreign-buffer
+                // filter reads buffer-local variables through the cdr).
                 let buffers = super::call(interp, "buffer-list", &[], env)?
                     .to_vec()
                     .unwrap_or_default()
                     .into_iter()
                     .filter_map(|buffer| match buffer {
-                        Value::Buffer(buffer) => Some(Value::String(buffer.name.clone())),
+                        Value::Buffer(handle) => Some(Value::cons(
+                            Value::String(handle.name.clone()),
+                            Value::Buffer(handle),
+                        )),
                         _ => None,
                     })
                     .collect::<Vec<_>>();

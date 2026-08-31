@@ -3983,3 +3983,53 @@ tests GNU itself fails identically here (server version drift, matched
 failure conditions -- these are honest matches, not Emaxx successes);
 the seven skips want eclipse-jdt, typescript/deno, and yasnippet,
 absent on both sides.
+
+## 2026-08-31 hard-third round 1 (tramp + erc mechanisms)
+
+Frozen at the merge: 7712/7883.  This round's flips, each anchored to
+its C source with oracle probes:
+- fileio.c expand_cp_target BEFORE handler dispatch: Fcopy_file and
+  Fadd_name_to_file expand FILE and resolve a directory NEWNAME to
+  NEWNAME/basename; Frename_file feeds directory-file-name FILE;
+  Fmake_symbolic_link keeps TARGET verbatim.  Emaxx passed raw
+  arguments to file-name handlers, so Tramp's exists-check fired on
+  the directory itself (probe trcp1.el byte-identical; tramp-tests
+  09/11/12/21 flipped, 7 -> 4 mismatching).
+- textprop.c graft_intervals_into_buffer with inherit: an inserted
+  string's own intervals MERGE with what the insertion point inherits
+  (string keys win); insert-and-inherit was wiping inherited props by
+  replacing the plist wholesale.  format-spec relies on a propertized
+  replacement keeping the spec region's face (probes fspec1/ercfmt1.el
+  byte-identical; the erc speaker-format family and refresh-prompt
+  flipped).
+- editfns.c styled_format property layering: the format string's props
+  cover each substituted span UNDER the argument's own (probe tp2.el);
+  the format builder's overlapping spans now flatten with that rule.
+- minibuf.c read_buffer completes over (NAME . BUFFER) conses -- the
+  PREDICATE receives the pair -- and RET under REQUIRE-MATCH dispatches
+  minibuffer-complete-and-exit, which refuses input test-completion
+  rejects (completing-read-default installs the context as
+  minibuffer-buffer locals via the setup hook; the simulated reader's
+  RET now validates against them, slicing the prompt off the buffer
+  front).  Probes reqm1-6/rbuf2.el byte-identical; erc--switch-to-buffer
+  and the erc-channel-p cascade flipped (erc-tests 9 -> 3).
+- STALE IN-REPO TEST corrected: read_buffer_simulation_enforces_its_
+  predicate pinned a NAME-string predicate -- the oracle HANGS on that
+  program (every candidate refused); the test now uses the cons
+  contract (probe rbuf2.el).  The old test had passed only because the
+  old reader ignored predicates entirely.
+- The frozen-resume feature (head.json commit marker; --resume reuses
+  same-commit per-file comparisons) landed with its stored shape
+  matching the flattened comparison.json.
+
+Documented-open from this round:
+- erc--essential-hook-ordering and erc--find-mode spawn a child of the
+  running binary and read its output inside GNU's OWN 10-second
+  accept-process-output silence window; an Emaxx child takes ~40-50s to
+  boot (no portable dump), so both sides' correct code diverges on
+  latency alone (probe inv3.el: the child's output arrives, late).
+  Boot-latency-bound, like simple-tests' async-shell case.
+- erc--split-line splits between a base character and its combining
+  diaeresis where GNU keeps the grapheme together; tramp-test39/41/42
+  (supersession warning, special-character names, filename encoding)
+  remain open with diagnosed directions.
