@@ -1866,6 +1866,94 @@ pub(crate) fn string_identity_for_coding(
     true
 }
 
+fn detect_sjis_bytes(bytes: &[u8]) -> bool {
+    // coding.c:detect_coding_sjis.  japanese-shift-jis has three charsets,
+    // so its two-byte lead range ends at 0xEF (the wider Shift-JIS-2004
+    // definition uses 0xFC).  Detection must see at least one non-ASCII
+    // sequence, and a lead at end-of-input is rejected in the last block.
+    let mut index = 0;
+    let mut found = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            0x00..=0x7F => index += 1,
+            0x81..=0x9F | 0xE0..=0xEF => {
+                let Some(&trail) = bytes.get(index + 1) else {
+                    return false;
+                };
+                if !(0x40..=0xFC).contains(&trail) || trail == 0x7F {
+                    return false;
+                }
+                found = true;
+                index += 2;
+            }
+            0xA0..=0xDF => {
+                found = true;
+                index += 1;
+            }
+            _ => return false,
+        }
+    }
+    found
+}
+
+fn detect_emacs_mule_sjis_conflict(interp: &Interpreter, bytes: &[u8]) -> bool {
+    // Emacs-Mule precedes Shift-JIS in the default category priority.  Port
+    // the overlapping part of coding.c:detect_coding_emacs_mule so a valid
+    // Emacs-Mule byte stream is not stolen by the new SJIS detector.  The
+    // 0x80 composition form cannot itself be valid SJIS, so it is outside
+    // this deliberately bounded conflict check.
+    let mut lengths = [1_usize; 256];
+    lengths[0x9A] = 3;
+    lengths[0x9B] = 3;
+    lengths[0x9C] = 4;
+    lengths[0x9D] = 4;
+    for charset in interp.charset_name_list() {
+        let Some(id) = charset_plist_property(interp, &charset, ":emacs-mule-id")
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value < 256)
+        else {
+            continue;
+        };
+        let Some(dimension) = charset_plist_property(interp, &charset, ":dimension")
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            continue;
+        };
+        lengths[id] = dimension + usize::from(id >= 0xA0) + 1;
+    }
+
+    let mut index = 0;
+    let mut found = false;
+    while index < bytes.len() {
+        let lead = bytes[index];
+        index += 1;
+        if lead < 0x80 {
+            if matches!(lead, 0x0E | 0x0F | 0x1B) {
+                return false;
+            }
+            continue;
+        }
+        if lead == 0x80 {
+            return false;
+        }
+        let following = lengths[usize::from(lead)].saturating_sub(1);
+        let Some(end) = index
+            .checked_add(following)
+            .filter(|end| *end <= bytes.len())
+        else {
+            return false;
+        };
+        if bytes[index..end].iter().any(|byte| *byte < 0xA0) {
+            return false;
+        }
+        found = true;
+        index = end;
+    }
+    found
+}
+
 pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
     // None when no eol byte exists: the name then stays the bare base,
     // which is what GNU records in last-coding-system-used and what lets
@@ -1923,11 +2011,13 @@ pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String,
     // the highest-priority charset coding, iso-latin-1 under the harness's
     // LANG=C environment -- every byte decodes (mojibake, not raw bytes).
     // A byte in 0x80..=0x9F is a C1 control, which no ISO 8859 text uses:
-    // its presence rejects the latin-1 category and the read stays
-    // raw-text (the oracle: (97 255) is latin-1, (97 129) is raw-text,
-    // and a stray valid UTF-8 sequence like C3 80 forces raw-text through
-    // its 0x80 continuation byte).
+    // its presence rejects the latin-1 category.  A complete Japanese
+    // sequence may then win; otherwise the read stays raw-text (the oracle:
+    // (97 255) is latin-1, (97 129) is raw-text, and 61 81 62 is Shift-JIS).
     if bomless.iter().any(|byte| (0x80..=0x9F).contains(byte)) {
+        if detect_sjis_bytes(bomless) && !detect_emacs_mule_sjis_conflict(interp, bomless) {
+            return (coding_variant_name(interp, "sjis", actual_eol), normalized);
+        }
         return (
             coding_variant_name(interp, "raw-text", actual_eol),
             normalized,

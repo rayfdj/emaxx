@@ -189,6 +189,48 @@ fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
 }
 
 #[test]
+fn compiled_time_string_results_keep_text_property_mutation() {
+    // GNU timefns.c allocates mutable Lisp strings: multibyte for
+    // Fformat_time_string and unibyte for Fcurrent_time_string.  A
+    // byte-compiled lexical local does not pass through the interpreter's
+    // value-storage upgrade, so returning immutable host text here silently
+    // discarded ERC's timestamp properties.
+    let program = r#"
+        (progn
+          (require 'bytecomp)
+          (funcall
+           (byte-compile
+            (lambda ()
+              (let ((formatted (format-time-string "%H:%M" 704591940 t))
+                    (current (current-time-string 704591940 t)))
+                (dolist (s (list formatted current))
+                  (put-text-property 0 (length s) 'invisible 'timestamp s))
+                (list
+                 (list (get-text-property 0 'invisible formatted)
+                       (object-intervals formatted)
+                       (multibyte-string-p formatted))
+                 (list (get-text-property 0 'invisible current)
+                       (object-intervals current)
+                       (multibyte-string-p current))))))))
+    "#;
+    let expected = concat!(
+        "((timestamp ((0 5 (invisible timestamp))) t) ",
+        "(timestamp ((0 24 (invisible timestamp))) nil))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read compiled time-string program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate compiled time-string program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -9344,6 +9386,44 @@ fn string_decode_names_last_coding_system_used_like_the_oracle() {
     let result = interp
         .eval(&form, &mut Vec::new())
         .expect("evaluate lcsu program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn undecided_decode_detects_shift_jis_like_coding_c() {
+    // coding.c:detect_coding_sjis accepts 0x81..0x9F leads only with a
+    // 0x40..0xFC trail other than 0x7F, and rejects an incomplete lead in
+    // the final block.  The first row is the sole residual from the round-2
+    // 132-case decode matrix; its 0x81 0x62 pair is JIS #x2143 (U+FF5C).
+    let program = r#"
+        (progn
+          (defun zz-sjis-detect (bytes)
+            (let ((decoded
+                   (decode-coding-string
+                    (apply #'unibyte-string bytes) 'undecided)))
+              (list (append decoded nil) last-coding-system-used)))
+          (list
+           (zz-sjis-detect '(97 129 98))
+           (progn (decode-coding-string (unibyte-string 129) 'undecided)
+                  last-coding-system-used)
+           (zz-sjis-detect '(129 64))
+           (progn (decode-coding-string (unibyte-string 129 127) 'undecided)
+                  last-coding-system-used)))
+    "#;
+    let expected = concat!(
+        "(((97 65372) japanese-shift-jis) raw-text ",
+        "((12288) japanese-shift-jis) raw-text)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read Shift-JIS detection program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate Shift-JIS detection program");
     assert_eq!(result.to_string(), expected);
 }
 
