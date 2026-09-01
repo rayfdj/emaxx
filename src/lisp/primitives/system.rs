@@ -1389,7 +1389,6 @@ pub(crate) struct FileNameHandlerOperation {
     string_indices: &'static [usize],
     default_directory: DefaultDirectorySource,
     buffer_file: Option<BufferFileSource>,
-    process_command: bool,
 }
 
 impl FileNameHandlerOperation {
@@ -1401,17 +1400,11 @@ impl FileNameHandlerOperation {
             string_indices,
             default_directory,
             buffer_file: None,
-            process_command: false,
         }
     }
 
     const fn with_buffer_file(mut self, buffer_file: BufferFileSource) -> Self {
         self.buffer_file = Some(buffer_file);
-        self
-    }
-
-    const fn with_process_command(mut self) -> Self {
-        self.process_command = true;
         self
     }
 }
@@ -1498,7 +1491,6 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         }
         "verify-visited-file-modtime" => FileNameHandlerOperation::new(&[], Always)
             .with_buffer_file(BufferFileSource::ArgumentOrCurrent),
-        "make-process" => FileNameHandlerOperation::new(&[], Always).with_process_command(),
         _ => return None,
     };
     Some(specification)
@@ -1577,18 +1569,6 @@ pub(crate) fn dispatch_file_name_handler(
         .map(|string| string.text)
         .collect::<Vec<_>>();
 
-    if specification.process_command {
-        for pair in args.chunks_exact(2) {
-            if pair[0] == Value::Symbol(":command".into())
-                && let Ok(command) = pair[1].to_vec()
-                && let Some(program) = command.first().and_then(string_like)
-            {
-                candidates.push(program.text);
-                break;
-            }
-        }
-    }
-
     let uses_implicit_default_directory = match specification.default_directory {
         DefaultDirectorySource::Never => false,
         DefaultDirectorySource::RelativeArgument => {
@@ -1643,6 +1623,15 @@ pub(crate) fn dispatch_file_name_handler(
             &handler_args,
             env,
         )?;
+        // Funhandled_file_name_directory accepts only a string from the
+        // handler; every other return value means the directory is not
+        // directly usable and becomes nil.
+        let result =
+            if operation == "unhandled-file-name-directory" && string_like(&result).is_none() {
+                Value::Nil
+            } else {
+                result
+            };
         if operation == "insert-file-contents" {
             let inserted = result
                 .to_vec()

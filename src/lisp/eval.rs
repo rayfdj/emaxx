@@ -196,7 +196,10 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     // GNU bindings.el advertises this host-backed primitive family.
     StartupFeature::new("base64"),
     StartupFeature::new("emacs"),
+    #[cfg(target_os = "macos")]
     StartupFeature::new("kqueue"),
+    #[cfg(target_os = "linux")]
+    StartupFeature::new("inotify"),
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
@@ -1672,6 +1675,30 @@ pub(crate) struct RunningProcess {
     pub(crate) pty_slave_name: Option<String>,
 }
 
+impl Drop for RunningProcess {
+    fn drop(&mut self) {
+        // `Child' closes its pipe handles but deliberately leaves a running
+        // child alive.  Every RunningProcess is owned by one interpreter, so
+        // dropping an uninstalled runtime after a later setup error—or
+        // dropping the interpreter itself—must terminate and reap it.
+        match self.child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+            // The Unix status pump uses waitpid directly so it can observe
+            // stop/continue transitions.  ECHILD here means that pump has
+            // already reaped this PID; never signal a potentially reused PID.
+            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
+            Err(_) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for RunningProcess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunningProcess").finish_non_exhaustive()
@@ -2013,12 +2040,75 @@ pub(crate) struct WindowConfigurationSnapshot {
     frame_height: i64,
 }
 
-#[derive(Clone)]
 struct FileNotifyWatch {
+    descriptor: Value,
     path: Option<String>,
+    flags: Vec<String>,
     callback: Value,
     active: bool,
+    backend: FileNotifyBackend,
     fingerprint: Option<FileNotifyFingerprint>,
+    directory_snapshot: Option<Vec<FileNotifyDirectoryEntry>>,
+    #[cfg(target_os = "macos")]
+    host_handle: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
+    #[cfg(target_os = "linux")]
+    host_watch_descriptor: Option<i32>,
+    #[cfg(target_os = "linux")]
+    host_mask: u32,
+}
+
+/// Image templates may carry inert/remote watches, but sharing a live kernel
+/// watch between two interpreters would let either clone consume the other's
+/// events and close its descriptors.  Match the live-process clone contract:
+/// reject such a template loudly instead of manufacturing independence.
+impl Clone for FileNotifyWatch {
+    fn clone(&self) -> Self {
+        #[cfg(target_os = "macos")]
+        if self.host_handle.is_some() {
+            panic!("image-template clone with a live kqueue watch");
+        }
+        #[cfg(target_os = "linux")]
+        if self.host_watch_descriptor.is_some() {
+            panic!("image-template clone with a live inotify watch");
+        }
+        Self {
+            descriptor: self.descriptor.clone(),
+            path: self.path.clone(),
+            flags: self.flags.clone(),
+            callback: self.callback.clone(),
+            active: self.active,
+            backend: self.backend,
+            fingerprint: self.fingerprint.clone(),
+            directory_snapshot: self.directory_snapshot.clone(),
+            #[cfg(target_os = "macos")]
+            host_handle: None,
+            #[cfg(target_os = "linux")]
+            host_watch_descriptor: None,
+            #[cfg(target_os = "linux")]
+            host_mask: self.host_mask,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileNotifyBackend {
+    /// File-name handlers and the non-kernel compatibility surface use the
+    /// kqueue event shape already consumed by filenotify.el.
+    SyntheticKqueue,
+    #[cfg(target_os = "macos")]
+    Kqueue,
+    #[cfg(target_os = "linux")]
+    Inotify,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+struct FileNotifyHostQueue(std::sync::Arc<std::os::fd::OwnedFd>);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Clone for FileNotifyHostQueue {
+    fn clone(&self) -> Self {
+        panic!("image-template clone with a live file-notification queue");
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2031,11 +2121,25 @@ enum FileNotifyFingerprint {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileNotifyDirectoryEntry {
+    name: String,
+    inode: u64,
+    modified: Option<SystemTime>,
+    status_changed: Option<(i64, i64)>,
+    len: u64,
+}
+
 #[derive(Clone)]
 struct PendingFileNotification {
     path: String,
+    secondary_path: Option<String>,
     action: String,
-    callbacks: Vec<(i64, Value)>,
+    callbacks: Vec<(Value, Value)>,
+    /// inotify already supplies the complete low-level event, including its
+    /// aspect list, basename, and rename cookie.  kqueue notifications are
+    /// assembled from the path/action fields above.
+    raw_event: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -2629,11 +2733,16 @@ impl Interpreter {
                 }
             }
             for notification in &mut clone.pending_file_notifications {
-                for (_, callback) in &mut notification.callbacks {
+                if let Some(event) = &notification.raw_event {
+                    notification.raw_event = Some(c.copy(event));
+                }
+                for (descriptor, callback) in &mut notification.callbacks {
+                    *descriptor = c.copy(descriptor);
                     *callback = c.copy(callback);
                 }
             }
             for watch in clone.file_notify_watches.values_mut() {
+                watch.descriptor = c.copy(&watch.descriptor.clone());
                 watch.callback = c.copy(&watch.callback.clone());
             }
             for frame in &mut clone.backtrace_frames {
@@ -3282,6 +3391,10 @@ pub struct Interpreter {
     lambda_capture_overrides: Vec<bool>,
     lambda_trim_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
+    /// Cooperative thread bodies currently suspended on Rust call stacks,
+    /// outermost first.  `active_thread_id' identifies only the deepest one;
+    /// event pumping from that body must not re-enter any suspended ancestor.
+    executing_thread_ids: Vec<u64>,
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
     combined_after_change: Option<CombinedAfterChangeState>,
@@ -3298,6 +3411,10 @@ pub struct Interpreter {
     plain_quote_templates: HashMap<usize, ConsMutationStamped<Value>>,
     pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
+    #[cfg(target_os = "macos")]
+    file_notify_kqueue: Option<FileNotifyHostQueue>,
+    #[cfg(target_os = "linux")]
+    file_notify_inotify: Option<FileNotifyHostQueue>,
     pub(crate) file_name_handler_match_cache: HashMap<
         (String, String),
         FileNameHandlerMatchCacheEntry,
@@ -4085,6 +4202,7 @@ impl Interpreter {
                 outcome: None,
                 waiting_for_user_input: false,
             }],
+            executing_thread_ids: Vec::new(),
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
             combined_after_change: None,
@@ -4095,6 +4213,10 @@ impl Interpreter {
             plain_quote_templates: HashMap::new(),
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),
+            #[cfg(target_os = "macos")]
+            file_notify_kqueue: None,
+            #[cfg(target_os = "linux")]
+            file_notify_inotify: None,
             file_name_handler_match_cache: HashMap::default(),
             main_thread_id,
             active_thread_id: main_thread_id,

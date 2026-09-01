@@ -2481,14 +2481,13 @@ define_dispatch!(
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                // keyboard.c's Finput_pending_p: a non-nil CHECK-TIMERS
-                // runs ripe timers (READABLE_EVENTS_DO_TIMERS_NOW) before
-                // answering — sit-for's zero-second path depends on it.
+                // keyboard.c processes special events on every probe, and
+                // READABLE_EVENTS_DO_TIMERS_NOW when CHECK-TIMERS is non-nil.
+                // `sit-for' deliberately calls `(input-pending-p t)', even
+                // for a zero-length no-redisplay wait.
+                interp.service_file_notifications(env)?;
                 if args.first().is_some_and(Value::is_truthy) {
-                    let idle = crate::lisp::primitives::tty_current_idle_duration()
-                        .map(|duration| duration.as_secs_f64())
-                        .unwrap_or(0.0);
-                    crate::lisp::primitives::run_due_timers(interp, env, idle);
+                    interp.run_pending_timer_events(env)?;
                 }
                 Ok(
                     if unread_command_events(interp, env)?.is_empty()
@@ -3818,6 +3817,9 @@ define_dispatch!(
             }
             "redisplay" => {
                 need_arg_range(name, args, 0, 1)?;
+                // `sit-for 0' redisplays instead of entering read-event, but
+                // GNU still dispatches timers that were already ripe.
+                interp.run_pending_timer_events(env)?;
                 // A live frontend repaints through its redraw hook
                 // (sit-for redisplays before waiting); the cache-free
                 // batch renderer cannot be preempted by pending terminal

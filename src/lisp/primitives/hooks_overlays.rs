@@ -326,7 +326,8 @@ pub(crate) fn deliver_file_notification(
     env: &mut Env,
     path: &str,
     action: &str,
-    callbacks: Vec<(i64, Value)>,
+    secondary_path: Option<&str>,
+    callbacks: Vec<(Value, Value)>,
 ) -> Result<(), LispError> {
     let saved_buffer_id = interp.current_buffer_id();
     let backend_action = match action {
@@ -335,16 +336,43 @@ pub(crate) fn deliver_file_notification(
         "changed" => "write",
         "attribute-changed" => "attrib",
         "renamed" => "rename",
+        "revoked" => "revoke",
         other => other,
     };
     let mut result = Ok(());
     for (descriptor, callback) in callbacks {
-        let event = Value::list([
-            Value::Integer(descriptor),
+        let mut event = vec![
+            descriptor,
             Value::list([Value::Symbol(backend_action.into())]),
             Value::String(path.into()),
-        ]);
+        ];
+        if let Some(secondary_path) = secondary_path {
+            event.push(Value::String(secondary_path.into()));
+        }
+        let event = Value::list(event);
         if let Err(error) = call_function_value(interp, &callback, &[event], env) {
+            result = Err(error);
+            break;
+        }
+    }
+    if interp.has_buffer_id(saved_buffer_id) {
+        interp.switch_to_buffer_id(saved_buffer_id)?;
+    }
+    result
+}
+
+pub(crate) fn deliver_raw_file_notification(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    event: Value,
+    callbacks: Vec<(Value, Value)>,
+) -> Result<(), LispError> {
+    let saved_buffer_id = interp.current_buffer_id();
+    let mut result = Ok(());
+    for (_, callback) in callbacks {
+        if let Err(error) =
+            call_function_value(interp, &callback, std::slice::from_ref(&event), env)
+        {
             result = Err(error);
             break;
         }

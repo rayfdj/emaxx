@@ -521,6 +521,7 @@ pub(crate) fn write_region_value_with_logical_path(
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);
     validate_file_name(&path)?;
+    let existed_before_write = fs::symlink_metadata(&path).is_ok();
     let (text, source_multibyte) = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
         (interp.buffer.buffer_string(), interp.buffer.is_multibyte())
     } else if string_like(&args[0]).is_some() {
@@ -637,7 +638,21 @@ pub(crate) fn write_region_value_with_logical_path(
         (Ok(()), Ok(())) => {}
     }
     set_last_coding_system_used(interp, &coding, env);
-    dispatch_file_notification(interp, env, &path, "changed")?;
+    if !existed_before_write {
+        dispatch_file_notification(interp, env, &path, "created")?;
+    }
+    // Creating an empty file changes the directory but writes no file data;
+    // kqueue therefore exposes CREATE without WRITE for that transition.
+    if existed_before_write || !bytes.is_empty() {
+        dispatch_file_notification(interp, env, &path, "changed")?;
+    }
+    // Darwin kqueue reports the metadata transition caused by replacing the
+    // file contents separately from the write readiness flag.  Watches that
+    // did not request attribute changes filter this event at the backend.
+    #[cfg(target_os = "macos")]
+    if existed_before_write || !bytes.is_empty() {
+        dispatch_file_notification(interp, env, &path, "attribute-changed")?;
+    }
     if let Some(visit) = args.get(4)
         && (matches!(visit, Value::T) || string_like(visit).is_some())
     {

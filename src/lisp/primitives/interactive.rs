@@ -1170,9 +1170,13 @@ pub(crate) fn tty_current_idle_duration() -> Option<std::time::Duration> {
         .map(|start| start.elapsed())
 }
 
-pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_seconds: f64) -> bool {
+pub(crate) fn run_due_timers(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    idle_seconds: f64,
+) -> Result<bool, LispError> {
     if interp.lookup_function("timer-event-handler", env).is_err() {
-        return false;
+        return Ok(false);
     }
     // keyboard.c's decode_timer reads the timer vector and compares its
     // exact timestamp against the C clock.  Going back through the Lisp
@@ -1223,16 +1227,19 @@ pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_secon
             };
             if due {
                 ran = true;
-                let _ = interp.call_function_value(
+                interp.begin_timer_callback();
+                let outcome = interp.call_function_value(
                     Value::Symbol("timer-event-handler".into()),
-                    None,
+                    Some("timer-event-handler"),
                     std::slice::from_ref(&timer),
                     env,
                 );
+                interp.end_timer_callback();
+                outcome?;
             }
         }
     }
-    ran
+    Ok(ran)
 }
 
 /// The echo-area text for a command's error, GNU's
@@ -1343,11 +1350,23 @@ pub(crate) fn pop_unread_command_event_value(
                     let idle = idle_start
                         .get_or_insert_with(std::time::Instant::now)
                         .elapsed();
-                    if run_due_timers(interp, env, idle.as_secs_f64()) {
+                    let mut process_progress =
+                        crate::lisp::primitives::processes::pump_external_process_output(
+                            interp, env,
+                        )?;
+                    process_progress |=
+                        crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
+                    if process_progress
+                        || interp.service_async_runtime_events(
+                            env,
+                            true,
+                            Some(idle.as_secs_f64()),
+                        )?
+                    {
                         // A blocking Lisp reader owns the command thread, so
-                        // the outer terminal loop cannot observe timer work.
-                        // Redisplay here, as read_char does after timer_check;
-                        // query-replace's lazy-highlight overlays rely on it.
+                        // the outer terminal loop cannot observe asynchronous
+                        // work.  Redisplay here, as read_char does after
+                        // wait_reading_process_output.
                         run_tty_frame_redraw(interp, env);
                     }
                 }
@@ -2077,9 +2096,18 @@ pub(crate) fn read_tty_event_with_timeout(
         // is the cancel-on-input wait used by jsonrpc/Eglot completion: a
         // subprocess reply and the zero-delay continuation its filter
         // schedules must run even when no key arrives.
-        crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
-        crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
-        interp.drive_threads(env, true)?;
+        let mut process_progress =
+            crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
+        process_progress |=
+            crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
+        let async_progress = interp.service_async_runtime_events(
+            env,
+            true,
+            Some(started.elapsed().as_secs_f64()),
+        )?;
+        if process_progress || async_progress {
+            run_tty_frame_redraw(interp, env);
+        }
         let cursor_in_echo_area = interp
             .lookup_var("cursor-in-echo-area", env)
             .is_some_and(|value| value.is_truthy());
@@ -2096,7 +2124,6 @@ pub(crate) fn read_tty_event_with_timeout(
                 return Ok(Some(event));
             }
             Some(None) => {
-                run_due_timers(interp, env, started.elapsed().as_secs_f64());
                 if std::time::Instant::now() >= deadline {
                     return Ok(None);
                 }
