@@ -6285,19 +6285,55 @@ policy, but `archive.ubuntu.com` is reachable:
    extract to `../emacs`, `git init` + commit it.
 2. The Ubuntu `+1` repack strips GFDL docs and `admin/unidata/IVD_Sequences.txt`;
    stub `doc/{emacs,lispintro,lispref,misc}/Makefile.in` with no-op targets
-   (include a `.SUFFIXES:` override so `org.texi` matches the catch-all rule)
    plus minimal `emacs.texi`/`emacs-lisp-intro.texi`/`elisp.texi` files that
-   carry a `@direntry`, and `touch admin/unidata/IVD_Sequences.txt`.
+   carry a `@direntry`, and `touch admin/unidata/IVD_Sequences.txt`.  Each stub
+   needs a `.SUFFIXES:` override AND a `%:` catch-all, because the parent
+   makefiles ask these directories for named targets, not just suffix rules:
+   `doc/emacs` must answer `doc-emacsver` (configure instantiates
+   `emacsver.texi` through it, so give it a real rule that seds `@version@`
+   out of `emacsver.texi.in`), `doc/misc` must answer `org-manuals` (from
+   `lisp/Makefile`) and `echo-sources` (from the top-level `Makefile`).
+   Without those the build dies at `lisp` with "No rule to make target
+   'org.texi'".
 3. `apt-get install build-essential pkg-config texinfo autoconf libgnutls28-dev
    libncurses-dev libgccjit-13-dev libgmp-dev libxml2-dev libsqlite3-dev
-   zlib1g-dev`, then `./autogen.sh && ./configure --with-native-compilation
-   --without-x && make -j$(nproc)`.
-4. Repin: `cargo run --bin compat-harness -- oracle pin --emacs
+   zlib1g-dev`, plus the feature libraries the pinned oracle is built with:
+   `libtree-sitter-dev libx11-dev libxpm-dev libjpeg-dev libgif-dev
+   libtiff-dev libpng-dev libxft-dev libxrender-dev libxt-dev`.  Then
+   `./autogen.sh && ./configure --with-native-compilation --with-x
+   --with-x-toolkit=no --with-tree-sitter --without-imagemagick
+   --without-lcms2 && make -j$(nproc)`.
+
+   Do NOT configure `--without-x`: the anti-cheat gate
+   `gnu_c_manifest_matches_fresh_regeneration` regenerates
+   `generated_gnu_c_primitives_linux.rs` by asking the RUNNING oracle for each
+   DEFUN's `subr-arity`, so a primitive that is not compiled in records
+   `arity: None`.  A `--without-x` build mismatches the committed manifest on
+   140 contracts (45 treesit.c, the rest xfns.c/image.c/xselect.c/xfaces.c/
+   fontset.c/fringe.c/...), and an ImageMagick or lcms2 build mismatches it on
+   9 in the other direction.  The configuration above is the one the committed
+   Linux manifest describes; verify with
+   `../emacs/src/emacs -Q --batch --eval '(prin1 (list (fboundp (quote
+   x-window-property)) (fboundp (quote treesit-parser-p)) (fboundp (quote
+   imagemagick-types)) (fboundp (quote lcms2-available-p))))'`, which must
+   print `(t t nil nil)`.
+4. Commit the repack fixups into the oracle checkout before pinning: the
+   harness refuses a dirty checkout ("commit identity alone would not describe
+   the oracle sources"), and it also refuses a binary whose recorded
+   `emacs-repository-version` differs from the checkout's HEAD.  That value is
+   baked at DUMP time by `lisp/loadup.el`, so after committing you must
+   `touch lisp/loadup.el && make` to re-dump -- an ordinary incremental `make`
+   leaves the old revision in `emacs.pdmp` and the pin keeps failing.
+5. Repin: `cargo run --bin compat-harness -- oracle pin --emacs
    ../emacs/src/emacs --repo ../emacs`. Leave the resulting
-   `compat/oracle.lock.json` change uncommitted; the darwin pin in git history
-   stays canonical.
-5. Run the Rust test suite as a non-root user; several tests assert
-   unwritable-file behavior that is vacuous under root.
+   `compat/oracle.lock.linux.json` change uncommitted; the darwin pin in git
+   history stays canonical.
+6. Run the Rust test suite as a non-root user; several tests assert
+   unwritable-file behavior that is vacuous under root.  Recreate that user
+   with `useradd -m -s /bin/bash emaxx` if the container lost it.
+7. A fresh container may ship a rustc older than the committed `Cargo.lock`
+   needs (`sysinfo` wanted 1.95 against a 1.94 toolchain); `rustup update
+   stable` rather than editing the lockfile.
 
 ## Non-Negotiable Rules
 
