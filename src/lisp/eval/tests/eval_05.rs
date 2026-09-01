@@ -247,33 +247,6 @@ fn latin_1_aliases_resolve_to_iso_latin_1() {
 }
 
 #[test]
-fn find_composition_reports_no_automatic_composition_in_batch() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            "(let ((old (window-buffer (selected-window))))
-               (unwind-protect
-                   (with-temp-buffer
-                     (set-window-buffer (selected-window) (current-buffer))
-                     (insert \"__Åström\")
-                     (let ((composition (find-composition 9 10)))
-                       (list (car composition) (cadr composition))))
-                 (set-window-buffer (selected-window) old)))"
-        ),
-        // The batch oracle: no frame font machinery, so no automatic
-        // composition -- (find-composition 9 10) is nil even across the
-        // combining pair.
-        Value::list([Value::Nil, Value::Nil]),
-    );
-}
-
-#[test]
 fn ascii_case_table_leaves_non_ascii_letters_unchanged() {
     let mut interp = Interpreter::new();
     interp.set_load_path(

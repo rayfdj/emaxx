@@ -971,10 +971,84 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "char-charset" => {
-                need_args(name, args, 1)?;
-                Ok(Value::Symbol(
-                    charset_for_char(args[0].as_integer()? as u32).into(),
-                ))
+                need_arg_range(name, args, 1, 2)?;
+                // CHECK_CHARACTER
+                let Some(character) = args[0]
+                    .as_integer()
+                    .ok()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value <= 0x3f_ffff)
+                else {
+                    return Err(LispError::WrongTypeArgument(
+                        "characterp".into(),
+                        args[0].clone(),
+                    ));
+                };
+                // ENCODE_CHAR speaks the regex-internal raw-byte range, as
+                // in the `encode-char' arm above.
+                let internal = if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
+                    RAW_BYTE_REGEX_BASE + character - RAW_BYTE8_BASE
+                } else {
+                    character
+                };
+                let restriction = args.get(1).filter(|value| !value.is_nil());
+                let Some(restriction) = restriction else {
+                    return Ok(Value::Symbol(charset_for_char(character).into()));
+                };
+                if restriction.cons_values().is_some() {
+                    // A list RESTRICTION: the first charset that encodes
+                    // CH wins, in list order; every entry must name a
+                    // charset (CHECK_CHARSET_GET_CHARSET).
+                    let mut tail = (*restriction).clone();
+                    while let Some((head, rest)) = tail.cons_values() {
+                        let charset = head
+                            .as_symbol()
+                            .ok()
+                            .filter(|charset| interp.has_charset(charset))
+                            .map(str::to_string);
+                        let Some(charset) = charset else {
+                            return Err(LispError::WrongTypeArgument(
+                                "charsetp".into(),
+                                head.clone(),
+                            ));
+                        };
+                        if encode_charset_char(interp, &charset, internal).is_some() {
+                            return Ok(head);
+                        }
+                        tail = rest;
+                    }
+                    return Ok(Value::Nil);
+                }
+                // A coding-system RESTRICTION: search the charsets that
+                // coding system supports (coding_system_charset_list).  An
+                // unknown coding system signals (coding-system-error NAME)
+                // via CHECK_CODING_SYSTEM_GET_ID.  GNU substitutes global
+                // charset lists for full-support iso-2022 and emacs-mule
+                // codings; Emaxx models only the :charset-list attribute,
+                // so those two families report fewer supported charsets.
+                let known = restriction
+                    .as_symbol()
+                    .ok()
+                    .filter(|coding| interp.coding_system_base_name(coding).is_some())
+                    .map(str::to_string);
+                let Some(coding) = known else {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("coding-system-error".into()),
+                        (*restriction).clone(),
+                    ])));
+                };
+                // char_charset substitutes the full charset priority order
+                // for a nil charset list (raw-text codings carry none).
+                let mut charsets = coding_system_charset_names(interp, &coding);
+                if charsets.is_empty() {
+                    charsets = interp.charset_priority_list();
+                }
+                for charset in charsets {
+                    if encode_charset_char(interp, &charset, internal).is_some() {
+                        return Ok(Value::Symbol(charset.into()));
+                    }
+                }
+                Ok(Value::Nil)
             }
             "charsetp" => {
                 need_args(name, args, 1)?;

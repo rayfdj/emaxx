@@ -189,6 +189,48 @@ fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
 }
 
 #[test]
+fn compiled_time_string_results_keep_text_property_mutation() {
+    // GNU timefns.c allocates mutable Lisp strings: multibyte for
+    // Fformat_time_string and unibyte for Fcurrent_time_string.  A
+    // byte-compiled lexical local does not pass through the interpreter's
+    // value-storage upgrade, so returning immutable host text here silently
+    // discarded ERC's timestamp properties.
+    let program = r#"
+        (progn
+          (require 'bytecomp)
+          (funcall
+           (byte-compile
+            (lambda ()
+              (let ((formatted (format-time-string "%H:%M" 704591940 t))
+                    (current (current-time-string 704591940 t)))
+                (dolist (s (list formatted current))
+                  (put-text-property 0 (length s) 'invisible 'timestamp s))
+                (list
+                 (list (get-text-property 0 'invisible formatted)
+                       (object-intervals formatted)
+                       (multibyte-string-p formatted))
+                 (list (get-text-property 0 'invisible current)
+                       (object-intervals current)
+                       (multibyte-string-p current))))))))
+    "#;
+    let expected = concat!(
+        "((timestamp ((0 5 (invisible timestamp))) t) ",
+        "(timestamp ((0 24 (invisible timestamp))) nil))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read compiled time-string program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate compiled time-string program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -7193,7 +7235,11 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
     let expected_printed = "(nil ([d 5 f] [a 2 c] [g 2 i]) (((2) . ignore) (1 3 t) (1 3 [98 99] t ignore 1) (0 2 [98 99] . ignore)) (1 nil t) ((1 2 [88] . ignore) (2 4 [88] t ignore 1) (2 4 t) (2 4 t)) ((0 3 [65 12 66] nil ignore 2) (0 3 [88 89] t ignore 1)) [[us-ascii 101 769] nil [0 0 101 101 1 0 1 1 0 nil] [1 1 769 769 0 0 0 1 0 nil] nil nil nil nil nil nil] nil ((args-out-of-range buffer) (wrong-type-argument vectorp) (error \"Attempt to shape zero-length text\") (wrong-type-argument terminal-live-p) (args-out-of-range \"a\") (error \"Invalid composition rule in RULES argument\")))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fill_gstring_body reads glyph widths from `char-width-table', whose
+    // combining-character entries are set by international/characters.el at
+    // dump time; the expected literal is the dumped oracle's answer, so the
+    // in-process arm must carry the same dumped Lisp surface.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -7209,6 +7255,89 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "composite.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn find_composition_reports_the_automatic_composition_for_a_displayed_buffer() {
+    // composite.c find_automatic_composition: the decomposed
+    // "__A<U+030A>stro<U+0308>m" of erc-tests' `erc--split-line'.  The
+    // combining pair composes through composition-function-table's Mn rule
+    // and `compose-gstring-for-terminal' -- but ONLY while a window shows
+    // the buffer, because the C returns 0 when Fget_buffer_window does.
+    // Both halves are asserted, and the expectation is the oracle's own
+    // live answer rather than a transcribed literal.
+    let program = r#"
+        (let ((old (window-buffer (selected-window)))
+              (line (concat "__A" (string #x30A) "stro" (string #x308) "m")))
+          (unwind-protect
+              (list
+               (with-temp-buffer
+                 (set-window-buffer (selected-window) (current-buffer))
+                 (insert line)
+                 (find-composition 9 10))
+               (with-temp-buffer
+                 (insert line)
+                 (find-composition 9 10)))
+            (set-window-buffer (selected-window) old)))"#;
+    let expected = upstream_oracle_stdout(&format!("(prin1 {program})"));
+    assert!(
+        expected.starts_with("((8 10 [[us-ascii 111 776]") && expected.ends_with(") nil)"),
+        "oracle reported an unexpected composition shape: {expected}"
+    );
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("automatic composition contract should parse")
+        .expect("automatic composition contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("automatic composition contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn char_charset_restriction_narrows_to_charset_list_or_coding_system() {
+    // charset.c Fchar_charset with RESTRICTION: a list names charsets to
+    // try in order (each validated with CHECK_CHARSET_GET_CHARSET); any
+    // other non-nil value goes through coding_system_charset_list, which
+    // signals (coding-system-error NAME) for an unknown coding system.
+    // `compose-gstring-for-terminal' leans on the coding-system form to
+    // decide whether the terminal can render each glyph.
+    let program = r#"
+        (list
+         (char-charset 776 'us-ascii)
+         (char-charset 776 'utf-8)
+         (char-charset 111 'us-ascii)
+         (char-charset 97 'latin-1)
+         (char-charset 776 '(ascii unicode))
+         (char-charset 40 '(unicode ascii))
+         (char-charset 12354 'japanese-shift-jis)
+         (char-charset 776 'no-conversion)
+         (char-charset 97 'no-conversion)
+         (condition-case e (char-charset 776 '(nosuch)) (error e))
+         (condition-case e (char-charset 776 'nosuch) (error e))
+         (condition-case e (char-charset 'x 'utf-8) (error e)))"#;
+    let expected = "(nil unicode ascii iso-8859-1 unicode unicode japanese-jisx0208 unicode ascii \
+                    (wrong-type-argument charsetp nosuch) (coding-system-error nosuch) \
+                    (wrong-type-argument characterp x))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("char-charset restriction contract should parse")
+        .expect("char-charset restriction contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("char-charset restriction contract should evaluate")
+            .to_string(),
+        expected
     );
 }
 
@@ -9523,6 +9652,75 @@ fn string_decode_names_last_coding_system_used_like_the_oracle() {
     let result = interp
         .eval(&form, &mut Vec::new())
         .expect("evaluate lcsu program");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
+fn undecided_decode_detects_shift_jis_like_coding_c() {
+    // coding.c:detect_coding_sjis accepts 0x81..0x9F leads only with a
+    // 0x40..0xFC trail other than 0x7F, and rejects an incomplete lead in
+    // the final block.  The first row is the sole residual from the round-2
+    // 132-case decode matrix; its 0x81 0x62 pair is JIS #x2143 (U+FF5C).
+    // The overlap rows pin the category order which an SJIS-only matrix
+    // missed: the live Latin-extra table admits 0x91..0x96, valid Emacs-Mule
+    // wins before SJIS, and private or unmappable Mule forms preserve bytes.
+    let program = r#"
+        (progn
+          (defun zz-sjis-detect (bytes)
+            (let ((decoded
+                   (decode-coding-string
+                    (apply #'unibyte-string bytes) 'undecided)))
+              (list (append decoded nil) last-coding-system-used)))
+          (list
+           (zz-sjis-detect '(97 129 98))
+           (progn (decode-coding-string (unibyte-string 129) 'undecided)
+                  last-coding-system-used)
+           (zz-sjis-detect '(129 64))
+           (progn (decode-coding-string (unibyte-string 129 127) 'undecided)
+                  last-coding-system-used)
+           (zz-sjis-detect '(129 160))
+           (zz-sjis-detect '(130 160))
+           (zz-sjis-detect '(131 160))
+           (zz-sjis-detect '(137 160))
+           (zz-sjis-detect '(139 160))
+           (zz-sjis-detect '(144 160))
+           (zz-sjis-detect '(144 160 160))
+           (zz-sjis-detect '(145 160))
+           (zz-sjis-detect '(150 64))
+           (zz-sjis-detect '(151 160))
+           (zz-sjis-detect '(154 160 160))
+           (zz-sjis-detect '(156 160 160 160))
+           (zz-sjis-detect '(137 161))
+           (let ((old (aref latin-extra-code-table 129)))
+             (unwind-protect
+                 (progn
+                   (aset latin-extra-code-table 129 t)
+                   (zz-sjis-detect '(129 64)))
+               (aset latin-extra-code-table 129 old)))))
+    "#;
+    let expected = concat!(
+        "(((97 65372) japanese-shift-jis) raw-text ",
+        "((12288) japanese-shift-jis) raw-text ",
+        "((160) emacs-mule) ((160) emacs-mule) ((160) emacs-mule) ",
+        "((4194185 4194208) emacs-mule) ((20384) japanese-shift-jis) ",
+        "((25722) japanese-shift-jis) ",
+        "((4194192 4194208 4194208) emacs-mule) ",
+        "((145 160) iso-latin-1) ((150 64) iso-latin-1) ",
+        "((35023) japanese-shift-jis) ",
+        "((4194202 4194208 4194208) emacs-mule) ",
+        "((4194204 4194208 4194208 4194208) emacs-mule) ",
+        "((65377) emacs-mule) ((129 64) iso-latin-1))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read Shift-JIS detection program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("evaluate Shift-JIS detection program");
     assert_eq!(result.to_string(), expected);
 }
 
