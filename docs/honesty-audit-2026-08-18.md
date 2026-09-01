@@ -4136,3 +4136,48 @@ Documented-open from this round:
   (probe ctx1.el).  The divergence is therefore in what the live
   session does around those calls, which needs an erc-d dialog to
   bisect.
+
+Hard-third round 3 (2026-09-01, Darwin): coding detection and ERC stamps
+------------------------------------------------------------------------
+This round closes all three concrete residuals documented at the end of
+round 2.  The pinned GNU 30.2 binary was probed before either mechanism
+changed.
+
+- coding.c detect_coding_sjis is now represented in undecided decoding:
+  ASCII passes, 0x81..0x9F and 0xE0..0xEF require a 0x40..0xFC trail
+  other than 0x7F, 0xA0..0xDF is a single-byte Japanese sequence, and an
+  incomplete lead in the final block rejects the category.  Because
+  Emacs-Mule has higher category priority, the overlapping portion of
+  detect_coding_emacs_mule is checked first using the live charsets'
+  :emacs-mule-id and :dimension, rather than letting the new detector
+  steal those streams.  The sole residual from round 2's 132-case matrix
+  now matches exactly: undecided over 61 81 62 decodes to (97 65372) and
+  records japanese-shift-jis.  Oracle-backed boundary rows cover the
+  incomplete 81, valid 81 40, and invalid 81 7F cases.
+- timefns.c Fformat_time_string returns a newly allocated mutable,
+  multibyte Lisp string.  Emaxx returned immutable host text and relied
+  on the interpreted evaluator to upgrade values when they entered a
+  variable.  Byte-compiled lexical locals bypass that upgrade, so
+  erc-format-timestamp's put-text-property calls were silently discarded
+  from the original timestamp string: the left-margin method inserted a
+  correct buffer display property whose nested string lacked `invisible',
+  and legacy date stamps inserted a string lacking the `erc-timestamp'
+  field.  The primitive now allocates shared mutable string state at its
+  boundary.  The adjacent Fcurrent_time_string twin was corrected at the
+  same ownership boundary; GNU specifies it as mutable but unibyte.
+  A compiled oracle contract checks mutation, intervals, and the two
+  multibyte flags, so an interpreted-only pass cannot hide this bug again.
+- Live erc-d tracing established that erc-stamp--setup,
+  erc-add-timestamp, and the specialized erc--insert-timestamp-left all
+  ran in the right buffer and that the outer buffer properties were
+  already present.  The real pre-fix comparison was 1/3 matching
+  (target/compat/run-1788273953352161000-80592); the rebuilt final tree is
+  3/3 matching with zero mismatches
+  (target/compat/run-1788276213505930000-86621).
+
+Environment correction: an initial sandboxed ERC comparison appeared to
+be 3/3 matching only because BOTH GNU and Emaxx failed to bind the local
+erc-d server with `Operation not permitted'
+(target/compat/run-1788273832246543000-80173).  That result was rejected,
+not counted as compatibility evidence; every before/after count above is
+from the unsandboxed localhost run.

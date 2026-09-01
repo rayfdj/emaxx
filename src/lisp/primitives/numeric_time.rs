@@ -1917,8 +1917,10 @@ define_dispatch!(
                 let zone =
                     zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
                 let (datetime, _) = time_local_datetime(&time, &zone)?;
-                Ok(Value::String(
-                    datetime.format("%a %b %e %H:%M:%S %Y").to_string().into(),
+                Ok(string_like_value_with_multibyte(
+                    datetime.format("%a %b %e %H:%M:%S %Y").to_string(),
+                    Vec::new(),
+                    false,
                 ))
             }
             "time-add" | "time-subtract" => {
@@ -2077,8 +2079,10 @@ define_dispatch!(
                 let time = exact_time_from_value(interp, args.get(1).unwrap_or(&Value::Nil), &now)?;
                 let zone =
                     zone_spec_from_value(interp, args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
-                Ok(Value::String(
-                    format_time_string_value(interp, &format, &time, &zone)?.into(),
+                Ok(string_like_value_with_multibyte(
+                    format_time_string_value(interp, &format, &time, &zone)?,
+                    Vec::new(),
+                    true,
                 ))
             }
             "current-time-zone" => {
