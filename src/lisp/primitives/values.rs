@@ -2092,6 +2092,29 @@ pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -
         )
 }
 
+/// GNU's internal FUNCTIONP predicate.  Native callers use this helper
+/// directly so redefining the Lisp symbol `functionp' cannot change C-level
+/// argument validation.
+pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
+    let symbol_value = if symbols_with_pos_enabled(interp, env) {
+        symbol_with_pos_parts(interp, value)
+            .map(|(symbol, _)| symbol)
+            .unwrap_or_else(|| value.clone())
+    } else {
+        value.clone()
+    };
+    let symbol = symbol_value.as_symbol().ok();
+    if symbol
+        .is_some_and(|symbol| name_facts(symbol).special_form || interp.has_macro_binding(symbol))
+    {
+        return false;
+    }
+    let resolved = resolve_callable(interp, value, env).unwrap_or_else(|_| value.clone());
+    let autoloaded_function =
+        symbol.is_some() && autoload_parts(&resolved).is_some_and(|(_, _, kind)| kind.is_nil());
+    callable_value_p(interp, &resolved, env) || autoloaded_function
+}
+
 pub(crate) fn value_matches_with_test(
     interp: &mut Interpreter,
     left: &Value,

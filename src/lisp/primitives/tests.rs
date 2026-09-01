@@ -1643,9 +1643,18 @@ fn every_literal_native_dispatch_arm_is_owned_by_gnu_c() {
         nonliteral_patterns.join(", ")
     );
 
+    // Dispatch source is a cross-platform union.  An arm must belong to at
+    // least one contracted GNU host, while `is_builtin' separately selects
+    // only the current host's generated ownership manifest.
     let non_gnu = names
         .iter()
-        .filter(|(name, _)| generated_gnu_c_primitive_available(name) != Some(true))
+        .filter(|(name, _)| {
+            super::generated_gnu_c_primitives::generated_gnu_c_primitive_available(name)
+                != Some(true)
+                && super::generated_gnu_c_primitives_linux::generated_gnu_c_primitive_available(
+                    name,
+                ) != Some(true)
+        })
         .map(|(name, module)| format!("{module}: {name}"))
         .collect::<Vec<_>>();
     assert!(
@@ -1654,6 +1663,20 @@ fn every_literal_native_dispatch_arm_is_owned_by_gnu_c() {
         non_gnu.len(),
         non_gnu.join("\n")
     );
+}
+
+#[test]
+fn file_notification_primitives_follow_the_host_contract() {
+    #[cfg(target_os = "macos")]
+    {
+        assert!(is_builtin("kqueue-add-watch"));
+        assert!(!is_builtin("inotify-add-watch"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(is_builtin("inotify-add-watch"));
+        assert!(!is_builtin("kqueue-add-watch"));
+    }
 }
 
 #[test]
@@ -9021,6 +9044,249 @@ fn threads_get_their_own_bindings_handlers_and_join_semantics() {
 }
 
 #[test]
+fn thread_join_leaves_unrelated_timers_pending() {
+    let program = r#"
+        (progn
+          (setq zz-join-timer-fired nil)
+          (run-at-time 0 nil (lambda () (setq zz-join-timer-fired t)))
+          (thread-join (make-thread (lambda () 'done)))
+          (list zz-join-timer-fired
+                (progn (input-pending-p t) zz-join-timer-fired)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil t)");
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read thread-join timer program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate thread-join timer program"),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn subprocess_cwd_uses_native_unhandled_directory_mechanism() {
+    let program = r#"
+        (let ((saved (symbol-function 'unhandled-file-name-directory))
+              (replacement-called nil))
+          (unwind-protect
+              (progn
+                (fset 'unhandled-file-name-directory
+                      (lambda (_file)
+                        (setq replacement-called t)
+                        "/path-that-must-not-be-used/"))
+                (let ((default-directory "/"))
+                  (list replacement-called
+                        (call-process shell-file-name nil nil nil "-c" "exit 0"))))
+            (fset 'unhandled-file-name-directory saved)))"#;
+    let expected = "(nil 0)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read subprocess cwd dispatch program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate subprocess cwd dispatch program")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn process_tty_name_rejects_unknown_streams() {
+    let program = r#"
+        (let ((process (make-pipe-process :name "emaxx-tty-stream-contract")))
+          (unwind-protect
+              (condition-case error
+                  (process-tty-name process 'bogus-stream)
+                (error error))
+            (delete-process process)))"#;
+    let expected = "(error \"Unknown stream\" bogus-stream)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read process tty stream program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate process tty stream program")
+            .to_string(),
+        expected
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn dropping_an_interpreter_terminates_and_reaps_its_child() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let program = r#"
+        (make-process
+         :name "emaxx-drop-child-contract"
+         :command (list shell-file-name "-c" "read line")
+         :connection-type 'pipe
+         :noquery t)"#;
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read child-drop lifecycle program")
+        .remove(0);
+    let process = interp
+        .eval(&form, &mut Vec::new())
+        .expect("create child for interpreter-drop lifecycle");
+    let process_id = interp
+        .resolve_process_id(&process)
+        .expect("resolve lifecycle child");
+    let pid = interp
+        .process_os_id(process_id)
+        .expect("lifecycle child has an operating-system pid") as libc::pid_t;
+
+    drop(interp);
+
+    // RunningProcess::drop waits for reaping, so this is a deterministic
+    // lifecycle assertion rather than a sleep-and-hope race probe.
+    // SAFETY: signal zero only queries whether PID still names a process.
+    let result = unsafe { libc::kill(pid, 0) };
+    assert_eq!(result, -1, "interpreter drop left child pid {pid} alive");
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH),
+        "interpreter drop did not reap child pid {pid}"
+    );
+}
+
+#[test]
+fn buffer_file_name_primitive_observes_current_buffer_dynamic_binding() {
+    let program = r#"(with-temp-buffer
+        (let ((buffer-file-name "/tmp/emaxx-dynamic-file"))
+          (list buffer-file-name
+                (buffer-file-name)
+                (buffer-file-name (current-buffer)))))"#;
+    let expected =
+        "(\"/tmp/emaxx-dynamic-file\" \"/tmp/emaxx-dynamic-file\" \"/tmp/emaxx-dynamic-file\")";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read dynamically bound buffer-file-name program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate dynamically bound buffer-file-name program")
+            .to_string(),
+        expected
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn kqueue_directory_watch_reports_external_child_creation() {
+    let program = r#"
+        (progn
+          (require 'filenotify)
+          (let* ((directory (make-temp-file "emaxx-kqueue-contract" t))
+                 (child (expand-file-name "created-outside-emaxx" directory))
+                 (events nil)
+                 (descriptor
+                  (file-notify-add-watch
+                   directory '(change)
+                   (lambda (event)
+                     (push (list (cadr event)
+                                 (file-name-nondirectory (caddr event)))
+                           events))))
+                 (touch (executable-find "touch"))
+                 (process
+                  (make-process :name "external-file-creator"
+                                :command (list touch child)
+                                :noquery t
+                                :connection-type 'pipe)))
+            (unwind-protect
+                (progn
+                  (while (process-live-p process)
+                    (accept-process-output process 0.05))
+                  (let ((deadline (+ (float-time) 2.0)))
+                    (while (and (null events) (< (float-time) deadline))
+                      (read-event nil nil 0.01)))
+                  (nreverse events))
+              (file-notify-rm-watch descriptor)
+              (delete-directory directory t))))"#;
+    let expected = "((created \"created-outside-emaxx\"))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read external kqueue directory program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate external kqueue directory program")
+            .to_string(),
+        expected
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inotify_directory_watch_reports_external_child_creation() {
+    let program = r#"
+        (progn
+          (require 'filenotify)
+          (let* ((directory (make-temp-file "emaxx-inotify-contract" t))
+                 (child (expand-file-name "created-outside-emaxx" directory))
+                 (events nil)
+                 (descriptor
+                  (file-notify-add-watch
+                   directory '(change)
+                   (lambda (event)
+                     (push (list (cadr event)
+                                 (file-name-nondirectory (caddr event)))
+                           events))))
+                 (touch (executable-find "touch"))
+                 (process
+                  (make-process :name "external-file-creator"
+                                :command (list touch child)
+                                :noquery t
+                                :connection-type 'pipe)))
+            (unwind-protect
+                (progn
+                  (while (process-live-p process)
+                    (accept-process-output process 0.05))
+                  (let ((deadline (+ (float-time) 2.0)))
+                    (while (and (null events) (< (float-time) deadline))
+                      (read-event nil nil 0.01)))
+                  (nreverse events))
+              (file-notify-rm-watch descriptor)
+              (delete-directory directory t))))"#;
+    let expected = "((created \"created-outside-emaxx\"))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read external inotify directory program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate external inotify directory program")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
 fn skip_chars_word_class_includes_ascii_digits() {
     // The SkipSyntaxSnapshot classifies each segment by sampling its START,
     // which is only correct where the class is uniform across the window.
@@ -15384,6 +15650,109 @@ fn blocking_tty_event_read_redraws_after_a_due_timer() {
 }
 
 #[test]
+fn blocking_tty_event_read_redraws_after_process_output() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let process = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn
+           (setq emaxx-test-process-output nil)
+           (make-process
+            :name \"emaxx-tty-process-redraw\"
+            :command (list shell-file-name \"-c\" \"printf ready\")
+            :connection-type 'pipe
+            :noquery t
+            :filter (lambda (_process output)
+                      (setq emaxx-test-process-output output))))",
+    )
+    .expect("start the redraw probe process");
+
+    let saw_output = std::rc::Rc::new(std::cell::Cell::new(false));
+    let poll_observation = std::rc::Rc::clone(&saw_output);
+    let polls = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+    let poll_count = std::rc::Rc::clone(&polls);
+    set_tty_event_poller(Some(Box::new(move || {
+        let count = poll_count.get() + 1;
+        poll_count.set(count);
+        Some((poll_observation.get() || count >= 100_000).then_some(Value::Integer(120)))
+    })));
+    let redraw_observation = std::rc::Rc::clone(&saw_output);
+    set_tty_frame_redraw(Some(Box::new(move |interp, env| {
+        if interp
+            .lookup_var("emaxx-test-process-output", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            redraw_observation.set(true);
+        }
+    })));
+
+    let event = call(&mut interp, "read-event", &[], &mut env);
+    set_tty_frame_redraw(None);
+    set_tty_event_poller(None);
+    let _ = call(
+        &mut interp,
+        "delete-process",
+        std::slice::from_ref(&process),
+        &mut env,
+    );
+    assert_eq!(
+        event.expect("the redraw observation releases the input poll"),
+        Value::Integer(120)
+    );
+    assert!(
+        saw_output.get(),
+        "process output handled inside read-event must reach redisplay"
+    );
+}
+
+#[test]
+fn redisplay_dispatches_an_already_due_timer() {
+    let program = r#"
+        (let ((noninteractive nil)
+              (timer-ran nil))
+          (run-at-time '(0 0 0 0) nil (lambda () (setq timer-ran t)))
+          (redisplay)
+          timer-ran)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "t");
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read redisplay timer program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate redisplay timer program"),
+        Value::T
+    );
+}
+
+#[test]
+fn input_pending_check_timers_dispatches_an_already_due_timer() {
+    let program = r#"
+        (let ((timer-ran nil))
+          (run-at-time '(0 0 0 0) nil (lambda () (setq timer-ran t)))
+          (list timer-ran
+                (progn (input-pending-p t) timer-ran)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(nil t)");
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read input-pending timer program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate input-pending timer program"),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
@@ -15398,7 +15767,7 @@ fn delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined() {
     .expect("schedule a delayed timer before pinning the presentation clock");
 
     assert!(
-        !run_due_timers(&mut interp, &mut env, 0.0),
+        !run_due_timers(&mut interp, &mut env, 0.0).expect("inspect delayed timer queue"),
         "redefining float-time must not make a future timer ripe"
     );
     assert_eq!(

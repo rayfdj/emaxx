@@ -4033,3 +4033,77 @@ Documented-open from this round:
   diaeresis where GNU keeps the grapheme together; tramp-test39/41/42
   (supersession warning, special-character names, filename encoding)
   remain open with diagnosed directions.
+
+## 2026-09-01 issue 34: asynchronous process, timer, and file events
+
+This round replaces polling-shaped placeholders with the host event substrate
+needed by ordinary Emacs Lisp waits.  The implementation is anchored to
+`process.c`'s `wait_reading_process_output`, `Fmake_process`,
+`Faccept_process_output`, and `Fprocess_tty_name`; `keyboard.c`'s
+`timer_check`; `kqueue.c`'s `kqueue_callback`, directory-diff path,
+`Fkqueue_add_watch`, and `Fkqueue_rm_watch`; and `inotify.c`'s
+`inotify_callback`, `Finotify_add_watch`, and `Finotify_rm_watch`.
+
+The resulting runtime contract is:
+
+- Darwin registers real vnode descriptors with kqueue and translates the
+  coalesced flags and directory snapshots into GNU's callback order.  Linux
+  selects the generated Linux primitive inventory and uses a shared
+  nonblocking inotify descriptor, preserving masks, names, move cookies,
+  ignored-watch invalidation, and queue order.
+- The process wait path services filters, sentinels, connection progress,
+  child status, timers, file notifications, and cooperative threads.  The
+  blocking TTY paths use the same pump and redraw after timer or process
+  progress; nested readers pass their own idle duration rather than scanning
+  the Lisp timer list twice.
+- External processes honor the unhandled local form of `default-directory`,
+  stream-specific PTY reporting, stop validation, and deterministic child
+  cleanup.  Dropping an interpreter terminates and reaps live children.
+
+Adversarial review found and corrected these lifecycle defects before the
+gate:
+
+1. The kqueue reserve check underflowed when `RLIMIT_NOFILE` was below Emacs's
+   50-descriptor reserve.
+2. A failed final inotify watch removal could retain an otherwise empty shared
+   queue.
+3. Post-spawn descriptor setup could fail before the child was wrapped in its
+   terminating/reaping owner; synchronous stdin write failure likewise left
+   cleanup implicit.  Both paths now kill and wait deterministically.
+4. Deleting a nonexistent path fabricated a `deleted` event, and stale
+   fingerprint fields survived after the native backend became authoritative.
+5. A blocking terminal read pumped process output without reporting progress,
+   so the changed buffer was not redrawn until the next key.
+6. The unified timer pump reused a TTY helper that discarded callback errors
+   and nonlocal exits.  It now invokes `timer-event-handler` as a named timer
+   callback, balances timer callback state, propagates throws and debugger
+   errors, preserves the native exact clock, and performs one Lisp timer scan
+   per wait.
+
+Permanent Rust coverage includes independently created/renamed/deleted host
+files, kqueue directory creation, callback isolation and invalidation, raw
+inotify ordering/cookies, due and deferred timers, recursive-edit nonlocal
+exits, process cwd/PTY/EOF/drop cleanup, and TTY redraw after both timer and
+process progress.  Focused upstream runs matched 4/4 filenotify tests, 5/5
+timer tests, 2/2 inotify tests, and every issue-relevant process selector
+(pipe/PTY shapes, lifecycle, stderr, sentinels, stop/filter/multiwait, serial,
+and network descriptors).  The 15-test Rust timer cluster is also green.
+
+The cooperative thread model's previously disclosed gaps remain: the Lisp
+thread file matches 1/3 and the C-thread file 30/32, with the same blocked
+thread backtrace/list and preemptive mutex/condition-variable limitations
+already recorded above.  This change does not claim preemptive threads.
+
+macOS Clippy is warning-free for all targets and features.  The Linux target
+cross-compiles and passes the same Clippy `-D warnings` gate through Zig; no
+Linux runtime was available in this session, so native inotify execution is
+not claimed beyond source-oracle comparison, permanent tests, and the Linux
+build gate.
+
+The final unrestricted macOS gate (batch stdin closed so EOF-prompt tests use
+their documented contract) is green: the library reports 2263 passed, 0
+failed, and 4 documented ignores; compat-harness 38/38; CLI 12/12; ERT
+integration 3/3; package lifecycle 5/5; and perf-harness 1/1.  The localhost
+socket, UDP, GnuTLS transport/X.509, external kqueue, process cwd/PTY/drop,
+timer, file-notification, and blocking-TTY redraw cases all executed in that
+run rather than being inferred from compilation.

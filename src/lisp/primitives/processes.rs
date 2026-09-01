@@ -40,11 +40,11 @@ fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
 }
 
 pub(crate) fn run_external_process(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     program: &str,
     argv: &[String],
     input: Option<&[u8]>,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<std::process::Output, LispError> {
     #[cfg(test)]
     crate::test_support::mark_process_test();
@@ -70,10 +70,14 @@ pub(crate) fn run_external_process(
     })?;
     if let Some(stdin_data) = input
         && let Some(mut stdin) = child.stdin.take()
+        && let Err(error) = stdin.write_all(stdin_data)
     {
-        stdin
-            .write_all(stdin_data)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        // Dropping `Child' does not terminate it.  If the peer closes stdin
+        // while input is being copied, explicitly reap the child before
+        // returning the write error.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(LispError::Signal(error.to_string()));
     }
     child
         .wait_with_output()
@@ -81,8 +85,8 @@ pub(crate) fn run_external_process(
 }
 
 pub(crate) fn configure_external_command(
-    interp: &Interpreter,
-    env: &Env,
+    interp: &mut Interpreter,
+    env: &mut Env,
     command: &mut Command,
 ) -> Result<(), LispError> {
     if let Some(default_directory) = interp
@@ -90,16 +94,32 @@ pub(crate) fn configure_external_command(
         .and_then(|value| string_like(&value).map(|string| string.text))
         .filter(|directory| !directory.is_empty())
     {
-        // `Command::current_dir` is a host boundary.  A file-name handler may
-        // retain Lisp's logical remote directory while its transport runs the
-        // actual program locally, so resolve it through the same path policy
-        // as every other host filesystem operation.
-        let directory = resolve_file_name_in_env(interp, env, &default_directory);
+        // GNU's get_current_directory(true) asks a handler for the local
+        // directory without delegating the process operation itself.  This
+        // is what lets `:file-handler nil' run locally from a remote logical
+        // default-directory.
+        // callproc.c invokes Funhandled_file_name_directory directly, so a
+        // user redefinition of the Lisp function cell cannot replace the C
+        // mechanism.  Native dispatch still performs the legitimate
+        // file-name-handler call made inside that primitive.
+        let unhandled = call(
+            interp,
+            "unhandled-file-name-directory",
+            &[Value::String(default_directory.clone().into())],
+            env,
+        )?;
+        // A handler returns nil when its logical directory cannot be a host
+        // cwd.  GNU falls back to HOME, then expands the result without
+        // sending it back through remote-name resolution.
+        let unhandled = string_like(&unhandled)
+            .map(|directory| directory.text)
+            .unwrap_or_else(|| "~".into());
+        let directory = expand_file_name_in_env(interp, env, &unhandled, None);
         let metadata = fs::metadata(&directory).map_err(|error| {
             LispError::SignalValue(file_operation_error_value(
                 "Setting current directory",
                 &error,
-                &directory,
+                &default_directory,
             ))
         })?;
         if !metadata.is_dir() {
@@ -107,7 +127,7 @@ pub(crate) fn configure_external_command(
             return Err(LispError::SignalValue(file_operation_error_value(
                 "Setting current directory",
                 &error,
-                &directory,
+                &default_directory,
             )));
         }
         command.current_dir(directory);
@@ -117,10 +137,10 @@ pub(crate) fn configure_external_command(
 }
 
 pub(crate) fn spawn_persistent_process(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     program: &str,
     argv: &[String],
-    env: &Env,
+    env: &mut Env,
     connection_type: Option<&Value>,
     separate_stderr: bool,
 ) -> Result<RunningProcess, LispError> {
@@ -219,25 +239,29 @@ pub(crate) fn spawn_persistent_process(
     let child = command
         .spawn()
         .map_err(|error| LispError::Signal(error.to_string()))?;
-    #[cfg(unix)]
-    {
-        if let Some(stdout) = child.stdout.as_ref() {
-            set_nonblocking(stdout)?;
-        }
-        if let Some(stderr) = child.stderr.as_ref() {
-            set_nonblocking(stderr)?;
-        }
-        if let Some(output) = pty_output.as_ref() {
-            set_nonblocking(output)?;
-        }
-    }
-    Ok(RunningProcess {
+    // Put the child under RunningProcess's terminate-and-reap Drop guard
+    // before any fallible post-spawn setup.  A failed fcntl must not leak a
+    // subprocess whose runtime was never installed in the interpreter.
+    let runtime = RunningProcess {
         child,
         pty_input,
         pty_output,
         pty_slave_guard,
         pty_slave_name,
-    })
+    };
+    #[cfg(unix)]
+    {
+        if let Some(stdout) = runtime.child.stdout.as_ref() {
+            set_nonblocking(stdout)?;
+        }
+        if let Some(stderr) = runtime.child.stderr.as_ref() {
+            set_nonblocking(stderr)?;
+        }
+        if let Some(output) = runtime.pty_output.as_ref() {
+            set_nonblocking(output)?;
+        }
+    }
+    Ok(runtime)
 }
 
 fn process_connection_pty_modes(
@@ -505,6 +529,13 @@ pub(crate) fn parse_make_process_args(
                 }
             }
             ":noquery" => query_on_exit_flag = !value.is_truthy(),
+            // Normal asynchronous subprocesses cannot start stopped.  GNU's
+            // CHECK_TYPE accepts this compatibility keyword only when its
+            // value is nil.
+            ":stop" if value.is_truthy() => {
+                return Err(wrong_type_argument("null", value.clone()));
+            }
+            ":stop" => {}
             ":file-handler" => file_handler = value.is_truthy(),
             ":connection-type" => connection_type = Some(value.clone()),
             _ => {}

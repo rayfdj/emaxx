@@ -916,12 +916,22 @@ fn command_loop(
             if idle_since.is_none() {
                 crate::lisp::primitives::tty_note_idle_start(interpreter, env);
             }
-            let idle = idle_since
-                .get_or_insert_with(std::time::Instant::now)
-                .elapsed();
-            if crate::lisp::primitives::run_due_timers(interpreter, env, idle.as_secs_f64()) {
-                let mut state = shared_state.borrow_mut();
-                let _ = redraw(interpreter, env, &mut state);
+            idle_since.get_or_insert_with(std::time::Instant::now);
+            match interpreter.service_async_runtime_events(env, true, None) {
+                Ok(true) => {
+                    let mut state = shared_state.borrow_mut();
+                    let _ = redraw(interpreter, env, &mut state);
+                }
+                Ok(false) => {}
+                Err(LispError::Terminate(termination)) => {
+                    return Ok(termination.exit_code);
+                }
+                Err(error) => {
+                    let text = command_error_text(interpreter, env, &error);
+                    crate::lisp::primitives::set_echo_area_message(Some(text));
+                    let mut state = shared_state.borrow_mut();
+                    let _ = redraw(interpreter, env, &mut state);
+                }
             }
             // keyboard.c's kbd_buffer_get_event blocks inside
             // wait_reading_process_output (READ_KBD -1, do_display set):

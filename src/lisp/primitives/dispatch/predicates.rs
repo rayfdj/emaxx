@@ -202,31 +202,11 @@ define_dispatch!(
             }
             "functionp" => {
                 need_args(name, args, 1)?;
-                let symbol_value = if symbols_with_pos_enabled(interp, env) {
-                    symbol_with_pos_parts(interp, &args[0])
-                        .map(|(symbol, _)| symbol)
-                        .unwrap_or_else(|| args[0].clone())
+                Ok(if function_value_p(interp, &args[0], env) {
+                    Value::T
                 } else {
-                    args[0].clone()
-                };
-                let symbol = symbol_value.as_symbol().ok();
-                if symbol.is_some_and(|symbol| {
-                    crate::lisp::primitives::name_facts(symbol).special_form
-                        || interp.has_macro_binding(symbol)
-                }) {
-                    return Ok(Value::Nil);
-                }
-                let value =
-                    resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
-                let autoloaded_function = symbol.is_some()
-                    && autoload_parts(&value).is_some_and(|(_, _, kind)| kind.is_nil());
-                Ok(
-                    if callable_value_p(interp, &value, env) || autoloaded_function {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                    Value::Nil
+                })
             }
             "byte-code-function-p" => {
                 need_args(name, args, 1)?;

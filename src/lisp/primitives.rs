@@ -56,17 +56,22 @@ mod file_io;
 mod generated_builtin_arities;
 mod generated_gnu_c_defsyms;
 pub(crate) use generated_gnu_c_defsyms::GNU_C_DEFSYMS;
+#[allow(dead_code)]
 mod generated_gnu_c_primitives;
+#[cfg(not(target_os = "linux"))]
 pub(crate) use generated_gnu_c_primitives::{
     GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
 };
-// The Linux oracle build's own C-primitive contract.  Phase 1 of the
-// per-platform contracts: the anti-cheat regeneration gate compares a
-// Linux oracle against this file; dispatch still builds against the
-// Darwin-pinned surface above (host-faithful dispatch is the phase-2
-// work item).
+// The generated inventories come from contracted oracle builds.  Runtime
+// ownership must select the host inventory: advertising the Linux `inotify'
+// feature while retaining Darwin's kqueue-owned function cells makes the
+// actual backend unreachable through ordinary Lisp.
 #[allow(dead_code)]
 mod generated_gnu_c_primitives_linux;
+#[cfg(target_os = "linux")]
+pub(crate) use generated_gnu_c_primitives_linux::{
+    GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
+};
 mod hash_insert;
 mod hooks_overlays;
 mod interactive;

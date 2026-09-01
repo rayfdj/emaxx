@@ -836,8 +836,8 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         // timer.el owns GNU timer objects in `timer-list'; the native queue
         // remains the bootstrap path, so a real command-loop pump must drain
         // both representations just like the other event-waiting paths.
-        .and_then(|()| interp.run_pending_file_notifications(env))
-        .and_then(|()| interp.run_pending_timer_events(env));
+        .and_then(|()| interp.service_file_notifications(env).map(|_| ()))
+        .and_then(|()| interp.run_pending_timer_events(env).map(|_| ()));
     interp.pop_handler_bindings(handler_start);
     interp.command_loop_recursion_depth -= 1;
     match result {

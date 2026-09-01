@@ -479,6 +479,16 @@ define_dispatch!(
                 } else {
                     interp.current_buffer_id()
                 };
+                // `buffer-file-name' is a per-buffer special variable.  A
+                // dynamic binding in the current buffer is observable both
+                // through the variable and through this primitive; reading
+                // only the host Buffer field lost bindings used by ordinary
+                // save code (including backup creation).
+                if buffer_id == interp.current_buffer_id() {
+                    return Ok(interp
+                        .lookup_var("buffer-file-name", env)
+                        .unwrap_or(Value::Nil));
+                }
                 Ok(interp
                     .get_buffer_by_id(buffer_id)
                     .and_then(|buffer| buffer.file.clone())
@@ -1094,7 +1104,8 @@ define_dispatch!(
                 if directory_name_p(&target) {
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                if fs::symlink_metadata(&target).is_ok() && args.get(2).is_none_or(Value::is_nil) {
+                let target_existed = fs::symlink_metadata(&target).is_ok();
+                if target_existed && args.get(2).is_none_or(Value::is_nil) {
                     return Err(file_operation_error(
                         "Copying file",
                         &std::io::Error::from(ErrorKind::AlreadyExists),
@@ -1130,6 +1141,10 @@ define_dispatch!(
                         let _ = file.set_times(times);
                     }
                 }
+                if !target_existed {
+                    dispatch_file_notification(interp, env, &target, "created")?;
+                }
+                dispatch_file_notification(interp, env, &target, "changed")?;
                 Ok(Value::Nil)
             }
             "rename-file" => {
@@ -1159,9 +1174,8 @@ define_dispatch!(
                     };
                     file_operation_error("Renaming file", &error, path)
                 })?;
+                interp.queue_file_rename_notification(&source, &target);
                 interp.invalidate_file_notify_watches_for_path(&source);
-                dispatch_file_notification(interp, env, &source, "deleted")?;
-                dispatch_file_notification(interp, env, &target, "created")?;
                 Ok(Value::Nil)
             }
             "system-move-file-to-trash" => {
@@ -1178,21 +1192,23 @@ define_dispatch!(
                         &path,
                     ))
                 })?;
-                interp.invalidate_file_notify_watches_for_path(&path);
                 dispatch_file_notification(interp, env, &path, "deleted")?;
+                interp.invalidate_file_notify_watches_for_path(&path);
                 Ok(Value::Nil)
             }
             "delete-file-internal" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
-                match fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                let removed = match fs::remove_file(&path) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == ErrorKind::NotFound => false,
                     Err(error) => return Err(LispError::Signal(error.to_string())),
+                };
+                if removed {
+                    dispatch_file_notification(interp, env, &path, "deleted")?;
+                    interp.invalidate_file_notify_watches_for_path(&path);
                 }
-                interp.invalidate_file_notify_watches_for_path(&path);
-                dispatch_file_notification(interp, env, &path, "deleted")?;
                 Ok(Value::Nil)
             }
             "delete-directory-internal" => {
@@ -1200,8 +1216,8 @@ define_dispatch!(
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
                 fs::remove_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                interp.queue_directory_deletion_notification(&path);
                 interp.invalidate_file_notify_watches_for_path(&path);
-                dispatch_file_notification(interp, env, &path, "deleted")?;
                 Ok(Value::Nil)
             }
 
@@ -1209,7 +1225,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
-                fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::create_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                dispatch_file_notification(interp, env, &path, "created")?;
                 Ok(Value::Nil)
             }
             "add-name-to-file" => {
@@ -1296,22 +1313,105 @@ define_dispatch!(
                 }
                 write_region_value(interp, args, env)
             }
+            #[cfg(target_os = "linux")]
+            "inotify-add-watch" => {
+                need_args(name, args, 3)?;
+                let path = string_text(&args[0])?;
+                let aspects = if args[1].is_nil() {
+                    Vec::new()
+                } else if args[1].cons_values().is_some() {
+                    args[1].to_vec()?
+                } else {
+                    vec![args[1].clone()]
+                };
+                let flags = aspects
+                    .iter()
+                    .map(|aspect| {
+                        aspect.as_symbol().map(str::to_string).map_err(|_| {
+                            LispError::SignalValue(Value::list([
+                                Value::Symbol("file-notify-error".into()),
+                                Value::String("Unknown aspect".into()),
+                                aspect.clone(),
+                            ]))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                interp.register_inotify_file_notify_watch(path, flags, args[2].clone())
+            }
+            #[cfg(target_os = "linux")]
+            "inotify-rm-watch" => {
+                need_args(name, args, 1)?;
+                let valid = args[0].cons_values().is_some_and(|(watch, id)| {
+                    matches!(watch, Value::Integer(value) if value >= 0 && value <= i64::from(i32::MAX))
+                        && matches!(id, Value::Integer(value) if value >= 0)
+                });
+                if !valid {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("file-notify-error".into()),
+                        Value::String("Invalid descriptor ".into()),
+                        args[0].clone(),
+                    ])));
+                }
+                interp.remove_inotify_file_notify_watch(&args[0])?;
+                Ok(Value::T)
+            }
+            #[cfg(target_os = "linux")]
+            "inotify-valid-p" => {
+                need_args(name, args, 1)?;
+                Ok(if interp.inotify_file_notify_watch_is_active(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
             "kqueue-add-watch" => {
                 need_args(name, args, 3)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let path = directory_file_name(&resolve_file_name_in_env(
+                    interp,
+                    env,
+                    &string_text(&args[0])?,
+                ));
                 // kqueue.c signals file-missing before registering anything;
                 // Emaxx accepted any path and returned a live descriptor
                 // (finding 13's "never fails" half, per the second audit).
-                if std::fs::symlink_metadata(&path).is_err() {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("file-missing"),
-                        Value::String("File does not exist".into()),
-                        Value::String("No such file or directory".into()),
-                        Value::String(string_text(&args[0])?.into()),
-                    ])));
+                if let Err(error) = std::fs::metadata(&path) {
+                    return Err(file_operation_error("File does not exist", &error, &path));
                 }
-                let descriptor =
-                    FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
+                let flags = args[1]
+                    .to_vec()?
+                    .into_iter()
+                    .filter_map(|flag| flag.as_symbol().ok().map(str::to_string))
+                    .collect::<Vec<_>>();
+                if !function_value_p(interp, &args[2], env) {
+                    return Err(wrong_type_argument("invalid-function", args[2].clone()));
+                }
+                // kqueue.c deliberately reserves fifty descriptors for the
+                // rest of Emacs and reports `file-notify-error' before a
+                // watch can exhaust the process limit.  Besides matching the
+                // public failure contract, this keeps callers able to remove
+                // every watch and clean up after the limit is reached.
+                #[cfg(unix)]
+                {
+                    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                    // SAFETY: getrlimit initializes LIMIT on success.
+                    let maximum =
+                        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } == 0
+                        {
+                            // SAFETY: the successful call above initialized LIMIT.
+                            unsafe { limit.assume_init() }.rlim_cur as usize
+                        } else {
+                            256
+                        };
+                    if maximum < 50 || maximum - 50 < interp.file_notify_watch_count() {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("file-notify-error".into()),
+                            Value::String(
+                                "File watching not possible, no file descriptor left".into(),
+                            ),
+                            Value::Integer(interp.file_notify_watch_count() as i64),
+                        ])));
+                    }
+                }
                 // Watches taken from a remotely visited buffer model Tramp's
                 // gio monitors: they outlive deletions of the watched file, so
                 // they get no local path registration to invalidate.
@@ -1319,23 +1419,36 @@ define_dispatch!(
                     || interp
                         .buffer_remote_prefix(interp.current_buffer_id())
                         .is_some();
+                #[cfg(target_os = "macos")]
+                if !remote_watch {
+                    let descriptor =
+                        interp.register_kqueue_file_notify_watch(path, flags, args[2].clone())?;
+                    return Ok(Value::Integer(descriptor));
+                }
+                let descriptor =
+                    FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
                 interp.register_file_notify_watch(
                     descriptor,
                     (!remote_watch).then_some(path),
+                    flags,
                     args[2].clone(),
-                );
+                )?;
                 Ok(Value::Integer(descriptor))
             }
             "kqueue-rm-watch" => {
                 need_args(name, args, 1)?;
-                let descriptor = args[0].as_integer()?;
-                interp.remove_file_notify_watch(descriptor);
-                Ok(Value::Nil)
+                if !interp.remove_file_notify_watch(&args[0]) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("file-notify-error".into()),
+                        Value::String("Not a watch descriptor".into()),
+                        args[0].clone(),
+                    ])));
+                }
+                Ok(Value::T)
             }
             "kqueue-valid-p" => {
                 need_args(name, args, 1)?;
-                let descriptor = args[0].as_integer()?;
-                Ok(if interp.file_notify_watch_is_active(descriptor) {
+                Ok(if interp.file_notify_watch_is_active(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -1392,6 +1505,7 @@ define_dispatch!(
                         file_operation_error("Setting file modes", &error, &path)
                     })?;
                 }
+                dispatch_file_notification(interp, env, &path, "attribute-changed")?;
                 Ok(Value::Nil)
             }
             "file-name-all-completions" => {
@@ -1960,6 +2074,15 @@ define_dispatch!(
             "process-tty-name" => {
                 need_arg_range(name, args, 1, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
+                if let Some(stream) = args.get(1).filter(|stream| stream.is_truthy())
+                    && !matches!(stream.as_symbol(), Ok("stdin" | "stdout" | "stderr"))
+                {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String("Unknown stream".into()),
+                        stream.clone(),
+                    ])));
+                }
                 // process.c: the name of the process's terminal, nil for a
                 // pipe.  The stale nil-for-everything answer here made
                 // python.el treat pty processes as pipes and send a
