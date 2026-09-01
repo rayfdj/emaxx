@@ -7170,7 +7170,11 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
     let expected_printed = "(nil ([d 5 f] [a 2 c] [g 2 i]) (((2) . ignore) (1 3 t) (1 3 [98 99] t ignore 1) (0 2 [98 99] . ignore)) (1 nil t) ((1 2 [88] . ignore) (2 4 [88] t ignore 1) (2 4 t) (2 4 t)) ((0 3 [65 12 66] nil ignore 2) (0 3 [88 89] t ignore 1)) [[us-ascii 101 769] nil [0 0 101 101 1 0 1 1 0 nil] [1 1 769 769 0 0 0 1 0 nil] nil nil nil nil nil nil] nil ((args-out-of-range buffer) (wrong-type-argument vectorp) (error \"Attempt to shape zero-length text\") (wrong-type-argument terminal-live-p) (args-out-of-range \"a\") (error \"Invalid composition rule in RULES argument\")))";
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // fill_gstring_body reads glyph widths from `char-width-table', whose
+    // combining-character entries are set by international/characters.el at
+    // dump time; the expected literal is the dumped oracle's answer, so the
+    // in-process arm must carry the same dumped Lisp surface.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -7186,6 +7190,89 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
     assert!(
         values_equal(&interp, &actual, &expected),
         "composite.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+}
+
+#[test]
+fn find_composition_reports_the_automatic_composition_for_a_displayed_buffer() {
+    // composite.c find_automatic_composition: the decomposed
+    // "__A<U+030A>stro<U+0308>m" of erc-tests' `erc--split-line'.  The
+    // combining pair composes through composition-function-table's Mn rule
+    // and `compose-gstring-for-terminal' -- but ONLY while a window shows
+    // the buffer, because the C returns 0 when Fget_buffer_window does.
+    // Both halves are asserted, and the expectation is the oracle's own
+    // live answer rather than a transcribed literal.
+    let program = r#"
+        (let ((old (window-buffer (selected-window)))
+              (line (concat "__A" (string #x30A) "stro" (string #x308) "m")))
+          (unwind-protect
+              (list
+               (with-temp-buffer
+                 (set-window-buffer (selected-window) (current-buffer))
+                 (insert line)
+                 (find-composition 9 10))
+               (with-temp-buffer
+                 (insert line)
+                 (find-composition 9 10)))
+            (set-window-buffer (selected-window) old)))"#;
+    let expected = upstream_oracle_stdout(&format!("(prin1 {program})"));
+    assert!(
+        expected.starts_with("((8 10 [[us-ascii 111 776]") && expected.ends_with(") nil)"),
+        "oracle reported an unexpected composition shape: {expected}"
+    );
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("automatic composition contract should parse")
+        .expect("automatic composition contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("automatic composition contract should evaluate")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
+fn char_charset_restriction_narrows_to_charset_list_or_coding_system() {
+    // charset.c Fchar_charset with RESTRICTION: a list names charsets to
+    // try in order (each validated with CHECK_CHARSET_GET_CHARSET); any
+    // other non-nil value goes through coding_system_charset_list, which
+    // signals (coding-system-error NAME) for an unknown coding system.
+    // `compose-gstring-for-terminal' leans on the coding-system form to
+    // decide whether the terminal can render each glyph.
+    let program = r#"
+        (list
+         (char-charset 776 'us-ascii)
+         (char-charset 776 'utf-8)
+         (char-charset 111 'us-ascii)
+         (char-charset 97 'latin-1)
+         (char-charset 776 '(ascii unicode))
+         (char-charset 40 '(unicode ascii))
+         (char-charset 12354 'japanese-shift-jis)
+         (char-charset 776 'no-conversion)
+         (char-charset 97 'no-conversion)
+         (condition-case e (char-charset 776 '(nosuch)) (error e))
+         (condition-case e (char-charset 776 'nosuch) (error e))
+         (condition-case e (char-charset 'x 'utf-8) (error e)))"#;
+    let expected = "(nil unicode ascii iso-8859-1 unicode unicode japanese-jisx0208 unicode ascii \
+                    (wrong-type-argument charsetp nosuch) (coding-system-error nosuch) \
+                    (wrong-type-argument characterp x))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("char-charset restriction contract should parse")
+        .expect("char-charset restriction contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("char-charset restriction contract should evaluate")
+            .to_string(),
+        expected
     );
 }
 

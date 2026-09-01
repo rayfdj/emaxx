@@ -4803,6 +4803,11 @@ impl Interpreter {
                 Value::cons(Value::Symbol("display".into()), Value::T),
             ]),
         );
+        // buffer.c syms_of_buffer: `Fput (Qkill_buffer_hook,
+        // Qpermanent_local, Qt)' -- a buffer-local kill hook survives major
+        // mode changes (erc-d's canned-dialog buffers register their
+        // cleanup before switching to lisp-data-mode).
+        interp.put_symbol_property("kill-buffer-hook", "permanent-local", Value::T);
         // files.el keeps `write-file-functions' global by default: a local
         // binding is allowed and survives a mode change, but ordinary global
         // additions must remain visible in every buffer.  The two legacy and
