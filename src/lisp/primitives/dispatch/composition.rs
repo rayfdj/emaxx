@@ -343,6 +343,385 @@ fn register_composition(
     Ok(Some((key, relative, tail, width)))
 }
 
+fn char_table_id_from_var(interp: &Interpreter, env: &Env, name: &str) -> Option<u64> {
+    match interp.lookup_var(name, env)? {
+        Value::CharTable(id) => Some(id),
+        _ => None,
+    }
+}
+
+/// composite.c `char_composable_p': anything from space upward composes
+/// unless its general category is Z* or C*, with ZWNJ/ZWJ, the TR51 tag
+/// range, and Zs carved back in.  `unicode-category-table' stores the raw
+/// fixnum encoding of `enum unicode_category' (character.h); every
+/// composable category sorts at or before Zs, index 23.
+fn char_composable_p(interp: &Interpreter, env: &Env, c: char) -> bool {
+    const ZERO_WIDTH_NON_JOINER: u32 = 0x200C;
+    const ZERO_WIDTH_JOINER: u32 = 0x200D;
+    const TAG_SPACE: u32 = 0xE0020;
+    const CANCEL_TAG: u32 = 0xE007F;
+    const UNICODE_CATEGORY_ZS: i64 = 23;
+    let c = c as u32;
+    c >= ' ' as u32
+        && (c == ZERO_WIDTH_NON_JOINER
+            || c == ZERO_WIDTH_JOINER
+            || (TAG_SPACE..=CANCEL_TAG).contains(&c)
+            || matches!(
+                char_table_id_from_var(interp, env, "unicode-category-table")
+                    .and_then(|id| interp.char_table_get(id, c)),
+                Some(Value::Integer(category)) if category <= UNICODE_CATEGORY_ZS
+            ))
+}
+
+/// composite.c `inhibit_auto_composition': `auto-composition-mode' nil
+/// turns automatic composition off entirely; a string value turns it off
+/// only on the terminal type it names.
+fn inhibit_auto_composition(interp: &Interpreter, env: &Env) -> bool {
+    let Some(mode) = interp.lookup_var("auto-composition-mode", env) else {
+        return true;
+    };
+    if mode.is_nil() {
+        return true;
+    }
+    if let Some(mode) = string_like(&mode) {
+        return interp
+            .tty_terminal_type()
+            .is_some_and(|terminal_type| terminal_type == mode.text);
+    }
+    false
+}
+
+fn target_min(interp: &Interpreter, string: &Value) -> usize {
+    if string.is_nil() {
+        interp.buffer.point_min()
+    } else {
+        0
+    }
+}
+
+fn target_char_at(interp: &Interpreter, string: &Value, pos: usize) -> Option<char> {
+    if string.is_nil() {
+        interp.buffer.char_at(pos)
+    } else {
+        string_like(string)?.text.chars().nth(pos)
+    }
+}
+
+fn target_text(
+    interp: &Interpreter,
+    string: &Value,
+    from: usize,
+    to: usize,
+) -> Result<String, LispError> {
+    if string.is_nil() {
+        interp
+            .buffer
+            .buffer_substring(from, to)
+            .map_err(|error| LispError::Signal(error.to_string()))
+    } else {
+        Ok(string_like(string)
+            .map(|text| text.text.chars().skip(from).take(to - from).collect())
+            .unwrap_or_default())
+    }
+}
+
+/// `composition-function-table' holds, per character, a list of
+/// [PATTERN LOOKBACK FUNC] rules.  The C walks only a proper cons chain
+/// (`for (...; CONSP (val); val = XCDR (val))'); a bare vector is ignored.
+fn composition_rules_for_char(interp: &Interpreter, env: &Env, c: char) -> Vec<Value> {
+    let Some(table_id) = char_table_id_from_var(interp, env, "composition-function-table") else {
+        return Vec::new();
+    };
+    let Some(value) = interp.char_table_get(table_id, c as u32) else {
+        return Vec::new();
+    };
+    let mut rules = Vec::new();
+    let mut tail = value;
+    while let Some((head, rest)) = tail.cons_values() {
+        rules.push(head);
+        tail = rest;
+    }
+    rules
+}
+
+/// LGSTRING_CHAR_LEN: the number of characters a glyph-string covers is
+/// the length of its header vector minus the leading font slot.
+fn lgstring_char_len(gstring: &Value) -> Option<usize> {
+    let items = vector_items(gstring).ok()?;
+    let header = items.first()?;
+    Some(vector_items(header).ok()?.len().saturating_sub(1))
+}
+
+/// composite.c `autocmp_chars': try to compose the characters at CHARPOS
+/// according to RULE ([PATTERN LOOKBACK FUNC]), bounded by LIMIT.  Match
+/// data is saved and restored around the attempt
+/// (`record_unwind_save_match_data'), and point is restored after calling
+/// out to Lisp on the buffer path (`restore_point_unwind').
+fn autocmp_chars(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    rule_items: &[Value],
+    charpos: usize,
+    limit: usize,
+    string: &Value,
+) -> Result<Value, LispError> {
+    let saved_match_data = interp.last_match_data.clone();
+    let saved_match_buffer = interp.last_match_data_buffer_id;
+    let saved_point = string.is_nil().then(|| interp.buffer.point());
+    let result = autocmp_chars_inner(interp, env, rule_items, charpos, limit, string);
+    if let Some(point) = saved_point {
+        let clamped = point.clamp(interp.buffer.point_min(), interp.buffer.point_max());
+        interp.buffer.goto_char(clamped);
+    }
+    interp.last_match_data = saved_match_data;
+    interp.last_match_data_buffer_id = saved_match_buffer;
+    result
+}
+
+fn autocmp_chars_inner(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    rule_items: &[Value],
+    charpos: usize,
+    limit: usize,
+    string: &Value,
+) -> Result<Value, LispError> {
+    let pattern_value = &rule_items[0];
+    let len = if pattern_value.is_nil() {
+        1
+    } else {
+        let Some(pattern) = string_like(pattern_value) else {
+            // Non-string, non-nil PATTERN: the rule matches nothing.
+            return Ok(Value::Nil);
+        };
+        let haystack = target_text(interp, string, charpos, limit)?;
+        let at_absolute_start = charpos == target_min(interp, string);
+        match regexp::fast_looking_at_chars(interp, &pattern, &haystack, at_absolute_start)? {
+            Some(len) if len > 0 => len,
+            _ => return Ok(Value::Nil),
+        }
+    };
+    let to = charpos + len;
+    // On a character terminal the font object handed down the shaping
+    // pipeline is the frame itself (autocmp_chars: font_object =
+    // win->frame; the window-system font_range branch is compiled out).
+    let font_object = interp.selected_frame_value();
+    // GNU fetches the glyph-string here to check for a cached shaped ID.
+    // Emaxx never registers shaped glyph-strings in a cache, so the ID is
+    // always nil and control continues to `auto-composition-function'
+    // exactly as GNU does on a cache miss; only the fetch's own validation
+    // (unibyte text, invalid region) remains observable.
+    get_glyph_string(
+        interp,
+        env,
+        &[
+            Value::Integer(charpos as i64),
+            Value::Integer(to as i64),
+            font_object.clone(),
+            string.clone(),
+        ],
+    )?;
+    let function = interp
+        .lookup_var("auto-composition-function", env)
+        .unwrap_or(Value::Nil);
+    let call = interp.call_function_value(
+        function,
+        None,
+        &[
+            rule_items[2].clone(),
+            Value::Integer(charpos as i64),
+            Value::Integer(to as i64),
+            font_object,
+            string.clone(),
+            Value::Nil,
+        ],
+        env,
+    );
+    match call {
+        Ok(value) => Ok(value),
+        Err(error @ LispError::Throw(..)) => Err(error),
+        // safe_calln: a signaled condition absorbs into a failed
+        // composition attempt.
+        Err(_) => Ok(Value::Nil),
+    }
+}
+
+struct AutoCompositionMatch {
+    start: usize,
+    end: usize,
+    gstring: Value,
+}
+
+/// composite.c `find_automatic_composition' on the BACKLIM = -1 path used
+/// by `find-composition-internal': search for an automatic composition at
+/// or near POS, walking back across composable characters to a safe start
+/// and matching `composition-function-table' rules forward.
+fn find_automatic_composition(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pos: usize,
+    limit: Option<usize>,
+    string: &Value,
+) -> Result<Option<AutoCompositionMatch>, LispError> {
+    const MAX_AUTO_COMPOSITION_LOOKBACK: usize = 3;
+    // The C first locates a window showing the current buffer; with none
+    // (an undisplayed temp buffer -- even when the target is a string)
+    // there is no automatic composition.
+    let window = super::display::call(interp, "get-buffer-window", &[Value::Nil, Value::Nil], env)?;
+    if window.is_nil() {
+        return Ok(None);
+    }
+
+    let (head, tail) = if string.is_nil() {
+        // BACKLIM is -1 here, so the backward search stops at the first
+        // newline before POS: a newline can never be composed.  (GNU's
+        // long-line-optimizations narrowing is not modeled.)
+        let min = interp.buffer.point_min();
+        let before = interp
+            .buffer
+            .buffer_substring(min, pos)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let head = before
+            .rfind('\n')
+            .map(|byte| min + before[..byte].chars().count() + 1)
+            .unwrap_or(min);
+        (head, interp.buffer.point_max())
+    } else {
+        (
+            0,
+            string_like(string)
+                .map(|text| text.text.chars().count())
+                .unwrap_or(0),
+        )
+    };
+    // A negative LIMIT means: find a composition covering the character
+    // after POS.
+    let limit_value = limit.unwrap_or(pos);
+    let mut fore_check_limit = if limit_value <= pos {
+        tail.min(pos + 1 + MAX_AUTO_COMPOSITION_LOOKBACK)
+    } else {
+        tail.min(limit_value + MAX_AUTO_COMPOSITION_LOOKBACK)
+    };
+
+    let mut cur = pos;
+    loop {
+        let composable =
+            target_char_at(interp, string, cur).is_some_and(|c| char_composable_p(interp, env, c));
+        if !composable && limit_value <= pos {
+            // Case (1): rewind to the previous composable character.
+            loop {
+                if cur <= limit_value {
+                    return Ok(None);
+                }
+                cur -= 1;
+                if target_char_at(interp, string, cur)
+                    .is_some_and(|c| char_composable_p(interp, env, c))
+                {
+                    break;
+                }
+            }
+            fore_check_limit = cur + 1;
+        }
+        if composable || limit_value <= pos {
+            // Rewind to a position where forward search is safe: just
+            // after the nearest non-composable character (or HEAD).
+            while head < cur {
+                let prev = cur;
+                cur -= 1;
+                if !target_char_at(interp, string, cur)
+                    .is_some_and(|c| char_composable_p(interp, env, c))
+                {
+                    cur = prev;
+                    break;
+                }
+            }
+        }
+
+        // search_forward:
+        let mut last: Option<AutoCompositionMatch> = None;
+        let scan_start = cur;
+        while cur < fore_check_limit {
+            let Some(c) = target_char_at(interp, string, cur) else {
+                break;
+            };
+            let mut advanced = false;
+            for rule in composition_rules_for_char(interp, env, c) {
+                let Ok(items) = vector_items(&rule) else {
+                    continue;
+                };
+                if items.len() != 3 {
+                    continue;
+                }
+                let Value::Integer(lookback) = items[1] else {
+                    continue;
+                };
+                if lookback < 0 || lookback as usize > cur {
+                    continue;
+                }
+                let check_pos = cur - lookback as usize;
+                if check_pos < head {
+                    continue;
+                }
+                if limit_value <= pos {
+                    if pos < check_pos {
+                        continue;
+                    }
+                } else if limit_value <= check_pos {
+                    continue;
+                }
+                let gstring = autocmp_chars(interp, env, &items, check_pos, tail, string)?;
+                // The C stores every attempt into *gstring: a later failed
+                // attempt clears an earlier non-target success.
+                let char_len = if gstring.is_nil() {
+                    None
+                } else {
+                    lgstring_char_len(&gstring).filter(|len| *len > 0)
+                };
+                let Some(char_len) = char_len else {
+                    last = None;
+                    continue;
+                };
+                let start = check_pos;
+                let end = check_pos + char_len;
+                let found = AutoCompositionMatch {
+                    start,
+                    end,
+                    gstring,
+                };
+                let is_target = if pos < limit_value {
+                    pos < end
+                } else {
+                    start <= pos && pos < end
+                };
+                if is_target {
+                    return Ok(Some(found));
+                }
+                last = Some(found);
+                cur = end;
+                advanced = true;
+                break;
+            }
+            if !advanced {
+                cur += 1;
+            }
+        }
+
+        if pos < limit_value {
+            // Cases (2) and (4): a single forward pass decides.
+            return Ok(None);
+        }
+        if last.is_some() {
+            // A composition was found past POS; the caller checks whether
+            // it actually covers POS.
+            return Ok(last);
+        }
+        if scan_start == head {
+            return Ok(None);
+        }
+        cur = scan_start - 1;
+    }
+}
+
 fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
     if value.is_nil()
         || matches!(value, Value::Terminal(0))
@@ -354,7 +733,24 @@ fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError
     }
 }
 
-fn glyph_string(chars: &[char], font: Value, compose_cluster: bool) -> Value {
+/// fill_gstring_body reads the fontless glyph width from
+/// `char-width-table' (XFIXNAT (CHAR_TABLE_REF (Vchar_width_table, c))),
+/// not from any host notion of display width.
+fn char_width_table_width(interp: &Interpreter, env: &Env, character: char) -> i64 {
+    char_table_id_from_var(interp, env, "char-width-table")
+        .and_then(|id| interp.char_table_get(id, character as u32))
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(0)
+        .max(0)
+}
+
+fn glyph_string(
+    interp: &Interpreter,
+    env: &Env,
+    chars: &[char],
+    font: Value,
+    compose_cluster: bool,
+) -> Value {
     let header = vector_value(
         std::iter::once(font).chain(
             chars
@@ -364,7 +760,7 @@ fn glyph_string(chars: &[char], font: Value, compose_cluster: bool) -> Value {
     );
     let cluster_end = chars.len().saturating_sub(1) as i64;
     let glyphs = chars.iter().enumerate().map(|(index, character)| {
-        let width = character.width().unwrap_or(0) as i64;
+        let width = char_width_table_width(interp, env, *character);
         let from = if compose_cluster { 0 } else { index as i64 };
         let to = if compose_cluster {
             cluster_end
@@ -390,7 +786,11 @@ fn glyph_string(chars: &[char], font: Value, compose_cluster: bool) -> Value {
     vector_value(body)
 }
 
-fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+fn find_composition(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
     let string = &args[2];
     let position = position_from_value(interp, &args[0])?;
     let (minimum, maximum) = if string.is_nil() {
@@ -425,6 +825,29 @@ fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, L
     };
     let ranges = composition_ranges(interp, string)?;
     if let Some(range) = find_static_composition(&ranges, position, limit) {
+        if !(range.start <= position && position < range.end) {
+            // A static composition was found through the LIMIT search but
+            // does not cover POS; an automatic composition closer to POS
+            // wins (Ffind_composition_internal's second
+            // find_automatic_composition call carries no multibyte or
+            // inhibition guard).
+            let string = string.clone();
+            if let Some(found) = find_automatic_composition(interp, env, position, limit, &string)?
+            {
+                let better = if found.end <= position {
+                    found.end > range.end
+                } else {
+                    found.start < range.start
+                };
+                if better {
+                    return Ok(Value::list([
+                        Value::Integer(found.start as i64),
+                        Value::Integer(found.end as i64),
+                        found.gstring,
+                    ]));
+                }
+            }
+        }
         let start = Value::Integer(range.start as i64);
         let end = Value::Integer(range.end as i64);
         let Some((components, relative, modification, width)) =
@@ -445,23 +868,30 @@ fn find_composition(interp: &mut Interpreter, args: &[Value]) -> Result<Value, L
             Value::Integer(width),
         ]));
     }
-    // No automatic composition here.  For BUFFER positions the batch
-    // oracle answers nil (no frame font machinery), which this matches.
-    // For the STRING argument the oracle DOES compose in batch, through
-    // composition-function-table rules and terminal gstring shaping
-    // ((find-composition 0 nil "e\u{301}" t) returns a real gstring with
-    // per-script cluster structure); Emaxx does not implement that shaping
-    // yet, so the string surface diverges and answers nil -- disclosed in
-    // docs/honesty-audit-2026-08-18.md (2026-08-23 audit finding).  No test
-    // in the pinned oracle's test tree calls find-composition, so the
-    // frozen measurement never exercises either surface.  The previous
-    // grapheme-cluster substitute is gone because it fabricated buffer
-    // compositions GNU does not report and mismatched GNU's string gstring
-    // structure.
+    // No static composition: try the automatic one, gated exactly as
+    // Ffind_composition_internal gates it -- a multibyte target and
+    // auto-composition not inhibited.  The shaping itself runs through the
+    // GNU Lisp owners (`auto-compose-chars',
+    // `compose-gstring-for-terminal') over the ported C substrate.
+    let multibyte = if string.is_nil() {
+        interp.buffer.is_multibyte()
+    } else {
+        string_like(string).is_some_and(|text| text.multibyte)
+    };
+    if multibyte && !inhibit_auto_composition(interp, env) {
+        let string = string.clone();
+        if let Some(found) = find_automatic_composition(interp, env, position, limit, &string)? {
+            return Ok(Value::list([
+                Value::Integer(found.start as i64),
+                Value::Integer(found.end as i64),
+                found.gstring,
+            ]));
+        }
+    }
     Ok(Value::Nil)
 }
 
-fn get_glyph_string(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
+fn get_glyph_string(interp: &Interpreter, env: &Env, args: &[Value]) -> Result<Value, LispError> {
     let font = terminal_font(interp, &args[2])?;
     let chars = if args[3].is_nil() {
         let (start, end) = checked_buffer_region(interp, &args[0], &args[1])?;
@@ -475,7 +905,7 @@ fn get_glyph_string(interp: &Interpreter, args: &[Value]) -> Result<Value, LispE
             "Attempt to shape zero-length text".into(),
         ));
     }
-    Ok(glyph_string(&chars, font, false))
+    Ok(glyph_string(interp, env, &chars, font, false))
 }
 
 fn sort_rules(rules: &Value) -> Result<Value, LispError> {
@@ -507,7 +937,7 @@ define_dispatch!(
         interp: &mut Interpreter,
         name: &str,
         args: &[Value],
-        _env: &mut Env,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         match name {
             "clear-composition-cache" => {
@@ -524,7 +954,7 @@ define_dispatch!(
             }
             "composition-get-gstring" => {
                 need_args(name, args, 4)?;
-                get_glyph_string(interp, args)
+                get_glyph_string(interp, env, args)
             }
             "composition-sort-rules" => {
                 need_args(name, args, 1)?;
@@ -532,7 +962,7 @@ define_dispatch!(
             }
             "find-composition-internal" => {
                 need_args(name, args, 4)?;
-                find_composition(interp, args)
+                find_composition(interp, env, args)
             }
         }
     }

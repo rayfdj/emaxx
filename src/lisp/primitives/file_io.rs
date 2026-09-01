@@ -1315,16 +1315,30 @@ pub(crate) fn insert_file_contents(
             let end = interp.buffer.point_min() + old_end;
             let replacement = new_chars[prefix..new_end].iter().collect::<String>();
             let replacement_len = replacement.chars().count();
-            // Fileio's replacement keeps point before inserted text.  Point
-            // in (or exactly at the end of) the discarded middle collapses
-            // to its start; point after it follows the unchanged suffix.
-            let replacement_point = if original_point <= start {
+            // fileio.c saves point as a marker across the delete+insert
+            // (get_window_points_and_markers/restore_point_unwind), so it
+            // first moves exactly as a marker would: point before the
+            // replaced middle stays, point inside it collapses to the
+            // start, point after it follows the unchanged suffix.
+            let mut replacement_point = if original_point <= start {
                 original_point
             } else if original_point <= end {
                 start
             } else {
                 original_point - (end - start) + replacement_len
             };
+            // restore_window_points then overrides that for a point that
+            // was strictly inside the replaced span, keeping it at the same
+            // relative distance instead of at the span's start (bug#19161):
+            //   newpos = same_at_start + growth * (oldpos - same_at_start)
+            // with growth = inserted / (same_at_end - same_at_start),
+            // computed in double and truncated.  GNU applies it only when
+            // characters were actually inserted.
+            if replacement_len > 0 && original_point > start && original_point <= end {
+                let growth = replacement_len as f64 / (end - start) as f64;
+                replacement_point =
+                    (start as f64 + growth * (original_point - start) as f64) as usize;
+            }
             inserted_chars = replacement.chars().count();
             if start != end {
                 // GNU runs the modification hooks only for the portion that
@@ -1709,6 +1723,17 @@ pub(crate) fn ensure_no_supersession_threat(
     let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(());
     };
+    // filelock.c's supersession block lives in the native half of
+    // `lock-file', AFTER the file-name-handler dispatch: a handled file
+    // never reaches it, and its handler's own `lock-file' (Tramp routes
+    // straight to `ask-user-about-supersession-threat', deliberately
+    // skipping the local content comparison) owns the stale-file policy.
+    // Running the native check for handled files silently re-stamped the
+    // visited modtime through `userlock--check-content-unchanged' and
+    // suppressed the handler's prompt.
+    if super::system::find_file_name_handler(interp, env, &logical_path, "lock-file")?.is_some() {
+        return Ok(());
+    }
     let path = resolve_file_name_in_env(interp, env, &logical_path);
     let Some(current_modtime) = file_modtime(&path)? else {
         return Ok(());

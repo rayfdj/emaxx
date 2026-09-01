@@ -2178,10 +2178,30 @@ fn compile_elisp_regex_with_syntax_properties(
     encoding: Option<&SyntaxPropertyEncoding>,
     category_scope: RegexpCategoryScope,
 ) -> Result<CompiledElispRegex, LispError> {
-    let pattern_text = pattern.text.clone();
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
+    compile_elisp_regex_with_case_fold(
+        interp,
+        pattern,
+        point_assertion,
+        at_absolute_start,
+        encoding,
+        category_scope,
+        case_fold,
+    )
+}
+
+fn compile_elisp_regex_with_case_fold(
+    interp: &Interpreter,
+    pattern: &StringLike,
+    point_assertion: &str,
+    at_absolute_start: bool,
+    encoding: Option<&SyntaxPropertyEncoding>,
+    category_scope: RegexpCategoryScope,
+    case_fold: bool,
+) -> Result<CompiledElispRegex, LispError> {
+    let pattern_text = pattern.text.clone();
     let category_table_id = category_scope.table_id(interp);
     // Translation is the single owner of Emacs regexp grammar.  A pattern
     // that depends on mutable runtime tables is keyed by the identity of
@@ -2255,6 +2275,43 @@ fn compile_elisp_regex_with_syntax_properties(
     };
     COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().insert(key, compiled.clone()));
     Ok(compiled)
+}
+
+/// search.c `fast_looking_at', reduced to the result the composition engine
+/// consumes: match PATTERN at the very start of HAYSTACK (the accessible
+/// text from the match position up to the composition search limit) and
+/// return the match length in characters.  GNU compiles the pattern with a
+/// nil translate table, so `case-fold-search' never applies, and
+/// `re_match_2' resolves `\cC' classes through the current buffer's
+/// category table even when the target is a Lisp string.
+pub(super) fn fast_looking_at_chars(
+    interp: &Interpreter,
+    pattern: &StringLike,
+    haystack: &str,
+    at_absolute_start: bool,
+) -> Result<Option<usize>, LispError> {
+    let regex = compile_elisp_regex_with_case_fold(
+        interp,
+        pattern,
+        r"\A",
+        at_absolute_start,
+        None,
+        RegexpCategoryScope::CurrentBuffer,
+        false,
+    )?;
+    let Some(captures) = regex
+        .captures_from_pos(haystack, 0)
+        .map_err(|error| LispError::Signal(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let Some(matched) = captures.get(0) else {
+        return Ok(None);
+    };
+    if matched.start() != 0 {
+        return Ok(None);
+    }
+    Ok(Some(haystack[..matched.end()].chars().count()))
 }
 
 fn regex_pattern_with_search_spaces(

@@ -4033,3 +4033,106 @@ Documented-open from this round:
   diaeresis where GNU keeps the grapheme together; tramp-test39/41/42
   (supersession warning, special-character names, filename encoding)
   remain open with diagnosed directions.
+
+Hard-third round 2 (2026-09-01, Linux): composition, tramp and coding
+mechanisms
+----------------------------------------------------------------------
+Every item below was diagnosed by probing the pinned oracle first and
+porting the mechanism from the C (or its owning Elisp), then re-checking
+the probe byte-for-byte.
+
+- composite.c find_automatic_composition is now really implemented:
+  `find-composition-internal' walks composition-function-table rules
+  (char_composable_p over unicode-category-table, MAX_AUTO_COMPOSITION_
+  LOOKBACK, the rewind/forward search, autocmp_chars through
+  `auto-composition-function') instead of always answering nil for the
+  buffer surface.  It reproduces the oracle's whole glyph-string, and
+  keeps GNU's load-bearing precondition: with no window showing the
+  buffer, Fget_buffer_window returns nil and there is NO automatic
+  composition.  fill_gstring_body's glyph widths now come from
+  `char-width-table' (the dumped value) rather than a host width table.
+  STALE IN-REPO TEST corrected: find_composition_reports_no_automatic_
+  composition_in_batch pinned `(nil nil)' for the decomposed
+  "__A<U+030A>stro<U+0308>m" of erc-tests' `erc--split-line'; the live
+  oracle reports the composition (8 10 [[us-ascii 111 776] ...]) once
+  the buffer is in a window.  The replacement asserts both halves.
+- charset.c Fchar_charset's RESTRICTION argument was missing entirely
+  (Emaxx took one argument): a list picks the first charset that can
+  encode CH, any other non-nil value goes through
+  coding_system_charset_list, and an unknown coding system signals
+  (coding-system-error NAME).  `compose-gstring-for-terminal' needs it
+  to decide what the terminal can render.  Disclosed: GNU substitutes
+  global charset lists for full-support iso-2022 and emacs-mule
+  codings; Emaxx models only the :charset-list attribute, so those two
+  families report fewer supported charsets.
+- filelock.c: the supersession check lives in the NATIVE half of
+  `lock-file', after file-name-handler dispatch.  Emaxx ran it for
+  handled files too, so `userlock--check-content-unchanged' silently
+  re-stamped the visited modtime and Tramp's own handler (which routes
+  to `ask-user-about-supersession-threat' deliberately without the
+  local content comparison) never prompted (tramp-test39).
+- tramp-file-name-regexp: the method and user/host segments are
+  `[^/|:]+' / `[^/|:]*'.  Emaxx's native parser accepted any colon,
+  so a LOCAL file whose name contains ":foo;bar:baz;" parsed as remote
+  -- file-exists-p answered from the wrong side and directory-files
+  dropped the entry (tramp-test41).
+- fileio.c Finsert_file_contents with REPLACE saves point as a marker
+  and then applies restore_window_points' growth rule (bug#19161): a
+  point strictly inside the replaced span keeps its relative distance
+  (same_at_start + inserted/oldsize * offset, truncated) instead of
+  collapsing to the span start (tramp-test09).
+- buffer.c syms_of_buffer marks `kill-buffer-hook' permanent-local;
+  Emaxx did not, so a buffer-local kill hook registered before a major
+  mode change was discarded and erc-d's canned dialog buffers were
+  never removed from erc-d-u--canned-buffers (erc-scenarios-internal,
+  3 tests).
+- coding.c code_convert_string decodes the STRING's OWN BYTES (SDATA):
+  Emaxx read a multibyte string as one octet per character and signaled
+  "Character cannot be encoded" for anything above Latin-1
+  (tramp-test42).  The full mechanism is now ported: decode_coding_
+  object sets src_multibyte from `chars < bytes'; ONE_MORE_BYTE under
+  multibytep recovers a byte8 character's octet and hands every other
+  character to the decoder as a NEGATIVE code that passes through
+  unchanged -- so the decoder really runs over the byte runs BETWEEN
+  multibyte characters, and a unibyte destination stores such a code's
+  low eight bits ((-c) & 0xFF).  CODING_FOR_UNIBYTE (the raw-text
+  family's :for-unibyte) makes a decode that actually ran produce a
+  UNIBYTE string, while code_convert_string's ascii-compatible fast
+  path still returns multibyte.  EOL conversion now happens on the
+  DECODED characters, so a byte-oriented coding (utf-16) that swallows
+  a CR octet inside a code unit no longer names an eol subsidiary.
+  A unibyte result keeps Emaxx's raw-byte spelling for bytes above
+  0x7F (what `bytes_to_unibyte_value' and the raw-text decoder
+  produce), so case tables keyed on byte8 characters still match it.
+  Measured live against the oracle over a 132-case matrix (11 input
+  kinds x 12 coding systems): 45 divergences before, 1 after, with no
+  case that matched before changing.
+
+Documented-open from this round:
+- KNOWN-RACY IN-REPO TEST (not a fidelity gap, recorded so a future
+  gate failure is not misread): subprocess_exit_is_event_driven_and_
+  notifies_newest_process_first_once asserts that the `sh -c "printf
+  err >&2"' child is still live at the very next Lisp form.  Under CPU
+  load the parent can be descheduled long enough for the child to run
+  and exit first, so `initially-live' comes back nil while every other
+  element -- the (primary stderr) event order, the single delivery,
+  the exit status -- still matches.  Measured on the gate binary with
+  four spinners running: this round's tree passed 6/6 idle and 3/6
+  loaded, and the UNCHANGED base tree passed 6/6 idle and 2/6 loaded,
+  so the race is environmental, not a regression.  It also flaked once
+  before, in gate47-attempt2, during a round that touched no process
+  code.
+- The one remaining matrix case is coding DETECTION, not decoding:
+  for `undecided' over the byte stream 61 81 62 the oracle detects
+  japanese-shift-jis (yielding U+FF5C) where Emaxx's auto-detection
+  answers raw-text.  Emaxx's detector does not try the Japanese
+  multi-byte categories.
+- erc-scenarios-stamp--left/display-margin-mode and --legacy-date-
+  stamps still fail, but the pieces they rest on do not: `field-at-pos'
+  and the field machinery are byte-identical to the oracle (probe
+  fld1.el), and so are cl-generic `&context' dispatch and
+  `erc--insert-timestamp-left' under erc-stamp--display-margin-mode,
+  including the `((margin left-margin) STRING)' display property
+  (probe ctx1.el).  The divergence is therefore in what the live
+  session does around those calls, which needs an erc-d dialog to
+  bisect.
