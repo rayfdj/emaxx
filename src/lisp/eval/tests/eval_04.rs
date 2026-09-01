@@ -2989,12 +2989,20 @@ fn buffer_character_primitives_project_raw_bytes_like_gnu() {
 }
 
 #[test]
-#[ignore = "Emaxx substitutes SPACE for an unencodable character where GNU substitutes ?; probed: GNU (115 63 108 32 63 32 63 63 63 63)"]
 fn encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars() {
     assert_eq!(
         eval_str_with_upstream_batch(
-            r#"(list (string-to-list (encode-coding-string "sæl ö всем" 'iso-8859-1))
-                     (string-to-list (encode-coding-string "sæl ö всем" 'ascii)))"#
+            r#"(progn
+                  (define-coding-system 'zz-default-char "audit contract"
+                    :coding-type 'charset :mnemonic ?Z
+                    :charset-list '(ascii) :default-char ?!)
+                  (list
+                   (string-to-list
+                    (encode-coding-string "sæl ö всем" 'iso-8859-1))
+                   (string-to-list
+                    (encode-coding-string "sæl ö всем" 'ascii))
+                   (string-to-list
+                    (encode-coding-string (string 233) 'zz-default-char))))"#
         ),
         Value::list([
             Value::list([
@@ -3021,6 +3029,7 @@ fn encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars() {
                 Value::Integer(63),
                 Value::Integer(63),
             ]),
+            Value::list([Value::Integer(33)]),
         ])
     );
 }
@@ -3042,7 +3051,6 @@ fn url_insert_entities_in_string_escapes_html_markup_chars() {
 }
 
 #[test]
-#[ignore = "EUC-JP encoding is unimplemented (GNU encodes \u{3042} as (164 162)); the codec that stood in for it recognised only that one character"]
 fn decode_coding_region_rewrites_dos_eol_in_place() {
     assert_eq!(
         eval_str_with_upstream_batch(

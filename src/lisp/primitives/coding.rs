@@ -290,6 +290,13 @@ fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) ->
     })
 }
 
+fn coding_system_default_char_byte(interp: &Interpreter, coding: &str) -> u8 {
+    coding_system_property(interp, coding, ":default-char")
+        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(b' ')
+}
+
 fn coding_system_requires_bom(interp: &Interpreter, coding: &str) -> bool {
     coding_system_property(interp, coding, ":bom")
         .is_some_and(|value| !value.is_nil() && value.cons_values().is_none())
@@ -413,6 +420,12 @@ fn encode_charset_coding_bytes(
 ) -> Result<Vec<u8>, LispError> {
     let charsets = coding_system_charset_names(interp, coding);
     let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
+    // setup_coding_system takes the codec's default character from its
+    // attributes.  Charset codings do not share one replacement: us-ascii
+    // specifies `?' while iso-latin-1 and the Japanese families default to
+    // SPACE.  Reading the live property also preserves package-defined
+    // charset codings instead of special-casing these builtins.
+    let default_char = coding_system_default_char_byte(interp, coding);
     let mut encoded = Vec::new();
     for character in text.chars() {
         let scalar = raw_byte_from_regex_char(character)
@@ -428,7 +441,7 @@ fn encode_charset_coding_bytes(
         let code = if let Some(code) = code {
             code
         } else if ascii_compatible {
-            encoded.push(b' ');
+            encoded.push(default_char);
             continue;
         } else {
             charsets
@@ -525,6 +538,18 @@ pub(crate) fn shared_string_copy(value: &Value) -> Result<Value, LispError> {
         string.props,
         string.multibyte,
     ))
+}
+
+/// The character a unibyte Lisp string stores for one byte: ASCII stays
+/// itself, and a byte above 0x7F keeps Emaxx's raw-byte spelling -- the
+/// same one `bytes_to_unibyte_value' and the raw-text decoder produce --
+/// so a case table keyed on byte8 characters still matches it.
+fn unibyte_char_for_byte(byte: u8) -> char {
+    if byte <= 0x7F {
+        char::from(byte)
+    } else {
+        raw_byte_regex_char(byte)
+    }
 }
 
 pub(crate) fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
@@ -1663,6 +1688,7 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
         "charset" => {
             let charsets = coding_system_charset_names(interp, coding);
             let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
+            let default_char = char::from(coding_system_default_char_byte(interp, coding));
             text.chars()
                 .map(|ch| {
                     let scalar = raw_byte_from_regex_char(ch)
@@ -1675,11 +1701,7 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
                     {
                         ch
                     } else {
-                        // GNU's charset coders use a space as their default
-                        // replacement for an unrepresentable character.  The
-                        // selected coding system remains authoritative; this
-                        // is not an implicit fallback to UTF-8.
-                        ' '
+                        default_char
                     }
                 })
                 .collect()
@@ -1737,6 +1759,7 @@ pub(crate) fn decode_text_bytes(
         "euc-jp" => Ok(decode_euc_jp_bytes(interp, bytes)),
         "sjis" => Ok(decode_sjis_bytes(interp, bytes)),
         "big5" => Ok(decode_big5_bytes(interp, bytes)),
+        "emacs-mule" => Ok(decode_emacs_mule_bytes(interp, bytes)),
         "charset" => Ok(decode_charset_coding_bytes(interp, bytes, &canonical)),
         _ => Ok(decode_raw_text_bytes(bytes)),
     }
@@ -1854,6 +1877,197 @@ pub(crate) fn string_identity_for_coding(
     true
 }
 
+fn detect_sjis_bytes(bytes: &[u8]) -> bool {
+    // coding.c:detect_coding_sjis.  japanese-shift-jis has three charsets,
+    // so its two-byte lead range ends at 0xEF (the wider Shift-JIS-2004
+    // definition uses 0xFC).  Detection must see at least one non-ASCII
+    // sequence, and a lead at end-of-input is rejected in the last block.
+    let mut index = 0;
+    let mut found = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            0x00..=0x7F => index += 1,
+            0x81..=0x9F | 0xE0..=0xEF => {
+                let Some(&trail) = bytes.get(index + 1) else {
+                    return false;
+                };
+                if !(0x40..=0xFC).contains(&trail) || trail == 0x7F {
+                    return false;
+                }
+                found = true;
+                index += 2;
+            }
+            0xA0..=0xDF => {
+                found = true;
+                index += 1;
+            }
+            _ => return false,
+        }
+    }
+    found
+}
+
+struct EmacsMuleLayout {
+    lengths: [usize; 256],
+    charsets: Vec<Option<String>>,
+}
+
+fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
+    // charset.c keeps these two tables in lockstep with `define-charset'.
+    // The Lisp table is the exact last-definition-wins charset map; deriving
+    // lengths from its live entries also honors packages which add charsets.
+    let mut lengths = [1_usize; 256];
+    lengths[0x9A] = 3;
+    lengths[0x9B] = 3;
+    lengths[0x9C] = 4;
+    lengths[0x9D] = 4;
+    let mut charsets = vec![None; 256];
+    if let Some(table) = interp.lookup_var("emacs-mule-charset-table", &Vec::new())
+        && let Ok(entries) = vector_items(&table)
+    {
+        for (id, entry) in entries.into_iter().take(256).enumerate() {
+            let Ok(charset) = entry.as_symbol() else {
+                continue;
+            };
+            let Some(dimension) = charset_plist_property(interp, charset, ":dimension")
+                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| usize::try_from(value).ok())
+            else {
+                continue;
+            };
+            charsets[id] = Some(charset.to_string());
+            lengths[id] = dimension + usize::from(id >= 0xA0) + 1;
+        }
+    }
+    EmacsMuleLayout { lengths, charsets }
+}
+
+fn latin1_detector_accepts(interp: &Interpreter, bytes: &[u8]) -> bool {
+    // coding.c:detect_coding_charset rejects C1 bytes for iso-latin-1 unless
+    // their slot in the mutable `latin-extra-code-table' is non-nil.  The
+    // dumped GNU image enables 0x91..0x96, so hard-coding the whole C1 range
+    // as invalid incorrectly lets Shift-JIS steal those byte streams.
+    let extras = interp
+        .lookup_var("latin-extra-code-table", &Vec::new())
+        .and_then(|table| vector_items(&table).ok());
+    bytes.iter().all(|byte| {
+        !(0x80..=0x9F).contains(byte)
+            || extras
+                .as_ref()
+                .and_then(|table| table.get(usize::from(*byte)))
+                .is_some_and(Value::is_truthy)
+    })
+}
+
+fn detect_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> bool {
+    // Emacs-Mule precedes Shift-JIS in the default category priority.  Port
+    // the overlapping part of coding.c:detect_coding_emacs_mule so a valid
+    // Emacs-Mule byte stream is not stolen by the SJIS detector.  The 0x80
+    // composition form cannot itself be valid SJIS, so it remains outside
+    // this deliberately bounded overlap detector.
+    let layout = emacs_mule_layout(interp);
+
+    let mut index = 0;
+    let mut found = false;
+    while index < bytes.len() {
+        let lead = bytes[index];
+        index += 1;
+        if lead < 0x80 {
+            if matches!(lead, 0x0E | 0x0F | 0x1B) {
+                return false;
+            }
+            continue;
+        }
+        if lead == 0x80 {
+            return false;
+        }
+        let following = layout.lengths[usize::from(lead)].saturating_sub(1);
+        let Some(end) = index
+            .checked_add(following)
+            .filter(|end| *end <= bytes.len())
+        else {
+            return false;
+        };
+        if bytes[index..end].iter().any(|byte| *byte < 0xA0) {
+            return false;
+        }
+        found = true;
+        index = end;
+    }
+    found
+}
+
+pub(crate) fn decode_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> String {
+    // coding.c:emacs_mule_char.  Invalid or unmappable sequences are retried
+    // from the next byte, which preserves each offending byte as GNU's
+    // eight-bit character instead of consuming a superficially valid run.
+    let layout = emacs_mule_layout(interp);
+    let mut out = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let lead = bytes[index];
+        if lead < 0x80 {
+            out.push(char::from(lead));
+            index += 1;
+            continue;
+        }
+
+        let decoded = match lead {
+            0x9A | 0x9B => bytes
+                .get(index + 1..index + 3)
+                .filter(|tail| tail[0] >= 0xA0 && tail[1] >= 0xA0)
+                .and_then(|tail| {
+                    layout.charsets[usize::from(tail[0])]
+                        .as_deref()
+                        .map(|charset| (charset, tail))
+                })
+                .and_then(|(charset, tail)| {
+                    decode_charset_code(interp, charset, u32::from(tail[1] & 0x7F))
+                })
+                .and_then(char::from_u32)
+                .map(|character| (character, 3)),
+            0x9C | 0x9D => bytes
+                .get(index + 1..index + 4)
+                .filter(|tail| tail[1] >= 0xA0 && tail[2] >= 0xA0)
+                .and_then(|tail| {
+                    layout.charsets[usize::from(tail[0])]
+                        .as_deref()
+                        .map(|charset| (charset, tail))
+                })
+                .and_then(|(charset, tail)| {
+                    let code = u32::from(tail[1] & 0x7F) << 8 | u32::from(tail[2] & 0x7F);
+                    decode_charset_code(interp, charset, code)
+                })
+                .and_then(char::from_u32)
+                .map(|character| (character, 4)),
+            _ if lead < 0xA0 && layout.lengths[usize::from(lead)] > 1 => {
+                let length = layout.lengths[usize::from(lead)];
+                bytes
+                    .get(index + 1..index + length)
+                    .filter(|tail| tail.iter().all(|byte| *byte >= 0xA0))
+                    .and_then(|tail| {
+                        let charset = layout.charsets[usize::from(lead)].as_deref()?;
+                        let code = tail
+                            .iter()
+                            .fold(0_u32, |code, byte| code << 8 | u32::from(byte & 0x7F));
+                        decode_charset_code(interp, charset, code)
+                    })
+                    .and_then(char::from_u32)
+                    .map(|character| (character, length))
+            }
+            _ => None,
+        };
+        if let Some((character, consumed)) = decoded {
+            out.push(character);
+            index += consumed;
+        } else {
+            out.push(raw_byte_regex_char(lead));
+            index += 1;
+        }
+    }
+    out
+}
+
 pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
     // None when no eol byte exists: the name then stays the bare base,
     // which is what GNU records in last-coding-system-used and what lets
@@ -1907,15 +2121,26 @@ pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String,
         }
         return (coding_variant_name(interp, "utf-8", actual_eol), normalized);
     }
-    // Non-UTF-8 8-bit data without a null byte: GNU's detector falls to
-    // the highest-priority charset coding, iso-latin-1 under the harness's
-    // LANG=C environment -- every byte decodes (mojibake, not raw bytes).
-    // A byte in 0x80..=0x9F is a C1 control, which no ISO 8859 text uses:
-    // its presence rejects the latin-1 category and the read stays
-    // raw-text (the oracle: (97 255) is latin-1, (97 129) is raw-text,
-    // and a stray valid UTF-8 sequence like C3 80 forces raw-text through
-    // its 0x80 continuation byte).
+    // Non-UTF-8 8-bit data without a null byte: try the same relevant default
+    // category order as coding.c -- iso-latin-1, Emacs-Mule, then Shift-JIS.
+    // The mutable Latin-extra table and the live Emacs-Mule charset table are
+    // both part of detection; byte-range shortcuts are not equivalent.
     if bomless.iter().any(|byte| (0x80..=0x9F).contains(byte)) {
+        if latin1_detector_accepts(interp, bomless) {
+            return (
+                coding_variant_name(interp, "iso-latin-1", actual_eol),
+                normalized,
+            );
+        }
+        if detect_emacs_mule_bytes(interp, bomless) {
+            return (
+                coding_variant_name(interp, "emacs-mule", actual_eol),
+                normalized,
+            );
+        }
+        if detect_sjis_bytes(bomless) {
+            return (coding_variant_name(interp, "sjis", actual_eol), normalized);
+        }
         return (
             coding_variant_name(interp, "raw-text", actual_eol),
             normalized,
@@ -2280,6 +2505,61 @@ pub(crate) fn encode_coding_value(
     }
 }
 
+/// coding.c's `ONE_MORE_BYTE' under `multibytep' (coding->src_multibyte,
+/// set by decode_coding_object from `chars < bytes'): an ASCII character
+/// is a source byte, a raw byte8 character is its own octet (the macro
+/// recovers it from the C0/C1 lead), and any other character leaves the
+/// byte stream -- the macro hands the decoder the NEGATIVE character code,
+/// which every decoder passes through unchanged.  So the decoder really
+/// runs over the byte runs BETWEEN the multibyte characters, and a unibyte
+/// destination stores each passed-through code's low eight bits.
+fn decode_multibyte_source_text(
+    interp: &Interpreter,
+    text: &str,
+    coding: &str,
+    for_unibyte: bool,
+) -> Result<String, LispError> {
+    let mut decoded = String::new();
+    let mut run: Vec<u8> = Vec::new();
+    for ch in text.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            run.push(byte);
+            continue;
+        }
+        if (ch as u32) < 0x80 {
+            run.push(ch as u8);
+            continue;
+        }
+        flush_decoded_source_run(interp, &mut run, &mut decoded, coding, for_unibyte)?;
+        if for_unibyte {
+            decoded.push(unibyte_char_for_byte(((-(ch as i32)) & 0xFF) as u8));
+        } else {
+            decoded.push(ch);
+        }
+    }
+    flush_decoded_source_run(interp, &mut run, &mut decoded, coding, for_unibyte)?;
+    Ok(decoded)
+}
+
+fn flush_decoded_source_run(
+    interp: &Interpreter,
+    run: &mut Vec<u8>,
+    decoded: &mut String,
+    coding: &str,
+    for_unibyte: bool,
+) -> Result<(), LispError> {
+    if run.is_empty() {
+        return Ok(());
+    }
+    if for_unibyte {
+        decoded.extend(run.iter().copied().map(unibyte_char_for_byte));
+    } else {
+        decoded.push_str(&decode_text_bytes(interp, run, coding)?);
+    }
+    run.clear();
+    Ok(())
+}
+
 pub(crate) fn decode_coding_text(
     interp: &mut Interpreter,
     value: &Value,
@@ -2300,10 +2580,19 @@ pub(crate) fn decode_coding_text(
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(coding))?;
+    // coding.c's code_convert_string decodes the STRING's own bytes
+    // (SDATA/SBYTES), so a multibyte string contributes its internal
+    // spelling -- reading it as one octet per character rejected every
+    // non-Latin-1 character with "Character cannot be encoded" instead of
+    // decoding it.
+    let source_bytes = if string.multibyte {
+        encode_internal_multibyte_bytes(&string.text)?
+    } else {
+        encode_raw_text_bytes(&string.text)?
+    };
     let undecided_bytes =
         if interp.coding_system_kind_name(&canonical).as_deref() == Some("undecided") {
-            let bytes = encode_raw_text_bytes(&string.text)?;
-            let (detected, normalized) = auto_detect_coding(interp, &bytes);
+            let (detected, normalized) = auto_detect_coding(interp, &source_bytes);
             Some((detected, normalized))
         } else {
             None
@@ -2312,13 +2601,59 @@ pub(crate) fn decode_coding_text(
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
+    // A unibyte Lisp string is a byte stream even when its internal scalar
+    // happens to be in U+0080..U+00FF; a byte-oriented coding such as
+    // UTF-16 is not ascii-compatible, so the fast path below never claims
+    // its ASCII-looking octets (30 42 encodes U+3042 in UTF-16BE).
+    // decode_coding_object: coding->src_multibyte = chars < bytes.  A raw
+    // byte8 character counts as two bytes in that comparison, exactly as
+    // SBYTES counts its internal C0/C1 pair.
+    let src_multibyte = string.text.chars().count() < string.byte_len()?;
+    // setup_coding_system: CODING_FOR_UNIBYTE comes from the coding
+    // system's `:for-unibyte' attribute (the raw-text family), and such a
+    // decode produces a unibyte string.
+    let for_unibyte = coding_system_property(interp, &canonical, ":for-unibyte")
+        .is_some_and(|value| value.is_truthy());
+    // code_convert_string's fast path: an ascii-compatible coding whose
+    // source carries no multibyte content and nothing for eol conversion
+    // to do returns the string unchanged -- the decoder never runs.
+    let fast_path = coding_system_is_ascii_compatible(interp, &canonical)
+        && (if string.multibyte {
+            !src_multibyte
+        } else {
+            source_bytes.iter().all(u8::is_ascii)
+        })
+        && (interp.coding_system_eol_type_value(&canonical) == Some(0)
+            // `binary'/`no-conversion' report eol type 0 to Lisp; the
+            // native accessor keeps them out of the eol-variant table.
+            || matches!(canonical.as_str(), "no-conversion" | "binary")
+            || inhibit_eol_conversion
+            || !source_bytes.contains(&b'\r'));
+    let decoder_ran = !detected_undecided && !fast_path;
+    let staged = if let Some((detected, normalized)) = &undecided_bytes {
+        decode_text_bytes(interp, normalized, detected)?
+    } else if decoder_ran {
+        if src_multibyte {
+            decode_multibyte_source_text(interp, &string.text, &canonical, for_unibyte)?
+        } else if for_unibyte {
+            source_bytes
+                .iter()
+                .copied()
+                .map(unibyte_char_for_byte)
+                .collect()
+        } else {
+            decode_text_bytes(interp, &source_bytes, &canonical)?
+        }
+    } else {
+        string.text.clone()
+    };
     // String decoding names `last-coding-system-used' differently from a
     // file read (the oracle's contract): pure-ASCII input without a CR
     // never re-resolves the name -- the requested spelling survives, alias
     // and all (euc-jp stays `euc-jp', LF included) -- and a converted text
     // gains the canonical eol subsidiary only when an eol byte was seen.
     let actual_coding = if let Some((detected, _)) = &undecided_bytes {
-        let bytes = encode_raw_text_bytes(&string.text)?;
+        let bytes = &source_bytes;
         if bytes.iter().all(u8::is_ascii) && !bytes.contains(&b'\r') {
             interp
                 .coding_system_base_name(detected)
@@ -2329,14 +2664,17 @@ pub(crate) fn decode_coding_text(
     } else if interp.coding_system_eol_type_value(&canonical).is_none()
         && !matches!(canonical.as_str(), "no-conversion" | "binary")
     {
-        let bytes = encode_raw_text_bytes(&string.text)?;
         // The pure-ASCII shortcut is really "the decoder never ran": it
         // needs the coding to be ascii-compatible.  iso-2022-7bit is not
         // (its ESC sequences convert), so even an all-ASCII decode with a
-        // LF re-resolves to iso-2022-7bit-unix, per the oracle.
+        // LF re-resolves to iso-2022-7bit-unix, per the oracle.  The eol
+        // convention is a property of the DECODED characters: a byte
+        // oriented coding such as utf-16 swallows a CR octet inside a code
+        // unit, so it never names an eol subsidiary for it.
+        let bytes = staged.as_bytes();
         let untouched =
             bytes.iter().all(u8::is_ascii) && coding_system_is_ascii_compatible(interp, &canonical);
-        match detect_eol_type_opt(&bytes) {
+        match detect_eol_type_opt(bytes) {
             Some(eol) if bytes.contains(&b'\r') || !untouched => {
                 let base = interp
                     .coding_system_base_name(&canonical)
@@ -2350,46 +2688,32 @@ pub(crate) fn decode_coding_text(
         coding.to_string()
     };
     set_last_coding_system_used(interp, &actual_coding, env);
-    let text = if let Some((_, normalized)) = undecided_bytes {
-        decode_text_bytes(interp, &normalized, &actual_coding)?
-    } else if inhibit_eol_conversion {
-        string.text.clone()
+    // The decoder's own output stage performs the eol conversion, so it
+    // applies to the DECODED characters (fileio/coding.c never rewrites
+    // source octets before decoding them).
+    let text = if detected_undecided || inhibit_eol_conversion {
+        staged
     } else {
         match interp.coding_system_eol_type_value(&canonical) {
-            Some(1) if string.text.contains('\r') => string.text.replace("\r\n", "\n"),
-            Some(2) if string.text.contains('\r') => string.text.replace('\r', "\n"),
+            Some(1) if staged.contains('\r') => staged.replace("\r\n", "\n"),
+            Some(2) if staged.contains('\r') => staged.replace('\r', "\n"),
             // GNU detects the EOL convention for codings with an unspecified
             // eol type; only no-conversion/binary keep raw CR bytes.
-            None if string.text.contains('\r')
+            None if staged.contains('\r')
                 && !matches!(canonical.as_str(), "no-conversion" | "binary") =>
             {
-                if string.text.contains("\r\n") {
-                    string.text.replace("\r\n", "\n")
+                if staged.contains("\r\n") {
+                    staged.replace("\r\n", "\n")
                 } else {
-                    string.text.replace('\r', "\n")
+                    staged.replace('\r', "\n")
                 }
             }
-            _ => string.text.clone(),
+            _ => staged,
         }
     };
-    // A unibyte Lisp string is a byte stream even when its internal scalar
-    // happens to be in U+0080..U+00FF.  Literal file insertion and generated
-    // unibyte strings must therefore share the same decoder boundary.
-    // UTF-16 is also necessarily byte-oriented even when all input octets
-    // happen to be ASCII (e.g. 30 42 encodes U+3042 in UTF-16BE).  Buffer
-    // regions do not retain the unibyte provenance of those ASCII octets.
-    let byte_oriented_multibyte = interp
-        .coding_system_kind_name(&canonical)
-        .is_some_and(|kind| matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le"));
-    let text = if !detected_undecided
-        && (!string.multibyte
-            || byte_oriented_multibyte
-            || text.chars().any(is_raw_byte_regex_char))
-    {
-        decode_text_bytes(interp, &encode_raw_text_bytes(&text)?, &canonical)?
-    } else {
-        text
-    };
+    // A raw-text decode that actually ran yields a unibyte string; the
+    // ASCII fast path in code_convert_string still returns multibyte.
+    let result_multibyte = !(decoder_ran && for_unibyte);
     let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
         .unwrap_or(Value::Nil);
     let conversion_ran = !post_read.is_nil();
@@ -2410,7 +2734,7 @@ pub(crate) fn decode_coding_text(
         Ok(make_shared_string_value_with_multibyte(
             text,
             string.props,
-            true,
+            result_multibyte,
         ))
     }
 }

@@ -4107,3 +4107,247 @@ integration 3/3; package lifecycle 5/5; and perf-harness 1/1.  The localhost
 socket, UDP, GnuTLS transport/X.509, external kqueue, process cwd/PTY/drop,
 timer, file-notification, and blocking-TTY redraw cases all executed in that
 run rather than being inferred from compilation.
+Hard-third round 2 (2026-09-01, Linux): composition, tramp and coding
+mechanisms
+----------------------------------------------------------------------
+Every item below was diagnosed by probing the pinned oracle first and
+porting the mechanism from the C (or its owning Elisp), then re-checking
+the probe byte-for-byte.
+
+- composite.c find_automatic_composition is now really implemented:
+  `find-composition-internal' walks composition-function-table rules
+  (char_composable_p over unicode-category-table, MAX_AUTO_COMPOSITION_
+  LOOKBACK, the rewind/forward search, autocmp_chars through
+  `auto-composition-function') instead of always answering nil for the
+  buffer surface.  It reproduces the oracle's whole glyph-string, and
+  keeps GNU's load-bearing precondition: with no window showing the
+  buffer, Fget_buffer_window returns nil and there is NO automatic
+  composition.  fill_gstring_body's glyph widths now come from
+  `char-width-table' (the dumped value) rather than a host width table.
+  STALE IN-REPO TEST corrected: find_composition_reports_no_automatic_
+  composition_in_batch pinned `(nil nil)' for the decomposed
+  "__A<U+030A>stro<U+0308>m" of erc-tests' `erc--split-line'; the live
+  oracle reports the composition (8 10 [[us-ascii 111 776] ...]) once
+  the buffer is in a window.  The replacement asserts both halves.
+- charset.c Fchar_charset's RESTRICTION argument was missing entirely
+  (Emaxx took one argument): a list picks the first charset that can
+  encode CH, any other non-nil value goes through
+  coding_system_charset_list, and an unknown coding system signals
+  (coding-system-error NAME).  `compose-gstring-for-terminal' needs it
+  to decide what the terminal can render.  Disclosed: GNU substitutes
+  global charset lists for full-support iso-2022 and emacs-mule
+  codings; Emaxx models only the :charset-list attribute, so those two
+  families report fewer supported charsets.
+- filelock.c: the supersession check lives in the NATIVE half of
+  `lock-file', after file-name-handler dispatch.  Emaxx ran it for
+  handled files too, so `userlock--check-content-unchanged' silently
+  re-stamped the visited modtime and Tramp's own handler (which routes
+  to `ask-user-about-supersession-threat' deliberately without the
+  local content comparison) never prompted (tramp-test39).
+- tramp-file-name-regexp: the method and user/host segments are
+  `[^/|:]+' / `[^/|:]*'.  Emaxx's native parser accepted any colon,
+  so a LOCAL file whose name contains ":foo;bar:baz;" parsed as remote
+  -- file-exists-p answered from the wrong side and directory-files
+  dropped the entry (tramp-test41).
+- fileio.c Finsert_file_contents with REPLACE saves point as a marker
+  and then applies restore_window_points' growth rule (bug#19161): a
+  point strictly inside the replaced span keeps its relative distance
+  (same_at_start + inserted/oldsize * offset, truncated) instead of
+  collapsing to the span start (tramp-test09).
+- buffer.c syms_of_buffer marks `kill-buffer-hook' permanent-local;
+  Emaxx did not, so a buffer-local kill hook registered before a major
+  mode change was discarded and erc-d's canned dialog buffers were
+  never removed from erc-d-u--canned-buffers (erc-scenarios-internal,
+  3 tests).
+- coding.c code_convert_string decodes the STRING's OWN BYTES (SDATA):
+  Emaxx read a multibyte string as one octet per character and signaled
+  "Character cannot be encoded" for anything above Latin-1
+  (tramp-test42).  The full mechanism is now ported: decode_coding_
+  object sets src_multibyte from `chars < bytes'; ONE_MORE_BYTE under
+  multibytep recovers a byte8 character's octet and hands every other
+  character to the decoder as a NEGATIVE code that passes through
+  unchanged -- so the decoder really runs over the byte runs BETWEEN
+  multibyte characters, and a unibyte destination stores such a code's
+  low eight bits ((-c) & 0xFF).  CODING_FOR_UNIBYTE (the raw-text
+  family's :for-unibyte) makes a decode that actually ran produce a
+  UNIBYTE string, while code_convert_string's ascii-compatible fast
+  path still returns multibyte.  EOL conversion now happens on the
+  DECODED characters, so a byte-oriented coding (utf-16) that swallows
+  a CR octet inside a code unit no longer names an eol subsidiary.
+  A unibyte result keeps Emaxx's raw-byte spelling for bytes above
+  0x7F (what `bytes_to_unibyte_value' and the raw-text decoder
+  produce), so case tables keyed on byte8 characters still match it.
+  Measured live against the oracle over a 132-case matrix (11 input
+  kinds x 12 coding systems): 45 divergences before, 1 after, with no
+  case that matched before changing.
+
+Documented-open from this round:
+- KNOWN-RACY IN-REPO TEST (not a fidelity gap, recorded so a future
+  gate failure is not misread): subprocess_exit_is_event_driven_and_
+  notifies_newest_process_first_once asserts that the `sh -c "printf
+  err >&2"' child is still live at the very next Lisp form.  Under CPU
+  load the parent can be descheduled long enough for the child to run
+  and exit first, so `initially-live' comes back nil while every other
+  element -- the (primary stderr) event order, the single delivery,
+  the exit status -- still matches.  Measured on the gate binary with
+  four spinners running: this round's tree passed 6/6 idle and 3/6
+  loaded, and the UNCHANGED base tree passed 6/6 idle and 2/6 loaded,
+  so the race is environmental, not a regression.  It also flaked once
+  before, in gate47-attempt2, during a round that touched no process
+  code.
+- The one remaining matrix case is coding DETECTION, not decoding:
+  for `undecided' over the byte stream 61 81 62 the oracle detects
+  japanese-shift-jis (yielding U+FF5C) where Emaxx's auto-detection
+  answers raw-text.  Emaxx's detector does not try the Japanese
+  multi-byte categories.
+- erc-scenarios-stamp--left/display-margin-mode and --legacy-date-
+  stamps still fail, but the pieces they rest on do not: `field-at-pos'
+  and the field machinery are byte-identical to the oracle (probe
+  fld1.el), and so are cl-generic `&context' dispatch and
+  `erc--insert-timestamp-left' under erc-stamp--display-margin-mode,
+  including the `((margin left-margin) STRING)' display property
+  (probe ctx1.el).  The divergence is therefore in what the live
+  session does around those calls, which needs an erc-d dialog to
+  bisect.
+
+Hard-third round 3 (2026-09-01, Darwin): coding detection and ERC stamps
+------------------------------------------------------------------------
+This round closes all three concrete residuals documented at the end of
+round 2.  The pinned GNU 30.2 binary was probed before either mechanism
+changed.
+
+- coding.c detect_coding_sjis is now represented in undecided decoding:
+  ASCII passes, 0x81..0x9F and 0xE0..0xEF require a 0x40..0xFC trail
+  other than 0x7F, 0xA0..0xDF is a single-byte Japanese sequence, and an
+  incomplete lead in the final block rejects the category.  Because
+  Emacs-Mule has higher category priority, the overlapping portion of
+  detect_coding_emacs_mule is checked first from the live
+  `emacs-mule-charset-table`, rather than letting the new detector steal
+  those streams.  The preceding iso-latin-1 detector likewise reads the
+  mutable `latin-extra-code-table`; C1 is not treated as one hard-coded
+  invalid range.  Selected Emacs-Mule input is decoded through the live
+  charset table.  The sole residual from round 2's 132-case matrix now
+  matches exactly: undecided over 61 81 62 decodes to (97 65372) and records
+  japanese-shift-jis.  Oracle-backed boundary rows cover incomplete and
+  invalid SJIS leads, Latin-extra priority, ordinary/private Emacs-Mule,
+  unmappable-byte preservation, and live mutation of the Latin-extra table.
+- timefns.c Fformat_time_string returns a newly allocated mutable,
+  multibyte Lisp string.  Emaxx returned immutable host text and relied
+  on the interpreted evaluator to upgrade values when they entered a
+  variable.  Byte-compiled lexical locals bypass that upgrade, so
+  erc-format-timestamp's put-text-property calls were silently discarded
+  from the original timestamp string: the left-margin method inserted a
+  correct buffer display property whose nested string lacked `invisible',
+  and legacy date stamps inserted a string lacking the `erc-timestamp'
+  field.  The primitive now allocates shared mutable string state at its
+  boundary.  The adjacent Fcurrent_time_string twin was corrected at the
+  same ownership boundary; GNU specifies it as mutable but unibyte.
+  A compiled oracle contract checks mutation, intervals, and the two
+  multibyte flags, so an interpreted-only pass cannot hide this bug again.
+- Live erc-d tracing established that erc-stamp--setup,
+  erc-add-timestamp, and the specialized erc--insert-timestamp-left all
+  ran in the right buffer and that the outer buffer properties were
+  already present.  The real pre-fix comparison was 1/3 matching
+  (target/compat/run-1788273953352161000-80592); the rebuilt final tree is
+  3/3 matching with zero mismatches
+  (target/compat/run-1788276213505930000-86621).
+
+Environment correction: an initial sandboxed ERC comparison appeared to
+be 3/3 matching only because BOTH GNU and Emaxx failed to bind the local
+erc-d server with `Operation not permitted'
+(target/compat/run-1788273832246543000-80173).  That result was rejected,
+not counted as compatibility evidence; every before/after count above is
+from the unsandboxed localhost run.
+
+## 2026-09-02 tty/main integration audit for issue 34
+
+The publication candidate merges tty head
+`a45ac6ad555dcce9b1f8c7588ee1cdce28569104` with refreshed main head
+`f957201559ed10d34e4de3927465969af3dd2cb3`; their merge base is
+`beca258798e124c101e2558816d405097536fcf3`.  Main first resolved to
+`5a20e24871c6f5e67d87f3919c70cd9b9d010670`, and that integration completed
+an optimized full run, but main advanced during the run.  The result was
+rejected as publication evidence, the uncommitted merge was aborted, and the
+latest main was merged afresh so one merge commit will carry the actual
+reviewed parents.
+
+The formal adversarial review re-read every combined-diff mechanism against
+its GNU 30.2 owner: process.c's wait/process lifecycle, keyboard.c's timer
+pump, kqueue.c and inotify.c's watch/event paths, composite.c's automatic
+composition, charset.c/coding.c's charset and byte-stream conversions,
+fileio.c/filelock.c's replace/handler semantics, and timefns.c's returned
+string ownership.  Static scans found no project-private Lisp namespace,
+oracle delegation, silent TTY fallback, generated-manifest drift, test-only
+runtime dispatch, or compatibility loaddefs in production.  All 15 enforced
+anti-cheat gates passed from the optimized candidate.
+
+The refreshed-main audit did find a real defect before Clippy or the final
+gate: round 3 detected an Emacs-Mule/SJIS overlap but never selected or
+decoded Emacs-Mule, and treated all C1 bytes as Latin-invalid.  For example,
+GNU selects Emacs-Mule for bytes 81 A0 while the first integration returned
+raw-text; GNU keeps 91..96 in iso-latin-1 through its live Latin-extra table.
+The repair ports the relevant category order and table-driven layouts rather
+than special-casing samples.  A 714-row cross-binary matrix (every C1 lead,
+2/3-byte boundary families, and private 4-byte forms) now has identical
+coding-category decisions; the permanent contract pins representative
+decoded values and mutates `latin-extra-code-table` to prove the live table is
+consulted.  Emacs-Mule decoding matched the oracle except for 17 cases whose
+decoded private-charset character is above Unicode; those remain part of the
+existing structural finding 127 because Rust strings cannot represent GNU's
+up-to-0x3FFFFF character space.
+
+The ignore inventory was challenged before accepting the long gate.  Two
+functional ignores were stale: the real EUC-JP codec already made the
+EUC-JP/DOS in-place region test pass, and the US-ASCII replacement test still
+hid a genuine defect.  The first serial attempt was interrupted and rejected
+as soon as it printed the stale EUC-JP ignore.  Charset encoding had flattened
+all unencodable characters to SPACE; coding.c instead uses each coding
+system's `:default-char` (US-ASCII specifies `?`, while iso-latin-1 defaults
+to SPACE).  Both the substitution staging and byte encoder now share the live
+property.  The enabled oracle contract covers Latin-1, US-ASCII, and a newly
+defined charset coding with a nonstandard replacement, and both formerly
+ignored tests pass normally.  The only remaining ignores are two explicit
+end-to-end PTY gates whose contract requires separately built release binaries
+and the sibling GNU tree; they are opt-in gates, not unsupported feature skips.
+Adversarially invoking those gates exposed one harness-honesty defect:
+`tty-smoke.py` returned status zero after printing `SKIP` when an input was
+missing.  The ignored Rust gate now sets `EMAXX_TTY_SMOKE_REQUIRE=1`, matching
+the existing fail-closed differential gate.  A deliberately missing binary
+then exited 1, and the actual optimized PTY smoke workflow ran and passed
+(1 passed, 2269 filtered out) against `target/release/emaxx` and
+`../emacs/lisp`.
+
+Two evidence corrections are explicit:
+
+- The earlier issue-34 full run used two libtest threads.  It remains useful
+  regression evidence but is not the required authoritative serial gate;
+  the fresh one-thread run and its exact permission-denied reruns below are
+  the publication evidence.
+- kqueue/inotify event names are converted with lossy UTF-8, so a host path
+  containing invalid UTF-8 bytes is reported with U+FFFD.  Ordinary Unicode
+  names and raw inotify ordering/cookies are covered, but arbitrary Unix
+  filename-byte preservation is not claimed.
+
+Formatting is clean, and macOS plus `x86_64-unknown-linux-gnu` all-target,
+all-feature Clippy pass with `-D warnings`; the latter uses Zig only as the
+cross C compiler/linker and is not Linux runtime evidence.
+
+The exact optimized serial command was `LANG=C LC_ALL=C RUST_TEST_THREADS=1
+cargo test --profile gate -- --test-threads=1 < /dev/null`.  In the managed
+sandbox it exercised all 2270
+library tests for 8418.88 seconds: 2258 passed, 10 local socket/TLS tests
+failed, and the two explicit PTY gates were ignored.  Every failure reported
+the same environmental boundary, `Cannot bind server socket: Operation not
+permitted`; there was no mismatched semantic assertion.  On explicit review
+direction the entire suite was not repeated.  Instead, exactly those ten
+named failures were rerun outside the bind-denying sandbox, optimized and one
+at a time with `--exact --test-threads=1`; all 10 passed.  The composite
+library accounting is therefore 2268 passing tests plus the two documented
+opt-in PTY gates.  This is recorded as composite evidence, not misreported as
+one exit-zero `cargo test` invocation.
+
+Rejected evidence is also explicit: an earlier malformed `--exact` filter
+selected zero tests; the first serial attempt was stopped at the stale EUC-JP
+ignore; and an unnecessary outside-sandbox full restart was interrupted at
+the user's direction (exit 130) before the targeted reruns.  None contributes
+to the passing totals above.

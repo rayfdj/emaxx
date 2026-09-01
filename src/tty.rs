@@ -5982,6 +5982,9 @@ fn tty_smoke_end_to_end() {
         .arg("tools/tty-smoke.py")
         .arg("target/release/emaxx")
         .arg("../emacs/lisp")
+        // An explicitly requested gate must fail, rather than silently skip,
+        // when its release binary or GNU Lisp inputs are not configured.
+        .env("EMAXX_TTY_SMOKE_REQUIRE", "1")
         .status()
         .expect("run tools/tty-smoke.py");
     assert!(status.success(), "tty smoke test failed");

@@ -1417,9 +1417,19 @@ pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> 
         return None;
     }
     let method = rest[..method_end].to_string();
+    // tramp-file-name-regexp: the method segment is `[^/|:]+' -- a local
+    // file whose NAME contains a colon ("/tmp/dir/:foo:bar") must never
+    // parse as remote.
+    if method.contains('/') || method.contains('|') {
+        return None;
+    }
     let after_method = &rest[method_end + 1..];
     let host_end = after_method.find(':')?;
     let authority = &after_method[..host_end];
+    // The user/host segment is `[^/|:]*' by the same regexp.
+    if authority.contains('/') || authority.contains('|') {
+        return None;
+    }
     let localname = after_method[host_end + 1..].to_string();
     match authority.rsplit_once('@') {
         Some((_, host)) if !host.is_empty() => {}
