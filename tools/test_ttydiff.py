@@ -2,10 +2,12 @@
 """Regression tests for the terminal stream decoder used by ttydiff."""
 
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
+import ttydiff
 from ttydiff import (
     Action,
     ADVERSARIAL_COMMAND_SCENARIO_NAMES,
@@ -120,6 +122,68 @@ class Vt100ScreenTests(unittest.TestCase):
         self.assertEqual(command_dispatch_minimum(b"x" * 20, 2.0), 1.0)
         self.assertEqual(command_dispatch_minimum(b"x" * 100, 2.0), 2.0)
         self.assertEqual(command_dispatch_minimum(b"x", 2.0, True), 2.0)
+
+    def test_subject_temp_namespace_is_shared_and_removed(self) -> None:
+        runtime_directories = []
+
+        class FakeSession:
+            def __init__(self, argv, env):
+                self.name = argv[0]
+                self.screen = Vt100Screen()
+                runtime_directory = Path(env["TMPDIR"])
+                runtime_directories.append(runtime_directory)
+                (runtime_directory / f"babel-stable-{self.name}").mkdir()
+
+            def wait_boot(self, _timeout):
+                pass
+
+            def wait_for_screen_text(self, _text, _timeout, minimum=0.5):
+                pass
+
+            def drain(self, _timeout):
+                pass
+
+            def close(self):
+                pass
+
+        with patch.object(ttydiff, "Session", FakeSession):
+            self.assertTrue(
+                ttydiff.compare(
+                    "temp-namespace",
+                    [],
+                    ["gnu", "/tmp/gnu-target"],
+                    ["emaxx", "/tmp/emaxx-target"],
+                    {},
+                    {},
+                    1.0,
+                )
+            )
+
+        self.assertEqual(runtime_directories[0], runtime_directories[1])
+        self.assertFalse(runtime_directories[0].exists())
+
+    def test_supersession_acceptance_does_not_type_after_save(self) -> None:
+        scenario = next(
+            entry for entry in SCENARIOS if entry[0] == "supersession-accept-revisit"
+        )
+        actions = scenario[2]
+        self.assertEqual(
+            [action.name for action in actions],
+            [
+                "disable-lockfiles-and-autosave",
+                "insert-local-change",
+                "replace-disk-externally",
+                "request-save-after-external-change",
+                "confirm-save-after-supersession",
+                "verify-accepted-supersession",
+                "kill-saved-buffer",
+                "revisit-superseded-bytes",
+            ],
+        )
+        self.assertEqual(actions[4].keys, b"yes\r")
+        self.assertTrue(actions[6].checkpoint)
+        self.assertGreaterEqual(actions[6].settle, 3.0)
+        self.assertTrue(actions[7].filesystem)
 
     def test_legacy_final_checkpoint_gets_complete_dispatch_window(self) -> None:
         legacy = normalize_action(b"complete command", 0)
