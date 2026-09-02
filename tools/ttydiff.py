@@ -724,9 +724,19 @@ def action_timing(scenario, index, final, command):
 
 
 def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait):
-    gnu = Session(gnu_argv, gnu_env)
-    emaxx = Session(emaxx_argv, emaxx_env)
+    runtime_directory = tempfile.mkdtemp(prefix=f"ttydiff-runtime-{scenario}-")
+    gnu_env = dict(gnu_env, TMPDIR=runtime_directory)
+    emaxx_env = dict(emaxx_env, TMPDIR=runtime_directory)
+    gnu = None
+    emaxx = None
     try:
+        # Both editors share one disposable temp namespace for path-exact
+        # output, but no namespace survives the scenario.  Killing an editor
+        # bypasses Lisp shutdown hooks; without this boundary, Org's
+        # babel-stable-N directories accumulate until all 1,000 candidate
+        # names exist and the next Org startup loops forever.
+        gnu = Session(gnu_argv, gnu_env)
+        emaxx = Session(emaxx_argv, emaxx_env)
         gnu.wait_boot(boot_wait)
         emaxx.wait_boot(boot_wait)
         # A target basename is rendered in the mode line only after startup
@@ -807,8 +817,11 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
             and not report_filesystem_comparison(final_label, gnu_target, emaxx_target)
         )
     finally:
-        gnu.close()
-        emaxx.close()
+        if gnu is not None:
+            gnu.close()
+        if emaxx is not None:
+            emaxx.close()
+        shutil.rmtree(runtime_directory)
 
 
 WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird line\n"
@@ -4450,19 +4463,17 @@ SCENARIOS += [
                 quiet=0.5,
             ),
             action(
-                "accept-supersession",
-                b"y",
-                checkpoint=False,
-                settle=2.0,
-                quiet=0.5,
-            ),
-            action(
                 "verify-accepted-supersession",
                 b'\x1b:(list (buffer-modified-p) '
                 b'(verify-visited-file-modtime))\r',
                 filesystem=True,
             ),
-            action("kill-saved-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "kill-saved-buffer",
+                b"\x18k\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
             action(
                 "revisit-superseded-bytes",
                 b"\x18\x06\x01\x0bttydiff-supersession-accept-revisit.dat\r",
@@ -4904,8 +4915,10 @@ def main():
         sys.exit(2)
 
     failures = 0
-    for entry in scenarios:
+    scenario_count = len(scenarios)
+    for scenario_number, entry in enumerate(scenarios, start=1):
         name, contents, keys = entry[0], entry[1], entry[2]
+        print(f"RUN [{scenario_number}/{scenario_count}] {name}", flush=True)
         # A scenario may carry a file suffix; `.el' engages lisp-mode and
         # font-lock through the ordinary auto-mode-alist path.
         suffix = entry[3] if len(entry) > 3 else ".dat"
