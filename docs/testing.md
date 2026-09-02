@@ -324,6 +324,15 @@ color state, alternate screen, scrollback, EOF, signals, exit, and cleanup.
 See [`docs/eat-compatibility.md`](eat-compatibility.md) for the artifact hashes,
 exact command, process inventory, and scope boundary.
 
+The third-party Vertico/Consult/Corfu contract installs hash-pinned releases
+and their exact dependency closure through `package.el`, verifies 41 compiled
+files and installed-bytecode origins after clean restarts, and exercises strict
+Vertico selection, Consult line/real-grep preview, and Corfu Terminal CAPF
+journeys.  See
+[`docs/completion-stack-compatibility.md`](completion-stack-compatibility.md)
+for the artifact/source hashes, Emacs 30.2 terminal boundary, exact command,
+and scope.
+
 The third-party lsp-mode contract likewise installs a hash-pinned release and
 dependency closure through `package.el`, verifies the exact compiled payload
 after a clean restart, and exercises real stdio JSON-RPC workspaces through

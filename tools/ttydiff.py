@@ -3394,6 +3394,259 @@ SCENARIOS += [
     ),
 ]
 
+COMPLETION_STACK_SCENARIO_NAMES = (
+    "stack-vertico",
+    "stack-consult-line",
+    "stack-consult-grep",
+    "stack-corfu",
+)
+
+COMPLETION_STACK_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"COMPLETION_STACK_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) "
+    b"(require 'vertico) (require 'consult) (require 'corfu) "
+    b"(require 'popon) (require 'corfu-terminal) "
+    b"(setq vertico-count 6 vertico-cycle t consult-preview-key 'any "
+    b"consult-async-min-input 1 consult-async-input-throttle 0 "
+    b"consult-async-input-debounce 0 consult-async-refresh-delay 0 "
+    b"corfu-auto nil corfu-cycle t corfu-preselect 'first "
+    b"corfu-preview-current 'insert) "
+    b"(vertico-mode 1) (corfu-terminal-mode 1) "
+)
+
+COMPLETION_STACK_SETUP = action(
+    "load-installed-completion-stack",
+    b"\x1b:(progn " + COMPLETION_STACK_PACKAGE_SETUP + b"nil)\r",
+    settle=12.0,
+    quiet=2.0,
+)
+
+COMPLETION_STACK_OPTIONS = {"completion_stack_package_root": True}
+
+CONSULT_LINE_SAMPLE = """target-first live preview
+ordinary line 02
+ordinary line 03
+ordinary line 04
+ordinary line 05
+ordinary line 06
+ordinary line 07
+ordinary line 08
+ordinary line 09
+ordinary line 10
+ordinary line 11
+ordinary line 12
+ordinary line 13
+ordinary line 14
+ordinary line 15
+ordinary line 16
+ordinary line 17
+ordinary line 18
+ordinary line 19
+ordinary line 20
+target-second live preview
+ordinary line 22
+ordinary line 23
+ordinary line 24
+ordinary line 25
+ordinary line 26
+ordinary line 27
+ordinary line 28
+ordinary line 29
+ordinary line 30
+"""
+
+SCENARIOS += [
+    (
+        "stack-vertico",
+        "completion stack fixture\n",
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "open-vertico-completing-read",
+                b"\x1b:(setq ttydiff--choice "
+                b"(completing-read \"Fruit: \" "
+                b"'(\"apple\" \"banana\" \"cherry\" \"date\" "
+                b"\"elderberry\") nil t))\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="Fruit:",
+            ),
+            action("vertico-next-candidate", b"\x0e", settle=2.0, quiet=0.5),
+            action(
+                "vertico-filter-candidates",
+                b"ch",
+                settle=2.0,
+                quiet=0.5,
+                require_text="cherry",
+            ),
+            action(
+                "vertico-accept-candidate",
+                b"\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="cherry",
+            ),
+            action(
+                "verify-vertico-result-and-cleanup",
+                b"\x1b:(list ttydiff--choice vertico-mode "
+                b"(active-minibuffer-window))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        COMPLETION_STACK_OPTIONS,
+    ),
+    (
+        "stack-consult-line",
+        CONSULT_LINE_SAMPLE,
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "open-consult-line",
+                b"\x1bxconsult-line\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="Go to line:",
+            ),
+            action(
+                "filter-consult-lines",
+                b"target-",
+                settle=3.0,
+                quiet=0.8,
+                require_text="target-second",
+            ),
+            action(
+                "preview-next-consult-line",
+                b"\x0e",
+                settle=3.0,
+                quiet=0.8,
+                require_text="target-second live preview",
+            ),
+            action(
+                "accept-consult-line",
+                b"\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="target-second live preview",
+            ),
+            action(
+                "verify-consult-line-result",
+                b"\x1b:(list (line-number-at-pos) "
+                b"(thing-at-point 'line t) (active-minibuffer-window))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        COMPLETION_STACK_OPTIONS,
+    ),
+    (
+        "stack-consult-grep",
+        "deterministic grep fixture anchor\n",
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "open-consult-grep",
+                b"\x1bxconsult-grep\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="Grep (",
+            ),
+            action(
+                "run-asynchronous-grep",
+                b"needle",
+                settle=10.0,
+                quiet=2.0,
+                require_text="needle-two",
+            ),
+            action(
+                "preview-next-grep-result",
+                b"\x0e",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "accept-grep-result",
+                b"\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-grep-result",
+                b"\x1b:(list (file-name-nondirectory buffer-file-name) "
+                b"(line-number-at-pos) (thing-at-point 'line t) "
+                b"(active-minibuffer-window))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        {
+            "separate_targets": True,
+            "target_parent": "grep",
+            "extra_files": {
+                "grep/alpha.txt": "plain line\nneedle-one alpha\ntrailer\n",
+                "grep/beta.txt": "header\nneedle-two beta\nneedle-three beta\n",
+            },
+            "completion_stack_package_root": True,
+        },
+    ),
+    (
+        "stack-corfu",
+        "",
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "configure-corfu-capf",
+                b"\x1b:(progn "
+                b"(defun ttydiff--completion-capf () "
+                b"(list (save-excursion (skip-chars-backward \"a-z\") (point)) "
+                b"(point) '(\"alpha\" \"alpine\" \"amber\" \"azure\") "
+                b":exclusive 'no)) "
+                b"(setq-local completion-at-point-functions "
+                b"'(ttydiff--completion-capf)) (corfu-mode 1) nil)\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("insert-completion-prefix", b"a", settle=2.0, quiet=0.5),
+            action(
+                "open-corfu-terminal-popup",
+                b"\x1bxcompletion-at-point\r",
+                settle=5.0,
+                quiet=1.0,
+                require_text="alpha",
+            ),
+            action(
+                "preview-next-corfu-candidate",
+                b"\x0e",
+                settle=3.0,
+                quiet=0.8,
+                require_text="amber",
+            ),
+            action(
+                "insert-corfu-candidate",
+                b"\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="amber",
+            ),
+            action(
+                "verify-corfu-result-and-cleanup",
+                b"\x1b:(list (buffer-string) corfu-mode corfu-terminal-mode "
+                b"(null corfu-terminal--popon))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        COMPLETION_STACK_OPTIONS,
+    ),
+]
+
+
 MAGIT_SCENARIO_NAMES = (
     "magit-status-sections-stage",
     "magit-diff-log-transient",
@@ -4362,7 +4615,10 @@ def select_scenarios(names):
     """
     if not names:
         package_scenarios = set(
-            MAGIT_SCENARIO_NAMES + LSP_MODE_SCENARIO_NAMES + FLYCHECK_SCENARIO_NAMES
+            COMPLETION_STACK_SCENARIO_NAMES
+            + MAGIT_SCENARIO_NAMES
+            + LSP_MODE_SCENARIO_NAMES
+            + FLYCHECK_SCENARIO_NAMES
         )
         return [entry for entry in SCENARIOS if entry[0] not in package_scenarios]
     by_name = {entry[0]: entry for entry in SCENARIOS}
@@ -4660,6 +4916,27 @@ def main():
         try:
             gnu_env = {}
             emaxx_env = {"EMACSLOADPATH": load_path}
+            if options.get("completion_stack_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_COMPLETION_GNU_ROOT",
+                    "EMAXX_TTYDIFF_COMPLETION_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                if not all(roots):
+                    print(
+                        "ERROR: completion-stack scenarios require %s"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print(
+                        "ERROR: completion-stack package roots have no packages directory",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                gnu_env["COMPLETION_STACK_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["COMPLETION_STACK_GATE_ROOT"] = os.path.abspath(roots[1])
             if options.get("magit_package_root"):
                 root_names = (
                     "EMAXX_TTYDIFF_MAGIT_GNU_ROOT",
