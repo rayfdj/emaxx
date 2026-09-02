@@ -1578,7 +1578,7 @@ pub(crate) fn dispatch_file_name_handler(
         .collect::<Vec<_>>();
 
     if specification.process_command {
-        for pair in args.chunks_exact(2) {
+        for pair in args.as_chunks::<2>().0 {
             if pair[0] == Value::Symbol(":command".into())
                 && let Ok(command) = pair[1].to_vec()
                 && let Some(program) = command.first().and_then(string_like)

@@ -1173,7 +1173,7 @@ define_dispatch!(
                     ));
                 }
                 let mut active = Vec::with_capacity(args.len() / 2);
-                for pair in args[1..].chunks_exact(2) {
+                for pair in args[1..].as_chunks::<2>().0 {
                     let conditions = match &pair[0] {
                         Value::Nil => Vec::new(),
                         Value::Cons(_) => pair[0]
@@ -1681,9 +1681,15 @@ define_dispatch!(
                     Value::Frame(_) => "frame",
                     Value::Terminal(_) => "terminal",
                     Value::Record(id) => {
-                        interp.find_record(*id).ok_or_else(|| {
+                        let record = interp.find_record(*id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{id}>"))
                         })?;
+                        // data.c:Ftype_of answers `subr' for every
+                        // PVEC_SUBR; only `cl-type-of' distinguishes native
+                        // functions, special forms, and primitives.
+                        if record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction {
+                            return Ok(Value::symbol("subr"));
+                        }
                         return cl_type_value(interp, &args[0]);
                     }
                     Value::Finalizer(_) => "finalizer",

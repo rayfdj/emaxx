@@ -64,6 +64,7 @@ impl NativeCompilerState {
         interp: &mut Interpreter,
         env: &mut Env,
         filename: &str,
+        library: loader::UnitLibrary,
         late: bool,
     ) -> Result<crate::lisp::types::Value, LispError> {
         loader::load(
@@ -72,6 +73,7 @@ impl NativeCompilerState {
             interp,
             env,
             filename,
+            library,
             late,
         )
     }

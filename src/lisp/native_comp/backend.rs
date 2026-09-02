@@ -1198,17 +1198,23 @@ impl Compiler {
                     i32::MAX
                 }
             }));
-        #[cfg(target_os = "macos")]
-        {
-            let basename = output_filename
-                .rsplit('/')
-                .next()
-                .unwrap_or(output_filename);
-            self.context.add_driver_option(&c_string("-install_name"));
-            self.context.add_driver_option(&c_string(basename));
-        }
+        self.add_platform_driver_options(output_filename);
         Ok(())
     }
+
+    /// comp.c sets a unique dylib ID on Darwin; other targets add nothing.
+    #[cfg(target_os = "macos")]
+    fn add_platform_driver_options(&self, output_filename: &str) {
+        let basename = output_filename
+            .rsplit('/')
+            .next()
+            .unwrap_or(output_filename);
+        self.context.add_driver_option(&c_string("-install_name"));
+        self.context.add_driver_option(&c_string(basename));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn add_platform_driver_options(&self, _output_filename: &str) {}
 
     /// Add the file-local/global compiler flags in GNU order, after the JIT
     /// graph is complete and before GNU asks Lisp to allocate a temp file.
@@ -2740,7 +2746,12 @@ mod tests {
     #[test]
     fn acquires_the_comp_c_backend_context() {
         let compiler = Compiler::acquire().expect("acquire native compiler");
-        assert_eq!(Compiler::libgccjit_version(), Some((15, 2, 0)));
+        // The backend reports the version of the libgccjit it actually
+        // loaded; the pinned toolchain differs per reference build.
+        assert_eq!(
+            Compiler::libgccjit_version(),
+            Some(super::super::gccjit::api().expect("libgccjit").version())
+        );
         assert!(compiler.context.first_error().is_none());
     }
 }

@@ -483,7 +483,7 @@ pub(crate) fn parse_make_process_args(
     let mut file_handler = false;
     let mut connection_type = None;
 
-    for pair in args.chunks_exact(2) {
+    for pair in args.as_chunks::<2>().0 {
         let key = pair[0].as_symbol()?;
         let value = &pair[1];
         match key {
@@ -1335,7 +1335,7 @@ pub(crate) fn make_network_process(
     let mut service: Option<i64> = None;
     let mut service_path: Option<String> = None;
 
-    for pair in args.chunks_exact(2) {
+    for pair in args.as_chunks::<2>().0 {
         let key = pair[0].as_symbol()?;
         let value = &pair[1];
         match key {
@@ -1711,7 +1711,7 @@ pub(crate) fn make_network_process(
 }
 
 fn plist_member_value(items: &[Value], key: &str) -> Option<Value> {
-    items.chunks_exact(2).find_map(|pair| {
+    items.as_chunks::<2>().0.iter().find_map(|pair| {
         pair[0]
             .as_symbol()
             .is_ok_and(|candidate| candidate == key)

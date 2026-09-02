@@ -30,13 +30,17 @@ struct StaticObjectHeader {
     len: isize,
 }
 
+pub(crate) type UnitLibrary = Library;
+
 struct LoadedUnit {
-    _library: Library,
-    _file: String,
+    library: Library,
     record_id: u64,
+    /// comp.c's `load_ongoing`: a unit whose top-level code is still running
+    /// on this thread must not have its ephemeral relocations rewritten by
+    /// a nested load of the same file.
+    load_ongoing: bool,
     _data: Value,
     _impure_data: Value,
-    _ephemeral_data: Value,
     _optimization_qualities: Value,
     _function_docs: Value,
     impure_relocations: *mut NativeWord,
@@ -205,17 +209,123 @@ unsafe fn fill_relocations(
     Ok(destination)
 }
 
+/// comp.c:dynlib_open_for_eln.  `file` is the name the unit is known by;
+/// `path` is what the dynamic loader opens, which `native-elisp-load` may
+/// have renamed to force a fresh handle.
+pub(crate) fn open_unit(file: &str, path: &str) -> Result<Library, LispError> {
+    unsafe { Library::new(Path::new(path)) }.map_err(|error| load_failed(file, error.to_string()))
+}
+
+/// comp.c:load_comp_unit for an in-process (non-dump) load.
 pub(crate) fn load(
     registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     filename: &str,
+    library: Library,
     late: bool,
 ) -> Result<Value, LispError> {
-    let path = Path::new(filename);
-    let library =
-        unsafe { Library::new(path) }.map_err(|error| load_failed(filename, error.to_string()))?;
+    let saved_unit = unsafe { data_symbol::<NativeWord>(&library, COMP_UNIT_SYM) }
+        .map_err(|_| inconsistent(filename))?;
+    if saved_unit.is_null() {
+        return Err(inconsistent(filename));
+    }
+    let saved_word = unsafe { std::ptr::read(saved_unit) };
+    let top_level_name = if late {
+        LATE_TOP_LEVEL_RUN_SYM
+    } else {
+        TOP_LEVEL_RUN_SYM
+    };
+    let top_level =
+        unsafe { function_symbol(&library, top_level_name) }.map_err(|_| inconsistent(filename))?;
+
+    let (record_id, unit) = if saved_word != 0 {
+        // The dynamic loader handed back a unit this session already loaded
+        // (dlopen returns the same handle for the same file).  Its static
+        // relocations may be live in running frames and are never touched
+        // again; only the top-level code runs.
+        let unit = runtime.decode_relocation(saved_word)?;
+        let Value::Record(record_id) = unit else {
+            return Err(inconsistent(filename));
+        };
+        if registry.unit(record_id).is_none() {
+            return Err(inconsistent(filename));
+        }
+        (record_id, unit)
+    } else {
+        first_load(
+            registry,
+            runtime,
+            interpreter,
+            environment,
+            filename,
+            library,
+            saved_unit,
+        )?
+    };
+
+    let index = registry
+        .units
+        .iter()
+        .position(|loaded| loaded.record_id == record_id)
+        .expect("unit registered before its top-level code runs");
+    let recursive_load = registry.units[index].load_ongoing;
+    registry.units[index].load_ongoing = true;
+    let ephemeral = if recursive_load {
+        // Another load of this unit is active on the stack and holds the
+        // ephemeral data; rewriting it would clobber objects in use.
+        Ok(())
+    } else {
+        fill_ephemeral_relocations(
+            &registry.units[index].library,
+            filename,
+            runtime,
+            interpreter,
+            environment,
+        )
+    };
+    let result = match ephemeral {
+        Ok(()) => with_registry(registry, || {
+            runtime.invoke(
+                interpreter,
+                environment,
+                top_level,
+                NativeCallingConvention::Fixed,
+                std::slice::from_ref(&unit),
+            )
+        }),
+        Err(error) => Err(error),
+    };
+    if !recursive_load {
+        registry.units[index].load_ongoing = false;
+    }
+    let result = result?;
+    // comp.c:register_native_comp_unit.
+    let loaded_units = interpreter
+        .lookup_var("comp-loaded-comp-units-h", environment)
+        .unwrap_or(Value::Nil);
+    super::lisp::call(
+        interpreter,
+        environment,
+        "puthash",
+        &[Value::string(filename), unit, loaded_units],
+    )?;
+    Ok(result)
+}
+
+/// The `!loaded_once` half of comp.c:load_comp_unit: verify the ABI hash,
+/// materialize the unit's static data, and install every runtime pointer
+/// and data relocation the generated code addresses.
+fn first_load(
+    registry: &mut NativeRegistry,
+    runtime: &mut NativeRuntime,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    filename: &str,
+    library: Library,
+    saved_unit: *mut NativeWord,
+) -> Result<(u64, Value), LispError> {
     let abi_hash = unsafe {
         read_static_object(
             &library,
@@ -262,18 +372,8 @@ pub(crate) fn load(
             environment,
         )?
     };
-    let ephemeral_data = unsafe {
-        read_static_object(
-            &library,
-            filename,
-            TEXT_DATA_RELOC_EPHEMERAL_SYM,
-            interpreter,
-            environment,
-        )?
-    };
     let data_values = vector_values(&data)?;
     let impure_values = vector_values(&impure_data)?;
-    let ephemeral_values = vector_values(&ephemeral_data)?;
 
     let unit = interpreter.create_pseudovector(
         RecordKind::NativeCompUnit,
@@ -285,12 +385,6 @@ pub(crate) fn load(
     };
     let unit = Value::Record(record_id);
     let unit_word = runtime.encode_relocations(std::slice::from_ref(&unit))?[0];
-
-    let saved_unit = unsafe { data_symbol::<NativeWord>(&library, COMP_UNIT_SYM) }
-        .map_err(|error| super::lisp::native_ice(&error))?;
-    if saved_unit.is_null() || unsafe { std::ptr::read(saved_unit) } != 0 {
-        return Err(inconsistent(filename));
-    }
     unsafe { std::ptr::write(saved_unit, unit_word) };
     unsafe {
         initialize_pointer(
@@ -313,43 +407,49 @@ pub(crate) fn load(
     unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
     let impure_relocations =
         unsafe { fill_relocations(&library, DATA_RELOC_IMPURE_SYM, runtime, &impure_values)? };
-    unsafe {
-        fill_relocations(
-            &library,
-            DATA_RELOC_EPHEMERAL_SYM,
-            runtime,
-            &ephemeral_values,
-        )?
-    };
-    let top_level_name = if late {
-        LATE_TOP_LEVEL_RUN_SYM
-    } else {
-        TOP_LEVEL_RUN_SYM
-    };
-    let top_level =
-        unsafe { function_symbol(&library, top_level_name) }.map_err(|_| inconsistent(filename))?;
 
     registry.units.push(LoadedUnit {
-        _library: library,
-        _file: filename.to_string(),
+        library,
         record_id,
+        load_ongoing: false,
         _data: data,
         _impure_data: impure_data,
-        _ephemeral_data: ephemeral_data,
         _optimization_qualities: optimization_qualities,
         _function_docs: function_docs,
         impure_relocations,
         impure_relocation_count: impure_values.len(),
     });
-    with_registry(registry, || {
-        runtime.invoke(
+    Ok((record_id, unit))
+}
+
+/// Ephemeral data is read and installed on every non-recursive load; GNU
+/// keeps it alive only for the duration of the top-level run.
+fn fill_ephemeral_relocations(
+    library: &Library,
+    filename: &str,
+    runtime: &mut NativeRuntime,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+) -> Result<(), LispError> {
+    let ephemeral_data = unsafe {
+        read_static_object(
+            library,
+            filename,
+            TEXT_DATA_RELOC_EPHEMERAL_SYM,
             interpreter,
             environment,
-            top_level,
-            NativeCallingConvention::Fixed,
-            std::slice::from_ref(&unit),
-        )
-    })
+        )?
+    };
+    let ephemeral_values = vector_values(&ephemeral_data)?;
+    unsafe {
+        fill_relocations(
+            library,
+            DATA_RELOC_EPHEMERAL_SYM,
+            runtime,
+            &ephemeral_values,
+        )?
+    };
+    Ok(())
 }
 
 /// Load a compilation unit into the native state already executing on this
@@ -361,11 +461,23 @@ pub(crate) fn load_active(
     interpreter: &mut Interpreter,
     environment: &mut Env,
     filename: &str,
+    library: Library,
     late: bool,
-) -> Option<Result<Value, LispError>> {
-    with_active_registry(|registry| {
+) -> Result<Result<Value, LispError>, Library> {
+    if ACTIVE_REGISTRY.with(Cell::get).is_null() {
+        return Err(library);
+    }
+    Ok(with_active_registry(|registry| {
         super::runtime::with_current_runtime(|runtime| {
-            load(registry, runtime, interpreter, environment, filename, late)
+            load(
+                registry,
+                runtime,
+                interpreter,
+                environment,
+                filename,
+                library,
+                late,
+            )
         })
         .unwrap_or_else(|| {
             Err(super::lisp::native_ice(
@@ -373,6 +485,7 @@ pub(crate) fn load_active(
             ))
         })
     })
+    .expect("active registry checked above"))
 }
 
 #[derive(Clone, Copy)]
@@ -481,7 +594,7 @@ pub(crate) fn register(
         let unit = registry
             .unit(unit_record_id)
             .ok_or_else(|| super::lisp::native_ice("unknown native compilation unit"))?;
-        let target = unsafe { function_symbol(&unit._library, &c_name) }
+        let target = unsafe { function_symbol(&unit.library, &c_name) }
             .map_err(|error| super::lisp::native_ice(&error))?;
         let symbol_name = if matches!(kind, RegistrationKind::Lambda) {
             c_name.clone()

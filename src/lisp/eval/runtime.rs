@@ -221,12 +221,18 @@ impl Interpreter {
                     Value::string("Invalid native Lisp filename"),
                 ]))
             })?;
-            // GNU lread.c routes native artifacts to comp.c from the normal
-            // `load' path.  Keep that same boundary: the Rust loader owns
-            // relocation/registration, while the generated top-level code
-            // still evaluates GNU comp.el's emitted operations normally.
+            // GNU lread.c routes native artifacts through Fnative_elisp_load
+            // from the normal `load' path.  Keep that same boundary: comp.c's
+            // loader owns handle, relocation, and registration, while the
+            // generated top-level code still evaluates GNU comp.el's emitted
+            // operations normally.
             let mut load_environment = env.clone();
-            crate::lisp::native_comp::load(self, &mut load_environment, filename, false)?;
+            crate::lisp::primitives::native_elisp_load(
+                self,
+                &Value::string(filename),
+                false,
+                &mut load_environment,
+            )?;
             return Ok(Value::T);
         }
         crate::lisp::load_file_strict(self, path)?;

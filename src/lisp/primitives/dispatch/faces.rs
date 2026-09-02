@@ -672,7 +672,7 @@ define_dispatch!(
                 if !values.len().is_multiple_of(2) {
                     return Err(LispError::Signal("Invalid face attribute list".into()));
                 }
-                for pair in values.chunks_exact(2) {
+                for pair in values.as_chunks::<2>().0 {
                     let attribute = pair[0].as_symbol()?;
                     let (index, value) = normalize_face_attribute_value(attribute, &pair[1])?;
                     aset_vector_value(&vector, index, value)?;

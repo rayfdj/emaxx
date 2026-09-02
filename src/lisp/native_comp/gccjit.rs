@@ -1129,7 +1129,8 @@ mod tests {
     #[test]
     fn loads_libgccjit_and_executes_a_smoke_test_function() {
         let api = api().expect("the native compiler test host must provide libgccjit");
-        assert_eq!(api.version(), (15, 2, 0));
+        // Every entry point the binding resolves exists from GCC 9 onward.
+        assert!(api.version().0 >= 9, "libgccjit {:?}", api.version());
         let context = api.context().expect("acquire libgccjit context");
         let long = context.c_type(TypeKind::Long);
         let parameter_name = CString::new("value").expect("static name");

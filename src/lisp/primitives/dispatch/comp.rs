@@ -48,31 +48,50 @@ fn source_basename(path: &str) -> Result<String, LispError> {
     Ok(basename.chars().take(length - 3).collect())
 }
 
-fn normalized_loadsearch_path(interp: &Interpreter, filename: &str, env: &Env) -> String {
-    let source = Path::new(filename);
-    let load_path = interp
-        .lookup_var("load-path", env)
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    for entry in load_path {
-        let Some(directory) = string_like(&entry).map(|string| PathBuf::from(string.text)) else {
-            continue;
-        };
-        // comp.c replaces both the configured dump Lisp directory and the
-        // versioned installed Lisp directory with `//'.  The root `lisp'
-        // entry is present in GNU's standard load-path in both layouts.
-        if !directory
-            .file_name()
-            .is_some_and(|component| component == "lisp")
-        {
-            continue;
-        }
-        let Ok(relative) = source.strip_prefix(&directory) else {
-            continue;
-        };
-        return format!("//{}", relative.to_string_lossy());
-    }
-    filename.to_string()
+/// A call into a Lisp function by name, the way comp.c reaches primitives
+/// and Lisp-defined helpers through `CALLNI` / `Fxxx`.
+fn lisp(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    crate::lisp::native_comp::call_lisp(interp, env, name, arguments)
+}
+
+/// comp.c:comp_hash_string: the first eight hex digits of MD5.
+fn comp_hash_string(text: &str) -> String {
+    md5_prefix(text.as_bytes())
+}
+
+/// GNU's build-time `PATH_REL_LOADSEARCH`, the versioned relative Lisp
+/// directory of an installed tree, and `PATH_DUMPLOADSEARCH`, the Lisp
+/// directory of the source tree the image was dumped from.
+fn loadsearch_regexps(interp: &mut Interpreter, env: &mut Env) -> Result<[Value; 2], LispError> {
+    let relative = format!("/{}/lisp/", crate::lisp::primitives::emacs_version_value());
+    let quoted_relative = lisp(
+        interp,
+        env,
+        "regexp-quote",
+        &[Value::String(relative.into())],
+    )?;
+    let system = lisp(
+        interp,
+        env,
+        "concat",
+        &[Value::string("\\`[[:ascii:]]+"), quoted_relative],
+    )?;
+    let source_directory = interp
+        .lookup_var("source-directory", env)
+        .unwrap_or(Value::Nil);
+    let dump_load_search = lisp(
+        interp,
+        env,
+        "expand-file-name",
+        &[Value::string("lisp/"), source_directory],
+    )?;
+    let quoted_dump = lisp(interp, env, "regexp-quote", &[dump_load_search])?;
+    Ok([system, quoted_dump])
 }
 
 pub(crate) fn comp_el_to_eln_rel_filename(
@@ -80,23 +99,81 @@ pub(crate) fn comp_el_to_eln_rel_filename(
     filename: &Value,
     env: &mut Env,
 ) -> Result<String, LispError> {
-    let filename = string_argument(filename)?;
-    let expanded = expand_file_name_runtime(interp, env, &filename, None)?;
-    let canonical = fs::canonicalize(&expanded).map_err(|_| {
-        LispError::SignalValue(Value::list([
+    string_argument(filename)?;
+    // Use the realpath so that any symlink always compares equal (bug#44701).
+    let expanded = lisp(
+        interp,
+        env,
+        "expand-file-name",
+        &[filename.clone(), Value::Nil],
+    )?;
+    let mut filename = match fs::canonicalize(string_argument(&expanded)?) {
+        Ok(canonical) => canonical.display().to_string(),
+        Err(_) => string_argument(&expanded)?,
+    };
+    if !lisp(interp, env, "file-exists-p", &[Value::string(&filename)])?.is_truthy() {
+        return Err(LispError::SignalValue(Value::list([
             Value::symbol("file-missing"),
-            Value::String(expanded.clone().into()),
-        ]))
-    })?;
-    let canonical = canonical.display().to_string();
-    let content_hash = md5_prefix(&source_bytes(Path::new(&canonical))?);
-    let hash_path = canonical.strip_suffix(".gz").unwrap_or(&canonical);
-    let normalized_hash_path = normalized_loadsearch_path(interp, hash_path, env);
-    let path_hash = md5_prefix(normalized_hash_path.as_bytes());
+            Value::String(filename.into()),
+        ])));
+    }
+    let content_hash = md5_prefix(&source_bytes(Path::new(&filename))?);
+    if let Some(uncompressed) = filename.strip_suffix(".gz") {
+        filename = uncompressed.to_string();
+    }
+    // Installing .eln files compiled during the build changes their
+    // absolute path, so the path hash replaces a match of either load
+    // search directory with `//'.
+    for regexp in loadsearch_regexps(interp, env)? {
+        let index = lisp(
+            interp,
+            env,
+            "string-match",
+            &[regexp, Value::string(&filename), Value::Nil, Value::Nil],
+        )?;
+        if matches!(index, Value::Integer(0)) {
+            let replaced = lisp(
+                interp,
+                env,
+                "replace-match",
+                &[
+                    Value::string("//"),
+                    Value::T,
+                    Value::T,
+                    Value::string(&filename),
+                    Value::Nil,
+                ],
+            )?;
+            filename = string_argument(&replaced)?;
+            break;
+        }
+    }
+    let path_hash = comp_hash_string(&filename);
     Ok(format!(
         "{}-{path_hash}-{content_hash}.eln",
-        source_basename(hash_path)?
+        source_basename(&filename)?
     ))
+}
+
+/// comp.c's `make_directory_wrapper` under `internal_condition_case_1`:
+/// true when `(make-directory DIR t)` completed, false when it signaled.
+fn try_make_directory(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    directory: &Value,
+) -> Result<bool, LispError> {
+    match lisp(
+        interp,
+        env,
+        "make-directory",
+        &[directory.clone(), Value::T],
+    ) {
+        Ok(_) => Ok(true),
+        Err(
+            error @ (LispError::Throw(..) | LispError::VmReturn(..) | LispError::Terminate(..)),
+        ) => Err(error),
+        Err(_) => Ok(false),
+    }
 }
 
 fn comp_el_to_eln_filename(
@@ -104,50 +181,213 @@ fn comp_el_to_eln_filename(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    let source_filename = args[0].clone();
     let relative = comp_el_to_eln_rel_filename(interp, &args[0], env)?;
-    let base = match args.get(1).filter(|value| value.is_truthy()) {
-        Some(base) => string_argument(base)?,
-        None => {
-            let temporary_directory = interp
-                .lookup_var("temporary-file-directory", env)
-                .and_then(|value| string_like(&value).map(|value| value.text))
-                .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-            expand_file_name_runtime(interp, env, "eln-cache", Some(&temporary_directory))?
+    // If BASE-DIR was not specified, search `native-comp-eln-load-path' for
+    // the first directory where we have write access.
+    let mut base_dir = args.get(1).cloned().filter(Value::is_truthy);
+    if base_dir.is_none() {
+        let load_path = interp
+            .lookup_var("native-comp-eln-load-path", env)
+            .unwrap_or(Value::Nil)
+            .to_vec()?;
+        for directory in load_path {
+            if lisp(
+                interp,
+                env,
+                "file-exists-p",
+                std::slice::from_ref(&directory),
+            )?
+            .is_truthy()
+            {
+                if lisp(
+                    interp,
+                    env,
+                    "file-writable-p",
+                    std::slice::from_ref(&directory),
+                )?
+                .is_truthy()
+                {
+                    base_dir = Some(directory);
+                    break;
+                }
+            } else if try_make_directory(interp, env, &directory)? {
+                base_dir = Some(directory);
+                break;
+            }
         }
-    };
-    let invocation_directory = interp
-        .lookup_var("invocation-directory", env)
-        .and_then(|value| string_like(&value).map(|value| value.text));
-    let mut directory =
-        expand_file_name_runtime(interp, env, &base, invocation_directory.as_deref())?;
-    if let Some(version) = interp
-        .lookup_var("comp-native-version-dir", env)
-        .filter(Value::is_truthy)
-    {
-        directory =
-            expand_file_name_runtime(interp, env, &string_argument(&version)?, Some(&directory))?;
     }
-    Ok(Value::String(
-        expand_file_name_runtime(interp, env, &relative, Some(&directory))?.into(),
-    ))
+    let Some(mut base_dir) = base_dir else {
+        return Err(LispError::Signal(
+            "Cannot find suitable directory for output in `native-comp-eln-load-path'.".into(),
+        ));
+    };
+    if !lisp(interp, env, "file-name-absolute-p", &[base_dir.clone()])?.is_truthy() {
+        let invocation_directory = interp
+            .lookup_var("invocation-directory", env)
+            .unwrap_or(Value::Nil);
+        base_dir = lisp(
+            interp,
+            env,
+            "expand-file-name",
+            &[base_dir, invocation_directory],
+        )?;
+    }
+    // A file named in LISP_PRELOADED, or compiled while
+    // `comp-file-preloaded-p' is set, targets the `preloaded' subfolder.
+    let lisp_preloaded = lisp(
+        interp,
+        env,
+        "getenv-internal",
+        &[Value::string("LISP_PRELOADED"), Value::Nil],
+    )?;
+    let version_dir = interp
+        .lookup_var("comp-native-version-dir", env)
+        .unwrap_or(Value::Nil);
+    base_dir = lisp(interp, env, "expand-file-name", &[version_dir, base_dir])?;
+    let preloaded_p = interp
+        .lookup_var("comp-file-preloaded-p", env)
+        .is_some_and(|value| value.is_truthy());
+    let preloaded = preloaded_p
+        || (lisp_preloaded.is_truthy() && {
+            let source_base = lisp(interp, env, "file-name-base", &[source_filename])?;
+            let preloaded_names = lisp(interp, env, "split-string", &[lisp_preloaded])?;
+            let preloaded_bases = lisp(
+                interp,
+                env,
+                "mapcar",
+                &[Value::symbol("file-name-base"), preloaded_names],
+            )?;
+            lisp(interp, env, "member", &[source_base, preloaded_bases])?.is_truthy()
+        });
+    if preloaded {
+        base_dir = lisp(
+            interp,
+            env,
+            "expand-file-name",
+            &[Value::string("preloaded"), base_dir],
+        )?;
+    }
+    lisp(
+        interp,
+        env,
+        "expand-file-name",
+        &[Value::String(relative.into()), base_dir],
+    )
 }
 
-fn native_elisp_load(
+/// comp.c:file_in_eln_sys_dir: whether FILENAME lives under the last entry
+/// of `native-comp-eln-load-path', the system directory.
+fn file_in_eln_sys_dir(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    filename: &Value,
+) -> Result<bool, LispError> {
+    let system_directory = interp
+        .lookup_var("native-comp-eln-load-path", env)
+        .unwrap_or(Value::Nil)
+        .to_vec()?
+        .pop()
+        .unwrap_or(Value::Nil);
+    let expanded_directory = lisp(
+        interp,
+        env,
+        "expand-file-name",
+        &[system_directory, Value::Nil],
+    )?;
+    let quoted = lisp(interp, env, "regexp-quote", &[expanded_directory])?;
+    let expanded_file = lisp(
+        interp,
+        env,
+        "expand-file-name",
+        &[filename.clone(), Value::Nil],
+    )?;
+    Ok(lisp(
+        interp,
+        env,
+        "string-match",
+        &[quoted, expanded_file, Value::Nil, Value::Nil],
+    )?
+    .is_truthy())
+}
+
+/// comp.c:Fnative_elisp_load.
+pub(crate) fn native_elisp_load(
     interp: &mut Interpreter,
     filename: &Value,
     late: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let filename = string_argument(filename)?;
-    let expanded = expand_file_name_runtime(interp, env, &filename, None)?;
-    if !Path::new(&expanded).exists() {
+    let name = string_argument(filename)?;
+    if !lisp(interp, env, "file-exists-p", std::slice::from_ref(filename))?.is_truthy() {
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("native-lisp-load-failed"),
             Value::string("file does not exists"),
-            Value::String(filename.into()),
+            filename.clone(),
         ])));
     }
-    crate::lisp::native_comp::load(interp, env, &expanded, late)
+    let loaded_units = interp
+        .lookup_var("comp-loaded-comp-units-h", env)
+        .unwrap_or(Value::Nil);
+    let loaded_before = lisp(
+        interp,
+        env,
+        "gethash",
+        &[filename.clone(), loaded_units, Value::Nil],
+    )?
+    .is_truthy();
+    let library = if loaded_before
+        && !file_in_eln_sys_dir(interp, env, filename)?
+        && lisp(
+            interp,
+            env,
+            "file-writable-p",
+            std::slice::from_ref(filename),
+        )?
+        .is_truthy()
+    {
+        // If in this session there was ever a file loaded with this name,
+        // rename it before loading, to make sure we always get a new handle!
+        let temporary = lisp(
+            interp,
+            env,
+            "make-temp-file-internal",
+            &[
+                filename.clone(),
+                Value::Nil,
+                Value::string(".eln.tmp"),
+                Value::Nil,
+            ],
+        )?;
+        if lisp(
+            interp,
+            env,
+            "file-writable-p",
+            std::slice::from_ref(&temporary),
+        )?
+        .is_truthy()
+        {
+            lisp(
+                interp,
+                env,
+                "rename-file",
+                &[filename.clone(), temporary.clone(), Value::T],
+            )?;
+            let opened = crate::lisp::native_comp::open_unit(&name, &string_argument(&temporary)?);
+            lisp(
+                interp,
+                env,
+                "rename-file",
+                &[temporary, filename.clone(), Value::Nil],
+            )?;
+            opened?
+        } else {
+            crate::lisp::native_comp::open_unit(&name, &name)?
+        }
+    } else {
+        crate::lisp::native_comp::open_unit(&name, &name)?
+    };
+    crate::lisp::native_comp::load(interp, env, &name, library, late)
 }
 
 define_dispatch!(

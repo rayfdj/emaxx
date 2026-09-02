@@ -748,14 +748,20 @@ define_dispatch!(
                 let needle = string_text(&args[0])?;
                 let haystack = string_text(&args[1])?;
                 let hay_chars: Vec<char> = haystack.chars().collect();
-                let start = if args.len() == 3 {
-                    let start = args[2].as_integer()?;
-                    if start < 0 || start as usize > hay_chars.len() {
-                        return Err(LispError::Signal("Args out of range".into()));
+                // fns.c: a nil START-POS, explicit or omitted, means 0.
+                let start = match args.get(2) {
+                    Some(start_pos) if start_pos.is_truthy() => {
+                        let start = start_pos.as_fixnum()?;
+                        if start < 0 || start as usize > hay_chars.len() {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::symbol("args-out-of-range"),
+                                args[1].clone(),
+                                start_pos.clone(),
+                            ])));
+                        }
+                        start as usize
                     }
-                    start as usize
-                } else {
-                    0
+                    _ => 0,
                 };
                 if needle.is_empty() {
                     return Ok(Value::Integer(start as i64));

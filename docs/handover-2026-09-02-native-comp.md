@@ -68,6 +68,197 @@ precedence over older plans and handovers.
 11. Commit as `Ray <26018378+rayfdj@users.noreply.github.com>`. No AI
     attribution or generated/co-authored trailers.
 
+## Linux support and boundary fixes (2026-09-02, second session)
+
+This section supersedes the "Current blocker" and "Best next diagnostic
+step" sections below; they remain as history.
+
+### Platform support
+
+GNU Emacs supports Linux and macOS, so Emaxx's native compiler now does too.
+The supported native targets are `aarch64-apple-darwin` and
+`x86_64-unknown-linux-gnu`; any other target fails at compile time with a
+`compile_error!` in `abi.rs` naming what is missing (measured layout
+constants and a generated subroutine table).
+
+- `abi.rs` carries per-target layout constants measured from the pinned
+  reference build's own headers (`sizeof`/`offsetof` against its configured
+  `lisp.h` and `thread.h`), never derived by hand.  The Linux x86-64
+  values are `SYS_JMP_BUF_SIZE` 200, handler `val`/`next`/`jmp` offsets
+  24/32/64, `HANDLER_SIZE` 304, `THREAD_STATE_SIZE` 520, and
+  `m_handlerlist` at 96.  The previous unmeasured Linux guess of
+  `HANDLER_SIZE` 312 was wrong; `HAVE_X_WINDOWS` adds
+  `x_error_handler_depth` to `struct handler`, so the constants belong to
+  the same X11/GTK configuration as the generated table.
+- `NativeThreadState` is `align(8)`, matching GNU's `GCALIGNED_STRUCT`; the
+  earlier `align(16)` padded the Linux size to 528.
+- `runtime.rs` has a System V x86-64 `native_call_trampoline` beside the
+  Darwin arm64 one.
+- One generated table per target:
+  `generated_native_subrs_aarch64_apple_darwin.rs` (1,445 entries, moved
+  unchanged) and `generated_native_subrs_x86_64_unknown_linux_gnu.rs`
+  (1,467 entries).  `mod.rs` selects by `#[path]` under `cfg`.  The Linux
+  table was verified against the live oracle: `(mapcar #'subr-name
+  comp-subr-list)` and every `(subr-arity ...)` are identical, and the
+  ABI hash it produces (`30.2-319e459f`) is the oracle's
+  `comp-native-version-dir`.
+- `tools/generate_native_subrs.rs` no longer carries a hand-maintained,
+  NS-specific source list.  It preprocesses `emacs.c` with the reference
+  build's own compiler configuration, walks the argument-less startup calls
+  in `main` in order, follows each into the built source that defines it,
+  and reads that function's active `defsubr` calls.  Build it with
+  `rustc --edition 2024 -O tools/generate_native_subrs.rs`; run it as
+  `TOOL GNU-SRC GNU-BINARY OUTPUT` against a configured, built tree.  The
+  Darwin table was not regenerated in this session (no Darwin build was
+  available); regenerate it on the Mac and confirm it is byte-identical to
+  the moved file before trusting the tool on Darwin.
+
+### Linux oracle used here
+
+The Linux pin in `compat/oracle.lock.linux.json` (`6ee5c136`) is not in the
+public `emacs-mirror` history, so this session built the oracle from the
+Darwin pin `636f166c` (which is on `emacs-30`) on Ubuntu 24.04 with
+`CC=gcc-14`, libgccjit 14.2, and
+`--with-native-compilation=aot --with-x-toolkit=gtk3 --with-cairo
+--with-harfbuzz --with-tree-sitter --with-xml2 --with-gnutls --with-modules
+--with-sqlite3 --with-rsvg --with-webp --without-compress-install`.
+The generated table's configuration strings record exactly that build.  If
+the real Linux oracle is configured differently, regenerate the table from
+it; the eln directory name and the subroutine order both depend on it.
+
+### Root cause of the `listp 3` blocker
+
+The Mac blocker was a stale cons mirror.  `pcase` builds placeholder cells
+`(pcase--placeholder . N)` inside natively compiled `pcase.eln` and later
+patches them in place with `setcar`/`setcdr`.  Rust had already mirrored
+those cells, and the mirror was not refreshed before Rust read them, so the
+expansion still contained the placeholders (`3` was a placeholder index).
+`(macroexpand '(pcase x ((pred stringp) 1) (_ 2)))` reproduces it in one
+line and now expands correctly; `(pcase 3 ((pred integerp) 'int) (_ 'other))`
+evaluates to `int`.
+
+The general fix is in `runtime.rs`:
+
+- Every mirror records the two words on which its Rust cell and native cell
+  last agreed (`mirror_words`, shared with frame entries as `AgreedWords`).
+- `reconcile_mirror` brings one cell back into agreement per field: a native
+  word that changed since agreement is decoded into the Rust field; a Rust
+  field that changed since agreement is encoded into the native word.  It
+  runs whenever an existing mirror crosses the boundary in either direction
+  and for every queued interpreter write.
+- A nested native call's tracked cells stay registered with the enclosing
+  frame when it returns, and results of nested calls stay tracked, because
+  the enclosing generated frame can keep writing to them.
+- At every primitive entry from generated code, all active frames' tracked
+  cells are scanned (two loads and two compares each) and only changed cells
+  are reconciled.  The scan of the innermost frame alone was insufficient: a
+  `byte-compile-lapcode` frame patched jump-table tag cells that had been
+  mirrored by an outer frame, and the `maphash` callback, which GNU also runs
+  as bytecode, read the stale ids.
+
+The remaining structural gap is documented under "What is not done".
+
+### Boundary audit findings fixed
+
+- `comp-el-to-eln-filename` searched a temporary `eln-cache` when BASE-DIR
+  was nil; comp.c searches `native-comp-eln-load-path` for the first
+  writable directory (creating one), expands a relative BASE-DIR against
+  `invocation-directory`, and appends `preloaded/` when
+  `comp-file-preloaded-p` is set or the file is named in `LISP_PRELOADED`.
+  Ported.
+- `comp-el-to-eln-rel-filename` normalized the path hash from `load-path`;
+  comp.c replaces a match of `\`[[:ascii:]]+/VERSION/lisp/` or of the dump
+  load directory (`source-directory` + `lisp/`) with `//` using
+  `string-match`/`replace-match`.  Ported.
+- `native-elisp-load` did not rename a file loaded earlier in the session
+  before reopening it (comp.c does, so `dlopen` returns a fresh handle),
+  and `load` of an `.eln` bypassed it.  Ported, and `load` now routes
+  through it as lread.c does.
+- `load_comp_unit`: a unit whose `*saved_cu` is already set is reused
+  without touching its static relocations; a recursive load of a unit does
+  not rewrite its ephemeral data; every load registers the unit in
+  `comp-loaded-comp-units-h`.  Ported.
+- `assq`/`rassq` fell back to structural equality for keys that were not
+  scalars; fns.c uses `EQ`.  This merged distinct `(args-out-of-range)`
+  condition constants in `.elc` output.  Fixed with `values_eq_in_env`.
+- `string-search`, `make-char`, and `map-charset-chars` rejected an explicit
+  nil optional argument; generated code always passes every argument, so a
+  nil START-POS from `warnings.el` failed with `integerp nil`.  Fixed to
+  GNU's `NILP` semantics; `string-search` now signals
+  `(args-out-of-range HAYSTACK START-POS)` like fns.c.
+- `type-of` answered `native-comp-function` for a native function; data.c
+  answers `subr` there and only `cl-type-of` distinguishes native functions.
+
+### Verified on Linux
+
+- `cargo check --all-targets`, `cargo fmt --all -- --check`, and
+  `cargo clippy --all-targets --all-features -- -D warnings` are clean with
+  rustc 1.98 (the lockfile requires 1.95 or newer; the container had 1.94).
+  Sixteen pre-existing `chunks_exact(2)` uses were changed to `as_chunks`
+  because the newer Clippy flags them.
+- `cargo test --lib lisp::native_comp`: 16 passed, 1 ignored, including the
+  x86-64 trampoline round trip and the libgccjit smoke test.  Two tests
+  that pinned the Mac's libgccjit 15.2.0 now assert the loaded library's
+  own version.
+- `.elc` identity: `batch-byte-compile` of `test/src/comp-resources/comp-test-funcs.el`
+  is byte-identical to GNU's output when the byte compiler runs as bytecode
+  (`load-no-native`), and a `cond` switch fixture is byte-identical with GNU's
+  own native `bytecomp.eln` executing inside Emaxx.
+
+### What is not done
+
+- No `.eln` produced on Linux has been compared with GNU yet.  With the
+  system native units loaded, `batch-native-compile` of `comp-test-funcs.el`
+  did not finish within 15 minutes, and the unchanged `comp.el` self-compile
+  did not finish within an hour.  The cost is the per-primitive scan of all
+  tracked cells: correctness required scanning every active frame, and the
+  top-level load frames of the preloaded units track tens of thousands of
+  cells.  Plain batch startup on this container is 22 seconds against
+  GNU's 0.2 seconds, and the fixture byte-compile adds about 4 seconds under
+  bytecode but exceeds 15 minutes under native `bytecomp.eln`.
+- The dual representation is the structural cause: GNU has one heap, Emaxx
+  keeps a Rust value and a two-word native mirror, and every write by
+  generated code is invisible until Rust compares memory.  Options, in
+  order of preference: page-granular dirty tracking of the mirror arena
+  (`mprotect` plus a fault handler marks dirty pages; scan only those);
+  tracking mirror identity inside `ConsCell` so Rust reads verify against
+  memory in O(1); or dropping frame tracking for cells no Rust reference
+  can reach (`Rc::strong_count` equal to the registry's own references).
+  This is the next design decision and it is Ray's.
+- Byte-compile warning positions differ in one case: GNU reports the free
+  variable `c` in `comp-test-silly-frame2` at 711:10, Emaxx at 712:10
+  (the second occurrence).  The artifacts are unaffected.
+- `normal-top-level` does run (the backtrace shows it), but nothing here
+  verified that `native-comp-eln-load-path` gets the user `eln-cache`
+  entry the way `startup.el` arranges it; the comparisons pinned
+  `native-compile-target-directory` on both editors instead.
+- The three uncommitted measurement-harness files on the Mac (compat
+  runner eln cache) are still needed to run `comp-tests.el` through the
+  harness.
+
+### Historical comparison qualification
+
+The Linux artifact comparisons configured the upstream
+`native-compile-target-directory` variable through a command-line Elisp form.
+That did not modify either source tree, but it is not admissible as final proof
+under Ray's stricter rule against diagnostic/injected Elisp. Do not repeat or
+cite those runs as final native-comp compatibility proof. Re-run the final
+GNU-versus-Emaxx corpus through ordinary entry points with no helper `.el` and
+no injected Elisp, and compare every complete artifact with `cmp`.
+
+### Verification after applying this patch on Darwin/arm64
+
+- `cargo fmt --all -- --check`, `cargo check --all-targets`, and
+  `cargo clippy --all-targets --all-features -- -D warnings` pass.
+- `cargo test --lib lisp::native_comp` passes: 16 passed, 0 failed, and 1
+  deliberately ignored stress probe.
+- The unchanged ordinary `comp.el` self-compile command below ran for two
+  minutes without the former deterministic `wrong-type-argument listp 3`
+  failure, which previously occurred in 13–19 seconds. The run was then
+  interrupted because the known all-active-frame mirror scan makes continued
+  compilation prohibitively expensive on the loaded machine. This confirms
+  progress past the old blocker, not completed compilation or `.eln` identity.
+
 ## What the checkpoint implements
 
 The new Rust native-comp subsystem is under `src/lisp/native_comp/`:
@@ -171,7 +362,7 @@ The upstream non-expensive compatibility replay previously reached 177/177,
 but that is not proof that the full frontend is correct. The self-bootstrap
 below exercises a substantially deeper path and currently fails.
 
-## Current blocker: `listp 3` while unchanged `comp.el` is loaded
+## Current blocker: `listp 3` while unchanged `comp.el` is loaded (superseded, see the Linux section above)
 
 Reproduce with the ordinary user-facing path—no helper Elisp and no `--eval`:
 
