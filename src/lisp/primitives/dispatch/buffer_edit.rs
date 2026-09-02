@@ -2425,7 +2425,7 @@ define_dispatch!(
                 }
                 let mut plist = interp.symbol_plist(&symbol).to_vec()?;
                 let mut replaced = false;
-                for pair in plist.chunks_exact_mut(2) {
+                for pair in plist.as_chunks_mut::<2>().0 {
                     if values_eq_in_env(interp, &pair[0], &args[1], env) {
                         pair[1] = args[2].clone();
                         replaced = true;

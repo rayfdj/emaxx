@@ -78,7 +78,9 @@ fn charset_map(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
             .unwrap_or(&values);
         return Some(
             values
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .filter_map(|pair| {
                     Some((
                         u32::try_from(pair[0].as_integer().ok()?).ok()?,
@@ -197,7 +199,9 @@ fn charset_code_space(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u
         .strip_prefix(&[Value::Symbol("vector-literal".into())])
         .unwrap_or(&values);
     let bounds: Vec<(u32, u32)> = values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter_map(|pair| {
             Some((
                 u32::try_from(pair[0].as_integer().ok()?).ok()?,
@@ -1575,8 +1579,7 @@ fn decode_utf16_bytes(
 
     let mut out = String::new();
     let mut units = Vec::with_capacity((bytes.len().saturating_sub(offset)) / 2);
-    let chunks = bytes[offset..].chunks_exact(2);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = bytes[offset..].as_chunks::<2>();
     for chunk in chunks {
         units.push(if big_endian {
             u16::from_be_bytes([chunk[0], chunk[1]])

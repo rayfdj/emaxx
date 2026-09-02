@@ -194,7 +194,7 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
         return false;
     }
     let mut properties = std::collections::HashMap::new();
-    for pair in items[1..].chunks_exact(2) {
+    for pair in items[1..].as_chunks::<2>().0 {
         let Value::Symbol(key) = &pair[0] else {
             return false;
         };
@@ -377,7 +377,7 @@ fn image_hot_spot_contains(area: &Value, x: i64, y: i64) -> bool {
                 return false;
             };
             let mut inside = false;
-            for pair in coordinates.chunks_exact(2) {
+            for pair in coordinates.as_chunks::<2>().0 {
                 let (x1, y1) = (x0, y0);
                 let (Ok(next_x), Ok(next_y)) = (pair[0].as_integer(), pair[1].as_integer()) else {
                     return false;
@@ -900,7 +900,7 @@ fn tty_supports_face_attributes(
             pending.extend(items.into_iter().rev());
             continue;
         }
-        for pair in items.chunks_exact(2) {
+        for pair in items.as_chunks::<2>().0 {
             if let Value::Symbol(key) = &pair[0] {
                 pairs.push((key.to_string(), pair[1].clone()));
             }
@@ -1161,9 +1161,9 @@ fn resolve_tty_face_reference_options(
         return merged;
     }
 
-    let mut pairs = items.chunks_exact(2);
+    let pairs = items.as_chunks::<2>().0;
     let inherited = pairs
-        .clone()
+        .iter()
         .find(|pair| matches!(&pair[0], Value::Symbol(name) if name == ":inherit"))
         .map(|pair| &pair[1])
         .filter(|value| value.is_truthy());
@@ -1171,7 +1171,7 @@ fn resolve_tty_face_reference_options(
         .map(|value| resolve_tty_face_reference_options(interp, env, value, depth + 1))
         .unwrap_or_default();
     let color_index = tty_face_color_index;
-    for pair in &mut pairs {
+    for pair in pairs {
         let Value::Symbol(name) = &pair[0] else {
             continue;
         };
@@ -2443,7 +2443,13 @@ define_dispatch!(
                 // GNU processes subprocess output whenever it waits; epg relies
                 // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
                 // flush gpg's final status lines through the process filter.
-                wait_pumping_processes(interp, env, Some(wait_duration(args)?), false, None)?;
+                // wait_reading_process_output records READ_KBD 0 for the
+                // whole call, even when it nests inside a keyboard read.
+                let previous_wait = interp.set_waiting_for_user_input(false);
+                let wait_result =
+                    wait_pumping_processes(interp, env, Some(wait_duration(args)?), false, None);
+                interp.set_waiting_for_user_input(previous_wait);
+                wait_result?;
                 Ok(Value::Nil)
             }
             "accept-process-output" => {
@@ -2475,17 +2481,26 @@ define_dispatch!(
                 } else {
                     None
                 };
-                let delivered =
-                    wait_pumping_processes(interp, env, timeout, true, target_process_id)?;
+                // A READ_KBD 0 wait: it never selects the keyboard-class
+                // notification descriptor, even when a callback nests it
+                // inside a keyboard read.
+                let previous_wait = interp.set_waiting_for_user_input(false);
+                let wait_result =
+                    wait_pumping_processes(interp, env, timeout, true, target_process_id);
+                interp.set_waiting_for_user_input(previous_wait);
+                let delivered = wait_result?;
                 Ok(if delivered { Value::T } else { Value::Nil })
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                // keyboard.c processes special events on every probe, and
-                // READABLE_EVENTS_DO_TIMERS_NOW when CHECK-TIMERS is non-nil.
-                // `sit-for' deliberately calls `(input-pending-p t)', even
-                // for a zero-length no-redisplay wait.
-                interp.service_file_notifications(env)?;
+                // keyboard.c's process_special_events handles selection
+                // events only: buffered file notifications wait for read_char
+                // and the kernel notification queue is not read here at all
+                // (the oracle answers nil and runs no callback for a watched
+                // file written moments earlier).  A non-nil CHECK-TIMERS is
+                // READABLE_EVENTS_DO_TIMERS_NOW; `sit-for' deliberately calls
+                // `(input-pending-p t)', even for a zero-length no-redisplay
+                // wait.
                 if args.first().is_some_and(Value::is_truthy) {
                     interp.run_pending_timer_events(env)?;
                 }
@@ -3521,6 +3536,20 @@ define_dispatch!(
             }
             "window-mode-line-height" | "window-header-line-height" | "window-tab-line-height" => {
                 need_arg_range(name, args, 0, 1)?;
+                // window.c window_wants_mode_line/header_line/tab_line all
+                // require !MINI_WINDOW_P: a minibuffer window has none of
+                // these lines whatever its buffer's format variables say.
+                let window = args.first().cloned().unwrap_or(Value::Nil);
+                let window_id = window_id_or_selected(interp, &window)?;
+                let is_minibuffer = interp
+                    .find_record(window_id)
+                    .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
+                    .is_some_and(
+                        |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                    );
+                if is_minibuffer {
+                    return Ok(Value::Integer(0));
+                }
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
                 let format_variable = match name {
                     "window-mode-line-height" => "mode-line-format",
@@ -4415,9 +4444,21 @@ define_dispatch!(
                     "window-prev-sibling" => WINDOW_PREV_SIBLING_SLOT,
                     _ => WINDOW_NEXT_SIBLING_SLOT,
                 };
-                Ok(window_link(interp, window_id, slot)
-                    .map(Value::Record)
-                    .unwrap_or(Value::Nil))
+                if let Some(linked) = window_link(interp, window_id, slot) {
+                    return Ok(Value::Record(linked));
+                }
+                // frame.c make_frame links a frame's root and its own
+                // minibuffer window as siblings (wset_next (rw, mini_window);
+                // wset_prev (mw, root_window)); window.el's
+                // frame-windows-min-size reaches the minibuffer through that
+                // link.
+                let root = frame_root_window_value(interp);
+                let minibuffer = interp.minibuffer_window_value();
+                Ok(match name {
+                    "window-next-sibling" if root == Value::Record(window_id) => minibuffer,
+                    "window-prev-sibling" if minibuffer == Value::Record(window_id) => root,
+                    _ => Value::Nil,
+                })
             }
             "window-top-child" | "window-left-child" => {
                 need_arg_range(name, args, 0, 1)?;
