@@ -1531,8 +1531,15 @@ fn normalize_copy_family_args(
     let (Some(first_text), Some(second_text)) = (string_like(first), string_like(second)) else {
         return Ok(None);
     };
-    let file = if expand_first {
+    // Fmake_symbolic_link keeps TARGET verbatim so links to relative names
+    // stay possible; only the interactive path (a fixnum
+    // OK-IF-ALREADY-EXISTS) expands a leading `~' or drops a `/:' quote.
+    let interactive_symlink =
+        operation == "make-symbolic-link" && matches!(args.get(2), Some(Value::Integer(_)));
+    let file = if expand_first || (interactive_symlink && first_text.text.starts_with('~')) {
         expand_file_name_runtime(interp, env, &first_text.text, None)?
+    } else if interactive_symlink && first_text.text.starts_with("/:") {
+        first_text.text[2..].to_string()
     } else {
         first_text.text.clone()
     };
@@ -1548,13 +1555,22 @@ fn normalize_copy_family_args(
     Ok(Some(normalized))
 }
 
+/// Outcome of the file-name-handler choke point: either a handler produced
+/// the operation's value, or the native primitive must run -- with the
+/// fileio.c-normalized arguments when the operation is one that expands
+/// its names before the handler lookup.
+pub(crate) enum FileNameDispatch {
+    Handled(Value),
+    Native(Option<Vec<Value>>),
+}
+
 pub(crate) fn dispatch_file_name_handler(
     interp: &mut Interpreter,
     env: &mut Env,
     operation: &str,
     specification: FileNameHandlerOperation,
     args: &[Value],
-) -> Result<Option<Value>, LispError> {
+) -> Result<FileNameDispatch, LispError> {
     // fileio.c normalizes the copy-family arguments BEFORE the handler
     // lookup, so a Lisp handler (Tramp) receives the already-joined
     // target: Fcopy_file and Fadd_name_to_file expand FILE and run
@@ -1666,9 +1682,9 @@ pub(crate) fn dispatch_file_name_handler(
             interp.buffer.file = Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
             interp.buffer.set_unmodified();
         }
-        return Ok(Some(result));
+        return Ok(FileNameDispatch::Handled(result));
     }
-    Ok(None)
+    Ok(FileNameDispatch::Native(normalized))
 }
 
 pub(crate) fn directory_files(

@@ -9779,6 +9779,92 @@ fn filenotify_scenarios_match_the_oracle_through_keyboard_reads() {
     );
 }
 
+#[test]
+fn copy_family_native_path_uses_handler_expanded_names() {
+    // fileio.c's Fadd_name_to_file, Fcopy_file, Frename_file and
+    // Fmake_symbolic_link expand their names (Fexpand_file_name and
+    // expand_cp_target, both handler-aware) BEFORE the handler lookup and
+    // then run the native body on those expanded names.  A handler that
+    // rewrites names during expansion and therefore no longer matches must
+    // see its rewrite honored; Emaxx used to re-resolve the raw arguments
+    // and link the unrewritten name (files-tests' `.special` handler).
+    let program = r#"
+        (progn
+          (defun zz-special-handler (operation &rest args)
+            (let ((arg args)
+                  (file-name-handler-alist
+                   (delete (rassoc 'zz-special-handler file-name-handler-alist)
+                           file-name-handler-alist)))
+              (while arg
+                (when (and (stringp (car arg))
+                           (not (file-name-quoted-p (car arg)))
+                           (string-match "\\.special\\'" (car arg)))
+                  (setcar arg (replace-match "" nil nil (car arg))))
+                (setq arg (cdr arg)))
+              (apply operation args)))
+          (let* ((dir (file-name-as-directory (make-temp-file "zz-cpfam" t)))
+                 (real (expand-file-name "base" dir))
+                 (file (concat real ".special"))
+                 (file-name-handler-alist
+                  (cons (cons "\\.special\\'" 'zz-special-handler)
+                        file-name-handler-alist)))
+            (unwind-protect
+                (progn
+                  (with-temp-file real (insert "x"))
+                  (list
+                   (progn (add-name-to-file file (expand-file-name "added.special" dir))
+                          (list (file-exists-p (expand-file-name "added" dir))
+                                (file-exists-p (expand-file-name "added.special" dir))))
+                   (progn (copy-file file (expand-file-name "copied.special" dir))
+                          (list (file-exists-p (expand-file-name "copied" dir))
+                                (file-exists-p (expand-file-name "copied.special" dir))))
+                   (progn (make-directory (expand-file-name "sub" dir))
+                          (copy-file file (file-name-as-directory
+                                           (expand-file-name "sub" dir)))
+                          (directory-files (expand-file-name "sub" dir) nil "^[^.]"))
+                   (progn (rename-file (expand-file-name "copied.special" dir)
+                                       (expand-file-name "moved.special" dir))
+                          (list (file-exists-p (expand-file-name "copied" dir))
+                                (file-exists-p (expand-file-name "moved" dir))))
+                   (progn (make-symbolic-link "base" (expand-file-name "link.special" dir))
+                          (list (file-symlink-p (expand-file-name "link" dir))
+                                (file-exists-p (expand-file-name "link.special" dir))))
+                   (condition-case e
+                       (add-name-to-file file (expand-file-name "added.special" dir))
+                     (error (car e)))
+                   ;; Fmake_symbolic_link keeps TARGET verbatim; only a
+                   ;; fixnum OK-IF-ALREADY-EXISTS expands `~' or drops `/:'.
+                   (progn
+                     (make-symbolic-link "~/zz-target" (expand-file-name "l1" dir))
+                     (make-symbolic-link "~/zz-target" (expand-file-name "l2" dir) 1)
+                     (make-symbolic-link "/:/tmp/zz-q" (expand-file-name "l3" dir) 1)
+                     (make-symbolic-link "/:/tmp/zz-q" (expand-file-name "l4" dir))
+                     (list (file-symlink-p (expand-file-name "l1" dir))
+                           (equal (file-symlink-p (expand-file-name "l2" dir))
+                                  (expand-file-name "~/zz-target"))
+                           (file-symlink-p (expand-file-name "l3" dir))
+                           (file-symlink-p (expand-file-name "l4" dir))))))
+              (delete-directory dir t))))"#;
+    let expected = concat!(
+        "((t t) (t t) (\"base\") (nil t) (\"base\" t) file-already-exists ",
+        "(\"~/zz-target\" t \"/tmp/zz-q\" \"/:/tmp/zz-q\"))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read copy-family handler program")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate copy-family handler program")
+            .to_string(),
+        expected
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn subr_arity_answers_the_host_inotify_primitives() {
