@@ -653,10 +653,14 @@ define_dispatch!(
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                if let Some(size) = args.first()
-                    && size.as_integer()? < 0
-                {
-                    return Err(LispError::WrongTypeArgument("natnump".into(), size.clone()));
+                if let Some(size) = args.first().filter(|size| !size.is_nil()) {
+                    let size_value = size.as_fixnum()?;
+                    if size_value < 0 {
+                        return Err(LispError::WrongTypeArgument(
+                            "wholenump".into(),
+                            size.clone(),
+                        ));
+                    }
                 }
                 Ok(make_obarray(interp))
             }
@@ -792,6 +796,20 @@ define_dispatch!(
                 {
                     return Ok(value.unwrap_or(default));
                 }
+                if let Value::Record(id) = &args[1]
+                    && interp.has_custom_hash_table_index(*id)
+                {
+                    let test = interp
+                        .find_record(*id)
+                        .and_then(|record| record.slots.first())
+                        .and_then(|value| value.as_symbol().ok())
+                        .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
+                        .to_string();
+                    return Ok(custom_hash_lookup_indexed(
+                        interp, &args[1], *id, &test, &args[0], env,
+                    )?
+                    .unwrap_or(default));
+                }
                 let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
                     return Err(LispError::WrongTypeArgument(
                         "hash-table-p".into(),
@@ -815,9 +833,35 @@ define_dispatch!(
             "puthash" => {
                 need_args(name, args, 3)?;
                 if let Value::Record(id) = &args[2]
+                    && !interp.hash_table_is_mutable(*id)
+                {
+                    return Err(LispError::Signal("hash table test modifies table".into()));
+                }
+                if let Value::Record(id) = &args[2]
                     && interp.equal_hash_put(*id, args[0].clone(), args[1].clone(), env)
                 {
                     return Ok(args[1].clone());
+                }
+                if let Value::Record(id) = &args[2]
+                    && interp.has_custom_hash_table_index(*id)
+                {
+                    let test = interp
+                        .find_record(*id)
+                        .and_then(|record| record.slots.first())
+                        .and_then(|value| value.as_symbol().ok())
+                        .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
+                        .to_string();
+                    if custom_hash_put_indexed(
+                        interp,
+                        &args[2],
+                        *id,
+                        &test,
+                        args[0].clone(),
+                        args[1].clone(),
+                        env,
+                    )? {
+                        return Ok(args[1].clone());
+                    }
                 }
                 let Some((test, mut entries)) = json::hash_table_entries(interp, &args[2]) else {
                     return Err(LispError::WrongTypeArgument(
@@ -857,9 +901,27 @@ define_dispatch!(
             "remhash" => {
                 need_args(name, args, 2)?;
                 if let Value::Record(id) = &args[1]
+                    && !interp.hash_table_is_mutable(*id)
+                {
+                    return Err(LispError::Signal("hash table test modifies table".into()));
+                }
+                if let Value::Record(id) = &args[1]
                     && interp.equal_hash_remove(*id, &args[0], env).is_some()
                 {
                     return Ok(Value::Nil);
+                }
+                if let Value::Record(id) = &args[1]
+                    && interp.has_custom_hash_table_index(*id)
+                {
+                    let test = interp
+                        .find_record(*id)
+                        .and_then(|record| record.slots.first())
+                        .and_then(|value| value.as_symbol().ok())
+                        .ok_or_else(|| LispError::Signal("Invalid hash table test".into()))?
+                        .to_string();
+                    if custom_hash_remove_indexed(interp, &args[1], *id, &test, &args[0], env)? {
+                        return Ok(Value::Nil);
+                    }
                 }
                 let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
                     return Err(LispError::WrongTypeArgument(
@@ -885,11 +947,21 @@ define_dispatch!(
             }
             "clrhash" => {
                 need_args(name, args, 1)?;
+                if let Value::Record(id) = &args[0]
+                    && !interp.hash_table_is_mutable(*id)
+                {
+                    return Err(LispError::Signal("hash table test modifies table".into()));
+                }
                 if json::hash_table_entries(interp, &args[0]).is_none() {
                     return Err(LispError::WrongTypeArgument(
                         "hash-table-p".into(),
                         args[0].clone(),
                     ));
+                }
+                if let Value::Record(id) = &args[0]
+                    && interp.clear_custom_hash_table(*id)
+                {
+                    return Ok(args[0].clone());
                 }
                 set_hash_table_entries(interp, &args[0], Vec::new())?;
                 Ok(args[0].clone())

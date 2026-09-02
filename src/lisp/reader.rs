@@ -632,6 +632,16 @@ impl<'a> Reader<'a> {
                 None => return Err(LispError::EndOfInput),
                 Some(b'"') => {
                     self.advance();
+                    // alloc.c canonicalizes every zero-length unibyte string
+                    // to empty_unibyte_string.  It is the one reader literal
+                    // whose identity is intentionally shared globally.
+                    if s.is_empty()
+                        && extended_chars.is_empty()
+                        && !has_explicit_multibyte
+                        && !has_invalid_unicode
+                    {
+                        return Ok(Some(Value::String("".into())));
+                    }
                     // A Lisp string is an object even when it has no text
                     // properties.  Keeping ordinary source literals as the
                     // scalar `Value::String` shortcut loses object identity

@@ -241,10 +241,10 @@ impl Interpreter {
             return Some(name.clone());
         }
         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
-            && let Some((Value::Symbol(name), _)) =
-                crate::lisp::primitives::symbol_with_pos_parts(self, value)
+            && let Some((symbol, _)) = crate::lisp::primitives::symbol_with_pos_parts(self, value)
+            && let Ok(name) = symbol.as_symbol()
         {
-            return Some(name);
+            return Some(name.into());
         }
         None
     }
@@ -444,12 +444,20 @@ impl Interpreter {
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                     && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>
             {
-                let Some((Value::Symbol(name), _)) =
-                    crate::lisp::primitives::symbol_with_pos_parts(self, expr)
+                let Some((symbol, _)) = crate::lisp::primitives::symbol_with_pos_parts(self, expr)
                 else {
                     unreachable!("guard accepted a positioned symbol without a symbol slot");
                 };
-                match self.lookup(&name, env) {
+                let name = symbol
+                    .as_symbol()
+                    .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), expr.clone()))?;
+                if name == "t" {
+                    return Ok(Value::T);
+                }
+                if name == "nil" {
+                    return Ok(Value::Nil);
+                }
+                match self.lookup(name, env) {
                     Ok(value) => Ok(value),
                     Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
                         Value::Symbol("void-variable".into()),
@@ -973,6 +981,31 @@ impl Interpreter {
                     None,
                 );
                 let result = match primitives::call(self, name, args, env) {
+                    Ok(value) => Ok(value),
+                    Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+                    Err(error) => self.dispatch_handler_bindings(error, env),
+                };
+                if let Err(error) = &result {
+                    self.capture_batch_error_backtrace(error, env);
+                }
+                self.pop_backtrace_frame();
+                result
+            }
+            Value::Record(id)
+                if self
+                    .find_record(id)
+                    .is_some_and(|record| record.kind == RecordKind::NativeCompiledFunction) =>
+            {
+                let backtrace_function = original_name
+                    .map(CallName::original_symbol_value)
+                    .unwrap_or(Value::Record(id));
+                self.push_backtrace_frame(backtrace_function, args);
+                self.capture_current_backtrace_context(
+                    original_name.map(CallName::as_str),
+                    env,
+                    None,
+                );
+                let result = match crate::lisp::native_comp::call_function(self, env, id, args) {
                     Ok(value) => Ok(value),
                     Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
                     Err(error) => self.dispatch_handler_bindings(error, env),

@@ -1219,12 +1219,17 @@ define_dispatch!(
             }
             "subr-type" => {
                 need_args(name, args, 1)?;
-                if !matches!(args[0], Value::BuiltinFunc(_)) {
-                    return Err(wrong_type_argument("subrp", args[0].clone()));
+                match &args[0] {
+                    Value::BuiltinFunc(_) => Ok(Value::Nil),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        Ok(interp.find_record(*id).expect("record checked above").slots[4].clone())
+                    }
+                    other => Err(wrong_type_argument("subrp", other.clone())),
                 }
-                // Emaxx currently has no native-compiled Lisp subrs.  GNU C
-                // primitives report nil here even in native-comp-enabled builds.
-                Ok(Value::Nil)
             }
             "function-equal" => {
                 need_args(name, args, 2)?;
@@ -1788,12 +1793,19 @@ fn internal_subr_documentation(
     function: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let Value::BuiltinFunc(name) = function else {
-        return Ok(Value::T);
-    };
-    Ok(Value::Integer(ensure_builtin_doc_offset(
-        interp, name, env,
-    )?))
+    match function {
+        Value::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
+            interp, name, env,
+        )?)),
+        Value::Record(id)
+            if interp.find_record(*id).is_some_and(|record| {
+                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+            }) =>
+        {
+            crate::lisp::native_comp::function_documentation(interp, *id)
+        }
+        _ => Ok(Value::T),
+    }
 }
 
 fn documentation_property(

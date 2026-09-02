@@ -680,6 +680,136 @@ pub(crate) fn resolve_load_target_in_env(
     interp.resolve_load_target(target)
 }
 
+/// GNU lread.c:maybe_swap_for_eln.  A bare `load' first resolves its normal
+/// `.elc' target, then substitutes a matching, at-least-as-new `.eln' from
+/// `native-comp-eln-load-path'.  Explicit `.elc' loads deliberately bypass
+/// this substitution.
+pub(crate) fn maybe_swap_for_native(
+    interp: &mut Interpreter,
+    requested: &str,
+    resolved: &Path,
+    env: &Env,
+) -> Result<PathBuf, LispError> {
+    if requested.ends_with(".elc")
+        || resolved
+            .extension()
+            .is_none_or(|extension| extension != "elc")
+        || interp
+            .lookup_var("load-no-native", env)
+            .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(resolved.to_path_buf());
+    }
+
+    let mut source = resolved.to_path_buf();
+    source.set_extension("el");
+    if !source.is_file() {
+        let compressed = PathBuf::from(format!("{}.gz", source.display()));
+        if !compressed.is_file() {
+            return Ok(resolved.to_path_buf());
+        }
+        source = compressed;
+    }
+
+    let mut filename_env = env.clone();
+    let relative = super::dispatch::comp_el_to_eln_rel_filename(
+        interp,
+        &Value::String(source.display().to_string().into()),
+        &mut filename_env,
+    )?;
+    let version = interp
+        .lookup_var("comp-native-version-dir", env)
+        .and_then(|value| string_like(&value).map(|string| string.text));
+    let Some(version) = version else {
+        return Ok(resolved.to_path_buf());
+    };
+    let load_paths = interp
+        .lookup_var("native-comp-eln-load-path", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    let invocation_directory = interp
+        .lookup_var("invocation-directory", env)
+        .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)));
+    let resolved_mtime = fs::metadata(resolved)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+
+    let mut system_directory = None;
+    for entry in load_paths {
+        let Some(text) = string_like(&entry).map(|string| string.text) else {
+            continue;
+        };
+        let directory = PathBuf::from(text);
+        let directory = if directory.is_absolute() {
+            directory
+        } else if let Some(invocation_directory) = &invocation_directory {
+            invocation_directory.join(directory)
+        } else {
+            directory
+        };
+        system_directory = Some(directory.clone());
+        let candidate = directory.join(&version).join(&relative);
+        if native_candidate_is_current(&candidate, resolved_mtime) {
+            record_native_source(interp, &candidate, &source, env)?;
+            return Ok(candidate);
+        }
+    }
+
+    // GNU also searches the `preloaded' subdirectory of the final (system)
+    // native directory after all ordinary cache directories.
+    if let Some(directory) = system_directory {
+        let candidate = directory.join(version).join("preloaded").join(relative);
+        if native_candidate_is_current(&candidate, resolved_mtime) {
+            record_native_source(interp, &candidate, &source, env)?;
+            return Ok(candidate);
+        }
+    }
+
+    Ok(resolved.to_path_buf())
+}
+
+fn native_candidate_is_current(
+    candidate: &Path,
+    resolved_mtime: Option<std::time::SystemTime>,
+) -> bool {
+    let Ok(metadata) = fs::metadata(candidate) else {
+        return false;
+    };
+    if metadata.is_dir() {
+        return false;
+    }
+    match (metadata.modified().ok(), resolved_mtime) {
+        (Some(native), Some(resolved)) => native >= resolved,
+        _ => true,
+    }
+}
+
+fn record_native_source(
+    interp: &mut Interpreter,
+    native: &Path,
+    source: &Path,
+    env: &Env,
+) -> Result<(), LispError> {
+    let Some(table) = interp.lookup_var("comp-eln-to-el-h", env) else {
+        return Ok(());
+    };
+    let Some(basename) = native.file_name() else {
+        return Ok(());
+    };
+    let mut put_env = env.clone();
+    super::call(
+        interp,
+        "puthash",
+        &[
+            Value::String(basename.to_string_lossy().into_owned().into()),
+            Value::String(source.display().to_string().into()),
+            table,
+        ],
+        &mut put_env,
+    )?;
+    Ok(())
+}
+
 pub(crate) fn read_symbol_shorthands_in_env(
     interp: &Interpreter,
     env: &Env,

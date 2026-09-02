@@ -238,6 +238,17 @@ pub(crate) fn function_arity_value(
                 .ok_or_else(|| invalid_function_arity(function))?;
             closure_arity_value(argument_spec, function)
         }
+        Value::Record(id)
+            if interp.find_record(*id).is_some_and(|record| {
+                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+            }) =>
+        {
+            let record = interp.find_record(*id).expect("record checked above");
+            Ok(Value::cons(
+                record.slots[1].clone(),
+                record.slots[2].clone(),
+            ))
+        }
         value if is_lambda_expression(interp, value, env) => {
             let items = value.to_vec()?;
             let parameters = items[1]
@@ -318,14 +329,20 @@ pub(crate) fn bigint_from_integral_float(value: f64) -> Option<BigInt> {
 
 pub(crate) fn apply_rounding_kind(kind: RoundingKind, value: f64) -> Result<f64, LispError> {
     if !value.is_finite() {
-        return Err(LispError::Signal("Floating-point overflow".into()));
+        return Err(LispError::SignalValue(Value::list([Value::symbol(
+            "overflow-error",
+        )])));
     }
-    Ok(match kind {
+    Ok(round_float(kind, value))
+}
+
+fn round_float(kind: RoundingKind, value: f64) -> f64 {
+    match kind {
         RoundingKind::Ceiling => value.ceil(),
         RoundingKind::Floor => value.floor(),
         RoundingKind::Round => value.round_ties_even(),
         RoundingKind::Truncate => value.trunc(),
-    })
+    }
 }
 
 pub(crate) fn integer_rounding_value(
@@ -334,7 +351,7 @@ pub(crate) fn integer_rounding_value(
     args: &[Value],
     float_result: bool,
 ) -> Result<Value, LispError> {
-    if args.is_empty() || args.len() > 2 {
+    if args.is_empty() || args.len() > 2 || (float_result && args.len() != 1) {
         return Err(LispError::WrongNumberOfArgs(
             match (kind, float_result) {
                 (RoundingKind::Ceiling, false) => "ceiling",
@@ -359,10 +376,13 @@ pub(crate) fn integer_rounding_value(
 
     if args.len() == 1 {
         if float_result {
-            return Ok(Value::Float(apply_rounding_kind(
+            // GNU's f* family returns an integral float and deliberately
+            // preserves infinities and NaNs.  Only the integer-returning
+            // family signals `overflow-error' for non-finite input.
+            return Ok(Value::Float(round_float(
                 kind,
                 numeric_to_f64(interp, &args[0])?,
-            )?));
+            )));
         }
         return match &args[0] {
             Value::Integer(_) | Value::BigInteger(_) => Ok(args[0].clone()),

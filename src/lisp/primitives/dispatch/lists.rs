@@ -1729,14 +1729,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Ffset uses CHECK_SYMBOL/XSYMBOL.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                if args[1].is_nil() {
-                    interp.set_function_binding(&symbol, None);
-                    Ok(Value::Nil)
-                } else {
-                    interp.validate_function_binding(&symbol, &args[1])?;
-                    interp.set_function_binding(&symbol, Some(args[1].clone()));
-                    Ok(args[1].clone())
-                }
+                interp.fset_function(&symbol, args[1].clone(), env)
             }
             "fmakunbound" => {
                 need_args(name, args, 1)?;

@@ -1,6 +1,110 @@
 use super::*;
 
 impl Interpreter {
+    pub(crate) fn save_excursion_state(&mut self) -> SavedExcursion {
+        let buffer_id = self.current_buffer_id();
+        let point = self.buffer.point();
+        let marker_id = match self.make_marker() {
+            Value::Marker(id) => id,
+            _ => unreachable!("make_marker returns a marker"),
+        };
+        self.set_marker(marker_id, Some(point), Some(buffer_id))
+            .expect("a freshly allocated marker accepts a live buffer");
+        SavedExcursion {
+            buffer_id,
+            point,
+            marker_id,
+        }
+    }
+
+    pub(crate) fn restore_excursion_state(&mut self, saved: SavedExcursion) {
+        if self.has_buffer_id(saved.buffer_id) {
+            let _ = self.set_current_buffer_id(saved.buffer_id);
+            let point = self
+                .marker_position(saved.marker_id)
+                .unwrap_or(saved.point)
+                .clamp(self.buffer.point_min(), self.buffer.point_max());
+            self.buffer.goto_char(point);
+        }
+        let _ = self.set_marker(saved.marker_id, None, None);
+    }
+
+    pub(crate) fn save_restriction_state(&mut self) -> SavedRestriction {
+        let buffer_id = self.current_buffer_id();
+        let beginning = self.buffer.point_min();
+        let end = self.buffer.point_max();
+        let labeled = self.labeled_restrictions_snapshot(buffer_id);
+        let bounds = if beginning == 1 && end == self.buffer.size_total() + 1 {
+            SavedRestrictionBounds::Wide
+        } else {
+            let beginning_marker_id = match self.make_marker() {
+                Value::Marker(id) => id,
+                _ => unreachable!("make_marker returns a marker"),
+            };
+            let end_marker_id = match self.make_marker() {
+                Value::Marker(id) => id,
+                _ => unreachable!("make_marker returns a marker"),
+            };
+            self.set_marker(beginning_marker_id, Some(beginning), Some(buffer_id))
+                .expect("a freshly allocated marker accepts a live buffer");
+            self.set_marker(end_marker_id, Some(end), Some(buffer_id))
+                .expect("a freshly allocated marker accepts a live buffer");
+            self.set_marker_insertion_type(end_marker_id, true);
+            SavedRestrictionBounds::Narrow {
+                beginning,
+                end,
+                beginning_marker_id,
+                end_marker_id,
+            }
+        };
+        SavedRestriction {
+            buffer_id,
+            bounds,
+            labeled,
+        }
+    }
+
+    pub(crate) fn restore_restriction_state(&mut self, saved: SavedRestriction) {
+        let final_buffer_id = self.current_buffer_id();
+        if self.has_buffer_id(saved.buffer_id) {
+            if final_buffer_id != saved.buffer_id {
+                let _ = self.set_current_buffer_id(saved.buffer_id);
+            }
+            match saved.bounds {
+                SavedRestrictionBounds::Wide => {
+                    let full_end = self.buffer.size_total() + 1;
+                    self.buffer.restore_restriction(1, full_end);
+                }
+                SavedRestrictionBounds::Narrow {
+                    beginning,
+                    end,
+                    beginning_marker_id,
+                    end_marker_id,
+                } => {
+                    let beginning = self
+                        .marker_position(beginning_marker_id)
+                        .unwrap_or(beginning);
+                    let end = self.marker_position(end_marker_id).unwrap_or(end);
+                    self.buffer.restore_restriction(beginning, end);
+                    let _ = self.set_marker(beginning_marker_id, None, None);
+                    let _ = self.set_marker(end_marker_id, None, None);
+                }
+            }
+            self.restore_labeled_restrictions(saved.buffer_id, saved.labeled);
+            if final_buffer_id != saved.buffer_id && self.has_buffer_id(final_buffer_id) {
+                let _ = self.set_current_buffer_id(final_buffer_id);
+            }
+        } else if let SavedRestrictionBounds::Narrow {
+            beginning_marker_id,
+            end_marker_id,
+            ..
+        } = saved.bounds
+        {
+            let _ = self.set_marker(beginning_marker_id, None, None);
+            let _ = self.set_marker(end_marker_id, None, None);
+        }
+    }
+
     pub(super) fn sf_unwind_protect(
         &mut self,
         items: &[Value],
@@ -148,24 +252,9 @@ impl Interpreter {
         items: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved_buffer_id = self.current_buffer_id();
-        let saved_pt = self.buffer.point();
-        let saved_marker = self.make_marker();
-        let saved_marker_id = match saved_marker {
-            Value::Marker(id) => id,
-            _ => unreachable!("make_marker returns a marker"),
-        };
-        self.set_marker(saved_marker_id, Some(saved_pt), Some(saved_buffer_id))?;
+        let saved = self.save_excursion_state();
         let result = self.sf_progn(&items[1..], env);
-        if self.has_buffer_id(saved_buffer_id) {
-            let _ = self.set_current_buffer_id(saved_buffer_id);
-            let restore_pt = self
-                .marker_position(saved_marker_id)
-                .unwrap_or(saved_pt)
-                .clamp(self.buffer.point_min(), self.buffer.point_max());
-            self.buffer.goto_char(restore_pt);
-        }
-        let _ = self.set_marker(saved_marker_id, None, None);
+        self.restore_excursion_state(saved);
         result
     }
 
@@ -187,60 +276,9 @@ impl Interpreter {
         items: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let saved_buffer_id = self.current_buffer_id();
-        let saved_begv = self.buffer.point_min();
-        let saved_zv = self.buffer.point_max();
-        let saved_labeled = self.labeled_restrictions_snapshot(saved_buffer_id);
-        // GNU save-restriction-save: a wide buffer is saved as "no
-        // restriction" and simply re-widened on exit; tracking the old
-        // bounds with markers would spuriously re-narrow after edits
-        // (e.g. insert-before-markers at BEGV pushes both markers).
-        let was_wide = saved_begv == 1 && saved_zv == self.buffer.size_total() + 1;
-        if was_wide {
-            let result = self.sf_progn(&items[1..], env);
-            let final_buffer_id = self.current_buffer_id();
-            if self.has_buffer_id(saved_buffer_id) {
-                if final_buffer_id != saved_buffer_id {
-                    let _ = self.set_current_buffer_id(saved_buffer_id);
-                }
-                let full_end = self.buffer.size_total() + 1;
-                self.buffer.restore_restriction(1, full_end);
-                if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
-                    let _ = self.set_current_buffer_id(final_buffer_id);
-                }
-                self.restore_labeled_restrictions(saved_buffer_id, saved_labeled);
-            }
-            return result;
-        }
-        let beg_marker = self.make_marker();
-        let end_marker = self.make_marker();
-        let beg_id = match beg_marker {
-            Value::Marker(id) => id,
-            _ => unreachable!("make_marker returns a marker"),
-        };
-        let end_id = match end_marker {
-            Value::Marker(id) => id,
-            _ => unreachable!("make_marker returns a marker"),
-        };
-        let _ = self.set_marker(beg_id, Some(saved_begv), Some(saved_buffer_id));
-        let _ = self.set_marker(end_id, Some(saved_zv), Some(saved_buffer_id));
-        self.set_marker_insertion_type(end_id, true);
+        let saved = self.save_restriction_state();
         let result = self.sf_progn(&items[1..], env);
-        let final_buffer_id = self.current_buffer_id();
-        let restore_begv = self.marker_position(beg_id).unwrap_or(saved_begv);
-        let restore_zv = self.marker_position(end_id).unwrap_or(saved_zv);
-        if self.has_buffer_id(saved_buffer_id) {
-            if final_buffer_id != saved_buffer_id {
-                let _ = self.set_current_buffer_id(saved_buffer_id);
-            }
-            self.buffer.restore_restriction(restore_begv, restore_zv);
-            self.restore_labeled_restrictions(saved_buffer_id, saved_labeled);
-            if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
-                let _ = self.set_current_buffer_id(final_buffer_id);
-            }
-        }
-        let _ = self.set_marker(beg_id, None, None);
-        let _ = self.set_marker(end_id, None, None);
+        self.restore_restriction_state(saved);
         result
     }
 

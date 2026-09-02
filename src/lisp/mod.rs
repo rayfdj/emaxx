@@ -196,6 +196,7 @@ macro_rules! define_dispatch {
 pub mod bytecode;
 pub mod eval;
 pub mod json;
+pub(crate) mod native_comp;
 pub mod primitives;
 pub mod reader;
 pub mod sqlite;
@@ -841,6 +842,18 @@ pub fn load_file_strict(
     interp: &mut eval::Interpreter,
     path: &Path,
 ) -> Result<(), types::LispError> {
+    load_file_strict_until(interp, path, |_| false).map(|_| ())
+}
+
+/// Load PATH through the ordinary GNU `readevalloop' boundary, but stop
+/// before the first top-level form accepted by STOP_BEFORE.  The image
+/// builder uses this for loadup.el: GNU's dumped state includes loadup's
+/// initialization forms but not its final transfer into `top-level'.
+pub(crate) fn load_file_strict_until(
+    interp: &mut eval::Interpreter,
+    path: &Path,
+    mut stop_before: impl FnMut(&types::Value) -> bool,
+) -> Result<bool, types::LispError> {
     let requested_source = read_source_bytes(path)?;
     // Resolution has already selected the file.  GNU executes that exact
     // path: an explicit or resolver-selected `.elc' must never silently run a
@@ -974,6 +987,7 @@ pub fn load_file_strict(
         // front, but the observable Interpreter-dependent reader work must remain
         // in that same per-form order: a later compiled object can depend on a
         // definition installed by an earlier top-level form.
+        let mut stopped = false;
         for (form_index, form) in forms.into_iter().enumerate() {
             // GNU's reader interns ordinary symbols and returns fully constructed
             // identity-bearing objects before invoking the Lisp-owned eager
@@ -1005,6 +1019,10 @@ pub fn load_file_strict(
                     return Err(error);
                 }
             };
+            if stop_before(&form) {
+                stopped = true;
+                break;
+            }
             let result = if eager_macroexpand {
                 primitives::eager_expand_eval(interp, &form, &mut env)
             } else {
@@ -1059,7 +1077,7 @@ pub fn load_file_strict(
                 &mut env,
             )?;
         }
-        Ok(())
+        Ok(stopped)
     })
 }
 
