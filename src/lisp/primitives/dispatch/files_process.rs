@@ -163,6 +163,88 @@ impl AddressFamily {
             Self::Ipv6 => address.is_ipv6(),
         }
     }
+
+    fn resolver_family(self) -> libc::c_int {
+        match self {
+            Self::Both => libc::AF_UNSPEC,
+            Self::Ipv4 => libc::AF_INET,
+            Self::Ipv6 => libc::AF_INET6,
+        }
+    }
+}
+
+fn network_lookup_addresses(
+    host: &str,
+    family: AddressFamily,
+    numeric: bool,
+) -> Result<Vec<std::net::SocketAddr>, String> {
+    // process.c passes the string data to getaddrinfo, so an embedded NUL
+    // terminates the name instead of making construction of a Rust CString
+    // fail.  The public primitive has already rejected non-ASCII names.
+    let host_prefix = host
+        .as_bytes()
+        .split(|byte| *byte == 0)
+        .next()
+        .unwrap_or_default();
+    let host = std::ffi::CString::new(host_prefix).expect("NUL-free hostname prefix");
+    let mut hints = unsafe { std::mem::zeroed::<libc::addrinfo>() };
+    hints.ai_family = family.resolver_family();
+    hints.ai_socktype = libc::SOCK_DGRAM;
+    if numeric {
+        hints.ai_flags = libc::AI_NUMERICHOST;
+    }
+
+    let mut result = std::ptr::null_mut();
+    let status = unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut result) };
+    if status != 0 {
+        let message = unsafe { libc::gai_strerror(status) };
+        return Err(if message.is_null() {
+            format!("getaddrinfo error {status}")
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(message) }
+                .to_string_lossy()
+                .into_owned()
+        });
+    }
+
+    let mut addresses = Vec::new();
+    let mut current = result;
+    while !current.is_null() {
+        let entry = unsafe { &*current };
+        let address = match entry.ai_family {
+            libc::AF_INET
+                if !entry.ai_addr.is_null()
+                    && entry.ai_addrlen as usize >= std::mem::size_of::<libc::sockaddr_in>() =>
+            {
+                let address = unsafe { &*entry.ai_addr.cast::<libc::sockaddr_in>() };
+                Some(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(
+                        address.sin_addr.s_addr,
+                    ))),
+                    u16::from_be(address.sin_port),
+                ))
+            }
+            libc::AF_INET6
+                if !entry.ai_addr.is_null()
+                    && entry.ai_addrlen as usize >= std::mem::size_of::<libc::sockaddr_in6>() =>
+            {
+                let address = unsafe { &*entry.ai_addr.cast::<libc::sockaddr_in6>() };
+                Some(std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                    std::net::Ipv6Addr::from(address.sin6_addr.s6_addr),
+                    u16::from_be(address.sin6_port),
+                    address.sin6_flowinfo,
+                    address.sin6_scope_id,
+                )))
+            }
+            _ => None,
+        };
+        if let Some(address) = address {
+            addresses.push(address);
+        }
+        current = entry.ai_next;
+    }
+    unsafe { libc::freeaddrinfo(result) };
+    Ok(addresses)
 }
 
 fn interface_broadcast(ip: std::net::IpAddr, mask: std::net::IpAddr) -> std::net::IpAddr {
@@ -2204,16 +2286,7 @@ define_dispatch!(
                     Some(Value::Symbol(hint)) if hint == "numeric" => true,
                     _ => return Err(LispError::Signal("Unsupported hints value".into())),
                 };
-                let resolved = if numeric {
-                    host.parse::<std::net::IpAddr>()
-                        .map(|address| vec![std::net::SocketAddr::new(address, 0)])
-                        .map_err(|error| error.to_string())
-                } else {
-                    std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0))
-                        .map(|addresses| addresses.collect::<Vec<_>>())
-                        .map_err(|error| error.to_string())
-                };
-                let addresses = match resolved {
+                let addresses = match network_lookup_addresses(&host, family, numeric) {
                     Ok(addresses) => addresses,
                     Err(error) => {
                         let _ = super::call(
@@ -2225,12 +2298,7 @@ define_dispatch!(
                         return Ok(Value::Nil);
                     }
                 };
-                Ok(Value::list(
-                    addresses
-                        .into_iter()
-                        .filter(|address| family.includes(address.ip()))
-                        .map(sockaddr_vector),
-                ))
+                Ok(Value::list(addresses.into_iter().map(sockaddr_vector)))
             }
             "delete-process" => {
                 need_args(name, args, 1)?;

@@ -4657,3 +4657,86 @@ runner used the recorded safe schedule (single-threaded within the evaluator,
 primitive, compatibility, and TTY groups; only proven-safe groups overlapped)
 and completed in about 22 minutes.  No production source changed after this
 gate; only this evidence record was appended.
+
+## 2026-09-02 issue 35 network/TLS/JSON-RPC adversarial audit
+
+The issue-35 candidate begins at pushed tty head `170f0dc` on the dedicated
+`issue-35-networking` branch; `tty-frontend` itself was left unmoved while its
+integration into main was owned elsewhere.  The exact candidate diff was
+reviewed against GNU 30.2 process.c's
+`Fnetwork_lookup_address_info`/`network_lookup_address_info_1`, the upstream
+network-stream, GnuTLS, JSON, and JSON-RPC suites, and the existing Eglot and
+lsp-mode application contracts.
+
+Before final certification, refreshed `origin/main` at `1394e8d` was merged
+into the issue branch, producing merge commit `7e389f9`.  Restoring the issue
+work produced no source conflict; the only textual conflict was between two
+independent audit-ledger sections, and both were retained.  The production
+file and new network-contract document match their pre-merge SHA-256 exactly.
+The test and testing-documentation changes have the same stable patch IDs as
+before the merge while preserving main's adjacent additions.
+
+The one production change removes Rust `IpAddr::parse` and
+`ToSocketAddrs` from `network-lookup-address-info`.  GNU initializes an
+`addrinfo` hint with the requested AF_UNSPEC/AF_INET/AF_INET6 family,
+SOCK_DGRAM, and (only for the `numeric` hint) AI_NUMERICHOST, traverses the
+returned list in resolver order, converts each sockaddr to the public vector,
+and frees the list.  Emaxx now does the same.  The audit verified that the
+string's C NUL boundary, family mapping, socket-type/flag selection, IPv4 and
+IPv6 network-byte-order conversion, port, resolver order, error path, and
+single free all follow that owner.  No address/sample literal occurs in the
+production path.
+
+Two findings were corrected before the gate:
+
+1. The first unsafe draft trusted `ai_family` but did not validate
+   `ai_addrlen` before casting `ai_addr` to `sockaddr_in`/`sockaddr_in6`.
+   Both casts now require a non-null pointer and the corresponding full
+   structure length.
+2. The first HTTP fixture used an unnecessary `X-Emaxx-Fixture` header and
+   compared only GNU/Emaxx derived body records.  The shared fixture now uses
+   the editor-neutral `X-Contract-Fixture`, both editors must parse its value,
+   and GNU's complete status/header/length/SHA-256/prefix/cleanup record is
+   pinned before Emaxx is compared.  Independent server-side assertions prove
+   that each editor opened a connection and sent the exact GET target and Host
+   header; no normalization is applied.
+
+The final static pass found no project-private Lisp namespace or fixture-name
+branch in production, editor identity branch, oracle path/delegation,
+generated answer table, test-only runtime hook, swallowed warning, retry,
+accepted failure, or weakened assertion.  The numeric contract sends the same
+29 valid/invalid inputs to GNU and Emaxx and compares complete vectors.  The
+HTTP servers are independent, loopback-only, one-shot, and bounded; the
+fixture response is identical, buffer cleanup is observed, and a fabricated
+response cannot satisfy the request capture.
+
+Focused evidence on the audited bytes: both new exact gate-profile tests pass;
+all-selector upstream replays match 9/9 JSON-RPC, 7/7 GnuTLS, 27/27
+network-stream, 59/59 Lisp JSON, and 23/23 native JSON outcomes.  The GnuTLS
+replay's 64x test-time slowdown is disclosed for the performance milestone.
+The HTTP bind-denied sandbox result, malformed initial test filter that
+selected zero tests, vacuous batch input-cancellation probe, and focused
+compat-harness runs killed after isolated-build time consumed their total
+timeout are rejected, not counted.  Full command details and scope boundaries
+are recorded in `docs/network-compatibility.md`.
+
+The formal static audit was then repeated against the exact working-tree diff
+from `7e389f9`.  It again found no fixture/sample literal or editor identity in
+the production path, no environment or target branch, no oracle execution or
+delegation, and no bypass, retry, accepted failure, or weakened assertion in
+the tests.  All 15 repository anti-cheat gates passed, with zero failures and
+zero ignored.  This post-merge audit precedes the final formatting, native and
+Linux cross-target Clippy, and repository-wide gate.  Any later source change
+to this candidate requires those claims to be established again.
+
+After the audit, `cargo fmt --check`, native all-target/all-feature gate-profile
+Clippy with `-D warnings`, and the equivalent `x86_64-unknown-linux-gnu` cross
+Clippy pass were clean.  The complete optimized grouped gate passed with
+artifact `target/grouped-gate/run-1788356614665579000-29565`: its dynamic
+library inventory was exactly 2,287 outcomes, with 2,285 passed, zero failed,
+and only the two declared opt-in TTY end-to-end gates ignored.  The three
+binary targets passed 39 tests, CLI passed 12/12, ERT runner 3/3, and package
+lifecycle 5/5.  The primitives group containing both new issue-35 contracts
+passed 353/353 with zero ignored.  A final remote refresh left `origin/main`
+unchanged at `1394e8d`; no production or test source changed after the audit or
+gate, only this evidence record was appended.
