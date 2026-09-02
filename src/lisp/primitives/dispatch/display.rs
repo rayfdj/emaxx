@@ -1456,10 +1456,15 @@ fn render_window_line_with_format(
         Ok((text, spans))
     })();
     interp.buffer.goto_char(saved_point);
+    // Restore selection before switching the current buffer back.  While a
+    // non-selected window's mode line is rendered we temporarily select it;
+    // switching away with that temporary selection still installed makes
+    // `set_current_buffer_id' save the buffer's live point into the window's
+    // independent point slot, corrupting the slot as a redisplay side effect.
+    interp.set_selected_window_id(saved_window);
     if switched {
         let _ = interp.set_current_buffer_id(saved_buffer);
     }
-    interp.set_selected_window_id(saved_window);
     set_interactive_window_metrics(saved_metrics);
     result
 }

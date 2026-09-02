@@ -75,6 +75,9 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 128 | encode substitution rules for the generic/charset arms never swept against the oracle | OPEN |
 | 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | OPEN |
 | 130 | a failed oracle load-path probe silently falls back to the manual tree walk, changing what the harness boots without a trace | OPEN (recorded 2026-08-29) |
+| 146 | rendering a non-selected mode line overwrote that window's independent point slot | FIXED 2026-09-02 |
+| 147 | graphical fringe display strings leaked their source text onto TTY frames | FIXED 2026-09-02 |
+| 148 | motion between edits left undo's point-before-command record stale when a boundary already existed | FIXED 2026-09-02 |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -4574,3 +4577,83 @@ Not claimed: Darwin was not re-run here.  The kqueue backend is unchanged;
 the delivery-timing change applies to it through the same
 `waiting_for_user_input` gate, and the converted eval tests use the same
 keyboard-read waits on both hosts.
+
+## 2026-09-02 findings 146-148: Darwin post-merge certification and TTY correction
+
+The Linux integration publication above ended by stating that Darwin had not
+been rerun.  This audit starts from the resulting remote-main commit
+`3c78b1e93bdad5a2099e3b5d22a235b33d0f8d47` and closes that evidence gap on
+Darwin.  The first strict all-target, all-feature Clippy pass found one real
+host-configuration defect before runtime testing: `file_notify_error_with_errno`
+is used only by Linux-guarded inotify call sites but the helper itself was
+compiled on macOS, where `-D warnings` rejected it as dead code.  The helper
+now has the same Linux guard as all four callers.  Formatting, diff hygiene,
+and strict release Clippy then passed.
+
+The focused Darwin notification audit exercised the real kqueue backend:
+four eval_04 notification tests, the exact auto-revert regression, all 346
+then-current primitive tests (including kqueue, processes, timers, and GNU
+probes), and the Todo window regression all passed, 352/352.  The first full
+grouped gate on that production tree recorded artifact
+`target/grouped-gate/run-1788334198352310000-94983`: the library was green
+(2271 passed plus the two declared opt-in TTY ignores), every binary target,
+CLI, and ERT runner passed, but package lifecycle was 4/5.  The failed
+`local_package_vc_upgrade_matches_gnu_and_survives_restart` run was not
+retried or counted green.  GNU had checked out the 2.0 source while its 1.0
+bytecode and package descriptor were still active.
+
+Inspection of GNU package-vc.el established the test race: the Git process
+can become non-live before `vc-post-command-functions` runs
+`package-vc--unpack-1`, recompiles the checkout, and replaces package-alist.
+The integration test had waited only for `process-live-p`.  It now waits, with
+a 60-second bound, for the public semantic result -- the installed
+`package-desc-version` becoming `(2 0)` -- while continuing to service process
+output.  This is not a retry or a fixed sleep.  The exact formerly failing
+test then passed in 23.06 seconds and all five package-lifecycle tests passed
+under their original two-thread integration conditions in 116.27 seconds.
+
+The explicit release TTY smoke gate passed 1/1 in 53.85 seconds.  The complete
+217-scenario GNU-vs-Emaxx PTY differential then ran serially for 4644.19
+seconds.  It completed the whole inventory rather than stopping at the first
+failure: 211 scenarios matched and six diverged.  Those failures reduced to
+three production mechanisms, recorded rather than dismissed as timing:
+
+- Finding 146: while rendering a non-selected window's mode line, Emaxx
+  temporarily selected that window and made its buffer current.  Restoration
+  switched the current buffer back before restoring selection, which made
+  `set_current_buffer_id` save the buffer's live scan point into the temporary
+  window.  TMM consequently changed *Completions* from GNU's line 1 to line 5.
+  Restoring selection first makes redisplay state-preserving.  Folded-row
+  point deferral is also now limited to a window with an actual cursor; two
+  absent cursors are not a same-row motion.
+- Finding 147: Bookmark's graphical `(left-fringe ...)' display property on
+  an overlay before-string leaked the underlying `"x"` into a terminal text
+  row.  Left- and right-fringe display strings now occupy zero TTY cells;
+  the complete bookmark set-and-jump journey matches GNU.
+- Finding 148: Emaxx refreshed its point-before-command undo field only when
+  `undo-boundary` actually appended a boundary.  GNU refreshes the keyboard.c
+  command point even when simple.el suppresses a consecutive boundary.  A
+  motion between two edits therefore left Emaxx recording the earlier point.
+  Refreshing at every command dispatch fixes recorded and replayed keyboard
+  macro undo, selective region undo with a newer out-of-region edit, repeated
+  `C-_`, and repeated `C-x u`.
+
+All six formerly divergent journeys were rerun together against GNU after the
+fixes; every checkpoint, including the portions unreachable after each first
+failure, matched.  Native regressions separately cover graphical fringe
+suppression, the nested TMM window point, state-preserving non-selected
+mode-line rendering, and the selected-window folded-row deferral.  This is
+composite TTY evidence -- one complete 217-scenario run plus a complete
+focused rerun of its six failures -- not misreported as a second one-shot
+217-scenario pass.
+
+Finally, `python3 tools/grouped_gate.py --scope full` passed on the complete
+corrected dirty tree with artifact
+`target/grouped-gate/run-1788342414268828000-6860`.  Its dynamic inventory was
+2275 library outcomes: 2273 passed, zero failed, and exactly the two declared
+opt-in TTY gates were ignored.  The three discovered binary targets passed
+39 tests; CLI passed 12/12, ERT runner 3/3, and package lifecycle 5/5.  The
+runner used the recorded safe schedule (single-threaded within the evaluator,
+primitive, compatibility, and TTY groups; only proven-safe groups overlapped)
+and completed in about 22 minutes.  No production source changed after this
+gate; only this evidence record was appended.

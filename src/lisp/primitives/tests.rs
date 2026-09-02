@@ -18172,6 +18172,17 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         "current buffer restored"
     );
     assert_eq!(interp.buffer.point(), point_before, "point restored");
+    assert_eq!(
+        call(
+            &mut interp,
+            "window-point",
+            std::slice::from_ref(&lower),
+            &mut env,
+        )
+        .expect("window-point after rendering"),
+        Value::Integer(9),
+        "rendering a non-selected mode line does not overwrite its window point"
+    );
 
     // Dedication marks: display-buffer's weak kind shows `d', strong `D'.
     call(
@@ -18345,6 +18356,61 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
         "Type M-RET on a completion to select it.\n\
          Type M-<down> or M-<up> to move point between completions.\n\n\
          2 possible completions:\nambig1\nambig2"
+    );
+}
+
+#[test]
+fn tmm_nested_menu_keeps_the_completions_window_at_its_first_line() {
+    // M-` opens the menu-bar level and `f' descends into File.  GNU keeps
+    // the reused, non-selected *Completions* window's point at point-min
+    // while tmm.el scans the buffer in `with-current-buffer'.
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    interp.set_tty_frame_size(80, 24);
+    interp.buffer.insert("alpha\nbeta\ngamma\n");
+    interp.load_target("tmm").expect("tmm.el loads");
+
+    // Select File at the first prompt, then abort the nested prompt after
+    // its redraw has exposed the reused completions window.
+    let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(
+            "f\u{7}"
+                .chars()
+                .rev()
+                .map(|ch| Value::Integer(ch as i64))
+                .collect(),
+        ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let observed: std::rc::Rc<std::cell::RefCell<Vec<usize>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    crate::lisp::primitives::set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
+        for info in crate::lisp::primitives::window_render_layout(interp) {
+            let name = if info.buffer_id == interp.current_buffer_id() {
+                &interp.buffer.name
+            } else if let Some(buffer) = interp.get_buffer_by_id(info.buffer_id) {
+                &buffer.name
+            } else {
+                continue;
+            };
+            if name == "*Completions*" {
+                sink.borrow_mut().push(info.point);
+            }
+        }
+    })));
+    let result = call_via_lisp(&mut interp, "tmm-menubar", &[], &mut env);
+    crate::lisp::primitives::set_tty_frame_redraw(None);
+    set_tty_event_reader(None);
+
+    let observed = observed.borrow();
+    assert!(
+        observed.len() >= 2,
+        "both menu levels display *Completions*: {observed:?}; result: {result:?}"
+    );
+    assert_eq!(
+        observed.last(),
+        Some(&1),
+        "the nested menu keeps the completions window at its first line: {observed:?}"
     );
 }
 
