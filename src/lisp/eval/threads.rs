@@ -2302,6 +2302,14 @@ impl Interpreter {
         Ok(descriptor as i64)
     }
 
+    /// aspect_to_inotifymask runs before Finotify_add_watch checks its
+    /// FILE-NAME, so callers validate the aspects first and only then look
+    /// at the other arguments.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn validate_inotify_aspects(&self, flags: &[String]) -> Result<(), LispError> {
+        inotify_mask_from_flags(flags).map(|_| ())
+    }
+
     #[cfg(target_os = "linux")]
     fn close_empty_inotify_queue(&mut self) {
         if !self
@@ -2466,7 +2474,13 @@ impl Interpreter {
                 // the host removal error.  Keep that cleanup ordering so an
                 // already-invalid kernel watch cannot strand the queue.
                 self.close_empty_inotify_queue();
-                return Err(file_notify_host_io_error("Could not rm watch", "", &error));
+                // remove_descriptor reports the kernel watch descriptor, not
+                // a file name, as the data element.
+                return Err(primitives::file_notify_error_with_errno(
+                    "Could not rm watch",
+                    &error,
+                    Value::Integer(i64::from(watch_descriptor)),
+                ));
             }
         }
         if !self
@@ -2922,9 +2936,42 @@ impl Interpreter {
         Ok(())
     }
 
+    /// Dispatch queued notifications the way read_char dispatches buffered
+    /// FILE_NOTIFY_EVENTs: each callback runs through the special-event
+    /// binding, and a signal or nonlocal exit propagates to the reader while
+    /// the events behind it stay queued for the next read.  Only the command
+    /// loop's own condition handler turns such an error into a message, so
+    /// nothing is demoted here.
     pub fn run_pending_file_notifications(&mut self, env: &mut Env) -> Result<bool, LispError> {
-        let mut pending = std::mem::take(&mut self.pending_file_notifications).into_iter();
-        let ran = pending.len() != 0;
+        self.run_pending_file_notifications_inner(env, true)
+    }
+
+    /// Handler-backed watches model Tramp's monitor process filters, whose
+    /// callbacks fire inside any process wait.  Kernel watch descriptors are
+    /// keyboard-class in process.c (add_keyboard_wait_descriptor), so a
+    /// READ_KBD 0 wait never even reads them; their events stay queued for
+    /// the keyboard readers.
+    pub(crate) fn run_pending_synthetic_file_notifications(
+        &mut self,
+        env: &mut Env,
+    ) -> Result<bool, LispError> {
+        self.run_pending_file_notifications_inner(env, false)
+    }
+
+    fn run_pending_file_notifications_inner(
+        &mut self,
+        env: &mut Env,
+        include_kernel_events: bool,
+    ) -> Result<bool, LispError> {
+        let (pending, retained): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.pending_file_notifications)
+                .into_iter()
+                .partition(|notification| {
+                    include_kernel_events || notification.raw_event.is_none()
+                });
+        self.pending_file_notifications = retained;
+        let ran = !pending.is_empty();
+        let mut pending = pending.into_iter();
         while let Some(mut notification) = pending.next() {
             let mut callbacks = std::mem::take(&mut notification.callbacks).into_iter();
             while let Some(callback) = callbacks.next() {
@@ -2948,35 +2995,19 @@ impl Interpreter {
                 let Err(error) = outcome else {
                     continue;
                 };
-                let debug = self
-                    .lookup_var("debug-on-error", env)
-                    .is_some_and(|value| value.is_truthy());
-                if matches!(&error, LispError::Throw(_, _)) || debug {
-                    // This input event was consumed, but later recipients and
-                    // later kernel events remain queued.  Dropping the tail
-                    // here made one failing callback erase unrelated watches.
-                    let remaining_callbacks = callbacks.collect::<Vec<_>>();
-                    let mut remaining = Vec::new();
-                    if !remaining_callbacks.is_empty() {
-                        notification.callbacks = remaining_callbacks;
-                        remaining.push(notification);
-                    }
-                    remaining.extend(pending);
-                    remaining.append(&mut self.pending_file_notifications);
-                    self.pending_file_notifications = remaining;
-                    return Err(error);
+                // This input event was consumed, but later recipients and
+                // later kernel events remain queued.  Dropping the tail here
+                // made one failing callback erase unrelated watches.
+                let remaining_callbacks = callbacks.collect::<Vec<_>>();
+                let mut remaining = Vec::new();
+                if !remaining_callbacks.is_empty() {
+                    notification.callbacks = remaining_callbacks;
+                    remaining.push(notification);
                 }
-                // The command loop demotes errors from special event handlers
-                // to a message, then processes the next queued event.
-                let _ = primitives::call(
-                    self,
-                    "message",
-                    &[
-                        Value::String("Error in file notification: %S".into()),
-                        super::error_condition_value(&error),
-                    ],
-                    env,
-                );
+                remaining.extend(pending);
+                remaining.append(&mut self.pending_file_notifications);
+                self.pending_file_notifications = remaining;
+                return Err(error);
             }
         }
         Ok(ran)
@@ -3458,9 +3489,17 @@ impl Interpreter {
         }
         let _ = entry_yield_count;
         if service_events {
-            // Native file operations enqueue exact events immediately; the
-            // platform backend supplies independent-process transitions.
-            let _ = self.service_file_notifications(env)?;
+            // wait_reading_process_output selects keyboard-class descriptors
+            // (the inotify/kqueue queue among them) only for a READ_KBD wait,
+            // and read_char then dispatches the buffered special events.  A
+            // READ_KBD 0 wait such as accept-process-output or sleep-for runs
+            // timers and delivers handler-backed notifications, which GNU
+            // receives as monitor process output, but never reads that queue.
+            if self.waiting_for_user_input() {
+                let _ = self.service_file_notifications(env)?;
+            } else {
+                let _ = self.run_pending_synthetic_file_notifications(env)?;
+            }
             let _ = self.run_pending_timer_events(env)?;
         }
         Ok(())
@@ -3989,11 +4028,13 @@ fn inotify_mask_from_flags(flags: &[String]) -> Result<u32, LispError> {
                 } else {
                     Value::Symbol(flag.clone().into())
                 };
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("file-notify-error".into()),
-                    Value::String("Unknown aspect".into()),
+                // symbol_to_inotifymask sets errno to EINVAL before
+                // report_file_notify_error renders it into the data.
+                return Err(primitives::file_notify_error_with_errno(
+                    "Unknown aspect",
+                    &std::io::Error::from_raw_os_error(libc::EINVAL),
                     aspect,
-                ])));
+                ));
             }
         };
     }

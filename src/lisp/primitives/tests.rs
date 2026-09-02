@@ -2240,7 +2240,14 @@ fn native_frame_geometry_parameters_and_state_flags_match_gnu() {
     let expected_printed = r#"(1 1 80 25 80 25 80 25 80 25 0 0 0 0 0 0 0 0 1.0 (0 . 0) 8 10 5 (80 25 "F1") first (90 31) (70 21) nil t (0 . 0) nil t t nil t nil nil t)"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    let mut interp = Interpreter::new();
+    // `frame-windows-min-size' is window.el Lisp in GNU; only the Darwin
+    // contract lists it with an arity.  On a host whose C contract does not
+    // own it, the interpreter needs the dumped Lisp to answer, as GNU does.
+    let mut interp = if is_builtin("frame-windows-min-size") {
+        Interpreter::new()
+    } else {
+        crate::test_support::initialized_upstream_batch_interpreter()
+    };
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -4871,6 +4878,21 @@ fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
         &mut env,
     )
     .expect_err("moving a nonexistent file to trash must signal");
+    // Only the w32 and NS builds DEFUN this primitive; on a host whose C
+    // contract lacks it (the X oracle), GNU and Emaxx both answer
+    // `void-function'.
+    if !is_builtin("system-move-file-to-trash") {
+        let condition = crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            "(condition-case e (system-move-file-to-trash \"/nonexistent/zz\") (error e))",
+        )
+        .expect("void-function must be catchable")
+        .to_string();
+        assert_eq!(condition, "(void-function system-move-file-to-trash)");
+        drop(error);
+        return;
+    }
     let LispError::SignalValue(condition) = error else {
         panic!("expected a structured file-missing condition");
     };
@@ -7678,16 +7700,28 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
         );
     }
 
+    // Dispatch follows the host's C contract, so on a host whose oracle
+    // lacks `x-load-color-file' Emaxx lacks it too; stub the same element
+    // out of both sides there instead of asserting the Darwin build's row.
+    let (host_program, host_expected) = if is_builtin("x-load-color-file") {
+        (program.clone(), expected_printed.to_string())
+    } else {
+        (
+            program.replace(&color_file_call, "'emaxx-oracle-lacks-x-load-color-file"),
+            expected_printed.replace(color_file_rows, "emaxx-oracle-lacks-x-load-color-file"),
+        )
+    };
+    let _ = expected;
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();
-    let form = Reader::new(&program)
+    let form = Reader::new(&host_program)
         .read()
         .expect("xfaces.c family contract should parse")
         .expect("xfaces.c family contract should contain a form");
     let actual = interp
         .eval(&form, &mut env)
         .expect("xfaces.c family contract should evaluate");
-    let expected = Reader::new(expected)
+    let expected = Reader::new(&host_expected)
         .read()
         .expect("xfaces.c expected value should parse")
         .expect("xfaces.c expected value should exist");
@@ -9412,6 +9446,232 @@ fn inotify_directory_watch_reports_external_child_creation() {
             .expect("evaluate external inotify directory program")
             .to_string(),
         expected
+    );
+}
+
+/// Pin PROGRAM's printed value against the live Linux oracle and then
+/// against a fresh interpreter, so the literal cannot drift from GNU.
+#[cfg(target_os = "linux")]
+fn assert_linux_inotify_contract(program: &str, expected: &str, label: &str) {
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read_all()
+        .unwrap_or_else(|_| panic!("read {label} program"))
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .unwrap_or_else(|_| panic!("evaluate {label} program"))
+            .to_string(),
+        expected
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inotify_error_data_follows_report_file_notify_error() {
+    // fileio.c report_file_notify_error always places the rendered errno
+    // between the message and the offending object, splicing a list (or nil)
+    // object in as the tail.  Aspects are converted before FILE-NAME is
+    // type-checked, a well-formed but stale descriptor removes nothing and
+    // returns t, and IDs for one inode are the lowest free ones.  The
+    // "Invalid descriptor " text depends on the errno left by the previous
+    // host call in GNU as well, so only its shape is pinned.
+    let program = r#"
+        (list
+         (condition-case e (inotify-add-watch "/tmp" '(bogus) #'ignore)
+           (file-notify-error e))
+         (condition-case e (inotify-add-watch "/tmp" '(create 7) #'ignore)
+           (file-notify-error e))
+         (condition-case e (inotify-add-watch "/tmp" '(nil) #'ignore)
+           (file-notify-error e))
+         (condition-case e (inotify-add-watch 42 '(bogus) #'ignore) (error e))
+         (condition-case e (inotify-add-watch 42 '(create) #'ignore) (error e))
+         (condition-case e
+             (inotify-add-watch "/nonexistent/zz-audit" '(create) #'ignore)
+           (file-notify-error e))
+         (let ((e (condition-case e (inotify-rm-watch 5) (file-notify-error e))))
+           (list (car e) (cadr e) (stringp (nth 2 e)) (nthcdr 3 e)))
+         (let ((e (condition-case e (inotify-rm-watch '(a . 1))
+                    (file-notify-error e))))
+           (list (car e) (cadr e) (stringp (nth 2 e)) (nthcdr 3 e)))
+         (inotify-rm-watch '(123456 . 0))
+         (let* ((a (inotify-add-watch "/tmp" '(create) #'ignore))
+                (b (inotify-add-watch "/tmp" '(delete) #'ignore))
+                (c (progn (inotify-rm-watch a)
+                          (inotify-add-watch "/tmp" '(attrib) #'ignore))))
+           (prog1 (list (eq (car a) (car b)) (cdr a) (cdr b) (cdr c)
+                        (inotify-valid-p a) (inotify-valid-p b)
+                        (inotify-rm-watch (cons (car b) 99)) (inotify-valid-p b))
+             (inotify-rm-watch b) (inotify-rm-watch c)))
+         (let ((d (inotify-add-watch "/tmp" '(create) #'ignore)))
+           (inotify-rm-watch d)
+           (list (inotify-rm-watch d) (inotify-valid-p d))))"#;
+    let expected = concat!(
+        "((file-notify-error \"Unknown aspect\" \"Invalid argument\" bogus) ",
+        "(file-notify-error \"Unknown aspect\" \"Invalid argument\" 7) ",
+        "(file-notify-error \"Unknown aspect\" \"Invalid argument\") ",
+        "(file-notify-error \"Unknown aspect\" \"Invalid argument\" bogus) ",
+        "(wrong-type-argument stringp 42) ",
+        "(file-notify-error \"Could not add watch for file\" ",
+        "\"No such file or directory\" \"/nonexistent/zz-audit\") ",
+        "(file-notify-error \"Invalid descriptor \" t (5)) ",
+        "(file-notify-error \"Invalid descriptor \" t (a . 1)) ",
+        "t (t 0 1 0 t t t t) (t nil))"
+    );
+    assert_linux_inotify_contract(program, expected, "inotify error data");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inotify_events_reach_lisp_only_through_keyboard_reads() {
+    // process.c registers the inotify descriptor with
+    // add_keyboard_wait_descriptor, so a READ_KBD 0 wait such as
+    // accept-process-output or sleep-for never reads it, input-pending-p
+    // neither reads nor dispatches, and the callback runs from read_char.
+    let program = r#"
+        (let* ((events nil)
+               (file (make-temp-file "zz-audit-stage"))
+               (d (inotify-add-watch file '(modify)
+                                     (lambda (ev) (push ev events)))))
+          (unwind-protect
+              (progn
+                (with-temp-file file (insert "y"))
+                (list (input-pending-p) (length events)
+                      (progn (accept-process-output nil 0.05) (length events))
+                      (progn (sleep-for 0.02) (length events))
+                      (progn (input-pending-p t) (length events))
+                      (progn (read-event nil nil 0.05) (length events))
+                      (mapcar (lambda (ev)
+                                (list (equal (car ev) d) (cadr ev)
+                                      (equal (caddr ev) file) (nth 3 ev)))
+                              events)))
+            (inotify-rm-watch d)
+            (delete-file file)))"#;
+    assert_linux_inotify_contract(
+        program,
+        "(nil 0 0 0 0 1 ((t (modify) t 0)))",
+        "inotify delivery stage",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn file_notification_callback_errors_propagate_from_read_event() {
+    // read_char executes the special-event binding without a condition
+    // handler: the signal leaves read-event, and the buffered events behind
+    // it (here the second watch's callback for the same kernel event) are
+    // delivered by the next read.  GNU has no "Error in file notification"
+    // message; that text was an emaxx invention.
+    let program = r#"
+        (let* ((events nil)
+               (create-lockfiles nil)
+               (dir (make-temp-file "zz-audit-err" t))
+               (d1 (inotify-add-watch dir '(create) (lambda (_) (error "boom"))))
+               (d2 (inotify-add-watch dir '(create)
+                                      (lambda (ev) (push (caddr ev) events)))))
+          (unwind-protect
+              (progn
+                (with-temp-file (expand-file-name "a" dir) nil)
+                (list (condition-case err (read-event nil nil 0.2) (error err))
+                      (length events)
+                      (progn (read-event nil nil 0.1) events)
+                      (cdr d1) (cdr d2)))
+            (inotify-rm-watch d1)
+            (inotify-rm-watch d2)
+            (delete-directory dir t)))"#;
+    assert_linux_inotify_contract(
+        program,
+        "((error \"boom\") 0 (\"a\") 0 1)",
+        "file notification error propagation",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn filenotify_scenarios_match_the_oracle_through_keyboard_reads() {
+    // The same watch-isolation, invalidation and no-replay scenarios that
+    // the eval tests exercise, run through filenotify.el against the live
+    // oracle with read-event waits.  Their earlier `sleep-for' form encoded
+    // delivery inside a READ_KBD 0 wait, which GNU never performs.
+    let program = r#"
+        (progn
+          (require 'filenotify)
+          (let* ((root (make-temp-file "zz-audit-iso" t))
+                 (file (expand-file-name "watched-file" root))
+                 (directory (expand-file-name "watched-directory" root))
+                 (generation (make-temp-file "zz-audit-gen"))
+                 (create-lockfiles nil)
+                 events first second directory-watch)
+            (unwind-protect
+                (progn
+                  (with-temp-file file (insert "contents"))
+                  (make-directory directory)
+                  (setq first (file-notify-add-watch
+                               file '(change)
+                               (lambda (event)
+                                 (when (eq (cadr event) 'deleted) (push 1 events))))
+                        second (file-notify-add-watch
+                                file '(change)
+                                (lambda (event)
+                                  (when (eq (cadr event) 'deleted) (push 2 events)))))
+                  (file-notify-rm-watch first)
+                  (delete-file file)
+                  (read-event nil nil 0.1)
+                  (setq directory-watch
+                        (file-notify-add-watch
+                         directory '(change)
+                         (lambda (event)
+                           (when (eq (cadr event) 'deleted) (push 'directory events)))))
+                  (delete-directory directory)
+                  (read-event nil nil 0.1)
+                  (let ((isolation (list (reverse events)
+                                         (file-notify-valid-p first)
+                                         (file-notify-valid-p second)
+                                         (file-notify-valid-p directory-watch))))
+                    (setq events nil)
+                    (write-region "before" nil generation nil 'no-message)
+                    (setq first (file-notify-add-watch
+                                 generation '(change)
+                                 (lambda (_event) (push 'first events)))
+                          second (file-notify-add-watch
+                                  generation '(change)
+                                  (lambda (_event) (push 'second events))))
+                    (read-event nil nil 0.1)
+                    (let ((before events))
+                      (write-region "after" nil generation nil 'no-message)
+                      (read-event nil nil 0.1)
+                      (list isolation
+                            (list before (length events)
+                                  (not (null (memq 'first events)))
+                                  (not (null (memq 'second events))))))))
+              (ignore-errors (file-notify-rm-watch first))
+              (ignore-errors (file-notify-rm-watch second))
+              (delete-file generation)
+              (delete-directory root t))))"#;
+    assert_linux_inotify_contract(
+        program,
+        "(((2 directory) nil nil nil) (nil 2 t t))",
+        "filenotify keyboard-read scenarios",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn subr_arity_answers_the_host_inotify_primitives() {
+    // The Darwin-derived arity table has no inotify rows; `subr-arity' and
+    // `func-arity' must consult the host's C contract, or loading
+    // inotify-tests.el fails inside macroexpansion before any test runs.
+    let program = r#"
+        (list (subr-arity (symbol-function 'inotify-valid-p))
+              (subr-arity (symbol-function 'inotify-add-watch))
+              (func-arity 'inotify-rm-watch)
+              (featurep 'inotify) (fboundp 'kqueue-add-watch))"#;
+    assert_linux_inotify_contract(
+        program,
+        "((1 . 1) (3 . 3) (1 . 1) t nil)",
+        "host inotify arity",
     );
 }
 
@@ -14448,7 +14708,10 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
     let actual = interp
         .eval(&form, &mut env)
         .expect("headless GUI action failures should be catchable");
-    let expected = Reader::new(&expected_with_choosers(true))
+    // Dispatch follows the host's C contract: the choosers exist for Emaxx
+    // exactly where the host's oracle build compiled them.
+    let host_has_choosers = is_builtin("x-file-dialog") && is_builtin("x-select-font");
+    let expected = Reader::new(&expected_with_choosers(host_has_choosers))
         .read()
         .expect("headless GUI action expected value should parse")
         .expect("headless GUI action expected value should exist");

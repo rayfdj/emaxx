@@ -1132,7 +1132,7 @@ define_dispatch!(
                     ));
                 }
                 let mut active = Vec::with_capacity(args.len() / 2);
-                for pair in args[1..].chunks_exact(2) {
+                for pair in args[1..].as_chunks::<2>().0 {
                     let conditions = match &pair[0] {
                         Value::Nil => Vec::new(),
                         Value::Cons(_) => pair[0]

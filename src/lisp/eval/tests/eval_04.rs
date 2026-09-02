@@ -1504,6 +1504,10 @@ fn auto_revert_mode_reloads_changed_file() {
                      (write-region "another text" nil "{path_text}" nil 'no-message)
                      (set-file-times "{path_text}" (time-subtract nil 1))
                      (ert-with-message-capture auto-revert-test-messages
+                       ;; autorevert-tests.el's auto-revert--wait-for-revert
+                       ;; waits with read-event when notifications are in
+                       ;; use: the kernel queue is keyboard-class, and a
+                       ;; sleep-for loop leaves the oracle at "any text".
                        (let ((started (current-time)))
                          (while
                              (and
@@ -1512,7 +1516,7 @@ fn auto_revert_mode_reloads_changed_file() {
                                (string-match
                                 "Reverting buffer"
                                 auto-revert-test-messages)))
-                           (sleep-for 0.05))))
+                           (read-event nil nil 0.05))))
                      (prog1 (buffer-string)
                        (set-buffer-modified-p nil)
                        (kill-buffer buf)))))"#
@@ -1698,10 +1702,11 @@ fn file_notifications_drive_global_auto_revert_without_polling() {
                          (global-auto-revert-mode 1)
                          (let ((desc auto-revert-notify-watch-descriptor))
                            (write-region "changed" nil "{path_text}" nil 'no-message)
-                           ;; Notifications are delivered when the command
-                           ;; loop goes idle, as in GNU Emacs.
-                           (sleep-for 0)
-                           (list (eq file-notify--library 'kqueue)
+                           ;; Kernel notifications reach Lisp through a
+                           ;; keyboard read (read_char), never through a
+                           ;; READ_KBD 0 wait such as sleep-for.
+                           (read-event nil nil 0.1)
+                           (list (and (memq file-notify--library '(kqueue inotify)) t)
                                  (file-notify-valid-p desc)
                                  (equal desc
                                         (buffer-local-value
@@ -1757,7 +1762,7 @@ fn file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths() {
                           (push 2 events)))))
                (file-notify-rm-watch first)
                (delete-file {file})
-               (sleep-for 0)
+               (read-event nil nil 0.1)
                (setq directory-watch
                      (file-notify-add-watch
                       {directory} '(change)
@@ -1765,7 +1770,7 @@ fn file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths() {
                         (when (eq (cadr event) 'deleted)
                           (push 'directory events)))))
                (delete-directory {directory})
-               (sleep-for 0)
+               (read-event nil nil 0.1)
                (list (reverse events)
                      (file-notify-valid-p first)
                      (file-notify-valid-p second)
@@ -1799,7 +1804,8 @@ fn file_notifications_do_not_replay_events_to_later_watches() {
              (require 'filenotify)
              (let (events first second)
                ;; Queue an event before either watch exists.  It must not be
-               ;; delivered retroactively when the command loop next idles.
+               ;; delivered retroactively when the next keyboard read drains
+               ;; the kernel queue.
                (write-region "before" nil {path_literal} nil 'no-message)
                (setq first
                      (file-notify-add-watch
@@ -1809,10 +1815,10 @@ fn file_notifications_do_not_replay_events_to_later_watches() {
                      (file-notify-add-watch
                       {path_literal} '(change)
                       (lambda (_event) (push 'second events))))
-               (sleep-for 0)
+               (read-event nil nil 0.1)
                (let ((before events))
                  (write-region "after" nil {path_literal} nil 'no-message)
-                 (sleep-for 0)
+                 (read-event nil nil 0.1)
                  (prog1
                      (list before
                            (length events)
