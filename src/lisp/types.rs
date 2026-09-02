@@ -45,7 +45,31 @@ impl Hasher for IdentityHasher {
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
-type ConsMutationWatchers = HashMap<usize, Vec<Weak<Cell<bool>>>, IdentityBuildHasher>;
+#[derive(Debug, Default)]
+pub(crate) struct ConsMutationQueue {
+    dirty: RefCell<Vec<usize>>,
+}
+
+impl ConsMutationQueue {
+    pub(crate) fn drain(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.dirty.borrow_mut())
+    }
+}
+
+#[derive(Debug)]
+struct ConsMutationNotification {
+    queue: Weak<ConsMutationQueue>,
+    key: usize,
+    queued: Cell<bool>,
+}
+
+#[derive(Debug)]
+struct ConsMutationWatch {
+    valid: Cell<bool>,
+    notification: Option<ConsMutationNotification>,
+}
+
+type ConsMutationWatchers = HashMap<usize, Vec<Weak<ConsMutationWatch>>, IdentityBuildHasher>;
 
 /// 256 Kibit Bloom filter over watched field addresses, allocated on first
 /// registration.  Mutation of an unwatched field is by far the common case
@@ -91,11 +115,17 @@ fn note_cons_mutation(field_id: usize) {
     let emptied = CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
         let mut remove = false;
         if let Some(tokens) = watchers.get_mut(&field_id) {
-            tokens.retain(|token| {
-                let Some(token) = token.upgrade() else {
+            tokens.retain(|watch| {
+                let Some(watch) = watch.upgrade() else {
                     return false;
                 };
-                token.set(false);
+                watch.valid.set(false);
+                if let Some(notification) = &watch.notification
+                    && !notification.queued.replace(true)
+                    && let Some(queue) = notification.queue.upgrade()
+                {
+                    queue.dirty.borrow_mut().push(notification.key);
+                }
                 true
             });
             remove = tokens.is_empty();
@@ -114,7 +144,7 @@ fn note_cons_mutation(field_id: usize) {
     }
 }
 
-fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) {
+fn register_cons_mutation_watchers(field_ids: &[usize], watch: &Rc<ConsMutationWatch>) {
     if field_ids.is_empty() {
         return;
     }
@@ -124,16 +154,22 @@ fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) 
             // Dead source forms can leave weak-only keys behind.  A rare
             // bounded reset invalidates every still-live derivation before
             // dropping those keys, so no cache can survive unsafely.
-            for tokens in watchers.values() {
-                for token in tokens {
-                    if let Some(token) = token.upgrade() {
-                        token.set(false);
+            for watches in watchers.values() {
+                for watch in watches {
+                    if let Some(watch) = watch.upgrade() {
+                        watch.valid.set(false);
+                        if let Some(notification) = &watch.notification
+                            && !notification.queued.replace(true)
+                            && let Some(queue) = notification.queue.upgrade()
+                        {
+                            queue.dirty.borrow_mut().push(notification.key);
+                        }
                     }
                 }
             }
             watchers.clear();
         }
-        let weak = Rc::downgrade(token);
+        let weak = Rc::downgrade(watch);
         for field_id in field_ids {
             watchers.entry(*field_id).or_default().push(weak.clone());
         }
@@ -159,11 +195,33 @@ fn register_cons_mutation_watchers(field_ids: &[usize], token: &Rc<Cell<bool>>) 
 /// that actually depend on the field being borrowed mutably.
 #[derive(Debug, Clone)]
 pub(crate) struct ConsMutationSnapshot {
-    valid: Rc<Cell<bool>>,
+    watch: Rc<ConsMutationWatch>,
     field_ids: Vec<usize>,
 }
 
 impl ConsMutationSnapshot {
+    pub(crate) fn cell(cell: &SharedCons) -> Self {
+        Self::from_field_ids(ConsCell::mutation_field_ids(cell).to_vec())
+    }
+
+    pub(crate) fn tracked_cell(
+        cell: &SharedCons,
+        key: usize,
+        queue: &Rc<ConsMutationQueue>,
+    ) -> Self {
+        let field_ids = ConsCell::mutation_field_ids(cell).to_vec();
+        let watch = Rc::new(ConsMutationWatch {
+            valid: Cell::new(true),
+            notification: Some(ConsMutationNotification {
+                queue: Rc::downgrade(queue),
+                key,
+                queued: Cell::new(false),
+            }),
+        });
+        register_cons_mutation_watchers(&field_ids, &watch);
+        Self { watch, field_ids }
+    }
+
     pub(crate) fn list_spine(value: &Value) -> Self {
         let mut field_ids = Vec::new();
         let mut seen = HashSet::new();
@@ -203,7 +261,7 @@ impl ConsMutationSnapshot {
         added.sort_unstable();
         added.dedup();
         added.retain(|field_id| self.field_ids.binary_search(field_id).is_err());
-        register_cons_mutation_watchers(&added, &self.valid);
+        register_cons_mutation_watchers(&added, &self.watch);
         self.field_ids.extend(added);
         self.field_ids.sort_unstable();
     }
@@ -211,13 +269,23 @@ impl ConsMutationSnapshot {
     fn from_field_ids(mut field_ids: Vec<usize>) -> Self {
         field_ids.sort_unstable();
         field_ids.dedup();
-        let valid = Rc::new(Cell::new(true));
-        register_cons_mutation_watchers(&field_ids, &valid);
-        Self { valid, field_ids }
+        let watch = Rc::new(ConsMutationWatch {
+            valid: Cell::new(true),
+            notification: None,
+        });
+        register_cons_mutation_watchers(&field_ids, &watch);
+        Self { watch, field_ids }
     }
 
     pub(crate) fn is_current(&self) -> bool {
-        self.valid.get()
+        self.watch.valid.get()
+    }
+
+    pub(crate) fn mark_current(&self) {
+        self.watch.valid.set(true);
+        if let Some(notification) = &self.watch.notification {
+            notification.queued.set(false);
+        }
     }
 }
 
@@ -225,6 +293,13 @@ impl ConsMutationSnapshot {
 #[repr(transparent)]
 #[derive(Clone, Eq, PartialOrd, Ord)]
 pub struct SharedText(Rc<String>);
+
+thread_local! {
+    // alloc.c returns its permanently rooted empty string from every zero-
+    // length allocation.  Besides making `(eq "" "")' true, that identity
+    // is observable through print-circle when compiler constants repeat it.
+    static EMPTY_SHARED_TEXT: SharedText = SharedText(Rc::new(String::new()));
+}
 
 impl PartialEq for SharedText {
     fn eq(&self, other: &Self) -> bool {
@@ -241,7 +316,14 @@ impl std::hash::Hash for SharedText {
 }
 
 impl SharedText {
+    pub(crate) fn identity_ptr(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+
     pub fn new(text: String) -> Self {
+        if text.is_empty() {
+            return EMPTY_SHARED_TEXT.with(Clone::clone);
+        }
         let text = Rc::new(text);
         INTERNED_TEXT_BOOK.with(|book| {
             book.borrow_mut().push(Rc::downgrade(&text));
@@ -537,6 +619,12 @@ impl PartialEq<SymbolName> for &str {
 #[repr(transparent)]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SharedBigInt(Rc<BigInt>);
+
+impl SharedBigInt {
+    pub(crate) fn identity_ptr(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+}
 
 impl Deref for SharedBigInt {
     type Target = BigInt;
@@ -1045,6 +1133,13 @@ pub enum Value {
     Unbound,
 }
 
+thread_local! {
+    // alloc.c's zero_vector is the result of every zero-length vector
+    // allocation.  Emaxx's vector representation is a tagged cons list, so
+    // preserve that singleton identity at the common constructor boundary.
+    static EMPTY_VECTOR_VALUE: Value = Value::cons(Value::symbol("vector-literal"), Value::Nil);
+}
+
 /// One lexical environment frame.
 ///
 /// Capturing or invoking a closure snapshots an environment far more often
@@ -1477,6 +1572,9 @@ impl Value {
     /// Build a proper list from an iterator of values.
     pub fn list(items: impl IntoIterator<Item = Value>) -> Self {
         let items: Vec<Value> = items.into_iter().collect();
+        if matches!(items.as_slice(), [Value::Symbol(tag)] if tag == "vector-literal") {
+            return EMPTY_VECTOR_VALUE.with(Clone::clone);
+        }
         let mut result = Value::Nil;
         for item in items.into_iter().rev() {
             result = Value::cons(item, result);

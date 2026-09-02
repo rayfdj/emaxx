@@ -116,14 +116,25 @@ impl PrintContext {
         let number_table = interp
             .lookup_var("print-number-table", env)
             .filter(|value| json::is_hash_table(interp, value));
-        let (labels, next_label) = if options.circle && options.continuous_numbering {
+        let (mut labels, mut next_label) = if options.circle && options.continuous_numbering {
             parse_print_number_table(interp, number_table.as_ref(), options)
         } else {
             (HashMap::new(), 1)
         };
         let mut counts = HashMap::new();
         if options.circle {
-            collect_print_counts(interp, value, options, &mut counts, &mut HashSet::new())?;
+            if options.continuous_numbering {
+                collect_print_counts(interp, value, options, &mut counts)?;
+            } else {
+                collect_print_sharing(
+                    interp,
+                    value,
+                    options,
+                    &mut counts,
+                    &mut labels,
+                    &mut next_label,
+                )?;
+            }
         }
         Ok(Self {
             options,
@@ -200,6 +211,10 @@ pub(crate) fn print_ref_key(
         Value::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
             cell,
         ))),
+        // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
+        // strings still have Lisp identity: cloning SharedText preserves its
+        // Rc allocation, so repeated occurrences must receive one #N label.
+        Value::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
         Value::StringObject(state) => Some(PrintRefKey::StringObject(Rc::as_ptr(state) as usize)),
         Value::Symbol(symbol)
             if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
@@ -305,11 +320,42 @@ pub(crate) fn collect_print_counts(
     value: &Value,
     options: PrintOptions,
     counts: &mut HashMap<PrintRefKey, usize>,
-    expanded: &mut HashSet<PrintRefKey>,
 ) -> Result<(), LispError> {
+    let mut expanded = HashSet::new();
     walk_print_graph(interp, value, options, |key, _| {
         *counts.entry(key.clone()).or_insert(0) += 1;
         expanded.insert(key)
+    })
+}
+
+/// Match print.c:print_preprocess's numbering rule: a shared object's label
+/// is allocated when the traversal encounters that object for the second
+/// time, not when the printer later reaches its first occurrence.  These
+/// orders differ for nested vectors and are observable in serialized .eln
+/// constants.
+fn collect_print_sharing(
+    interp: &Interpreter,
+    value: &Value,
+    options: PrintOptions,
+    counts: &mut HashMap<PrintRefKey, usize>,
+    labels: &mut HashMap<PrintRefKey, PrintLabel>,
+    next_label: &mut usize,
+) -> Result<(), LispError> {
+    walk_print_graph(interp, value, options, |key, object| {
+        let count = counts.entry(key.clone()).or_insert(0);
+        *count += 1;
+        if *count == 2 {
+            labels.insert(
+                key,
+                PrintLabel {
+                    number: *next_label,
+                    printed: false,
+                    object: object.clone(),
+                },
+            );
+            *next_label += 1;
+        }
+        *count == 1
     })
 }
 
@@ -1612,6 +1658,13 @@ pub(crate) fn materialize_read_hash_table_literals(
     materialize_hash_table_literals_inner(interp, value, &mut seen)
 }
 
+pub(crate) fn materialize_read_hash_table_literal_fields(
+    interp: &mut Interpreter,
+    fields: &[Value],
+) -> Result<Value, LispError> {
+    hash_table_from_literal_fields(interp, fields, &mut HashSet::new())
+}
+
 const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
 const MAX_CHAR: u32 = 0x3f_ffff;
 
@@ -2050,6 +2103,7 @@ fn hash_table_from_literal_fields(
     let mut rehash_size = Value::Float(1.5);
     let mut rehash_threshold = Value::Float(0.8125);
     let mut weakness = Value::Nil;
+    let mut purecopy = Value::Nil;
     let mut entries = Vec::new();
     let mut index = 0usize;
     while index + 1 < fields.len() {
@@ -2065,6 +2119,7 @@ fn hash_table_from_literal_fields(
             "rehash-size" => rehash_size = field_value,
             "rehash-threshold" => rehash_threshold = field_value,
             "weakness" => weakness = field_value,
+            "purecopy" => purecopy = field_value,
             "data" => {
                 let items = field_value.to_vec()?;
                 let mut cursor = 0usize;
@@ -2085,13 +2140,14 @@ fn hash_table_from_literal_fields(
     if let Value::Record(id) = &table
         && let Some(record) = interp.find_record_mut(*id)
     {
-        if record.slots.len() < 6 {
-            record.slots.resize(6, Value::Nil);
+        if record.slots.len() < 7 {
+            record.slots.resize(7, Value::Nil);
         }
         record.slots[2] = size;
         record.slots[3] = rehash_size;
         record.slots[4] = rehash_threshold;
         record.slots[5] = weakness;
+        record.slots[6] = purecopy;
     }
     Ok(table)
 }

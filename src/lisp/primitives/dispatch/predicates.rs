@@ -382,6 +382,13 @@ define_dispatch!(
                 // is a subr; disguising any as Lisp forged provenance.
                 Ok(match &args[0] {
                     Value::BuiltinFunc(_) => Value::T,
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        Value::T
+                    }
                     _ => Value::Nil,
                 })
             }
@@ -512,7 +519,7 @@ define_dispatch!(
             "local-variable-p" => {
                 need_arg_range(name, args, 1, 2)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                let buffer_id = if let Some(buffer) = args.get(1) {
+                let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
                     interp.resolve_buffer_id(buffer)?
                 } else {
                     interp.current_buffer_id()
@@ -530,7 +537,7 @@ define_dispatch!(
             "local-variable-if-set-p" => {
                 need_arg_range(name, args, 1, 2)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                let buffer_id = if let Some(buffer) = args.get(1) {
+                let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
                     interp.resolve_buffer_id(buffer)?
                 } else {
                     interp.current_buffer_id()

@@ -530,6 +530,22 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
     }
 }
 
+/// fns.c:Feql handles floats and bignums specially, then delegates every
+/// other representation to `EQ`.  That final path matters while
+/// `symbols-with-pos-enabled` is dynamically non-nil: distinct positioned
+/// wrappers for the same bare symbol must then be `eql` too.
+pub(crate) fn values_eql_in_env(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> bool {
+    match left {
+        Value::Float(_) | Value::BigInteger(_) => values_eql(left, right),
+        _ => values_eq_in_env(interp, left, right, env),
+    }
+}
+
 pub(crate) fn values_eq_in_env(
     interp: &Interpreter,
     left: &Value,
@@ -708,28 +724,52 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
 }
 
 fn text_property_plists_equal_including_properties(
+    interp: &Interpreter,
     left: &[(String, Value)],
     right: &[(String, Value)],
     seen: &mut HashSet<(usize, usize)>,
+    env: &Env,
 ) -> bool {
     left.len() == right.len()
         && left.iter().all(|(key, left_value)| {
             right.iter().any(|(right_key, right_value)| {
                 right_key == key
-                    && values_equal_including_properties_recursive(left_value, right_value, seen)
+                    && values_equal_including_properties_recursive(
+                        interp,
+                        left_value,
+                        right_value,
+                        seen,
+                        env,
+                    )
             })
         })
 }
 
-pub(crate) fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
-    values_equal_including_properties_recursive(left, right, &mut HashSet::new())
+pub(crate) fn values_equal_including_properties(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> bool {
+    values_equal_including_properties_recursive(interp, left, right, &mut HashSet::new(), env)
 }
 
 pub(crate) fn values_equal_including_properties_recursive(
+    interp: &Interpreter,
     left: &Value,
     right: &Value,
     seen: &mut HashSet<(usize, usize)>,
+    env: &Env,
 ) -> bool {
+    // fns.c:internal_equal calls maybe_remove_pos_from_symbol before its
+    // type/equality dispatch.  The switch is the dynamically bound
+    // `symbols-with-pos-enabled' flag, so the including-properties variant
+    // must consult the same evaluator environment as ordinary `equal'.
+    if (matches!(left, Value::Record(_)) || matches!(right, Value::Record(_)))
+        && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
+    {
+        return equal;
+    }
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
         // GNU's compare_string_intervals walks POSITIONS, so interval
         // segmentation is not significant, and plists within a span
@@ -766,9 +806,11 @@ pub(crate) fn values_equal_including_properties_recursive(
                 break;
             }
             if !text_property_plists_equal_including_properties(
+                interp,
                 &collect_props(&left_string, pos),
                 &collect_props(&right_string, pos),
                 seen,
+                env,
             ) {
                 return false;
             }
@@ -784,7 +826,7 @@ pub(crate) fn values_equal_including_properties_recursive(
                 .iter()
                 .zip(right_items.iter())
                 .all(|(left, right)| {
-                    values_equal_including_properties_recursive(left, right, seen)
+                    values_equal_including_properties_recursive(interp, left, right, seen, env)
                 });
     }
     match (left, right) {
@@ -796,6 +838,68 @@ pub(crate) fn values_equal_including_properties_recursive(
         }
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Record(left_id), Value::Record(right_id)) => {
+            if left_id == right_id {
+                return true;
+            }
+            let (Some(left_record), Some(right_record)) =
+                (interp.find_record(*left_id), interp.find_record(*right_id))
+            else {
+                return false;
+            };
+            if left_record.kind != right_record.kind {
+                return false;
+            }
+            // fns.c:internal_equal walks genuine records and pseudovectors
+            // at or above PVEC_CLOSURE element-by-element.  In particular,
+            // distinct but equal byte-code closures are keys in comp.el's
+            // relocation tables.  Runtime handles below that boundary stay
+            // identity-only.
+            if matches!(
+                left_record.kind,
+                crate::lisp::eval::RecordKind::Process
+                    | crate::lisp::eval::RecordKind::HashTable
+                    | crate::lisp::eval::RecordKind::Obarray
+                    | crate::lisp::eval::RecordKind::Window
+                    | crate::lisp::eval::RecordKind::WindowConfiguration
+                    | crate::lisp::eval::RecordKind::Thread
+                    | crate::lisp::eval::RecordKind::Mutex
+                    | crate::lisp::eval::RecordKind::ConditionVariable
+                    | crate::lisp::eval::RecordKind::NativeCompUnit
+                    | crate::lisp::eval::RecordKind::NativeCompiledFunction
+                    | crate::lisp::eval::RecordKind::TreeSitterParser
+                    | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
+                    | crate::lisp::eval::RecordKind::Sqlite
+            ) {
+                return false;
+            }
+            if left_record.kind == crate::lisp::eval::RecordKind::TreeSitterNode {
+                let left = interp.treesit_node_state(left);
+                let right = interp.treesit_node_state(right);
+                return matches!((left, right), (Some(left), Some(right))
+                    if left.parser_id == right.parser_id
+                        && left.generation == right.generation
+                        && left.node_id == right.node_id);
+            }
+            let pair = (*left_id as usize, *right_id as usize);
+            if !seen.insert(pair) {
+                return true;
+            }
+            values_equal_including_properties_recursive(
+                interp,
+                &left_record.type_tag,
+                &right_record.type_tag,
+                seen,
+                env,
+            ) && left_record.slots.len() == right_record.slots.len()
+                && left_record
+                    .slots
+                    .iter()
+                    .zip(&right_record.slots)
+                    .all(|(left, right)| {
+                        values_equal_including_properties_recursive(interp, left, right, seen, env)
+                    })
+        }
         (Value::Cons(_), Value::Cons(_)) => {
             let Some((left_car, _)) = left.cons_cells() else {
                 return false;
@@ -813,10 +917,10 @@ pub(crate) fn values_equal_including_properties_recursive(
             let Some((b_car, b_cdr)) = right.cons_values() else {
                 return false;
             };
-            values_equal_including_properties_recursive(&a_car, &b_car, seen)
-                && values_equal_including_properties_recursive(&a_cdr, &b_cdr, seen)
+            values_equal_including_properties_recursive(interp, &a_car, &b_car, seen, env)
+                && values_equal_including_properties_recursive(interp, &a_cdr, &b_cdr, seen, env)
         }
-        _ => left == right,
+        _ => values_equal_in_env(interp, left, right, env),
     }
 }
 
@@ -1059,6 +1163,7 @@ pub(crate) fn compare_record_values(
         | crate::lisp::eval::RecordKind::Mutex
         | crate::lisp::eval::RecordKind::ConditionVariable
         | crate::lisp::eval::RecordKind::NativeCompUnit
+        | crate::lisp::eval::RecordKind::NativeCompiledFunction
         | crate::lisp::eval::RecordKind::TreeSitterParser
         | crate::lisp::eval::RecordKind::TreeSitterNode
         | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
@@ -1469,8 +1574,32 @@ pub(crate) fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
 }
 
 pub(crate) fn sxhash_value(interp: &Interpreter, value: &Value, mode: HashMode) -> i64 {
+    sxhash_value_with_symbol_positions(interp, value, mode, false)
+}
+
+pub(crate) fn sxhash_value_in_env(
+    interp: &Interpreter,
+    value: &Value,
+    mode: HashMode,
+    env: &Env,
+) -> i64 {
+    sxhash_value_with_symbol_positions(interp, value, mode, symbols_with_pos_enabled(interp, env))
+}
+
+fn sxhash_value_with_symbol_positions(
+    interp: &Interpreter,
+    value: &Value,
+    mode: HashMode,
+    remove_symbol_positions: bool,
+) -> i64 {
     let mut state = 0xcbf2_9ce4_8422_2325u64;
-    hash_value_recursive(interp, &mut state, value, mode);
+    hash_value_recursive_with_symbol_positions(
+        interp,
+        &mut state,
+        value,
+        mode,
+        remove_symbol_positions,
+    );
     (state & 0x7fff_ffff_ffff_ffff) as i64
 }
 
@@ -1604,6 +1733,7 @@ pub(crate) fn hash_props(
     state: &mut u64,
     props: &[StringPropertySpan],
     depth: u32,
+    remove_symbol_positions: bool,
 ) {
     hash_mix(state, props.len() as u64);
     for span in props {
@@ -1612,25 +1742,44 @@ pub(crate) fn hash_props(
         hash_mix(state, span.props.len() as u64);
         for (key, value) in &span.props {
             hash_str(state, key);
-            hash_value_equal_at(interp, state, value, true, depth + 1);
+            hash_value_equal_at(
+                interp,
+                state,
+                value,
+                true,
+                depth + 1,
+                remove_symbol_positions,
+            );
         }
     }
 }
 
-pub(crate) fn hash_value_recursive(
+fn hash_value_recursive_with_symbol_positions(
     interp: &Interpreter,
     state: &mut u64,
     value: &Value,
     mode: HashMode,
+    remove_symbol_positions: bool,
 ) {
+    if remove_symbol_positions && let Some((symbol, _)) = symbol_with_pos_parts(interp, value) {
+        return hash_value_recursive_with_symbol_positions(
+            interp,
+            state,
+            &symbol,
+            mode,
+            remove_symbol_positions,
+        );
+    }
     match mode {
         HashMode::Eq => hash_value_eq(state, value),
         HashMode::Eql => hash_value_eql(state, value),
-        HashMode::Equal | HashMode::EqualIncludingProperties => hash_value_equal(
+        HashMode::Equal | HashMode::EqualIncludingProperties => hash_value_equal_at(
             interp,
             state,
             value,
             mode == HashMode::EqualIncludingProperties,
+            0,
+            remove_symbol_positions,
         ),
     }
 }
@@ -1741,15 +1890,6 @@ pub(crate) fn hash_value_eql(state: &mut u64, value: &Value) {
     }
 }
 
-pub(crate) fn hash_value_equal(
-    interp: &Interpreter,
-    state: &mut u64,
-    value: &Value,
-    include_properties: bool,
-) {
-    hash_value_equal_at(interp, state, value, include_properties, 0);
-}
-
 /// `sxhash_obj' (fns.c:5505) with GNU's depth bound: past `SXHASH_MAX_DEPTH'
 /// every object hashes as 0 regardless of its contents.
 pub(crate) fn hash_value_equal_at(
@@ -1758,10 +1898,21 @@ pub(crate) fn hash_value_equal_at(
     value: &Value,
     include_properties: bool,
     depth: u32,
+    remove_symbol_positions: bool,
 ) {
     if depth > SXHASH_MAX_DEPTH {
         hash_mix(state, 0);
         return;
+    }
+    if remove_symbol_positions && let Some((symbol, _)) = symbol_with_pos_parts(interp, value) {
+        return hash_value_equal_at(
+            interp,
+            state,
+            &symbol,
+            include_properties,
+            depth,
+            remove_symbol_positions,
+        );
     }
     match value {
         Value::Nil => hash_mix(state, 30),
@@ -1798,7 +1949,7 @@ pub(crate) fn hash_value_equal_at(
                 hash_mix(state, u64::from(*code));
             }
             if include_properties {
-                hash_props(interp, state, &shared.props, depth);
+                hash_props(interp, state, &shared.props, depth, remove_symbol_positions);
             }
         }
         Value::Symbol(symbol) => {
@@ -1817,12 +1968,26 @@ pub(crate) fn hash_value_equal_at(
                     let Some((car, cdr)) = tail.cons_values() else {
                         break;
                     };
-                    hash_value_equal_at(interp, state, &car, include_properties, depth + 1);
+                    hash_value_equal_at(
+                        interp,
+                        state,
+                        &car,
+                        include_properties,
+                        depth + 1,
+                        remove_symbol_positions,
+                    );
                     tail = cdr;
                 }
             }
             if !tail.is_nil() {
-                hash_value_equal_at(interp, state, &tail, include_properties, depth + 1);
+                hash_value_equal_at(
+                    interp,
+                    state,
+                    &tail,
+                    include_properties,
+                    depth + 1,
+                    remove_symbol_positions,
+                );
             }
         }
         Value::BuiltinFunc(name) => {
@@ -1837,7 +2002,14 @@ pub(crate) fn hash_value_equal_at(
                 .into_iter()
                 .take(SXHASH_MAX_LEN)
             {
-                hash_value_equal_at(interp, state, &slot, include_properties, depth + 1);
+                hash_value_equal_at(
+                    interp,
+                    state,
+                    &slot,
+                    include_properties,
+                    depth + 1,
+                    remove_symbol_positions,
+                );
             }
         }
         Value::Buffer(buffer_value) => {
@@ -1855,7 +2027,14 @@ pub(crate) fn hash_value_equal_at(
             hash_mix(state, *id);
         }
         Value::CharTable(id) => {
-            hash_char_table_equal(interp, state, *id, include_properties, depth);
+            hash_char_table_equal(
+                interp,
+                state,
+                *id,
+                include_properties,
+                depth,
+                remove_symbol_positions,
+            );
         }
         Value::Frame(id) => {
             hash_mix(state, 48);
@@ -1866,7 +2045,14 @@ pub(crate) fn hash_value_equal_at(
             hash_mix(state, *id);
         }
         Value::Record(id) => {
-            hash_record_equal(interp, state, *id, include_properties, depth);
+            hash_record_equal(
+                interp,
+                state,
+                *id,
+                include_properties,
+                depth,
+                remove_symbol_positions,
+            );
         }
         Value::Finalizer(id) => {
             hash_mix(state, 46);
@@ -1899,6 +2085,7 @@ pub(crate) fn hash_char_table_equal(
     id: u64,
     include_properties: bool,
     depth: u32,
+    remove_symbol_positions: bool,
 ) {
     hash_mix(state, 44);
     let Some(table) = interp.find_char_table(id) else {
@@ -1914,16 +2101,37 @@ pub(crate) fn hash_char_table_equal(
         None => hash_mix(state, 0),
     }
     hash_mix(state, table.parent.unwrap_or(0));
-    hash_value_equal_at(interp, state, &table.default, include_properties, depth + 1);
+    hash_value_equal_at(
+        interp,
+        state,
+        &table.default,
+        include_properties,
+        depth + 1,
+        remove_symbol_positions,
+    );
     hash_mix(state, table.extra_slots.len() as u64);
     for slot in table.extra_slots.iter().take(SXHASH_MAX_LEN) {
-        hash_value_equal_at(interp, state, slot, include_properties, depth + 1);
+        hash_value_equal_at(
+            interp,
+            state,
+            slot,
+            include_properties,
+            depth + 1,
+            remove_symbol_positions,
+        );
     }
     hash_mix(state, table.entries.len() as u64);
     for entry in table.entries.iter().take(SXHASH_MAX_LEN) {
         hash_mix(state, entry.start as u64);
         hash_mix(state, entry.end as u64);
-        hash_value_equal_at(interp, state, &entry.value, include_properties, depth + 1);
+        hash_value_equal_at(
+            interp,
+            state,
+            &entry.value,
+            include_properties,
+            depth + 1,
+            remove_symbol_positions,
+        );
     }
     hash_mix(state, table.category_docs.len() as u64);
     for (code, doc) in &table.category_docs {
@@ -1938,6 +2146,7 @@ pub(crate) fn hash_record_equal(
     id: u64,
     include_properties: bool,
     depth: u32,
+    remove_symbol_positions: bool,
 ) {
     hash_mix(state, 45);
     let Some(record) = interp.find_record(id) else {
@@ -1966,6 +2175,7 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::Mutex
         | crate::lisp::eval::RecordKind::ConditionVariable
         | crate::lisp::eval::RecordKind::NativeCompUnit
+        | crate::lisp::eval::RecordKind::NativeCompiledFunction
         | crate::lisp::eval::RecordKind::SymbolWithPos
         | crate::lisp::eval::RecordKind::TreeSitterParser
         | crate::lisp::eval::RecordKind::TreeSitterNode
@@ -1977,6 +2187,7 @@ pub(crate) fn hash_record_equal(
                 &record.type_tag,
                 include_properties,
                 depth + 1,
+                remove_symbol_positions,
             );
             hash_mix(state, id);
         }
@@ -1990,11 +2201,19 @@ pub(crate) fn hash_record_equal(
                 &record.type_tag,
                 include_properties,
                 depth + 1,
+                remove_symbol_positions,
             );
             hash_mix(state, record.slots.len() as u64);
             // fns.c:5447 `sxhash_vector' hashes a record's leading slots only.
             for slot in record.slots.iter().take(SXHASH_MAX_LEN) {
-                hash_value_equal_at(interp, state, slot, include_properties, depth + 1);
+                hash_value_equal_at(
+                    interp,
+                    state,
+                    slot,
+                    include_properties,
+                    depth + 1,
+                    remove_symbol_positions,
+                );
             }
         }
     }
@@ -2096,9 +2315,11 @@ pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -
         || matches!(
             value,
             Value::Record(id)
-                if interp
-                    .find_record(*id)
-                    .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
+                if interp.find_record(*id).is_some_and(|record| matches!(
+                    record.kind,
+                    crate::lisp::eval::RecordKind::Closure
+                        | crate::lisp::eval::RecordKind::NativeCompiledFunction
+                ))
         )
 }
 

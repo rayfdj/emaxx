@@ -200,8 +200,11 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
-    // No "native-compile": Emaxx models a no-native-comp GNU build, where
-    // comp.c registers nothing and `native-comp-available-p' is nil.
+    // GNU provides this when its comp.c backend is built, independently of
+    // whether libgccjit can be opened at runtime.  This build contains the
+    // corresponding Rust backend; `native-comp-available-p' performs the
+    // separate dynamic-library availability check.
+    StartupFeature::new("native-compile"),
     StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
     StartupFeature::new("sha1"),
     StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
@@ -863,15 +866,58 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["json-utf8-decode-error", "json-error", "error"],
             "invalid utf-8 encoding",
         ),
-        // comp.c and treesit.c register these the same way (DEFSYM plus
-        // `error-conditions'/`error-message' puts); values probed from the
-        // pinned oracle.  Emaxx signals all three, so leaving them
-        // unregistered made them catchable only by `t'.
+        // comp.c registers the native compiler and loader condition tree in
+        // C, independently of comp.el.  Keep that ownership here: these are
+        // the exact `error-conditions' and `error-message' values installed
+        // by syms_of_comp.
+        (
+            "native-compiler-error",
+            &["native-compiler-error", "error"],
+            "Native compiler error",
+        ),
+        (
+            "native-ice",
+            &["native-ice", "native-compiler-error", "error"],
+            "Internal native compiler error",
+        ),
         (
             "native-lisp-load-failed",
             &["native-lisp-load-failed", "error"],
             "Native elisp load failed",
         ),
+        (
+            "native-lisp-wrong-reloc",
+            &[
+                "native-lisp-wrong-reloc",
+                "native-lisp-load-failed",
+                "error",
+            ],
+            "Primitive redefined or wrong relocation",
+        ),
+        (
+            "wrong-register-subr-call",
+            &[
+                "wrong-register-subr-call",
+                "native-lisp-load-failed",
+                "error",
+            ],
+            "comp--register-subr can only be called during native lisp load phase.",
+        ),
+        (
+            "native-lisp-file-inconsistent",
+            &[
+                "native-lisp-file-inconsistent",
+                "native-lisp-load-failed",
+                "error",
+            ],
+            "eln file inconsistent with current runtime configuration, please recompile",
+        ),
+        (
+            "comp-sanitizer-error",
+            &["comp-sanitizer-error", "error"],
+            "Native code sanitizer runtime error",
+        ),
+        // treesit.c likewise owns these condition registrations.
         (
             "treesit-buffer-too-large",
             &["treesit-buffer-too-large", "treesit-error", "error"],
@@ -1271,6 +1317,28 @@ impl CharTableState {
                 .collect()
         })
     }
+
+    /// Append points in `[start, end]` at which this table's effective
+    /// explicit range can change.  `resolved_ranges` already folds the
+    /// append-only write log into the current, non-overlapping view, so
+    /// callers do not need to rescan every historical write.
+    pub(crate) fn append_change_boundaries(&self, start: u32, end: u32, boundaries: &mut Vec<u32>) {
+        self.with_resolved_ranges(|map| {
+            if let Some((_, &(range_end, _))) = map.range(..start).next_back()
+                && range_end >= start
+                && range_end < end
+            {
+                boundaries.push(range_end + 1);
+            }
+
+            for (&range_start, &(range_end, _)) in map.range(start..=end) {
+                boundaries.push(range_start);
+                if range_end < end {
+                    boundaries.push(range_end + 1);
+                }
+            }
+        });
+    }
 }
 
 /// GNU vectorlike representation carried by Emaxx's shared record arena.
@@ -1295,6 +1363,7 @@ pub(crate) enum RecordKind {
     Mutex,
     ConditionVariable,
     NativeCompUnit,
+    NativeCompiledFunction,
     TreeSitterParser,
     TreeSitterNode,
     TreeSitterCompiledQuery,
@@ -1544,6 +1613,33 @@ pub(crate) struct LabeledRestriction {
     end_marker_id: u64,
 }
 
+/// Rust representation of the state saved by GNU C's
+/// `record_unwind_protect_excursion`/`save_excursion_save` pair.
+pub(crate) struct SavedExcursion {
+    buffer_id: u64,
+    point: usize,
+    marker_id: u64,
+}
+
+/// Rust representation of the state saved by GNU C's
+/// `save_restriction_save`.  Marker-backed bounds retain their position
+/// across edits exactly like the interpreter's `save-restriction` path.
+pub(crate) struct SavedRestriction {
+    buffer_id: u64,
+    bounds: SavedRestrictionBounds,
+    labeled: Vec<LabeledRestriction>,
+}
+
+enum SavedRestrictionBounds {
+    Wide,
+    Narrow {
+        beginning: usize,
+        end: usize,
+        beginning_marker_id: u64,
+        end_marker_id: u64,
+    },
+}
+
 /// A memoized funcall resolution for a symbol callee (see
 /// `function_resolution_cache`).
 #[derive(Clone)]
@@ -1570,7 +1666,49 @@ pub(crate) enum RuntimeHashTest {
 struct EqualHashTableState {
     test: RuntimeHashTest,
     entries: Vec<(Value, Value)>,
+    // fns.c stores entries in stable key/value slots.  Removing an entry
+    // links its slot onto a LIFO free list; reinsertion reuses that slot,
+    // and DOHASH/maphash walk slots in numeric order.  Keep the compact Rust
+    // entry vector sorted by these slot numbers so public iteration has the
+    // same order without giving up contiguous storage.
+    slot_indices: Vec<usize>,
+    free_slots: Vec<usize>,
+    next_slot: usize,
     key_index: HashMap<Option<i64>, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
+}
+
+/// Indexed storage for hash tables with an Elisp-defined test.  GNU fns.c
+/// calls the Elisp hash function once for a probe, follows only that bucket,
+/// and calls the Elisp comparator for collisions.  Keep the returned hashes
+/// beside the entries so existing keys are not re-hashed on every lookup.
+#[derive(Clone)]
+struct CustomHashTableState {
+    entries: Vec<(Value, Value)>,
+    hashes: Vec<i64>,
+    slot_indices: Vec<usize>,
+    free_slots: Vec<usize>,
+    next_slot: usize,
+    key_index: HashMap<i64, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
+}
+
+impl CustomHashTableState {
+    fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+            hashes: Vec::new(),
+            slot_indices: Vec::new(),
+            free_slots: Vec::new(),
+            next_slot: 0,
+            key_index: HashMap::default(),
+        }
+    }
+
+    fn rebuild_index(&mut self) {
+        self.key_index.clear();
+        for (index, hash) in self.hashes.iter().copied().enumerate() {
+            self.key_index.entry(hash).or_default().push(index);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2889,6 +3027,10 @@ pub struct Interpreter {
     /// primitive.  GNU keeps this in C state; it must not leak through a
     /// project-private Lisp variable.
     pub(crate) external_debugging_output_target: Option<String>,
+    /// The live libgccjit arena and runtime ABI state owned by GNU's `comp.c`
+    /// in the reference implementation.  All compiler policy and LIMPLE
+    /// remain in the unchanged `comp.el` frontend.
+    pub(crate) native_compiler: crate::lisp::native_comp::NativeCompilerState,
     /// Process-local creation permissions owned by GNU's C runtime.  Keep
     /// this as typed interpreter state so isolated Rust interpreters neither
     /// communicate through a private Lisp variable nor mutate the host
@@ -3020,6 +3162,12 @@ pub struct Interpreter {
     /// showed up at 6% of a `puthash'/`gethash' kernel just locating the
     /// table per operation.
     equal_hash_tables: HashMap<u64, EqualHashTableState, crate::lisp::types::IdentityBuildHasher>,
+    custom_hash_tables: HashMap<u64, CustomHashTableState, crate::lisp::types::IdentityBuildHasher>,
+    /// Hash tables whose user-defined hash or comparison function is on the
+    /// stack.  GNU fns.c flips the table's `mutable` bit for exactly this
+    /// critical section; mutation primitives reject the table instead of
+    /// copying and comparing all of its entries around every callback.
+    hash_tables_under_test: HashSet<u64, crate::lisp::types::IdentityBuildHasher>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
@@ -3651,6 +3799,7 @@ impl Interpreter {
             command_loop_recursion_depth: 0,
             minibuffer_runtime: MinibufferRuntimeState::default(),
             external_debugging_output_target: None,
+            native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: 0o755,
             local_time_zone_rule,
             special_variables: vec![
@@ -3861,6 +4010,8 @@ impl Interpreter {
             regexp_syntax_class_cache: RefCell::new(None),
             syntax_segment_cache: RefCell::new(None),
             equal_hash_tables: HashMap::default(),
+            custom_hash_tables: HashMap::default(),
+            hash_tables_under_test: HashSet::default(),
             charset_aliases: Vec::new(),
             charset_ids: vec![
                 ("ascii".into(), 0),
@@ -4216,12 +4367,10 @@ impl Interpreter {
             ("command-history", Value::Nil),
             ("comment-end-can-be-escaped", Value::Nil),
             ("comment-use-syntax-ppss", Value::T),
-            // comp.c is compiled only under HAVE_NATIVE_COMP; this build
-            // reports `native-comp-available-p' nil, so `comp-abi-hash' and
-            // `comp-native-version-dir' are void exactly as in a GNU build
-            // without the native compiler.  The previous seeds copied the
-            // oracle binary's OWN build hash -- per-build identity values,
-            // not portable state (2026-08-23 audit finding 77).
+            // The live Rust comp.c replacement initializes its ABI hash,
+            // native version directory, and runtime tables after the base
+            // startup values below.  Never seed another executable's own
+            // build identity here (2026-08-23 audit finding 77).
             ("comp-ctxt", Value::Nil),
             ("comp-file-preloaded-p", Value::Nil),
             ("comp-sanitizer-active", Value::Nil),
@@ -4394,11 +4543,10 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
 
-        // Portable list-valued DEFVARs from the same completeness sweep;
-        // the native-comp comp-*-h tables, comp-subr-list, terminal-frame
-        // and the redisplay cause tables stay void -- they carry the NS
-        // build's own filesystem paths and live object state, a disclosed
-        // build divergence, not seedable data.
+        // Portable list-valued DEFVARs from the same completeness sweep.
+        // The live native-comp backend initializes its comp-*-h tables and
+        // comp-subr-list separately; terminal-frame and redisplay cause
+        // tables still carry live object state and are not seedable data.
         for (name, value) in [
             (
                 "coding-category-list",
@@ -5330,6 +5478,7 @@ impl Interpreter {
                 }
             }
         }
+        crate::lisp::native_comp::initialize_runtime(&mut interp);
         interp
     }
 

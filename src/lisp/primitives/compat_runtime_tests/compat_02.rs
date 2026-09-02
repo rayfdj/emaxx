@@ -2052,6 +2052,16 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         .expect("disabled equal plain"),
         Value::Nil
     );
+    assert_eq!(
+        call(
+            &mut interp,
+            "equal-including-properties",
+            &[foo1.clone(), plain.clone()],
+            &mut disabled_env
+        )
+        .expect("disabled equal-including-properties plain"),
+        Value::Nil
+    );
 
     let mut enabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
     assert_eq!(
@@ -2105,6 +2115,16 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         Value::T
     );
     assert_eq!(
+        call(
+            &mut interp,
+            "equal-including-properties",
+            &[foo1.clone(), plain.clone()],
+            &mut enabled_env
+        )
+        .expect("enabled equal-including-properties plain"),
+        Value::T
+    );
+    assert_eq!(
         call(&mut interp, "equal", &[foo1, plain], &mut enabled_env).expect("enabled equal plain"),
         Value::T
     );
@@ -2130,5 +2150,42 @@ fn member_ignore_case_matches_strings_case_insensitively_on_the_image() {
             Value::Nil,
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn obarray_make_accepts_explicit_nil_as_the_default_size() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let obarray = call(&mut interp, "obarray-make", &[Value::Nil], &mut env)
+        .expect("nil selects the default obarray size");
+    assert_eq!(
+        call(&mut interp, "obarrayp", &[obarray], &mut env).expect("obarrayp"),
+        Value::T
+    );
+}
+
+#[test]
+fn unicode_property_registry_uses_the_c_owned_symbol_value_cell() {
+    let mut interp = Interpreter::new();
+    let global_registry = Value::list([Value::cons(Value::symbol("probe"), Value::T)]);
+    interp.set_symbol_value_cell("char-code-property-alist", global_registry);
+    let lexical_registry = Value::list([Value::cons(
+        Value::symbol("probe"),
+        Value::String("wrong.el".into()),
+    )]);
+    let mut env = vec![crate::lisp::types::EnvFrame::new(vec![(
+        "char-code-property-alist".into(),
+        lexical_registry,
+    )])];
+    assert_eq!(
+        call(
+            &mut interp,
+            "unicode-property-table-internal",
+            &[Value::symbol("probe")],
+            &mut env,
+        )
+        .expect("read the C-owned Unicode property registry"),
+        Value::T
     );
 }

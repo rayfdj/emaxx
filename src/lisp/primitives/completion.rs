@@ -1506,10 +1506,27 @@ pub(crate) fn callable_interactive_form_items(
 ) -> Option<Vec<Value>> {
     if let Value::Record(id) = func
         && let Some(record) = interp.find_record(*id)
-        && record.kind == crate::lisp::eval::RecordKind::Closure
-        && let Ok(Some(object)) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
-        && let Some(spec) = object.interactive
     {
+        if record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction {
+            return record
+                .slots
+                .get(6)
+                .filter(|spec| !spec.is_nil())
+                .cloned()
+                .and_then(|form| form.to_vec().ok());
+        }
+        if record.kind != crate::lisp::eval::RecordKind::Closure {
+            return interactive_form_items(func);
+        }
+        let Some(object) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
+            .ok()
+            .flatten()
+        else {
+            return interactive_form_items(func);
+        };
+        let Some(spec) = object.interactive else {
+            return interactive_form_items(func);
+        };
         // GNU keys interactivity on the slot's presence (PVSIZE >
         // COMPILED_INTERACTIVE): a bare `(interactive)' stores nil there
         // and the function is still a command.  callint.c

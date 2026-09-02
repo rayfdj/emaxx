@@ -1,4 +1,272 @@
 use super::*;
+use crate::lisp::types::StringPropertySpan;
+
+struct CircularReadMaterializer<'a> {
+    interpreter: &'a mut Interpreter,
+    labels: std::collections::HashMap<u32, Value>,
+    records: std::collections::HashMap<usize, Value>,
+    resolved_cons: std::collections::HashSet<usize>,
+}
+
+impl CircularReadMaterializer<'_> {
+    fn invalid() -> LispError {
+        LispError::ReadError("invalid-read-syntax".into())
+    }
+
+    fn circular_label(value: &Value) -> Option<(u32, Value)> {
+        let Value::ReaderForm(form) = value else {
+            return None;
+        };
+        match form.as_ref() {
+            ReaderForm::CircularLabel { id, payload } => Some((*id, payload.clone())),
+            _ => None,
+        }
+    }
+
+    fn circular_reference(value: &Value) -> Option<u32> {
+        let Value::ReaderForm(form) = value else {
+            return None;
+        };
+        match form.as_ref() {
+            ReaderForm::CircularReference(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn quoted_hash_table_with_circular_data(value: &Value) -> bool {
+        let Some((head, tail)) = value.cons_values() else {
+            return false;
+        };
+        if head.as_symbol().ok() != Some("quote") {
+            return false;
+        }
+        let Some((literal, end)) = tail.cons_values() else {
+            return false;
+        };
+        end.is_nil()
+            && matches!(
+                &literal,
+                Value::ReaderForm(form)
+                    if matches!(form.as_ref(), ReaderForm::HashTable { .. })
+            )
+            && crate::lisp::reader::contains_circular_read_syntax(&literal)
+    }
+
+    fn record_placeholder(
+        &mut self,
+        form: &Rc<ReaderForm>,
+        label: Option<u32>,
+    ) -> Result<Option<Value>, LispError> {
+        let identity = Rc::as_ptr(form) as usize;
+        if let Some(record) = self.records.get(&identity).cloned() {
+            if let Some(label) = label {
+                self.labels.insert(label, record.clone());
+            }
+            return Ok(Some(record));
+        }
+
+        let (slots, ordinary_record) = match form.as_ref() {
+            ReaderForm::Record { slots }
+                if !matches!(
+                    slots.first(),
+                    Some(kind) if kind.as_symbol().ok() == Some("interpreted-function")
+                ) =>
+            {
+                (slots, true)
+            }
+            ReaderForm::Closure {
+                kind: ReaderClosureKind::ByteCode,
+                slots,
+            } => (slots, false),
+            _ => return Ok(None),
+        };
+        if ordinary_record && slots.is_empty() {
+            return Err(LispError::ReadError("empty record literal".into()));
+        }
+
+        // lread.c installs the finished object's address in the #N= table
+        // before reading its fields.  Allocate the Rust arena object first
+        // for the same reason: comp.el's serialized IR contains records whose
+        // predecessor/successor slots point back to the record itself.
+        let placeholder = if ordinary_record {
+            self.interpreter.create_record_with_type(
+                Value::Nil,
+                vec![Value::Nil; slots.len().saturating_sub(1)],
+            )
+        } else {
+            self.interpreter.create_pseudovector(
+                RecordKind::Closure,
+                "byte-code-function",
+                vec![Value::Nil; slots.len()],
+            )
+        };
+        self.records.insert(identity, placeholder.clone());
+        if let Some(label) = label {
+            // Reused label numbers replace the previous mapping, exactly as
+            // GNU's reader does; already-built objects retain their links.
+            self.labels.insert(label, placeholder.clone());
+        }
+
+        let mut resolved = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let slot = self.resolve(slot)?;
+            let slot = self.interpreter.materialize_read_record_literals(&slot)?;
+            let slot = crate::lisp::primitives::materialize_read_hash_table_literals(
+                self.interpreter,
+                &slot,
+            )?;
+            let slot = crate::lisp::primitives::materialize_read_char_table_literals(
+                self.interpreter,
+                &slot,
+            )?;
+            resolved.push(slot);
+        }
+
+        let Value::Record(record_id) = placeholder else {
+            unreachable!("record placeholder allocation returns a record")
+        };
+        if ordinary_record {
+            let type_tag = resolved.remove(0);
+            self.interpreter.retag_record(record_id, type_tag)?;
+        }
+        self.interpreter
+            .find_record_mut(record_id)
+            .expect("new reader record must remain allocated")
+            .slots = resolved;
+        Ok(Some(Value::Record(record_id)))
+    }
+
+    fn fill_cons(&mut self, template: &Value, target: &Value) -> Result<(), LispError> {
+        let Some((template_car, template_cdr)) = template.cons_values() else {
+            return Err(Self::invalid());
+        };
+        let Some((target_car, target_cdr)) = target.cons_cells() else {
+            return Err(Self::invalid());
+        };
+        *target_car.borrow_mut() = self.resolve(&template_car)?;
+        *target_cdr.borrow_mut() = self.resolve(&template_cdr)?;
+        Ok(())
+    }
+
+    fn resolve(&mut self, value: &Value) -> Result<Value, LispError> {
+        if Self::quoted_hash_table_with_circular_data(value) {
+            return Err(Self::invalid());
+        }
+        if let Some(id) = Self::circular_reference(value) {
+            return self.labels.get(&id).cloned().ok_or_else(Self::invalid);
+        }
+        if let Some((id, template)) = Self::circular_label(value) {
+            if Self::circular_reference(&template) == Some(id) {
+                return Err(LispError::ReadError("nonsensical self-reference".into()));
+            }
+            if let Value::ReaderForm(form) = &template
+                && let Some(record) = self.record_placeholder(form, Some(id))?
+            {
+                return Ok(record);
+            }
+
+            // The parser has already allocated the cons tree.  GNU's reader
+            // installs that object's address in the #N= table before filling
+            // it, so use the existing cons as the placeholder instead of
+            // cloning every list in a form that happens to contain a label.
+            // Besides matching GNU's identity model, this avoids quadratic
+            // list rescans in comp.el's large serialized compiler context.
+            let placeholder = matches!(template, Value::Cons(_)).then(|| template.clone());
+            if let Some(placeholder) = placeholder {
+                self.labels.insert(id, placeholder.clone());
+                if let Value::Cons(cell) = &placeholder {
+                    self.resolved_cons.insert(ConsCell::identity(cell));
+                }
+                self.fill_cons(&template, &placeholder)?;
+                return Ok(placeholder);
+            }
+
+            let resolved = self.resolve(&template)?;
+            self.labels.insert(id, resolved.clone());
+            return Ok(resolved);
+        }
+
+        match value {
+            Value::Cons(cell) => {
+                if !self.resolved_cons.insert(ConsCell::identity(cell)) {
+                    return Ok(value.clone());
+                }
+                let Some((car_cell, cdr_cell)) = value.cons_cells() else {
+                    return Err(Self::invalid());
+                };
+                let car = car_cell.borrow().clone();
+                *car_cell.borrow_mut() = self.resolve(&car)?;
+                let cdr = cdr_cell.borrow().clone();
+                *cdr_cell.borrow_mut() = self.resolve(&cdr)?;
+                Ok(value.clone())
+            }
+            Value::StringObject(state) => {
+                let spans = state.borrow().props.clone();
+                let mut resolved_spans = Vec::with_capacity(spans.len());
+                for span in spans {
+                    let mut props = Vec::with_capacity(span.props.len());
+                    for (key, property) in span.props {
+                        props.push((key, self.resolve(&property)?));
+                    }
+                    resolved_spans.push(StringPropertySpan { props, ..span });
+                }
+                state.borrow_mut().props = resolved_spans;
+                Ok(value.clone())
+            }
+            Value::ReaderForm(form) => {
+                if let Some(record) = self.record_placeholder(form, None)? {
+                    return Ok(record);
+                }
+                let resolve_fields = |this: &mut Self, fields: &[Value]| {
+                    fields
+                        .iter()
+                        .map(|field| this.resolve(field))
+                        .collect::<Result<Vec<_>, _>>()
+                };
+                let resolved = match form.as_ref() {
+                    // A #N= label can make the same hash table appear both
+                    // as an instruction constant and as its relocation-table
+                    // key.  Hash tables compare by identity, so materialize
+                    // the table before the label is installed rather than
+                    // leaving a ReaderForm that each later graph walk would
+                    // independently turn into a different table.
+                    ReaderForm::HashTable { fields } => {
+                        let fields = resolve_fields(self, fields)?;
+                        return crate::lisp::primitives::materialize_read_hash_table_literal_fields(
+                            self.interpreter,
+                            &fields,
+                        );
+                    }
+                    ReaderForm::CharTable { fields } => ReaderForm::CharTable {
+                        fields: resolve_fields(self, fields)?,
+                    },
+                    ReaderForm::SubCharTable { fields } => ReaderForm::SubCharTable {
+                        fields: resolve_fields(self, fields)?,
+                    },
+                    ReaderForm::Record { slots } => ReaderForm::Record {
+                        slots: resolve_fields(self, slots)?,
+                    },
+                    ReaderForm::Closure { kind, slots } => ReaderForm::Closure {
+                        kind: *kind,
+                        slots: resolve_fields(self, slots)?,
+                    },
+                    ReaderForm::BoolVector { bits } => {
+                        ReaderForm::BoolVector { bits: bits.clone() }
+                    }
+                    ReaderForm::PositionedSymbol { name, pos } => ReaderForm::PositionedSymbol {
+                        name: name.clone(),
+                        pos: *pos,
+                    },
+                    ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
+                        unreachable!("circular forms are handled before structural descent")
+                    }
+                };
+                Ok(Value::ReaderForm(Rc::new(resolved)))
+            }
+            _ => Ok(value.clone()),
+        }
+    }
+}
 
 impl Interpreter {
     /// Finish the Interpreter-dependent part of GNU's reader contract.
@@ -16,7 +284,13 @@ impl Interpreter {
             return Ok(value);
         }
         let value = if crate::lisp::reader::contains_circular_read_syntax(&value) {
-            crate::lisp::reader::resolve_circular_read_syntax(value)?
+            CircularReadMaterializer {
+                interpreter: self,
+                labels: std::collections::HashMap::new(),
+                records: std::collections::HashMap::new(),
+                resolved_cons: std::collections::HashSet::new(),
+            }
+            .resolve(&value)?
         } else {
             value
         };
@@ -273,26 +547,14 @@ impl Interpreter {
         if let Some(old_definition) = old_definition {
             self.record_function_redefinition(&name, old_definition);
         }
-        if crate::lisp::primitives::prefer_builtin_override(&name) {
-            // Calls still resolve through the preferred native primitive,
-            // but retain GNU's logical function cell for symbol-function,
-            // alias chasing, compiler macros, and generalized variables.
-            self.set_function_binding(&name, Some(function));
-        } else if self.defalias_fset_function_handles(&name, &function, env) {
+        if self.defalias_fset_function_handles(&name, &function, env) {
         } else {
             // A nil function definition voids the cell.  In particular,
             // loadhist uses `(defalias NAME nil)' while unloading; leaving
             // a literal nil binding here would hide any dumped autoload and
             // turn the next call into `(invalid-function nil)'.
             if !function.is_nil() || !self.defer_unloaded_defsubst(&name, env) {
-                self.set_function_binding(
-                    &name,
-                    if function.is_nil() {
-                        None
-                    } else {
-                        Some(function)
-                    },
-                );
+                self.fset_function(&name, function, env)?;
             }
         }
         if !docstring.is_nil() {

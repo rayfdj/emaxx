@@ -567,7 +567,7 @@ define_dispatch!(
             }
             "eql" => {
                 need_args(name, args, 2)?;
-                Ok(if values_eql(&args[0], &args[1]) {
+                Ok(if values_eql_in_env(interp, &args[0], &args[1], env) {
                     Value::T
                 } else {
                     Value::Nil
@@ -585,38 +585,48 @@ define_dispatch!(
             }
             "equal-including-properties" => {
                 need_args(name, args, 2)?;
-                Ok(if values_equal_including_properties(&args[0], &args[1]) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                Ok(
+                    if values_equal_including_properties(interp, &args[0], &args[1], env) {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "sxhash-equal" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(
+                Ok(Value::Integer(sxhash_value_in_env(
                     interp,
                     &args[0],
                     HashMode::Equal,
+                    env,
                 )))
             }
             "sxhash-eq" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(interp, &args[0], HashMode::Eq)))
+                Ok(Value::Integer(sxhash_value_in_env(
+                    interp,
+                    &args[0],
+                    HashMode::Eq,
+                    env,
+                )))
             }
             "sxhash-eql" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(
+                Ok(Value::Integer(sxhash_value_in_env(
                     interp,
                     &args[0],
                     HashMode::Eql,
+                    env,
                 )))
             }
             "sxhash-equal-including-properties" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(
+                Ok(Value::Integer(sxhash_value_in_env(
                     interp,
                     &args[0],
                     HashMode::EqualIncludingProperties,
+                    env,
                 )))
             }
             "string-equal" => {

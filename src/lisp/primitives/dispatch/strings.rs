@@ -1046,7 +1046,7 @@ fn registered_unicode_property(
     property: &str,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
-    let Some(mut registered) = find_registered_unicode_property(interp, property, env) else {
+    let Some(mut registered) = find_registered_unicode_property(interp, property) else {
         return Ok(None);
     };
     let filename = match &registered {
@@ -1060,17 +1060,16 @@ fn registered_unicode_property(
         return Ok(Some(registered));
     };
     crate::lisp::load_file_strict(interp, &path)?;
-    registered = find_registered_unicode_property(interp, property, env)
+    registered = find_registered_unicode_property(interp, property)
         .unwrap_or(Value::String(filename.into()));
     Ok(Some(registered))
 }
 
-fn find_registered_unicode_property(
-    interp: &Interpreter,
-    property: &str,
-    env: &Env,
-) -> Option<Value> {
-    let mut alist = interp.lookup_var("char-code-property-alist", env)?;
+fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Option<Value> {
+    // chartab.c:uniprop_table reads Vchar_code_property_alist, the C-owned
+    // symbol value cell.  A caller's same-named lexical binding is not part
+    // of this primitive's state.
+    let mut alist = interp.symbol_value_cell("char-code-property-alist").ok()?;
     loop {
         let (entry, rest) = alist.cons_values()?;
         if let Some((key, value)) = entry.cons_values()

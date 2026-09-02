@@ -4498,6 +4498,31 @@ fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
 }
 
 #[test]
+fn eql_uses_position_aware_eq_for_non_numbers() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let left = call(
+        &mut interp,
+        "position-symbol",
+        &[Value::Symbol("&aux".into()), Value::Integer(7)],
+        &mut env,
+    )
+    .expect("make the first positioned symbol");
+    let right = call(
+        &mut interp,
+        "position-symbol",
+        &[Value::Symbol("&aux".into()), Value::Integer(19)],
+        &mut env,
+    )
+    .expect("make the second positioned symbol");
+
+    assert_eq!(
+        call(&mut interp, "eql", &[left, right], &mut env).expect("compare positioned symbols"),
+        Value::T
+    );
+}
+
+#[test]
 fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
     let program = r#"
           (list
@@ -11542,6 +11567,19 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
             .expect("Meta function key should remain one symbolic event"),
         vec!["M-up".to_string()]
+    );
+}
+
+#[test]
+fn keymap_lookup_uses_the_event_head_of_a_character_range() {
+    let range_event = Value::list([
+        Value::Symbol("vector-literal".into()),
+        Value::cons(Value::Integer('w' as i64), Value::Integer('x' as i64)),
+    ]);
+    assert_eq!(
+        key_sequence_keymap_parts(&range_event)
+            .expect("a map-keymap character range should remain a valid lookup event"),
+        vec!["w".to_string()]
     );
 }
 

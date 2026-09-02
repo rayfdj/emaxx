@@ -1,0 +1,193 @@
+//! Native Lisp compiler backend.
+//!
+//! GNU's `comp.el` remains the frontend and owns byte compilation, LIMPLE,
+//! optimization, and relocation classification.  This module owns the same
+//! backend boundary as GNU's `comp.c`: libgccjit code generation, `.eln`
+//! artifacts, relocation, loading, and native subroutine lifetime.
+
+mod abi;
+mod backend;
+mod gccjit;
+mod generated_native_subrs;
+mod lisp;
+mod loader;
+mod runtime;
+mod state;
+
+pub(crate) use loader::RegistrationKind;
+pub(crate) use state::NativeCompilerState;
+
+use crate::lisp::eval::Interpreter;
+use crate::lisp::types::{Env, LispError, Value};
+
+pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
+    let subrs = abi::native_subrs();
+    let mut signatures = String::new();
+    for subr in subrs {
+        let maximum = match subr.max_args {
+            abi::NativeMaxArgs::Fixed(maximum) => maximum.to_string(),
+            abi::NativeMaxArgs::Many => "many".to_string(),
+            abi::NativeMaxArgs::Unevalled => "unevalled".to_string(),
+        };
+        signatures.push_str(subr.name);
+        signatures.push('(');
+        signatures.push_str(&subr.min_args.to_string());
+        signatures.push_str(" . ");
+        signatures.push_str(&maximum);
+        signatures.push(')');
+    }
+    let identity = format!(
+        "{}{}{}{}{}",
+        generated_native_subrs::NATIVE_ABI_VERSION,
+        crate::lisp::primitives::emacs_version_value(),
+        generated_native_subrs::NATIVE_ABI_SYSTEM_CONFIGURATION,
+        generated_native_subrs::NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS,
+        signatures,
+    );
+    let abi_hash = format!("{:x}", md5::compute(identity.as_bytes()))[..8].to_string();
+    let version_directory = format!(
+        "{}-{abi_hash}",
+        crate::lisp::primitives::emacs_version_value()
+    );
+    interpreter.define_special_variable(
+        "comp-subr-list",
+        Value::list(
+            subrs
+                .iter()
+                .map(|subr| Value::BuiltinFunc(subr.name.into())),
+        ),
+    );
+    interpreter.define_special_variable("comp-abi-hash", Value::string(&abi_hash));
+    interpreter
+        .define_special_variable("comp-native-version-dir", Value::string(&version_directory));
+    for (name, test) in [
+        ("comp-deferred-pending-h", "eq"),
+        ("comp-eln-to-el-h", "equal"),
+        ("comp-installed-trampolines-h", "eql"),
+        ("comp-no-native-file-h", "equal"),
+        ("comp-loaded-comp-units-h", "equal"),
+        ("comp-subr-arities-h", "equal"),
+    ] {
+        let table = crate::lisp::json::make_hash_table(interpreter, test, Vec::new());
+        interpreter.define_special_variable(name, table);
+    }
+    interpreter.define_special_variable(
+        "native-comp-eln-load-path",
+        Value::list([Value::string("../native-lisp/")]),
+    );
+    interpreter.define_special_variable("native-comp-enable-subr-trampolines", Value::T);
+}
+
+pub(crate) fn load(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    filename: &str,
+    late: bool,
+) -> Result<Value, LispError> {
+    if let Some(result) = loader::load_active(interpreter, environment, filename, late) {
+        return result;
+    }
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    let result = state.load(interpreter, environment, filename, late);
+    interpreter.native_compiler = state;
+    result
+}
+
+pub(crate) fn call_function(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    record_id: u64,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    if let Some(result) =
+        loader::call_active_function(interpreter, environment, record_id, arguments)
+    {
+        return result;
+    }
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    let result = state.call_function(interpreter, environment, record_id, arguments);
+    interpreter.native_compiler = state;
+    result
+}
+
+pub(crate) fn function_documentation(
+    interpreter: &Interpreter,
+    record_id: u64,
+) -> Result<Value, LispError> {
+    let function = interpreter
+        .find_record(record_id)
+        .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction)
+        .ok_or_else(|| lisp::native_ice("native documentation requested for a non-function"))?;
+    let index = function
+        .slots
+        .get(5)
+        .ok_or_else(|| lisp::native_ice("native function has no documentation index"))?
+        .as_integer()
+        .and_then(|index| {
+            usize::try_from(index)
+                .map_err(|_| lisp::native_ice("negative native documentation index"))
+        })?;
+    let unit_id = match function.slots.get(8) {
+        Some(Value::Record(unit_id)) => *unit_id,
+        _ => return Err(lisp::native_ice("native function has no compilation unit")),
+    };
+    let unit = interpreter
+        .find_record(unit_id)
+        .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompUnit)
+        .ok_or_else(|| lisp::native_ice("native function compilation unit is missing"))?;
+    let mut docs = unit
+        .slots
+        .get(1)
+        .ok_or_else(|| lisp::native_ice("native compilation unit has no documentation vector"))?
+        .to_vec()?;
+    if !matches!(docs.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
+        return Err(lisp::native_ice(
+            "native compilation unit documentation is not a vector",
+        ));
+    }
+    docs.remove(0);
+    docs.get(index)
+        .cloned()
+        .ok_or_else(|| lisp::native_ice("native documentation index is out of range"))
+}
+
+pub(crate) fn register(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    arguments: &[Value],
+    kind: RegistrationKind,
+) -> Result<Value, LispError> {
+    loader::register(interpreter, environment, arguments, kind)
+}
+
+pub(crate) fn subroutine_index(name: &str) -> Option<usize> {
+    abi::native_subrs()
+        .iter()
+        .position(|subroutine| subroutine.name == name)
+}
+
+pub(crate) fn install_trampoline(
+    interpreter: &mut Interpreter,
+    subroutine_index: usize,
+    record_id: u64,
+) -> Result<(), LispError> {
+    if let Some((target, _convention)) = loader::active_function_target(record_id) {
+        return runtime::with_current_runtime(|runtime| {
+            runtime.install_trampoline(subroutine_index, target)
+        })
+        .ok_or_else(|| lisp::native_ice("active native trampoline has no runtime"))?
+        .map_err(|error| lisp::native_ice(&error));
+    }
+    interpreter
+        .native_compiler
+        .install_trampoline(subroutine_index, record_id)
+}
+
+pub(crate) fn call_lisp(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    lisp::call(interpreter, environment, name, arguments)
+}

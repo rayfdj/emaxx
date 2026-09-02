@@ -192,10 +192,6 @@ fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
         .count()
 }
 
-pub(crate) fn prefer_builtin_override(name: &str) -> bool {
-    dispatch::prefer_builtin_override(name)
-}
-
 pub(crate) fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("wrong-type-argument".into()),

@@ -1200,6 +1200,52 @@ impl Interpreter {
         }
     }
 
+    /// data.c:Ffset's native-comp hook followed by the actual function-cell
+    /// write.  The hook is C-owned orchestration: GNU invokes the existing
+    /// Lisp `comp-subr-trampoline-install' before replacing an ordinary
+    /// primitive, so the Rust runtime must do the same while leaving all
+    /// trampoline policy and synthesis in comp-run.el/comp.el.
+    pub(crate) fn fset_function(
+        &mut self,
+        name: &str,
+        definition: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.validate_function_binding(name, &definition)?;
+        let installs_trampolines = self
+            .lookup_var("native-comp-enable-subr-trampolines", env)
+            .is_some_and(|value| value.is_truthy());
+        let replaces_primitive = matches!(
+            self.logical_function_binding(name, &Env::new()),
+            Some(Value::BuiltinFunc(_))
+        );
+        if installs_trampolines
+            && replaces_primitive
+            // Emaxx reconstructs GNU's pre-dump loadup before loaddefs has
+            // installed this dumped autoload.  GNU keeps the enable flag nil
+            // during that phase; the live image has both the true flag and
+            // the installer.  Requiring both reproduces those two phases
+            // without moving comp-run.el policy into Rust.
+            && let Ok(installer) = self.lookup_function("comp-subr-trampoline-install", env)
+        {
+            self.call_function_value(
+                installer,
+                Some("comp-subr-trampoline-install"),
+                &[Value::symbol(name)],
+                env,
+            )?;
+        }
+        self.set_function_binding(
+            name,
+            if definition.is_nil() {
+                None
+            } else {
+                Some(definition.clone())
+            },
+        );
+        Ok(definition)
+    }
+
     pub(crate) fn begin_timer_callback(&mut self) {
         self.timer_callback_depth += 1;
     }

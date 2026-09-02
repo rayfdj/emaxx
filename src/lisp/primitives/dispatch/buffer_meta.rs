@@ -753,6 +753,17 @@ define_dispatch!(
                                 "emaxx: no GNU-derived arity for subr {symbol}"
                             ))
                         }),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        let record = interp.find_record(*id).expect("record checked above");
+                        Ok(Value::cons(
+                            record.slots[1].clone(),
+                            record.slots[2].clone(),
+                        ))
+                    }
                     // GNU data.c CHECK_SUBR signals the subrp predicate with
                     // the offending value itself.
                     other => Err(crate::lisp::primitives::wrong_type_argument(
@@ -790,6 +801,13 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::BuiltinFunc(symbol) => Ok(Value::String(symbol.clone().into())),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        Ok(interp.find_record(*id).expect("record checked above").slots[0].clone())
+                    }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",
                         other.clone(),
@@ -800,6 +818,18 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::BuiltinFunc(_) => Ok(Value::T),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        let record = interp.find_record(*id).expect("record checked above");
+                        Ok(if record.slots[10].is_truthy() {
+                            record.slots[9].clone()
+                        } else {
+                            Value::T
+                        })
+                    }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",
                         other.clone(),
@@ -808,7 +838,13 @@ define_dispatch!(
             }
             "native-comp-available-p" => {
                 need_args(name, args, 0)?;
-                Ok(Value::Nil)
+                Ok(
+                    if crate::lisp::native_comp::NativeCompilerState::available() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "comp--subr-signature" => {
                 need_args(name, args, 1)?;
@@ -827,15 +863,30 @@ define_dispatch!(
                     format!("{symbol}{}", render_prin1(interp, &arity, env)?).into(),
                 ))
             }
-            "comp-libgccjit-version"
-            | "comp-native-compiler-options-effective-p"
+            "comp-libgccjit-version" => {
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::native_comp::NativeCompilerState::version()
+                    .map(|(major, minor, patch)| {
+                        Value::list([
+                            Value::Integer(i64::from(major)),
+                            Value::Integer(i64::from(minor)),
+                            Value::Integer(i64::from(patch)),
+                        ])
+                    })
+                    .unwrap_or(Value::Nil))
+            }
+            "comp-native-compiler-options-effective-p"
             | "comp-native-driver-options-effective-p" => {
                 need_args(name, args, 0)?;
-                // These are capability queries, not compiler emulation.  Emaxx
-                // has no libgccjit/native-comp backend, as reported by
-                // `native-comp-available-p', so GNU's documented unavailable
-                // result is nil for all three.
-                Ok(Value::Nil)
+                Ok(
+                    if crate::lisp::native_comp::NativeCompilerState::version()
+                        .is_some_and(|(major, _, _)| major >= 9)
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "dump-emacs-portable--sort-predicate" => {
                 need_args(name, args, 2)?;
@@ -879,17 +930,30 @@ define_dispatch!(
             }
             "native-comp-function-p" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Nil)
+                Ok(
+                    if matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "subr-native-comp-unit" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(interp.create_pseudovector(
-                        crate::lisp::eval::RecordKind::NativeCompUnit,
-                        "native-comp-unit",
-                        vec![Value::String(format!("{symbol}.eln").into())],
+                    Value::BuiltinFunc(_) => Ok(Value::Nil),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        Ok(interp.find_record(*id).expect("record checked above").slots[8].clone())
+                    }
+                    other => Err(crate::lisp::primitives::wrong_type_argument(
+                        "subrp",
+                        other.clone(),
                     )),
-                    other => Err(LispError::TypeError("subr".into(), other.type_name())),
                 }
             }
             "native-comp-unit-file" => {
@@ -936,7 +1000,7 @@ define_dispatch!(
                 } else {
                     record.slots[0] = args[1].clone();
                 }
-                Ok(args[1].clone())
+                Ok(args[0].clone())
             }
             "decode-char" => {
                 need_args(name, args, 2)?;

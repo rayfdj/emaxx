@@ -4,6 +4,7 @@ mod buffer_edit;
 mod buffer_meta;
 mod collections;
 mod comp;
+pub(crate) use comp::comp_el_to_eln_rel_filename;
 mod composition;
 mod display;
 mod emacs_module;
@@ -218,10 +219,6 @@ pub(crate) fn name_facts(name: &str) -> NameFacts {
 
 pub fn is_builtin(name: &str) -> bool {
     name_facts(name).builtin
-}
-
-pub(crate) fn prefer_builtin_override(name: &str) -> bool {
-    name_facts(name).prefer_override
 }
 
 #[cfg(test)]

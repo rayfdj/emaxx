@@ -758,6 +758,7 @@ define_dispatch!(
                         Value::String(target.into()),
                     ])));
                 };
+                let path = maybe_swap_for_native(interp, &target, &path, env)?;
                 interp.load_resolved_path(&path, env, args.get(2).is_some_and(Value::is_truthy))
             }
             "locate-file-internal" => {
