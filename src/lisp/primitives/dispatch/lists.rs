@@ -2124,7 +2124,7 @@ define_dispatch!(
                     }
                     let previous_wait = interp.set_waiting_for_user_input(true);
                     let wait_result =
-                        wait_pumping_processes(interp, env, Some(timeout), false, None);
+                        wait_pumping_processes(interp, env, Some(timeout), false, None, None, true);
                     interp.set_waiting_for_user_input(previous_wait);
                     wait_result?;
                     if !interaction_allowed(interp, env) {

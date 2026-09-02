@@ -2918,8 +2918,20 @@ fn make_process_value(
     env: &mut Env,
     args: &[Value],
 ) -> Result<Value, LispError> {
-    let mut parsed = parse_make_process_args(interp, args)?;
-    if parsed.file_handler {
+    // process.c:Fmake_process returns nil before parsing an empty plist.
+    // For nonempty plists it performs :file-handler dispatch before
+    // validating any other keyword value, so a remote handler owns even
+    // contracts such as `:command nil'.
+    if args.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let file_handler = args
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .find(|pair| matches!(&pair[0], Value::Symbol(key) if key == ":file-handler"))
+        .is_some_and(|pair| pair[1].is_truthy());
+    if file_handler {
         let default_directory = interp
             .lookup_var("default-directory", env)
             .and_then(|value| string_like(&value).map(|string| string.text))
@@ -2933,6 +2945,7 @@ fn make_process_value(
             return interp.call_function_value(handler, None, &handler_args, env);
         }
     }
+    let mut parsed = parse_make_process_args(interp, args)?;
     let inherit_coding_system = parsed.buffer_id.is_some()
         && interp
             .lookup_var("inherit-process-coding-system", env)

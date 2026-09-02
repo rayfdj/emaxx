@@ -2468,6 +2468,17 @@ define_dispatch!(
             "ding" => Ok(Value::Nil),
             "sleep-for" => {
                 need_arg_range(name, args, 1, 2)?;
+                let duration = wait_duration(args)?;
+                if duration.is_zero() {
+                    // Fsleep_for enters wait_reading_process_output only for
+                    // a positive duration.  Keep Emaxx's explicit delivery
+                    // point for already-due Lisp timers, but do not read a
+                    // ready subprocess: Tramp relies on `sit-for 0' reaching
+                    // its subsequent JUST-THIS-ONE accept before unrelated
+                    // filters can reenter the locked connection.
+                    interp.run_pending_timer_events(env)?;
+                    return Ok(Value::Nil);
+                }
                 // GNU processes subprocess output whenever it waits; epg relies
                 // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
                 // flush gpg's final status lines through the process filter.
@@ -2475,7 +2486,7 @@ define_dispatch!(
                 // whole call, even when it nests inside a keyboard read.
                 let previous_wait = interp.set_waiting_for_user_input(false);
                 let wait_result =
-                    wait_pumping_processes(interp, env, Some(wait_duration(args)?), false, None);
+                    wait_pumping_processes(interp, env, Some(duration), false, None, None, true);
                 interp.set_waiting_for_user_input(previous_wait);
                 wait_result?;
                 Ok(Value::Nil)
@@ -2483,9 +2494,7 @@ define_dispatch!(
             "accept-process-output" => {
                 need_arg_range(name, args, 0, 4)?;
                 // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
-                // JUST-THIS-ONE) - the wait always comes from args 2 and 3.  GNU
-                // may service unrelated processes during the wait, but when
-                // PROCESS is non-nil their output does not satisfy this call.
+                // JUST-THIS-ONE) - the wait always comes from args 2 and 3.
                 let duration_args = if args.len() > 1 {
                     &args[1..args.len().min(3)]
                 } else {
@@ -2499,7 +2508,7 @@ define_dispatch!(
                 if let Some(process_id) = target_process_id {
                     interp.ensure_process_owned_by_current_thread(process_id)?;
                 }
-                let timeout = if !duration_args.is_empty() {
+                let timeout = if args.get(1).is_some_and(|seconds| !seconds.is_nil()) {
                     Some(wait_duration(duration_args)?)
                 } else if target_process_id.is_none() {
                     // With neither PROCESS nor a timeout GNU performs one event
@@ -2509,12 +2518,30 @@ define_dispatch!(
                 } else {
                     None
                 };
+                // A non-nil JUST-THIS-ONE suspends output from every other
+                // process.  Its integer spelling also suppresses timers.
+                // GNU ignores the flag when PROCESS itself is nil.
+                let just_this_one = if target_process_id.is_some() {
+                    args.get(3).filter(|value| value.is_truthy())
+                } else {
+                    None
+                };
+                let only_process_id = just_this_one.and(target_process_id);
+                let run_timers =
+                    just_this_one.is_none_or(|value| !matches!(value, Value::Integer(_)));
                 // A READ_KBD 0 wait: it never selects the keyboard-class
                 // notification descriptor, even when a callback nests it
                 // inside a keyboard read.
                 let previous_wait = interp.set_waiting_for_user_input(false);
-                let wait_result =
-                    wait_pumping_processes(interp, env, timeout, true, target_process_id);
+                let wait_result = wait_pumping_processes(
+                    interp,
+                    env,
+                    timeout,
+                    true,
+                    target_process_id,
+                    only_process_id,
+                    run_timers,
+                );
                 interp.set_waiting_for_user_input(previous_wait);
                 let delivered = wait_result?;
                 Ok(if delivered { Value::T } else { Value::Nil })

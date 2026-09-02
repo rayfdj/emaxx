@@ -2046,6 +2046,34 @@ fn buffer_size_ignores_narrowing_like_emacs() {
 }
 
 #[test]
+fn buffer_size_honors_optional_buffer_like_emacs() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(let ((other (get-buffer-create " *buffer-size-other*")))
+                  (unwind-protect
+                      (progn
+                        (with-current-buffer other
+                          (erase-buffer)
+                          (insert "abcd")
+                          (narrow-to-region 2 3))
+                        (with-temp-buffer
+                          (insert "xy")
+                          (list (buffer-size)
+                                (buffer-size nil)
+                                (buffer-size other)
+                                (buffer-size " *buffer-size-other*"))))
+                    (kill-buffer other)))"#
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(4),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
 fn buffer_auto_revert_by_notification_defaults_to_nil() {
     assert_eq!(
         eval_str_with_upstream_batch("buffer-auto-revert-by-notification"),
