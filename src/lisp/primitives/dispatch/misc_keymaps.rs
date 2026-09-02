@@ -233,8 +233,27 @@ define_dispatch!(
                 // with a cons ("an XEmacs-style keyboard macro") gets the
                 // same conversion, so `[(control meta shift kp-9)]' and
                 // `[C-M-S-kp-9]' name one binding.
-                let normalized_key = normalize_lucid_key_events(interp, &args[1])?;
+                let normalized_key = normalize_lucid_key_events(interp, &args[1], env)?;
                 let def = normalize_xemacs_macro_definition(interp, &args[2])?;
+                // keymap.c:define-key passes every symbolic vector event
+                // through silly_event_symbol_error, whose first operation
+                // is parse_modifiers.  Besides validation, that populates
+                // the event-symbol-elements cache consumed by subr.el's
+                // event-basic-type (notably for mouse-N events).
+                if let Ok(events) = vector_items(&normalized_key) {
+                    for event in events {
+                        let bare_event = if event.is_symbol() {
+                            Some(event)
+                        } else if symbols_with_pos_enabled(interp, env) {
+                            symbol_with_pos_parts(interp, &event).map(|(symbol, _)| symbol)
+                        } else {
+                            None
+                        };
+                        if let Some(bare_event) = bare_event {
+                            parse_event_symbol_modifiers(interp, &bare_event)?;
+                        }
+                    }
+                }
                 let key = key_sequence_binding_text(&normalized_key)?;
                 let key_parts = key_sequence_keymap_parts(&normalized_key)?;
                 if def.is_nil() && args.get(3).is_some_and(Value::is_truthy) {
@@ -255,7 +274,7 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 3)?;
                 // keymap.c:lookup_key_1 applies the same Lucid event-list
                 // conversion as Fdefine_key.
-                let normalized_key = normalize_lucid_key_events(interp, &args[1])?;
+                let normalized_key = normalize_lucid_key_events(interp, &args[1], env)?;
                 let key_parts = key_sequence_keymap_parts(&normalized_key)?;
                 let result = keymap_lookup_sequence_value_with_default(
                     interp,
@@ -780,7 +799,13 @@ define_dispatch!(
                         args[0].clone(),
                     ));
                 }
-                interp.copy_record(id)
+                let copy = interp.copy_record(id)?;
+                if let Value::Record(copy_id) = copy {
+                    interp.reindex_hash_table_runtime_entries_in_env(copy_id, env);
+                    Ok(Value::Record(copy_id))
+                } else {
+                    Ok(copy)
+                }
             }
             "gethash" => {
                 if args.len() < 2 || args.len() > 3 {
@@ -839,6 +864,9 @@ define_dispatch!(
                     entries.push((args[0].clone(), args[1].clone()));
                 }
                 set_hash_table_entries(interp, &args[2], entries)?;
+                if let Value::Record(id) = args[2] {
+                    interp.reindex_hash_table_runtime_entries_in_env(id, env);
+                }
                 Ok(args[1].clone())
             }
             "maphash" => {
@@ -881,6 +909,9 @@ define_dispatch!(
                     }
                 }
                 set_hash_table_entries(interp, &args[1], retained)?;
+                if let Value::Record(id) = args[1] {
+                    interp.reindex_hash_table_runtime_entries_in_env(id, env);
+                }
                 Ok(Value::Nil)
             }
             "clrhash" => {

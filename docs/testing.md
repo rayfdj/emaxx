@@ -270,6 +270,14 @@ journeys against deterministic Git repositories.  See
 [`docs/magit-compatibility.md`](magit-compatibility.md) for the exact command,
 scenario inventory, determinism boundary, and anti-cheat evidence.
 
+The third-party Eat contract installs the hash-pinned 0.9.4 release through
+real `package.el`, restarts both editors into separate clean package trees,
+runs all 57 unedited upstream tests from installed bytecode, and compares
+structured records from real PTY children covering input, resize, cursor and
+color state, alternate screen, scrollback, EOF, signals, exit, and cleanup.
+See [`docs/eat-compatibility.md`](eat-compatibility.md) for the artifact hashes,
+exact command, process inventory, and scope boundary.
+
 The third-party lsp-mode contract likewise installs a hash-pinned release and
 dependency closure through `package.el`, verifies the exact compiled payload
 after a clean restart, and exercises real stdio JSON-RPC workspaces through
