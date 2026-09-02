@@ -1,6 +1,6 @@
 use super::*;
 use crate::lisp::reader::Reader;
-use std::io::Write;
+use std::io::{Read, Write};
 
 fn upstream_emacs_repo() -> PathBuf {
     crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
@@ -13167,6 +13167,200 @@ fn native_network_lookup_uses_platform_address_vectors_and_gnu_validation() {
             .expect("network lookup result should parse")
             .expect("network lookup result should exist")
     );
+}
+
+#[test]
+fn native_network_lookup_delegates_numeric_syntax_to_the_host_resolver() {
+    let program = r#"(let ((addresses
+                            '("localhost" "343.1.2.3" "1.2.3.4.5"
+                              "127.0.0.1" "127.0.1" "127.1" "127" "1" "0"
+                              "0xe3010203" "0xe3.1.2.3" "227.0x1.2.3"
+                              "034300201003" "0343.1.2.3" "227.001.2.3"
+                              "fe80:1" "e301:203:1" "e301::203::1"
+                              "1:2:3:4:5:6:7:8:9" "0xe301:203::1"
+                              "343:10001:2::3" "fe80::1" "e301::203:1"
+                              "e301:0203::1" "::1" "::0"
+                              "0343:1:2::3" "343:001:2::3")))
+                       (mapcar
+                        (lambda (address)
+                          (list address
+                                (network-lookup-address-info
+                                 address nil 'numeric)
+                                (network-lookup-address-info
+                                 address 'ipv4 'numeric)
+                                (network-lookup-address-info
+                                 address 'ipv6 'numeric)))
+                        addresses))"#;
+    let oracle = upstream_oracle_stdout(&format!("(prin1 {program})"));
+    let expected = Reader::new(&oracle)
+        .read()
+        .expect("numeric lookup oracle result should parse")
+        .expect("numeric lookup oracle result should exist");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("numeric lookup contract should parse")
+        .expect("numeric lookup contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("numeric lookup contract should evaluate"),
+        expected
+    );
+}
+
+fn one_shot_http_fixture() -> (
+    u16,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+    std::thread::JoinHandle<()>,
+) {
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("bind one-shot HTTP fixture");
+    let port = listener
+        .local_addr()
+        .expect("read one-shot HTTP fixture address")
+        .port();
+    listener
+        .set_nonblocking(true)
+        .expect("make one-shot HTTP fixture nonblocking");
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "editor did not connect to the one-shot HTTP fixture"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept one-shot HTTP fixture connection: {error}"),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .expect("make accepted HTTP fixture connection blocking");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .expect("set HTTP fixture read timeout");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = stream.read(&mut chunk).expect("read HTTP fixture request");
+            assert_ne!(count, 0, "HTTP request ended before its header terminator");
+            request.extend_from_slice(&chunk[..count]);
+            assert!(
+                request.len() < 64 * 1024,
+                "HTTP fixture request is too large"
+            );
+        }
+        request_tx
+            .send(request)
+            .expect("publish HTTP fixture request");
+
+        let body = b"network fixture\nline two\n";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\nX-Contract-Fixture: exact\r\n\r\n",
+            body.len()
+        )
+        .expect("write HTTP fixture headers");
+        stream.write_all(body).expect("write HTTP fixture body");
+        stream.flush().expect("flush HTTP fixture response");
+    });
+    (port, request_rx, server)
+}
+
+fn http_retrieval_program(port: u16) -> String {
+    format!(
+        r#"(progn
+              (require 'url)
+              (let ((buffer
+                     (url-retrieve-synchronously
+                      "http://127.0.0.1:{port}/fixture?mode=exact" t t 10))
+                    result)
+                (unwind-protect
+                    (with-current-buffer buffer
+                      (goto-char (point-min))
+                      (re-search-forward
+                       "^X-Contract-Fixture: \\([^\r\n]+\\)\r?$")
+                      (let ((fixture-header (match-string 1)))
+                        (re-search-forward "\r?\n\r?\n")
+                        (let ((body
+                             (buffer-substring-no-properties
+                              (point) (point-max))))
+                          (setq result
+                                (list url-http-response-status
+                                      fixture-header
+                                      (length body)
+                                      (secure-hash 'sha256 body)
+                                      (buffer-substring-no-properties
+                                       (point) (+ (point) 7)))))))
+                  (when (buffer-live-p buffer)
+                    (kill-buffer buffer)))
+                (list result (buffer-live-p buffer))))"#
+    )
+}
+
+#[test]
+fn url_retrieve_synchronously_matches_gnu_over_a_real_local_http_connection() {
+    let (oracle_port, oracle_request_rx, oracle_server) = one_shot_http_fixture();
+    let oracle_program = http_retrieval_program(oracle_port);
+    let oracle = upstream_oracle_stdout(&format!("(prin1 {oracle_program})"));
+    let pinned = "((200 \"exact\" 25 \"bdf31c61b3e3c2a24d92212baf213640a6c53aa75563d8691e609a146dae30f4\" \"network\") nil)";
+    assert_eq!(
+        oracle, pinned,
+        "GNU did not return the pinned one-shot HTTP fixture record"
+    );
+    let expected = Reader::new(&oracle)
+        .read()
+        .expect("HTTP retrieval oracle result should parse")
+        .expect("HTTP retrieval oracle result should exist");
+    let oracle_request = oracle_request_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("receive GNU HTTP request");
+    oracle_server.join().expect("join GNU HTTP fixture");
+
+    let (emaxx_port, emaxx_request_rx, emaxx_server) = one_shot_http_fixture();
+    let emaxx_program = http_retrieval_program(emaxx_port);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(&emaxx_program)
+        .read()
+        .expect("HTTP retrieval contract should parse")
+        .expect("HTTP retrieval contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("HTTP retrieval contract should evaluate");
+    let emaxx_request = emaxx_request_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("receive Emaxx HTTP request");
+    emaxx_server.join().expect("join Emaxx HTTP fixture");
+
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "local HTTP retrieval differed from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+    for (request, port) in [
+        (oracle_request.as_slice(), oracle_port),
+        (emaxx_request.as_slice(), emaxx_port),
+    ] {
+        let request = String::from_utf8(request.to_vec()).expect("HTTP request should be ASCII");
+        assert!(
+            request.starts_with("GET /fixture?mode=exact HTTP/1.1\r\n"),
+            "editor did not request the exact fixture path: {request:?}"
+        );
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(&format!("Host: 127.0.0.1:{port}"))),
+            "editor did not send the fixture Host header: {request:?}"
+        );
+    }
 }
 
 #[test]
