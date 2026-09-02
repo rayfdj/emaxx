@@ -268,10 +268,19 @@ pub(crate) fn call_with_facts(
     {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    if let Some(specification) = facts.file_name_handler
-        && let Some(result) = dispatch_file_name_handler(interp, env, name, specification, args)?
-    {
-        return Ok(result);
+    if let Some(specification) = facts.file_name_handler {
+        match dispatch_file_name_handler(interp, env, name, specification, args)? {
+            FileNameDispatch::Handled(result) => return Ok(result),
+            // fileio.c's copy family runs its native body on the names it
+            // expanded for the handler lookup (Fexpand_file_name and
+            // expand_cp_target go through handlers), not on the raw
+            // arguments; a handler that rewrites names during expansion
+            // and then declines the operation must see its rewrite honored.
+            FileNameDispatch::Native(Some(normalized)) => {
+                return facts.module.call(interp, name, &normalized, env);
+            }
+            FileNameDispatch::Native(None) => {}
+        }
     }
 
     facts.module.call(interp, name, args, env)

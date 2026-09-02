@@ -4976,3 +4976,59 @@ redisplay, cursor, and case-conversion regressions.  The compat harness passed
 the main and doc-test targets contained no tests.  No concurrent test or build
 was launched from this checkout while the gate was active, and no production
 or test source changed after it completed.
+
+## 2026-09-02 copy family: the native body must see the handler-expanded names
+
+A Linux frozen run of the integrated main (`3c78b1e`) surfaced one new
+files-tests mismatch, `files-tests-file-name-non-special-add-name-to-file`,
+failing with `(file-missing "Adding new name" ... "…add-name.special")`.
+The test installs a handler that rewrites names by stripping `.special`
+during any operation it receives, including `expand-file-name`.  In
+fileio.c, Fadd_name_to_file (and Fcopy_file, Frename_file,
+Fmake_symbolic_link) call Fexpand_file_name and expand_cp_target -- both
+handler-aware -- BEFORE the handler lookup; the rewritten names then match
+no handler, and the native body links the rewritten names.  Emaxx's
+round-1 normalization performed that same expansion but only to choose a
+handler: when none claimed the operation, the native arm re-resolved the
+raw arguments through the host path resolver and linked the unrewritten
+name.  The file-name-handler choke point now returns either the handler's
+value or the normalized arguments for the native call, so expansion happens
+once, as in C.  Oracle contract through a rewriting handler over all four
+operations: `((t t) (t t) ("base") (nil t) ("base" t) file-already-exists)`.
+files-tests.el is 116/116 matching (from 115/116).  The failure is
+identical on the pre-integration main `8b08bbf`, so it dates from the
+round-1 normalization, not from the tty merge.
+
+The same frozen run also stopped at simple-tests.el with "process timed
+out during test" and zero Emaxx outcomes.  That is not a hang: the two
+`shell-command-dont-erase-buffer` tests spawn a child
+`emacs -Q --batch --eval` about seventy times between them, and an Emaxx
+child boots in ~15 s (GNU: 0.04 s) because there is no portable dump, so
+the file needs well over the 900 s per-file timeout that run was given.
+The recorded frozen baselines use `--timeout-seconds 3600`; resumed at that
+value (same commit, 335 per-file comparisons reused) the run completed:
+**7738/7883 matching, 145 mismatching across 19 of 461 files**, with
+simple-tests.el at 52/53 (only the disclosed async-shell latency case).
+The boot latency stays the structural limitation it already was (erc's
+child-spawning tests, above).  The inventory: src/comp-tests 96 and
+lisp/comp-tests 3 (native compilation, in progress elsewhere);
+server-tests 7; semantic-utest-ia 6; socks-tests 6; lcms-tests 6;
+mml-sec 4; thread-tests 2 + src/thread-tests 2; proced 2; em-prompt 2;
+erc 2 (child-boot latency); and one each in files-tests (fixed here),
+nadvice, kmacro, editfns, print, process (`lookup-hints-values`) and
+simple.
+
+New finding from that inventory, OPEN: the six lcms-tests are skipped by
+the Linux oracle (built `--without-lcms2`, `lcms2-available-p` unbound)
+but run under Emaxx, because the `lcms2` startup feature is advertised
+unconditionally in `STARTUP_FEATURES` rather than following the host C
+contract the way `kqueue`/`inotify` now do.  The fix is the same
+host-manifest gate; it is recorded here rather than folded into this
+change so the copy-family fix stays a single mechanism.
+
+This change was gated with the grouped runner on Linux (2275 library
+tests, bins and integration all green; run-1788351345455641394-28877)
+after the targeted file-name-handler tests and a 116/116 files-tests
+replay, and again after rebasing onto the Darwin certification commit
+`1394e8d` (2277 library tests, bins and integration green;
+run-1788358068697089711-3005).
