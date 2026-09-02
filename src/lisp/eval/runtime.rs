@@ -1488,6 +1488,69 @@ impl Interpreter {
         self.equal_hash_tables.get(&id).map(|state| &state.entries)
     }
 
+    fn value_contains_positioned_symbol(
+        &self,
+        value: &Value,
+        visited: &mut std::collections::HashSet<usize>,
+    ) -> bool {
+        if crate::lisp::primitives::symbol_with_pos_parts(self, value).is_some() {
+            return true;
+        }
+        let Value::Cons(cell) = value else {
+            return false;
+        };
+        let identity = crate::lisp::types::ConsCell::identity(cell);
+        if !visited.insert(identity) {
+            return false;
+        }
+        self.value_contains_positioned_symbol(&cell.car.borrow(), visited)
+            || self.value_contains_positioned_symbol(&cell.cdr.borrow(), visited)
+    }
+
+    pub fn reindex_hash_table_runtime_entries_in_env(&mut self, id: u64, env: &Env) {
+        let Some(state) = self.equal_hash_tables.get(&id) else {
+            return;
+        };
+        let test = state.test;
+        let positions_enabled = test == RuntimeHashTest::Equal
+            && crate::lisp::primitives::symbols_with_pos_enabled(self, env);
+        let hashes = state
+            .entries
+            .iter()
+            .map(|(key, _)| {
+                if positions_enabled
+                    && self.value_contains_positioned_symbol(
+                        key,
+                        &mut std::collections::HashSet::new(),
+                    )
+                {
+                    // GNU hashes the bare-symbol projection while the dynamic
+                    // mode is enabled.  This reserved bucket is internal and
+                    // deliberately unreachable by the ordinary, disabled
+                    // structural hash; enabled operations use the exact
+                    // env-aware scan below.  Thus toggling the mode preserves
+                    // GNU's stale-bucket miss instead of finding the wrapper
+                    // under a hash that was never used to insert it.
+                    Some(i64::MIN)
+                } else {
+                    crate::lisp::primitives::runtime_hash_bucket_key(self, test, key)
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut key_index: HashMap<
+            Option<i64>,
+            Vec<usize>,
+            crate::lisp::primitives::FnvBuildHasher,
+        > = HashMap::default();
+        for (index, hash) in hashes.into_iter().enumerate() {
+            key_index.entry(hash).or_default().push(index);
+        }
+        self.equal_hash_tables
+            .get_mut(&id)
+            .expect("hash table disappeared while reindexing")
+            .key_index = key_index;
+    }
+
     fn runtime_hash_keys_match(
         &self,
         test: RuntimeHashTest,
@@ -1500,12 +1563,23 @@ impl Interpreter {
                 crate::lisp::primitives::values_eq_in_env(self, stored, probe, env)
             }
             RuntimeHashTest::Eql => crate::lisp::primitives::values_eql(stored, probe),
-            RuntimeHashTest::Equal => crate::lisp::primitives::values_equal(self, stored, probe),
+            RuntimeHashTest::Equal => {
+                crate::lisp::primitives::values_equal_in_env(self, stored, probe, env)
+            }
         }
     }
 
     pub fn equal_hash_lookup(&self, id: u64, key: &Value, env: &Env) -> Option<Option<Value>> {
         let state = self.equal_hash_tables.get(&id)?;
+        // `equal' dynamically treats a symbol-with-position as its bare
+        // symbol while this byte-compiler switch is enabled.  Use the generic
+        // env-aware scan rather than let an ordinary structural bucket hide a
+        // match at any nesting depth.
+        if state.test == RuntimeHashTest::Equal
+            && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+        {
+            return None;
+        }
         let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
         Some(
             state
@@ -1524,6 +1598,11 @@ impl Interpreter {
             return false;
         };
         let test = state.test;
+        if test == RuntimeHashTest::Equal
+            && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+        {
+            return false;
+        }
         let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, &key);
         let existing_index = state
             .key_index
@@ -1554,6 +1633,11 @@ impl Interpreter {
     pub fn equal_hash_remove(&mut self, id: u64, key: &Value, env: &Env) -> Option<bool> {
         let state = self.equal_hash_tables.get(&id)?;
         let test = state.test;
+        if test == RuntimeHashTest::Equal
+            && crate::lisp::primitives::symbols_with_pos_enabled(self, env)
+        {
+            return None;
+        }
         let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, key);
         let existing_index = state
             .key_index

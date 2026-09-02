@@ -4351,3 +4351,82 @@ selected zero tests; the first serial attempt was stopped at the stale EUC-JP
 ignore; and an unnecessary outside-sandbox full restart was interrupted at
 the user's direction (exit 130) before the targeted reruns.  None contributes
 to the passing totals above.
+
+## 2026-09-02 issue 39: Eat 0.9.4 package and real-process certification
+
+The certified package is Eat 0.9.4 from the official NonGNU ELPA archive,
+whose package tarball has SHA-256
+`14971fc562f0820794eb6af78beebc7dc3ba898221e785c2d272a9f0fccfc54a`.
+The matching upstream source commit is
+`c91451f2d17453c19d3fa76faa4945cbe54e14ce`, and its source archive has
+SHA-256 `32a2793c1f203bf2e0fe67f79310c2389257e1338b191e017ea60dc68000c01a`.
+The local archive also pins Compat 31.0.0.2 at SHA-256
+`47d8693a10087f8b20c72e6a78b628db980cb7547c4f8f517fc5d11acd8b0f38`.
+Both subjects assert Lisp `emacs-version` is exactly 30.2.  The Compat package
+version does not imply Emacs 31: Emacs 30.2's built-in Compat satisfies Eat's
+`compat >= 29.1` dependency, so an ordinary package.el transaction installs
+only Eat 0.9.4.
+
+The work corrected three general runtime defects found by the unedited
+package and process workloads.  Evaluation of positioned source symbols now
+handles every bare-symbol value, including nil, t, keywords, and ordinary
+symbols, instead of assuming the ordinary-symbol representation.  Equal hash
+tables now use the active environment's positioned-symbol equality for
+lookup, insertion, deletion, and copying.  Key definition and lookup now
+normalize GNU symbolic vector events consistently and populate the same
+modifier cache for nil, t, mouse events, and positioned symbols.
+
+The adversarial review found and corrected two narrower versions of those
+repairs before publication.  The first keymap repair handled ordinary
+`Value::Symbol` events but omitted nil, t, and positioned events, and it used
+synthetic names rather than the canonical nil/t values.  The first hash-table
+expectation also assumed that a key inserted while positioned-symbol mode was
+enabled would remain visible after disabling the mode.  A direct GNU 30.2
+probe disproved that assumption: the correct enabled/disabled/re-enabled
+record is `(1 207 207 (missing missing missing missing) 207)`.  Emaxx now
+matches it, including copied-table behavior.  The other direct records also
+match exactly: `(t nil :eat-key 42 t)` for bare-symbol evaluation and
+`((nil) (t) (mouse-1 click) t)` for symbolic key events.
+
+The package gate creates separate clean GNU and Emaxx user roots and an
+artifact-pinned local package archive, then performs ordinary package refresh
+and installation.  It requires the exact transaction and installed inventory
+(`eat-0.9.4` only), exactly Eat's two compiled `.elc` files and generated
+autoload file, a fresh-process restart, and proof that the restarted runtime
+loads installed bytecode.  It extracts the official source archive's 57
+`eat-test-` ERT definitions without editing them; both GNU and Emaxx pass all
+57.  The shared process workload drives real Eat PTYs for shell input and
+output, terminal resizing, cursor and SGR state, alternate-screen removal,
+scrollback, EOF and exit status, Ctrl-C signal termination, and an interactive
+shell.  GNU and Emaxx emit the same pinned records.  The final optimized run
+reported, for each subject, two compiled files, 57 upstream tests, and a
+passing real-process gate, followed by an exact record match.
+
+Static review found no editor-name branch, oracle delegation, fixture-output
+dispatch, process shortcut, package skip, or test-only production hook.  The
+process gate contains no system-type branch and uses Eat's real PTY entry
+points rather than `call-process` or `start-process`.  The five Python
+anti-cheat/unit tests pass.  Formatting and `git diff --check` are clean;
+native and `x86_64-unknown-linux-gnu` all-target, all-feature Clippy both pass
+with `-D warnings`.  Zig is used only as the Linux cross C compiler/linker,
+not as Linux runtime evidence.
+
+The authoritative repository-wide command was exactly `LANG=C LC_ALL=C
+RUST_TEST_THREADS=1 cargo test --profile gate -- --test-threads=1 <
+/dev/null`.  It ran outside the managed socket-binding restriction once, in
+the optimized `gate` profile.  The main library result was 2271 passed, zero
+failed, and two ignored in 8330.65 seconds; all 59 executed follow-on tests
+also passed, including 5/5 package-lifecycle tests.  The two ignores are the
+explicit opt-in `tty_differential_end_to_end` and `tty_smoke_end_to_end`
+gates, whose contracts require separately built release binaries and the
+sibling GNU tree; they are not Eat skips or unsupported-feature waivers.
+
+Rejected evidence is explicit.  Short-name `--exact` filters that selected
+zero Rust tests were discarded and replaced by fully qualified focused runs.
+One malformed Emaxx key probe with an extra closing parenthesis was discarded
+and corrected.  An earlier long-gate attempt was interrupted when the Emacs
+31/Compat-version misunderstanding was corrected; it is not counted.  The
+initial stale-bucket expectation described above was rejected after the GNU
+probe.  Finally, a Python bytecode-cache `PermissionError` outside the
+workspace was an environmental write restriction, not a code result; the
+same syntax check passed with its cache under `/private/tmp`.

@@ -444,12 +444,12 @@ impl Interpreter {
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                     && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>
             {
-                let Some((Value::Symbol(name), _)) =
-                    crate::lisp::primitives::symbol_with_pos_parts(self, expr)
+                let Some((symbol, _)) = crate::lisp::primitives::symbol_with_pos_parts(self, expr)
                 else {
-                    unreachable!("guard accepted a positioned symbol without a symbol slot");
+                    return Ok(expr.clone());
                 };
-                match self.lookup(&name, env) {
+                let name = symbol.as_symbol()?;
+                match self.lookup(name, env) {
                     Ok(value) => Ok(value),
                     Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
                         Value::Symbol("void-variable".into()),
