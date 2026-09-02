@@ -5231,6 +5231,35 @@ fn make_process_nil_or_omitted_connection_type_uses_the_dynamic_default() {
 
 #[cfg(unix)]
 #[test]
+fn make_process_accepts_nil_coding_like_emacs() {
+    let _permit = crate::test_support::acquire_exclusive_host_test_permit();
+    let program = r#"(let* ((default-directory temporary-file-directory)
+                            (process
+                             (make-process
+                              :name "nil-coding"
+                              :command '("/usr/bin/true")
+                              :coding nil
+                              :sentinel 'ignore)))
+                       (unwind-protect
+                           (processp process)
+                         (delete-process process)))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "t");
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("nil-coding process contract should parse")
+        .expect("nil-coding process contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("nil :coding should use process coding defaults"),
+        Value::T
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();
@@ -5808,6 +5837,99 @@ fn accept_process_output_ignores_distractor_output_until_target_delivers() {
         .strip_suffix("\nProcess accept-target finished\n")
         .unwrap_or(&text);
     assert_eq!(text, "target");
+}
+
+#[test]
+fn accept_process_output_just_this_one_suspends_distractor_filters_like_emacs() {
+    let _permit = crate::test_support::acquire_exclusive_host_test_permit();
+    let program = r#"(let* ((target-buffer (generate-new-buffer " *apo-target*"))
+                            (distractor-buffer
+                             (generate-new-buffer " *apo-distractor*"))
+                            (target
+                             (make-process
+                              :name "apo-target" :buffer target-buffer
+                              :command (list shell-file-name shell-command-switch
+                                             "sleep 0.15; printf target")
+                              :noquery t :sentinel #'ignore))
+                            (distractor
+                             (make-process
+                              :name "apo-distractor" :buffer distractor-buffer
+                              :command (list shell-file-name shell-command-switch
+                                             "printf distractor")
+                              :noquery t :sentinel #'ignore)))
+                       (unwind-protect
+                           (list
+                            (accept-process-output target nil nil t)
+                            (with-current-buffer distractor-buffer (buffer-string))
+                            (with-current-buffer target-buffer (buffer-string))
+                            (accept-process-output distractor 2)
+                            (with-current-buffer distractor-buffer (buffer-string)))
+                         (ignore-errors (delete-process target))
+                         (ignore-errors (delete-process distractor))
+                         (kill-buffer target-buffer)
+                         (kill-buffer distractor-buffer)))"#;
+    let expected = "(t \"\" \"target\" t \"distractor\")";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("JUST-THIS-ONE contract should parse")
+        .expect("JUST-THIS-ONE contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("JUST-THIS-ONE contract should evaluate"),
+        Value::list([
+            Value::T,
+            Value::String("".into()),
+            Value::String("target".into()),
+            Value::T,
+            Value::String("distractor".into()),
+        ])
+    );
+}
+
+#[test]
+fn zero_duration_sleep_does_not_dispatch_ready_process_output_like_emacs() {
+    let _permit = crate::test_support::acquire_exclusive_host_test_permit();
+    let program = r#"(let* ((buffer (generate-new-buffer " *sleep-zero*"))
+                            (process
+                             (make-process
+                              :name "sleep-zero" :buffer buffer
+                              :command (list shell-file-name shell-command-switch
+                                             "printf ready")
+                              :noquery t :sentinel #'ignore)))
+                       (unwind-protect
+                           (progn
+                             (call-process "sleep" nil nil nil "0.1")
+                             (sleep-for 0)
+                             (list
+                              (with-current-buffer buffer (buffer-string))
+                              (accept-process-output process 1)
+                              (with-current-buffer buffer (buffer-string))))
+                         (ignore-errors (delete-process process))
+                         (kill-buffer buffer)))"#;
+    let expected = "(\"\" t \"ready\")";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("zero-duration sleep contract should parse")
+        .expect("zero-duration sleep contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("zero-duration sleep contract should evaluate"),
+        Value::list([
+            Value::String("".into()),
+            Value::T,
+            Value::String("ready".into()),
+        ])
+    );
 }
 
 #[test]

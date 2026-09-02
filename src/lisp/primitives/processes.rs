@@ -480,7 +480,6 @@ pub(crate) struct MakeProcessArgs {
     pub(crate) stderr_process_id: Option<u64>,
     pub(crate) stderr_buffer_id: Option<u64>,
     pub(crate) query_on_exit_flag: bool,
-    pub(crate) file_handler: bool,
     pub(crate) connection_type: Option<Value>,
 }
 
@@ -504,7 +503,6 @@ pub(crate) fn parse_make_process_args(
     let mut stderr_process_id = None;
     let mut stderr_buffer_id = None;
     let mut query_on_exit_flag = true;
-    let mut file_handler = false;
     let mut connection_type = None;
 
     for pair in args.as_chunks::<2>().0 {
@@ -520,6 +518,7 @@ pub(crate) fn parse_make_process_args(
             }
             ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
             ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
+            ":coding" if value.is_nil() => coding = None,
             ":coding" => coding = Some(process_coding_pair(value)?),
             ":stderr" if !value.is_nil() => {
                 if let Ok(process_id) = interp.resolve_process_id(value) {
@@ -536,7 +535,7 @@ pub(crate) fn parse_make_process_args(
                 return Err(wrong_type_argument("null", value.clone()));
             }
             ":stop" => {}
-            ":file-handler" => file_handler = value.is_truthy(),
+            ":file-handler" => {}
             ":connection-type" => connection_type = Some(value.clone()),
             _ => {}
         }
@@ -553,7 +552,6 @@ pub(crate) fn parse_make_process_args(
         stderr_process_id,
         stderr_buffer_id,
         query_on_exit_flag,
-        file_handler,
         connection_type,
     })
 }
@@ -1030,9 +1028,20 @@ pub(crate) fn pump_external_process_output(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<bool, LispError> {
+    pump_external_process_output_for(interp, env, None)
+}
+
+fn pump_external_process_output_for(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    only_process_id: Option<u64>,
+) -> Result<bool, LispError> {
     let ids = interp.live_external_process_ids();
     let mut progressed = false;
     for process_id in ids {
+        if only_process_id.is_some_and(|id| process_id != id) {
+            continue;
+        }
         if interp.process_output_paused(process_id) {
             // Status changes still arrive while output is held.  GNU removes
             // only the read descriptor, not SIGCHLD/status observation.
@@ -1042,7 +1051,7 @@ pub(crate) fn pump_external_process_output(
         let (stdout, stderr) = interp.poll_process_output(process_id)?;
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
-    for (process_id, event) in interp.take_pending_subprocess_exit_events() {
+    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(only_process_id) {
         run_process_sentinel(interp, process_id, &event, env)?;
         progressed = true;
     }
@@ -2159,6 +2168,8 @@ pub(crate) fn wait_pumping_processes(
     total: Option<std::time::Duration>,
     return_on_delivery: bool,
     target_process_id: Option<u64>,
+    only_process_id: Option<u64>,
+    run_timers: bool,
 ) -> Result<bool, LispError> {
     let deadline = total.map(|total| std::time::Instant::now() + total);
     let mut delivered = false;
@@ -2167,8 +2178,8 @@ pub(crate) fn wait_pumping_processes(
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
     let all_processes_start = interp.current_thread_process_output_delivery_count();
     loop {
-        let mut progressed = pump_external_process_output(interp, env)?;
-        progressed |= pump_connection_processes(interp, env)?;
+        let mut progressed = pump_external_process_output_for(interp, env, only_process_id)?;
+        progressed |= pump_connection_processes_for(interp, env, only_process_id)?;
         let any_process_delivered =
             interp.current_thread_process_output_delivery_count() != all_processes_start;
         delivered |= any_process_delivered;
@@ -2181,7 +2192,12 @@ pub(crate) fn wait_pumping_processes(
             delivery_grace_deadline =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
         }
-        interp.drive_threads(env, true)?;
+        if run_timers {
+            interp.drive_threads(env, true)?;
+        }
+        if interp.waiting_for_user_input() && !unread_command_events(interp, env)?.is_empty() {
+            break;
+        }
         let requested_process_delivered = target_process_id.is_some_and(|process_id| {
             interp.process_output_delivery_count(process_id) != target_start
         });
@@ -2202,8 +2218,9 @@ pub(crate) fn wait_pumping_processes(
             // readiness once more before reporting a timeout; otherwise the
             // bytes are left for the next caller, producing a deterministic
             // one-wait lag under load.
-            let mut final_progress = pump_external_process_output(interp, env)?;
-            final_progress |= pump_connection_processes(interp, env)?;
+            let mut final_progress =
+                pump_external_process_output_for(interp, env, only_process_id)?;
+            final_progress |= pump_connection_processes_for(interp, env, only_process_id)?;
             delivered |= final_progress;
             break;
         }
@@ -2255,6 +2272,14 @@ pub(crate) fn pump_connection_processes(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<bool, LispError> {
+    pump_connection_processes_for(interp, env, None)
+}
+
+fn pump_connection_processes_for(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    only_process_id: Option<u64>,
+) -> Result<bool, LispError> {
     let mut progressed = false;
 
     // `:nowait t' exposes a freshly created client as `connect' until the
@@ -2262,6 +2287,9 @@ pub(crate) fn pump_connection_processes(
     // in this compatibility runtime, but deferring the `open' transition
     // lets callers install their sentinel before it runs, like GNU Emacs.
     for process_id in interp.connecting_network_processes() {
+        if only_process_id.is_some_and(|id| process_id != id) {
+            continue;
+        }
         progressed = true;
         match progress_async_gnutls(interp, process_id)? {
             AsyncGnuTlsProgress::NotRequested | AsyncGnuTlsProgress::Ready => {
@@ -2283,6 +2311,9 @@ pub(crate) fn pump_connection_processes(
 
     // Accept new connections on every server listener.
     for server_id in interp.network_listener_ids() {
+        if only_process_id.is_some_and(|id| server_id != id) {
+            continue;
+        }
         loop {
             let Some((child_runtime, peer_addr)) = interp.accept_network_connection(server_id)?
             else {
@@ -2391,6 +2422,9 @@ pub(crate) fn pump_connection_processes(
 
     // Deliver input / closure on every open network or serial stream.
     for stream_id in interp.connection_stream_ids() {
+        if only_process_id.is_some_and(|id| stream_id != id) {
+            continue;
+        }
         if interp.process_output_paused(stream_id) {
             continue;
         }

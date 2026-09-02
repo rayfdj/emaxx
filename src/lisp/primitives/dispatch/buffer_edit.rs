@@ -925,7 +925,17 @@ define_dispatch!(
                 };
                 Ok(if invisible { Value::T } else { Value::Nil })
             }
-            "buffer-size" => Ok(Value::Integer(interp.buffer.size_total() as i64)),
+            "buffer-size" => {
+                need_arg_range(name, args, 0, 1)?;
+                let buffer_id = match args.first() {
+                    Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
+                    _ => interp.current_buffer_id(),
+                };
+                let buffer = interp
+                    .get_buffer_by_id(buffer_id)
+                    .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?;
+                Ok(Value::Integer(buffer.size_total() as i64))
+            }
             "buffer-enable-undo" => {
                 interp.buffer.enable_undo();
                 Ok(Value::Nil)

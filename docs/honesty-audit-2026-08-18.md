@@ -4804,3 +4804,100 @@ scan found no debug probes, expected-failure markers, new ignores, skips, or
 normalization escape hatches in the repaired harness.  The package artifacts
 remain version-pinned, GNU and Emaxx use isolated roots, comparisons remain
 exact, and no production source changed after the complete grouped gate.
+
+## 2026-09-03 issue 36 TRAMP adversarial audit
+
+The issue-36 candidate starts from pushed issue-35 commit `dcd5b82` on the
+dedicated `issue-36-tramp` branch.  The initial remote refresh before
+certification found `origin/main` at `1394e8d`, already contained by the
+branch.  During the long gate, main advanced to merge `9f7c591`; final merge
+`b51ca69` integrated it before publication.  Comparing the two prior merge
+trees showed that this late integration changed only the audit ledger and the
+already-certified TTY differential Python runner/tests, not Rust production or
+Rust test bytes.  Both independent ledger sections were retained.  The target
+is GNU Emacs 30.2.  The work uses GNU TRAMP's own file-name-handler mechanisms
+and public process APIs; it does not add an Emaxx-specific remote API.
+
+Production corrections cover four contracts exposed by the selected upstream
+TRAMP tests.  `buffer-size` now accepts GNU's optional buffer designator and
+reports the complete buffer size despite narrowing.  `make-process` dispatches
+to a file-name handler before validating native-only keyword details, accepts
+the empty call's GNU nil result, and treats `:coding nil` as the default coding
+selection.  Remote `list-system-processes` and `process-attributes` calls now
+follow the handler selected by `default-directory`.  `accept-process-output`
+now implements GNU's target-only delivery boundary, accepts nil as an
+unbounded timeout, and distinguishes integer JUST-THIS-ONE from the ordinary
+truthy spelling; zero-duration `sleep-for` no longer consumes ready process
+output.  Finally, SIGUSR1 and SIGUSR2 are installed through async-signal-safe
+counters and enter the ordinary keyboard event path, including
+`special-event-map`, command dispatch, and the unread-event fallback.
+
+The first formal audit of the permanent deterministic journey found four real
+test-tool defects, all corrected before certification:
+
+1. Exact GNU/Emaxx equality alone allowed two false semantic records to agree.
+   Independent assertions now require the expected content, file operations,
+   handler prefixes, metadata, process result, connection reuse/reconnect,
+   integration results, and final cleanup.
+2. The first runner could start Emaxx after the GNU oracle failed.  Oracle
+   completion and validation are now prerequisites for starting the subject,
+   with an offline regression proving that boundary.
+3. Final Lisp cleanup used `ignore-errors`.  Cleanup now aggregates and reports
+   any buffer, file, directory, process, or connection failure and must emit
+   `cleanup.final=t`.
+4. The first process wrapper overstated its descendant cleanup guarantee and
+   mishandled byte output in `TimeoutExpired`.  The runner now owns each editor
+   with `Popen`, snapshots its exact descendant tree, terminates and reaps those
+   exact PIDs, and decodes partial byte output safely.
+
+The final runner has no retry, normalization, accepted-failure path, or
+warning suppression.  It runs the GNU oracle to completion before the Emaxx
+subject, compares complete structured records exactly, and retains raw stderr.
+Only TRAMP's blank progress lines plus the expected `Compilation finished`
+message are allowed; every other diagnostic fails.  Its default transport is
+the deterministic localhost `mock` method.  Real SSH requires both
+`--live-ssh` and an explicit `/ssh...:` root, so network availability cannot
+silently change the gate.  All 10 offline fail-closed runner tests passed, and
+the final GNU-30.2-versus-Emaxx journey passed at
+`target/tramp-compat-gate/journey-20260902T172315.597899Z.json`, covering remote
+visit/save/revert, directory and Dired operations, completion, metadata,
+copy/rename/delete, temporary files, subprocess and compilation invocation,
+project and VC discovery, connection reuse, forced reconnect, failure, and
+cleanup.  A post-run process-tree check was empty.
+
+Upstream TRAMP evidence is deliberately composite, not misreported as a new
+whole-suite rerun.  The seven previously divergent default selectors (tests
+08, 09, 10, 11, 12, 23, and 27) each matched GNU exactly after the
+`buffer-size` repair.  A serial non-default pass excluding test 45 initially
+matched 41 of 50 outcomes and exposed nine differences.  Only those nine were
+then rerun, as requested: test 29 normal and direct-async, test 30 normal and
+direct-async, test 31 list-system-processes, process-attributes, and
+signal-process, test 34's explicit-shell case, and test 47's read-password
+case all matched GNU exactly.  Test 45 separately passed an exact clean run.
+One rejected test-31 attempt failed on both editors with a generated process
+name; it was not counted as passing, and the clean exact rerun is the evidence.
+
+The final static audit found no fixture, selector, package, editor-identity,
+environment, or oracle branch in production; no runtime oracle execution or
+delegation; no generated answer table; no new ignore, skip, retry,
+normalization, accepted failure, or weakened assertion; and no warning
+suppression.  All 15 repository anti-cheat tests passed with zero ignored.
+`cargo fmt --check` was clean, and
+`cargo clippy --profile gate --all-targets --all-features -- -D warnings`
+passed with zero warnings.
+
+The authoritative publication gate was then run conventionally rather than
+with the concurrent grouped accelerator: `LANG=C LC_ALL=C
+RUST_TEST_THREADS=1 RUST_MIN_STACK=134217728 cargo test --profile gate --
+--test-threads=1`.  The optimized library binary reported 2291 passed, zero
+failed, and exactly the two reviewed opt-in TTY end-to-end gates ignored out
+of 2293 tests in 7097.99 seconds.  The compat-harness binary passed 38/38,
+the perf-harness binary 1/1, CLI 13/13 (including the real-process SIGUSR
+test), ERT runner 3/3, and package lifecycle 5/5; main and doc-test binaries
+contained no tests.  No second test or build was launched from this checkout
+while the gate was active, and the post-gate process-tree check was empty.
+After the late main merge, its affected TTY/completion offline tests passed
+31/31 serially and the TRAMP runner's offline tests passed 10/10 serially.  No
+Rust production or Rust test source changed after the full gate.  The merge
+added only its separately certified TTY Python runner/test correction and the
+two retained evidence sections described above.

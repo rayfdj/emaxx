@@ -3831,6 +3831,66 @@ fn make_process_file_handler_uses_the_registered_gnu_dispatch_route() {
 }
 
 #[test]
+fn make_process_delegates_before_command_validation_and_empty_call_returns_nil() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defalias
+                  'process-handler
+                  #'(lambda (operation &rest arguments)
+                      (list operation arguments)))
+                 (let ((default-directory "/sample:host:/tmp/")
+                       (file-name-handler-alist
+                        '(("\\`/sample:" . process-handler))))
+                   (list
+                    (make-process)
+                    (make-process :name "sample"
+                                  :command nil
+                                  :file-handler t))))"#,
+        ),
+        Value::list([
+            Value::Nil,
+            Value::list([
+                Value::symbol("make-process"),
+                Value::list([
+                    Value::symbol(":name"),
+                    Value::String("sample".into()),
+                    Value::symbol(":command"),
+                    Value::Nil,
+                    Value::symbol(":file-handler"),
+                    Value::T,
+                ]),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn system_process_queries_use_remote_default_directory_handlers_like_emacs() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defalias
+                  'process-query-handler
+                  #'(lambda (operation &rest arguments)
+                      (list operation arguments)))
+                 (let ((default-directory "/sample:host:/tmp/")
+                       (file-name-handler-alist
+                        '(("\\`/sample:" . process-query-handler))))
+                   (list (list-system-processes)
+                         (process-attributes 42))))"#,
+        ),
+        Value::list([
+            Value::list([Value::symbol("list-system-processes"), Value::Nil,]),
+            Value::list([
+                Value::symbol("process-attributes"),
+                Value::list([Value::Integer(42)]),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn lexical_file_name_operations_ignore_a_remote_default_directory() {
     assert_eq!(
         eval_str(
