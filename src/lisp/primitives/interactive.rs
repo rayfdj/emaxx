@@ -1022,36 +1022,42 @@ pub(crate) fn execute_command_binding(
         )
         .map(|_| ())
     };
-    let buffer_id = interp.current_buffer_id();
-    crate::lisp::primitives::safe_run_named_hooks(
-        interp,
-        "post-command-hook",
-        env,
-        Some(buffer_id),
-    )
-    .unwrap_or(());
-    // After post-command-hook GNU deactivates the mark when the command
-    // asked for it (keyboard.c calls the real `deactivate-mark' so its
-    // hook runs).  Buffer-modifying primitives are insdel.c's trigger
-    // for the same flag; until every native arm publishes it, a changed
-    // modification tick stands in for that side of the protocol.
-    let deactivate = interp
-        .lookup_var("deactivate-mark", env)
-        .is_some_and(|value| value.is_truthy())
-        || (interp.current_buffer_id() == modified_before.0
-            && interp.buffer.chars_modified_tick() != modified_before.1);
-    let mark_active = interp
-        .lookup_var("mark-active", env)
-        .is_some_and(|value| value.is_truthy());
-    if deactivate && mark_active {
-        // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
-        // an ordinary Lisp call (call0), never through native dispatch.
-        let _ = interp.call_function_value(
-            Value::Symbol("deactivate-mark".into()),
-            Some("deactivate-mark"),
-            &[],
+    // A command that leaves through `throw' or another nonlocal exit never
+    // reaches keyboard.c's command-completion boundary.  In particular,
+    // exit-minibuffer must not run the minibuffer's post-command hooks a
+    // second time after its initial pre-input boundary.
+    if result.is_ok() {
+        let buffer_id = interp.current_buffer_id();
+        crate::lisp::primitives::safe_run_named_hooks(
+            interp,
+            "post-command-hook",
             env,
-        );
+            Some(buffer_id),
+        )
+        .unwrap_or(());
+        // After post-command-hook GNU deactivates the mark when the command
+        // asked for it (keyboard.c calls the real `deactivate-mark' so its
+        // hook runs).  Buffer-modifying primitives are insdel.c's trigger
+        // for the same flag; until every native arm publishes it, a changed
+        // modification tick stands in for that side of the protocol.
+        let deactivate = interp
+            .lookup_var("deactivate-mark", env)
+            .is_some_and(|value| value.is_truthy())
+            || (interp.current_buffer_id() == modified_before.0
+                && interp.buffer.chars_modified_tick() != modified_before.1);
+        let mark_active = interp
+            .lookup_var("mark-active", env)
+            .is_some_and(|value| value.is_truthy());
+        if deactivate && mark_active {
+            // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
+            // an ordinary Lisp call (call0), never through native dispatch.
+            let _ = interp.call_function_value(
+                Value::Symbol("deactivate-mark".into()),
+                Some("deactivate-mark"),
+                &[],
+                env,
+            );
+        }
     }
     // GNU takes last-command from this-command AFTER the command ran: a
     // prefix command (universal-argument) restores the previous value

@@ -1911,6 +1911,25 @@ fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i6
         .sum()
 }
 
+/// Screen rows owned by the window selected *now*.  During a minibuffer read,
+/// packages can temporarily select the shrunken ordinary window and call
+/// `recenter'.  The last published glyph metrics then belong to an earlier
+/// redisplay and can still describe the pre-minibuffer height; the live window
+/// tree is GNU's authoritative source for command-time geometry.  Batch mode
+/// has no realized window tree, so it retains the published/dumb-frame model.
+fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
+    if interp
+        .lookup_var("noninteractive", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return selected_window_text_height().max(1);
+    }
+    let window_id = interp.selected_window_id();
+    let buffer_id = interp.selected_window_buffer_id();
+    (window_geometry(interp, window_id).1 - window_non_body_height(interp, buffer_id, env)).max(1)
+        as usize
+}
+
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
     let (total, _, left, _) = window_geometry(interp, window_id);
     let root_id = match interp.root_window_value() {
@@ -2137,6 +2156,22 @@ fn window_list_value(
     start: Option<&Value>,
 ) -> Value {
     let mut ids = live_ordinary_window_ids(interp);
+    // GNU window.c includes the active minibuffer when MINIBUF is nil or
+    // omitted, and includes it unconditionally for t.  Any other non-nil
+    // value excludes it.  Add it before rotating so an active, selected
+    // minibuffer is first in the cyclic order; window.el's
+    // `get-buffer-window-list' relies on precisely this default contract.
+    let include_minibuffer = match minibuf {
+        Some(Value::T) => true,
+        None | Some(Value::Nil) => interp.active_minibuffer_buffer_id().is_some(),
+        Some(_) => false,
+    };
+    if include_minibuffer {
+        let minibuffer_id = interp.minibuffer_window_id();
+        if !ids.contains(&minibuffer_id) {
+            ids.push(minibuffer_id);
+        }
+    }
     // GNU lists windows in cyclic order starting from WINDOW (default
     // the selected window), not from the tree's first leaf.
     let start_id = start
@@ -2146,19 +2181,7 @@ fn window_list_value(
     if let Some(index) = ids.iter().position(|id| *id == start_id) {
         ids.rotate_left(index);
     }
-    let mut windows = ids.into_iter().map(Value::Record).collect::<Vec<_>>();
-    let include_minibuffer = matches!(minibuf, Some(Value::T));
-    if !include_minibuffer {
-        return Value::list(windows);
-    }
-    let minibuffer = interp.minibuffer_window_value();
-    if !windows
-        .iter()
-        .any(|window| values_equal(interp, window, &minibuffer))
-    {
-        windows.push(minibuffer);
-    }
-    Value::list(windows)
+    Value::list(ids.into_iter().map(Value::Record))
 }
 
 define_dispatch!(
@@ -3580,7 +3603,8 @@ define_dispatch!(
             }
             "move-to-window-line" => {
                 need_arg_range(name, args, 0, 1)?;
-                let line = resolve_window_line(args.first(), selected_window_text_height() / 2)?;
+                let height = selected_command_text_height(interp, env);
+                let line = resolve_window_line(args.first(), height / 2, height)?;
                 let window_start = current_window_start(interp);
                 let (target, shortage) = move_lines_from(interp, window_start, line);
                 interp.buffer.goto_char(target);
@@ -3599,7 +3623,8 @@ define_dispatch!(
                 let arg = args
                     .first()
                     .filter(|value| !matches!(value, Value::Cons(_)));
-                let line = resolve_window_line(arg, selected_window_text_height() / 2)?;
+                let height = selected_command_text_height(interp, env);
+                let line = resolve_window_line(arg, height / 2, height)?;
                 // Walk back whole screen lines: wrapped lines occupy one
                 // row per continuation, exactly as the display counts.
                 let point = interp.buffer.point();
@@ -3612,14 +3637,19 @@ define_dispatch!(
                 let sign: isize = if name == "scroll-up" { 1 } else { -1 };
                 match args.first() {
                     // nil scrolls a near-full screen.
-                    None | Some(Value::Nil) => scroll_selected_window(interp, env, None, sign)?,
+                    None | Some(Value::Nil) => {
+                        let height = selected_command_text_height(interp, env);
+                        scroll_selected_window(interp, env, None, sign, height)?
+                    }
                     // `-' scrolls a near-full screen the other way.
                     Some(Value::Symbol(minus)) if minus == "-" => {
-                        scroll_selected_window(interp, env, None, -sign)?
+                        let height = selected_command_text_height(interp, env);
+                        scroll_selected_window(interp, env, None, -sign, height)?
                     }
                     Some(value) => {
                         let lines = prefix_numeric_value(value)?.as_integer()? as isize;
-                        scroll_selected_window(interp, env, Some(sign * lines), sign)?
+                        let height = selected_command_text_height(interp, env);
+                        scroll_selected_window(interp, env, Some(sign * lines), sign, height)?
                     }
                 }
                 Ok(Value::Nil)
