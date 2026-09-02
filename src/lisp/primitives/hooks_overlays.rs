@@ -387,6 +387,7 @@ pub(crate) fn deliver_raw_file_notification(
 /// the rendered errno text, then NAME -- spliced in as the tail when it is
 /// already a list (or nil) and wrapped in a one-element list otherwise, so a
 /// dotted descriptor such as (a . 1) yields the same improper data GNU does.
+#[cfg(target_os = "linux")]
 pub(crate) fn file_notify_error_with_errno(
     message: &str,
     error: &std::io::Error,

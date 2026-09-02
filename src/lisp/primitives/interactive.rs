@@ -923,6 +923,11 @@ pub(crate) fn execute_command_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
+    // keyboard.c refreshes point_before_last_command_or_undo at every
+    // command boundary, independently of whether simple.el decides that a
+    // new undo-list boundary is needed.  Without this, a motion between two
+    // edits leaves record_point using the earlier edit's position.
+    interp.buffer.note_undo_command_point();
     // keyboard.c:1537: before this command runs, boundaries for the
     // LAST command's changes are ensured through simple.el's own
     // `undo-auto--add-boundary', whose amalgamation policy (fusing runs
