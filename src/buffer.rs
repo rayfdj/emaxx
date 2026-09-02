@@ -1493,6 +1493,15 @@ impl Buffer {
         self.point_before_last_boundary = Some(self.pt);
     }
 
+    /// Record keyboard.c's point-before-command value even when the undo
+    /// list already starts with a boundary.  `undo-auto--ensure-boundary'
+    /// deliberately avoids adding consecutive boundaries, but a motion
+    /// command between two edits still changes the point that the second
+    /// edit must preserve in its undo record.
+    pub(crate) fn note_undo_command_point(&mut self) {
+        self.point_before_last_boundary = Some(self.pt);
+    }
+
     /// undo.c's `record_point': the first change after a boundary records
     /// the position point had when that boundary was laid down (a bare
     /// integer entry `primitive-undo' replays with `goto-char'), unless

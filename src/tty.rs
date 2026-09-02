@@ -1632,6 +1632,22 @@ fn window_margin_display(value: &Value) -> Option<(String, Value)> {
     Some((side, payload))
 }
 
+/// A string character displayed in a graphical fringe has no text glyph on
+/// a terminal.  Bookmark's fringe mark is the common case: its source "x"
+/// must not leak into the buffer body when no fringe exists.
+fn tty_fringe_display(value: &Value, position: usize) -> bool {
+    let Some(display) = crate::lisp::primitives::string_property_at(value, position, "display")
+    else {
+        return false;
+    };
+    display.to_vec().ok().is_some_and(|parts| {
+        matches!(
+            parts.first(),
+            Some(Value::Symbol(name)) if name == "left-fringe" || name == "right-fringe"
+        )
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum GlyphlessDisplayMethod {
     ZeroWidth,
@@ -1832,8 +1848,10 @@ fn visible_overlay_string(
         let class = class_at(position);
         if class == 0 {
             map.push(display_chars);
-            rendered.push(characters[position]);
-            display_chars += 1;
+            if !tty_fringe_display(value, position) {
+                rendered.push(characters[position]);
+                display_chars += 1;
+            }
             position += 1;
         } else {
             let start = position;
@@ -2530,7 +2548,8 @@ fn mode_line_display_point(
     chars_modiff: crate::buffer::ModCount,
     invisibility_active: bool,
 ) -> usize {
-    if invisibility_active
+    if cursor.is_some()
+        && invisibility_active
         && previous.last_buffer_id == Some(buffer_id)
         && previous.last_point.is_some_and(|old| old != point)
         && previous.last_cursor.map(|(row, _)| row) == cursor.map(|(row, _)| row)
@@ -4850,6 +4869,11 @@ mod tests {
             "ordinary visible motion renders the live point"
         );
         assert_eq!(
+            mode_line_display_point(previous, 7, 30, None, 1, 9, true),
+            30,
+            "a non-selected window has no cursor row whose motion can be deferred"
+        );
+        assert_eq!(
             mode_line_display_point(previous, 7, 30, Some((3, 4)), 1, 10, true),
             30,
             "a text change must refresh the mode line"
@@ -5097,6 +5121,30 @@ mod tests {
             .expect("evaluate margin overlay-string probe");
         let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
         assert_eq!(visual.text, "Recent commits");
+        assert!(visual.display_face_spans.is_empty());
+    }
+
+    #[test]
+    fn graphical_fringe_overlay_strings_have_no_tty_text_glyph() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"alpha\\n\")
+               (let ((mark (make-overlay 1 2)))
+                 (overlay-put
+                  mark 'before-string
+                  (propertize \"x\" 'display
+                              '(left-fringe bookmark-mark bookmark-face)))))",
+        )
+        .read()
+        .expect("read fringe overlay-string probe")
+        .expect("fringe overlay-string probe exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate fringe overlay-string probe");
+        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        assert_eq!(visual.text, "alpha");
         assert!(visual.display_face_spans.is_empty());
     }
 
