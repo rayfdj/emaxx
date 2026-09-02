@@ -99,7 +99,22 @@ fn arity_value((minimum, maximum): (i64, i64)) -> Value {
 }
 
 pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
-    generated_builtin_arities::generated_builtin_arity(name).map(arity_value)
+    // The host's contracted C inventory owns dispatch (dispatch.rs), so it
+    // also answers `subr-arity' for primitives the source-tree table lacks:
+    // that table is regenerated from the Darwin oracle and has no inotify
+    // entries, which made every macroexpansion touching `inotify-valid-p'
+    // fail on Linux before any test in inotify-tests.el could run.
+    host_c_primitive_arity(name)
+        .or_else(|| generated_builtin_arities::generated_builtin_arity(name))
+        .map(arity_value)
+}
+
+fn host_c_primitive_arity(name: &str) -> Option<(i64, i64)> {
+    let contracts = crate::lisp::primitives::GNU_C_PRIMITIVES;
+    contracts
+        .binary_search_by_key(&name, |contract| contract.name)
+        .ok()
+        .and_then(|index| contracts[index].arity)
 }
 
 pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {

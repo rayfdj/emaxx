@@ -1317,7 +1317,7 @@ pub(crate) fn activate_minibuffer(
             .filter(|properties| !properties.is_nil())
         {
             let properties = properties.to_vec().unwrap_or_default();
-            for pair in properties.chunks_exact(2) {
+            for pair in properties.as_chunks::<2>().0 {
                 let name = pair[0].as_symbol()?;
                 if name == "face" {
                     add_face_text_property(

@@ -4430,3 +4430,147 @@ initial stale-bucket expectation described above was rejected after the GNU
 probe.  Finally, a Python bytecode-cache `PermissionError` outside the
 workspace was an environmental write restriction, not a code result; the
 same syntax check passed with its cache under `/private/tmp`.
+
+## 2026-09-02 Linux integration audit of the tty/main candidate (issue 34)
+
+The candidate above (`0bbdb5b`, tty head merged with main `f957201`) was
+re-audited on a Linux host with the pinned GNU 30.2 oracle running natively,
+which the Darwin session could not do.  The diff was re-read against
+inotify.c, fileio.c, process.c and keyboard.c; every byte-stream probe below
+was run identically under both binaries before any change was made.  The
+integration is sound in its process, timer, kqueue and coding mechanisms;
+its Linux backend had four defects and one evidence gap, all corrected here.
+
+1. **inotify-tests.el could not load.**  `subr-arity`/`func-arity` consulted
+   only the Darwin-regenerated arity table, which has no inotify rows, so
+   the eager macroexpansion of `(should-not (inotify-valid-p 0))` signalled
+   "no GNU-derived arity for subr inotify-valid-p" and the harness recorded
+   LoadError with 0/2 (main: 0/2 as `ert-test-skipped`).  The arity
+   accessor now consults the host's C contract first, as dispatch already
+   did; oracle contract: `((1 . 1) (3 . 3) (1 . 1) t nil)`.  inotify-tests.el
+   is 2/2 matching.
+2. **Delivery timing.**  process.c registers the inotify (and kqueue)
+   descriptor with `add_keyboard_wait_descriptor`, and
+   `wait_reading_process_output` selects keyboard-class descriptors only for
+   a READ_KBD wait; `process_special_events` handles X selection events
+   only.  So `accept-process-output` and `sleep-for` never read the kernel
+   queue, `input-pending-p` neither reads nor dispatches, and callbacks run
+   from read_char.  The oracle for a watched file written moments earlier:
+   `(nil 0 0 0 0 1 ...)` across input-pending-p, accept-process-output,
+   sleep-for, `(input-pending-p t)` and read-event.  Emaxx ran the callback at
+   every one of those points.  Kernel-queue service now happens only while
+   the thread is in a keyboard read (`waiting_for_user_input`, which
+   `accept-process-output` and `sleep-for` clear for their own duration as
+   `waiting_for_user_input_p = read_kbd` does); handler-backed watches keep
+   delivering inside any wait, because GNU receives those as monitor process
+   output.  Four eval tests had pinned the old behaviour: three with
+   `(sleep-for 0)` waits and a kqueue-only library check, and
+   `auto_revert_mode_reloads_changed_file` with a `sleep-for` polling loop
+   that the oracle itself leaves at "any text" (autorevert-tests.el's own
+   `auto-revert--wait-for-revert` uses read-event once notifications are in
+   use).  They now use keyboard reads and a host-neutral check, and the same
+   watch scenarios are a Linux oracle contract:
+   `(((2 directory) nil nil nil) (nil 2 t t))`.
+3. **Callback errors.**  read_char executes the special-event binding without
+   a condition handler, so a signalling callback leaves `read-event` (the
+   oracle: `(error "boom")`, with the sibling watch's callback for the same
+   kernel event delivered by the next read).  Emaxx demoted every non-debug
+   error to a message reading "Error in file notification: %S", a string that
+   exists nowhere in GNU; that invented message is gone and errors propagate,
+   the remaining queue intact.  The tty command loop already reports such an
+   error the way cmd_error does.
+4. **Error data shapes.**  fileio.c `report_file_notify_error` always places
+   the rendered errno between the message and the object, splicing a list or
+   nil object in as the tail.  Emaxx omitted the errno text for "Unknown
+   aspect" (GNU: `"Invalid argument"`, set explicitly by
+   symbol_to_inotifymask) and "Invalid descriptor ", printed a nil aspect as
+   an extra element, wrapped a dotted descriptor in a list, and reported
+   "Could not rm watch" with an empty name instead of the kernel descriptor.
+   Aspects are also converted before FILE-NAME is type-checked, as
+   Finotify_add_watch orders them.  All shapes now match the oracle; the
+   "Invalid descriptor " errno text is whatever the previous host call left
+   behind in GNU as well, so the contract pins its presence and type, not its
+   value.
+5. **Clippy on Linux.**  The candidate's Linux Clippy evidence came from a Zig
+   cross-compile on the Darwin toolchain.  With the current stable toolchain
+   (rustc 1.98.0) the same gate fails on 15 pre-existing `chunks_exact(2)`
+   sites through the new `chunks_exact_to_as_chunks` lint; they are converted
+   to `as_chunks::<2>()`, which is behaviour-preserving.  `cargo fmt --check`
+   and `cargo clippy --profile gate --all-targets --all-features -- -D
+   warnings` are both clean natively on Linux.
+
+Cross-binary evidence: a 30-row inotify probe (error shapes, stale and
+duplicate removal, per-inode ID assignment, directory create/modify/rename/
+delete/delete-self event lists with cookies, ignored-watch invalidation,
+delivery stage, error propagation and isolation) is identical between GNU
+and emaxx except for one row, where emaxx reports an extra `modify` for the
+`.#file` lock entry because `lock-file` writes a regular file where GNU
+writes a dangling symlink -- the divergence already recorded in the
+2026-08-27 sweep, outside this change.  Harness replays on Linux after the
+fixes: inotify-tests.el 2/2 (from 0/2), filenotify-tests.el 4/4,
+timer-tests.el 5/5, process-tests.el 36/37.  The one process-tests miss,
+`lookup-hints-values`, fails identically on main (`--subject-root` baseline
+0/1): `network-lookup-address-info` rejects the glibc `inet_aton` forms
+("127.1", "0xe3010203", octal octets) that AI_NUMERICHOST accepts on
+GNU/Linux.  It predates this integration and stays OPEN as a new finding.
+
+The full serial Linux gate on the candidate plus the fixes above exposed
+what the branch's switch to the host C contract means for the Rust suite:
+four tests had been written against the Darwin contract and only ever ran
+there.  `x-load-color-file`, `x-file-dialog` and `system-move-file-to-trash`
+are not compiled into the X oracle (nor, now, into Emaxx on Linux), and
+`frame-windows-min-size` is window.el Lisp everywhere, which only the Darwin
+contract lists with an arity.  Those tests now consult `is_builtin` and
+assert the void-function or Lisp-defined behaviour the host's oracle shows;
+on Linux that closes the "Emaxx models the X-compiled headless build"
+divergence those tests used to record.  Routing `frame-windows-min-size`
+through window.el then uncovered two window.c gaps that the native stand-in
+had masked: a frame's root window had no sibling link to its minibuffer
+window (frame.c make_frame sets `wset_next (rw, mini_window)` and
+`wset_prev (mw, root_window)`), and `window-mode-line-height` reported the
+minibuffer's buffer format where `window_wants_mode_line` requires
+!MINI_WINDOW_P.  Oracle: `(8 10 5)` for the three frame-windows-min-size
+forms; Emaxx read `(4 10 4)` before and `(8 10 5)` after.
+
+Two gate observations are recorded, not hidden: the manifest anti-cheat
+test shells out to `rustfmt`, which the unprivileged gate user could not
+reach under /root's rustup (it passed once the toolchain was on that user's
+PATH), and `process_send_string_and_region_route_output_to_the_process_buffer`
+failed once under the serial gate's load with only the first echo line
+present, then passed on rerun and on the main baseline; its single
+`accept-process-output` returns on the first delivery from the named
+process, so it belongs to the KNOWN-RACY family already listed above.
+
+Gate accounting for this change, as composite evidence: the first full
+serial Linux gate (`lingate2`, LANG=C, one thread, unprivileged runner) on
+the candidate plus the notification fixes reported 2264 passed, 7 failed, 2
+ignored over 5845 s -- the rustfmt PATH artifact, the four Darwin-contract
+tests, the `sleep-for` auto-revert test, and the one load-sensitive process
+echo -- with bins and the CLI, package-lifecycle and ERT-runner integration
+suites all green.  After the corrections above the second full serial gate
+reported 2270 passed, 1 failed, 2 ignored over 5772 s, again with every
+other stage green; the single failure was the Todo-mode window-state test
+asserting that the batch root window has no next sibling, which is false in
+GNU (`(eq (window-next-sibling (selected-window)) (minibuffer-window))` is
+t there) and had only held because of the missing frame.c link.  That
+assertion now states the oracle's answer, and the test plus the 159-test
+window/frame subset were rerun green on the final tree; no production
+source changed after the second gate.
+
+The publication tree then also absorbed main's grouped test gate
+(`8b08bbf`) and tty-frontend's Eat certification (`59b4d18`), both merging
+without a source conflict (only this ledger and docs/testing.md overlapped,
+textually).  On that merged tree, natively on Linux as the unprivileged
+runner with git state recorded, `python3 tools/grouped_gate.py --scope full`
+passed every group: eval_01 349, eval_02 284, eval_03 319, eval_04 247,
+eval_05 349, primitives 349, compat_runtime 82, tty 45 (+2 opt-in PTY
+ignores), batch 43, lightweight 207 -- 2274 library tests -- plus the bins
+and integration targets, in about 57 minutes.  Per docs/testing.md that
+runner is still an experimental accelerator, so this is recorded as the
+grouped run it was, alongside the two serial gates above, not as a third
+serial gate.
+
+Not claimed: Darwin was not re-run here.  The kqueue backend is unchanged;
+the delivery-timing change applies to it through the same
+`waiting_for_user_input` gate, and the converted eval tests use the same
+keyboard-read waits on both hosts.
