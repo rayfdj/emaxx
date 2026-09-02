@@ -11,6 +11,7 @@ from ttydiff import (
     ADVERSARIAL_COMMAND_SCENARIO_NAMES,
     COLS,
     CORE_FREQUENCY_SCENARIO_NAMES,
+    COMPLETION_STACK_SCENARIO_NAMES,
     DIRED_BATCH_SCENARIO_NAMES,
     EGLOT_SCENARIO_NAMES,
     FAKE_LSP_FIXTURE_PATH,
@@ -87,6 +88,7 @@ class Vt100ScreenTests(unittest.TestCase):
                 not in MAGIT_SCENARIO_NAMES
                 + LSP_MODE_SCENARIO_NAMES
                 + FLYCHECK_SCENARIO_NAMES
+                + COMPLETION_STACK_SCENARIO_NAMES
             ],
         )
 

@@ -13020,10 +13020,24 @@ fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
                                   (minibufferp nil t)
                                   (eq (current-local-map)
                                       minibuffer-local-completion-map)
-                                  (equal minibuffer-completion-table '("a"))))))))
+                                  (equal minibuffer-completion-table '("a"))
+                                  (let ((active (active-minibuffer-window)))
+                                    (list
+                                     (mapcar
+                                      (lambda (window)
+                                        (if (eq window active) 'mini 'ordinary))
+                                      (window-list nil nil))
+                                     (mapcar
+                                      (lambda (window)
+                                        (if (eq window active) 'mini 'ordinary))
+                                      (window-list-1 (selected-window) nil nil))
+                                     (memq active
+                                           (window-list nil 'exclude))
+                                     (length (get-buffer-window-list))))))))))
                         (let ((executing-kbd-macro t))
                           (completing-read "Prompt: " '("a")))))"#;
-    let active_expected = r#"(1 "Prompt: " t t 9 9 "" t t t t)"#;
+    let active_expected =
+        r#"(1 "Prompt: " t t 9 9 "" t t t t ((mini ordinary) (mini ordinary) nil 1))"#;
     assert_upstream_primitive_contract(&format!("(prin1 {active})"), active_expected);
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
@@ -13044,6 +13058,96 @@ fn native_minibuffer_stack_queries_match_gnu_minibuf_c() {
             expected
         );
     }
+}
+
+#[test]
+fn native_minibuffer_runs_initial_post_command_hook_before_input() {
+    let setup = r#"(setq emaxx-initial-post-command-count 0
+                         minibuffer-setup-hook
+                         (list
+                          (lambda ()
+                            (add-hook
+                             'post-command-hook
+                             (lambda ()
+                               (setq emaxx-initial-post-command-count
+                                     (1+ emaxx-initial-post-command-count)))
+                             nil t))))"#;
+    let program = format!(
+        r#"(progn
+                       {setup}
+                       (let ((executing-kbd-macro t)
+                             (unread-command-events '(13)))
+                         (completing-read "Prompt: " '("a")))
+                       emaxx-initial-post-command-count)"#
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "1");
+
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    let form = Reader::new(setup)
+        .read()
+        .expect("initial post-command setup should parse")
+        .expect("initial post-command setup should contain a form");
+    interp
+        .eval(&form, &mut env)
+        .expect("initial post-command setup should evaluate");
+    let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+    let result = call(
+        &mut interp,
+        "completing-read",
+        &[
+            Value::String("Prompt: ".into()),
+            Value::list([Value::String("a".into())]),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+    assert_eq!(
+        result.expect("RET should submit the minibuffer"),
+        Value::String("".into())
+    );
+    assert_eq!(
+        interp.lookup_var("emaxx-initial-post-command-count", &env),
+        Some(Value::Integer(1))
+    );
+}
+
+#[test]
+fn reused_minibuffer_discards_overlays_from_the_previous_read() {
+    let program = r#"(progn
+                       (setq emaxx-minibuffer-overlay-counts nil
+                             minibuffer-setup-hook
+                             (list
+                              (lambda ()
+                                (push (length (overlays-at (point-min)))
+                                      emaxx-minibuffer-overlay-counts)
+                                (make-overlay (point-min) (point-min)))))
+                       (let ((executing-kbd-macro t)
+                             (unread-command-events '(13)))
+                         (completing-read "First: " '("a")))
+                       (let ((executing-kbd-macro t)
+                             (unread-command-events '(13)))
+                         (completing-read "Second: " '("b")))
+                       (nreverse emaxx-minibuffer-overlay-counts))"#;
+    let expected = "(0 0)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("minibuffer overlay reset contract should parse")
+        .expect("minibuffer overlay reset contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("minibuffer overlay reset contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("minibuffer overlay reset result should parse")
+            .expect("minibuffer overlay reset result should exist")
+    );
 }
 
 #[test]
@@ -16490,6 +16594,56 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
 }
 
 #[test]
+fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let entry = call(&mut interp, "selected-window", &[], &mut env).expect("entry window");
+    let outer = crate::lisp::primitives::activate_minibuffer(
+        &mut interp,
+        &Value::String("Outer: ".into()),
+        &Value::String("".into()),
+        Value::Nil,
+        &mut env,
+    )
+    .expect("outer minibuffer activates");
+    assert_eq!(
+        call(&mut interp, "minibuffer-selected-window", &[], &mut env).expect("outer entry query"),
+        entry,
+        "the outer read remembers its ordinary entry window"
+    );
+    let outer_minibuffer =
+        call(&mut interp, "active-minibuffer-window", &[], &mut env).expect("active window");
+
+    let inner = crate::lisp::primitives::activate_minibuffer(
+        &mut interp,
+        &Value::String("Inner: ".into()),
+        &Value::String("".into()),
+        Value::Nil,
+        &mut env,
+    )
+    .expect("nested minibuffer activates");
+    assert_eq!(
+        call(&mut interp, "minibuffer-selected-window", &[], &mut env).expect("inner entry query"),
+        outer_minibuffer,
+        "a nested read remembers the outer minibuffer window"
+    );
+
+    crate::lisp::primitives::restore_active_minibuffer(&mut interp, inner);
+    assert_eq!(
+        call(&mut interp, "minibuffer-selected-window", &[], &mut env)
+            .expect("restored outer query"),
+        entry,
+        "unwinding the nested read restores the outer entry window"
+    );
+    crate::lisp::primitives::restore_active_minibuffer(&mut interp, outer);
+    assert_eq!(
+        call(&mut interp, "selected-window", &[], &mut env).expect("restored selection"),
+        entry,
+        "unwinding the outer read restores the ordinary selection"
+    );
+}
+
+#[test]
 fn tty_real_minibuffer_history_recalls_through_simple_el() {
     let (mut interp, mut env) = upstream_interactive_interpreter();
     let feed_events = |events: &str| {
@@ -16959,6 +17113,7 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
 fn recenter_uses_the_published_window_height_for_negative_lines() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::T, &mut env);
     for n in 0..60 {
         call(
             &mut interp,
@@ -16989,6 +17144,51 @@ fn recenter_uses_the_published_window_height_for_negative_lines() {
         start,
         Value::Integer((11 * 9 + 1) as i64),
         "window starts 19 lines above point"
+    );
+}
+
+#[test]
+fn interactive_recenter_uses_the_live_shrunken_window_height() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    for n in 0..30 {
+        call(
+            &mut interp,
+            "insert",
+            &[Value::String(format!("line {n:02}\n").into())],
+            &mut env,
+        )
+        .expect("insert seeds the buffer");
+    }
+    let selected =
+        call(&mut interp, "selected-window", &[], &mut env).expect("selected window is live");
+    call(
+        &mut interp,
+        "set-window-new-pixel",
+        &[selected, Value::Integer(16)],
+        &mut env,
+    )
+    .expect("stage the minibuffer-shrunken height");
+    call(&mut interp, "window-resize-apply", &[], &mut env).expect("apply the live height");
+    assert_eq!(
+        call(&mut interp, "window-body-height", &[], &mut env).expect("body height"),
+        Value::Integer(15)
+    );
+    // Model the stale pre-minibuffer glyph publication that used to win over
+    // the live 15-row body while Consult temporarily selected this window.
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 21,
+        window_end: interp.buffer.point_max(),
+    }));
+    call(&mut interp, "goto-char", &[Value::Integer(161)], &mut env).expect("line 21");
+    call(&mut interp, "recenter", &[], &mut env).expect("recenter");
+    let start = call(&mut interp, "window-start", &[], &mut env).expect("window start");
+    set_interactive_window_metrics(None);
+    assert_eq!(
+        start,
+        Value::Integer(105),
+        "a 15-row body centers line 21 with line 14 at the top"
     );
 }
 
