@@ -1316,7 +1316,10 @@ define_dispatch!(
             #[cfg(target_os = "linux")]
             "inotify-add-watch" => {
                 need_args(name, args, 3)?;
-                let path = string_text(&args[0])?;
+                // Finotify_add_watch converts ASPECT to its mask before
+                // CHECK_STRING examines FILE-NAME, and symbol_to_inotifymask
+                // reports any entry it cannot map -- a non-symbol included --
+                // as an unknown aspect with errno set to EINVAL.
                 let aspects = if args[1].is_nil() {
                     Vec::new()
                 } else if args[1].cons_values().is_some() {
@@ -1328,14 +1331,16 @@ define_dispatch!(
                     .iter()
                     .map(|aspect| {
                         aspect.as_symbol().map(str::to_string).map_err(|_| {
-                            LispError::SignalValue(Value::list([
-                                Value::Symbol("file-notify-error".into()),
-                                Value::String("Unknown aspect".into()),
+                            crate::lisp::primitives::file_notify_error_with_errno(
+                                "Unknown aspect",
+                                &std::io::Error::from_raw_os_error(libc::EINVAL),
                                 aspect.clone(),
-                            ]))
+                            )
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                interp.validate_inotify_aspects(&flags)?;
+                let path = string_text(&args[0])?;
                 interp.register_inotify_file_notify_watch(path, flags, args[2].clone())
             }
             #[cfg(target_os = "linux")]
@@ -1346,11 +1351,14 @@ define_dispatch!(
                         && matches!(id, Value::Integer(value) if value >= 0)
                 });
                 if !valid {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("file-notify-error".into()),
-                        Value::String("Invalid descriptor ".into()),
+                    // report_file_notify_error renders whatever errno the
+                    // preceding host call left behind, so GNU's own text here
+                    // depends on session history; only the shape is stable.
+                    return Err(crate::lisp::primitives::file_notify_error_with_errno(
+                        "Invalid descriptor ",
+                        &std::io::Error::last_os_error(),
                         args[0].clone(),
-                    ])));
+                    ));
                 }
                 interp.remove_inotify_file_notify_watch(&args[0])?;
                 Ok(Value::T)

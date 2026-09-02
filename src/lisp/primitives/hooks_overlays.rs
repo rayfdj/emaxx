@@ -383,6 +383,33 @@ pub(crate) fn deliver_raw_file_notification(
     result
 }
 
+/// fileio.c report_file_notify_error: the condition data is MESSAGE, then
+/// the rendered errno text, then NAME -- spliced in as the tail when it is
+/// already a list (or nil) and wrapped in a one-element list otherwise, so a
+/// dotted descriptor such as (a . 1) yields the same improper data GNU does.
+pub(crate) fn file_notify_error_with_errno(
+    message: &str,
+    error: &std::io::Error,
+    name: Value,
+) -> LispError {
+    let rendered = error.to_string();
+    let detail = rendered
+        .split_once(" (os error")
+        .map_or(rendered.as_str(), |(detail, _)| detail);
+    let tail = if name.is_nil() || name.cons_values().is_some() {
+        name
+    } else {
+        Value::list([name])
+    };
+    LispError::SignalValue(Value::cons(
+        Value::Symbol("file-notify-error".into()),
+        Value::cons(
+            Value::String(message.into()),
+            Value::cons(Value::String(detail.into()), tail),
+        ),
+    ))
+}
+
 #[derive(Clone)]
 pub(crate) struct OverlayHookCall {
     overlay_id: u64,
