@@ -50,6 +50,52 @@ Use this when:
 - You want the fastest feedback loop
 - You are working on one subsystem and want targeted regressions
 
+### Experimental resource-grouped gate
+
+The full library suite contains two very different costs: lightweight Rust
+tests and tests that reconstruct or consume the complete GNU Lisp image.  The
+experimental grouped runner reuses a validated image only inside isolated,
+single-threaded worker processes and runs at most two measured-safe workers at
+once:
+
+```bash
+python3 tools/grouped_gate.py --scope full
+```
+
+Its current resource schedule is deliberately fixed:
+
+| Phase | Concurrency | Image policy |
+|---|---:|---|
+| `eval_01` + `eval_02` | 2 processes | one cached image per serial process |
+| `eval_03` + `eval_04` | 2 processes | one cached image per serial process |
+| `eval_05` | exclusive | cached; Eshell/process timing cluster isolated |
+| primitives | exclusive | cached; oracle/network/process tests isolated |
+| compat-runtime + TTY unit tests | 2 processes | one cached image per serial process |
+| batch reconstruction | one process, 2 test threads | fresh images; construction is the subject |
+| lightweight remainder | one process, 2 test threads | no image template |
+
+The runner builds the test binary first, discovers that exact binary's test
+inventory, and proves that every selected name occurs in exactly one group.
+Each group must report the expected outcome count and complementary
+`filtered out` count.  New `eval_*` modules are rejected until explicitly
+classified.  There are no retries, accepted failures, or additional ignores.
+The runner discovers ignored names separately and rejects any name outside the
+four reviewed, pre-existing opt-outs; removing an opt-out remains allowed.
+For `--scope full`, binary and integration-test targets are discovered from
+Cargo metadata rather than maintained as a list, and every target must emit
+one successful test result.  Adding a new test binary therefore cannot
+silently leave it outside the gate.
+Per-group logs, timings, test-binary hash, inventory hash, Git state, and a
+machine-readable summary are written under `target/grouped-gate/`.
+The runner pins the gate locale, stack size, and two-thread ceiling instead of
+inheriting a caller's potentially unsafe test-thread override.
+
+Use `--scope eval --repetitions 3` to stress only the five eval groups, or
+`--scope lib` to omit the binary and integration stages.  Until repeated
+grouped runs and a complete conventional gate agree on the same tree, treat
+this as an experimental accelerator rather than replacing the authoritative
+gate.
+
 ## 2. Smoke Integration Tests
 
 Run:

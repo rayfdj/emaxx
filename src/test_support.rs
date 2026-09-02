@@ -256,7 +256,7 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter_with(libraries: &[&str]) ->
 }
 
 pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
-    // EMAXX_IMAGE_TEMPLATE=1: reconstruct the image once per test thread
+    // EMAXX_IMAGE_TEMPLATE=1: reconstruct the image once per test process
     // and clone it per test (issue #11).  The clone shares immutable Rc
     // structure; interpreter-owned tables are per-clone.  Validation
     // criterion: identical results to the reconstruct-per-test path,
