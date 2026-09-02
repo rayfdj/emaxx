@@ -194,7 +194,7 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
         return false;
     }
     let mut properties = std::collections::HashMap::new();
-    for pair in items[1..].chunks_exact(2) {
+    for pair in items[1..].as_chunks::<2>().0 {
         let Value::Symbol(key) = &pair[0] else {
             return false;
         };
@@ -377,7 +377,7 @@ fn image_hot_spot_contains(area: &Value, x: i64, y: i64) -> bool {
                 return false;
             };
             let mut inside = false;
-            for pair in coordinates.chunks_exact(2) {
+            for pair in coordinates.as_chunks::<2>().0 {
                 let (x1, y1) = (x0, y0);
                 let (Ok(next_x), Ok(next_y)) = (pair[0].as_integer(), pair[1].as_integer()) else {
                     return false;
@@ -900,7 +900,7 @@ fn tty_supports_face_attributes(
             pending.extend(items.into_iter().rev());
             continue;
         }
-        for pair in items.chunks_exact(2) {
+        for pair in items.as_chunks::<2>().0 {
             if let Value::Symbol(key) = &pair[0] {
                 pairs.push((key.to_string(), pair[1].clone()));
             }
@@ -1161,7 +1161,7 @@ fn resolve_tty_face_reference_options(
         return merged;
     }
 
-    let mut pairs = items.chunks_exact(2);
+    let mut pairs = items.as_chunks::<2>().0.iter();
     let inherited = pairs
         .clone()
         .find(|pair| matches!(&pair[0], Value::Symbol(name) if name == ":inherit"))

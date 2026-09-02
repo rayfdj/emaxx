@@ -8,13 +8,21 @@
 mod abi;
 mod backend;
 mod gccjit;
+// One generated table per supported target.  Each is the pinned GNU
+// reference build's C subroutine registration order for that target and
+// carries the configuration strings that feed comp.c:hash_native_abi.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[path = "generated_native_subrs_aarch64_apple_darwin.rs"]
+mod generated_native_subrs;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "generated_native_subrs_x86_64_unknown_linux_gnu.rs"]
 mod generated_native_subrs;
 mod lisp;
 mod loader;
 mod runtime;
 mod state;
 
-pub(crate) use loader::RegistrationKind;
+pub(crate) use loader::{RegistrationKind, UnitLibrary, open_unit};
 pub(crate) use state::NativeCompilerState;
 
 use crate::lisp::eval::Interpreter;
@@ -82,13 +90,15 @@ pub(crate) fn load(
     interpreter: &mut Interpreter,
     environment: &mut Env,
     filename: &str,
+    library: UnitLibrary,
     late: bool,
 ) -> Result<Value, LispError> {
-    if let Some(result) = loader::load_active(interpreter, environment, filename, late) {
-        return result;
-    }
+    let library = match loader::load_active(interpreter, environment, filename, library, late) {
+        Ok(result) => return result,
+        Err(library) => library,
+    };
     let mut state = std::mem::take(&mut interpreter.native_compiler);
-    let result = state.load(interpreter, environment, filename, late);
+    let result = state.load(interpreter, environment, filename, library, late);
     interpreter.native_compiler = state;
     result
 }

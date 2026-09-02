@@ -1,93 +1,24 @@
 //! Regenerate the native compiler's C-subroutine ABI order from GNU C source.
 //!
-//! This is a development tool, not runtime machinery.  It follows the
-//! startup registration order in GNU `emacs.c`, reads each active C-owned
-//! `defsubr` call after applying the reference build's C preprocessor
-//! configuration, filters it through the linked GNU binary, and finally
-//! reverses the sequence because GNU `defsubr` conses each entry onto
-//! `Vcomp_subr_list`.
+//! This is a development tool, not runtime machinery.  It preprocesses GNU
+//! `emacs.c` with the reference build's own compiler configuration, walks the
+//! argument-less startup calls in `main` in order, follows each into the
+//! source file that defines it, reads that function's active `defsubr` calls
+//! after the same preprocessing, and finally reverses the sequence because
+//! GNU `defsubr` conses each entry onto `Vcomp_subr_list`.  Window-system and
+//! feature differences between reference builds therefore come from the
+//! configured tree itself rather than from a hand-maintained file list.
+//!
+//! Usage: `generate_native_subrs GNU-SRC GNU-BINARY OUTPUT`, where GNU-SRC is
+//! the configured and built `src` directory of the pinned checkout, and
+//! GNU-BINARY is the unstripped `emacs` executable it produced.  Build it with
+//! `rustc --edition 2024 -O tools/generate_native_subrs.rs`.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-const REGISTRATION_SOURCES: &[&str] = &[
-    "xfaces.c",
-    "keymap.c",
-    "keyboard.c",
-    "data.c",
-    "fns.c",
-    "fileio.c",
-    "alloc.c",
-    "charset.c",
-    "coding.c",
-    "textconv.c",
-    "comp.c",
-    "callproc.c",
-    "chartab.c",
-    "lread.c",
-    "print.c",
-    "eval.c",
-    "floatfns.c",
-    "buffer.c",
-    "bytecode.c",
-    "callint.c",
-    "casefiddle.c",
-    "casetab.c",
-    "category.c",
-    "ccl.c",
-    "character.c",
-    "cmds.c",
-    "dired.c",
-    "dispnew.c",
-    "doc.c",
-    "editfns.c",
-    "emacs.c",
-    "filelock.c",
-    "indent.c",
-    "insdel.c",
-    "macros.c",
-    "marker.c",
-    "minibuf.c",
-    "process.c",
-    "search.c",
-    "sysdep.c",
-    "timefns.c",
-    "frame.c",
-    "syntax.c",
-    "terminal.c",
-    "term.c",
-    "undo.c",
-    "emacs-module.c",
-    "treesit.c",
-    "sound.c",
-    "textprop.c",
-    "composite.c",
-    "window.c",
-    "xdisp.c",
-    "sqlite.c",
-    "font.c",
-    "fringe.c",
-    "image.c",
-    "xml.c",
-    "lcms.c",
-    "decompress.c",
-    "menu.c",
-    "nsterm.m",
-    "nsfns.m",
-    "nsmenu.m",
-    "nsselect.m",
-    "fontset.c",
-    "gnutls.c",
-    "kqueue.c",
-    "xwidget.c",
-    "thread.c",
-    "profiler.c",
-    "pdumper.c",
-    "json.c",
-];
 
 #[derive(Clone)]
 struct Primitive {
@@ -127,52 +58,37 @@ fn main() {
         read_c_define_string(&gnu_src.join("config.h"), "EMACS_CONFIG_OPTIONS");
     let mut registration = Vec::with_capacity(compiled_subrs.len());
     let mut seen = HashSet::new();
+    let mut preprocessed: HashMap<String, String> = HashMap::new();
 
-    for source in REGISTRATION_SOURCES {
-        let path = gnu_src.join(source);
-        if !path.exists() {
-            continue;
-        }
-        let text = preprocess_registration_source(&gnu_src, source);
-        let local_definitions = defun_definitions(&text, &min_arg_constants);
-        for identifier in defsubr_identifiers(&text) {
-            // print.c registers this debugger helper from init_print_once,
-            // which emacs.c calls between syms_of_alloc and syms_of_charset;
-            // it is not part of the later syms_of_print registration pass.
-            if *source == "print.c" && identifier == "Sexternal_debugging_output" {
-                continue;
-            }
-            if !compiled_subrs.contains(&identifier) {
-                continue;
-            }
-            let Some(primitive) = local_definitions
-                .get(&identifier)
-                .or_else(|| definitions.get(&identifier))
-            else {
+    for function in startup_calls(&gnu_src) {
+        for source in definition_sources(&gnu_src, &function) {
+            let text = preprocessed
+                .entry(source.clone())
+                .or_insert_with(|| preprocess_registration_source(&gnu_src, &source));
+            let Some(body) = function_body(text, &function) else {
                 continue;
             };
-            assert!(
-                seen.insert(primitive.name.clone()),
-                "compiled primitive {:?} was registered more than once",
-                primitive.name
-            );
-            registration.push(primitive.clone());
-        }
-        if *source == "alloc.c" {
-            let identifier = "Sexternal_debugging_output";
-            let primitive = definitions
-                .get(identifier)
-                .expect("print.c defines external-debugging-output");
-            assert!(
-                compiled_subrs.contains(identifier),
-                "external-debugging-output is missing from the reference binary"
-            );
-            assert!(
-                seen.insert(primitive.name.clone()),
-                "compiled primitive {:?} was registered more than once",
-                primitive.name
-            );
-            registration.push(primitive.clone());
+            let local_definitions = defun_definitions(text, &min_arg_constants);
+            for identifier in defsubr_identifiers(body) {
+                if !compiled_subrs.contains(&identifier) {
+                    eprintln!(
+                        "warning: {source}:{function} registers {identifier}, which the reference binary does not define"
+                    );
+                    continue;
+                }
+                let primitive = local_definitions
+                    .get(&identifier)
+                    .or_else(|| definitions.get(&identifier))
+                    .unwrap_or_else(|| {
+                        panic!("{source}:{function} registers {identifier} without a DEFUN")
+                    });
+                assert!(
+                    seen.insert(primitive.name.clone()),
+                    "compiled primitive {:?} was registered more than once",
+                    primitive.name
+                );
+                registration.push(primitive.clone());
+            }
         }
     }
 
@@ -390,7 +306,7 @@ fn defun_definitions(
 
 fn read_compiled_subrs(binary: &Path) -> HashSet<String> {
     let output = Command::new("nm")
-        .args(["-nm"])
+        .args(["-n"])
         .arg(binary)
         .output()
         .unwrap_or_else(|error| panic!("run nm on {}: {error}", binary.display()));
@@ -580,7 +496,135 @@ fn unescape_string(value: &str) -> String {
 
 fn read_source(path: &Path) -> String {
     let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    String::from_utf8_lossy(&bytes).into_owned()
+    strip_comments(&String::from_utf8_lossy(&bytes))
+}
+
+/// C text without its comments.  Directives-only preprocessing keeps
+/// comments, and GNU sources comment out calls such as `syms_of_keymap ();`
+/// and write apostrophes in prose, so every scan runs on stripped text.
+fn strip_comments(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut quoted: Option<char> = None;
+    let mut escaped = false;
+    let mut rest = text;
+    while let Some(character) = rest.chars().next() {
+        if let Some(quote) = quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote {
+                quoted = None;
+            }
+        } else if let Some(tail) = rest.strip_prefix("/*") {
+            rest = tail.find("*/").map_or("", |end| &tail[end + 2..]);
+            result.push(' ');
+            continue;
+        } else if rest.starts_with("//") {
+            rest = rest.find('\n').map_or("", |end| &rest[end..]);
+            continue;
+        } else if character == '"' || character == '\'' {
+            quoted = Some(character);
+        }
+        result.push(character);
+        rest = &rest[character.len_utf8()..];
+    }
+    result
+}
+
+/// The argument-less calls made by `main` in the configured `emacs.c`, in
+/// order.  Every C-owned subroutine registration happens inside one of them.
+fn startup_calls(directory: &Path) -> Vec<String> {
+    let text = preprocess_registration_source(directory, "emacs.c");
+    let body = function_body(&text, "main").expect("emacs.c defines main");
+    let mut result = Vec::new();
+    let mut offset = 0;
+    while let Some(relative) = body[offset..].find(" ();") {
+        let end = offset + relative;
+        let start = body[..end]
+            .rfind(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            .map_or(0, |position| position + 1);
+        if start < end {
+            result.push(body[start..end].to_string());
+        }
+        offset = end + " ();".len();
+    }
+    result
+}
+
+/// Source files under GNU `src` that the reference build compiled, register
+/// subroutines, and define `NAME (void)`.  Platform ports can define the
+/// same startup function in different files, and sources for other
+/// platforms do not even preprocess on this one, so a candidate must have
+/// its object file in the built tree; the preprocessed text then decides
+/// which definition is compiled in.
+fn definition_sources(directory: &Path, name: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    for entry in fs::read_dir(directory).expect("read GNU src directory") {
+        let path = entry.expect("read GNU src entry").path();
+        if !matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("c" | "m")
+        ) {
+            continue;
+        }
+        if !path.with_extension("o").is_file() {
+            continue;
+        }
+        let text = read_source(&path);
+        if text.contains("defsubr") && function_body(&text, name).is_some() {
+            result.push(
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .expect("GNU source names are UTF-8")
+                    .to_string(),
+            );
+        }
+    }
+    result.sort();
+    result
+}
+
+/// The brace-delimited body of the definition `NAME (...)` in C text, if the
+/// text contains one.  Only a definition at column zero counts, which is how
+/// GNU formats every function definition.
+fn function_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("\n{name} (");
+    let mut offset = 0;
+    while let Some(relative) = text[offset..].find(&needle) {
+        let start = offset + relative + 1;
+        let open = text[start..].find('{')? + start;
+        let signature = &text[start..open];
+        if signature.contains(';') {
+            offset = start;
+            continue;
+        }
+        let mut depth = 0_i32;
+        let mut quoted: Option<char> = None;
+        let mut escaped = false;
+        for (relative, character) in text[open..].char_indices() {
+            if let Some(quote) = quoted {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == quote {
+                    quoted = None;
+                }
+            } else if character == '"' || character == '\'' {
+                quoted = Some(character);
+            } else if character == '{' {
+                depth += 1;
+            } else if character == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[open..open + relative + 1]);
+                }
+            }
+        }
+        return None;
+    }
+    None
 }
 
 fn preprocess_registration_source(directory: &Path, source: &str) -> String {
@@ -609,7 +653,14 @@ fn preprocess_registration_source(directory: &Path, source: &str) -> String {
                     .is_some_and(|argument| argument == source)
         })
         .unwrap_or_else(|| panic!("make did not expose the compile command for {source}"));
-    let preprocess = compile.replacen(" -c ", " -E -fdirectives-only ", 1);
+    // Directives-only preprocessing resolves the build's `#if` structure
+    // while leaving `DEFUN (...)` and `defsubr (&S...)` readable.  GCC rejects
+    // that mode together with `-Wunused-macros`, and it cannot evaluate
+    // gnulib's `__COUNTER__` probe inside a directive, so the diagnostic is
+    // dropped and the builtin is undefined; neither changes which code is
+    // active.
+    let preprocess = compile.replacen(" -c ", " -E -fdirectives-only -U__COUNTER__ ", 1);
+    let preprocess = preprocess.replace(" -Wunused-macros ", " ");
     // The ordinary compile command requests a dependency side file.  Point
     // that output at /dev/null so regeneration is a read-only operation on
     // the reference tree.
@@ -624,5 +675,5 @@ fn preprocess_registration_source(directory: &Path, source: &str) -> String {
         "preprocessing {source} failed: {}",
         String::from_utf8_lossy(&preprocessed.stderr)
     );
-    String::from_utf8_lossy(&preprocessed.stdout).into_owned()
+    strip_comments(&String::from_utf8_lossy(&preprocessed.stdout))
 }

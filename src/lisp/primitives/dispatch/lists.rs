@@ -1409,10 +1409,7 @@ define_dispatch!(
                                     // symbol-with-position objects while the
                                     // dynamic mode is enabled.  Keep ordinary
                                     // scalar keys on the fast path above.
-                                    (a @ Value::Record(_), b) | (a, b @ Value::Record(_)) => {
-                                        values_eq_in_env(interp, a, b, env)
-                                    }
-                                    (a, b) => *a == *b,
+                                    (a, b) => values_eq_in_env(interp, a, b, env),
                                 }
                             }
                             _ => false,

@@ -125,9 +125,63 @@ unsafe fn invoke_platform(invocation: *mut NativeInvocation) -> Result<bool, Str
     Ok(unsafe { native_call_trampoline(invocation) } != 0)
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-unsafe fn invoke_platform(_invocation: *mut NativeInvocation) -> Result<bool, String> {
-    Err("native call trampoline is not implemented for this platform".to_string())
+// System V x86-64: the first six words travel in registers and the last two
+// on the stack.  `rbx` keeps the invocation pointer across `_setjmp`, which
+// saves and restores it, so a `longjmp` back here still finds the record.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+core::arch::global_asm!(
+    r#"
+    .text
+    .p2align 4
+    .hidden native_call_trampoline
+    .type native_call_trampoline, @function
+native_call_trampoline:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    mov rbx, rdi
+    lea rdi, [rbx + {jump_buffer}]
+    call _setjmp@PLT
+    test eax, eax
+    jnz 1f
+    mov rax, [rbx + {target}]
+    mov rdi, [rbx + {arguments}]
+    mov rsi, [rbx + {arguments} + 8]
+    mov rdx, [rbx + {arguments} + 16]
+    mov rcx, [rbx + {arguments} + 24]
+    mov r8, [rbx + {arguments} + 32]
+    mov r9, [rbx + {arguments} + 40]
+    push qword ptr [rbx + {arguments} + 56]
+    push qword ptr [rbx + {arguments} + 48]
+    call rax
+    add rsp, 16
+    mov [rbx + {result}], rax
+    xor eax, eax
+    jmp 2f
+1:
+    mov eax, 1
+2:
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+    .size native_call_trampoline, .-native_call_trampoline
+    "#,
+    target = const std::mem::offset_of!(NativeInvocation, target),
+    arguments = const std::mem::offset_of!(NativeInvocation, arguments),
+    result = const std::mem::offset_of!(NativeInvocation, result),
+    jump_buffer = const std::mem::offset_of!(NativeInvocation, jump_buffer),
+);
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+unsafe extern "C" {
+    fn native_call_trampoline(invocation: *mut NativeInvocation) -> std::ffi::c_int;
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+unsafe fn invoke_platform(invocation: *mut NativeInvocation) -> Result<bool, String> {
+    Ok(unsafe { native_call_trampoline(invocation) } != 0)
 }
 
 struct ActiveCall {
@@ -220,7 +274,10 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
     })
 }
 
-#[repr(C, align(16))]
+// GNU declares `struct thread_state` GCALIGNED, eight bytes; a wider Rust
+// alignment would pad the size past the C `sizeof` on targets where that
+// size is not a multiple of sixteen.
+#[repr(C, align(8))]
 struct NativeThreadState {
     bytes: [u8; THREAD_STATE_SIZE],
 }
@@ -406,6 +463,14 @@ impl NativeRuntime {
             .ok_or_else(|| "native trampoline subroutine is outside the runtime ABI".to_string())?;
         *entry = target;
         Ok(())
+    }
+
+    /// The value a relocation word written by `encode_relocations` stands
+    /// for, as comp.c reads `*saved_cu` back from an already loaded unit.
+    pub(crate) fn decode_relocation(&mut self, word: NativeWord) -> Result<Value, LispError> {
+        self.heap
+            .decode(word)
+            .map_err(|error| super::lisp::native_ice(&error))
     }
 
     pub(crate) fn encode_relocations(
@@ -1370,9 +1435,13 @@ struct NativeCons {
 struct TouchedCons {
     native: *mut NativeCons,
     value: SharedCons,
-    car_word: NativeWord,
-    cdr_word: NativeWord,
+    /// Shared with `NativeHeap::mirror_words`, so the per-primitive scan can
+    /// tell whether generated code wrote this cell with two loads and no
+    /// table lookup.
+    agreed: AgreedWords,
 }
+
+type AgreedWords = Rc<Cell<[NativeWord; 2]>>;
 
 #[derive(Default)]
 struct TouchedFrame {
@@ -1466,6 +1535,15 @@ pub(crate) struct NativeHeap {
     cons_by_value: IdentityMap<*mut NativeCons>,
     cons_values: IdentityMap<SharedCons>,
     cons_snapshots: IdentityMap<ConsMutationSnapshot>,
+    /// The two words each mirror held when its Rust cell and native cell
+    /// last agreed.  A native word that differs from it was written by
+    /// generated code since then; a Rust field that differs from it was
+    /// written by a primitive.  Reconciling per field lets both sides share
+    /// one cell the way GNU's C runtime does.
+    mirror_words: IdentityMap<AgreedWords>,
+    /// Mirrors whose reconciliation is in progress, so cyclic structures do
+    /// not recurse into themselves.
+    reconciling: IdentitySet,
     interpreter_dirty: Rc<ConsMutationQueue>,
     handles: Vec<HandleEntry>,
     handle_by_value: HashMap<NativeIdentity, usize>,
@@ -1507,25 +1585,103 @@ impl NativeHeap {
         address + TAG_CONS
     }
 
-    fn track_cons(
+    fn agreed_words(&mut self, native: *mut NativeCons) -> AgreedWords {
+        let address = native as usize;
+        self.mirror_words
+            .entry(address)
+            .or_insert_with(|| Rc::new(Cell::new(unsafe { [(*native).car, (*native).cdr] })))
+            .clone()
+    }
+
+    fn set_agreed_words(&mut self, native: *mut NativeCons, words: [NativeWord; 2]) {
+        self.agreed_words(native).set(words);
+    }
+
+    fn track_cons(&mut self, native: *mut NativeCons, value: &SharedCons) {
+        let address = native as usize;
+        if self
+            .touched_frames
+            .last()
+            .is_none_or(|frame| frame.cons_set.contains(&address))
+        {
+            return;
+        }
+        let agreed = self.agreed_words(native);
+        let frame = self.touched_frames.last_mut().expect("checked above");
+        frame.cons_set.insert(address);
+        frame.conses.push(TouchedCons {
+            native,
+            value: value.clone(),
+            agreed,
+        });
+    }
+
+    /// Bring a mirrored cons cell's two representations back into agreement.
+    ///
+    /// Generated code writes the native words directly and Rust primitives
+    /// write the Rust fields; GNU has a single cell and needs neither copy.
+    /// A native word that changed since the last agreement is decoded into
+    /// the Rust field; otherwise a Rust field that changed since then is
+    /// encoded into the native word.  Returns whether a Rust field changed.
+    fn reconcile_mirror(
         &mut self,
         native: *mut NativeCons,
         value: &SharedCons,
-        car_word: NativeWord,
-        cdr_word: NativeWord,
-    ) {
+        decoding_conses: &mut IdentitySet,
+    ) -> Result<bool, String> {
         let address = native as usize;
-        let Some(frame) = self.touched_frames.last_mut() else {
-            return;
-        };
-        if frame.cons_set.insert(address) {
-            frame.conses.push(TouchedCons {
-                native,
-                value: value.clone(),
-                car_word,
-                cdr_word,
-            });
+        if decoding_conses.contains(&address) || !self.reconciling.insert(address) {
+            return Ok(false);
         }
+        let result = self.reconcile_mirror_inner(native, value, decoding_conses);
+        self.reconciling.remove(&address);
+        result
+    }
+
+    fn reconcile_mirror_inner(
+        &mut self,
+        native: *mut NativeCons,
+        value: &SharedCons,
+        decoding_conses: &mut IdentitySet,
+    ) -> Result<bool, String> {
+        let address = native as usize;
+        let current = unsafe { [(*native).car, (*native).cdr] };
+        let agreed = self.agreed_words(native).get();
+        let rust_dirty = self
+            .cons_snapshots
+            .get(&address)
+            .is_some_and(|snapshot| !snapshot.is_current());
+        let mut words = current;
+        let mut rust_changed = false;
+        for field in 0..2 {
+            let slot = if field == 0 { &value.car } else { &value.cdr };
+            if current[field] != agreed[field] {
+                decoding_conses.insert(address);
+                let decoded = self.decode_inner(current[field], decoding_conses, false);
+                decoding_conses.remove(&address);
+                let decoded = decoded?;
+                if !crate::lisp::primitives::values_eql(&slot.borrow(), &decoded) {
+                    *slot.borrow_mut() = decoded;
+                    rust_changed = true;
+                }
+            } else if rust_dirty {
+                let field_value = slot.borrow().clone();
+                let word = self.encode_inner(&field_value, &mut IdentitySet::default())?;
+                if word != current[field] {
+                    unsafe {
+                        if field == 0 {
+                            (*native).car = word;
+                        } else {
+                            (*native).cdr = word;
+                        }
+                    }
+                    words[field] = word;
+                }
+            }
+        }
+        self.set_agreed_words(native, words);
+        self.mark_cons_mirror_current(native, value);
+        Ok(rust_changed)
     }
 
     fn mark_cons_mirror_current(&mut self, native: *mut NativeCons, value: &SharedCons) {
@@ -1538,40 +1694,6 @@ impl NativeHeap {
             address,
             ConsMutationSnapshot::tracked_cell(value, address, &self.interpreter_dirty),
         );
-    }
-
-    /// Translate one tagged word to its interpreter object without walking
-    /// through a cons.  Every cons word in generated code already names the
-    /// stable mirror entry for the corresponding Rust cons cell.
-    fn value_for_word(
-        &mut self,
-        word: NativeWord,
-        decoding_conses: &mut IdentitySet,
-    ) -> Result<Value, String> {
-        if word == 0 {
-            return Ok(Value::Nil);
-        }
-        if word == native_boolean(true) {
-            return Ok(Value::T);
-        }
-        if word & 3 == TAG_FIXNUM_LOW {
-            return Ok(Value::Integer((word as isize >> FIXNUM_BITS) as i64));
-        }
-        if word & TAG_MASK == TAG_CONS {
-            return self.decode_inner(word, decoding_conses, false);
-        }
-        let tag = word & TAG_MASK;
-        let address = word.wrapping_sub(tag);
-        let index = self
-            .handle_by_address
-            .get(&address)
-            .copied()
-            .ok_or_else(|| format!("unknown native Lisp word 0x{word:x}"))?;
-        let entry = &self.handles[index];
-        if entry.tag != tag {
-            return Err(format!("native Lisp word 0x{word:x} has a mismatched tag"));
-        }
-        Ok(entry.native.value.clone())
     }
 
     fn encode_inner(
@@ -1627,35 +1749,30 @@ impl NativeHeap {
             (native, false)
         };
         let address = native as usize;
-        if existing
-            && self
-                .cons_snapshots
+        if existing {
+            let value = self
+                .cons_values
                 .get(&address)
-                .is_some_and(ConsMutationSnapshot::is_current)
-        {
-            let car_word = unsafe { (*native).car };
-            let cdr_word = unsafe { (*native).cdr };
-            self.track_cons(native, cell, car_word, cdr_word);
+                .expect("an interpreter cons mirror retains its Rust value")
+                .clone();
+            self.reconcile_mirror(native, &value, &mut IdentitySet::default())?;
+            self.track_cons(native, &value);
             return Ok(address + TAG_CONS);
         }
         if !encoding_conses.insert(identity) {
             return Ok(address + TAG_CONS);
         }
-        let value = self
-            .cons_values
-            .get(&address)
-            .expect("an interpreter cons mirror retains its Rust value")
-            .clone();
-        let car = value.car.borrow().clone();
-        let cdr = value.cdr.borrow().clone();
+        let car = cell.car.borrow().clone();
+        let cdr = cell.cdr.borrow().clone();
         let car = self.encode_inner(&car, encoding_conses)?;
         let cdr = self.encode_inner(&cdr, encoding_conses)?;
         unsafe {
             (*native).car = car;
             (*native).cdr = cdr;
         }
-        self.mark_cons_mirror_current(native, &value);
-        self.track_cons(native, &value, car, cdr);
+        self.set_agreed_words(native, [car, cdr]);
+        self.mark_cons_mirror_current(native, cell);
+        self.track_cons(native, cell);
         encoding_conses.remove(&identity);
         Ok(address + TAG_CONS)
     }
@@ -1693,8 +1810,13 @@ impl NativeHeap {
         self.decode_inner(word, &mut IdentitySet::default(), false)
     }
 
+    /// Decode a native return value.  Only the outermost activation may
+    /// stop tracking the cells it returns: while an outer generated frame is
+    /// still running, it can go on writing to any cell a nested call handed
+    /// back, so those cells stay tracked for the enclosing frame.
     fn decode_result(&mut self, word: NativeWord) -> Result<Value, String> {
-        self.decode_inner(word, &mut IdentitySet::default(), true)
+        let outermost = self.touched_frames.len() <= 1;
+        self.decode_inner(word, &mut IdentitySet::default(), outermost)
     }
 
     /// Materialize the overwhelmingly common native proper-list shape in one
@@ -1717,11 +1839,8 @@ impl NativeHeap {
                 break self.decode_inner(cursor, decoding_conses, mark_clean)?;
             }
             let address = cursor.wrapping_sub(TAG_CONS);
-            if let Some(value) = self.cons_values.get(&address) {
-                if mark_clean {
-                    return Ok(None);
-                }
-                break Value::Cons(value.clone());
+            if self.cons_values.contains_key(&address) {
+                break self.decode_inner(cursor, decoding_conses, mark_clean)?;
             }
             if decoding_conses.contains(&address) || !seen.insert(address) {
                 return Ok(None);
@@ -1748,9 +1867,10 @@ impl NativeHeap {
             self.cons_values.insert(address, value.clone());
             self.cons_by_value
                 .insert(ConsCell::identity(&value), native);
+            self.set_agreed_words(native, [car_word, cdr_word]);
             self.mark_cons_mirror_current(native, &value);
             if !mark_clean {
-                self.track_cons(native, &value, car_word, cdr_word);
+                self.track_cons(native, &value);
             }
             tail = Value::Cons(value);
         }
@@ -1774,28 +1894,19 @@ impl NativeHeap {
         }
         if word & TAG_MASK == TAG_CONS {
             let address = word.wrapping_sub(TAG_CONS);
-            if let Some(value) = self.cons_values.get(&address).cloned()
-                && self
-                    .cons_snapshots
-                    .get(&address)
-                    .is_some_and(ConsMutationSnapshot::is_current)
-            {
+            if let Some(value) = self.cons_values.get(&address).cloned() {
                 let native = address as *mut NativeCons;
-                let car_word = unsafe { (*native).car };
-                let cdr_word = unsafe { (*native).cdr };
+                self.reconcile_mirror(native, &value, decoding_conses)?;
                 if mark_clean {
                     if let Some(frame) = self.touched_frames.last_mut() {
                         frame.cons_set.remove(&address);
                     }
                 } else {
-                    self.track_cons(native, &value, car_word, cdr_word);
+                    self.track_cons(native, &value);
                 }
                 return Ok(Value::Cons(value));
             }
-            if !self.cons_values.contains_key(&address)
-                && let Some(value) =
-                    self.try_decode_linear_cons(word, decoding_conses, mark_clean)?
-            {
+            if let Some(value) = self.try_decode_linear_cons(word, decoding_conses, mark_clean)? {
                 return Ok(value);
             }
             let native = address as *mut NativeCons;
@@ -1804,35 +1915,27 @@ impl NativeHeap {
             // Native-only allocations stay as two words until an interpreter
             // observer needs one.  Install the placeholder before following
             // either field so circular native structures materialize safely.
-            let value = if let Some(value) = self.cons_values.get(&address) {
-                value.clone()
-            } else {
-                let Value::Cons(value) = Value::cons(Value::Nil, Value::Nil) else {
-                    unreachable!("Value::cons always constructs a cons cell");
-                };
-                self.cons_values.insert(address, value.clone());
-                self.cons_by_value
-                    .insert(ConsCell::identity(&value), native);
-                value
+            let Value::Cons(value) = Value::cons(Value::Nil, Value::Nil) else {
+                unreachable!("Value::cons always constructs a cons cell");
             };
+            self.cons_values.insert(address, value.clone());
+            self.cons_by_value
+                .insert(ConsCell::identity(&value), native);
+            self.set_agreed_words(native, [car_word, cdr_word]);
             if !decoding_conses.insert(address) {
                 return Ok(Value::Cons(value));
             }
             let car = self.decode_inner(car_word, decoding_conses, mark_clean)?;
             let cdr = self.decode_inner(cdr_word, decoding_conses, mark_clean)?;
-            if !crate::lisp::primitives::values_eql(&value.car.borrow(), &car) {
-                *value.car.borrow_mut() = car;
-            }
-            if !crate::lisp::primitives::values_eql(&value.cdr.borrow(), &cdr) {
-                *value.cdr.borrow_mut() = cdr;
-            }
+            *value.car.borrow_mut() = car;
+            *value.cdr.borrow_mut() = cdr;
             self.mark_cons_mirror_current(native, &value);
             if mark_clean {
                 if let Some(frame) = self.touched_frames.last_mut() {
                     frame.cons_set.remove(&address);
                 }
             } else {
-                self.track_cons(native, &value, car_word, cdr_word);
+                self.track_cons(native, &value);
             }
             decoding_conses.remove(&address);
             return Ok(Value::Cons(value));
@@ -1880,17 +1983,11 @@ impl NativeHeap {
                 .get(&address)
                 .cloned()
                 .ok_or_else(|| "dirty interpreter cons has no native mirror".to_string())?;
-            let mut encoding_conses = IdentitySet::default();
-            self.encode_cons(&value, &mut encoding_conses)?;
-        }
-        for frame in &mut self.touched_frames {
-            for touched in &mut frame.conses {
-                if !dirty_addresses.contains(&(touched.native as usize)) {
-                    continue;
-                }
-                touched.car_word = unsafe { (*touched.native).car };
-                touched.cdr_word = unsafe { (*touched.native).cdr };
-            }
+            self.reconcile_mirror(
+                address as *mut NativeCons,
+                &value,
+                &mut IdentitySet::default(),
+            )?;
         }
         Ok(())
     }
@@ -1900,83 +1997,77 @@ impl NativeHeap {
         self.synchronize_touched_conses(true)
     }
 
+    /// Reconcile the cells generated code may have written since Rust last
+    /// looked, then either keep them tracked (a primitive is about to run
+    /// while generated frames stay active) or retire the innermost frame.
+    ///
+    /// Every active generated frame shares GNU's single heap, so a cell a
+    /// nested call mirrored can be rewritten later by any enclosing frame;
+    /// with tracking retained, all active frames are reconciled, not just
+    /// the innermost one.
     fn synchronize_touched_conses(&mut self, retain_tracking: bool) -> Result<Vec<Value>, String> {
-        let Some(frame_index) = self.touched_frames.len().checked_sub(1) else {
+        let Some(innermost) = self.touched_frames.len().checked_sub(1) else {
             return Ok(Vec::new());
         };
-        let (mut touched, touched_set) = {
-            let frame = &mut self.touched_frames[frame_index];
-            (
-                std::mem::take(&mut frame.conses),
-                std::mem::take(&mut frame.cons_set),
-            )
+        let frames = if retain_tracking {
+            0..=innermost
+        } else {
+            innermost..=innermost
         };
-        let mut retained = Vec::with_capacity(touched.len());
         let mut mutated_conses = Vec::new();
         let mut decoding_conses = IdentitySet::default();
         let mut result = Ok(());
-        for mut touched in touched.drain(..) {
-            let address = touched.native as usize;
-            if !touched_set.contains(&address) {
-                continue;
-            }
-            if result.is_ok() {
-                let car_word = unsafe { (*touched.native).car };
-                let cdr_word = unsafe { (*touched.native).cdr };
-                let changed = car_word != touched.car_word || cdr_word != touched.cdr_word;
-                if car_word != touched.car_word {
-                    match self.value_for_word(car_word, &mut decoding_conses) {
-                        Ok(car) => {
-                            if !crate::lisp::primitives::values_eql(
-                                &touched.value.car.borrow(),
-                                &car,
-                            ) {
-                                *touched.value.car.borrow_mut() = car;
-                            }
-                        }
+        let mut retired = Vec::new();
+        for index in frames {
+            let touched = std::mem::take(&mut self.touched_frames[index].conses);
+            let touched_set = if retain_tracking {
+                self.touched_frames[index].cons_set.clone()
+            } else {
+                std::mem::take(&mut self.touched_frames[index].cons_set)
+            };
+            let mut kept = Vec::with_capacity(touched.len());
+            for touched in touched {
+                let address = touched.native as usize;
+                if !touched_set.contains(&address) {
+                    continue;
+                }
+                let current = unsafe { [(*touched.native).car, (*touched.native).cdr] };
+                if result.is_ok() && current != touched.agreed.get() {
+                    match self.reconcile_mirror(
+                        touched.native,
+                        &touched.value,
+                        &mut decoding_conses,
+                    ) {
+                        Ok(true) => mutated_conses.push(Value::Cons(touched.value.clone())),
+                        Ok(false) => {}
                         Err(error) => result = Err(error),
                     }
                 }
-                if result.is_ok() && cdr_word != touched.cdr_word {
-                    match self.value_for_word(cdr_word, &mut decoding_conses) {
-                        Ok(cdr) => {
-                            if !crate::lisp::primitives::values_eql(
-                                &touched.value.cdr.borrow(),
-                                &cdr,
-                            ) {
-                                *touched.value.cdr.borrow_mut() = cdr;
-                            }
-                        }
-                        Err(error) => result = Err(error),
-                    }
-                }
-                if result.is_ok() {
-                    touched.car_word = car_word;
-                    touched.cdr_word = cdr_word;
-                    self.mark_cons_mirror_current(touched.native, &touched.value);
-                    if changed {
-                        mutated_conses.push(Value::Cons(touched.value.clone()));
-                    }
-                }
+                kept.push(touched);
             }
             if retain_tracking {
-                retained.push(touched);
+                // Reconciliation may have tracked newly decoded cells in the
+                // innermost frame meanwhile; keep both.
+                let frame = &mut self.touched_frames[index];
+                let mut conses = std::mem::take(&mut frame.conses);
+                conses.extend(kept);
+                frame.conses = conses;
+            } else {
+                retired = kept;
             }
         }
-        if retain_tracking {
-            let frame = &mut self.touched_frames[frame_index];
-            let mut newly_touched = std::mem::take(&mut frame.conses);
-            let mut newly_touched_set = std::mem::take(&mut frame.cons_set);
-            for touched in retained {
-                let address = touched.native as usize;
-                if newly_touched_set.insert(address) {
-                    newly_touched.push(touched);
+        if !retain_tracking {
+            self.touched_frames.pop();
+            // The enclosing generated frame shares GNU's single heap with the
+            // retired call and can keep writing to every cell it saw.
+            if let Some(frame) = self.touched_frames.last_mut() {
+                for touched in retired {
+                    let address = touched.native as usize;
+                    if frame.cons_set.insert(address) {
+                        frame.conses.push(touched);
+                    }
                 }
             }
-            frame.conses = newly_touched;
-            frame.cons_set = newly_touched_set;
-        } else {
-            self.touched_frames.pop();
         }
         result.map(|()| mutated_conses)
     }

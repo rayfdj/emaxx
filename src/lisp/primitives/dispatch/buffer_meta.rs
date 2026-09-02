@@ -7,7 +7,9 @@ fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
         return false;
     };
     items
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .find(|pair| pair[0].as_symbol().ok() == Some(property))
         .is_some_and(|pair| pair[1].is_truthy())
 }
@@ -1201,7 +1203,12 @@ define_dispatch!(
                 let function = args[0].clone();
                 let charset = args[1].as_symbol()?.to_string();
                 let arg = args.get(2).cloned().unwrap_or(Value::Nil);
-                let from = args.get(3).map(Value::as_integer).transpose()?.unwrap_or(0);
+                let from = args
+                    .get(3)
+                    .filter(|from| from.is_truthy())
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .unwrap_or(0);
                 let to = args
                     .get(4)
                     .map(Value::as_integer)

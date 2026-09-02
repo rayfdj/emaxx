@@ -843,7 +843,12 @@ define_dispatch!(
             "make-char" => {
                 need_arg_range(name, args, 1, 2)?;
                 let _charset = args[0].as_symbol()?;
-                let code = args.get(1).map(Value::as_integer).transpose()?.unwrap_or(0);
+                let code = args
+                    .get(1)
+                    .filter(|code| code.is_truthy())
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .unwrap_or(0);
                 Ok(Value::Integer(code))
             }
             "string-to-char" => {
