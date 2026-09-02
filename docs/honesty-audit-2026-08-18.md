@@ -4657,3 +4657,67 @@ runner used the recorded safe schedule (single-threaded within the evaluator,
 primitive, compatibility, and TTY groups; only proven-safe groups overlapped)
 and completed in about 22 minutes.  No production source changed after this
 gate; only this evidence record was appended.
+
+## 2026-09-03 findings 149-150: tty-frontend merge certification and gate repairs
+
+The candidate is a clean no-conflict merge of main
+`1394e8d9c90398a4a978fc8fb3ed1015d4d9e7f5` and tty-frontend
+`170f0dcf6d058d9496320d4355f80705f45f3bc1`.  Adversarial inspection of the
+merged diff confirmed that main's selected-window/current-buffer restoration,
+folded-row cursor gate, TTY fringe suppression, command undo-point refresh,
+package-vc semantic-version wait, and Linux-gated notification helper remain
+present alongside tty-frontend's completion-stack and terminal changes.  No
+merge resolution discarded either side's production fixes.
+
+The full grouped gate passed on the exact merged production tree with artifact
+`target/grouped-gate/run-1788347588425925000-13645`.  Its dynamic inventory
+hash was `bb372db771bc2718596c3fbf8c9b5c97f9d2beea19f5fb6a15ab4fbe8e412073`:
+2285/2285 outcomes were observed, with 2283 passed, zero failed, and exactly
+the two declared opt-in PTY gates ignored.  The three discovered binary
+targets passed 39/39 tests, and the integration targets passed 20/20 (CLI
+12/12, ERT runner 3/3, package lifecycle 5/5).  The strict completion-stack
+package gate separately installed and restarted through all 6/6 pinned
+packages, validated 41 compiled/autoload artifacts, and matched all 25/25
+checkpoints across its four real TTY scenarios.  The release Emaxx binary was
+`9be0ff62f8ad4026889fdc2580f7611c4aa9592518ee3f84dd1527787dc5d76e`; the GNU
+oracle was `7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82`.
+
+Two harness defects were found during the required end-to-end TTY gate rather
+than hidden as flaky editor failures:
+
+- Finding 149: every scenario killed both editor processes, bypassing Org's
+  Lisp cleanup, but reused the host temporary namespace.  Exactly 1000 stale
+  `babel-stable-0` through `babel-stable-999` directories had accumulated;
+  Org chooses only those 1000 names, so later Org startup looped indefinitely.
+  Each comparison now gives both subjects the same fresh per-scenario TMPDIR
+  (preserving path-exact comparison) and removes it after closing both
+  sessions.  A regression constructs subject temp artifacts, proves the two
+  subjects received one namespace, and proves it was removed afterward.
+- Finding 150: `supersession-accept-revisit` sent `yes RET` to GNU's
+  save-anyway prompt and then sent a second `y`.  The first response had
+  already saved successfully, so the extra byte modified the buffer and the
+  later kill command stopped at a confirmation prompt; the scenario then
+  opened a second minibuffer and manufactured a divergence.  The redundant
+  byte is removed, the kill is now a real checkpoint with a complete dispatch
+  window, and a regression pins the exact action sequence and final filesystem
+  assertion.
+
+The discarded/red evidence is part of the record.  A first grouped-gate
+attempt inside the restricted sandbox failed because the tests could not bind
+their required localhost services; it was rerun natively and produced the
+passing artifact above.  Earlier TTY attempts stopped at changing startup
+locations under host pressure before the deterministic Org namespace
+exhaustion was isolated.  The first complete 217-scenario run then reported
+216/217 matches and the invalid supersession-script divergence described
+above; it was not counted green.  After both harness repairs, a new one-shot
+full run passed 217/217, including every screen, face, liveness, and requested
+filesystem checkpoint.  The explicit release TTY smoke passed 1/1.
+
+The final post-run audit passed `python3 -m unittest tools/test_ttydiff.py
+tools/test_completion_stack_package_gate.py` at 31/31, `cargo fmt --all --
+--check`, `cargo clippy --all-targets --all-features -- -D warnings`,
+`cargo check --all-targets --all-features`, and `git diff --check`.  A static
+scan found no debug probes, expected-failure markers, new ignores, skips, or
+normalization escape hatches in the repaired harness.  The package artifacts
+remain version-pinned, GNU and Emaxx use isolated roots, comparisons remain
+exact, and no production source changed after the complete grouped gate.

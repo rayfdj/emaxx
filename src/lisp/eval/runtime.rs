@@ -484,6 +484,13 @@ impl Interpreter {
         self.minibuffer_selected_window_id
     }
 
+    pub(crate) fn replace_minibuffer_selected_window_id(
+        &mut self,
+        window_id: Option<u64>,
+    ) -> Option<u64> {
+        std::mem::replace(&mut self.minibuffer_selected_window_id, window_id)
+    }
+
     pub(crate) fn window_cursor_visible(&self, id: u64) -> bool {
         self.window_cursor_visibility
             .get(&id)
