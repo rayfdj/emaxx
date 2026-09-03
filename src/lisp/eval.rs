@@ -1486,6 +1486,11 @@ pub(crate) struct SpecialBindingRestore {
 struct BacktraceFrame {
     function: Value,
     args: Vec<Value>,
+    /// eval.c:record_in_backtrace retains the existing Lisp_Object argument
+    /// vector for a native call instead of copying every object.  Keep the
+    /// same words lazy while that native activation is live; debugger-facing
+    /// APIs materialize Values only if somebody inspects the frame.
+    native_args: Option<smallvec::SmallVec<[usize; 8]>>,
     /// Original list form for an unevaluated frame.  GNU backtraces retain
     /// the live Lisp form; keeping it here avoids cloning its function symbol
     /// and every argument on each interpreted call.  Debugger-facing APIs

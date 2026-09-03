@@ -415,6 +415,17 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
     })
 }
 
+pub(crate) fn decode_active_backtrace_arguments(
+    words: &[NativeWord],
+) -> Option<Result<Vec<Value>, String>> {
+    with_current_runtime(|runtime| {
+        words
+            .iter()
+            .map(|word| runtime.heap.decode(*word))
+            .collect()
+    })
+}
+
 // GNU declares `struct thread_state` GCALIGNED, eight bytes; a wider Rust
 // alignment would pad the size past the C `sizeof` on targets where that
 // size is not a multiple of sixteen.
@@ -796,6 +807,74 @@ impl NativeRuntime {
         Ok(result)
     }
 
+    /// Enter a non-dynamic native subr with Lisp_Object words that are
+    /// already in GNU's generated-code ABI.  eval.c:funcall_general passes
+    /// this vector directly to funcall_subr; decoding and re-encoding it at
+    /// a native-to-native call boundary is not part of GNU's behavior.
+    fn invoke_words(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        convention: NativeCallingConvention,
+        arguments: &[NativeWord],
+    ) -> Result<NativeWord, LispError> {
+        if target.is_null() {
+            return Err(super::lisp::native_ice(
+                "attempted to call a null native function",
+            ));
+        }
+        if matches!(convention, NativeCallingConvention::Fixed) && arguments.len() > 8 {
+            return Err(super::lisp::native_ice(
+                "fixed native function exceeds the eight-register ABI",
+            ));
+        }
+
+        *self.symbols_with_positions_enabled = interpreter
+            .symbol_value_cell("symbols-with-pos-enabled")
+            .is_ok_and(|value| value.is_truthy());
+
+        let mut invocation = NativeInvocation::new(target);
+        self.begin_call(invocation.jump_buffer());
+        if let Err(error) = self.heap.publish_interpreter_writes() {
+            let finish = self.finish_call(interpreter);
+            finish?;
+            return Err(super::lisp::native_ice(&error));
+        }
+        match convention {
+            NativeCallingConvention::Fixed => {
+                invocation.arguments[..arguments.len()].copy_from_slice(arguments);
+            }
+            NativeCallingConvention::Many => {
+                invocation.arguments[0] = arguments.len();
+                invocation.arguments[1] = arguments.as_ptr() as NativeWord;
+            }
+        }
+
+        let escaped = with_active_call(interpreter, environment, self, || unsafe {
+            invoke_platform(&mut invocation)
+        });
+        let escaped = match escaped {
+            Ok(escaped) => escaped,
+            Err(error) => {
+                let finish = self.finish_call(interpreter);
+                finish?;
+                return Err(super::lisp::native_ice(&error));
+            }
+        };
+        let finish = self.finish_call(interpreter);
+        if escaped {
+            return match finish {
+                Err(error) => Err(error),
+                Ok(()) => Err(super::lisp::native_ice(
+                    "native function escaped without a pending Lisp error",
+                )),
+            };
+        }
+        finish?;
+        Ok(invocation.result)
+    }
+
     pub(crate) fn finish_call(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
         let sync_result = self.sync_handlers(interpreter);
         let Some(frame) = self.calls.pop() else {
@@ -1133,6 +1212,11 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         if subroutine.name == "memq" && arguments.len() == 2 {
             return native_memq(active, arguments[0], arguments[1]);
         }
+        if subroutine.name == "funcall"
+            && let Some(result) = invoke_native_funcall(active, arguments)
+        {
+            return result;
+        }
         let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
         for word in arguments {
             let value = match unsafe { &mut *active.runtime }.heap.decode(*word) {
@@ -1189,6 +1273,60 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
                 remember_helper_error(active, error);
                 0
             }
+        }
+    })
+}
+
+/// eval.c:Ffuncall followed by funcall_general's non-dynamic native-subr
+/// arm.  Like eval.c:record_in_backtrace, the accompanying frame retains the
+/// original Lisp words and decodes them only if Lisp inspects the backtrace.
+fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
+    let (&function_word, call_arguments) = arguments.split_first()?;
+    let runtime = unsafe { &mut *active.runtime };
+    let interpreter = unsafe { &mut *active.interpreter };
+    let environment = unsafe { &mut *active.environment };
+    let original_function = runtime.heap.decode(function_word).ok()?;
+    let record_id = match &original_function {
+        Value::Record(record_id) => *record_id,
+        Value::Symbol(name) => match interpreter.lookup_function(name, environment).ok()? {
+            Value::Record(record_id) => record_id,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let function = super::loader::active_direct_function(record_id)?;
+
+    interpreter.push_native_backtrace_frame(original_function, call_arguments);
+    interpreter.capture_current_backtrace_context(None, environment, None);
+    let result = function.check_arity(call_arguments.len()).and_then(|()| {
+        runtime.invoke_words(
+            interpreter,
+            environment,
+            function.target,
+            function.convention,
+            call_arguments,
+        )
+    });
+    let result = match result {
+        Ok(word) => Ok(word),
+        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+        Err(error) => match interpreter.dispatch_handler_bindings(error, environment) {
+            Ok(value) => runtime
+                .heap
+                .encode(&value)
+                .map_err(|error| super::lisp::native_ice(&error)),
+            Err(error) => Err(error),
+        },
+    };
+    if let Err(error) = &result {
+        interpreter.capture_batch_error_backtrace(error, environment);
+    }
+    interpreter.pop_backtrace_frame();
+    Some(match result {
+        Ok(word) => word,
+        Err(error) => {
+            remember_helper_error(active, error);
+            0
         }
     })
 }
@@ -2349,11 +2487,21 @@ impl NativeHeap {
         );
     }
 
+    #[inline(always)]
+    fn mirror_is_synchronized(
+        native: *const NativeCons,
+        value: &SharedCons,
+        mutations_current: bool,
+    ) -> bool {
+        mutations_current
+            && value.native_words_agreed() == unsafe { [(*native).car(), (*native).cdr()] }
+    }
+
     fn synchronize_cons(&mut self, address: usize) -> Result<(), String> {
-        let Some(value) = self
+        let Some((value, mutations_current)) = self
             .cons_values
             .get(&address)
-            .map(|mirror| mirror.value.clone())
+            .map(|mirror| (mirror.value.clone(), mirror.mutations.is_current()))
         else {
             return Ok(());
         };
@@ -2365,13 +2513,7 @@ impl NativeHeap {
         // neither generated code nor a Rust primitive has written the cell
         // since its last boundary crossing, so establish that directly and
         // avoid cloning its owner or entering recursive reconciliation.
-        let native_words = unsafe { [(*native).car(), (*native).cdr()] };
-        if value.native_words_agreed() == native_words
-            && self
-                .cons_values
-                .get(&address)
-                .is_some_and(|mirror| mirror.mutations.is_current())
-        {
+        if Self::mirror_is_synchronized(native, &value, mutations_current) {
             return Ok(());
         }
         self.reconcile_mirror(native, &value, &mut IdentitySet::default())?;
@@ -2519,13 +2661,14 @@ impl NativeHeap {
         };
         let address = native as usize;
         if existing {
-            let value = self
+            let (value, mutations_current) = self
                 .cons_values
                 .get(&address)
-                .expect("the matching interpreter cons mirror is live")
-                .value
-                .clone();
-            self.reconcile_mirror(native, &value, &mut IdentitySet::default())?;
+                .map(|mirror| (mirror.value.clone(), mirror.mutations.is_current()))
+                .expect("the matching interpreter cons mirror is live");
+            if !Self::mirror_is_synchronized(native, &value, mutations_current) {
+                self.reconcile_mirror(native, &value, &mut IdentitySet::default())?;
+            }
             self.track_cons(native, &value);
             return Ok(address + TAG_CONS);
         }
@@ -2620,13 +2763,15 @@ impl NativeHeap {
         }
         if word & TAG_MASK == TAG_CONS {
             let address = word.wrapping_sub(TAG_CONS);
-            if let Some(value) = self
+            if let Some((value, mutations_current)) = self
                 .cons_values
                 .get(&address)
-                .map(|mirror| mirror.value.clone())
+                .map(|mirror| (mirror.value.clone(), mirror.mutations.is_current()))
             {
                 let native = address as *mut NativeCons;
-                self.reconcile_mirror(native, &value, decoding_conses)?;
+                if !Self::mirror_is_synchronized(native, &value, mutations_current) {
+                    self.reconcile_mirror(native, &value, decoding_conses)?;
+                }
                 if mark_clean {
                     self.touched.cons_set.remove(&address);
                 } else {
