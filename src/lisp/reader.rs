@@ -1883,7 +1883,7 @@ impl<'a> Reader<'a> {
             }
 
             if let Some(f) = parse_special_float_token(&token) {
-                return Ok(Some(Value::Float(f)));
+                return Ok(Some(Value::float(f)));
             }
             if let Some(number) = parse_decimal_token(&token) {
                 return Ok(Some(number));
@@ -1958,7 +1958,7 @@ fn parse_decimal_token(token: &str) -> Option<Value> {
     if (token.contains('.') || token.contains('e') || token.contains('E'))
         && let Ok(value) = token.parse::<f64>()
     {
-        return Some(Value::Float(value));
+        return Some(Value::float(value));
     }
     None
 }

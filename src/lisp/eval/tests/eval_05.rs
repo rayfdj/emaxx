@@ -816,7 +816,7 @@ fn generated_numeric_property_table_uncompresses_and_decodes_values() {
         Value::list([
             Value::Integer(5),
             Value::Integer(5),
-            Value::Float(0.25),
+            Value::float(0.25),
             Value::Integer(12),
             Value::symbol("Nd"),
         ])

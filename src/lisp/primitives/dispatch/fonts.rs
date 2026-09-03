@@ -270,7 +270,7 @@ fn style_property(index: usize, value: &Value) -> Result<Value, LispError> {
 fn nonnegative_property(value: &Value) -> Result<Value, LispError> {
     match value {
         Value::Integer(number) if *number >= 0 => Ok(value.clone()),
-        Value::Float(number) if *number >= 0.0 => Ok(value.clone()),
+        Value::Float(number) if number.get() >= 0.0 => Ok(value.clone()),
         _ => Err(invalid_font_property()),
     }
 }
@@ -376,7 +376,7 @@ fn set_name_properties(slots: &mut [Value], name: &str) -> Result<(), LispError>
         slots[FONT_SLANT_INDEX] = Value::symbol(&slant);
     }
     if let Some(size) = info.size {
-        slots[FONT_SIZE_INDEX] = Value::Float(size);
+        slots[FONT_SIZE_INDEX] = Value::float(size);
     }
     if let Some(spacing) = info.spacing {
         slots[FONT_SPACING_INDEX] = Value::Integer(spacing);
@@ -520,7 +520,7 @@ fn font_xlfd_name(
     let (pixel_size, point_size) = match slot(FONT_SIZE_INDEX) {
         Some(Value::Integer(size)) => (size.to_string(), "*".into()),
         Some(Value::Float(size)) => {
-            let tenths = size * 10.0;
+            let tenths = size.get() * 10.0;
             let point = if tenths.fract() == 0.0 {
                 format!("{tenths:.0}")
             } else {

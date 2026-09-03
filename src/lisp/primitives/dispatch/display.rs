@@ -3463,7 +3463,7 @@ define_dispatch!(
                     .find_record(window_id)
                     .and_then(|record| record.slots.get(slot))
                     .cloned()
-                    .unwrap_or(Value::Float(1.0)))
+                    .unwrap_or(Value::float(1.0)))
             }
             "set-window-new-pixel" | "set-window-new-total" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -5186,7 +5186,7 @@ fn mode_line_min_width(value: &Value) -> Option<usize> {
         [Value::Symbol(key), width] if key == "min-width" => {
             let widths = width.to_vec().ok()?;
             match widths.first()? {
-                Value::Float(width) => Some(*width as usize),
+                Value::Float(width) => Some(width.get() as usize),
                 Value::Integer(width) => Some(*width as usize),
                 _ => None,
             }

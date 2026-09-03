@@ -1690,37 +1690,43 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs("apply".into(), args.len()));
                 }
                 if args.len() == 1 {
-                    let expanded_args = args[0].to_vec()?;
-                    if expanded_args.len() < 2 {
-                        return Err(LispError::WrongNumberOfArgs(
-                            "apply".into(),
-                            expanded_args.len(),
+                    // eval.c:Fapply treats the sole argument as the complete
+                    // funcall vector: its first list element is the function
+                    // and the rest are arguments.  A one-element list is a
+                    // valid zero-argument call; an empty list therefore tries
+                    // to funcall nil and reports void-function.
+                    if is_vector_value(&args[0]) {
+                        return Err(LispError::WrongTypeArgument(
+                            "listp".into(),
+                            args[0].clone(),
                         ));
                     }
-                    let resolved = resolve_callable(interp, &expanded_args[0], env)?;
-                    let original_name = expanded_args[0].as_symbol().ok();
-                    return interp.call_function_value(
-                        resolved,
-                        original_name,
-                        &expanded_args[1..],
-                        env,
-                    );
+                    let expanded_args = args[0].to_vec()?;
+                    let Some((function, call_args)) = expanded_args.split_first() else {
+                        return interp.call_function_value(Value::Nil, None, &[], env);
+                    };
+                    return interp.call_function_value(function.clone(), None, call_args, env);
                 }
                 let func = &args[0];
                 let last = &args[args.len() - 1];
                 let mut all_args: Vec<Value> = args[1..args.len() - 1].to_vec();
-                all_args.extend(sequence_values(interp, last)?);
-                let resolved = resolve_callable(interp, func, env)?;
-                let original_name = func.as_symbol().ok();
-                interp.call_function_value(resolved, original_name, &all_args, env)
+                // Fapply calls list_length and then walks XCAR/XCDR.  Its
+                // spread argument is a proper list, not an arbitrary Emacs
+                // sequence.
+                if is_vector_value(last) {
+                    return Err(LispError::WrongTypeArgument("listp".into(), last.clone()));
+                }
+                all_args.extend(last.to_vec()?);
+                interp.call_function_value(func.clone(), None, &all_args, env)
             }
             "funcall" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs("funcall".into(), 0));
                 }
-                let resolved = resolve_callable(interp, &args[0], env)?;
-                let original_name = args[0].as_symbol().ok();
-                interp.call_function_value(resolved, original_name, &args[1..], env)
+                // Let the common funcall_general translation resolve the
+                // original function object so resolution failures retain the
+                // attempted call in the backtrace, as GNU does.
+                interp.call_function_value(args[0].clone(), None, &args[1..], env)
             }
             "fset" => {
                 need_args(name, args, 2)?;

@@ -1045,7 +1045,7 @@ fn eval_arithmetic() {
     assert_eq!(eval_str("(* 4 5)"), Value::Integer(20));
     assert_eq!(eval_str("(/ 2)"), Value::Integer(0));
     assert_eq!(eval_str("(/ -1)"), Value::Integer(-1));
-    assert_eq!(eval_str("(/ 2.0)"), Value::Float(0.5));
+    assert_eq!(eval_str("(/ 2.0)"), Value::float(0.5));
     {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -2264,14 +2264,14 @@ fn assert_eval_string_ops() {
             Value::Integer(97),
         ])
     );
-    assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::Float(0.1));
+    assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::float(0.1));
     assert_eq!(
         eval_str(r#"(string-to-number ".1..e1")"#),
-        Value::Float(0.1)
+        Value::float(0.1)
     );
     assert_eq!(
         eval_str(r#"(string-to-number "1e+1.1")"#),
-        Value::Float(10.0)
+        Value::float(10.0)
     );
     assert_eq!(
         eval_str(r#"(string-to-number "ffzz" 16)"#),
@@ -2387,9 +2387,9 @@ fn eval_string_ops() {
 #[test]
 fn reader_printer_and_string_to_number_share_gnu_special_float_syntax() {
     let positive_infinity = eval_str(r#"(string-to-number "1.0e+INFjunk")"#);
-    assert!(matches!(positive_infinity, Value::Float(value) if value == f64::INFINITY));
+    assert!(matches!(positive_infinity, Value::Float(value) if value.get() == f64::INFINITY));
     let negative_infinity = eval_str(r#"(string-to-number "-2.e+INF")"#);
-    assert!(matches!(negative_infinity, Value::Float(value) if value == f64::NEG_INFINITY));
+    assert!(matches!(negative_infinity, Value::Float(value) if value.get() == f64::NEG_INFINITY));
 
     let positive_nan = eval_str(r#"(string-to-number "2.e+NaNjunk")"#);
     assert!(
@@ -2405,7 +2405,7 @@ fn reader_printer_and_string_to_number_share_gnu_special_float_syntax() {
         Value::Integer(1)
     );
     assert_eq!(eval_str("'1e-INF"), Value::Symbol("1e-INF".into()));
-    assert!(matches!(eval_str("1e+INF"), Value::Float(value) if value == f64::INFINITY));
+    assert!(matches!(eval_str("1e+INF"), Value::Float(value) if value.get() == f64::INFINITY));
     assert_string_value(eval_str(r#"(prin1-to-string (intern "1e-INF"))"#), "1e-INF");
     assert_string_value(
         eval_str(r#"(prin1-to-string (intern "1e+INF"))"#),
@@ -3900,11 +3900,11 @@ fn float_constants_are_available_as_builtin_variables() {
     // float-sup.el owns these; they exist only in the loaded image.
     assert_eq!(
         eval_str_with_upstream_batch("float-e"),
-        Value::Float(std::f64::consts::E)
+        Value::float(std::f64::consts::E)
     );
     assert_eq!(
         eval_str_with_upstream_batch("float-pi"),
-        Value::Float(std::f64::consts::PI)
+        Value::float(std::f64::consts::PI)
     );
 }
 
@@ -4024,7 +4024,7 @@ fn native_buffer_ticks_are_signed_distinct_and_honor_buffer_arguments() {
 fn gc_counter_variables_are_available_for_benchmark() {
     assert_eq!(
         eval_str("(list gcs-done gc-elapsed)"),
-        Value::list([Value::Integer(0), Value::Float(0.0)])
+        Value::list([Value::Integer(0), Value::float(0.0)])
     );
 }
 
@@ -4680,6 +4680,124 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
 }
 
 #[test]
+fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
+    let interp = Interpreter::new();
+    let env = Env::new();
+    assert_eq!(
+        interp.lookup_var("gc-cons-percentage", &env),
+        Some(Value::float(0.1))
+    );
+    assert_eq!(
+        interp.lookup_var("undo-outer-limit", &env),
+        Some(Value::Integer(24_000_000))
+    );
+    assert_eq!(interp.lookup_var("font-log", &env), Some(Value::Nil));
+    assert_eq!(interp.lookup_var("purify-flag", &env), Some(Value::T));
+    assert_eq!(interp.lookup_var("display-hourglass", &env), Some(Value::T));
+    for name in [
+        "inhibit-x-resources",
+        "internal-doc-file-name",
+        "load-source-file-function",
+        "resize-mini-windows",
+        "exec-suffixes",
+        "temporary-file-directory",
+    ] {
+        assert_eq!(
+            interp.lookup_var(name, &env),
+            Some(Value::Nil),
+            "wrong C initializer for {name}"
+        );
+    }
+    assert_eq!(
+        interp.lookup_var("debugger", &env),
+        Some(Value::symbol("debug-early"))
+    );
+    assert_eq!(
+        interp.lookup_var("native-comp-enable-subr-trampolines", &env),
+        Some(Value::Nil)
+    );
+    assert_eq!(interp.lookup_var("use-dialog-box", &env), Some(Value::T));
+    assert_eq!(
+        interp.lookup_var("frame-internal-parameters", &env),
+        Some(Value::list([
+            Value::symbol("name"),
+            Value::symbol("parent-id"),
+            Value::symbol("window-id"),
+        ]))
+    );
+    assert_eq!(
+        interp.lookup_var("auto-save-list-file-prefix", &env),
+        None,
+        "startup.el, not Rust, owns auto-save-list-file-prefix"
+    );
+    assert_eq!(
+        interp.get_symbol_property("temporary-file-directory", "standard-value"),
+        None,
+        "cus-start.el, not Rust, owns the Custom standard value"
+    );
+    assert_eq!(
+        interp.lookup_var("terminal-frame", &env),
+        Some(Value::Frame(interp.selected_frame_id))
+    );
+    for name in [
+        "redisplay--all-windows-cause",
+        "redisplay--mode-lines-cause",
+    ] {
+        let table = interp
+            .lookup_var(name, &env)
+            .unwrap_or_else(|| panic!("xdisp.c did not initialize {name}"));
+        assert_eq!(
+            crate::lisp::json::hash_table_entries(&interp, &table),
+            Some(("eql".to_string(), Vec::new()))
+        );
+    }
+    assert_eq!(
+        interp.lookup_var("eol-mnemonic-dos", &env),
+        Some(Value::string("\\"))
+    );
+    assert_eq!(
+        interp.lookup_var("eol-mnemonic-mac", &env),
+        Some(Value::string("/"))
+    );
+    let frame_title = interp
+        .lookup_var("frame-title-format", &env)
+        .expect("xdisp.c initializes frame-title-format");
+    let icon_title = interp
+        .lookup_var("icon-title-format", &env)
+        .expect("xdisp.c initializes icon-title-format");
+    assert!(crate::lisp::primitives::values::values_eq_in_env(
+        &interp,
+        &frame_title,
+        &icon_title,
+        &env,
+    ));
+    assert_eq!(
+        frame_title,
+        Value::list([
+            Value::symbol("multiple-frames"),
+            Value::string("%b"),
+            Value::list([
+                Value::string(""),
+                Value::string("%b - GNU Emacs at "),
+                Value::symbol("system-name"),
+            ]),
+        ])
+    );
+    let Value::Record(comp_units_id) = interp
+        .lookup_var("comp-loaded-comp-units-h", &env)
+        .expect("comp.c initializes the loaded-unit table")
+    else {
+        panic!("comp-loaded-comp-units-h is not a hash table record")
+    };
+    assert_eq!(
+        interp
+            .find_record(comp_units_id)
+            .and_then(|record| record.slots.get(5)),
+        Some(&Value::symbol("value"))
+    );
+}
+
+#[test]
 fn startup_features_own_their_capability_metadata_in_one_manifest() {
     let interp = Interpreter::new();
     let mut unique = std::collections::HashSet::new();
@@ -4706,28 +4824,19 @@ fn startup_features_own_their_capability_metadata_in_one_manifest() {
 }
 
 #[test]
-fn dumped_auto_buffer_locals_share_their_defaults_and_locality_manifest() {
+fn native_syntax_propertize_progress_is_buffer_local() {
     let interp = Interpreter::new();
-    let mut unique = std::collections::HashSet::new();
-    for variable in DUMPED_AUTO_BUFFER_LOCALS {
-        assert!(
-            unique.insert(variable.name),
-            "dumped auto-buffer-local manifest contains duplicate `{}`",
-            variable.name
-        );
-        assert_eq!(
-            interp.builtin_var_value(variable.name),
-            Some(variable.default.value()),
-            "dumped auto-buffer-local `{}` lost its default",
-            variable.name
-        );
-        assert!(
-            interp.is_auto_buffer_local(variable.name),
-            "dumped auto-buffer-local `{}` lost its locality",
-            variable.name
-        );
-        assert!(interp.is_special_variable(variable.name));
-    }
+    assert_eq!(
+        interp.builtin_var_value("syntax-propertize--done"),
+        Some(Value::Integer(-1))
+    );
+    assert!(interp.is_auto_buffer_local("syntax-propertize--done"));
+    assert!(interp.is_special_variable("syntax-propertize--done"));
+    assert_eq!(
+        interp.lookup_var("font-lock-defaults", &Env::new()),
+        None,
+        "font-core.el, not Rust, owns font-lock-defaults"
+    );
 }
 
 #[test]
@@ -5105,7 +5214,7 @@ fn gnu_keyboard_c_startup_policy_has_one_bound_special_value_cell() {
         Value::list([
             Value::Integer(1),
             Value::T,
-            Value::Float(2.0),
+            Value::float(2.0),
             Value::Integer(500),
             Value::Integer(3),
             Value::Integer(0),
@@ -5156,7 +5265,7 @@ fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
 }
 
 #[test]
-fn dumped_lread_loader_policy_defaults_are_complete() {
+fn batch_lread_loader_policy_defaults_are_complete() {
     #[cfg(target_os = "macos")]
     let dynamic_suffixes =
         Value::list([Value::String(".dylib".into()), Value::String(".so".into())]);
@@ -5171,7 +5280,7 @@ fn dumped_lread_loader_policy_defaults_are_complete() {
         .into_iter()
         .chain([Value::String(".elc".into()), Value::String(".el".into())]);
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list load-suffixes
                    dynamic-library-suffixes
                    load-file-rep-suffixes

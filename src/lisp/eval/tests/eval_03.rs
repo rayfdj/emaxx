@@ -5173,7 +5173,7 @@ fn pcase_backquote_treats_plain_symbols_as_literals() {
         ),
         Value::list([
             Value::list([Value::Integer(141421356237), Value::Integer(-11)]),
-            Value::Float(0.5),
+            Value::float(0.5),
             Value::Symbol("value".into()),
         ])
     );

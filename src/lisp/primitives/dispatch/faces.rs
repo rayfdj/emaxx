@@ -110,7 +110,7 @@ fn normalize_face_attribute_value(
         }
         ":height" => match value {
             Value::Integer(height) if *height > 0 => value.clone(),
-            Value::Float(scale) if scale.is_finite() && *scale > 0.0 => value.clone(),
+            Value::Float(scale) if scale.is_finite() && scale.get() > 0.0 => value.clone(),
             Value::Lambda(_) | Value::BuiltinFunc(_) | Value::Symbol(_) => value.clone(),
             _ => return Err(LispError::Signal("Invalid face height".into())),
         },
@@ -249,8 +249,8 @@ fn merge_face_height(
     match from {
         Value::Integer(_) => Ok(from.clone()),
         Value::Float(scale) => match to {
-            Value::Integer(height) => Ok(Value::Integer((*scale * *height as f64) as i64)),
-            Value::Float(height) => Ok(Value::Float(*scale * *height)),
+            Value::Integer(height) => Ok(Value::Integer((scale.get() * *height as f64) as i64)),
+            Value::Float(height) => Ok(Value::float(scale.get() * height.get())),
             Value::Symbol(symbol) if symbol == "unspecified" => Ok(from.clone()),
             _ => Ok(from.clone()),
         },

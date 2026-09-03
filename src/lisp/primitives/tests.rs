@@ -20,6 +20,33 @@ fn call_via_lisp(
     interp.call_function_value(function, Some(name), args, env)
 }
 
+#[test]
+fn apply_follows_eval_c_proper_list_contract() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+
+    let zero_argument_call = Value::list([Value::symbol("list")]);
+    assert_eq!(
+        call(&mut interp, "apply", &[zero_argument_call], &mut env,)
+            .expect("one-element apply list calls its function with no arguments"),
+        Value::Nil
+    );
+
+    let vector = Value::list([Value::symbol("vector-literal"), Value::Integer(1)]);
+    match call(
+        &mut interp,
+        "apply",
+        &[Value::symbol("list"), vector.clone()],
+        &mut env,
+    ) {
+        Err(LispError::WrongTypeArgument(predicate, value)) => {
+            assert_eq!(predicate, "listp");
+            assert_eq!(value, vector);
+        }
+        other => panic!("apply must reject a vector spread argument, got {other:?}"),
+    }
+}
+
 fn upstream_primitive_contract_output(program: &str) -> String {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
@@ -1082,7 +1109,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::T,
         Value::Integer(1),
         Value::big_integer(BigInt::from(i64::MAX) + 1),
-        Value::Float(1.5),
+        Value::float(1.5),
         Value::String("inline string".into()),
         string_object,
         Value::symbol("symbol"),
@@ -5331,7 +5358,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.1)],
+            &[process.clone(), Value::float(0.1)],
             &mut env,
         )
         .expect("wait for PTY output");
@@ -5393,7 +5420,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.1)],
+            &[process.clone(), Value::float(0.1)],
             &mut env,
         )
         .expect("wait for split PTY output");
@@ -6236,7 +6263,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
     call(
         &mut interp,
         "accept-process-output",
-        &[Value::Nil, Value::Float(0.05)],
+        &[Value::Nil, Value::float(0.05)],
         &mut env,
     )
     .expect("event pump should report the connection");
@@ -14867,7 +14894,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     call(
         &mut interp,
         "accept-process-output",
-        &[process.clone(), Value::Float(1.0)],
+        &[process.clone(), Value::float(1.0)],
         &mut env,
     )
     .expect("pump serial process input");
@@ -15376,7 +15403,7 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.05)],
+            &[process.clone(), Value::float(0.05)],
             &mut env,
         )
         .expect("wait while output is held"),
@@ -16353,7 +16380,7 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
             upper.clone(),
             Value::Integer(12),
             Value::Nil,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -16710,7 +16737,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
     assert_eq!(interp.buffer.point(), 87, "goal column 3 within the row");
 
-    let float_goal = Value::cons(Value::Float(3.0), Value::Integer(-1));
+    let float_goal = Value::cons(Value::float(3.0), Value::Integer(-1));
     call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
     assert_eq!(
         interp.buffer.point(),
@@ -17192,7 +17219,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     let lower = call(
         &mut interp,
         "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
         &mut env,
     )
     .expect("split-window-internal");
@@ -17239,7 +17266,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
             upper_left.clone(),
             Value::Integer(11),
             Value::Nil,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -17251,7 +17278,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
             upper_left.clone(),
             Value::Integer(40),
             Value::T,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -17297,7 +17324,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let lower = call(
         &mut interp,
         "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
         &mut env,
     )
     .expect("split");

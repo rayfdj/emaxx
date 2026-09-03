@@ -62,26 +62,16 @@ struct NativeFunction {
     dynamic: bool,
 }
 
-/// The portion of a non-dynamic native subr that eval.c:funcall_general
-/// needs in order to call it without translating its Lisp_Object arguments.
+/// The function-pointer and arity portion of a non-dynamic native subr.
+/// eval.c:funcall_general sends these through funcall_subr, whereas dynamic
+/// native functions follow funcall_lambda and therefore stay on the general
+/// evaluator path.
 #[derive(Clone, Copy)]
 pub(crate) struct DirectNativeFunction {
     pub(crate) target: *const c_void,
     pub(crate) convention: NativeCallingConvention,
-    min_args: usize,
-    max_args: Option<usize>,
-}
-
-impl DirectNativeFunction {
-    pub(crate) fn check_arity(self, count: usize) -> Result<(), LispError> {
-        if count < self.min_args || self.max_args.is_some_and(|maximum| count > maximum) {
-            return Err(LispError::WrongNumberOfArgs(
-                "native-compiled-function".into(),
-                count,
-            ));
-        }
-        Ok(())
-    }
+    pub(crate) min_args: usize,
+    pub(crate) max_args: Option<usize>,
 }
 
 #[derive(Default)]

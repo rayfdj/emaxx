@@ -852,7 +852,20 @@ pub fn load_file_strict(
 pub(crate) fn load_file_strict_until(
     interp: &mut eval::Interpreter,
     path: &Path,
+    stop_before: impl FnMut(&types::Value) -> bool,
+) -> Result<bool, types::LispError> {
+    load_file_strict_until_or_error(interp, path, stop_before, |_| false)
+}
+
+/// The loadup image builder needs to stop at GNU's C portable-dumper call,
+/// after the surrounding unchanged Lisp has performed its pre-dump state
+/// transitions.  STOP_AFTER_ERROR recognizes that unavailable C boundary;
+/// all ordinary loads pass a predicate that is always false.
+pub(crate) fn load_file_strict_until_or_error(
+    interp: &mut eval::Interpreter,
+    path: &Path,
     mut stop_before: impl FnMut(&types::Value) -> bool,
+    mut stop_after_error: impl FnMut(&types::LispError) -> bool,
 ) -> Result<bool, types::LispError> {
     let requested_source = read_source_bytes(path)?;
     // Resolution has already selected the file.  GNU executes that exact
@@ -1029,6 +1042,14 @@ pub(crate) fn load_file_strict_until(
                 interp.eval(&form, &mut env)
             };
             if let Err(error) = result {
+                if stop_after_error(&error) {
+                    // The recognized C handoff is successful control flow
+                    // for image reconstruction, not a batch error retained
+                    // in the restored process.
+                    interp.clear_batch_error_backtrace();
+                    stopped = true;
+                    break;
+                }
                 if trace_load_errors_enabled() {
                     let head = form
                         .car()

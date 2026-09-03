@@ -102,7 +102,7 @@ define_dispatch!(
                 let k_l = optional_lcms_number_arg(args.get(2))?;
                 let k_c = optional_lcms_number_arg(args.get(3))?;
                 let k_h = optional_lcms_number_arg(args.get(4))?;
-                Ok(Value::Float(left.cie2000_delta_e(&right, k_l, k_c, k_h)))
+                Ok(Value::float(left.cie2000_delta_e(&right, k_l, k_c, k_h)))
             }
             "lcms-xyz->jch" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -142,7 +142,7 @@ define_dispatch!(
                 let fl = lcms_fl(view.La);
                 let left = lcms_jch_to_jab(model.forward(&left), fl);
                 let right = lcms_jch_to_jab(model.forward(&right), fl);
-                Ok(Value::Float(
+                Ok(Value::float(
                     (right.j - left.j).hypot((right.a - left.a).hypot(right.b - left.b)),
                 ))
             }
@@ -298,33 +298,33 @@ pub(crate) fn lcms_jab_to_jch(jab: Cam02Jab, fl: f64) -> JCh {
 
 pub(crate) fn lcms_jch_value(jch: JCh) -> Value {
     Value::list([
-        Value::Float(jch.J),
-        Value::Float(jch.C),
-        Value::Float(jch.h),
+        Value::float(jch.J),
+        Value::float(jch.C),
+        Value::float(jch.h),
     ])
 }
 
 pub(crate) fn lcms_jab_value(jab: Cam02Jab) -> Value {
     Value::list([
-        Value::Float(jab.j),
-        Value::Float(jab.a),
-        Value::Float(jab.b),
+        Value::float(jab.j),
+        Value::float(jab.a),
+        Value::float(jab.b),
     ])
 }
 
 pub(crate) fn lcms_scaled_xyz_value(xyz: CIEXYZ) -> Value {
     Value::list([
-        Value::Float(xyz.X / 100.0),
-        Value::Float(xyz.Y / 100.0),
-        Value::Float(xyz.Z / 100.0),
+        Value::float(xyz.X / 100.0),
+        Value::float(xyz.Y / 100.0),
+        Value::float(xyz.Z / 100.0),
     ])
 }
 
 pub(crate) fn lcms_white_point_value(xyz: CIEXYZ) -> Value {
     Value::list([
-        Value::Float(xyz.X),
-        Value::Float(xyz.Y),
-        Value::Float(xyz.Z),
+        Value::float(xyz.X),
+        Value::float(xyz.Y),
+        Value::float(xyz.Z),
     ])
 }
 

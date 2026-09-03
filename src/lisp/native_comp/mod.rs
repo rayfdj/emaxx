@@ -78,13 +78,30 @@ pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
         ("comp-subr-arities-h", "equal"),
     ] {
         let table = crate::lisp::json::make_hash_table(interpreter, test, Vec::new());
+        if name == "comp-loaded-comp-units-h" {
+            let Value::Record(id) = &table else {
+                unreachable!("native compiler hash tables use hash-table records")
+            };
+            let record = interpreter
+                .find_record_mut(*id)
+                .expect("new native compiler hash table record");
+            if record.slots.len() < 7 {
+                record.slots.resize(7, Value::Nil);
+            }
+            // comp.c:5926 uses `:weakness value'.  This is observable through
+            // hash-table-weakness and controls whether compilation units keep
+            // their Lisp values alive.
+            record.slots[5] = Value::symbol("value");
+        }
         interpreter.define_special_variable(name, table);
     }
     interpreter.define_special_variable(
         "native-comp-eln-load-path",
         Value::list([Value::string("../native-lisp/")]),
     );
-    interpreter.define_special_variable("native-comp-enable-subr-trampolines", Value::T);
+    // comp.c leaves this nil.  GNU's unchanged loadup.el enables it at the
+    // portable-dump boundary once compiler bootstrap has completed.
+    interpreter.define_special_variable("native-comp-enable-subr-trampolines", Value::Nil);
 }
 
 pub(crate) fn load(

@@ -354,7 +354,7 @@ pub(crate) fn integer_like_bigint(
 
 pub(crate) fn numeric_to_f64(interp: &Interpreter, value: &Value) -> Result<f64, LispError> {
     match value {
-        Value::Float(f) => Ok(*f),
+        Value::Float(f) => Ok(f.get()),
         Value::BigInteger(n) => n.to_f64().ok_or_else(|| {
             LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
         }),
@@ -416,12 +416,15 @@ pub(crate) fn integer_rounding_value(
         ));
     }
 
-    if args.len() == 1 {
+    // floatfns.c:rounding_driver receives a fixed second C argument and uses
+    // NILP (d), so funcall_subr's padded Qnil and an explicit nil have the
+    // same no-divisor behavior.
+    if args.len() == 1 || (!float_result && args[1].is_nil()) {
         if float_result {
             // GNU's f* family returns an integral float and deliberately
             // preserves infinities and NaNs.  Only the integer-returning
             // family signals `overflow-error' for non-finite input.
-            return Ok(Value::Float(round_float(
+            return Ok(Value::float(round_float(
                 kind,
                 numeric_to_f64(interp, &args[0])?,
             )));
@@ -437,7 +440,7 @@ pub(crate) fn integer_rounding_value(
 
     if let Some(rounded) = exact_numeric_division_round(interp, kind, &args[0], &args[1])? {
         return if float_result {
-            Ok(Value::Float(numeric_to_f64(interp, &rounded)?))
+            Ok(Value::float(numeric_to_f64(interp, &rounded)?))
         } else {
             Ok(rounded)
         };
@@ -452,7 +455,7 @@ pub(crate) fn integer_rounding_value(
         }
         let rounded = exact_integer_division_round(kind, numerator, divisor);
         return if float_result {
-            Ok(Value::Float(
+            Ok(Value::float(
                 numeric_to_f64(interp, &rounded).unwrap_or(f64::NAN),
             ))
         } else {
@@ -467,7 +470,7 @@ pub(crate) fn integer_rounding_value(
     let quotient = numeric_to_f64(interp, &args[0])? / divisor;
     let rounded = apply_rounding_kind(kind, quotient)?;
     if float_result {
-        Ok(Value::Float(rounded))
+        Ok(Value::float(rounded))
     } else {
         rounded_f64_to_number_value(rounded)
     }
@@ -482,7 +485,7 @@ pub(crate) fn integer_like_bigint_for_rounding(
     value: &Value,
 ) -> Option<BigInt> {
     match value {
-        Value::Float(value) => bigint_from_integral_float(*value),
+        Value::Float(value) => bigint_from_integral_float(value.get()),
         _ => integer_like_bigint(interp, value).ok(),
     }
 }
@@ -626,7 +629,7 @@ pub(crate) fn expt_value(
 ) -> Result<Value, LispError> {
     let exponent_bigint = integer_like_bigint(interp, exponent);
     if matches!(base, Value::Float(_)) || matches!(exponent, Value::Float(_)) {
-        return Ok(Value::Float(
+        return Ok(Value::float(
             numeric_to_f64(interp, base)?.powf(numeric_to_f64(interp, exponent)?),
         ));
     }
@@ -636,7 +639,7 @@ pub(crate) fn expt_value(
         let exponent_value = exponent_bigint.to_f64().ok_or_else(|| {
             LispError::WrongTypeArgument("number-or-marker-p".into(), exponent.clone())
         })?;
-        return Ok(Value::Float(base_value.powf(exponent_value)));
+        return Ok(Value::float(base_value.powf(exponent_value)));
     }
 
     let base_bigint = integer_like_bigint(interp, base)?;
@@ -664,7 +667,7 @@ pub(crate) fn exact_binary_rational(
     value: &Value,
 ) -> Result<Option<(BigInt, i32)>, LispError> {
     match value {
-        Value::Float(value) => Ok(exact_float_binary_rational(*value)),
+        Value::Float(value) => Ok(exact_float_binary_rational(value.get())),
         Value::Integer(value) => Ok(Some((BigInt::from(*value), 0))),
         Value::BigInteger(value) => Ok(Some((value.clone().into(), 0))),
         Value::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
@@ -812,7 +815,7 @@ pub(crate) fn exact_time_from_value(
         Value::Nil => Ok(now.clone()),
         Value::Integer(value) => exact_time_value(BigInt::from(*value), BigInt::from(1u8)),
         Value::BigInteger(value) => exact_time_value(value.clone().into(), BigInt::from(1u8)),
-        Value::Float(value) => exact_time_from_float(*value),
+        Value::Float(value) => exact_time_from_float(value.get()),
         Value::Cons(cons_cell) => {
             let car = &cons_cell.car;
             let cdr = &cons_cell.cdr;
@@ -2047,7 +2050,7 @@ define_dispatch!(
             "float-time" => {
                 need_arg_range(name, args, 0, 1)?;
                 let value = args.first().unwrap_or(&Value::Nil);
-                Ok(Value::Float(exact_time_to_f64(&exact_time_from_value(
+                Ok(Value::float(exact_time_to_f64(&exact_time_from_value(
                     interp, value, &now,
                 )?)))
             }
@@ -2268,7 +2271,7 @@ pub(crate) fn numeric_ordering(
     }
 
     match (left, right) {
-        (Value::Float(left), Value::Float(right)) => Ok(left.partial_cmp(right)),
+        (Value::Float(left), Value::Float(right)) => Ok(left.get().partial_cmp(&right.get())),
         (Value::Float(left), _) if left.is_infinite() => Ok(Some(if left.is_sign_positive() {
             Ordering::Greater
         } else {
@@ -2303,13 +2306,13 @@ pub(crate) fn extremum_numeric_value(
     choose_max: bool,
 ) -> Result<Value, LispError> {
     let mut best = numeric_result_value(interp, &args[0])?;
-    if matches!(best, Value::Float(value) if value.is_nan()) {
+    if matches!(&best, Value::Float(value) if value.is_nan()) {
         return Ok(best);
     }
 
     for arg in &args[1..] {
         let candidate = numeric_result_value(interp, arg)?;
-        if matches!(candidate, Value::Float(value) if value.is_nan()) {
+        if matches!(&candidate, Value::Float(value) if value.is_nan()) {
             return Ok(candidate);
         }
         let ordering = numeric_ordering(interp, &best, &candidate)?;
@@ -2330,7 +2333,7 @@ pub(crate) fn numeric_result_value(
     match value {
         Value::Integer(number) => Ok(Value::Integer(*number)),
         Value::BigInteger(number) => Ok(normalize_bigint_value(number.clone().into())),
-        Value::Float(number) => Ok(Value::Float(*number)),
+        Value::Float(number) => Ok(Value::Float(number.clone())),
         Value::Marker(id) => Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {
             LispError::WrongTypeArgument("number-or-marker-p".into(), value.clone())
         })? as i64)),
@@ -2359,7 +2362,7 @@ pub(crate) fn parse_decimal_string_to_number(text: &str) -> Value {
     };
     if prefix.contains(['.', 'e', 'E']) {
         if let Some(value) = crate::lisp::reader::parse_special_float_token(prefix) {
-            return Value::Float(value);
+            return Value::float(value);
         }
         if prefix.ends_with('.')
             && !prefix.contains(['e', 'E'])
@@ -2380,7 +2383,7 @@ pub(crate) fn parse_decimal_string_to_number(text: &str) -> Value {
         }
         prefix
             .parse::<f64>()
-            .map(Value::Float)
+            .map(Value::float)
             .unwrap_or(Value::Integer(0))
     } else if let Ok(value) = prefix.parse::<i64>() {
         Value::Integer(value)
@@ -2515,7 +2518,7 @@ pub(crate) fn number_to_string(value: &Value) -> Result<String, LispError> {
     match value {
         Value::Integer(n) => Ok(n.to_string()),
         Value::BigInteger(n) => Ok(n.to_string()),
-        Value::Float(f) => Ok(crate::lisp::types::format_float(*f)),
+        Value::Float(f) => Ok(crate::lisp::types::format_float(f.get())),
         _ => Err(LispError::WrongTypeArgument(
             "number-or-marker-p".into(),
             value.clone(),

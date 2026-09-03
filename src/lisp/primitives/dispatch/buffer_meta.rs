@@ -1,7 +1,5 @@
 use super::*;
 
-const PORTABLE_DUMPER_UNAVAILABLE: &str = "Portable dumper backend is unavailable";
-
 fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
     let Ok(items) = plist.to_vec() else {
         return false;
