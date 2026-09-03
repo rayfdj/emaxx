@@ -2294,6 +2294,7 @@ fn ordered_name_index(entries: &[(String, Value)]) -> OrderedNameIndex {
 pub(crate) struct MinibufferRuntimeState {
     active_buffer_id: Option<u64>,
     active_window_id: Option<u64>,
+    activation_id: Option<u64>,
     depth: usize,
     prompt: Option<String>,
 }
@@ -2994,6 +2995,11 @@ pub struct Interpreter {
     pub(crate) keyboard_input: KeyboardInputState,
     pub(crate) command_loop_recursion_depth: usize,
     minibuffer_runtime: MinibufferRuntimeState,
+    /// Monotonic identity for a read-minibuffer activation.  The TTY uses
+    /// it to distinguish a new read from another redraw of the same reused
+    /// ` *Minibuf-N*' buffer, so grow-only height does not leak between
+    /// consecutive or nested reads.
+    minibuffer_activation_count: u64,
     /// Destination installed by the native `redirect-debugging-output'
     /// primitive.  GNU keeps this in C state; it must not leak through a
     /// project-private Lisp variable.
@@ -3768,6 +3774,7 @@ impl Interpreter {
             keyboard_input: KeyboardInputState::default(),
             command_loop_recursion_depth: 0,
             minibuffer_runtime: MinibufferRuntimeState::default(),
+            minibuffer_activation_count: 0,
             external_debugging_output_target: None,
             default_file_modes: 0o755,
             local_time_zone_rule,

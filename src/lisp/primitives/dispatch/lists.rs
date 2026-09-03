@@ -2232,6 +2232,26 @@ define_dispatch!(
                                 Some((head, _)) => head,
                                 None => default.clone(),
                             };
+                            // In a live interactive read GNU records the
+                            // accepted default, not the empty text that RET
+                            // submitted.  Batch/macro-only reads retain the
+                            // noninteractive contract and leave history
+                            // unchanged.
+                            let history = args.get(2).cloned().unwrap_or(Value::Nil);
+                            if crate::lisp::primitives::has_tty_event_reader()
+                                && interp
+                                    .lookup_var("noninteractive", env)
+                                    .is_some_and(|value| value.is_nil())
+                                && let Some(text) = string_like(&default).map(|text| text.text)
+                                && let Some(variable) =
+                                    crate::lisp::primitives::completion::history_variable_name(
+                                        &history,
+                                    )
+                            {
+                                crate::lisp::primitives::completion::push_minibuffer_history(
+                                    interp, env, &variable, &text,
+                                );
+                            }
                             return Ok(default);
                         }
                     }

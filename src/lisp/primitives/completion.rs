@@ -897,8 +897,20 @@ pub(crate) fn try_completion(
     // `set-text-properties' silently rewrite only the caller's environment
     // binding, which bytecode stack slots never see; a shared string gives
     // every holder the same mutable object, like `all-completions' above.
+    let common = completion_common_prefix(&matches, &input, ignore_case);
+    // When case folding finds no extension, GNU preserves the user's exact
+    // spelling ("A" stays "A").  Once completion extends the input it uses
+    // the candidates' canonical case ("AL" becomes "alp").
+    let completed = if ignore_case
+        && common.chars().count() == input.chars().count()
+        && common.eq_ignore_ascii_case(&input)
+    {
+        input
+    } else {
+        common
+    };
     Ok(make_shared_string_value_with_multibyte(
-        completion_common_prefix(&matches, &input, ignore_case),
+        completed,
         Vec::new(),
         false,
     ))
@@ -1809,7 +1821,7 @@ fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: c
 /// The history variable a minibuffer read records into: HIST arg shapes
 /// are SYMBOL, (SYMBOL . STARTPOS), nil (the default
 /// `minibuffer-history'), and t (no recording).
-fn history_variable_name(spec: &Value) -> Option<String> {
+pub(crate) fn history_variable_name(spec: &Value) -> Option<String> {
     match spec {
         Value::Nil => Some("minibuffer-history".to_string()),
         Value::Symbol(name) if name == "t" => None,
@@ -1834,7 +1846,12 @@ fn ensure_history_variable_bound(interp: &mut Interpreter, env: &mut Env, variab
 
 /// Record submitted minibuffer input, GNU's add_to_history: skip empty
 /// input and an immediate duplicate, honor `history-length'.
-fn push_minibuffer_history(interp: &mut Interpreter, env: &mut Env, variable: &str, text: &str) {
+pub(crate) fn push_minibuffer_history(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    variable: &str,
+    text: &str,
+) {
     if text.is_empty() {
         return;
     }
@@ -1971,7 +1988,19 @@ pub(crate) fn interactive_minibuffer_command_loop(
         loop {
             if pending.is_empty() {
                 if !hold_echo {
-                    super::set_echo_area_message(Some(interp.buffer.buffer_string()));
+                    let minibuffer_text = interp
+                        .active_minibuffer_buffer_id()
+                        .and_then(|id| {
+                            if id == interp.current_buffer_id() {
+                                Some(interp.buffer.buffer_string())
+                            } else {
+                                interp
+                                    .get_buffer_by_id(id)
+                                    .map(|buffer| buffer.buffer_string())
+                            }
+                        })
+                        .unwrap_or_else(|| interp.buffer.buffer_string());
+                    super::set_echo_area_message(Some(minibuffer_text));
                 }
                 // Window-configuration changes made mid-read (the
                 // completion help pop-up) reach the glass before the next
@@ -1986,7 +2015,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
                 crate::lisp::primitives::KeyResolution::Command(binding) => {
                     let keys = std::mem::take(&mut pending);
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);
-                    match crate::lisp::primitives::execute_command_binding(
+                    match crate::lisp::primitives::execute_recorded_input_command_binding(
                         interp, env, binding, &keys, last_event,
                     ) {
                         Ok(()) => {}
