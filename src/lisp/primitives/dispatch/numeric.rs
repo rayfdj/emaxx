@@ -57,7 +57,7 @@ define_dispatch!(
                     }
                     Ok(Value::Float(sum))
                 } else if let Some(sum) = checked_integer_fold(interp, args, 0, i64::checked_add)? {
-                    Ok(Value::Integer(sum))
+                    Ok(normalize_integer_value(sum))
                 } else {
                     let mut sum = BigInt::zero();
                     for a in args {
@@ -84,7 +84,7 @@ define_dispatch!(
                         if !matches!(args[0], Value::BigInteger(_)) {
                             let value = integer_like_i64(interp, &args[0])?;
                             if let Some(result) = value.checked_neg() {
-                                return Ok(Value::Integer(result));
+                                return Ok(normalize_integer_value(result));
                             }
                         }
                         return Ok(normalize_bigint_value(-integer_like_bigint(
@@ -96,7 +96,7 @@ define_dispatch!(
                         if let Some(result) =
                             checked_integer_fold(interp, &args[1..], first, i64::checked_sub)?
                         {
-                            return Ok(Value::Integer(result));
+                            return Ok(normalize_integer_value(result));
                         }
                     }
                     let mut result = integer_like_bigint(interp, &args[0])?;
@@ -116,7 +116,7 @@ define_dispatch!(
                 } else if let Some(product) =
                     checked_integer_fold(interp, args, 1, i64::checked_mul)?
                 {
-                    Ok(Value::Integer(product))
+                    Ok(normalize_integer_value(product))
                 } else {
                     let mut product = BigInt::from(1u8);
                     for a in args {
@@ -174,7 +174,7 @@ define_dispatch!(
                         }
                         result /= divisor;
                     }
-                    Ok(Value::Integer(result))
+                    Ok(normalize_integer_value(result))
                 }
             }
             "%" | "mod" => {
@@ -209,7 +209,7 @@ define_dispatch!(
                 if b == 0 {
                     return Err(arith_error());
                 }
-                Ok(Value::Integer(if name == "mod" {
+                Ok(normalize_integer_value(if name == "mod" {
                     let mut remainder = a % b;
                     if remainder != 0 && (remainder.is_negative() != b.is_negative()) {
                         remainder += b;
@@ -226,7 +226,7 @@ define_dispatch!(
                 } else if !matches!(args[0], Value::BigInteger(_))
                     && let Some(value) = integer_like_i64(interp, &args[0])?.checked_add(1)
                 {
-                    Ok(Value::Integer(value))
+                    Ok(normalize_integer_value(value))
                 } else {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])? + 1,
@@ -240,7 +240,7 @@ define_dispatch!(
                 } else if !matches!(args[0], Value::BigInteger(_))
                     && let Some(value) = integer_like_i64(interp, &args[0])?.checked_sub(1)
                 {
-                    Ok(Value::Integer(value))
+                    Ok(normalize_integer_value(value))
                 } else {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])? - 1,
@@ -270,7 +270,7 @@ define_dispatch!(
                 } else {
                     let value = integer_like_i64(interp, &args[0])?;
                     match value.checked_abs() {
-                        Some(abs) => Ok(Value::Integer(abs)),
+                        Some(abs) => Ok(normalize_integer_value(abs)),
                         None => Ok(normalize_bigint_value(BigInt::from(value).abs())),
                     }
                 }

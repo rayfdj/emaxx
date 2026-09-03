@@ -1097,36 +1097,42 @@ define_dispatch!(
                 let symbol = args[0].as_symbol()?;
                 interp.mark_special_variable(symbol);
                 if let Some(doc) = args.get(1).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+                    let doc = purecopy_value(interp, doc, env)?;
+                    interp.put_symbol_property(symbol, "variable-documentation", doc);
                 }
-                Ok(Value::Symbol(symbol.to_string().into()))
+                Ok(Value::Nil)
             }
             "defvar-1" => {
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let symbol = args[0].as_symbol()?;
+                let symbol_name = symbol.to_string();
                 interp.mark_special_variable(symbol);
-                if interp.lookup_var(symbol, env).is_none() {
-                    interp.set_variable(symbol, args[1].clone(), &mut Vec::new());
-                }
                 if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+                    let doc = purecopy_value(interp, doc, env)?;
+                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
-                Ok(Value::Symbol(symbol.to_string().into()))
+                if interp.lookup_var(&symbol_name, env).is_none() {
+                    interp.set_variable(&symbol_name, args[1].clone(), &mut Vec::new());
+                }
+                Ok(Value::Symbol(symbol_name.into()))
             }
             "defconst-1" => {
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let symbol = args[0].as_symbol()?;
+                let symbol_name = symbol.to_string();
                 interp.mark_special_variable(symbol);
-                interp.set_variable(symbol, args[1].clone(), &mut Vec::new());
                 if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+                    let doc = purecopy_value(interp, doc, env)?;
+                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
-                interp.put_symbol_property(symbol, "risky-local-variable", Value::T);
-                Ok(Value::Symbol(symbol.to_string().into()))
+                let value = purecopy_value(interp, &args[1], env)?;
+                interp.set_variable(&symbol_name, value, &mut Vec::new());
+                interp.put_symbol_property(&symbol_name, "risky-local-variable", Value::T);
+                Ok(Value::Symbol(symbol_name.into()))
             }
             "internal-make-var-non-special" => {
                 need_args(name, args, 1)?;
@@ -1187,11 +1193,9 @@ define_dispatch!(
                 )
             }
 
-            // Load-time compatibility shims for upstream Lisp helpers whose exact
-            // side effects are not needed by the currently exercised batch paths.
             "purecopy" => {
                 need_args(name, args, 1)?;
-                Ok(args[0].clone())
+                purecopy_value(interp, &args[0], env)
             }
 
             "macroexpand" => macroexpand_dispatch(interp, name, args, env),

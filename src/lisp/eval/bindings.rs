@@ -204,9 +204,18 @@ impl Interpreter {
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
-        let resolved = self.resolve_variable_name(name)?;
-        self.lookup_var_with_resolved_name(&resolved, &resolved, &Env::new())?
-            .ok_or(LispError::Void(resolved))
+        // data.c:find_symbol_value follows a variable alias only when the
+        // symbol is actually redirected.  Keep the overwhelmingly common
+        // plain-value path borrowed; allocating a fresh String for every
+        // native `symbol-value' made compiler propagation spend most of its
+        // time copying already-interned names.
+        let resolved: std::borrow::Cow<'_, str> = if self.direct_variable_alias(name).is_none() {
+            name.into()
+        } else {
+            self.resolve_variable_name(name)?.into()
+        };
+        self.lookup_var_with_resolved_name(resolved.as_ref(), resolved.as_ref(), &Env::new())?
+            .ok_or_else(|| LispError::Void(resolved.into_owned()))
     }
 
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
@@ -972,21 +981,26 @@ impl Interpreter {
             }
             if let Some(environment) = frame.lisp_environment().cloned() {
                 let frame_id = Self::frame_identity(frame);
+                let captured = frame.is_captured();
                 let stored = Self::stored_value(value.clone());
                 if set_lisp_environment_binding_checked(&environment, name, stored.clone())? {
                     if let Some(frame_id) = frame_id {
-                        self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
+                        self.record_lexical_cell_update_if_captured(
+                            frame_id, name, &stored, captured,
+                        );
                     }
                     return Ok(true);
                 }
                 continue;
             }
             let frame_id = Self::frame_identity(frame);
+            let captured = frame.is_captured();
             if let Some(binding_index) = frame.iter().rposition(|(key, _)| key == name) {
                 let stored = Self::stored_value(value);
                 frame[binding_index].1 = stored.clone();
                 if let Some(frame_id) = frame_id {
-                    self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
+                    frame.update_canonical_lisp_binding(name, stored.clone());
+                    self.record_lexical_cell_update_if_captured(frame_id, name, &stored, captured);
                 }
                 return Ok(true);
             }

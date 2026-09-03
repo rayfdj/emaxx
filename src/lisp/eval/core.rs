@@ -1059,7 +1059,6 @@ impl Interpreter {
                 let params = &lambda.params;
                 let body = &lambda.body;
                 let closure_env = &lambda.env;
-                self.register_captured_lexical_frames(closure_env);
                 if params.len() != args.len() {
                     let min_params = params
                         .iter()
@@ -1164,7 +1163,7 @@ impl Interpreter {
                 let call_capture_override =
                     (self.lambda_capture_override() != Some(call_context)).then_some(call_context);
                 if let Some(capture) = call_capture_override {
-                    self.push_lambda_eval_context(capture, false);
+                    self.push_lambda_eval_context(capture);
                 }
                 let previous_activation = self.enter_activation();
                 let result = if closure_env.borrow().is_empty() && !lexical_closure {

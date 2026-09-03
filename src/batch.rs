@@ -16,6 +16,11 @@ pub struct BatchRunOptions {
     pub eval: Vec<String>,
     pub funcall: Vec<String>,
     pub args_left: Vec<String>,
+    /// Complete argv for GNU's unchanged `normal-top-level', after the
+    /// C-owned startup switches have been consumed.  An early option with
+    /// Elisp-owned semantics uses this path instead of being implemented in
+    /// the Rust command-line host.
+    pub startup_command_line_args: Option<Vec<String>>,
     /// Leave `custom-delayed-init-variables' queued instead of replaying
     /// at the end of the dumped-image reconstruction.  GNU's dump keeps
     /// the queue for startup.el to replay in the real session mode; the
@@ -75,6 +80,9 @@ pub fn run_batch_with_actions(
         ..options
     };
     let mut interpreter = initialize_batch_interpreter(&options)?;
+    if let Some(command_line_args) = &options.startup_command_line_args {
+        return run_batch_through_normal_top_level(&mut interpreter, command_line_args);
+    }
     let eval_expressions = actions
         .iter()
         .filter_map(|action| match action {
@@ -216,6 +224,34 @@ pub fn run_batch_with_actions(
     // compat reporter) runs the tests, writes any structured artifacts, and
     // exits through `kill-emacs'.  Reaching this point means every action
     // evaluated without a termination request.
+    Ok(BatchRunOutcome::Exit(0))
+}
+
+fn run_batch_through_normal_top_level(
+    interpreter: &mut Interpreter,
+    command_line_args: &[String],
+) -> Result<BatchRunOutcome, String> {
+    interpreter.set_global_binding(
+        "command-line-args",
+        Value::list(
+            command_line_args
+                .iter()
+                .cloned()
+                .map(|argument| Value::String(argument.into())),
+        ),
+    );
+    let form = Value::list([Value::Symbol("normal-top-level".into())]);
+    match interpreter.eval(&form, &mut Vec::new()) {
+        Ok(_) => {}
+        Err(LispError::Terminate(termination)) => return Ok(termination.into()),
+        Err(error) => {
+            emit_unhandled_batch_error(interpreter, &error, &[]);
+            return Ok(BatchRunOutcome::Exit(255));
+        }
+    }
+    if let Some(termination) = interpreter.take_pending_termination() {
+        return Ok(termination.into());
+    }
     Ok(BatchRunOutcome::Exit(0))
 }
 
@@ -436,7 +472,7 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     interpreter.define_special_variable("after-init-time", Value::Nil);
     let installation_load_path = installation_lisp_load_path()?;
     interpreter.set_load_path(installation_load_path.clone());
-    configure_system_native_load_path(&mut interpreter, &installation_load_path);
+    configure_native_load_path_for_dump_reconstruction(&mut interpreter)?;
     // GNU starts batch evaluation in *scratch*, whose buffer-local
     // `lexical-binding' is t while the default remains nil.  File cookies
     // override and restore this state around loads.
@@ -482,15 +518,18 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
         // other order left `package-user-dir' and `package-quickstart-file'
         // computed against a nil directory, so they no longer equalled
         // `(locate-user-emacs-file ...)' as they do in GNU.
-        initialize_batch_user_emacs_directory(interpreter)?;
-        initialize_batch_lisp_directory(interpreter)?;
-        if !options.defer_delayed_custom_init {
-            complete_delayed_custom_initialization(interpreter)?;
+        if options.startup_command_line_args.is_none() {
+            initialize_batch_user_emacs_directory(interpreter)?;
+            initialize_batch_lisp_directory(interpreter)?;
+            if !options.defer_delayed_custom_init {
+                complete_delayed_custom_initialization(interpreter)?;
+            }
+            initialize_batch_scratch_major_mode(interpreter)?;
+            initialize_batch_bar_modes(interpreter)?;
+            initialize_batch_tty_default_colors(interpreter)?;
+            initialize_batch_locale_environment(interpreter)?;
         }
-        initialize_batch_scratch_major_mode(interpreter)?;
-        initialize_batch_bar_modes(interpreter)?;
-        initialize_batch_tty_default_colors(interpreter)?;
-        initialize_batch_locale_environment(interpreter)
+        Ok(())
     })(&mut interpreter);
     // Restore before propagating: a failed reconstruction must not leave the
     // session muted, or its own diagnostics would be swallowed too.
@@ -500,32 +539,57 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     // The image is built; now the session's own `load-path' applies, with the
     // user's `-L' entries ahead of the installation directories.
     interpreter.set_load_path(effective_batch_load_path(options)?);
-    let after_init_time = lisp::primitives::system_time_list_value(std::time::SystemTime::now())
-        .map_err(|error| format!("record batch initialization end: {error}"))?;
-    interpreter.set_global_binding("after-init-time", after_init_time);
+    if options.startup_command_line_args.is_none() {
+        let after_init_time =
+            lisp::primitives::system_time_list_value(std::time::SystemTime::now())
+                .map_err(|error| format!("record batch initialization end: {error}"))?;
+        interpreter.set_global_binding("after-init-time", after_init_time);
+    }
     Ok(interpreter)
 }
 
-fn configure_system_native_load_path(
+fn configure_native_load_path_for_dump_reconstruction(
     interpreter: &mut Interpreter,
-    installation_load_path: &[PathBuf],
-) {
-    let Some(lisp_directory) = installation_load_path.iter().find(|path| {
-        path.file_name()
-            .is_some_and(|component| component == "lisp")
-    }) else {
-        return;
-    };
-    let Some(installation_root) = lisp_directory.parent() else {
-        return;
-    };
-    let native_directory = installation_root.join("native-lisp");
-    if native_directory.is_dir() {
-        interpreter.set_global_binding(
-            "native-comp-eln-load-path",
-            Value::list([Value::String(native_directory.display().to_string().into())]),
-        );
-    }
+) -> Result<(), String> {
+    // emacs.c expands the temporary path installed by syms_of_comp against
+    // invocation-directory when a non-dumped Emacs is about to load Lisp.
+    // For Emaxx this is the writable build-tree cache under target/.
+    let load_path = interpreter
+        .lookup_var("native-comp-eln-load-path", &Vec::new())
+        .ok_or_else(|| "native-comp-eln-load-path is unbound during startup".to_string())?;
+    let (initial_directory, _) = load_path
+        .cons_values()
+        .ok_or_else(|| "native-comp-eln-load-path has no initial entry".to_string())?;
+    let initial_directory = lisp::primitives::string_like(&initial_directory)
+        .ok_or_else(|| "native-comp-eln-load-path initial entry is not a string".to_string())?
+        .text;
+    let invocation_directory = interpreter
+        .lookup_var("invocation-directory", &Vec::new())
+        .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
+        .ok_or_else(|| "invocation-directory is not a string during startup".to_string())?;
+    let native_directory =
+        lisp::primitives::expand_file_name(&initial_directory, Some(&invocation_directory));
+
+    // The image reconstructed immediately below is GNU's dumped Lisp image.
+    // Its system .eln files were built beside `source-directory', and GNU
+    // keeps that system directory last after adding writable cache entries.
+    // Keeping the two directories distinct lets unchanged loadup.el resolve
+    // the same native standard-library functions as the dumped GNU binary,
+    // while newly compiled files continue to land in Emaxx's build tree.
+    let source_directory = interpreter
+        .lookup_var("source-directory", &Vec::new())
+        .and_then(|value| lisp::primitives::string_like(&value).map(|string| string.text))
+        .ok_or_else(|| "source-directory is not a string during startup".to_string())?;
+    let system_native_directory =
+        lisp::primitives::expand_file_name("native-lisp/", Some(&source_directory));
+    interpreter.set_global_binding(
+        "native-comp-eln-load-path",
+        Value::list([
+            Value::String(native_directory.into()),
+            Value::String(system_native_directory.into()),
+        ]),
+    );
+    Ok(())
 }
 
 fn configure_batch_source_provenance(interpreter: &mut Interpreter) -> Result<(), String> {
@@ -852,51 +916,69 @@ fn has_configured_lisp_tree(interpreter: &Interpreter) -> bool {
         .is_some_and(|paths| !paths.is_empty())
 }
 
-fn is_loadup_top_level_handoff(form: &Value) -> bool {
+fn form_contains_symbol(form: &Value, sought: &str) -> bool {
+    let mut pending = vec![form.clone()];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::Symbol(name) | Value::BuiltinFunc(name) if name == sought => return true,
+            Value::Cons(cell) => {
+                pending.push(cell.cdr.borrow().clone());
+                pending.push(cell.car.borrow().clone());
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_loadup_dump_handoff(form: &Value) -> bool {
     let Ok(items) = form.to_vec() else {
         return false;
     };
-    items.len() == 3
-        && items[0].as_symbol().is_ok_and(|name| name == "eval")
-        && items[1].as_symbol().is_ok_and(|name| name == "top-level")
-        && matches!(items[2], Value::T)
+    items
+        .first()
+        .is_some_and(|head| head.as_symbol().is_ok_and(|name| name == "if"))
+        && form_contains_symbol(form, "dump-emacs-portable")
+        && form_contains_symbol(form, "dump-emacs")
+        && form_contains_symbol(form, "add-name-to-file")
+        && form_contains_symbol(form, "kill-emacs")
 }
 
 fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
     // GNU's executable starts from the state produced by loadup.el.  Emaxx
-    // reconstructs that image by evaluating the unchanged GNU owner itself,
-    // stopping only before loadup's final transfer into the process top level
-    // (which is runtime control flow, not part of the dumped image).
+    // reconstructs that image by evaluating the unchanged GNU owner itself
+    // in its real portable-dump mode, stopping at the C dumper handoff after
+    // every Lisp-owned image-construction form has run.
     if !has_configured_lisp_tree(interpreter) {
         return Ok(());
     }
-    interpreter.define_special_variable("dump-mode", Value::Nil);
-    interpreter.define_special_variable("purify-flag", Value::Nil);
+    interpreter.define_special_variable("dump-mode", Value::string("pdump"));
+    interpreter.define_special_variable("purify-flag", Value::T);
     let path = interpreter
         .resolve_load_target("loadup")
         .ok_or_else(|| "preload GNU loadup.el: cannot resolve loadup".to_string())?;
-    let stopped = match crate::lisp::load_file_strict_until(
-        interpreter,
-        &path,
-        is_loadup_top_level_handoff,
-    ) {
-        Ok(stopped) => stopped,
-        Err(error) => {
-            let backtrace = interpreter
-                .take_batch_error_backtrace()
-                .map(|snapshot| format_backtrace_frames(snapshot.frames))
-                .unwrap_or_default();
-            let suffix = if backtrace.is_empty() {
-                String::new()
-            } else {
-                format!(" | backtrace: {backtrace}")
-            };
-            return Err(format!("preload GNU loadup.el: {error}{suffix}"));
-        }
-    };
+    let stopped =
+        match crate::lisp::load_file_strict_until(interpreter, &path, is_loadup_dump_handoff) {
+            Ok(stopped) => stopped,
+            Err(error) => {
+                let backtrace = interpreter
+                    .take_batch_error_backtrace()
+                    .map(|snapshot| format_backtrace_frames(snapshot.frames))
+                    .unwrap_or_default();
+                let suffix = if backtrace.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | backtrace: {backtrace}")
+                };
+                return Err(format!("preload GNU loadup.el: {error}{suffix}"));
+            }
+        };
     if !stopped {
-        return Err("preload GNU loadup.el: top-level handoff was not found".to_string());
+        return Err("preload GNU loadup.el: portable-dump handoff was not found".to_string());
     }
+    // pdumper restores the live process outside the dump-time dynamic
+    // binding.  The running image exposes nil, as does GNU after startup.
+    interpreter.set_global_binding("dump-mode", Value::Nil);
     Ok(())
 }
 fn format_backtrace_summary(interpreter: &Interpreter) -> String {
@@ -1293,6 +1375,39 @@ mod tests {
         assert_eq!(
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)
+        );
+    }
+
+    #[test]
+    fn dump_reconstruction_has_cache_then_gnu_system_native_paths() {
+        let mut interpreter = Interpreter::new();
+        let invocation_directory = interpreter
+            .lookup_var("invocation-directory", &Vec::new())
+            .and_then(|value| lisp::primitives::string_like(&value))
+            .expect("invocation-directory string")
+            .text;
+        let expected_cache =
+            lisp::primitives::expand_file_name("../native-lisp/", Some(&invocation_directory));
+        let source_directory = interpreter
+            .lookup_var("source-directory", &Vec::new())
+            .and_then(|value| lisp::primitives::string_like(&value))
+            .expect("source-directory string")
+            .text;
+        let expected_system =
+            lisp::primitives::expand_file_name("native-lisp/", Some(&source_directory));
+        configure_native_load_path_for_dump_reconstruction(&mut interpreter)
+            .expect("configure native paths for GNU dump reconstruction");
+        let load_path = interpreter
+            .lookup_var("native-comp-eln-load-path", &Vec::new())
+            .expect("native-comp-eln-load-path is C-initialized")
+            .to_vec()
+            .expect("native-comp-eln-load-path is a proper list");
+        assert_eq!(
+            load_path,
+            vec![
+                Value::String(expected_cache.into()),
+                Value::String(expected_system.into())
+            ]
         );
     }
 

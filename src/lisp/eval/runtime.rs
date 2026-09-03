@@ -1632,7 +1632,11 @@ impl Interpreter {
     }
 
     pub(crate) fn hash_table_is_mutable(&self, id: u64) -> bool {
-        !self.hash_tables_under_test.contains(&id)
+        !self.hash_tables_under_test.contains(&id) && !self.immutable_hash_tables.contains(&id)
+    }
+
+    pub(crate) fn mark_hash_table_immutable(&mut self, id: u64) {
+        self.immutable_hash_tables.insert(id);
     }
 
     fn runtime_hash_keys_match(
@@ -2186,6 +2190,20 @@ impl Interpreter {
             .and_then(|id| self.keymap_public_cons_owners.get(&id))
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub(crate) fn keymap_public_root_owner_id(&self, value: &Value) -> Option<u64> {
+        let root = value.cons_id()?;
+        self.keymap_public_cons_owners
+            .get(&root)?
+            .iter()
+            .copied()
+            .find(|owner| {
+                self.keymap_public_cons_ids
+                    .get(owner)
+                    .and_then(|ids| ids.first())
+                    .is_some_and(|id| *id == root)
+            })
     }
 
     pub(crate) fn create_treesit_query(&mut self, language: Value, source: Value) -> Value {

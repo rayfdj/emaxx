@@ -166,11 +166,10 @@ pub(crate) fn eval_impl(
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
     }
     if let Some(lexical) = args.get(1) {
-        let (capture_lexical, trim_context, mut eval_env) = match lexical {
-            Value::Nil => (false, false, Vec::new()),
+        let (capture_lexical, mut eval_env) = match lexical {
+            Value::Nil => (false, Vec::new()),
             Value::T => (
                 true,
-                false,
                 vec![EnvFrame::with_lisp_environment_and_identity(
                     Vec::new(),
                     Value::list([Value::T]),
@@ -179,11 +178,10 @@ pub(crate) fn eval_impl(
             ),
             Value::Cons(_) => {
                 let frame = lexical_alist_frame(interp, lexical, caller_env)?;
-                (true, true, vec![frame.into()])
+                (true, vec![frame.into()])
             }
             _ => (
                 true,
-                false,
                 vec![EnvFrame::with_lisp_environment_and_identity(
                     Vec::new(),
                     Value::list([Value::T]),
@@ -191,7 +189,7 @@ pub(crate) fn eval_impl(
                 )],
             ),
         };
-        interp.push_lambda_eval_context(capture_lexical, trim_context);
+        interp.push_lambda_eval_context(capture_lexical);
         // A fresh `eval' is a fresh activation: closures it creates must not
         // share captured-environment cells with content-identical captures
         // from the caller's activation (bug#51695's interpreted lambda).
@@ -207,7 +205,7 @@ pub(crate) fn eval_impl(
         // directly evaluated forms as dynamic; lexical function call
         // boundaries mask this context so their internal lambdas and lets
         // retain the function's definition-time semantics.
-        interp.push_lambda_eval_context(false, false);
+        interp.push_lambda_eval_context(false);
         let previous_activation = interp.enter_activation();
         let result = interp.eval(&args[0], &mut Vec::new());
         interp.leave_activation(previous_activation);
@@ -493,7 +491,7 @@ fn with_fresh_eval_environment<T>(
     } else {
         Vec::new()
     };
-    interp.push_lambda_eval_context(lexical, false);
+    interp.push_lambda_eval_context(lexical);
     let previous_activation = interp.enter_activation();
     let result = body(interp, &mut eval_env);
     interp.leave_activation(previous_activation);

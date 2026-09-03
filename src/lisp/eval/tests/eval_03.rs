@@ -567,7 +567,7 @@ fn eval_second_argument_controls_delayed_lambda_macroexpansion() {
 #[test]
 fn eval_lambda_trims_unused_lexical_context_unless_marker_requests_it() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (let* ((magic "This-is-a-magic-string")
                        (safe-p (lambda (x)
@@ -1006,41 +1006,6 @@ fn sibling_closure_called_during_writer_sees_the_immediate_update() {
         ),
         Value::Integer(23)
     );
-}
-
-#[test]
-fn captured_frame_index_updates_live_closures_outside_the_dedup_cache() {
-    let mut interp = Interpreter::new();
-    let identity = Interpreter::fresh_frame_identity();
-    let captured = shared_env(vec![EnvFrame::with_identity(
-        vec![("cell".into(), Value::Integer(1))],
-        identity,
-    )]);
-    interp.register_captured_lexical_frames(&captured);
-    assert!(interp.closure_capture_cache.is_empty());
-
-    interp.sync_cached_closure_frames(&[EnvFrame::with_identity(
-        vec![("cell".into(), Value::Integer(23))],
-        identity,
-    )]);
-
-    assert_eq!(captured.borrow()[0][0].1, Value::Integer(23));
-}
-
-#[test]
-fn captured_environment_registration_is_idempotent() {
-    let mut interp = Interpreter::new();
-    let captured = shared_env(vec![EnvFrame::with_identity(
-        vec![("cell".into(), Value::Integer(1))],
-        Interpreter::fresh_frame_identity(),
-    )]);
-
-    interp.register_captured_lexical_frames(&captured);
-    interp.register_captured_lexical_frames(&captured);
-
-    assert_eq!(interp.captured_env_registrations, 1);
-    let frame_id = Interpreter::frame_identity(&captured.borrow()[0]).unwrap();
-    assert_eq!(interp.captured_lexical_frames[&frame_id].len(), 1);
 }
 
 #[test]

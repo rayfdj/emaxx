@@ -6,17 +6,17 @@
 //! Rust runtime or the loaded compilation unit itself.
 
 use super::backend::{
-    COMP_UNIT_SYM, CURRENT_THREAD_RELOC_SYM, DATA_RELOC_EPHEMERAL_SYM, DATA_RELOC_IMPURE_SYM,
-    DATA_RELOC_SYM, F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM, FUNC_LINK_TABLE_SYM, LINK_TABLE_HASH_SYM,
-    PURE_RELOC_SYM, TEXT_DATA_RELOC_EPHEMERAL_SYM, TEXT_DATA_RELOC_IMPURE_SYM, TEXT_DATA_RELOC_SYM,
-    TEXT_FDOC_SYM, TEXT_OPTIM_QLY_SYM,
+    COMP_UNIT_SYM, CURRENT_THREAD_RELOC_SYM, Compiler, DATA_RELOC_EPHEMERAL_SYM,
+    DATA_RELOC_IMPURE_SYM, DATA_RELOC_SYM, F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM,
+    FUNC_LINK_TABLE_SYM, LINK_TABLE_HASH_SYM, PURE_RELOC_SYM, TEXT_DATA_RELOC_EPHEMERAL_SYM,
+    TEXT_DATA_RELOC_IMPURE_SYM, TEXT_DATA_RELOC_SYM, TEXT_FDOC_SYM, TEXT_OPTIM_QLY_SYM,
 };
 use super::runtime::{NativeCallingConvention, NativeRuntime, NativeWord};
 use crate::lisp::eval::{Interpreter, RecordKind};
 use crate::lisp::primitives::{decode_utf8_bytes, read_one_form_in_env, string_like, values_equal};
 use crate::lisp::types::{Env, LispError, Value};
 use libloading::Library;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
@@ -45,6 +45,12 @@ struct LoadedUnit {
     _function_docs: Value,
     impure_relocations: *mut NativeWord,
     impure_relocation_count: usize,
+}
+
+struct EphemeralRelocations {
+    _guard: Value,
+    start: *const NativeWord,
+    len: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -76,24 +82,63 @@ impl NativeRegistry {
     }
 }
 
+pub(super) struct LoaderState<'a> {
+    compiler: &'a RefCell<Option<Compiler>>,
+    registry: &'a mut NativeRegistry,
+    runtime: &'a mut NativeRuntime,
+}
+
+impl<'a> LoaderState<'a> {
+    pub(super) fn new(
+        compiler: &'a RefCell<Option<Compiler>>,
+        registry: &'a mut NativeRegistry,
+        runtime: &'a mut NativeRuntime,
+    ) -> Self {
+        Self {
+            compiler,
+            registry,
+            runtime,
+        }
+    }
+}
+
 thread_local! {
     static ACTIVE_REGISTRY: Cell<*mut NativeRegistry> = const { Cell::new(std::ptr::null_mut()) };
+    static ACTIVE_REGISTERED_RUNTIME: Cell<*mut NativeRuntime> =
+        const { Cell::new(std::ptr::null_mut()) };
+    static ACTIVE_COMPILER: Cell<*const RefCell<Option<Compiler>>> =
+        const { Cell::new(std::ptr::null()) };
 }
 
 struct RegistryGuard {
-    previous: *mut NativeRegistry,
+    previous_registry: *mut NativeRegistry,
+    previous_runtime: *mut NativeRuntime,
+    previous_compiler: *const RefCell<Option<Compiler>>,
 }
 
 impl Drop for RegistryGuard {
     fn drop(&mut self) {
-        ACTIVE_REGISTRY.set(self.previous);
+        ACTIVE_REGISTRY.set(self.previous_registry);
+        ACTIVE_REGISTERED_RUNTIME.set(self.previous_runtime);
+        ACTIVE_COMPILER.set(self.previous_compiler);
     }
 }
 
-fn with_registry<R>(registry: &mut NativeRegistry, body: impl FnOnce() -> R) -> R {
-    let previous = ACTIVE_REGISTRY.replace(registry);
-    let _guard = RegistryGuard { previous };
-    body()
+pub(super) fn with_native_state<R>(
+    compiler: &RefCell<Option<Compiler>>,
+    registry: &mut NativeRegistry,
+    runtime: &mut NativeRuntime,
+    body: impl FnOnce(&mut NativeRuntime) -> R,
+) -> R {
+    let previous_registry = ACTIVE_REGISTRY.replace(registry);
+    let previous_runtime = ACTIVE_REGISTERED_RUNTIME.replace(runtime);
+    let previous_compiler = ACTIVE_COMPILER.replace(compiler);
+    let _guard = RegistryGuard {
+        previous_registry,
+        previous_runtime,
+        previous_compiler,
+    };
+    body(runtime)
 }
 
 fn with_active_registry<R>(body: impl FnOnce(&mut NativeRegistry) -> R) -> Option<R> {
@@ -103,6 +148,33 @@ fn with_active_registry<R>(body: impl FnOnce(&mut NativeRegistry) -> R) -> Optio
             // SAFETY: `with_registry` installs the pointer only while its
             // boxed registry remains alive. Native callbacks are synchronous.
             body(unsafe { &mut *registry })
+        })
+    })
+}
+
+fn with_active_registered_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R) -> Option<R> {
+    ACTIVE_REGISTERED_RUNTIME.with(|runtime| {
+        let runtime = runtime.get();
+        (!runtime.is_null()).then(|| {
+            // SAFETY: `with_registry_and_runtime` installs this pointer only
+            // while the owning compiler state remains live.  Native and
+            // backend callbacks are synchronous on the Lisp thread.
+            body(unsafe { &mut *runtime })
+        })
+    })
+}
+
+pub(super) fn with_active_compiler<R>(
+    body: impl FnOnce(&RefCell<Option<Compiler>>) -> R,
+) -> Option<R> {
+    ACTIVE_COMPILER.with(|compiler| {
+        let compiler = compiler.get();
+        (!compiler.is_null()).then(|| {
+            // SAFETY: `with_native_state` installs a pointer to the compiler
+            // cell only while its owning NativeCompilerState is live.  The
+            // RefCell enforces the compiler context's non-reentrant mutable
+            // access independently of the active runtime and registry.
+            body(unsafe { &*compiler })
         })
     })
 }
@@ -217,15 +289,19 @@ pub(crate) fn open_unit(file: &str, path: &str) -> Result<Library, LispError> {
 }
 
 /// comp.c:load_comp_unit for an in-process (non-dump) load.
-pub(crate) fn load(
-    registry: &mut NativeRegistry,
-    runtime: &mut NativeRuntime,
+pub(super) fn load(
+    state: LoaderState<'_>,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     filename: &str,
     library: Library,
     late: bool,
 ) -> Result<Value, LispError> {
+    let LoaderState {
+        compiler,
+        registry,
+        runtime,
+    } = state;
     let saved_unit = unsafe { data_symbol::<NativeWord>(&library, COMP_UNIT_SYM) }
         .map_err(|_| inconsistent(filename))?;
     if saved_unit.is_null() {
@@ -275,7 +351,7 @@ pub(crate) fn load(
     let ephemeral = if recursive_load {
         // Another load of this unit is active on the stack and holds the
         // ephemeral data; rewriting it would clobber objects in use.
-        Ok(())
+        Ok(None)
     } else {
         fill_ephemeral_relocations(
             &registry.units[index].library,
@@ -286,15 +362,28 @@ pub(crate) fn load(
         )
     };
     let result = match ephemeral {
-        Ok(()) => with_registry(registry, || {
-            runtime.invoke(
-                interpreter,
-                environment,
-                top_level,
-                NativeCallingConvention::Fixed,
-                std::slice::from_ref(&unit),
-            )
-        }),
+        Ok(ephemeral) => {
+            if let Some(ephemeral) = &ephemeral {
+                runtime.push_ephemeral_root_range(ephemeral.start, ephemeral.len);
+            }
+            let result = with_native_state(compiler, registry, runtime, |runtime| {
+                runtime.invoke(
+                    interpreter,
+                    environment,
+                    top_level,
+                    NativeCallingConvention::Fixed,
+                    std::slice::from_ref(&unit),
+                )
+            });
+            // comp.c keeps data_ephemeral_vec in the load_comp_unit frame
+            // until top_level_run returns.  The explicit drop is Rust's
+            // counterpart of GNU's post-call volatile self-assignment.
+            if let Some(ephemeral) = &ephemeral {
+                runtime.pop_ephemeral_root_range(ephemeral.len);
+            }
+            drop(ephemeral);
+            result
+        }
         Err(error) => Err(error),
     };
     if !recursive_load {
@@ -386,6 +475,7 @@ fn first_load(
     let unit = Value::Record(record_id);
     let unit_word = runtime.encode_relocations(std::slice::from_ref(&unit))?[0];
     unsafe { std::ptr::write(saved_unit, unit_word) };
+    runtime.register_permanent_root_range(saved_unit, 1);
     unsafe {
         initialize_pointer(
             &library,
@@ -404,9 +494,12 @@ fn first_load(
         initialize_pointer(&library, FUNC_LINK_TABLE_SYM, runtime.function_link_table())
             .map_err(|_| inconsistent(filename))?;
     }
-    unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
+    let data_relocations =
+        unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
     let impure_relocations =
         unsafe { fill_relocations(&library, DATA_RELOC_IMPURE_SYM, runtime, &impure_values)? };
+    runtime.register_permanent_root_range(data_relocations, data_values.len());
+    runtime.register_permanent_root_range(impure_relocations, impure_values.len());
 
     registry.units.push(LoadedUnit {
         library,
@@ -430,7 +523,7 @@ fn fill_ephemeral_relocations(
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
-) -> Result<(), LispError> {
+) -> Result<Option<EphemeralRelocations>, LispError> {
     let ephemeral_data = unsafe {
         read_static_object(
             library,
@@ -441,7 +534,7 @@ fn fill_ephemeral_relocations(
         )?
     };
     let ephemeral_values = vector_values(&ephemeral_data)?;
-    unsafe {
+    let start = unsafe {
         fill_relocations(
             library,
             DATA_RELOC_EPHEMERAL_SYM,
@@ -449,7 +542,11 @@ fn fill_ephemeral_relocations(
             &ephemeral_values,
         )?
     };
-    Ok(())
+    Ok(Some(EphemeralRelocations {
+        _guard: ephemeral_data,
+        start,
+        len: ephemeral_values.len(),
+    }))
 }
 
 /// Load a compilation unit into the native state already executing on this
@@ -468,20 +565,26 @@ pub(crate) fn load_active(
         return Err(library);
     }
     Ok(with_active_registry(|registry| {
-        super::runtime::with_current_runtime(|runtime| {
-            load(
-                registry,
-                runtime,
-                interpreter,
-                environment,
-                filename,
-                library,
-                late,
-            )
+        with_active_compiler(|compiler| {
+            super::runtime::with_current_runtime(|runtime| {
+                load(
+                    LoaderState::new(compiler, registry, runtime),
+                    interpreter,
+                    environment,
+                    filename,
+                    library,
+                    late,
+                )
+            })
+            .unwrap_or_else(|| {
+                Err(super::lisp::native_ice(
+                    "active native registry has no active runtime",
+                ))
+            })
         })
         .unwrap_or_else(|| {
             Err(super::lisp::native_ice(
-                "active native registry has no active runtime",
+                "active native registry has no active compiler state",
             ))
         })
     })
@@ -691,6 +794,7 @@ pub(crate) fn call_active_function(
 }
 
 pub(crate) fn call_function(
+    compiler: &RefCell<Option<Compiler>>,
     registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
@@ -708,7 +812,7 @@ pub(crate) fn call_function(
             ))
     })?;
     check_arity(function, arguments.len())?;
-    with_registry(registry, || {
+    with_native_state(compiler, registry, runtime, |runtime| {
         invoke_function(
             function,
             record_id,
@@ -728,7 +832,19 @@ fn call_function_with_runtime(
     arguments: &[Value],
 ) -> Result<Value, LispError> {
     check_arity(function, arguments.len())?;
-    super::runtime::with_current_runtime(|runtime| {
+    if let Some(result) = super::runtime::with_current_runtime(|runtime| {
+        invoke_function(
+            function,
+            record_id,
+            runtime,
+            interpreter,
+            environment,
+            arguments,
+        )
+    }) {
+        return result;
+    }
+    with_active_registered_runtime(|runtime| {
         invoke_function(
             function,
             record_id,

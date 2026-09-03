@@ -5252,7 +5252,7 @@ fn host_noninteractive_flag_is_dynamically_visible_across_function_calls() {
 #[test]
 fn trimmed_closure_frame_does_not_alias_same_shaped_caller_frame() {
     let mut interp = Interpreter::new();
-    interp.push_lambda_eval_context(true, true);
+    interp.push_lambda_eval_context(true);
     let result = eval_str_with(
         &mut interp,
         r#"(let* ((make-inner
@@ -5280,7 +5280,7 @@ fn trimmed_closure_frame_does_not_alias_same_shaped_caller_frame() {
 fn letstar_initializer_closure_does_not_capture_a_later_binding() {
     let mut interp = Interpreter::new();
     interp.set_global_binding("later-binding", Value::Symbol("global".into()));
-    interp.push_lambda_eval_context(true, false);
+    interp.push_lambda_eval_context(true);
     let result = eval_str_with(
         &mut interp,
         r#"(let* ((reader (function (lambda () later-binding)))

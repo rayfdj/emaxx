@@ -68,6 +68,52 @@ precedence over older plans and handovers.
 11. Commit as `Ray <26018378+rayfdj@users.noreply.github.com>`. No AI
     attribution or generated/co-authored trailers.
 
+## Darwin exact-artifact progress (2026-09-03)
+
+This section is the current execution point and supersedes the older blocker
+descriptions below.  The ordinary, unchanged GNU `batch-native-compile` entry
+point now produces byte-identical complete `.eln` files for every ladder rung
+through the 18,832-byte broad opcode fixture.  The ordered results and the
+semantics each rung covers are recorded in `docs/testing.md` and enforced by
+the ignored oracle integration test `tests/native_comp_identity.rs`.
+
+The newly cleared rung is the unchanged upstream
+`test/lisp/emacs-lisp/comp-cstr-tests.el` (7,141 bytes).  GNU and Emaxx both
+produced a 298,232-byte artifact from the same copied absolute source path.
+Both SHA-256 digests were
+`b95c21b5b12c3e9eb50ddd5da34c85c7c0a3dae90b765bd100da008ca834c2b4`,
+and `cmp` found no differing byte.  This covers constraint type conversion,
+unions, intersections, negations, integer ranges, member sets, and
+conservative normalization.
+
+The failure was not in `comp.el`.  Emaxx's Rust cons-mutation watcher map used
+to clear every watcher at one million field keys.  Live native mirrors were
+invalidated during that reset and later marked current without being
+re-registered.  A subsequent Rust `setcar` could therefore leave GNU-generated
+machine code reading the old fixnum directly from its two-word `Lisp_Cons`
+view.  The fix in `src/lisp/types.rs` compacts only dead weak watcher entries,
+preserves all live subscriptions, rebuilds the Bloom filter, and grows the
+next compaction threshold amortized.  No Elisp was changed or added.
+
+Focused verification at this checkpoint:
+
+- `cargo test -j1 lisp::native_comp --lib -- --nocapture`: 23 passed, zero
+  failed, one intentionally ignored hot-path stress probe.
+- The automatic watcher-compaction regression and GNU 61-bit `make_int`
+  boundary regression pass.
+- `cargo fmt --all -- --check`, `cargo check -j1 --all-targets`, and
+  `cargo clippy -j1 --all-targets -- -D warnings` pass with no suppression
+  added for the work.  The loader's eight loose arguments were grouped into a
+  typed `LoaderState` instead of allowing the Clippy warning.
+- Temporary GC, assertion, subroutine-profile, and mirror-invariant tracing
+  has been removed.
+
+The next not-yet-proven ladder input is unchanged upstream
+`test/src/comp-tests.el` (49,628 bytes), the full native-compiler ERT
+definitions and orchestration file.  Stop at its first compile or artifact
+mismatch and diagnose the newly introduced semantics; do not alter the file or
+inject helper Elisp.
+
 ## Linux support and boundary fixes (2026-09-02, second session)
 
 This section supersedes the "Current blocker" and "Best next diagnostic
