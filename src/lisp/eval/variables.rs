@@ -9,6 +9,11 @@ impl BacktraceFrame {
     }
 
     fn args_snapshot(&self) -> Vec<Value> {
+        if let Some(words) = &self.native_args {
+            return crate::lisp::native_comp::decode_active_backtrace_arguments(words)
+                .expect("a native backtrace frame is inspected only during its activation")
+                .expect("a native backtrace frame contains valid Lisp words");
+        }
         let Some(form) = &self.source_form else {
             return self.args.clone();
         };
@@ -1460,6 +1465,19 @@ impl Interpreter {
         self.push_backtrace_frame_with_evald(function, pooled, true);
     }
 
+    pub(crate) fn push_native_backtrace_frame(&mut self, function: Value, args: &[usize]) {
+        self.backtrace_frames.push(BacktraceFrame {
+            function,
+            args: Vec::new(),
+            native_args: Some(args.iter().copied().collect()),
+            source_form: None,
+            locals: Vec::new(),
+            lexical_context: None,
+            evald: true,
+            debug_on_exit: false,
+        });
+    }
+
     pub fn push_backtrace_frame_with_evald(
         &mut self,
         function: Value,
@@ -1473,6 +1491,7 @@ impl Interpreter {
         self.backtrace_frames.push(BacktraceFrame {
             function: Value::Nil,
             args: Vec::new(),
+            native_args: None,
             source_form: Some(source_form.clone()),
             locals: Vec::new(),
             lexical_context: None,
@@ -1491,6 +1510,7 @@ impl Interpreter {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
+            native_args: None,
             source_form: None,
             locals,
             lexical_context: None,
@@ -1595,7 +1615,7 @@ impl Interpreter {
             .collect()
     }
 
-    pub(super) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
+    pub(crate) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
         if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_)) {
             return;
         }

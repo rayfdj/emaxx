@@ -62,6 +62,28 @@ struct NativeFunction {
     dynamic: bool,
 }
 
+/// The portion of a non-dynamic native subr that eval.c:funcall_general
+/// needs in order to call it without translating its Lisp_Object arguments.
+#[derive(Clone, Copy)]
+pub(crate) struct DirectNativeFunction {
+    pub(crate) target: *const c_void,
+    pub(crate) convention: NativeCallingConvention,
+    min_args: usize,
+    max_args: Option<usize>,
+}
+
+impl DirectNativeFunction {
+    pub(crate) fn check_arity(self, count: usize) -> Result<(), LispError> {
+        if count < self.min_args || self.max_args.is_some_and(|maximum| count > maximum) {
+            return Err(LispError::WrongNumberOfArgs(
+                "native-compiled-function".into(),
+                count,
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct NativeRegistry {
     units: Vec<LoadedUnit>,
@@ -1008,4 +1030,17 @@ pub(crate) fn active_function_target(
     record_id: u64,
 ) -> Option<(*mut c_void, NativeCallingConvention)> {
     with_active_registry(|registry| function_target(registry, record_id)).flatten()
+}
+
+pub(crate) fn active_direct_function(record_id: u64) -> Option<DirectNativeFunction> {
+    with_active_registry(|registry| {
+        let function = registry.function(record_id)?;
+        (!function.dynamic).then_some(DirectNativeFunction {
+            target: function.target,
+            convention: function.convention,
+            min_args: function.min_args,
+            max_args: function.max_args,
+        })
+    })
+    .flatten()
 }

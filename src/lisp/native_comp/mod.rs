@@ -23,7 +23,7 @@ mod runtime;
 mod state;
 
 pub(crate) use loader::{RegistrationKind, UnitLibrary, open_unit};
-pub(crate) use runtime::synchronize_cons_read;
+pub(crate) use runtime::{decode_active_backtrace_arguments, synchronize_cons_read};
 pub(crate) use state::NativeCompilerState;
 
 use crate::lisp::eval::Interpreter;
