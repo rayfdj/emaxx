@@ -764,6 +764,16 @@ impl Interpreter {
     /// `status_notify' walks that alist in order, so a newer child is
     /// notified before the older pipe supplied through its `:stderr' option.
     pub fn take_pending_subprocess_exit_events(&mut self) -> Vec<(u64, String)> {
+        self.take_pending_subprocess_exit_events_for(None)
+    }
+
+    /// Restricted form used by `accept-process-output's JUST-THIS-ONE mode.
+    /// Status changes remain recorded on every process, but only the selected
+    /// process may run its sentinel during that wait.
+    pub fn take_pending_subprocess_exit_events_for(
+        &mut self,
+        only_process_id: Option<u64>,
+    ) -> Vec<(u64, String)> {
         let active_thread_id = self.active_thread_id;
         let completed_children = self
             .process_states
@@ -775,6 +785,9 @@ impl Interpreter {
                     && process
                         .thread_id
                         .is_none_or(|thread_id| thread_id == active_thread_id)
+                    && only_process_id.is_none_or(|id| {
+                        process.record_id == id || process.stderr_process_id == Some(id)
+                    })
             })
             .filter_map(|process| {
                 process
@@ -801,6 +814,7 @@ impl Interpreter {
                 || process
                     .thread_id
                     .is_some_and(|thread_id| thread_id != active_thread_id)
+                || only_process_id.is_some_and(|id| process.record_id != id)
             {
                 continue;
             }
@@ -3116,6 +3130,13 @@ impl Interpreter {
         wake_sleepers: bool,
         idle_seconds: Option<f64>,
     ) -> Result<bool, LispError> {
+        let user_signal_events = if self.waiting_for_user_input()
+            && primitives::unread_command_events(self, env)?.is_empty()
+        {
+            primitives::run_pending_user_signal_events(self, env)?
+        } else {
+            false
+        };
         let file_events = self.service_file_notifications(env)?;
         let timer_events = if let Some(idle) = idle_seconds {
             self.run_pending_timer_events_with_idle(env, idle)?
@@ -3129,7 +3150,7 @@ impl Interpreter {
                         && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::Sleep)))
         });
         self.drive_threads_inner(env, wake_sleepers, false)?;
-        Ok(file_events || timer_events || thread_events)
+        Ok(user_signal_events || file_events || timer_events || thread_events)
     }
 
     pub fn current_thread_value(&self) -> Value {
@@ -3496,6 +3517,9 @@ impl Interpreter {
             // timers and delivers handler-backed notifications, which GNU
             // receives as monitor process output, but never reads that queue.
             if self.waiting_for_user_input() {
+                if primitives::unread_command_events(self, env)?.is_empty() {
+                    let _ = primitives::run_pending_user_signal_events(self, env)?;
+                }
                 let _ = self.service_file_notifications(env)?;
             } else {
                 let _ = self.run_pending_synthetic_file_notifications(env)?;

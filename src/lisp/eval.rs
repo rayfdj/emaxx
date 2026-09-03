@@ -3566,6 +3566,7 @@ impl Interpreter {
     }
 
     pub fn new() -> Self {
+        primitives::install_user_signal_handlers();
         let main_thread_id = 1u64;
         let standard_obarray_id = 2u64;
         let standard_syntax_table_id = 1u64;

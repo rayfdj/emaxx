@@ -1,5 +1,102 @@
 use super::*;
 
+#[cfg(unix)]
+use std::sync::atomic::{AtomicUsize, Ordering as UserSignalOrdering};
+
+#[cfg(unix)]
+static PENDING_SIGUSR1: AtomicUsize = AtomicUsize::new(0);
+#[cfg(unix)]
+static PENDING_SIGUSR2: AtomicUsize = AtomicUsize::new(0);
+
+/// sysdep.c registers SIGUSR1/SIGUSR2 as user-input signals.  The handler may
+/// only touch lock-free state; Lisp dispatch happens later from read_char's
+/// ordinary event pump.
+pub(crate) fn install_user_signal_handlers() {
+    #[cfg(unix)]
+    {
+        static INSTALLED: OnceLock<Result<(), String>> = OnceLock::new();
+        let result = INSTALLED.get_or_init(|| {
+            // SAFETY: both callbacks perform only an atomic increment, which
+            // is async-signal-safe, and signal-hook owns handler chaining.
+            unsafe {
+                signal_hook::low_level::register(libc::SIGUSR1, || {
+                    PENDING_SIGUSR1.fetch_add(1, UserSignalOrdering::Relaxed);
+                })
+                .map_err(|error| error.to_string())?;
+                signal_hook::low_level::register(libc::SIGUSR2, || {
+                    PENDING_SIGUSR2.fetch_add(1, UserSignalOrdering::Relaxed);
+                })
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        });
+        result
+            .as_ref()
+            .unwrap_or_else(|error| panic!("install SIGUSR1/SIGUSR2 handlers: {error}"));
+    }
+}
+
+#[cfg(unix)]
+fn take_pending_user_signal() -> Option<&'static str> {
+    // GNU prepends each add_user_signal registration.  sysdep.c registers
+    // SIGUSR1 and then SIGUSR2, so simultaneous pending events drain in this
+    // order, one occurrence at a time.
+    for (pending, name) in [(&PENDING_SIGUSR2, "sigusr2"), (&PENDING_SIGUSR1, "sigusr1")] {
+        if pending
+            .fetch_update(
+                UserSignalOrdering::Relaxed,
+                UserSignalOrdering::Relaxed,
+                |count| count.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn take_pending_user_signal() -> Option<&'static str> {
+    None
+}
+
+/// Convert pending host user signals into GNU keyboard events.  A binding in
+/// `special-event-map' executes through `command-execute'; an unbound event is
+/// appended to `unread-command-events' for the active input reader to return.
+pub(crate) fn run_pending_user_signal_events(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut handled = false;
+    while let Some(name) = take_pending_user_signal() {
+        handled = true;
+        let event = Value::Symbol(name.into());
+        let keymap = interp
+            .lookup_var("special-event-map", env)
+            .unwrap_or(Value::Nil);
+        let binding = keymap_lookup_binding_exact_parts(interp, &keymap, &[name.into()])?;
+        interp.set_variable("last-input-event", event.clone(), env);
+        if binding.is_nil() {
+            let mut unread = unread_command_events(interp, env)?;
+            unread.push(event);
+            interp.set_variable("unread-command-events", Value::list(unread), env);
+            // Keep later signals behind this unread event, matching the main
+            // keyboard queue's ordering.
+            break;
+        }
+
+        let keys = Value::list([Value::symbol("vector-literal"), event]);
+        interp.call_function_value(
+            Value::Symbol("command-execute".into()),
+            Some("command-execute"),
+            &[binding, Value::Nil, keys, Value::T],
+            env,
+        )?;
+    }
+    Ok(handled)
+}
+
 pub(crate) fn set_command_key_state(
     interp: &mut Interpreter,
     keys: Vec<Value>,
@@ -1326,6 +1423,14 @@ pub(crate) fn pop_unread_command_event_value(
         .unwrap_or(Value::Nil);
     let mut events = unread.to_vec()?;
     if events.is_empty() {
+        run_pending_user_signal_events(interp, env)?;
+        events = unread_command_events(interp, env)?;
+        if !events.is_empty() {
+            let event = events.remove(0);
+            interp.set_variable("unread-command-events", Value::list(events), env);
+            record_external_input_event(interp, &event, env);
+            return Ok(event);
+        }
         // GNU's input readers consume the executing keyboard macro's
         // remaining events (viper's `F'/`t' read their target char that way).
         if let Some(state) = interp.kbd_macro_executions.last_mut()
@@ -1379,6 +1484,13 @@ pub(crate) fn pop_unread_command_event_value(
                         // work.  Redisplay here, as read_char does after
                         // wait_reading_process_output.
                         run_tty_frame_redraw(interp, env);
+                    }
+                    let mut events = unread_command_events(interp, env)?;
+                    if !events.is_empty() {
+                        let event = events.remove(0);
+                        interp.set_variable("unread-command-events", Value::list(events), env);
+                        record_external_input_event(interp, &event, env);
+                        return Ok(event);
                     }
                 }
             }

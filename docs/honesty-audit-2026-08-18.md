@@ -4658,6 +4658,89 @@ primitive, compatibility, and TTY groups; only proven-safe groups overlapped)
 and completed in about 22 minutes.  No production source changed after this
 gate; only this evidence record was appended.
 
+## 2026-09-02 issue 35 network/TLS/JSON-RPC adversarial audit
+
+The issue-35 candidate begins at pushed tty head `170f0dc` on the dedicated
+`issue-35-networking` branch; `tty-frontend` itself was left unmoved while its
+integration into main was owned elsewhere.  The exact candidate diff was
+reviewed against GNU 30.2 process.c's
+`Fnetwork_lookup_address_info`/`network_lookup_address_info_1`, the upstream
+network-stream, GnuTLS, JSON, and JSON-RPC suites, and the existing Eglot and
+lsp-mode application contracts.
+
+Before final certification, refreshed `origin/main` at `1394e8d` was merged
+into the issue branch, producing merge commit `7e389f9`.  Restoring the issue
+work produced no source conflict; the only textual conflict was between two
+independent audit-ledger sections, and both were retained.  The production
+file and new network-contract document match their pre-merge SHA-256 exactly.
+The test and testing-documentation changes have the same stable patch IDs as
+before the merge while preserving main's adjacent additions.
+
+The one production change removes Rust `IpAddr::parse` and
+`ToSocketAddrs` from `network-lookup-address-info`.  GNU initializes an
+`addrinfo` hint with the requested AF_UNSPEC/AF_INET/AF_INET6 family,
+SOCK_DGRAM, and (only for the `numeric` hint) AI_NUMERICHOST, traverses the
+returned list in resolver order, converts each sockaddr to the public vector,
+and frees the list.  Emaxx now does the same.  The audit verified that the
+string's C NUL boundary, family mapping, socket-type/flag selection, IPv4 and
+IPv6 network-byte-order conversion, port, resolver order, error path, and
+single free all follow that owner.  No address/sample literal occurs in the
+production path.
+
+Two findings were corrected before the gate:
+
+1. The first unsafe draft trusted `ai_family` but did not validate
+   `ai_addrlen` before casting `ai_addr` to `sockaddr_in`/`sockaddr_in6`.
+   Both casts now require a non-null pointer and the corresponding full
+   structure length.
+2. The first HTTP fixture used an unnecessary `X-Emaxx-Fixture` header and
+   compared only GNU/Emaxx derived body records.  The shared fixture now uses
+   the editor-neutral `X-Contract-Fixture`, both editors must parse its value,
+   and GNU's complete status/header/length/SHA-256/prefix/cleanup record is
+   pinned before Emaxx is compared.  Independent server-side assertions prove
+   that each editor opened a connection and sent the exact GET target and Host
+   header; no normalization is applied.
+
+The final static pass found no project-private Lisp namespace or fixture-name
+branch in production, editor identity branch, oracle path/delegation,
+generated answer table, test-only runtime hook, swallowed warning, retry,
+accepted failure, or weakened assertion.  The numeric contract sends the same
+29 valid/invalid inputs to GNU and Emaxx and compares complete vectors.  The
+HTTP servers are independent, loopback-only, one-shot, and bounded; the
+fixture response is identical, buffer cleanup is observed, and a fabricated
+response cannot satisfy the request capture.
+
+Focused evidence on the audited bytes: both new exact gate-profile tests pass;
+all-selector upstream replays match 9/9 JSON-RPC, 7/7 GnuTLS, 27/27
+network-stream, 59/59 Lisp JSON, and 23/23 native JSON outcomes.  The GnuTLS
+replay's 64x test-time slowdown is disclosed for the performance milestone.
+The HTTP bind-denied sandbox result, malformed initial test filter that
+selected zero tests, vacuous batch input-cancellation probe, and focused
+compat-harness runs killed after isolated-build time consumed their total
+timeout are rejected, not counted.  Full command details and scope boundaries
+are recorded in `docs/network-compatibility.md`.
+
+The formal static audit was then repeated against the exact working-tree diff
+from `7e389f9`.  It again found no fixture/sample literal or editor identity in
+the production path, no environment or target branch, no oracle execution or
+delegation, and no bypass, retry, accepted failure, or weakened assertion in
+the tests.  All 15 repository anti-cheat gates passed, with zero failures and
+zero ignored.  This post-merge audit precedes the final formatting, native and
+Linux cross-target Clippy, and repository-wide gate.  Any later source change
+to this candidate requires those claims to be established again.
+
+After the audit, `cargo fmt --check`, native all-target/all-feature gate-profile
+Clippy with `-D warnings`, and the equivalent `x86_64-unknown-linux-gnu` cross
+Clippy pass were clean.  The complete optimized grouped gate passed with
+artifact `target/grouped-gate/run-1788356614665579000-29565`: its dynamic
+library inventory was exactly 2,287 outcomes, with 2,285 passed, zero failed,
+and only the two declared opt-in TTY end-to-end gates ignored.  The three
+binary targets passed 39 tests, CLI passed 12/12, ERT runner 3/3, and package
+lifecycle 5/5.  The primitives group containing both new issue-35 contracts
+passed 353/353 with zero ignored.  A final remote refresh left `origin/main`
+unchanged at `1394e8d`; no production or test source changed after the audit or
+gate, only this evidence record was appended.
+
 ## 2026-09-03 findings 149-150: tty-frontend merge certification and gate repairs
 
 The candidate is a clean no-conflict merge of main
@@ -4721,3 +4804,100 @@ scan found no debug probes, expected-failure markers, new ignores, skips, or
 normalization escape hatches in the repaired harness.  The package artifacts
 remain version-pinned, GNU and Emaxx use isolated roots, comparisons remain
 exact, and no production source changed after the complete grouped gate.
+
+## 2026-09-03 issue 36 TRAMP adversarial audit
+
+The issue-36 candidate starts from pushed issue-35 commit `dcd5b82` on the
+dedicated `issue-36-tramp` branch.  The initial remote refresh before
+certification found `origin/main` at `1394e8d`, already contained by the
+branch.  During the long gate, main advanced to merge `9f7c591`; final merge
+`b51ca69` integrated it before publication.  Comparing the two prior merge
+trees showed that this late integration changed only the audit ledger and the
+already-certified TTY differential Python runner/tests, not Rust production or
+Rust test bytes.  Both independent ledger sections were retained.  The target
+is GNU Emacs 30.2.  The work uses GNU TRAMP's own file-name-handler mechanisms
+and public process APIs; it does not add an Emaxx-specific remote API.
+
+Production corrections cover four contracts exposed by the selected upstream
+TRAMP tests.  `buffer-size` now accepts GNU's optional buffer designator and
+reports the complete buffer size despite narrowing.  `make-process` dispatches
+to a file-name handler before validating native-only keyword details, accepts
+the empty call's GNU nil result, and treats `:coding nil` as the default coding
+selection.  Remote `list-system-processes` and `process-attributes` calls now
+follow the handler selected by `default-directory`.  `accept-process-output`
+now implements GNU's target-only delivery boundary, accepts nil as an
+unbounded timeout, and distinguishes integer JUST-THIS-ONE from the ordinary
+truthy spelling; zero-duration `sleep-for` no longer consumes ready process
+output.  Finally, SIGUSR1 and SIGUSR2 are installed through async-signal-safe
+counters and enter the ordinary keyboard event path, including
+`special-event-map`, command dispatch, and the unread-event fallback.
+
+The first formal audit of the permanent deterministic journey found four real
+test-tool defects, all corrected before certification:
+
+1. Exact GNU/Emaxx equality alone allowed two false semantic records to agree.
+   Independent assertions now require the expected content, file operations,
+   handler prefixes, metadata, process result, connection reuse/reconnect,
+   integration results, and final cleanup.
+2. The first runner could start Emaxx after the GNU oracle failed.  Oracle
+   completion and validation are now prerequisites for starting the subject,
+   with an offline regression proving that boundary.
+3. Final Lisp cleanup used `ignore-errors`.  Cleanup now aggregates and reports
+   any buffer, file, directory, process, or connection failure and must emit
+   `cleanup.final=t`.
+4. The first process wrapper overstated its descendant cleanup guarantee and
+   mishandled byte output in `TimeoutExpired`.  The runner now owns each editor
+   with `Popen`, snapshots its exact descendant tree, terminates and reaps those
+   exact PIDs, and decodes partial byte output safely.
+
+The final runner has no retry, normalization, accepted-failure path, or
+warning suppression.  It runs the GNU oracle to completion before the Emaxx
+subject, compares complete structured records exactly, and retains raw stderr.
+Only TRAMP's blank progress lines plus the expected `Compilation finished`
+message are allowed; every other diagnostic fails.  Its default transport is
+the deterministic localhost `mock` method.  Real SSH requires both
+`--live-ssh` and an explicit `/ssh...:` root, so network availability cannot
+silently change the gate.  All 10 offline fail-closed runner tests passed, and
+the final GNU-30.2-versus-Emaxx journey passed at
+`target/tramp-compat-gate/journey-20260902T172315.597899Z.json`, covering remote
+visit/save/revert, directory and Dired operations, completion, metadata,
+copy/rename/delete, temporary files, subprocess and compilation invocation,
+project and VC discovery, connection reuse, forced reconnect, failure, and
+cleanup.  A post-run process-tree check was empty.
+
+Upstream TRAMP evidence is deliberately composite, not misreported as a new
+whole-suite rerun.  The seven previously divergent default selectors (tests
+08, 09, 10, 11, 12, 23, and 27) each matched GNU exactly after the
+`buffer-size` repair.  A serial non-default pass excluding test 45 initially
+matched 41 of 50 outcomes and exposed nine differences.  Only those nine were
+then rerun, as requested: test 29 normal and direct-async, test 30 normal and
+direct-async, test 31 list-system-processes, process-attributes, and
+signal-process, test 34's explicit-shell case, and test 47's read-password
+case all matched GNU exactly.  Test 45 separately passed an exact clean run.
+One rejected test-31 attempt failed on both editors with a generated process
+name; it was not counted as passing, and the clean exact rerun is the evidence.
+
+The final static audit found no fixture, selector, package, editor-identity,
+environment, or oracle branch in production; no runtime oracle execution or
+delegation; no generated answer table; no new ignore, skip, retry,
+normalization, accepted failure, or weakened assertion; and no warning
+suppression.  All 15 repository anti-cheat tests passed with zero ignored.
+`cargo fmt --check` was clean, and
+`cargo clippy --profile gate --all-targets --all-features -- -D warnings`
+passed with zero warnings.
+
+The authoritative publication gate was then run conventionally rather than
+with the concurrent grouped accelerator: `LANG=C LC_ALL=C
+RUST_TEST_THREADS=1 RUST_MIN_STACK=134217728 cargo test --profile gate --
+--test-threads=1`.  The optimized library binary reported 2291 passed, zero
+failed, and exactly the two reviewed opt-in TTY end-to-end gates ignored out
+of 2293 tests in 7097.99 seconds.  The compat-harness binary passed 38/38,
+the perf-harness binary 1/1, CLI 13/13 (including the real-process SIGUSR
+test), ERT runner 3/3, and package lifecycle 5/5; main and doc-test binaries
+contained no tests.  No second test or build was launched from this checkout
+while the gate was active, and the post-gate process-tree check was empty.
+After the late main merge, its affected TTY/completion offline tests passed
+31/31 serially and the TRAMP runner's offline tests passed 10/10 serially.  No
+Rust production or Rust test source changed after the full gate.  The merge
+added only its separately certified TTY Python runner/test correction and the
+two retained evidence sections described above.

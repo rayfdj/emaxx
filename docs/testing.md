@@ -304,6 +304,12 @@ The supported pass-through environment knobs are:
 
 ## Recommended Workflow
 
+The deterministic network contract combines the complete upstream JSON-RPC,
+GnuTLS, network-stream, and JSON suites with a real one-shot localhost HTTP
+retrieval and the existing Eglot/lsp-mode application journeys.  See
+[`docs/network-compatibility.md`](network-compatibility.md) for the exact
+commands, outcome counts, rejected evidence, and public-network boundary.
+
 The built-in Eglot contract has its own permanent upstream outcome inventory,
 deterministic JSON-RPC server, and strict interactive TTY journeys.  See
 [`docs/eglot-compatibility.md`](eglot-compatibility.md) for the exact oracle,

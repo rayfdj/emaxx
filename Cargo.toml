@@ -70,6 +70,12 @@ if-addrs = "=0.15.0"
 trash = "=5.2.6"
 mimalloc = { version = "0.1.52", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+# GNU converts SIGUSR1/SIGUSR2 into keyboard events.  Use the established
+# signal-safe registry already present through crossterm so our handler can
+# coexist with terminal signal handling instead of replacing it.
+signal-hook = "=0.3.18"
+
 [dev-dependencies]
 tree-sitter-json = "=0.24.8"
 

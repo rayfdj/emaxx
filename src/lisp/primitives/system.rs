@@ -1483,9 +1483,11 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         | "set-file-times"
         | "unlock-file"
         | "vc-registered" => FileNameHandlerOperation::new(&[0], RelativeArgument),
-        "memory-info" | "shell-command" | "temporary-file-directory" => {
-            FileNameHandlerOperation::new(&[], Always)
-        }
+        "list-system-processes"
+        | "memory-info"
+        | "process-attributes"
+        | "shell-command"
+        | "temporary-file-directory" => FileNameHandlerOperation::new(&[], Always),
         "make-auto-save-file-name" | "set-visited-file-modtime" => {
             FileNameHandlerOperation::new(&[], Always).with_buffer_file(BufferFileSource::Current)
         }
