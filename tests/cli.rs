@@ -15,6 +15,38 @@ fn unique_temp_path(stem: &str) -> std::path::PathBuf {
     ))
 }
 
+#[cfg(unix)]
+#[test]
+fn sigusr_events_follow_gnu_special_event_map_semantics() {
+    let program = r#"(let ((seen nil))
+      (define-key special-event-map [sigusr1]
+        (lambda () (interactive) (setq seen (1+ (or seen 0)))))
+      (call-process "kill" nil nil nil "-USR1" (number-to-string (emacs-pid)))
+      (prin1 (list (read-event nil nil 0.05) seen last-input-event))
+      (define-key special-event-map [sigusr1] nil)
+      (call-process "kill" nil nil nil "-USR1" (number-to-string (emacs-pid)))
+      (prin1 (list (read-event nil nil 0.05) seen last-input-event)))"#;
+    let run = |binary: &std::path::Path| {
+        Command::new(binary)
+            .args(["--quick", "--batch", "--eval", program])
+            .output()
+            .unwrap()
+    };
+    let oracle = run(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs"));
+    assert!(
+        oracle.status.success(),
+        "GNU signal oracle failed: {}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
+    assert!(
+        subject.status.success(),
+        "Emaxx did not survive/dispatch SIGUSR1: {}",
+        String::from_utf8_lossy(&subject.stderr)
+    );
+    assert_eq!(subject.stdout, oracle.stdout);
+}
+
 #[test]
 fn empty_batch_invocation_succeeds_like_gnu_emacs() {
     let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
