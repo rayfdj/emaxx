@@ -221,18 +221,92 @@ impl Interpreter {
                     Value::string("Invalid native Lisp filename"),
                 ]))
             })?;
-            // GNU lread.c routes native artifacts through Fnative_elisp_load
-            // from the normal `load' path.  Keep that same boundary: comp.c's
-            // loader owns handle, relocation, and registration, while the
-            // generated top-level code still evaluates GNU comp.el's emitted
-            // operations normally.
+            // lread.c:Fload computes the source-facing .elc name before it
+            // crosses comp.c's Fnative_elisp_load boundary.  A manual .eln
+            // load has no mapping and keeps its own file name.
+            let native_basename = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| filename.to_string());
             let mut load_environment = env.clone();
-            crate::lisp::primitives::native_elisp_load(
+            let mapped_source = self
+                .lookup_var("comp-eln-to-el-h", env)
+                .map(|table| {
+                    crate::lisp::primitives::call(
+                        self,
+                        "gethash",
+                        &[Value::string(&native_basename), table, Value::Nil],
+                        &mut load_environment,
+                    )
+                })
+                .transpose()?
+                .unwrap_or(Value::Nil);
+            let history_filename = crate::lisp::primitives::string_like(&mapped_source)
+                .map(|source| {
+                    let source = source.text;
+                    let source = source.strip_suffix(".gz").unwrap_or(&source);
+                    format!("{source}c")
+                })
+                .unwrap_or_else(|| filename.to_string());
+
+            // lread.c:Fload owns the dynamic load context and load-history;
+            // comp.c:Fnative_elisp_load owns only the native compilation unit.
+            let previous_file = self.set_current_load_file(Some(history_filename.clone()));
+            let mut restores = Vec::with_capacity(7);
+            for (name, value) in [
+                ("lexical-binding", Value::Nil),
+                ("lread--unescaped-character-literals", Value::Nil),
+                ("load-file-name", Value::string(&history_filename)),
+                ("load-true-file-name", Value::string(filename)),
+                ("inhibit-file-name-operation", Value::Nil),
+                ("load-in-progress", Value::T),
+                (
+                    "current-load-list",
+                    Value::list([Value::string(&history_filename)]),
+                ),
+            ] {
+                match self.bind_special_variable(name, value, &mut load_environment) {
+                    Ok(restore) => restores.push(restore),
+                    Err(error) => {
+                        while let Some(restore) = restores.pop() {
+                            let _ = self.restore_special_binding(restore, &mut load_environment);
+                        }
+                        self.set_current_load_file(previous_file);
+                        return Err(error);
+                    }
+                }
+            }
+            let load_result = crate::lisp::primitives::native_elisp_load(
                 self,
                 &Value::string(filename),
                 false,
                 &mut load_environment,
-            )?;
+            );
+            if load_result.is_ok() {
+                let current = self
+                    .lookup_var("current-load-list", &load_environment)
+                    .unwrap_or_else(|| Value::list([Value::string(&history_filename)]));
+                self.commit_entire_load_history(&history_filename, current);
+            }
+            while let Some(restore) = restores.pop() {
+                if let Err(error) = self.restore_special_binding(restore, &mut load_environment) {
+                    self.set_current_load_file(previous_file);
+                    return Err(error);
+                }
+            }
+            self.set_current_load_file(previous_file);
+            load_result?;
+
+            // lread.c calls the Lisp-owned after-load hook only after all
+            // bindings above have unwound.
+            if let Ok(after_load) = self.lookup_function("do-after-load-evaluation", env) {
+                self.call_function_value(
+                    after_load,
+                    Some("do-after-load-evaluation"),
+                    &[Value::string(&history_filename)],
+                    &mut load_environment,
+                )?;
+            }
             return Ok(Value::T);
         }
         crate::lisp::load_file_strict(self, path)?;

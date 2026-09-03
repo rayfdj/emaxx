@@ -47,26 +47,94 @@ pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
 #[derive(Debug, Default)]
 pub(crate) struct ConsMutationQueue {
-    dirty: RefCell<Vec<usize>>,
+    dirty: RefCell<HashSet<usize, IdentityBuildHasher>>,
 }
 
 impl ConsMutationQueue {
-    pub(crate) fn drain(&self) -> Vec<usize> {
-        std::mem::take(&mut *self.dirty.borrow_mut())
+    pub(crate) fn dirty_keys(&self) -> Vec<usize> {
+        self.dirty.borrow().iter().copied().collect()
     }
-}
 
-#[derive(Debug)]
-struct ConsMutationNotification {
-    queue: Weak<ConsMutationQueue>,
-    key: usize,
-    queued: Cell<bool>,
+    fn insert(&self, key: usize) {
+        self.dirty.borrow_mut().insert(key);
+    }
+
+    pub(crate) fn contains(&self, key: usize) -> bool {
+        self.dirty.borrow().contains(&key)
+    }
+
+    pub(crate) fn remove(&self, key: usize) {
+        self.dirty.borrow_mut().remove(&key);
+    }
 }
 
 #[derive(Debug)]
 struct ConsMutationWatch {
     valid: Cell<bool>,
-    notification: Option<ConsMutationNotification>,
+}
+
+thread_local! {
+    static NATIVE_CONS_MUTATION_QUEUES: RefCell<IdentityMap<Weak<ConsMutationQueue>>> =
+        RefCell::new(IdentityMap::default());
+}
+
+type IdentityMap<T> = HashMap<usize, T, IdentityBuildHasher>;
+
+#[derive(Debug)]
+pub(crate) struct NativeConsMutationRegistration {
+    key: usize,
+    queue: Weak<ConsMutationQueue>,
+}
+
+impl NativeConsMutationRegistration {
+    pub(crate) fn new(key: usize, queue: &Rc<ConsMutationQueue>) -> Self {
+        let queue = Rc::downgrade(queue);
+        NATIVE_CONS_MUTATION_QUEUES.with_borrow_mut(|queues| {
+            queues.insert(key, queue.clone());
+        });
+        Self { key, queue }
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        self.queue
+            .upgrade()
+            .is_none_or(|queue| !queue.contains(self.key))
+    }
+
+    pub(crate) fn mark_current(&self) {
+        if let Some(queue) = self.queue.upgrade() {
+            queue.remove(self.key);
+        }
+    }
+}
+
+impl Drop for NativeConsMutationRegistration {
+    fn drop(&mut self) {
+        if let Some(queue) = self.queue.upgrade() {
+            queue.remove(self.key);
+        }
+        NATIVE_CONS_MUTATION_QUEUES.with_borrow_mut(|queues| {
+            if queues
+                .get(&self.key)
+                .is_some_and(|queue| Weak::ptr_eq(queue, &self.queue))
+            {
+                queues.remove(&self.key);
+            }
+        });
+    }
+}
+
+fn note_native_cons_mutation(key: usize) {
+    NATIVE_CONS_MUTATION_QUEUES.with_borrow_mut(|queues| {
+        let Some(queue) = queues.get(&key) else {
+            return;
+        };
+        let Some(queue) = queue.upgrade() else {
+            queues.remove(&key);
+            return;
+        };
+        queue.insert(key);
+    });
 }
 
 type ConsMutationWatchers = HashMap<usize, Vec<Weak<ConsMutationWatch>>, IdentityBuildHasher>;
@@ -122,12 +190,6 @@ fn note_cons_mutation(field_id: usize) {
                     return false;
                 };
                 watch.valid.set(false);
-                if let Some(notification) = &watch.notification
-                    && !notification.queued.replace(true)
-                    && let Some(queue) = notification.queue.upgrade()
-                {
-                    queue.dirty.borrow_mut().push(notification.key);
-                }
                 true
             });
             remove = tokens.is_empty();
@@ -209,24 +271,6 @@ impl ConsMutationSnapshot {
         Self::from_field_ids(ConsCell::mutation_field_ids(cell).to_vec())
     }
 
-    pub(crate) fn tracked_cell(
-        cell: &SharedCons,
-        key: usize,
-        queue: &Rc<ConsMutationQueue>,
-    ) -> Self {
-        let field_ids = ConsCell::mutation_field_ids(cell).to_vec();
-        let watch = Rc::new(ConsMutationWatch {
-            valid: Cell::new(true),
-            notification: Some(ConsMutationNotification {
-                queue: Rc::downgrade(queue),
-                key,
-                queued: Cell::new(false),
-            }),
-        });
-        register_cons_mutation_watchers(&field_ids, &watch);
-        Self { watch, field_ids }
-    }
-
     pub(crate) fn list_spine(value: &Value) -> Self {
         let mut field_ids = Vec::new();
         let mut seen = HashSet::new();
@@ -276,7 +320,6 @@ impl ConsMutationSnapshot {
         field_ids.dedup();
         let watch = Rc::new(ConsMutationWatch {
             valid: Cell::new(true),
-            notification: None,
         });
         register_cons_mutation_watchers(&field_ids, &watch);
         Self { watch, field_ids }
@@ -288,9 +331,6 @@ impl ConsMutationSnapshot {
 
     pub(crate) fn mark_current(&self) {
         self.watch.valid.set(true);
-        if let Some(notification) = &self.watch.notification {
-            notification.queued.set(false);
-        }
     }
 }
 
@@ -678,6 +718,11 @@ pub type SharedLambdaBody = Rc<Vec<Value>>;
 #[derive(Debug)]
 pub struct LambdaValue {
     pub params: SharedLambdaParams,
+    /// Exact GNU interpreted-closure slot zero.  Emaxx also keeps `params`
+    /// as a compact binding vector, but Lisp-visible closure inspection and
+    /// native compilation must see the original argument-list objects,
+    /// including source-position symbols.
+    pub public_parameters: Option<Value>,
     pub body: SharedLambdaBody,
     pub env: SharedEnv,
     /// GNU closure slot four.  Unlike ordinary source docstrings, a
@@ -826,6 +871,8 @@ pub struct ConsCell {
 #[derive(Debug)]
 pub(crate) struct ConsValueCell {
     value: RefCell<Value>,
+    /// Low bit distinguishes cdr from car; native Lisp words are eight-byte
+    /// aligned, so the tag does not consume pointer information.
     native_word: Cell<*const usize>,
     native_agreed: Cell<usize>,
 }
@@ -839,13 +886,31 @@ impl ConsValueCell {
         }
     }
 
-    fn attach_native_word(&self, native_word: *const usize, agreed: usize) {
+    fn attach_native_word(&self, native_word: *const usize, agreed: usize, cdr: bool) {
         self.native_agreed.set(agreed);
-        self.native_word.set(native_word);
+        self.native_word
+            .set(((native_word as usize) | usize::from(cdr)) as *const usize);
+    }
+
+    fn native_word_pointer(&self) -> *const usize {
+        ((self.native_word.get() as usize) & !1) as *const usize
+    }
+
+    fn native_cons_key(&self) -> Option<usize> {
+        let tagged = self.native_word.get() as usize;
+        if tagged == 0 {
+            return None;
+        }
+        let word = tagged & !1;
+        Some(if tagged & 1 == 0 {
+            word
+        } else {
+            word - std::mem::size_of::<usize>()
+        })
     }
 
     fn detach_native_word(&self, native_word: *const usize) {
-        if self.native_word.get() == native_word {
+        if self.native_word_pointer() == native_word {
             self.native_word.set(std::ptr::null());
         }
     }
@@ -854,11 +919,18 @@ impl ConsValueCell {
         self.native_agreed.set(agreed);
     }
 
+    fn native_agreed(&self) -> usize {
+        self.native_agreed.get()
+    }
+
     #[inline(always)]
     fn synchronize_native_write(&self) {
-        let native_word = self.native_word.get();
+        let native_word = self.native_word_pointer();
         if !native_word.is_null() && unsafe { *native_word } != self.native_agreed.get() {
-            crate::lisp::native_comp::synchronize_cons_read(self as *const Self as usize);
+            crate::lisp::native_comp::synchronize_cons_read(
+                self.native_cons_key()
+                    .expect("an attached native word has a cons address"),
+            );
         }
     }
 
@@ -870,6 +942,9 @@ impl ConsValueCell {
     pub(crate) fn borrow_mut(&self) -> RefMut<'_, Value> {
         self.synchronize_native_write();
         note_cons_mutation(self as *const Self as usize);
+        if let Some(key) = self.native_cons_key() {
+            note_native_cons_mutation(key);
+        }
         self.value.borrow_mut()
     }
 }
@@ -990,9 +1065,9 @@ impl ConsCell {
     /// detached.
     pub(crate) unsafe fn attach_native_words(&self, native: *mut ConsWords, agreed: [usize; 2]) {
         self.car
-            .attach_native_word(unsafe { (*native).car.get() }, agreed[0]);
+            .attach_native_word(unsafe { (*native).car.get() }, agreed[0], false);
         self.cdr
-            .attach_native_word(unsafe { (*native).cdr.get() }, agreed[1]);
+            .attach_native_word(unsafe { (*native).cdr.get() }, agreed[1], true);
     }
 
     pub(crate) unsafe fn detach_native_words(&self, native: *mut ConsWords) {
@@ -1003,6 +1078,14 @@ impl ConsCell {
     pub(crate) fn set_native_words_agreed(&self, agreed: [usize; 2]) {
         self.car.set_native_agreed(agreed[0]);
         self.cdr.set_native_agreed(agreed[1]);
+    }
+
+    pub(crate) fn native_words_agreed(&self) -> [usize; 2] {
+        [self.car.native_agreed(), self.cdr.native_agreed()]
+    }
+
+    pub(crate) fn attached_native_address(&self) -> Option<usize> {
+        self.car.native_cons_key()
     }
 
     pub(crate) fn mutation_field_ids(cell: &SharedCons) -> [usize; 2] {
@@ -1750,6 +1833,7 @@ impl Value {
     ) -> Self {
         Value::Lambda(Rc::new(LambdaValue {
             params,
+            public_parameters: None,
             body,
             env,
             documentation,
@@ -1760,6 +1844,7 @@ impl Value {
 
     pub fn lambda_with_public_environment(
         params: SharedLambdaParams,
+        public_parameters: Value,
         body: SharedLambdaBody,
         env: SharedEnv,
         documentation: Option<Value>,
@@ -1768,6 +1853,7 @@ impl Value {
     ) -> Self {
         Value::Lambda(Rc::new(LambdaValue {
             params,
+            public_parameters: Some(public_parameters),
             body,
             env,
             documentation,
@@ -2071,6 +2157,7 @@ fn values_equal_recursive(
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Lambda(a), Value::Lambda(b)) => {
             a.params == b.params
+                && a.public_parameters == b.public_parameters
                 && a.body == b.body
                 && a.documentation == b.documentation
                 && a.interactive == b.interactive
@@ -2685,7 +2772,6 @@ mod tests {
         let field_ids = super::ConsCell::mutation_field_ids(cell);
         let dead_owner = Rc::new(super::ConsMutationWatch {
             valid: std::cell::Cell::new(true),
-            notification: None,
         });
         let dead = Rc::downgrade(&dead_owner);
         drop(dead_owner);

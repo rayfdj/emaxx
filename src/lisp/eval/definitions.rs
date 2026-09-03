@@ -126,7 +126,10 @@ impl Interpreter {
         if items.len() < 2 {
             return Err(LispError::WrongNumberOfArgs("defvar".into(), 0));
         }
-        let name = items[1].as_symbol()?.to_string();
+        // eval.c:Fdefvar uses CHECK_SYMBOL/XSYMBOL.  While source-position
+        // symbols are enabled, that means the definition is installed on
+        // the underlying bare symbol while the original object is returned.
+        let name = crate::lisp::primitives::checked_symbol_name(self, &items[1], env)?;
         let resolved = self.resolve_variable_name(&name)?;
         if items.len() > 4 {
             return Err(LispError::Signal("Too many arguments".into()));
@@ -161,7 +164,7 @@ impl Interpreter {
             let val = self.eval(&items[2], env)?;
             self.set_default_toplevel_value(&resolved, val);
         }
-        Ok(Value::Symbol(resolved.into()))
+        Ok(items[1].clone())
     }
 
     pub(super) fn sf_defconst(
@@ -175,7 +178,9 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let name = items[1].as_symbol()?.to_string();
+        // eval.c:Fdefconst has the same CHECK_SYMBOL/XSYMBOL contract as
+        // defvar for source-position symbols.
+        let name = crate::lisp::primitives::checked_symbol_name(self, &items[1], env)?;
         let resolved = self.resolve_variable_name(&name)?;
         if items.len() > 4 {
             return Err(LispError::Signal("Too many arguments".into()));
@@ -190,7 +195,7 @@ impl Interpreter {
         self.set_default_toplevel_value(&resolved, value);
         self.put_symbol_property(&resolved, "risky-local-variable", Value::T);
         self.record_definition_in_load_history("defvar", &resolved);
-        Ok(Value::Symbol(resolved.into()))
+        Ok(items[1].clone())
     }
 
     // Expand registered `cl-generic-define-context-rewriter' heads inside a
@@ -301,6 +306,7 @@ impl Interpreter {
             .and_then(crate::lisp::types::LambdaValue::interactive_slot_from_form);
         Ok(Value::lambda_with_public_environment(
             params.into(),
+            items[1].clone(),
             body,
             closure_env,
             documentation,

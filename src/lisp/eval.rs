@@ -2414,6 +2414,10 @@ impl ImageGraphCopier {
                 }
                 let copied = Value::Lambda(std::rc::Rc::new(crate::lisp::types::LambdaValue {
                     params: lambda.params.clone(),
+                    public_parameters: lambda
+                        .public_parameters
+                        .as_ref()
+                        .map(|parameters| self.copy(parameters)),
                     body: std::rc::Rc::new(
                         lambda.body.iter().map(|form| self.copy(form)).collect(),
                     ),
@@ -5597,12 +5601,14 @@ impl Interpreter {
         };
 
         let mut slots = vec![
-            Value::list(
-                lambda
-                    .params
-                    .iter()
-                    .map(|param| Value::Symbol(param.clone().into())),
-            ),
+            lambda.public_parameters.clone().unwrap_or_else(|| {
+                Value::list(
+                    lambda
+                        .params
+                        .iter()
+                        .map(|param| Value::Symbol(param.clone().into())),
+                )
+            }),
             Value::list(lambda.body.as_ref().clone()),
             environment,
         ];

@@ -69,6 +69,10 @@ if-addrs = "=0.15.0"
 # and the freedesktop.org Trash specification) to the established backend.
 trash = "=5.2.6"
 mimalloc = { version = "0.1.52", default-features = false }
+# Native ABI calls have at most eight register arguments in the common fixed
+# convention.  Keep their decoded Values on the stack and spill only the
+# uncommon wider MANY call instead of allocating a Vec for every primitive.
+smallvec = "=1.15.1"
 
 [dev-dependencies]
 tree-sitter-json = "=0.24.8"
