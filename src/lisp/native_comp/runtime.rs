@@ -724,8 +724,13 @@ impl NativeRuntime {
             ));
         }
 
-        *self.symbols_with_positions_enabled =
-            crate::lisp::primitives::symbols_with_pos_enabled(interpreter, environment);
+        // data.c exposes this as a forwarded C bool.  Since the variable is
+        // intrinsically special, its value cell (including any buffer-local
+        // forwarding) is the authority; walking lexical frames here is both
+        // unlike GNU and needlessly charges every native call.
+        *self.symbols_with_positions_enabled = interpreter
+            .symbol_value_cell("symbols-with-pos-enabled")
+            .is_ok_and(|value| value.is_truthy());
 
         let mut invocation = NativeInvocation::new(target);
         self.begin_call(invocation.jump_buffer());
@@ -2083,6 +2088,7 @@ struct NativeSymbolWithPosition {
 struct ConsMirror {
     value: SharedCons,
     mutations: NativeConsMutationRegistration,
+    gc_marked: bool,
 }
 
 /// Stable objects retained for native machine code.  GNU's GC provides the
@@ -2170,8 +2176,7 @@ impl NativeHeap {
             current += alignment;
         }
 
-        let mut marked_mirrors = IdentitySet::default();
-        let mut marked_handles = IdentitySet::default();
+        let mut marked_handles = vec![false; self.handles.len()];
         while let Some(word) = pending.pop() {
             match self.native_conses.mark_word(word) {
                 ArenaMark::AlreadyMarked => continue,
@@ -2191,7 +2196,12 @@ impl NativeHeap {
                 .flatten()
                 .find(|address| self.cons_values.contains_key(address))
             {
-                if marked_mirrors.insert(address) {
+                let mirror = self
+                    .cons_values
+                    .get_mut(&address)
+                    .expect("candidate was found in the cons mirror map");
+                if !mirror.gc_marked {
+                    mirror.gc_marked = true;
                     let native = address as *mut NativeCons;
                     pending.extend(unsafe { [(*native).car(), (*native).cdr()] });
                 }
@@ -2200,17 +2210,17 @@ impl NativeHeap {
             let tag = word & TAG_MASK;
             let address = word.wrapping_sub(tag);
             if let Some(index) = self.handle_by_address.get(&address) {
-                marked_handles.insert(*index);
+                marked_handles[*index] = true;
             }
         }
 
         let mut unreachable = Vec::new();
-        for &address in self.cons_values.keys() {
+        for (&address, mirror) in &self.cons_values {
             let native = address as *mut NativeCons;
             let marked = if self.native_conses.contains(native) {
                 self.native_conses.is_marked(native)
             } else {
-                marked_mirrors.contains(&address)
+                mirror.gc_marked
             };
             if !marked {
                 unreachable.push(address);
@@ -2239,37 +2249,30 @@ impl NativeHeap {
         }
         let unreachable = self
             .cons_values
-            .keys()
-            .copied()
-            .filter(|address| {
-                let native = *address as *mut NativeCons;
+            .iter()
+            .filter_map(|(&address, mirror)| {
+                let native = address as *mut NativeCons;
                 if self.native_conses.contains(native) {
-                    !self.native_conses.is_marked(native)
+                    (!self.native_conses.is_marked(native)).then_some(address)
                 } else {
-                    !marked_mirrors.contains(address)
+                    (!mirror.gc_marked).then_some(address)
                 }
             })
-            .collect::<IdentitySet>();
+            .collect::<Vec<_>>();
         if !unreachable.is_empty() {
-            for address in &unreachable {
-                if let Some(mirror) = self.cons_values.get(address) {
-                    unsafe {
-                        mirror
-                            .value
-                            .detach_native_words(*address as *mut NativeCons)
-                    };
+            for address in unreachable {
+                if let Some(mirror) = self.cons_values.remove(&address) {
+                    unsafe { mirror.value.detach_native_words(address as *mut NativeCons) };
                 }
+                self.reconciling.remove(&address);
+                self.touched.cons_set.remove(&address);
             }
-            self.cons_values
-                .retain(|address, _| !unreachable.contains(address));
-            self.reconciling
-                .retain(|address| !unreachable.contains(address));
             self.touched
                 .conses
-                .retain(|entry| !unreachable.contains(&(entry.native as usize)));
-            self.touched
-                .cons_set
-                .retain(|address| !unreachable.contains(address));
+                .retain(|entry| self.touched.cons_set.contains(&(entry.native as usize)));
+        }
+        for mirror in self.cons_values.values_mut() {
+            mirror.gc_marked = false;
         }
 
         let dead_handles = self
@@ -2279,7 +2282,7 @@ impl NativeHeap {
             .filter_map(|(index, entry)| {
                 entry
                     .as_ref()
-                    .is_some_and(|_| !marked_handles.contains(&index))
+                    .is_some_and(|_| !marked_handles[index])
                     .then_some(index)
             })
             .collect::<Vec<_>>();
@@ -2341,6 +2344,7 @@ impl NativeHeap {
             ConsMirror {
                 value: value.clone(),
                 mutations: NativeConsMutationRegistration::new(address, &self.interpreter_dirty),
+                gc_marked: false,
             },
         );
     }
