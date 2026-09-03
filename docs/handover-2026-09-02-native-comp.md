@@ -72,19 +72,38 @@ precedence over older plans and handovers.
 
 This section is the current execution point and supersedes the older blocker
 descriptions below.  The ordinary, unchanged GNU `batch-native-compile` entry
-point now produces byte-identical complete `.eln` files for every ladder rung
-through the 18,832-byte broad opcode fixture.  The ordered results and the
-semantics each rung covers are recorded in `docs/testing.md` and enforced by
-the ignored oracle integration test `tests/native_comp_identity.rs`.
+point now produces byte-identical complete `.eln` files for all eight rungs in
+the current smallest-to-largest ladder, through the 49,628-byte full
+native-compiler test file.  The ordered results and the semantics each rung
+covers are recorded in `docs/testing.md` and enforced by the ignored oracle
+integration test `tests/native_comp_identity.rs`.
 
-The newly cleared rung is the unchanged upstream
-`test/lisp/emacs-lisp/comp-cstr-tests.el` (7,141 bytes).  GNU and Emaxx both
-produced a 298,232-byte artifact from the same copied absolute source path.
-Both SHA-256 digests were
-`b95c21b5b12c3e9eb50ddd5da34c85c7c0a3dae90b765bd100da008ca834c2b4`,
-and `cmp` found no differing byte.  This covers constraint type conversion,
-unions, intersections, negations, integer ranges, member sets, and
-conservative normalization.
+The newly cleared rung is unchanged upstream `test/src/comp-tests.el`
+(49,628 bytes).  GNU and Emaxx both produced a 1,021,168-byte artifact from
+the same copied absolute source path.  Both SHA-256 digests were
+`995b8230bb390928510d256567da4c1639d5ab396c4ffa8139c8ca76d3ad6f39`,
+and `cmp` found no differing byte.  This covers the full upstream
+native-compiler ERT definitions, resource orchestration, compiler options,
+diagnostics, asynchronous compilation, loading, runtime assertions, and the
+positioned-symbol contracts described below.
+
+The full fixture initially exposed two C-boundary mismatches.  GNU
+`eval.c:Fdefvar` and `Fdefconst` use `CHECK_SYMBOL`/`XSYMBOL`, so a source
+symbol with position is accepted while `symbols-with-pos-enabled` is active,
+the definition is installed on the underlying bare symbol, and the original
+object is returned.  The Rust special forms now do the same.  GNU
+`eval.c:Fmake_interpreted_closure` stores its `ARGS` list verbatim in closure
+slot zero; the Rust closure now retains that exact Lisp object, including
+source-position symbols, while also keeping a compact parsed parameter vector
+for fast invocation.  `eval.c:Ffunc_arity`/`lambda_arity` now use the same
+`SYMBOLP`, `XSYMBOL`, and position-aware `EQ` rules in Rust for function names,
+macro wrappers, and closure argument markers.  No Elisp was changed or added.
+
+The identity harness now preserves each fixture's upstream relative path in
+its temporary tree.  This is necessary because unchanged
+`test/src/comp-tests.el` locates `comp-resources` through `ert-resource-file`;
+flattening the source into the temporary root changed the input environment
+and made GNU itself fail before compilation.
 
 The failure was not in `comp.el`.  Emaxx's Rust cons-mutation watcher map used
 to clear every watcher at one million field keys.  Live native mirrors were
@@ -97,22 +116,50 @@ next compaction threshold amortized.  No Elisp was changed or added.
 
 Focused verification at this checkpoint:
 
-- `cargo test -j1 lisp::native_comp --lib -- --nocapture`: 23 passed, zero
-  failed, one intentionally ignored hot-path stress probe.
+- The unchanged upstream `test/src/comp-tests.el` normal selector ran through
+  Emaxx with native compilation enabled: 177 passed, zero failed, zero
+  unexpected.  The run compiled and loaded both upstream helper `.eln` files
+  and compiled fresh artifacts in the individual runtime-compilation tests.
+- `cargo test --release -j1 --test native_comp_identity -- --ignored
+  --nocapture --test-threads=1` passed the complete eight-rung comparison.
+  Seven fixtures emitted byte-identical `.eln` files and the upstream
+  `no-byte-compile` fixture correctly emitted nothing in either editor.
+- `cargo test -j1 --lib lisp::native_comp::runtime::tests --
+  --test-threads=1`: 21 passed, zero failed, one intentionally ignored
+  hot-path benchmark.
 - The automatic watcher-compaction regression and GNU 61-bit `make_int`
   boundary regression pass.
 - `cargo fmt --all -- --check`, `cargo check -j1 --all-targets`, and
-  `cargo clippy -j1 --all-targets -- -D warnings` pass with no suppression
-  added for the work.  The loader's eight loose arguments were grouped into a
-  typed `LoaderState` instead of allowing the Clippy warning.
+  `cargo clippy -j1 --all-targets --all-features -- -D warnings` pass with no
+  suppression added for the work.  The loader's eight loose arguments were
+  grouped into a typed `LoaderState` instead of allowing the Clippy warning.
 - Temporary GC, assertion, subroutine-profile, and mirror-invariant tracing
   has been removed.
 
-The next not-yet-proven ladder input is unchanged upstream
-`test/src/comp-tests.el` (49,628 bytes), the full native-compiler ERT
-definitions and orchestration file.  Stop at its first compile or artifact
-mismatch and diagnose the newly introduced semantics; do not alter the file or
-inject helper Elisp.
+The first 177-case run stopped at `comp-tests-doc`: Emaxx's ordinary `load`
+path crossed directly into the native loader without the surrounding
+`lread.c:Fload` bookkeeping.  The Rust path now follows GNU exactly: resolve
+the source-facing `.elc` name through `comp-eln-to-el-h`, dynamically bind the
+load context and `current-load-list`, call the `comp.c`-owned native loader,
+commit `load-history`, unwind, and only then invoke GNU Elisp's unchanged
+`do-after-load-evaluation`.  This is C-to-Rust work; no Elisp was added or
+modified.  The isolated upstream `comp-tests-doc` test then passed and the
+full normal suite reached 177/177.
+
+The one test outside the normal 177 is `comp-tests-bootstrap`, tagged by GNU
+as `:expensive-test`.  On this Darwin reference, GNU itself fails that test's
+raw `cmp`: its two output paths have different basenames, and GNU `comp.c`
+faithfully places each basename in Mach-O `LC_ID_DYLIB` via `-install_name`.
+Emaxx has the same behavior.  Do not change the backend to hide that genuine
+GNU result.
+
+Correctness is now green at both required levels: upstream behavior is
+177/177 and generated artifacts are byte-identical across the full ladder.
+The next phase is performance.  Re-measure on an otherwise quiet host before
+optimizing; older loaded-host observations put an already-built GNU editor at
+about 6.3 seconds and release Emaxx between roughly 71 and 86 seconds for the
+full fixture.  Preserve exact output and rerun the focused correctness gates
+after every hot-path change.
 
 ## Linux support and boundary fixes (2026-09-02, second session)
 

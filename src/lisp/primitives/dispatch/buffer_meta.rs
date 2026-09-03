@@ -780,24 +780,15 @@ define_dispatch!(
                 // reports the expander's arity.
                 let unwrap_macro = |value: &Value| -> Value {
                     if let Some((car, cdr)) = value.cons_values()
-                        && matches!(&car, Value::Symbol(head) if head == "macro")
+                        && values_eq_in_env(interp, &car, &Value::Symbol("macro".into()), env)
                     {
                         cdr
                     } else {
                         value.clone()
                     }
                 };
-                match &args[0] {
-                    Value::Symbol(symbol) => {
-                        if let Some(arity) = special_form_arity_value(symbol) {
-                            Ok(arity)
-                        } else {
-                            let function = interp.lookup_function(symbol, env)?;
-                            function_arity_value(interp, &unwrap_macro(&function), env)
-                        }
-                    }
-                    other => function_arity_value(interp, &unwrap_macro(other), env),
-                }
+                let function = resolve_callable(interp, &args[0], env)?;
+                function_arity_value(interp, &unwrap_macro(&function), env)
             }
             "subr-name" => {
                 need_args(name, args, 1)?;

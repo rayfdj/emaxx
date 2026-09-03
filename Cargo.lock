@@ -369,6 +369,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sha3",
+ "smallvec",
  "streebog",
  "sysinfo",
  "trash",

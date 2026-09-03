@@ -162,7 +162,9 @@ fn unchanged_gnu_sources_produce_identical_native_artifacts() {
 
     for fixture in FIXTURES {
         let upstream = gnu_root.join(fixture.relative_path);
-        let source = work.join(upstream.file_name().expect("fixture has a file name"));
+        let source = work.join(fixture.relative_path);
+        std::fs::create_dir_all(source.parent().expect("fixture has a parent directory"))
+            .expect("create copied fixture directory");
         std::fs::copy(&upstream, &source).unwrap_or_else(|error| {
             panic!(
                 "copy unchanged fixture {} to {}: {error}",

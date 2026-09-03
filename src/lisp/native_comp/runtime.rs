@@ -13,8 +13,8 @@ use super::abi::{
 use crate::lisp::eval::{SavedExcursion, SavedRestriction, SpecialBindingRestore};
 use crate::lisp::primitives::{symbol_with_pos_parts, wrong_type_argument};
 use crate::lisp::types::{
-    ConsCell, ConsMutationQueue, ConsMutationSnapshot, ConsWords, IdentityBuildHasher, SharedCons,
-    Value,
+    ConsCell, ConsMutationQueue, ConsWords, IdentityBuildHasher, NativeConsMutationRegistration,
+    SharedCons, SymbolName, Value,
 };
 use crate::lisp::{
     eval::Interpreter,
@@ -26,7 +26,7 @@ use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::rc::{Rc, Weak};
 use std::sync::{
-    Mutex,
+    Mutex, OnceLock,
     atomic::{AtomicPtr, Ordering},
 };
 
@@ -383,7 +383,7 @@ fn with_active<R>(body: impl FnOnce(&mut ActiveCall) -> R) -> R {
 /// generated code is active.  GNU needs no hook because both sides already
 /// dereference the same `Lisp_Cons`; this is the narrow transition used while
 /// Emaxx's typed field cache is being folded into that canonical storage.
-pub(crate) fn synchronize_cons_read(field: usize) {
+pub(crate) fn synchronize_cons_read(address: usize) {
     if CONS_SYNC_DEPTH.get() != 0 {
         return;
     }
@@ -395,7 +395,7 @@ pub(crate) fn synchronize_cons_read(field: usize) {
         let active = unsafe { &mut *active };
         if let Err(error) = unsafe { &mut *active.runtime }
             .heap
-            .synchronize_cons_field(field)
+            .synchronize_cons(address)
         {
             remember_helper_error(active, super::lisp::native_ice(&error));
         }
@@ -735,18 +735,18 @@ impl NativeRuntime {
             return Err(super::lisp::native_ice(&error));
         }
         // GNU passes each Lisp_Object to generated code unchanged.
-        let encoded = arguments
-            .iter()
-            .map(|argument| self.heap.encode(argument))
-            .collect::<Result<Vec<_>, _>>();
-        let encoded = match encoded {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                let finish = self.finish_call(interpreter);
-                finish?;
-                return Err(super::lisp::native_ice(&error));
-            }
-        };
+        let mut encoded = smallvec::SmallVec::<[NativeWord; 8]>::new();
+        for argument in arguments {
+            let word = match self.heap.encode(argument) {
+                Ok(word) => word,
+                Err(error) => {
+                    let finish = self.finish_call(interpreter);
+                    finish?;
+                    return Err(super::lisp::native_ice(&error));
+                }
+            };
+            encoded.push(word);
+        }
         match convention {
             NativeCallingConvention::Fixed => {
                 invocation.arguments[..encoded.len()].copy_from_slice(&encoded);
@@ -1087,24 +1087,71 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
                 .heap
                 .cons(arguments[0], arguments[1]);
         }
+        // These are direct translations of the corresponding C-owned word
+        // operations in data.c and alloc.c.  Keep them at the GNU ABI instead
+        // of decoding into Emaxx's richer interpreter representation.
+        match (subroutine.name, arguments) {
+            ("eq", [left, right]) => match native_eq(active, *left, *right) {
+                Ok(equal) => return native_boolean(equal),
+                Err(error) => {
+                    remember_helper_error(active, error);
+                    return 0;
+                }
+            },
+            ("car-safe", [value]) => {
+                return if native_consp(*value) {
+                    unsafe { native_car(*value) }
+                } else {
+                    0
+                };
+            }
+            ("cdr-safe", [value]) => {
+                return if native_consp(*value) {
+                    unsafe { native_cdr(*value) }
+                } else {
+                    0
+                };
+            }
+            ("listp", [value]) => return native_boolean(*value == 0 || native_consp(*value)),
+            ("list", values) => {
+                let heap = &mut unsafe { &mut *active.runtime }.heap;
+                return values
+                    .iter()
+                    .rev()
+                    .fold(0, |tail, value| heap.cons(*value, tail));
+            }
+            _ => {}
+        }
         if subroutine.name == "assq" && arguments.len() == 2 {
             return native_assq(active, arguments[0], arguments[1]);
         }
-        let decoded = arguments
-            .iter()
-            .map(|word| unsafe { &mut *active.runtime }.heap.decode(*word))
-            .collect::<Result<Vec<_>, _>>();
-        let decoded = match decoded {
-            Ok(decoded) => decoded,
-            Err(error) => {
-                remember_helper_error(active, super::lisp::native_ice(&error));
-                return 0;
-            }
-        };
+        if subroutine.name == "memq" && arguments.len() == 2 {
+            return native_memq(active, arguments[0], arguments[1]);
+        }
+        let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
+        for word in arguments {
+            let value = match unsafe { &mut *active.runtime }.heap.decode(*word) {
+                Ok(value) => value,
+                Err(error) => {
+                    remember_helper_error(active, super::lisp::native_ice(&error));
+                    return 0;
+                }
+            };
+            decoded.push(value);
+        }
         let mutation_epoch = crate::lisp::types::cons_mutation_epoch();
-        let result = crate::lisp::primitives::call(
+        static SUBROUTINE_FACTS: OnceLock<Box<[crate::lisp::primitives::NameFacts]>> =
+            OnceLock::new();
+        let facts = SUBROUTINE_FACTS.get_or_init(|| {
+            super::abi::native_subrs()
+                .iter()
+                .map(|subroutine| crate::lisp::primitives::name_facts(subroutine.name))
+                .collect()
+        })[index];
+        let result = crate::lisp::primitives::call_with_facts(
             unsafe { &mut *active.interpreter },
             subroutine.name,
+            facts,
             &decoded,
             unsafe { &mut *active.environment },
         );
@@ -1226,6 +1273,55 @@ fn native_assq(active: &mut ActiveCall, key: NativeWord, alist: NativeWord) -> N
 
     if tail != 0 {
         let error = decode_word(active, alist).map(|alist| wrong_type_argument("listp", alist));
+        remember_helper_error(active, error.unwrap_or_else(|error| error));
+    }
+    0
+}
+
+/// Rust translation of fns.c:Fmemq and lisp.h:FOR_EACH_TAIL.
+fn native_memq(active: &mut ActiveCall, element: NativeWord, list: NativeWord) -> NativeWord {
+    let mut tail = list;
+    let mut tortoise = tail;
+    let mut max = 2_isize;
+    let mut n = 0_isize;
+    let mut q = 2_u16;
+
+    while native_consp(tail) {
+        let item = unsafe { native_car(tail) };
+        match native_eq(active, item, element) {
+            Ok(true) => return tail,
+            Ok(false) => {}
+            Err(error) => {
+                remember_helper_error(active, error);
+                return 0;
+            }
+        }
+
+        tail = unsafe { native_cdr(tail) };
+        q = q.wrapping_sub(1);
+        let mut compare_tortoise = q != 0;
+        if !compare_tortoise {
+            runtime_maybe_quit();
+            n = n.wrapping_sub(1);
+            compare_tortoise = n > 0;
+        }
+        if !compare_tortoise {
+            max = max.wrapping_shl(1);
+            n = max;
+            q = max as u16;
+            n >>= u16::BITS;
+            tortoise = tail;
+        } else if tail == tortoise {
+            let error = decode_word(active, tail).map(|tail| {
+                LispError::SignalValue(Value::list([Value::symbol("circular-list"), tail]))
+            });
+            remember_helper_error(active, error.unwrap_or_else(|error| error));
+            return 0;
+        }
+    }
+
+    if tail != 0 {
+        let error = decode_word(active, list).map(|list| wrong_type_argument("listp", list));
         remember_helper_error(active, error.unwrap_or_else(|error| error));
     }
     0
@@ -1716,14 +1812,14 @@ const MOST_NEGATIVE_FIXNUM: i64 = -(1_i64 << 61);
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum NativeIdentity {
-    Symbol(String),
+    Symbol(SymbolName),
     WideInteger(i64),
     BigInteger(usize),
     Float(u64),
     String(usize),
     StringObject(usize),
     Vector(usize),
-    Builtin(String),
+    Builtin(SymbolName),
     Lambda(usize),
     Buffer(usize),
     Marker(u64),
@@ -1958,13 +2054,7 @@ impl NativeConsArena {
 struct TouchedCons {
     native: *mut NativeCons,
     value: Weak<ConsCell>,
-    /// Shared with `NativeHeap::mirror_words`, so the per-primitive scan can
-    /// tell whether generated code wrote this cell with two loads and no
-    /// table lookup.
-    agreed: AgreedWords,
 }
-
-type AgreedWords = Rc<Cell<[NativeWord; 2]>>;
 
 #[derive(Default)]
 struct TouchedConses {
@@ -1990,22 +2080,18 @@ struct NativeSymbolWithPosition {
     position: NativeWord,
 }
 
+struct ConsMirror {
+    value: SharedCons,
+    mutations: NativeConsMutationRegistration,
+}
+
 /// Stable objects retained for native machine code.  GNU's GC provides the
 /// same stability in C; this Rust owner also supplies the reverse lookup
 /// needed by primitive-call wrappers.
 #[derive(Default)]
 pub(crate) struct NativeHeap {
     native_conses: NativeConsArena,
-    cons_by_value: IdentityMap<*mut NativeCons>,
-    cons_values: IdentityMap<SharedCons>,
-    cons_by_field: IdentityMap<*mut NativeCons>,
-    cons_snapshots: IdentityMap<ConsMutationSnapshot>,
-    /// The two words each mirror held when its Rust cell and native cell
-    /// last agreed.  A native word that differs from it was written by
-    /// generated code since then; a Rust field that differs from it was
-    /// written by a primitive.  Reconciling per field lets both sides share
-    /// one cell the way GNU's C runtime does.
-    mirror_words: IdentityMap<AgreedWords>,
+    cons_values: IdentityMap<ConsMirror>,
     /// Mirrors whose reconciliation is in progress, so cyclic structures do
     /// not recurse into themselves.
     reconciling: IdentitySet,
@@ -2025,8 +2111,8 @@ pub(crate) struct NativeHeap {
 
 impl Drop for NativeHeap {
     fn drop(&mut self) {
-        for (&address, value) in &self.cons_values {
-            unsafe { value.detach_native_words(address as *mut NativeCons) };
+        for (&address, mirror) in &self.cons_values {
+            unsafe { mirror.value.detach_native_words(address as *mut NativeCons) };
         }
     }
 }
@@ -2066,7 +2152,7 @@ impl NativeHeap {
         if self.native_stack_bottom.is_null() || !self.collection_due(threshold, percentage) {
             return;
         }
-        let mut pending = Vec::with_capacity(runtime_roots.len() + self.cons_values.len());
+        let mut pending = Vec::with_capacity(runtime_roots.len());
         pending.extend_from_slice(runtime_roots);
         for entry in self.handles.iter().flatten() {
             if entry.native.value.native_handle_has_external_owner() {
@@ -2138,7 +2224,11 @@ impl NativeHeap {
         // additional descendants, therefore compute the final removal set
         // only after this pass.
         for address in unreachable {
-            if let Some(value) = self.cons_values.get(&address).cloned() {
+            if let Some(value) = self
+                .cons_values
+                .get(&address)
+                .map(|mirror| mirror.value.clone())
+            {
                 self.reconcile_mirror(
                     address as *mut NativeCons,
                     &value,
@@ -2162,19 +2252,15 @@ impl NativeHeap {
             .collect::<IdentitySet>();
         if !unreachable.is_empty() {
             for address in &unreachable {
-                if let Some(value) = self.cons_values.get(address) {
-                    unsafe { value.detach_native_words(*address as *mut NativeCons) };
+                if let Some(mirror) = self.cons_values.get(address) {
+                    unsafe {
+                        mirror
+                            .value
+                            .detach_native_words(*address as *mut NativeCons)
+                    };
                 }
             }
             self.cons_values
-                .retain(|address, _| !unreachable.contains(address));
-            self.cons_by_value
-                .retain(|_, native| !unreachable.contains(&(*native as usize)));
-            self.cons_by_field
-                .retain(|_, native| !unreachable.contains(&(*native as usize)));
-            self.cons_snapshots
-                .retain(|address, _| !unreachable.contains(address));
-            self.mirror_words
                 .retain(|address, _| !unreachable.contains(address));
             self.reconciling
                 .retain(|address| !unreachable.contains(address));
@@ -2227,33 +2313,15 @@ impl NativeHeap {
         address + TAG_CONS
     }
 
-    fn agreed_words(&mut self, native: *mut NativeCons) -> AgreedWords {
-        let address = native as usize;
-        self.mirror_words
-            .entry(address)
-            .or_insert_with(|| Rc::new(Cell::new(unsafe { [(*native).car(), (*native).cdr()] })))
-            .clone()
-    }
-
-    fn set_agreed_words(&mut self, native: *mut NativeCons, words: [NativeWord; 2]) {
-        let address = native as usize;
-        self.agreed_words(native).set(words);
-        if let Some(value) = self.cons_values.get(&address) {
-            value.set_native_words_agreed(words);
-        }
-    }
-
     fn track_cons(&mut self, native: *mut NativeCons, value: &SharedCons) {
         let address = native as usize;
         if self.native_call_depth == 0 || self.touched.cons_set.contains(&address) {
             return;
         }
-        let agreed = self.agreed_words(native);
         self.touched.cons_set.insert(address);
         self.touched.conses.push(TouchedCons {
             native,
             value: Rc::downgrade(value),
-            agreed,
         });
     }
 
@@ -2266,19 +2334,26 @@ impl NativeHeap {
             self.native_conses
                 .note_allocation(std::mem::size_of::<NativeCons>());
         }
-        self.cons_values.insert(address, value.clone());
         let words = unsafe { [(*native).car(), (*native).cdr()] };
         unsafe { value.attach_native_words(native, words) };
-        for field in ConsCell::mutation_field_ids(value) {
-            self.cons_by_field.insert(field, native);
-        }
+        self.cons_values.insert(
+            address,
+            ConsMirror {
+                value: value.clone(),
+                mutations: NativeConsMutationRegistration::new(address, &self.interpreter_dirty),
+            },
+        );
     }
 
-    fn synchronize_cons_field(&mut self, field: usize) -> Result<(), String> {
-        let Some(native) = self.cons_by_field.get(&field).copied() else {
+    fn synchronize_cons(&mut self, address: usize) -> Result<(), String> {
+        let Some(value) = self
+            .cons_values
+            .get(&address)
+            .map(|mirror| mirror.value.clone())
+        else {
             return Ok(());
         };
-        let address = native as usize;
+        let native = address as *mut NativeCons;
         if self.reconciling.contains(&address) {
             return Ok(());
         }
@@ -2287,22 +2362,14 @@ impl NativeHeap {
         // since its last boundary crossing, so establish that directly and
         // avoid cloning its owner or entering recursive reconciliation.
         let native_words = unsafe { [(*native).car(), (*native).cdr()] };
-        if self
-            .mirror_words
-            .get(&address)
-            .is_some_and(|agreed| agreed.get() == native_words)
+        if value.native_words_agreed() == native_words
             && self
-                .cons_snapshots
+                .cons_values
                 .get(&address)
-                .is_some_and(ConsMutationSnapshot::is_current)
+                .is_some_and(|mirror| mirror.mutations.is_current())
         {
             return Ok(());
         }
-        let value = self
-            .cons_values
-            .get(&address)
-            .cloned()
-            .ok_or_else(|| "native cons field has no Rust owner".to_string())?;
         self.reconcile_mirror(native, &value, &mut IdentitySet::default())?;
         Ok(())
     }
@@ -2338,11 +2405,11 @@ impl NativeHeap {
     ) -> Result<bool, String> {
         let address = native as usize;
         let current = unsafe { [(*native).car(), (*native).cdr()] };
-        let agreed = self.agreed_words(native).get();
+        let agreed = value.native_words_agreed();
         let rust_dirty = self
-            .cons_snapshots
+            .cons_values
             .get(&address)
-            .is_some_and(|snapshot| !snapshot.is_current());
+            .is_some_and(|mirror| !mirror.mutations.is_current());
         let mut words = current;
         let mut rust_changed = false;
         for field in 0..2 {
@@ -2371,21 +2438,18 @@ impl NativeHeap {
                 }
             }
         }
-        self.set_agreed_words(native, words);
-        self.mark_cons_mirror_current(native, value);
+        value.set_native_words_agreed(words);
+        self.mark_cons_mirror_current(native);
         Ok(rust_changed)
     }
 
-    fn mark_cons_mirror_current(&mut self, native: *mut NativeCons, value: &SharedCons) {
+    fn mark_cons_mirror_current(&mut self, native: *mut NativeCons) {
         let address = native as usize;
-        if let Some(snapshot) = self.cons_snapshots.get(&address) {
-            snapshot.mark_current();
-            return;
-        }
-        self.cons_snapshots.insert(
-            address,
-            ConsMutationSnapshot::tracked_cell(value, address, &self.interpreter_dirty),
-        );
+        self.cons_values
+            .get(&address)
+            .expect("a reconciled native cons has a registered Rust mirror")
+            .mutations
+            .mark_current();
     }
 
     fn encode_inner(
@@ -2399,7 +2463,7 @@ impl NativeHeap {
             Value::Symbol(name) if name == "nil" => Ok(0),
             Value::Symbol(name) if name == "t" => Ok(native_boolean(true)),
             Value::Symbol(name) => {
-                self.encode_handle(NativeIdentity::Symbol(name.to_string()), value, TAG_SYMBOL)
+                self.encode_handle(NativeIdentity::Symbol(name.clone()), value, TAG_SYMBOL)
             }
             Value::Integer(integer)
                 if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(integer) =>
@@ -2428,10 +2492,11 @@ impl NativeHeap {
         encoding_conses: &mut IdentitySet,
     ) -> Result<NativeWord, String> {
         let identity = ConsCell::identity(cell);
-        let existing = self.cons_by_value.get(&identity).copied().filter(|native| {
+        let existing = cell.attached_native_address().and_then(|address| {
             self.cons_values
-                .get(&(*native as usize))
-                .is_some_and(|owner| Rc::ptr_eq(owner, cell))
+                .get(&address)
+                .is_some_and(|mirror| Rc::ptr_eq(&mirror.value, cell))
+                .then_some(address as *mut NativeCons)
         });
         let (native, existing) = if let Some(native) = existing {
             (native, true)
@@ -2445,7 +2510,6 @@ impl NativeHeap {
                 return Err("native cons allocation is not tag-aligned".to_string());
             }
             debug_assert_eq!(address, identity);
-            self.cons_by_value.insert(identity, native);
             self.register_cons_value(native, cell);
             (native, false)
         };
@@ -2455,6 +2519,7 @@ impl NativeHeap {
                 .cons_values
                 .get(&address)
                 .expect("the matching interpreter cons mirror is live")
+                .value
                 .clone();
             self.reconcile_mirror(native, &value, &mut IdentitySet::default())?;
             self.track_cons(native, &value);
@@ -2471,8 +2536,7 @@ impl NativeHeap {
             (*native).set_car(car);
             (*native).set_cdr(cdr);
         }
-        self.set_agreed_words(native, [car, cdr]);
-        self.mark_cons_mirror_current(native, cell);
+        cell.set_native_words_agreed([car, cdr]);
         self.track_cons(native, cell);
         encoding_conses.remove(&identity);
         Ok(address + TAG_CONS)
@@ -2552,7 +2616,11 @@ impl NativeHeap {
         }
         if word & TAG_MASK == TAG_CONS {
             let address = word.wrapping_sub(TAG_CONS);
-            if let Some(value) = self.cons_values.get(&address).cloned() {
+            if let Some(value) = self
+                .cons_values
+                .get(&address)
+                .map(|mirror| mirror.value.clone())
+            {
                 let native = address as *mut NativeCons;
                 self.reconcile_mirror(native, &value, decoding_conses)?;
                 if mark_clean {
@@ -2568,11 +2636,8 @@ impl NativeHeap {
             }
             let current = unsafe { [(*native).car(), (*native).cdr()] };
             let value = ConsCell::from_native_words(current[0], current[1]);
-            self.cons_by_value
-                .insert(ConsCell::identity(&value), native);
             self.register_cons_value(native, &value);
-            self.set_agreed_words(native, [0, 0]);
-            self.mark_cons_mirror_current(native, &value);
+            value.set_native_words_agreed([0, 0]);
             self.reconcile_mirror(native, &value, decoding_conses)?;
             if !mark_clean {
                 self.track_cons(native, &value);
@@ -2609,17 +2674,18 @@ impl NativeHeap {
     /// Emaxx records every mirrored cell that actually changes and refreshes
     /// only those two-word mirrors.
     fn publish_interpreter_writes(&mut self) -> Result<(), String> {
-        let mut dirty_addresses = IdentitySet::default();
-        for address in self.interpreter_dirty.drain() {
-            if !dirty_addresses.insert(address)
-                || self
-                    .cons_snapshots
-                    .get(&address)
-                    .is_none_or(ConsMutationSnapshot::is_current)
+        for address in self.interpreter_dirty.dirty_keys() {
+            if self
+                .cons_values
+                .get(&address)
+                .is_none_or(|mirror| mirror.mutations.is_current())
             {
                 continue;
             }
-            let value = self.cons_values.get(&address).cloned();
+            let value = self
+                .cons_values
+                .get(&address)
+                .map(|mirror| mirror.value.clone());
             let Some(value) = value else {
                 continue;
             };
@@ -2658,14 +2724,14 @@ impl NativeHeap {
             if !self.touched.cons_set.contains(&address) {
                 continue;
             }
+            let Some(value) = self.touched.conses[index].value.upgrade() else {
+                self.touched.cons_set.remove(&address);
+                continue;
+            };
             let current = unsafe { [(*native).car(), (*native).cdr()] };
-            if result.is_ok() && current != self.touched.conses[index].agreed.get() {
+            if result.is_ok() && current != value.native_words_agreed() {
                 // Drop the vector borrow before reconciliation: decoding a
                 // changed word may append another unique tracking entry.
-                let Some(value) = self.touched.conses[index].value.upgrade() else {
-                    self.touched.cons_set.remove(&address);
-                    continue;
-                };
                 match self.reconcile_mirror(native, &value, &mut decoding_conses) {
                     Ok(true) => mutated_conses.push(Value::Cons(value)),
                     Ok(false) => {}
@@ -2729,7 +2795,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
             NativeIdentity::StringObject(std::rc::Rc::as_ptr(string) as usize),
             TAG_STRING,
         ),
-        Value::BuiltinFunc(name) => (NativeIdentity::Builtin(name.to_string()), TAG_VECTORLIKE),
+        Value::BuiltinFunc(name) => (NativeIdentity::Builtin(name.clone()), TAG_VECTORLIKE),
         Value::Lambda(lambda) => (
             NativeIdentity::Lambda(std::rc::Rc::as_ptr(lambda) as usize),
             TAG_VECTORLIKE,
@@ -2810,6 +2876,26 @@ mod tests {
             .position(|subroutine| subroutine.name == "assq")
             .expect("assq belongs to the native ABI");
         invoke_subr(index, &[key, alist])
+    }
+
+    extern "C" fn call_memq(element: NativeWord, list: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "memq")
+            .expect("memq belongs to the native ABI");
+        invoke_subr(index, &[element, list])
+    }
+
+    extern "C" fn call_list3(
+        first: NativeWord,
+        second: NativeWord,
+        third: NativeWord,
+    ) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "list")
+            .expect("list belongs to the native ABI");
+        invoke_subr(index, &[first, second, third])
     }
 
     #[test]
@@ -2988,6 +3074,71 @@ mod tests {
             panic!("assq did not return the matching alist cell");
         };
         assert!(Rc::ptr_eq(&result, &expected));
+    }
+
+    #[test]
+    fn native_memq_uses_the_fns_c_cons_walk() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let matching_tail = Value::list([Value::symbol("match"), Value::Integer(9)]);
+        let list = Value::cons(Value::Integer(1), matching_tail.clone());
+
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_memq as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::symbol("match"), list],
+            )
+            .expect("native memq");
+        let (Value::Cons(result), Value::Cons(expected)) = (result, matching_tail) else {
+            panic!("memq did not return the matching list tail");
+        };
+        assert!(Rc::ptr_eq(&result, &expected));
+
+        let improper = Value::cons(Value::Integer(1), Value::symbol("not-a-list"));
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_memq as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::symbol("not-a-list"), improper.clone()],
+            )
+            .expect_err("GNU memq rejects an improper list without testing its final atom");
+        let LispError::SignalValue(data) = error else {
+            panic!("memq returned the wrong error: {error:?}");
+        };
+        assert_eq!(
+            data,
+            Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("listp"),
+                improper,
+            ])
+        );
+    }
+
+    #[test]
+    fn native_list_is_the_alloc_c_reverse_cons_loop() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_list3 as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::Integer(1), Value::symbol("two"), Value::Integer(3)],
+                )
+                .expect("native list"),
+            Value::list([Value::Integer(1), Value::symbol("two"), Value::Integer(3)])
+        );
     }
 
     #[test]

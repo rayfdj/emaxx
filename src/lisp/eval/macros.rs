@@ -515,6 +515,7 @@ impl Interpreter {
 
         Ok(Value::lambda_with_public_environment(
             params.into(),
+            slots[0].clone(),
             body.into(),
             closure_env,
             slots.get(4).cloned(),

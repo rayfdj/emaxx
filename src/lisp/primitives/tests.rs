@@ -189,6 +189,127 @@ fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
 }
 
 #[test]
+fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let positioned = |interp: &mut Interpreter, name: &str, position: i64, env: &mut Env| {
+        call(
+            interp,
+            "position-symbol",
+            &[Value::Symbol(name.into()), Value::Integer(position)],
+            env,
+        )
+        .expect("construct a positioned symbol")
+    };
+
+    let positioned_car = positioned(&mut interp, "car", 1, &mut env);
+    assert_eq!(
+        call(&mut interp, "func-arity", &[positioned_car], &mut env)
+            .expect("resolve a positioned function name"),
+        Value::cons(Value::Integer(1), Value::Integer(1))
+    );
+
+    let optional = positioned(&mut interp, "&optional", 2, &mut env);
+    let argument = positioned(&mut interp, "argument", 3, &mut env);
+    let closure = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Closure,
+        "byte-code-function",
+        vec![Value::list([optional, argument])],
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[closure], &mut env)
+            .expect("read positioned byte-code argument descriptors"),
+        Value::cons(Value::Integer(0), Value::Integer(1))
+    );
+
+    let macro_tag = positioned(&mut interp, "macro", 4, &mut env);
+    let macro_function = Value::cons(
+        macro_tag,
+        Value::lambda(
+            Vec::<String>::new().into(),
+            Vec::new().into(),
+            shared_env(Vec::new()),
+        ),
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[macro_function], &mut env)
+            .expect("unwrap a positioned macro tag"),
+        Value::cons(Value::Integer(0), Value::Integer(0))
+    );
+
+    let closure_parameters = Value::list([
+        positioned(&mut interp, "number", 5, &mut env),
+        positioned(&mut interp, "value", 6, &mut env),
+    ]);
+    let interpreted = call(
+        &mut interp,
+        "make-interpreted-closure",
+        &[
+            closure_parameters.clone(),
+            Value::list([Value::Nil]),
+            Value::list([Value::T]),
+        ],
+        &mut env,
+    )
+    .expect("construct an interpreted closure with positioned parameters");
+    let Value::Lambda(lambda) = &interpreted else {
+        panic!("make-interpreted-closure must return a lambda")
+    };
+    let visible_parameters = interp.interpreted_closure_slots(lambda)[0].clone();
+    assert_eq!(
+        call(
+            &mut interp,
+            "eq",
+            &[visible_parameters, closure_parameters],
+            &mut env,
+        )
+        .expect("compare GNU-visible argument-list identity"),
+        Value::T
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[interpreted], &mut env)
+            .expect("read an interpreted closure's positioned argument list"),
+        Value::cons(Value::Integer(2), Value::Integer(2))
+    );
+}
+
+#[test]
+fn defvar_and_defconst_use_gnu_check_symbol_for_positioned_names() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+
+    for (form, name, value, position) in [
+        ("defvar", "positioned-variable", 17, 1),
+        ("defconst", "positioned-constant", 29, 2),
+    ] {
+        let positioned = call(
+            &mut interp,
+            "position-symbol",
+            &[Value::Symbol(name.into()), Value::Integer(position)],
+            &mut env,
+        )
+        .expect("construct a positioned definition name");
+        let definition = Value::list([
+            Value::Symbol(form.into()),
+            positioned.clone(),
+            Value::Integer(value),
+        ]);
+        assert_eq!(
+            interp
+                .eval(&definition, &mut env)
+                .expect("evaluate a positioned variable definition"),
+            positioned
+        );
+        assert_eq!(
+            interp
+                .lookup(name, &env)
+                .expect("look up the bare definition name"),
+            Value::Integer(value)
+        );
+    }
+}
+
+#[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

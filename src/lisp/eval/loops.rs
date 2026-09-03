@@ -6,12 +6,27 @@ impl Interpreter {
             Value::Nil => Ok(Vec::new()),
             Value::Cons(_) => {
                 let items = spec.to_vec()?;
-                validate_lambda_list(spec, &items)?;
-                items
+                // eval.c:Fmake_interpreted_closure stores ARGS verbatim and
+                // does not consult `symbols_with_pos_enabled`.  Normalize
+                // its typed symbol-with-position storage only for Emaxx's
+                // fast internal binding vector; the original Lisp list is
+                // retained on LambdaValue as the public closure slot.
+                let normalized = items
                     .into_iter()
-                    .map(|v| match v {
-                        Value::Symbol(s) => Ok(s.to_string()),
-                        _ => Err(invalid_function(spec.clone())),
+                    .map(|item| match item {
+                        Value::Symbol(_) => Ok(item),
+                        _ => crate::lisp::primitives::symbol_with_pos_parts(self, &item)
+                            .map(|(symbol, _)| symbol)
+                            .ok_or_else(|| invalid_function(spec.clone())),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                validate_lambda_list(spec, &normalized)?;
+                normalized
+                    .into_iter()
+                    .map(|item| {
+                        item.as_symbol()
+                            .map(str::to_string)
+                            .map_err(|_| invalid_function(spec.clone()))
                     })
                     .collect()
             }

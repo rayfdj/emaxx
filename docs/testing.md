@@ -123,7 +123,7 @@ new compiler surface introduced by that file:
 | `test/lisp/emacs-lisp/comp-tests.el` | 3,364 | ERT and CL expansion, nested cleanup closures, filesystem control flow, shared constants | Exact `.eln` |
 | `test/lisp/emacs-lisp/comp-cstr-tests.el` | 7,141 | Constraint type conversion, unions, intersections, negations, integer ranges, member sets, conservative normalization | Exact `.eln` |
 | `test/src/comp-resources/comp-test-funcs.el` | 18,832 | Broad opcode lowering, variables, aggregates, argument ABIs, branches and jump tables, mutation, handlers/unwind, buffers, interactive forms, records, cyclic constants, non-ASCII names, and dead/no-return control flow | Exact `.eln` |
-| `test/src/comp-tests.el` | 49,628 | Full upstream native-compiler ERT definitions, resource orchestration, options, diagnostics, asynchronous compilation, loading, and runtime assertions | Pending after all smaller rungs |
+| `test/src/comp-tests.el` | 49,628 | Full upstream native-compiler ERT definitions, resource orchestration, options, diagnostics, asynchronous compilation, loading, runtime assertions, positioned definition names, and positioned interpreted-closure argument lists | Exact `.eln` (`995b8230bb390928510d256567da4c1639d5ab396c4ffa8139c8ca76d3ad6f39`) |
 
 “Exact” means equality of the complete artifact bytes for the same copied
 source path, platform, GNU source tree, and toolchain—not merely equal code

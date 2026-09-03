@@ -159,9 +159,31 @@ fn invalid_function_arity(function: &Value) -> LispError {
     ]))
 }
 
+/// Return the bare symbol GNU's `XSYMBOL` addresses after `SYMBOLP`.
+/// `SYMBOLP` includes nil and t, and includes symbol-with-position objects
+/// only while `symbols_with_pos_enabled` is active (`lisp.h`).
+fn arity_bare_symbol(
+    interp: &Interpreter,
+    value: &Value,
+    positions_enabled: bool,
+) -> Option<Value> {
+    if value.is_symbol() {
+        return Some(value.clone());
+    }
+    positions_enabled
+        .then(|| symbol_with_pos_parts(interp, value))
+        .flatten()
+        .map(|(symbol, _)| symbol)
+}
+
 /// Decode GNU's CLOSURE_ARGLIST using eval.c:lambda_arity and
 /// bytecode.c:get_byte_code_arity.
-fn closure_arity_value(argument_spec: &Value, function: &Value) -> Result<Value, LispError> {
+fn closure_arity_value(
+    interp: &Interpreter,
+    argument_spec: &Value,
+    function: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
     if let Value::Integer(packed) = argument_spec {
         if *packed < 0 {
             return Err(invalid_function_arity(function));
@@ -181,6 +203,7 @@ fn closure_arity_value(argument_spec: &Value, function: &Value) -> Result<Value,
     let mut required = 0i64;
     let mut maximum = 0i64;
     let mut optional = false;
+    let positions_enabled = symbols_with_pos_enabled(interp, env);
     let mut cursor = argument_spec.clone();
     let mut seen = crate::lisp::types::CycleGuard::new();
     loop {
@@ -199,10 +222,10 @@ fn closure_arity_value(argument_spec: &Value, function: &Value) -> Result<Value,
         }
         let parameter = cell.car.borrow().clone();
         cursor = cell.cdr.borrow().clone();
-        let Value::Symbol(parameter) = parameter else {
+        let Some(parameter) = arity_bare_symbol(interp, &parameter, positions_enabled) else {
             return Err(invalid_function_arity(function));
         };
-        match parameter.as_ref() {
+        match parameter.as_symbol().expect("SYMBOLP established a symbol") {
             "&rest" => {
                 return Ok(Value::cons(
                     Value::Integer(required),
@@ -225,6 +248,19 @@ pub(crate) fn function_arity_value(
     function: &Value,
     env: &Env,
 ) -> Result<Value, LispError> {
+    let positions_enabled = symbols_with_pos_enabled(interp, env);
+    if let Some(symbol) = arity_bare_symbol(interp, function, positions_enabled) {
+        if symbol.is_nil() {
+            return Err(LispError::VoidFunction("nil".into()));
+        }
+        let name = symbol.as_symbol().expect("SYMBOLP established a symbol");
+        if let Some(arity) = special_form_arity_value(name) {
+            return Ok(arity);
+        }
+        let resolved = interp.lookup_function(name, env)?;
+        return function_arity_value(interp, &resolved, env);
+    }
+
     match function {
         // Every genuine subr has its arity in the GNU-generated table; a
         // miss means an emaxx coverage gap, never a value to invent.
@@ -233,15 +269,10 @@ pub(crate) fn function_arity_value(
             .ok_or_else(|| {
                 LispError::Signal(format!("emaxx: no GNU-derived arity for subr {name}"))
             }),
-        Value::Lambda(lambda) => Ok(lambda_arity_value(&lambda.params)),
-        Value::Symbol(symbol) => {
-            if let Some(arity) = special_form_arity_value(symbol) {
-                Ok(arity)
-            } else {
-                let resolved = interp.lookup_function(symbol, env)?;
-                function_arity_value(interp, &resolved, env)
-            }
-        }
+        Value::Lambda(lambda) => match &lambda.public_parameters {
+            Some(parameters) => closure_arity_value(interp, parameters, function, env),
+            None => Ok(lambda_arity_value(&lambda.params)),
+        },
         Value::Record(id)
             if interp
                 .find_record(*id)
@@ -251,7 +282,7 @@ pub(crate) fn function_arity_value(
                 .find_record(*id)
                 .and_then(|record| record.slots.first())
                 .ok_or_else(|| invalid_function_arity(function))?;
-            closure_arity_value(argument_spec, function)
+            closure_arity_value(interp, argument_spec, function, env)
         }
         Value::Record(id)
             if interp.find_record(*id).is_some_and(|record| {
@@ -270,13 +301,9 @@ pub(crate) fn function_arity_value(
                 .to_vec()?
                 .into_iter()
                 .map(|parameter| {
-                    parameter.as_symbol().map(str::to_string).or_else(|_| {
-                        symbols_with_pos_enabled(interp, env)
-                            .then(|| symbol_with_pos_parts(interp, &parameter))
-                            .flatten()
-                            .and_then(|(symbol, _)| symbol.as_symbol().ok().map(str::to_string))
-                            .ok_or_else(|| invalid_function_arity(function))
-                    })
+                    arity_bare_symbol(interp, &parameter, positions_enabled)
+                        .and_then(|symbol| symbol.as_symbol().ok().map(str::to_string))
+                        .ok_or_else(|| invalid_function_arity(function))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(lambda_arity_value(&parameters))
