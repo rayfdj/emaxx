@@ -226,6 +226,10 @@ struct TtyState {
     /// with the plain message channel (the composed paint carries the
     /// prompt face and overlay strings).
     minibuffer_owns_echo: bool,
+    /// Identity of the read whose grow-only minibuffer height is retained.
+    /// Minibuffer buffers are reused, so the buffer id alone cannot detect
+    /// entry into a fresh read.
+    minibuffer_activation_id: Option<u64>,
     /// The menu-bar row's caption text, valid while the selected
     /// window's buffer, major mode, and active keymap set are unchanged
     /// — GNU recomputes menu_bar_items on buffer, window, or mode-line
@@ -253,6 +257,7 @@ impl TtyState {
             face_cache: std::collections::HashMap::new(),
             face_cache_generation: 0,
             minibuffer_owns_echo: false,
+            minibuffer_activation_id: None,
             menu_bar_row: None,
             painted_message_tick: 0,
         }
@@ -1995,6 +2000,10 @@ fn visual_line_at(
     }
     overlay_strings.sort_by_key(|(position, after, id, _)| (*position, *after, *id));
     let mut overlay_string_index = 0usize;
+    // At a boundary, point follows before-strings but precedes after-strings.
+    // Preserve that mapping even though both display objects are spliced
+    // before the following buffer character in the flattened visual text.
+    let mut after_string_boundaries = Vec::new();
     let mut string_run: Option<String> = None;
     let mut space_run: Option<Value> = None;
     let mut pos = line_begin;
@@ -2005,9 +2014,16 @@ fn visual_line_at(
         {
             overlay_string_index += 1;
         }
-        while let Some((position, _, _, value)) = overlay_strings.get(overlay_string_index) {
+        while let Some((position, after, _, value)) = overlay_strings.get(overlay_string_index) {
             if *position != pos {
                 break;
+            }
+            if *after
+                && after_string_boundaries
+                    .last()
+                    .is_none_or(|(raw, _)| *raw != pos - line_begin)
+            {
+                after_string_boundaries.push((pos - line_begin, display_chars));
             }
             let (string, spans) = visible_overlay_string(value, spec);
             let start = display_chars;
@@ -2169,9 +2185,16 @@ fn visual_line_at(
     }
     // A zero-width overlay at ZV is still a display object.  Popon anchors
     // its terminal popup there when point is at the end of the buffer.
-    while let Some((position, _, _, value)) = overlay_strings.get(overlay_string_index) {
+    while let Some((position, after, _, value)) = overlay_strings.get(overlay_string_index) {
         if *position != pos {
             break;
+        }
+        if *after
+            && after_string_boundaries
+                .last()
+                .is_none_or(|(raw, _)| *raw != pos - line_begin)
+        {
+            after_string_boundaries.push((pos - line_begin, display_chars));
         }
         let (string, spans) = visible_overlay_string(value, spec);
         let start = display_chars;
@@ -2199,6 +2222,11 @@ fn visual_line_at(
     // the entire display object.  With Popon's multiline popup GNU leaves
     // the terminal cursor at the end of the final candidate row.
     map.push(display_chars);
+    for (raw, display) in after_string_boundaries {
+        if let Some(boundary) = map.get_mut(raw) {
+            *boundary = display;
+        }
+    }
     raw_of_display.push(pos - line_begin);
     VisualLine {
         text,
@@ -2846,6 +2874,7 @@ fn redraw_with_echo_policy(
     if interpreter.frame_width() != cols as i64 || interpreter.frame_height() != rows as i64 {
         interpreter.set_tty_frame_size(cols as i64, rows as i64);
     }
+    run_pre_redisplay_function(interpreter, env);
     // Rows above the window tree belong to the frame's menu bar.
     let menu_lines = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1) as usize;
     // The mini window's height comes first: a tall message shrinks the
@@ -2861,11 +2890,20 @@ fn redraw_with_echo_policy(
         &mut state.face_cache,
     );
     let echo_paint = wrap_echo_paint(&echo_long, cols, max_mini.max(1));
+    let minibuffer_activation_id = interpreter.active_minibuffer_activation_id();
+    let new_minibuffer_activation =
+        echo_from_minibuffer && state.minibuffer_activation_id != minibuffer_activation_id;
+    state.minibuffer_activation_id = minibuffer_activation_id;
     let echo_empty = echo_paint.len() == 1
         && echo_paint[0].text.iter().all(|c| *c == ' ')
         && !echo_from_minibuffer;
     state.echo_rows = if echo_empty {
         1
+    } else if new_minibuffer_activation {
+        // read_minibuf starts a fresh mini-window sizing lifecycle even
+        // when get_minibuffer reuses the same ` *Minibuf-N*' buffer.  Keep
+        // grow-only behavior within this read, never across activations.
+        echo_paint.len().min(max_mini.max(1))
     } else if exact_echo && !echo_from_minibuffer {
         // resize_echo_area_exactly: at a command boundary a displayed
         // message sizes the mini window to exactly its rows; an active
@@ -4216,7 +4254,12 @@ fn redraw_with_echo_policy(
         }
         state.painted_echo = echo_paint;
     }
-    if echo_from_minibuffer && let Some(position) = echo_cursor {
+    if (minibuffer_echo_owns_hardware_cursor(interpreter, echo_from_minibuffer)
+        || (!echo_from_minibuffer
+            && frontend_echo_early.is_empty()
+            && interpreter.active_minibuffer_buffer_id().is_some()))
+        && let Some(position) = echo_cursor
+    {
         let (row, col) = wrapped_echo_cursor(&echo_long, position, cols, state.echo_rows);
         cursor_position = (
             col as u16,
@@ -4246,6 +4289,30 @@ fn redraw_with_echo_policy(
     out.flush()
 }
 
+/// Run the Lisp redisplay coordinator before taking any buffer snapshots.
+///
+/// GNU's redisplay calls `pre-redisplay-function' with t when every window is
+/// being considered.  Among other things, simple.el uses this to maintain the
+/// window-local cursor-face overlay in *Completions*.  Like GNU's dsafe call,
+/// redisplay must survive a callback error and continue painting the frame.
+fn run_pre_redisplay_function(interpreter: &mut Interpreter, env: &mut Env) {
+    let Some(function) = interpreter
+        .lookup_var("pre-redisplay-function", env)
+        .filter(Value::is_truthy)
+    else {
+        return;
+    };
+    let _ =
+        interpreter.call_function_value(function, Some("pre-redisplay-function"), &[Value::T], env);
+}
+
+fn minibuffer_echo_owns_hardware_cursor(
+    interpreter: &Interpreter,
+    echo_from_minibuffer: bool,
+) -> bool {
+    echo_from_minibuffer && interpreter.selected_window_id() == interpreter.minibuffer_window_id()
+}
+
 /// The echo row's paint: an active minibuffer renders from its buffer
 /// with the face text properties read_minibuf applied (the prompt's
 /// face); every other echo — messages, key progress, errors — paints in
@@ -4258,10 +4325,33 @@ fn compose_echo_row(
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
 ) -> (PaintRow, bool, Option<usize>) {
     let mut row = PaintRow::blank(cols);
+    let mut message_cursor = None;
     let minibuffer_id = if frontend_echo.is_empty() {
         interpreter
             .active_minibuffer_buffer_id()
             .filter(|id| interpreter.has_buffer_id(*id))
+            .and_then(|id| {
+                let buffer = if id == interpreter.current_buffer_id() {
+                    &interpreter.buffer
+                } else {
+                    interpreter
+                        .get_buffer_by_id(id)
+                        .unwrap_or(&interpreter.buffer)
+                };
+                // The minibuffer command loop mirrors its prompt text into
+                // the echo channel before blocking.  A different live value
+                // is an intentional transient message (notably the value
+                // printed by eval-expression after a nested read) and owns
+                // the echo area until the next input event.  Printing to the
+                // echo stream leaves the hardware cursor after that value.
+                match crate::lisp::primitives::echo_area_message() {
+                    Some(message) if message != buffer.buffer_string() => {
+                        message_cursor = Some(message.chars().count());
+                        None
+                    }
+                    _ => Some(id),
+                }
+            })
     } else {
         None
     };
@@ -4448,7 +4538,7 @@ fn compose_echo_row(
         });
         row.overlay(from.min(cols), to.min(cols), attrs);
     }
-    (row, false, None)
+    (row, false, message_cursor)
 }
 
 /// GNU display strings can carry a non-nil `cursor' property selecting the
@@ -5278,6 +5368,32 @@ mod tests {
     }
 
     #[test]
+    fn point_precedes_a_point_max_overlay_after_string() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = crate::lisp::reader::Reader::new(
+            r#"(progn
+                 (insert "alp")
+                 (let ((preview (make-overlay (point-max) (point-max))))
+                   (overlay-put preview 'after-string "haBeta")))"#,
+        )
+        .read()
+        .expect("point-max after-string probe should parse")
+        .expect("point-max after-string probe should exist");
+        interp
+            .eval(&form, &mut env)
+            .expect("point-max after-string probe should evaluate");
+
+        let visual = visual_line_at(&interp.buffer, &InvisibilitySpec::default(), 1);
+        assert_eq!(visual.text, "alphaBeta");
+        assert_eq!(
+            visual.map,
+            vec![0, 1, 2, 3],
+            "point at the overlay boundary stays before its after-string"
+        );
+    }
+
+    #[test]
     fn overlay_display_string_replaces_its_covered_buffer_range() {
         let mut interp = Interpreter::new();
         let mut env: Env = Vec::new();
@@ -5678,6 +5794,87 @@ mod tests {
             .eval(&form, &mut env)
             .expect("cursor display string should evaluate");
         assert_eq!(tty_string_cursor_position(&value), Some(0));
+    }
+
+    #[test]
+    fn tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows() {
+        let mut interpreter = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let setup = crate::lisp::reader::Reader::new(
+            "(progn
+               (setq tty--pre-redisplay-argument 'unset)
+               (setq pre-redisplay-function
+                     #'(lambda (windows)
+                         (setq tty--pre-redisplay-argument windows))))",
+        )
+        .read()
+        .expect("pre-redisplay setup parses")
+        .expect("pre-redisplay setup exists");
+        interpreter
+            .eval(&setup, &mut env)
+            .expect("pre-redisplay setup evaluates");
+
+        run_pre_redisplay_function(&mut interpreter, &mut env);
+
+        assert_eq!(
+            interpreter.lookup_var("tty--pre-redisplay-argument", &env),
+            Some(Value::T)
+        );
+    }
+
+    #[test]
+    fn active_minibuffer_only_owns_cursor_while_its_window_is_selected() {
+        let mut interpreter = crate::batch::initialize_interactive_interpreter()
+            .expect("interactive Lisp initializes");
+        let mut env: Env = Vec::new();
+        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        let ordinary_window = interpreter.selected_window_id();
+        let active = crate::lisp::primitives::activate_minibuffer(
+            &mut interpreter,
+            &Value::String("Prompt: ".into()),
+            &Value::String("".into()),
+            Value::Nil,
+            &mut env,
+        )
+        .expect("minibuffer activates");
+
+        assert!(minibuffer_echo_owns_hardware_cursor(&interpreter, true));
+        interpreter.set_selected_window_id(ordinary_window);
+        assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, true));
+        assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, false));
+
+        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active);
+    }
+
+    #[test]
+    fn transient_printed_value_takes_precedence_over_an_active_minibuffer() {
+        let mut interpreter = crate::batch::initialize_interactive_interpreter()
+            .expect("interactive Lisp initializes");
+        let mut env: Env = Vec::new();
+        interpreter.set_variable("noninteractive", Value::Nil, &mut env);
+        let active = crate::lisp::primitives::activate_minibuffer(
+            &mut interpreter,
+            &Value::String("Outer: ".into()),
+            &Value::String("outer".into()),
+            Value::Nil,
+            &mut env,
+        )
+        .expect("minibuffer activates");
+        crate::lisp::primitives::set_echo_area_message(Some("\"inner\"".into()));
+
+        let (row, from_minibuffer, cursor) = compose_echo_row(
+            &mut interpreter,
+            &mut env,
+            "",
+            80,
+            &mut std::collections::HashMap::new(),
+        );
+
+        crate::lisp::primitives::set_echo_area_message(None);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active);
+        assert!(!from_minibuffer);
+        assert_eq!(cursor, Some(7));
+        assert_eq!(row.text.iter().take(7).collect::<String>(), "\"inner\"");
     }
 
     #[test]

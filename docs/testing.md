@@ -304,6 +304,15 @@ The supported pass-through environment knobs are:
 
 ## Recommended Workflow
 
+The built-in minibuffer and completion contract combines 113 exact upstream
+GNU Emacs 30.2 outcome comparisons with six strict interactive TTY journeys
+covering defaults/history, require-match recovery, metadata and annotations,
+the `*Completions*` window, completion preview/CAPF, recursive reads, and
+keyboard macros.  See
+[`docs/minibuffer-completion-compatibility.md`](minibuffer-completion-compatibility.md)
+for the commands, permanent scenario inventory, anti-cheat boundary, and
+scope.
+
 The deterministic network contract combines the complete upstream JSON-RPC,
 GnuTLS, network-stream, and JSON suites with a real one-shot localhost HTTP
 retrieval and the existing Eglot/lsp-mode application journeys.  See

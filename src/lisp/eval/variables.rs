@@ -27,9 +27,11 @@ impl Interpreter {
         prompt: String,
     ) -> MinibufferRuntimeState {
         let previous = self.minibuffer_runtime.clone();
+        self.minibuffer_activation_count = self.minibuffer_activation_count.saturating_add(1);
         self.minibuffer_runtime = MinibufferRuntimeState {
             active_buffer_id: Some(buffer_id),
             active_window_id: Some(window_id),
+            activation_id: Some(self.minibuffer_activation_count),
             depth: previous.depth.saturating_add(1),
             prompt: Some(prompt),
         };
@@ -49,6 +51,10 @@ impl Interpreter {
             .active_window_id
             .filter(|window_id| self.find_record(*window_id).is_some())
             .map(Value::Record)
+    }
+
+    pub(crate) fn active_minibuffer_activation_id(&self) -> Option<u64> {
+        self.minibuffer_runtime.activation_id
     }
 
     pub(crate) fn minibuffer_depth(&self) -> usize {

@@ -12561,6 +12561,47 @@ fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
 }
 
 #[test]
+fn string_case_conversion_preserves_properties_until_character_count_changes() {
+    let program = r#"
+        (let* ((stable (concat (propertize "al" 'face 'bold)
+                               (propertize "pha" 'face 'italic)))
+               (upper (upcase stable))
+               (lower (downcase stable))
+               (capitalized (capitalize stable))
+               (initials (upcase-initials stable))
+               (expanded (upcase (propertize "aßc" 'face 'bold))))
+          (list
+           (substring-no-properties upper)
+           (text-properties-at 0 upper) (text-properties-at 2 upper)
+           (substring-no-properties lower)
+           (text-properties-at 0 lower) (text-properties-at 2 lower)
+           (substring-no-properties capitalized)
+           (text-properties-at 0 capitalized) (text-properties-at 2 capitalized)
+           (substring-no-properties initials)
+           (text-properties-at 0 initials) (text-properties-at 2 initials)
+           (substring-no-properties expanded)
+           (text-properties-at 0 expanded)))
+    "#;
+    let expected = concat!(
+        "(\"ALPHA\" (face bold) (face italic) ",
+        "\"alpha\" (face bold) (face italic) ",
+        "\"Alpha\" (face bold) (face italic) ",
+        "\"Alpha\" (face bold) (face italic) \"ASSC\" nil)"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("case-property contract should parse")
+        .expect("case-property contract should contain a form");
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("case-property contract should evaluate");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn capitalize_uses_current_syntax_table_word_boundaries() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
@@ -12841,6 +12882,34 @@ fn completion_predicates_preserve_string_list_membership() {
         .expect("spawn large-stack test thread")
         .join()
         .expect("join large-stack test thread");
+}
+
+#[test]
+fn case_folded_try_completion_preserves_unextended_input_spelling() {
+    let program = r#"(let ((completion-ignore-case t))
+                       (list
+                        (try-completion "A" '("alpha" "alpine" "amber"))
+                        (try-completion "AL" '("alpha" "alpine" "amber"))
+                        (try-completion "aL" '("alpha" "alpine" "amber"))
+                        (try-completion "AM" '("alpha" "alpine" "amber"))))"#;
+    let expected = r#"("A" "alp" "alp" "amber")"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("case-folded completion contract should parse")
+        .expect("case-folded completion contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("case-folded completion contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("case-folded completion result should parse")
+            .expect("case-folded completion result should exist")
+    );
 }
 
 #[test]
@@ -14272,6 +14341,63 @@ fn keyboard_macro_records_input_read_inside_a_command() {
             Value::Integer(114),
             Value::Integer(97),
         ]))
+    );
+}
+
+#[test]
+fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(progn
+             (defun emaxx-test-completion-command (value)
+               (interactive
+                (list (completing-read
+                       "Macro fruit: " '("apple" "banana") nil t)))
+               (setq emaxx-test-completion-value value))
+             (setq emaxx-test-completion-value nil))"#,
+    )
+    .expect("define a completing command for macro recording");
+    let script = std::rc::Rc::new(std::cell::RefCell::new(
+        "ba\t\r"
+            .chars()
+            .rev()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect::<Vec<_>>(),
+    ));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+
+    call(&mut interp, "start-kbd-macro", &[Value::Nil], &mut env)
+        .expect("start keyboard macro recording");
+    crate::lisp::primitives::execute_command_binding(
+        &mut interp,
+        &mut env,
+        Value::Symbol("emaxx-test-completion-command".into()),
+        &[Value::Integer(3), Value::Integer(99)],
+        Value::Integer(99),
+    )
+    .expect("record a command and its minibuffer input");
+    set_tty_event_reader(None);
+    call(&mut interp, "end-kbd-macro", &[], &mut env).expect("finish keyboard macro recording");
+
+    assert_eq!(
+        interp.lookup_var("emaxx-test-completion-value", &env),
+        Some(Value::String("banana".into()))
+    );
+    assert_eq!(
+        interp.lookup_var("last-kbd-macro", &env),
+        Some(Value::list([
+            Value::Symbol("vector-literal".into()),
+            Value::Integer(3),
+            Value::Integer(99),
+            Value::Integer(98),
+            Value::Integer(97),
+            Value::Integer(9),
+            Value::Integer(13),
+        ])),
+        "recursive minibuffer reads already record their terminal events"
     );
 }
 
@@ -16878,6 +17004,37 @@ fn read_string_history_keeps_the_minibuffer_map_and_initial_properties() {
 }
 
 #[test]
+fn live_read_string_records_an_accepted_default_in_history() {
+    let (mut interp, mut env) = upstream_interactive_interpreter();
+    interp.set_variable("emaxx-default-history", Value::Nil, &mut env);
+    let script = std::rc::Rc::new(std::cell::RefCell::new(vec![Value::Integer(13)]));
+    let feed = std::rc::Rc::clone(&script);
+    set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
+
+    let result = call(
+        &mut interp,
+        "read-string",
+        &[
+            Value::String("First: ".into()),
+            Value::Nil,
+            Value::Symbol("emaxx-default-history".into()),
+            Value::String("alpha".into()),
+        ],
+        &mut env,
+    );
+    set_tty_event_reader(None);
+
+    assert_eq!(
+        result.expect("RET accepts the read-string default"),
+        Value::String("alpha".into())
+    );
+    assert_eq!(
+        interp.lookup_var("emaxx-default-history", &env),
+        Some(Value::list([Value::String("alpha".into())]))
+    );
+}
+
+#[test]
 fn tty_minibuffer_edits_complete_and_recall_history() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -17176,6 +17333,7 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
 fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
+    assert_eq!(interp.active_minibuffer_activation_id(), None);
     let entry = call(&mut interp, "selected-window", &[], &mut env).expect("entry window");
     let outer = crate::lisp::primitives::activate_minibuffer(
         &mut interp,
@@ -17185,6 +17343,9 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         &mut env,
     )
     .expect("outer minibuffer activates");
+    let outer_activation = interp
+        .active_minibuffer_activation_id()
+        .expect("outer activation has an identity");
     assert_eq!(
         call(&mut interp, "minibuffer-selected-window", &[], &mut env).expect("outer entry query"),
         entry,
@@ -17201,6 +17362,10 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         &mut env,
     )
     .expect("nested minibuffer activates");
+    let inner_activation = interp
+        .active_minibuffer_activation_id()
+        .expect("inner activation has an identity");
+    assert!(inner_activation > outer_activation);
     assert_eq!(
         call(&mut interp, "minibuffer-selected-window", &[], &mut env).expect("inner entry query"),
         outer_minibuffer,
@@ -17209,12 +17374,18 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
 
     crate::lisp::primitives::restore_active_minibuffer(&mut interp, inner);
     assert_eq!(
+        interp.active_minibuffer_activation_id(),
+        Some(outer_activation),
+        "unwinding a nested read restores its outer sizing identity"
+    );
+    assert_eq!(
         call(&mut interp, "minibuffer-selected-window", &[], &mut env)
             .expect("restored outer query"),
         entry,
         "unwinding the nested read restores the outer entry window"
     );
     crate::lisp::primitives::restore_active_minibuffer(&mut interp, outer);
+    assert_eq!(interp.active_minibuffer_activation_id(), None);
     assert_eq!(
         call(&mut interp, "selected-window", &[], &mut env).expect("restored selection"),
         entry,
@@ -18573,10 +18744,11 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     interp.buffer.insert("alpha\nbeta\n");
 
     // "am" TAB completes to the common prefix; the second TAB makes no
-    // progress and pops *Completions*; "1" RET submits "ambig1".
+    // progress and pops *Completions*; M-v selects that window and RET
+    // submits its first candidate.
     let script: std::rc::Rc<std::cell::RefCell<Vec<Value>>> =
         std::rc::Rc::new(std::cell::RefCell::new(
-            "am\t\t1\r"
+            "am\t\t\x1bv\r"
                 .chars()
                 .rev()
                 .map(|ch| Value::Integer(ch as i64))
@@ -18586,12 +18758,12 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     set_tty_event_reader(Some(Box::new(move || feed.borrow_mut().pop())));
     // The frame-redraw hook runs once per minibuffer iteration; observing
     // the layout there sees the pop-up while the read is still live.
-    type LayoutSnapshots = Vec<Vec<(String, usize)>>;
+    type LayoutSnapshots = Vec<(Option<String>, Vec<(String, usize, bool)>)>;
     let observed: std::rc::Rc<std::cell::RefCell<LayoutSnapshots>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let sink = std::rc::Rc::clone(&observed);
     crate::lisp::primitives::set_tty_frame_redraw(Some(Box::new(move |interp, _env| {
-        let snapshot = crate::lisp::primitives::window_render_layout(interp)
+        let windows = crate::lisp::primitives::window_render_layout(interp)
             .into_iter()
             .map(|info| {
                 let name = if info.buffer_id == interp.current_buffer_id() {
@@ -18602,10 +18774,11 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
                         .map(|buffer| buffer.name.clone())
                         .unwrap_or_default()
                 };
-                (name, info.height)
+                (name, info.height, info.selected)
             })
             .collect();
-        sink.borrow_mut().push(snapshot);
+        sink.borrow_mut()
+            .push((crate::lisp::primitives::echo_area_message(), windows));
     })));
     let result = call(
         &mut interp,
@@ -18629,19 +18802,34 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     let observed = observed.borrow();
     let popped: Vec<_> = observed
         .iter()
-        .filter(|snapshot| snapshot.iter().any(|(name, _)| name == "*Completions*"))
+        .filter(|(_, windows)| windows.iter().any(|(name, _, _)| name == "*Completions*"))
         .collect();
     assert!(
         !popped.is_empty(),
         "the ambiguous TAB shows *Completions* while the read is live: {observed:?}"
     );
-    let (_, height) = popped[0]
-        .iter()
-        .find(|(name, _)| name == "*Completions*")
-        .expect("completions window in snapshot");
     // Content: two help lines, a blank, the count line, two candidates —
     // six lines plus the mode line, GNU's fit-window-to-buffer answer.
-    assert_eq!(*height, 7, "the pop-up fits its candidate list");
+    for (_, windows) in &popped {
+        let (_, height, _) = windows
+            .iter()
+            .find(|(name, _, _)| name == "*Completions*")
+            .expect("completions window in snapshot");
+        assert_eq!(*height, 7, "the pop-up stays fitted after selection");
+    }
+    let (selected_echo, _) = popped
+        .iter()
+        .find(|(_, windows)| {
+            windows
+                .iter()
+                .any(|(name, _, selected)| name == "*Completions*" && *selected)
+        })
+        .expect("M-v selects the completions window");
+    assert_eq!(
+        selected_echo.as_deref(),
+        Some("Pick: ambig"),
+        "selecting *Completions* keeps the active minibuffer in the echo area"
+    );
 
     let final_layout = crate::lisp::primitives::window_render_layout(&interp);
     assert_eq!(

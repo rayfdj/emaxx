@@ -2133,6 +2133,302 @@ SCENARIOS += [
     ),
 ]
 
+MINIBUFFER_COMPLETION_SCENARIO_NAMES = (
+    "minibuffer-default-history",
+    "completion-require-match-recovery",
+    "completion-metadata-navigation",
+    "completion-preview-capf",
+    "recursive-minibuffer",
+    "keyboard-macro-minibuffer",
+)
+
+SCENARIOS += [
+    # Accept a real default, then recall that submission through a named
+    # history variable.  The closing record proves values and cleanup rather
+    # than accepting two equally inert prompt implementations as parity.
+    (
+        "minibuffer-default-history",
+        "completion fixture\n",
+        [
+            action(
+                "open-defaulted-read",
+                b"\x1b:(progn (setq ttydiff--history nil) "
+                b"(setq ttydiff--first (read-string \"First: \" nil "
+                b"'ttydiff--history \"alpha\")))\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="First:",
+            ),
+            action("accept-default", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "inspect-default-and-history",
+                b"\x1b:(message \"I31 first=%S\" "
+                b"(list ttydiff--first ttydiff--history))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text="I31 first=",
+            ),
+            action(
+                "open-history-read",
+                b"\x1b:(setq ttydiff--second "
+                b"(read-string \"Second: \" nil 'ttydiff--history))\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="Second:",
+            ),
+            action("recall-default", b"\x1bp", require_text="alpha"),
+            action("submit-recalled-default", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-default-history-and-cleanup",
+                b"\x1b:(message \"I31 history=%S\" "
+                b"(list ttydiff--first ttydiff--second ttydiff--history "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text=
+                '"I31 history=(\\"alpha\\" \\"alpha\\" (\\"alpha\\") nil)"',
+            ),
+        ],
+    ),
+    # A require-match read must reject an invalid submission without losing
+    # the live minibuffer, then accept a valid correction and restore state.
+    (
+        "completion-require-match-recovery",
+        "completion fixture\n",
+        [
+            action(
+                "open-required-completion",
+                b"\x1b:(setq ttydiff--fruit "
+                b"(completing-read \"Fruit: \" "
+                b"'(\"apple\" \"apricot\" \"banana\") nil t))\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="Fruit:",
+            ),
+            action("type-invalid-candidate", b"pear"),
+            action(
+                "reject-invalid-candidate",
+                b"\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="Fruit: pear",
+            ),
+            action("replace-with-valid-candidate", b"\x01\x0bapple"),
+            action("accept-valid-candidate", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-required-result-and-cleanup",
+                b"\x1b:(message \"I31 require=%S\" "
+                b"(list ttydiff--fruit (active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text='"I31 require=(\\"apple\\" nil)"',
+            ),
+        ],
+    ),
+    # Exercise programmed metadata, a category-specific completion style,
+    # case folding, annotation rendering, and navigation in *Completions*.
+    (
+        "completion-metadata-navigation",
+        "completion fixture\n",
+        [
+            action(
+                "open-metadata-completion",
+                b"\x1b:(progn "
+                b"(defun ttydiff--annotate (candidate) "
+                b"(concat \" [\" (upcase candidate) \"]\")) "
+                b"(defun ttydiff--table (string predicate action) "
+                b"(if (eq action 'metadata) "
+                b"'(metadata (category . ttydiff-fruit) "
+                b"(annotation-function . ttydiff--annotate)) "
+                b"(complete-with-action action "
+                b"'(\"alpha\" \"alpine\" \"amber\") string predicate))) "
+                b"(setq completion-category-overrides "
+                b"'((ttydiff-fruit (styles basic))) "
+                b"completion-ignore-case t) "
+                b"(setq ttydiff--metadata-choice "
+                b"(completing-read \"Meta fruit: \" "
+                b"#'ttydiff--table nil t)))\r",
+                settle=4.0,
+                quiet=0.8,
+                require_text="Meta fruit:",
+            ),
+            action("type-case-folded-prefix", b"A"),
+            action(
+                "show-annotated-completions",
+                b"\t\t",
+                settle=4.0,
+                quiet=1.0,
+                require_text="[ALPHA]",
+            ),
+            action("enter-completions-window", b"\x1bv"),
+            action("select-next-completion", b"n"),
+            action("choose-completion", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-metadata-choice-and-cleanup",
+                b"\x1b:(message \"I31 metadata=%S\" "
+                b"(list ttydiff--metadata-choice "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text='"I31 metadata=(\\"alpine\\" nil)"',
+            ),
+        ],
+    ),
+    # Built-in completion-preview must render the CAPF candidate on the real
+    # terminal, cycle it, insert it, and remove its overlay afterwards.
+    (
+        "completion-preview-capf",
+        "; completion preview fixture\n",
+        [
+            action(
+                "configure-completion-preview",
+                b"\x1b:(progn "
+                b"(goto-char (point-max)) "
+                b"(defun ttydiff--preview-capf () "
+                b"(list (line-beginning-position) (point) "
+                b"'(\"alphaBeta\" \"alphaGamma\") :exclusive 'no)) "
+                b"(setq-local completion-at-point-functions "
+                b"'(ttydiff--preview-capf) "
+                b"completion-preview-minimum-symbol-length 1) "
+                b"(completion-preview-mode 1) "
+                b"(local-set-key (kbd \"C-n\") "
+                b"#'completion-preview-next-candidate) nil)\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "show-first-preview",
+                b"alp",
+                settle=3.0,
+                quiet=0.5,
+                require_text="alphaBeta",
+            ),
+            action(
+                "cycle-preview",
+                b"\x0e",
+                settle=2.0,
+                quiet=0.5,
+                require_text="alphaGamma",
+            ),
+            action("insert-preview", b"\t", settle=2.0, quiet=0.5),
+            action(
+                "verify-preview-result-and-cleanup",
+                b"\x1b:(message \"I31 capf=%S\" "
+                b"(list (subst-char-in-string ?\\n ?| "
+                b"(buffer-substring-no-properties "
+                b"(point-min) (point-max))) "
+                b"(and (boundp 'completion-preview--overlay) "
+                b"(overlayp completion-preview--overlay)) "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text=
+                '"I31 capf=(\\"; completion preview fixture|alphaGamma\\" nil nil)"',
+            ),
+        ],
+        ".el",
+    ),
+    # Enter eval-expression from an active minibuffer and have that command
+    # start another read.  Record depths in setup hooks, then prove both reads
+    # returned and the minibuffer stack fully unwound.
+    (
+        "recursive-minibuffer",
+        "completion fixture\n",
+        [
+            action(
+                "open-outer-minibuffer",
+                b"\x1b:(progn (setq enable-recursive-minibuffers t "
+                b"ttydiff--outer-depth nil ttydiff--inner-depth nil) "
+                b"(setq ttydiff--outer "
+                b"(minibuffer-with-setup-hook "
+                b"(lambda () (setq ttydiff--outer-depth "
+                b"(minibuffer-depth))) (read-string \"Outer: \"))))\r",
+                settle=4.0,
+                quiet=0.8,
+                require_text="Outer:",
+            ),
+            action("type-outer-value", b"outer"),
+            action(
+                "open-inner-minibuffer",
+                b"\x1b:(setq ttydiff--inner "
+                b"(minibuffer-with-setup-hook "
+                b"(lambda () (setq ttydiff--inner-depth "
+                b"(minibuffer-depth))) (read-string \"Inner: \")))\r",
+                settle=4.0,
+                quiet=0.8,
+                require_text="Inner:",
+            ),
+            action("type-inner-value", b"inner"),
+            action(
+                "submit-inner-value",
+                b"\r",
+                settle=4.0,
+                quiet=0.5,
+                require_text="Outer: outer",
+            ),
+            action("submit-outer-value", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-recursive-values-depths-and-cleanup",
+                b"\x1b:(message \"I31 recursive=%S\" "
+                b"(list ttydiff--outer ttydiff--inner "
+                b"ttydiff--outer-depth ttydiff--inner-depth "
+                b"(minibuffer-depth) (active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text=
+                '"I31 recursive=(\\"outer\\" \\"inner\\" 1 2 0 nil)"',
+            ),
+        ],
+    ),
+    # Record and replay an actual keyboard macro whose interactive command
+    # performs a require-match completing read.  This crosses the terminal,
+    # command loop, macro recorder/player, and minibuffer input lifecycle.
+    (
+        "keyboard-macro-minibuffer",
+        "completion fixture\n",
+        [
+            action(
+                "define-macro-completion-command",
+                b"\x1b:(progn "
+                b"(defun ttydiff--macro-choice (value) "
+                b"(interactive (list (completing-read \"Macro fruit: \" "
+                b"'(\"apple\" \"banana\") nil t))) "
+                b"(setq ttydiff--macro-values "
+                b"(cons value ttydiff--macro-values))) "
+                b"(global-set-key (kbd \"C-c c\") "
+                b"#'ttydiff--macro-choice) "
+                b"(setq ttydiff--macro-values nil))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("start-minibuffer-macro", b"\x18("),
+            action(
+                "invoke-recorded-completion",
+                b"\x03c",
+                settle=2.0,
+                quiet=0.5,
+                require_text="Macro fruit:",
+            ),
+            action("record-candidate", b"ba\t\r", settle=2.0, quiet=0.5),
+            action("end-minibuffer-macro", b"\x18)"),
+            action(
+                "clear-recording-result",
+                b"\x1b:(setq ttydiff--macro-values nil)\r",
+            ),
+            action("replay-minibuffer-macro", b"\x18e", settle=3.0, quiet=0.5),
+            action(
+                "verify-replayed-minibuffer-value",
+                b"\x1b:(message \"I31 macro=%S\" "
+                b"(list ttydiff--macro-values "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text='"I31 macro=((\\"banana\\") nil)"',
+            ),
+        ],
+    ),
+]
+
 ADVERSARIAL_COMMAND_SCENARIO_NAMES = (
     "kill-buffer-cancel-save",
     "revert-buffer-decline",

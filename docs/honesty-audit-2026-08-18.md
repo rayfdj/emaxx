@@ -4901,3 +4901,78 @@ After the late main merge, its affected TTY/completion offline tests passed
 Rust production or Rust test source changed after the full gate.  The merge
 added only its separately certified TTY Python runner/test correction and the
 two retained evidence sections described above.
+
+## 2026-09-03 issue 31 minibuffer/completion adversarial audit
+
+The issue-31 candidate starts from `origin/main` commit
+`589f82ba1c562c44b05cdea6a2d4c627e628e876` on the dedicated
+`issue-31-minibuffer-completion` branch.  A refreshed `tty-frontend` had no
+commit absent from main, so no tty merge was manufactured and the issue work
+was not placed directly on that shared branch.  The target is the pinned GNU
+Emacs 30.2 source at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, not
+Emacs 31.
+
+Production corrections are at shared semantic boundaries.  Consecutive and
+nested minibuffer reads receive distinct activation identities so grow-only
+TTY height cannot leak through a reused minibuffer buffer.  An accepted string
+default enters the named history through the ordinary history-length and
+duplicate policy.  Events already consumed by the recursive minibuffer reader
+are not appended a second time to a keyboard macro.  Case-folded completion
+preserves an unextended input's spelling, while same-length case conversion
+preserves string properties and character-count-changing conversion follows
+GNU's rebuilt-string path.  Redisplay places point before an overlay
+after-string, invokes the Lisp pre-redisplay coordinator, highlights the
+selected completion through its real cursor-face overlay, assigns the hardware
+cursor to the selected window rather than every active minibuffer, and mirrors
+the active minibuffer buffer even while `*Completions*` is selected.
+
+The adversarial pass found and corrected two evidence defects before
+certification.  First, final TTY records initially required only an `I31`
+prefix.  All six now require an independently specified exact return,
+history/depth, buffer/overlay, and cleanup record in addition to exact
+GNU/Emaxx terminal comparison.  Second, checkpoints aimed at two-second
+transient messages were sensitive to the runner's deliberate serial subject
+startup.  The permanent checks compare the stable retained invalid input and
+restored outer prompt; the following correction/acceptance actions and exact
+final records prove that the reads rejected, recovered, returned, and unwound.
+The earlier timing-sensitive and geometry-divergent runs are rejected, not
+counted as passes.
+
+The final static scan found no issue fixture, scenario, expected answer,
+editor-identity, environment, target, or oracle branch in production; no
+runtime oracle execution or delegation; and no new ignore, skip, retry,
+normalization, accepted-failure path, weakened assertion, or warning
+suppression.  The only test-input literals found under `src` are inside
+regression modules.  All 15 repository anti-cheat tests passed with zero
+failures and zero ignored.  `python3 -m unittest tools/test_ttydiff.py` passed
+26/26, `cargo fmt --all -- --check` was clean, and
+`cargo clippy --profile gate --all-targets --all-features -- -D warnings`
+completed with zero warnings.
+
+The definitive six-scenario TTY run passed every named checkpoint against GNU
+Emacs 30.2, including exact text, attributes, mode lines, echo areas, cursor
+positions, and the pinned semantic records.  The final upstream replays share
+dirty-candidate source hash
+`d3e1e921facd94d3768aaae2bf9181ba3475d240901dd96b8c8bb996222f34e0`:
+`test/lisp/minibuffer-tests.el` matched 31/31 at
+`run-1788411883969644000-41459`, `completion-preview-tests.el` matched 11/11
+at `run-1788411929234693000-41669`, `completion-tests.el` matched 6/6 at
+`run-1788411944841031000-41823`, and `test/src/minibuf-tests.el` matched 65/65
+at `run-1788411959437722000-41458`.  The last three small suites reported
+test-body slowdowns of about 3.6x, 4.7x, and 7.2x respectively; those are
+disclosed performance results, not semantic mismatches.
+
+The authoritative publication gate then ran once, serially, with the optimized
+`gate` profile: `LANG=C LC_ALL=C RUST_TEST_THREADS=1
+RUST_MIN_STACK=134217728 cargo test --profile gate -- --test-threads=1`.
+It exited successfully.  The library target contained 2301 tests: 2299 passed,
+zero failed, and exactly two reviewed opt-in TTY end-to-end gates were ignored,
+`tty::tty_differential_end_to_end` and `tty::tty_smoke_end_to_end`.  Those
+wrappers are not substitutes for issue coverage: the six issue-specific TTY
+journeys above ran explicitly and passed, as did the library's minibuffer,
+completion, completion-preview, history, recursive-read, keyboard-macro,
+redisplay, cursor, and case-conversion regressions.  The compat harness passed
+38/38, perf harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle 5/5;
+the main and doc-test targets contained no tests.  No concurrent test or build
+was launched from this checkout while the gate was active, and no production
+or test source changed after it completed.

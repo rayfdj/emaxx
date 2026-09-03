@@ -1020,6 +1020,31 @@ pub(crate) fn execute_command_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
+    execute_command_binding_inner(interp, env, binding, keys, last_event, true)
+}
+
+/// Execute a command whose input events were already recorded by a recursive
+/// reader.  `read_char' records those events as they arrive; adding the same
+/// resolved key sequence again would duplicate minibuffer input in a keyboard
+/// macro definition.
+pub(crate) fn execute_recorded_input_command_binding(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+) -> Result<(), LispError> {
+    execute_command_binding_inner(interp, env, binding, keys, last_event, false)
+}
+
+fn execute_command_binding_inner(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+    record_keys: bool,
+) -> Result<(), LispError> {
     // keyboard.c refreshes point_before_last_command_or_undo at every
     // command boundary, independently of whether simple.el decides that a
     // new undo-list boundary is needed.  Without this, a motion between two
@@ -1070,9 +1095,10 @@ pub(crate) fn execute_command_binding(
     // macro is being defined.  The command's end keys are deliberately
     // provisional: `end-kbd-macro' truncates back to the last command
     // boundary, while an ordinary completed command commits them below.
-    if interp
-        .lookup_var("defining-kbd-macro", env)
-        .is_some_and(|value| value.is_truthy())
+    if record_keys
+        && interp
+            .lookup_var("defining-kbd-macro", env)
+            .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_definition.extend_from_slice(keys);
     }
