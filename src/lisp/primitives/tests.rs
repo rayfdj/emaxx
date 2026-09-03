@@ -5851,11 +5851,19 @@ fn accept_process_output_just_this_one_suspends_distractor_filters_like_emacs() 
                               :command (list shell-file-name shell-command-switch
                                              "sleep 0.15; printf target")
                               :noquery t :sentinel #'ignore))
+                            ;; The distractor must outlive the wait.  A
+                            ;; distractor that exits during it changes the
+                            ;; measurement: process.c's status_notify reads
+                            ;; any output remaining from a process whose
+                            ;; status changed, JUST-THIS-ONE or not, and
+                            ;; whether that exit lands inside the 0.15 s
+                            ;; window is host timing (the Linux oracle
+                            ;; answers "distractor" there, Darwin "").
                             (distractor
                              (make-process
                               :name "apo-distractor" :buffer distractor-buffer
                               :command (list shell-file-name shell-command-switch
-                                             "printf distractor")
+                                             "printf distractor; sleep 2")
                               :noquery t :sentinel #'ignore)))
                        (unwind-protect
                            (list

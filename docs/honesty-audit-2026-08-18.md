@@ -78,6 +78,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 146 | rendering a non-selected mode line overwrote that window's independent point slot | FIXED 2026-09-02 |
 | 147 | graphical fringe display strings leaked their source text onto TTY frames | FIXED 2026-09-02 |
 | 148 | motion between edits left undo's point-before-command record stale when a boundary already existed | FIXED 2026-09-02 |
+| 149 | status_notify's drain of an exited process's remaining output is not modeled: during a JUST-THIS-ONE wait GNU still delivers a distractor's leftover output once it exits, Emaxx never does | OPEN (recorded 2026-09-03, Linux oracle) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -5032,3 +5033,32 @@ after the targeted file-name-handler tests and a 116/116 files-tests
 replay, and again after rebasing onto the Darwin certification commit
 `1394e8d` (2277 library tests, bins and integration green;
 run-1788358068697089711-3005).
+
+## 2026-09-03 finding 149: a Darwin-pinned race in the JUST-THIS-ONE contract
+
+Rebasing the copy-family change onto main `e9778fb` (eleven certification
+commits, none touching the copy family; `add-name-to-file` still fails on a
+build of that main) and re-gating stopped the grouped runner at one
+primitives test that arrived with the Tramp certification (`b5ee077`):
+`accept_process_output_just_this_one_suspends_distractor_filters_like_emacs`.
+Its failure is on the ORACLE side of the contract -- the Linux GNU answers
+`(t "distractor" "target" nil "distractor")` where the literal, pinned on
+Darwin, says `(t "" "target" t "distractor")` -- deterministically, three of
+three runs in isolation.  The program's distractor is `printf distractor`,
+which exits inside the target's 0.15 s window; process.c's status_notify then
+"reads any output that remains" from a process whose status changed, whether
+or not the wait is JUST-THIS-ONE.  Whether that exit lands inside the window
+is host timing, so the literal encoded Darwin's schedule, not the mechanism
+the test names.  With the distractor kept alive (`printf distractor; sleep
+2`) the Linux oracle answers the pinned literal three of three and Emaxx
+matches; the test now uses that form, its assertion unchanged.
+
+The probe also exposed a real gap, recorded as finding 149 rather than
+folded into this change: for the short-lived distractor Emaxx answers
+`(t "" "target" t "distractor")` on Linux, i.e. it never performs the
+status_notify drain of an exited process's leftover output during a
+JUST-THIS-ONE wait.  That is a process.c mechanism to port on its own.
+
+With the test corrected, the grouped gate on this two-commit tree over main
+`e9778fb` passed every group (2303 library outcomes with the two opt-in TTY
+ignores, bins and integration green; run-1788447199271435854-9123).
