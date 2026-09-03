@@ -2392,13 +2392,18 @@ pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) 
     if let Value::Record(id) = keymap {
         refresh_runtime_keymap_public_view(interp, id)
             .expect("new runtime keymap has a valid public view");
+        return interp
+            .find_record(id)
+            .and_then(|record| record.slots.get(KEYMAP_PUBLIC_VIEW_SLOT))
+            .cloned()
+            .expect("new runtime keymap has a public cons root");
     }
     keymap
 }
 
 pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
     let keymap = make_runtime_keymap(interp, name);
-    let Value::Record(id) = keymap.clone() else {
+    let Some(id) = keymap_record_id(interp, &keymap) else {
         return keymap;
     };
     let char_table = interp.make_char_table(None, Value::Nil);
@@ -2422,30 +2427,7 @@ pub(crate) fn runtime_keymap_public_view(interp: &Interpreter, keymap: &Value) -
 }
 
 pub(crate) fn public_keymap_value(interp: &Interpreter, value: &Value) -> Value {
-    fn project(interp: &Interpreter, value: &Value, seen: &mut HashSet<usize>) -> Value {
-        if let Some(view) = runtime_keymap_public_view(interp, value) {
-            return view;
-        }
-        let Some((car, cdr)) = value.cons_cells() else {
-            return value.clone();
-        };
-        let id = car.cell_id();
-        if !seen.insert(id) {
-            return value.clone();
-        }
-        let original_car = car.borrow().clone();
-        let original_cdr = cdr.borrow().clone();
-        let projected_car = project(interp, &original_car, seen);
-        let projected_cdr = project(interp, &original_cdr, seen);
-        seen.remove(&id);
-        if values_eql(&projected_car, &original_car) && values_eql(&projected_cdr, &original_cdr) {
-            value.clone()
-        } else {
-            Value::cons(projected_car, projected_cdr)
-        }
-    }
-
-    project(interp, value, &mut HashSet::new())
+    runtime_keymap_public_view(interp, value).unwrap_or_else(|| value.clone())
 }
 
 pub(crate) fn refresh_runtime_keymap_public_view(
@@ -2540,13 +2522,14 @@ pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
 }
 
 pub(crate) fn keymap_record_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    let Value::Record(id) = value else {
-        return None;
-    };
-    interp
-        .find_record(*id)
-        .filter(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
-        .map(|_| *id)
+    match value {
+        Value::Record(id) => interp
+            .find_record(*id)
+            .filter(|record| record.kind == crate::lisp::eval::RecordKind::Keymap)
+            .map(|_| *id),
+        Value::Cons(_) => interp.keymap_public_root_owner_id(value),
+        _ => None,
+    }
 }
 
 pub(crate) fn is_keymap_value(interp: &Interpreter, value: &Value) -> bool {

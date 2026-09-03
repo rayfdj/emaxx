@@ -5,7 +5,7 @@ use num_traits::ToPrimitive;
 use std::fmt;
 use std::{
     borrow::Borrow,
-    cell::{Cell, Ref, RefCell, RefMut},
+    cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
     collections::{HashMap, HashSet},
     hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
@@ -20,7 +20,7 @@ const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConsMutationEpoch(u64);
 
-const CONS_MUTATION_WATCH_KEY_LIMIT: usize = 1 << 20;
+const CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT: usize = 1 << 20;
 
 #[derive(Default)]
 pub(crate) struct IdentityHasher(u64);
@@ -76,8 +76,8 @@ type ConsMutationWatchers = HashMap<usize, Vec<Weak<ConsMutationWatch>>, Identit
 /// (every `aset', `setcar', and buffer-local write lands here), so the
 /// watcher-map probe must cost nothing for fields no cache depends on.
 /// Stale bits from dead watchers only cause harmless extra probes; the
-/// filter resets whenever the watcher map is observed empty and at the
-/// bounded key-limit reset.
+/// filter resets whenever the watcher map is observed empty and is rebuilt
+/// when dead watcher keys are compacted.
 const CONS_MUTATION_BLOOM_WORDS: usize = 4096;
 
 type ConsMutationBloom = Option<Box<[u64; CONS_MUTATION_BLOOM_WORDS]>>;
@@ -94,6 +94,8 @@ thread_local! {
     static CONS_MUTATION_WATCHERS: RefCell<ConsMutationWatchers> =
         RefCell::new(ConsMutationWatchers::default());
     static CONS_MUTATION_WATCH_BLOOM: RefCell<ConsMutationBloom> = const { RefCell::new(None) };
+    static CONS_MUTATION_WATCH_NEXT_KEY_LIMIT: Cell<usize> =
+        const { Cell::new(CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT) };
 }
 
 pub(crate) fn cons_mutation_epoch() -> ConsMutationEpoch {
@@ -144,43 +146,46 @@ fn note_cons_mutation(field_id: usize) {
     }
 }
 
+fn retain_live_cons_mutation_watchers(watchers: &mut ConsMutationWatchers) {
+    watchers.retain(|_, watches| {
+        watches.retain(|watch| watch.strong_count() != 0);
+        !watches.is_empty()
+    });
+}
+
 fn register_cons_mutation_watchers(field_ids: &[usize], watch: &Rc<ConsMutationWatch>) {
     if field_ids.is_empty() {
         return;
     }
-    let reset = CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
-        let reset = watchers.len() >= CONS_MUTATION_WATCH_KEY_LIMIT;
-        if reset {
-            // Dead source forms can leave weak-only keys behind.  A rare
-            // bounded reset invalidates every still-live derivation before
-            // dropping those keys, so no cache can survive unsafely.
-            for watches in watchers.values() {
-                for watch in watches {
-                    if let Some(watch) = watch.upgrade() {
-                        watch.valid.set(false);
-                        if let Some(notification) = &watch.notification
-                            && !notification.queued.replace(true)
-                            && let Some(queue) = notification.queue.upgrade()
-                        {
-                            queue.dirty.borrow_mut().push(notification.key);
-                        }
-                    }
-                }
-            }
-            watchers.clear();
+    let rebuilt_field_ids = CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
+        let compact =
+            CONS_MUTATION_WATCH_NEXT_KEY_LIMIT.with(|limit| watchers.len() >= limit.get());
+        if compact {
+            retain_live_cons_mutation_watchers(watchers);
+            CONS_MUTATION_WATCH_NEXT_KEY_LIMIT.with(|limit| {
+                limit.set(
+                    watchers
+                        .len()
+                        .saturating_mul(2)
+                        .max(CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT),
+                );
+            });
         }
         let weak = Rc::downgrade(watch);
         for field_id in field_ids {
             watchers.entry(*field_id).or_default().push(weak.clone());
         }
-        reset
+        compact.then(|| watchers.keys().copied().collect::<Vec<_>>())
     });
     CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| {
         let bloom = bloom.get_or_insert_with(|| Box::new([0u64; CONS_MUTATION_BLOOM_WORDS]));
-        if reset {
+        let bloom_field_ids = if let Some(rebuilt_field_ids) = &rebuilt_field_ids {
             bloom.fill(0);
-        }
-        for field_id in field_ids {
+            rebuilt_field_ids.as_slice()
+        } else {
+            field_ids
+        };
+        for field_id in bloom_field_ids {
             let (word, bit) = cons_mutation_bloom_slot(*field_id);
             bloom[word] |= bit;
         }
@@ -760,14 +765,53 @@ pub struct BufferValue {
     pub name: SharedText,
 }
 
+/// The two tagged Lisp words generated code reads and writes directly.
+///
+/// This is the Rust representation of GNU `struct Lisp_Cons`'s live fields.
+/// It is the first field of `ConsCell`, so a cons allocated for the Rust
+/// evaluator has the same address and field offsets at the native boundary.
+#[repr(C, align(8))]
+#[derive(Debug)]
+pub(crate) struct ConsWords {
+    car: UnsafeCell<usize>,
+    cdr: UnsafeCell<usize>,
+}
+
+impl ConsWords {
+    pub(crate) fn new(car: usize, cdr: usize) -> Self {
+        Self {
+            car: UnsafeCell::new(car),
+            cdr: UnsafeCell::new(cdr),
+        }
+    }
+
+    pub(crate) fn car(&self) -> usize {
+        unsafe { *self.car.get() }
+    }
+
+    pub(crate) fn cdr(&self) -> usize {
+        unsafe { *self.cdr.get() }
+    }
+
+    pub(crate) fn set_car(&self, value: usize) {
+        unsafe { *self.car.get() = value };
+    }
+
+    pub(crate) fn set_cdr(&self, value: usize) {
+        unsafe { *self.cdr.get() = value };
+    }
+}
+
 /// The mutable payload of one Lisp cons.
 ///
 /// GNU allocates the car and cdr together as one `Lisp_Cons`.  Keeping the
 /// same ownership shape halves the allocation and reference-count traffic of
 /// Emaxx's former two-`Rc` representation while retaining independent field
 /// borrows for `setcar`, `setcdr`, reader fixups, and vector element slots.
+#[repr(C, align(8))]
 #[derive(Debug)]
 pub struct ConsCell {
+    words: ConsWords,
     pub(crate) car: ConsValueCell,
     pub(crate) cdr: ConsValueCell,
 }
@@ -775,24 +819,58 @@ pub struct ConsCell {
 /// One tracked field of a cons cell.
 ///
 /// Every mutable borrow advances the single mutation epoch used to validate
-/// all derived source-form caches. The wrapper has the same storage shape as
-/// its `RefCell<Value>` payload and keeps mutation tracking out of callers.
-#[repr(transparent)]
+/// all derived source-form caches.  A field that has crossed the native ABI
+/// also keeps the address and last-agreed value of its GNU `Lisp_Object`
+/// word.  Ordinary reads can therefore detect the overwhelmingly common
+/// unchanged case without entering the native heap's lookup tables.
 #[derive(Debug)]
-pub(crate) struct ConsValueCell(RefCell<Value>);
+pub(crate) struct ConsValueCell {
+    value: RefCell<Value>,
+    native_word: Cell<*const usize>,
+    native_agreed: Cell<usize>,
+}
 
 impl ConsValueCell {
     fn new(value: Value) -> Self {
-        Self(RefCell::new(value))
+        Self {
+            value: RefCell::new(value),
+            native_word: Cell::new(std::ptr::null()),
+            native_agreed: Cell::new(0),
+        }
+    }
+
+    fn attach_native_word(&self, native_word: *const usize, agreed: usize) {
+        self.native_agreed.set(agreed);
+        self.native_word.set(native_word);
+    }
+
+    fn detach_native_word(&self, native_word: *const usize) {
+        if self.native_word.get() == native_word {
+            self.native_word.set(std::ptr::null());
+        }
+    }
+
+    fn set_native_agreed(&self, agreed: usize) {
+        self.native_agreed.set(agreed);
+    }
+
+    #[inline(always)]
+    fn synchronize_native_write(&self) {
+        let native_word = self.native_word.get();
+        if !native_word.is_null() && unsafe { *native_word } != self.native_agreed.get() {
+            crate::lisp::native_comp::synchronize_cons_read(self as *const Self as usize);
+        }
     }
 
     pub(crate) fn borrow(&self) -> Ref<'_, Value> {
-        self.0.borrow()
+        self.synchronize_native_write();
+        self.value.borrow()
     }
 
     pub(crate) fn borrow_mut(&self) -> RefMut<'_, Value> {
+        self.synchronize_native_write();
         note_cons_mutation(self as *const Self as usize);
-        self.0.borrow_mut()
+        self.value.borrow_mut()
     }
 }
 
@@ -883,16 +961,51 @@ impl ConsCell {
     fn new(car: Value, cdr: Value) -> Self {
         LIVE_CONSES.with(|count| count.set(count.get() + 1));
         Self {
+            words: ConsWords::new(0, 0),
             car: ConsValueCell::new(car),
             cdr: ConsValueCell::new(cdr),
         }
+    }
+
+    pub(crate) fn from_native_words(car: usize, cdr: usize) -> SharedCons {
+        LIVE_CONSES.with(|count| count.set(count.get() + 1));
+        Rc::new(Self {
+            words: ConsWords::new(car, cdr),
+            car: ConsValueCell::new(Value::Nil),
+            cdr: ConsValueCell::new(Value::Nil),
+        })
     }
 
     pub(crate) fn identity(cell: &SharedCons) -> usize {
         Rc::as_ptr(cell) as usize
     }
 
-    fn mutation_field_ids(cell: &SharedCons) -> [usize; 2] {
+    pub(crate) fn native_words(cell: &SharedCons) -> *mut ConsWords {
+        std::ptr::from_ref(&cell.words).cast_mut()
+    }
+
+    /// Attach the Rust value cache to the two words generated code accesses.
+    /// Rust-created conses point at their own prefix; conses allocated by
+    /// generated code point at the owning native arena until that bridge is
+    /// detached.
+    pub(crate) unsafe fn attach_native_words(&self, native: *mut ConsWords, agreed: [usize; 2]) {
+        self.car
+            .attach_native_word(unsafe { (*native).car.get() }, agreed[0]);
+        self.cdr
+            .attach_native_word(unsafe { (*native).cdr.get() }, agreed[1]);
+    }
+
+    pub(crate) unsafe fn detach_native_words(&self, native: *mut ConsWords) {
+        self.car.detach_native_word(unsafe { (*native).car.get() });
+        self.cdr.detach_native_word(unsafe { (*native).cdr.get() });
+    }
+
+    pub(crate) fn set_native_words_agreed(&self, agreed: [usize; 2]) {
+        self.car.set_native_agreed(agreed[0]);
+        self.cdr.set_native_agreed(agreed[1]);
+    }
+
+    pub(crate) fn mutation_field_ids(cell: &SharedCons) -> [usize; 2] {
         [
             &cell.car as *const ConsValueCell as usize,
             &cell.cdr as *const ConsValueCell as usize,
@@ -1151,6 +1264,16 @@ thread_local! {
 #[derive(Clone, Debug)]
 pub struct EnvFrame(Rc<EnvFrameData>);
 
+#[derive(Debug, Default)]
+struct LexicalFrameState {
+    captured: Cell<bool>,
+    /// GNU closures share the `(SYMBOL . VALUE)` conses of their lexical
+    /// environment.  Keep weak references by binding position so differently
+    /// trimmed snapshots reuse the same cells without retaining dead
+    /// closures or conflating unrelated frames that bind the same name.
+    binding_cells: RefCell<Vec<Weak<ConsCell>>>,
+}
+
 #[derive(Clone, Debug)]
 struct EnvFrameData {
     bindings: Vec<(String, Value)>,
@@ -1168,6 +1291,7 @@ struct EnvFrameData {
     /// copied frames and nested closures share the original Lisp cells
     /// without a Lisp-visible marker or a process-global side table.
     lisp_environment: Option<Value>,
+    state: Rc<LexicalFrameState>,
 }
 
 impl EnvFrame {
@@ -1193,6 +1317,10 @@ impl EnvFrame {
             function_bindings: data.function_bindings,
             local_special_declarations: data.local_special_declarations.clone(),
             lisp_environment: data.lisp_environment.as_ref().map(copy),
+            state: Rc::new(LexicalFrameState {
+                captured: Cell::new(data.state.captured.get()),
+                binding_cells: RefCell::new(Vec::new()),
+            }),
         }))
     }
 
@@ -1203,6 +1331,7 @@ impl EnvFrame {
             function_bindings: false,
             local_special_declarations: Vec::new(),
             lisp_environment: None,
+            state: Rc::new(LexicalFrameState::default()),
         }))
     }
 
@@ -1213,6 +1342,7 @@ impl EnvFrame {
             function_bindings: false,
             local_special_declarations: Vec::new(),
             lisp_environment: None,
+            state: Rc::new(LexicalFrameState::default()),
         }))
     }
 
@@ -1227,6 +1357,10 @@ impl EnvFrame {
             function_bindings: false,
             local_special_declarations: Vec::new(),
             lisp_environment: Some(lisp_environment),
+            state: Rc::new(LexicalFrameState {
+                captured: Cell::new(true),
+                binding_cells: RefCell::new(Vec::new()),
+            }),
         }))
     }
 
@@ -1237,6 +1371,7 @@ impl EnvFrame {
             function_bindings: true,
             local_special_declarations: Vec::new(),
             lisp_environment: None,
+            state: Rc::new(LexicalFrameState::default()),
         }))
     }
 
@@ -1251,6 +1386,7 @@ impl EnvFrame {
             function_bindings: false,
             local_special_declarations: names.into_iter().map(|name| (0, name)).collect(),
             lisp_environment: None,
+            state: Rc::new(LexicalFrameState::default()),
         }))
     }
 
@@ -1266,7 +1402,67 @@ impl EnvFrame {
             function_bindings,
             local_special_declarations,
             lisp_environment: None,
+            state: Rc::new(LexicalFrameState {
+                captured: Cell::new(true),
+                binding_cells: RefCell::new(Vec::new()),
+            }),
         }))
+    }
+
+    pub(crate) fn mark_captured(&self) {
+        self.0.state.captured.set(true);
+    }
+
+    pub(crate) fn is_captured(&self) -> bool {
+        self.0.state.captured.get()
+    }
+
+    pub(crate) fn canonical_lisp_binding(
+        &self,
+        position: usize,
+        name: &str,
+        value: Value,
+    ) -> Value {
+        let mut cells = self.0.state.binding_cells.borrow_mut();
+        if cells.len() <= position {
+            cells.resize_with(position + 1, Weak::new);
+        }
+        if let Some(cell) = cells[position].upgrade()
+            && cell
+                .car
+                .borrow()
+                .as_symbol()
+                .is_ok_and(|bound| bound == name)
+        {
+            return Value::Cons(cell);
+        }
+        let Value::Cons(cell) = Value::cons(Value::Symbol(name.into()), value) else {
+            unreachable!("Value::cons constructs a cons")
+        };
+        cells[position] = Rc::downgrade(&cell);
+        Value::Cons(cell)
+    }
+
+    pub(crate) fn update_canonical_lisp_binding(&self, name: &str, value: Value) {
+        for cell in self
+            .0
+            .state
+            .binding_cells
+            .borrow()
+            .iter()
+            .rev()
+            .filter_map(Weak::upgrade)
+        {
+            if cell
+                .car
+                .borrow()
+                .as_symbol()
+                .is_ok_and(|bound| bound == name)
+            {
+                *cell.cdr.borrow_mut() = value;
+                break;
+            }
+        }
     }
 
     pub fn identity(&self) -> Option<i64> {
@@ -1492,6 +1688,24 @@ pub(crate) fn format_float(value: f64) -> String {
 }
 
 impl Value {
+    /// Whether a reference-counted object wrapped for native code is still
+    /// owned outside that native wrapper.  Immediate/id-backed values return
+    /// true because their host representation has no reference count; their
+    /// wrappers are the stable identities generated code observes.
+    pub(crate) fn native_handle_has_external_owner(&self) -> bool {
+        match self {
+            Value::BigInteger(value) => Rc::strong_count(&value.0) > 1,
+            Value::String(value) => Rc::strong_count(&value.0) > 1,
+            Value::StringObject(value) => Rc::strong_count(value) > 1,
+            Value::Cons(value) => Rc::strong_count(value) > 1,
+            Value::Lambda(value) => Rc::strong_count(value) > 1,
+            Value::Buffer(value) => Rc::strong_count(value) > 1,
+            Value::ReaderForm(value) => Rc::strong_count(value) > 1,
+            Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Unbound => true,
+            _ => false,
+        }
+    }
+
     // Constructors
 
     pub fn int(n: i64) -> Self {
@@ -2426,11 +2640,6 @@ mod tests {
 
     #[test]
     fn every_cons_field_mutation_advances_the_shared_epoch() {
-        assert_eq!(
-            std::mem::size_of::<super::ConsValueCell>(),
-            std::mem::size_of::<std::cell::RefCell<Value>>()
-        );
-
         let pair = Value::cons(Value::Integer(1), Value::Integer(2));
         let before_car = super::cons_mutation_epoch();
         pair.set_car(Value::Integer(3)).expect("set car");
@@ -2459,6 +2668,50 @@ mod tests {
             .set_car(Value::Integer(4))
             .expect("source argument spine is a cons");
         assert!(!snapshot.is_current());
+    }
+
+    #[test]
+    fn watcher_compaction_preserves_live_mutation_subscriptions() {
+        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
+        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
+        super::CONS_MUTATION_WATCH_NEXT_KEY_LIMIT
+            .with(|limit| limit.set(super::CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT));
+
+        let source = Value::cons(Value::Integer(1), Value::Nil);
+        let Value::Cons(cell) = &source else {
+            unreachable!("constructed cons")
+        };
+        let snapshot = super::ConsMutationSnapshot::cell(cell);
+        let field_ids = super::ConsCell::mutation_field_ids(cell);
+        let dead_owner = Rc::new(super::ConsMutationWatch {
+            valid: std::cell::Cell::new(true),
+            notification: None,
+        });
+        let dead = Rc::downgrade(&dead_owner);
+        drop(dead_owner);
+        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| {
+            watchers.insert(usize::MAX, vec![dead]);
+        });
+        super::CONS_MUTATION_WATCH_NEXT_KEY_LIMIT.with(|limit| limit.set(1));
+        let other = Value::cons(Value::Integer(3), Value::Nil);
+        let Value::Cons(other_cell) = &other else {
+            unreachable!("constructed cons")
+        };
+        let _other_snapshot = super::ConsMutationSnapshot::cell(other_cell);
+        super::CONS_MUTATION_WATCHERS.with_borrow(|watchers| {
+            assert!(!watchers.contains_key(&usize::MAX));
+            assert!(field_ids.iter().all(|field| watchers.contains_key(field)));
+        });
+
+        source
+            .set_car(Value::Integer(2))
+            .expect("mutate watched cons");
+        assert!(!snapshot.is_current());
+
+        super::CONS_MUTATION_WATCHERS.with_borrow_mut(|watchers| watchers.clear());
+        super::CONS_MUTATION_WATCH_BLOOM.with_borrow_mut(|bloom| *bloom = None);
+        super::CONS_MUTATION_WATCH_NEXT_KEY_LIMIT
+            .with(|limit| limit.set(super::CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT));
     }
 
     #[test]

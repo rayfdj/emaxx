@@ -409,12 +409,16 @@ define_dispatch!(
             }
             "comp--release-ctxt" => {
                 need_args(name, args, 0)?;
-                interp.native_compiler.release();
+                if crate::lisp::native_comp::NativeCompilerState::release_active().is_none() {
+                    interp.native_compiler.release();
+                }
                 Ok(Value::T)
             }
             "comp--init-ctxt" => {
                 need_args(name, args, 0)?;
-                interp.native_compiler.acquire().map_err(|message| {
+                let acquired = crate::lisp::native_comp::NativeCompilerState::acquire_active()
+                    .unwrap_or_else(|| interp.native_compiler.acquire());
+                acquired.map_err(|message| {
                     LispError::SignalValue(Value::list([
                         Value::symbol("native-compiler-error"),
                         Value::String(message.into()),
@@ -425,9 +429,16 @@ define_dispatch!(
             "comp--compile-ctxt-to-file0" => {
                 need_args(name, args, 1)?;
                 let filename = string_argument(&args[0])?;
-                let mut state = std::mem::take(&mut interp.native_compiler);
-                let compiled = state.compile_current_unit(interp, env, &filename);
-                interp.native_compiler = state;
+                let compiled =
+                    crate::lisp::native_comp::NativeCompilerState::compile_current_unit_active(
+                        interp, env, &filename,
+                    )
+                    .unwrap_or_else(|| {
+                        let mut state = std::mem::take(&mut interp.native_compiler);
+                        let compiled = state.compile_current_unit(interp, env, &filename);
+                        interp.native_compiler = state;
+                        compiled
+                    });
                 let temporary = compiled?;
                 crate::lisp::native_comp::call_lisp(
                     interp,

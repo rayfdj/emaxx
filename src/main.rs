@@ -29,6 +29,11 @@ struct Cli {
     no_site_file: bool,
     #[arg(long)]
     no_site_lisp: bool,
+    // `emacs.c' recognizes and orders this switch, while startup.el owns its
+    // effect on the Elisp compiler state.  Invocations carrying it are routed
+    // through unchanged GNU startup instead of recreating that effect here.
+    #[arg(long = "no-comp-spawn")]
+    no_comp_spawn: bool,
     // Emaxx does not load user/site init files yet, so GNU's -Q/--quick is
     // already the effective startup mode.  Keep the parsed flag for command-
     // line compatibility even though it requires no additional action.
@@ -102,27 +107,40 @@ fn try_main() -> Result<u8, String> {
         // SAFETY: single-threaded startup, before Lisp or any subprocess.
         unsafe { std::env::remove_var("EMAXX_TRACE_LOAD_ERRORS") };
     }
-    let args = normalize_gnu_single_dash_long_options(std::env::args_os());
-    let matches = Cli::command().get_matches_from(args);
+    let original_args = std::env::args_os().collect::<Vec<_>>();
+    let args = normalize_gnu_single_dash_long_options(original_args.iter().cloned());
+    let matches = Cli::command().get_matches_from(args.clone());
+    let startup_command_line_args = matches
+        .get_flag("no_comp_spawn")
+        .then(|| startup_command_line_args(&original_args))
+        .transpose()?;
     let actions = ordered_batch_actions(&matches);
     let cli = Cli::from_arg_matches(&matches).map_err(|error| error.to_string())?;
     if cli.batch {
+        let startup_owns_command_line = startup_command_line_args.is_some();
         let outcome = run_batch_with_large_stack(
             BatchRunOptions {
-                load_path: cli
-                    .load_path
-                    .into_iter()
-                    .map(expand_load_path_entry)
-                    .collect(),
+                load_path: if startup_owns_command_line {
+                    Vec::new()
+                } else {
+                    cli.load_path
+                        .into_iter()
+                        .map(expand_load_path_entry)
+                        .collect()
+                },
                 load: cli.load,
                 eval: cli.eval,
                 funcall: cli.funcall,
-                args_left: cli
-                    .file
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
-                defer_delayed_custom_init: false,
+                args_left: if startup_owns_command_line {
+                    Vec::new()
+                } else {
+                    cli.file
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect()
+                },
+                defer_delayed_custom_init: startup_owns_command_line,
+                startup_command_line_args,
             },
             actions,
         )?;
@@ -135,6 +153,7 @@ fn try_main() -> Result<u8, String> {
     if cli.no_init_file
         || cli.no_site_file
         || cli.no_site_lisp
+        || cli.no_comp_spawn
         || !cli.load_path.is_empty()
         || !cli.load.is_empty()
         || !cli.eval.is_empty()
@@ -274,9 +293,37 @@ fn normalize_gnu_single_dash_long_options(
             Some("-no-init-file") => OsString::from("--no-init-file"),
             Some("-no-site-file") => OsString::from("--no-site-file"),
             Some("-no-site-lisp") => OsString::from("--no-site-lisp"),
+            Some("-no-comp-spawn") => OsString::from("--no-comp-spawn"),
             Some("-quick") => OsString::from("--quick"),
             Some("-version") => OsString::from("--version"),
             _ => arg,
+        })
+        .collect()
+}
+
+/// Build the argument list seen by unchanged GNU startup.el after emacs.c has
+/// consumed its C-owned startup switches.  All remaining arguments retain
+/// their original order and are interpreted by `normal-top-level'.
+fn startup_command_line_args(args: &[OsString]) -> Result<Vec<String>, String> {
+    args.iter()
+        .filter(|arg| {
+            !matches!(
+                arg.to_str(),
+                Some(
+                    "-batch"
+                        | "--batch"
+                        | "-no-build-details"
+                        | "--no-build-details"
+                        | "-nsl"
+                        | "-no-site-lisp"
+                        | "--no-site-lisp"
+                )
+            )
+        })
+        .map(|arg| {
+            arg.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "command-line argument is not valid UTF-8".to_string())
         })
         .collect()
 }
@@ -361,4 +408,25 @@ fn restart_current_process() -> Result<u8, String> {
 
 fn run_interactive(file: Option<PathBuf>) -> Result<u8, String> {
     tty::run(file).map(|code| code as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_receives_gnu_no_comp_spawn_spelling_unchanged() {
+        let original = [
+            OsString::from("emaxx"),
+            OsString::from("-no-comp-spawn"),
+            OsString::from("-Q"),
+            OsString::from("--batch"),
+            OsString::from("-l"),
+            OsString::from("worker.el"),
+        ];
+        assert_eq!(
+            startup_command_line_args(&original).expect("UTF-8 argv"),
+            ["emaxx", "-no-comp-spawn", "-Q", "-l", "worker.el"]
+        );
+    }
 }

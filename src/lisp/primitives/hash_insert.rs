@@ -191,6 +191,9 @@ pub(crate) fn collect_weak_hash_tables(interp: &mut Interpreter) -> Result<(), L
     for id in table_ids {
         let table = Value::Record(id);
         let weakness = hash_table_metadata_slot(interp, &table, 5, Value::Nil)?;
+        if matches!(weakness, Value::Nil) {
+            continue;
+        }
         let Some(weakness_name) = weakness.as_symbol().ok() else {
             continue;
         };

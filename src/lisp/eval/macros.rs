@@ -539,9 +539,16 @@ impl Interpreter {
         // original object for its return value while installing the function
         // on the positioned symbol's bare owner.
         let name = crate::lisp::primitives::checked_symbol_name(self, &args[0], env)?;
-        let function = args[1].clone();
+        let mut function = args[1].clone();
         let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
         self.validate_function_binding(&name, &function)?;
+        if self
+            .lookup_var("purify-flag", env)
+            .is_some_and(|value| value.is_truthy())
+            && !crate::lisp::primitives::is_keymap_value(self, &function)
+        {
+            function = crate::lisp::primitives::purecopy_value(self, &function, env)?;
+        }
         let old_definition = self.logical_function_binding(&name, &Env::new());
         self.record_definition_in_load_history("defun", &name);
         if let Some(old_definition) = old_definition {

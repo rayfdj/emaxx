@@ -9,6 +9,7 @@ use super::{
 };
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, LispError};
+use std::cell::RefCell;
 use std::ffi::c_void;
 
 /// The single compiler context that GNU keeps in its static `comp_t`.
@@ -18,7 +19,7 @@ use std::ffi::c_void;
 /// be duplicated.
 #[derive(Default)]
 pub(crate) struct NativeCompilerState {
-    compiler: Option<Compiler>,
+    compiler: RefCell<Option<Compiler>>,
     runtime: NativeRuntime,
     registry: Box<NativeRegistry>,
 }
@@ -26,7 +27,9 @@ pub(crate) struct NativeCompilerState {
 impl Clone for NativeCompilerState {
     fn clone(&self) -> Self {
         assert!(
-            self.compiler.is_none() && self.runtime.is_pristine() && self.registry.is_empty(),
+            self.compiler.borrow().is_none()
+                && self.runtime.is_pristine()
+                && self.registry.is_empty(),
             "cannot clone an interpreter with live native compiler or runtime state"
         );
         Self::default()
@@ -43,20 +46,39 @@ impl NativeCompilerState {
     }
 
     pub(crate) fn acquire(&mut self) -> Result<(), String> {
-        if self.compiler.is_some() {
+        Self::acquire_cell(&self.compiler)
+    }
+
+    fn acquire_cell(compiler: &RefCell<Option<Compiler>>) -> Result<(), String> {
+        let mut compiler = compiler
+            .try_borrow_mut()
+            .map_err(|_| "compiler context already taken".to_string())?;
+        if compiler.is_some() {
             return Err("compiler context already taken".to_string());
         }
-        self.compiler = Some(Compiler::acquire()?);
+        *compiler = Some(Compiler::acquire()?);
         Ok(())
     }
 
     pub(crate) fn release(&mut self) {
-        self.compiler = None;
+        Self::release_cell(&self.compiler);
+    }
+
+    fn release_cell(compiler: &RefCell<Option<Compiler>>) {
+        *compiler.borrow_mut() = None;
+    }
+
+    pub(crate) fn acquire_active() -> Option<Result<(), String>> {
+        loader::with_active_compiler(Self::acquire_cell)
+    }
+
+    pub(crate) fn release_active() -> Option<()> {
+        loader::with_active_compiler(Self::release_cell)
     }
 
     #[cfg(test)]
     pub(crate) fn is_acquired(&self) -> bool {
-        self.compiler.is_some()
+        self.compiler.borrow().is_some()
     }
 
     pub(crate) fn load(
@@ -68,8 +90,7 @@ impl NativeCompilerState {
         late: bool,
     ) -> Result<crate::lisp::types::Value, LispError> {
         loader::load(
-            &mut self.registry,
-            &mut self.runtime,
+            loader::LoaderState::new(&self.compiler, &mut self.registry, &mut self.runtime),
             interp,
             env,
             filename,
@@ -86,6 +107,7 @@ impl NativeCompilerState {
         arguments: &[crate::lisp::types::Value],
     ) -> Result<crate::lisp::types::Value, LispError> {
         loader::call_function(
+            &self.compiler,
             &mut self.registry,
             &mut self.runtime,
             interp,
@@ -115,11 +137,41 @@ impl NativeCompilerState {
         env: &mut Env,
         output_filename: &str,
     ) -> Result<String, LispError> {
-        let unit = UnitData::read(interp, env)?;
-        let compiler = self
-            .compiler
+        let Self {
+            runtime, registry, ..
+        } = self;
+        // comp.c calls Lisp accessors while its global compiler context is
+        // live.  Those accessors can themselves already be native compiled,
+        // so the process-wide native function registry and runtime must stay
+        // reachable throughout the backend call just as they do in GNU.
+        loader::with_native_state(&self.compiler, registry, runtime, |_| {
+            Self::compile_current_unit_with(&self.compiler, interp, env, output_filename)
+        })
+    }
+
+    pub(crate) fn compile_current_unit_active(
+        interp: &mut Interpreter,
+        env: &mut Env,
+        output_filename: &str,
+    ) -> Option<Result<String, LispError>> {
+        loader::with_active_compiler(|compiler| {
+            Self::compile_current_unit_with(compiler, interp, env, output_filename)
+        })
+    }
+
+    fn compile_current_unit_with(
+        compiler: &RefCell<Option<Compiler>>,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        output_filename: &str,
+    ) -> Result<String, LispError> {
+        let mut compiler = compiler
+            .try_borrow_mut()
+            .map_err(|_| super::lisp::native_ice("compiler context already in use"))?;
+        let compiler = compiler
             .as_mut()
             .ok_or_else(|| super::lisp::native_ice("compiler context is not initialized"))?;
+        let unit = UnitData::read(interp, env)?;
         compiler
             .configure_unit(unit.speed(), unit.debug(), output_filename)
             .map_err(|error| super::lisp::native_ice(&error))?;

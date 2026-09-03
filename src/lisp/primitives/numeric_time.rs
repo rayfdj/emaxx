@@ -25,11 +25,26 @@ pub(crate) enum RoundingKind {
     Truncate,
 }
 
+pub(crate) const MOST_POSITIVE_FIXNUM: i64 = (1_i64 << 61) - 1;
+pub(crate) const MOST_NEGATIVE_FIXNUM: i64 = -(1_i64 << 61);
+
+/// GNU lisp.h's `make_int`: keep values in the immediate fixnum range and
+/// represent every other mathematical integer as a bignum.
+pub(crate) fn normalize_integer_value(value: i64) -> Value {
+    if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&value) {
+        Value::Integer(value)
+    } else {
+        Value::BigInteger(BigInt::from(value).into())
+    }
+}
+
 pub(crate) fn normalize_bigint_value(value: BigInt) -> Value {
-    value
-        .to_i64()
-        .map(Value::Integer)
-        .unwrap_or(Value::BigInteger(value.into()))
+    match value.to_i64() {
+        Some(value) if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&value) => {
+            Value::Integer(value)
+        }
+        _ => Value::BigInteger(value.into()),
+    }
 }
 
 pub(crate) fn string_version_compare(left: &str, right: &str) -> Ordering {
@@ -2478,5 +2493,34 @@ pub(crate) fn number_to_string(value: &Value) -> Result<String, LispError> {
             "number-or-marker-p".into(),
             value.clone(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn make_int_boundary_matches_gnu_fixnum_representation() {
+        assert!(matches!(
+            normalize_integer_value(MOST_NEGATIVE_FIXNUM),
+            Value::Integer(MOST_NEGATIVE_FIXNUM)
+        ));
+        assert!(matches!(
+            normalize_integer_value(MOST_POSITIVE_FIXNUM),
+            Value::Integer(MOST_POSITIVE_FIXNUM)
+        ));
+        assert!(matches!(
+            normalize_integer_value(MOST_NEGATIVE_FIXNUM - 1),
+            Value::BigInteger(_)
+        ));
+        assert!(matches!(
+            normalize_integer_value(MOST_POSITIVE_FIXNUM + 1),
+            Value::BigInteger(_)
+        ));
+        assert!(matches!(
+            normalize_bigint_value(BigInt::from(MOST_POSITIVE_FIXNUM) + 1),
+            Value::BigInteger(_)
+        ));
     }
 }

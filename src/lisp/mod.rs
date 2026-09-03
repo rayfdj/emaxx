@@ -885,7 +885,7 @@ pub(crate) fn load_file_strict_until(
         .load_source_provenance_path(path)
         .display()
         .to_string();
-    interp.with_lambda_eval_context(settings.lexical_binding, false, |interp| {
+    interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {
             vec![types::EnvFrame::with_lisp_environment_and_identity(

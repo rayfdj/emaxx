@@ -1293,7 +1293,9 @@ define_dispatch!(
                 // Treat the suspended frames as captured lexical cells while the
                 // expression runs.  `setq' then records changes by frame
                 // identity, and the resumed activation observes them.
-                interp.register_captured_lexical_frames(&shared_context);
+                for frame in shared_context.borrow().iter() {
+                    frame.mark_captured();
+                }
                 interp.eval(&args[0], &mut shared_context.borrow_mut())
             }
             "backtrace--locals" => {
