@@ -219,12 +219,6 @@ impl Interpreter {
     }
 
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
-        if let Some(variable) = DUMPED_AUTO_BUFFER_LOCALS
-            .iter()
-            .find(|variable| variable.name == name)
-        {
-            return Some(variable.default.value());
-        }
         match name {
             "nil" => Some(Value::Nil),
             "t" => Some(Value::T),
@@ -282,8 +276,9 @@ impl Interpreter {
                 std::iter::once(Value::symbol("vector-literal"))
                     .chain(std::iter::repeat_n(Value::Nil, 16)),
             )),
-            "gc-elapsed" => Some(Value::Float(0.0)),
+            "gc-elapsed" => Some(Value::float(0.0)),
             "gcs-done" => Some(Value::Integer(0)),
+            "syntax-propertize--done" => Some(Value::Integer(-1)),
             "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
             "most-negative-fixnum" => Some(Value::Integer(-2_305_843_009_213_693_952)),
             "enable-multibyte-characters" => Some(if self.buffer.is_multibyte() {
@@ -347,7 +342,7 @@ impl Interpreter {
             "inhibit-null-byte-detection" => Some(Value::Nil),
             "inhibit-iso-escape-detection" => Some(Value::Nil),
             "create-lockfiles" => Some(Value::T),
-            "display-hourglass" => Some(Value::Nil),
+            "display-hourglass" => Some(Value::T),
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
             // GNU fileio.c defvar; simple.el reads it before files.el policy
             // is necessarily loaded.
@@ -392,10 +387,14 @@ impl Interpreter {
             // GNU's dumped image leaves automatic mini-window resizing at
             // its user-facing default and exposes textprop.c's point-motion
             // guard before any Lisp library is loaded.
-            "resize-mini-windows" => Some(Value::Symbol("grow-only".into())),
-            "max-mini-window-height" => Some(Value::Float(0.25)),
+            // xdisp.c deliberately starts this nil; unchanged loadup.el sets
+            // the advertised grow-only value after loading window.el.
+            "resize-mini-windows" => Some(Value::Nil),
+            "max-mini-window-height" => Some(Value::float(0.25)),
             "inhibit-point-motion-hooks" => Some(Value::T),
-            "inhibit-x-resources" => Some(Value::T),
+            // emacs.c starts this false.  startup.el sets it for -Q or
+            // --no-x-resources when it processes the actual command line.
+            "inhibit-x-resources" => Some(Value::Nil),
 
             // GNU keyboard.c keymaps; simple.el define-keys them at load
             // time (event-apply-*-modifier bindings).
@@ -412,12 +411,9 @@ impl Interpreter {
             )),
             "module-file-suffix" => Some(module_file_suffix_value()),
             "dynamic-library-suffixes" => Some(Value::list(dynamic_library_suffix_values())),
-            // GNU's dumped image has jka-compr's representation suffix
-            // installed; the native loader likewise understands gzip.
-            "load-file-rep-suffixes" => Some(Value::list([
-                Value::String(String::new().into()),
-                Value::String(".gz".into()),
-            ])),
+            // lread.c initializes this to just the empty representation.
+            // Unchanged jka-compr Elisp owns installing compression suffixes.
+            "load-file-rep-suffixes" => Some(Value::list([Value::String(String::new().into())])),
             "after-load-alist" => Some(Value::Nil),
             "load-true-file-name" => Some(
                 self.current_load_file
@@ -425,7 +421,9 @@ impl Interpreter {
                     .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
-            "load-source-file-function" => Some(Value::Symbol("load-with-code-conversion".into())),
+            // lread.c initializes nil; unchanged loadup.el installs
+            // load-with-code-conversion after the coding owners are loaded.
+            "load-source-file-function" => Some(Value::Nil),
             "load-force-doc-strings" | "load-convert-to-unibyte" => Some(Value::Nil),
             "preloaded-file-list" | "byte-boolean-vars" => Some(Value::Nil),
             "load-dangerous-libraries" | "force-load-messages" => Some(Value::Nil),
@@ -445,9 +443,16 @@ impl Interpreter {
             "signal-hook-function" => Some(Value::Nil),
             "minor-mode-overriding-map-alist" => Some(Value::Nil),
             "standard-input" => Some(Value::T),
-            "temporary-file-directory" => Some(Value::String(temp_directory_name().into())),
-            "purify-flag" => Some(Value::Nil),
-            "exec-suffixes" => Some(Value::list([Value::String(String::new().into())])),
+            // filelock.c initializes nil.  cus-start.el records and startup.el
+            // applies the environment-dependent standard value later.
+            "temporary-file-directory" => Some(Value::Nil),
+            // alloc.c:init_alloc_once and lread.c:syms_of_lread initialize
+            // this true.  Unchanged loadup.el owns the later hash table and
+            // final nil transitions.
+            "purify-flag" => Some(Value::T),
+            // callproc.c initializes nil.  Unchanged bindings.el installs the
+            // platform-specific executable suffix list during Lisp loadup.
+            "exec-suffixes" => Some(Value::Nil),
             "debug-on-error" => Some(Value::Nil),
             "debugger-stack-frame-as-list" => Some(Value::Nil),
             "print-quoted" => Some(Value::T),
@@ -485,14 +490,21 @@ impl Interpreter {
 
             // insdel.c: change hooks run unless a primitive binds this.
             "inhibit-modification-hooks" => Some(Value::Nil),
-            // doc.c: name of the DOC file inside `doc-directory'.
-            "internal-doc-file-name" => Some(Value::String("DOC".into())),
+            // doc.c starts nil.  Snarf-documentation records the actual DOC
+            // filename later while unchanged loadup.el builds the image.
+            "internal-doc-file-name" => Some(Value::Nil),
 
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
-            "frame-internal-parameters" => Some(Value::Nil),
+            // frame.c includes outer-window-id only in an X11 build.  Emaxx
+            // has no X11 frame backend, so it follows GNU's non-X branch.
+            "frame-internal-parameters" => Some(Value::list([
+                Value::symbol("name"),
+                Value::symbol("parent-id"),
+                Value::symbol("window-id"),
+            ])),
             // GNU's `Vsource_directory' is fixed when the binary is built
             // (epaths.h PATH_DUMPLOADSEARCH), so it names the checkout whose
             // Lisp this image reconstructs.  It must never be derived from a
@@ -538,11 +550,6 @@ impl Interpreter {
             "menu-updating-frame" => Some(Value::Nil),
             // xdisp.c's DEFVAR_BOOL, default off; xt-mouse consults it.
             "x-stretch-cursor" => Some(Value::Nil),
-            // startup.el's dumped defcustom default; the File menu's
-            // session-recovery :enable reads it.
-            "auto-save-list-file-prefix" => {
-                Some(Value::String("~/.emacs.d/auto-save-list/.saves-".into()))
-            }
             "line-spacing" => Some(Value::Nil),
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
@@ -1331,14 +1338,6 @@ impl Interpreter {
     }
 }
 
-fn temp_directory_name() -> String {
-    let mut directory = std::env::temp_dir().display().to_string();
-    if !directory.ends_with('/') {
-        directory.push('/');
-    }
-    directory
-}
-
 /// Every statically-valued name in `builtin_var_value' that GNU's C
 /// sources create with a DEFVAR_* (verified against the pinned checkout,
 /// 2026-08-22).  These are installed as *real* special-variable bindings at
@@ -1467,6 +1466,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "system-configuration-options",
     "system-name",
     "system-type",
+    "syntax-propertize--done",
     "tab-bar-border",
     "tab-bar-button-margin",
     "tab-bar-mode",

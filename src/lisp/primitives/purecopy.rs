@@ -194,7 +194,7 @@ fn purecopy_inner(
 
     let copied = match value {
         Value::BigInteger(integer) => Value::big_integer((**integer).clone()),
-        Value::Float(number) => Value::Float(*number),
+        Value::Float(number) => Value::Float(number.clone()),
         Value::String(text) => Value::String(text.to_string().into()),
         Value::StringObject(_) => {
             let string = string_like(value).expect("StringObject is string-like");

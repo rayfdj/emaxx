@@ -710,7 +710,7 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
         JsonNode::True => Value::T,
         JsonNode::Integer(value) => Value::Integer(value),
         JsonNode::BigInteger(value) => Value::BigInteger(value.into()),
-        JsonNode::Float(value) => Value::Float(value),
+        JsonNode::Float(value) => Value::float(value),
         JsonNode::String(value) => Value::String(value.into()),
         JsonNode::Array(items) => {
             let items: Vec<Value> = items

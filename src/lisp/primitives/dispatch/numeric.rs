@@ -55,7 +55,7 @@ define_dispatch!(
                     for a in &args[1..] {
                         sum += numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(sum))
+                    Ok(Value::float(sum))
                 } else if let Some(sum) = checked_integer_fold(interp, args, 0, i64::checked_add)? {
                     Ok(normalize_integer_value(sum))
                 } else {
@@ -72,13 +72,13 @@ define_dispatch!(
                 }
                 if has_float(args) {
                     if args.len() == 1 {
-                        return Ok(Value::Float(-numeric_to_f64(interp, &args[0])?));
+                        return Ok(Value::float(-numeric_to_f64(interp, &args[0])?));
                     }
                     let mut result = numeric_to_f64(interp, &args[0])?;
                     for a in &args[1..] {
                         result -= numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(result))
+                    Ok(Value::float(result))
                 } else {
                     if args.len() == 1 {
                         if !matches!(args[0], Value::BigInteger(_)) {
@@ -112,7 +112,7 @@ define_dispatch!(
                     for a in args {
                         product *= numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(product))
+                    Ok(Value::float(product))
                 } else if let Some(product) =
                     checked_integer_fold(interp, args, 1, i64::checked_mul)?
                 {
@@ -138,7 +138,7 @@ define_dispatch!(
                     for a in &args[1..] {
                         result /= numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(result))
+                    Ok(Value::float(result))
                 } else if has_big_integer(args) {
                     let mut result = if args.len() == 1 {
                         let divisor = integer_like_bigint(interp, &args[0])?;
@@ -190,7 +190,7 @@ define_dispatch!(
                     {
                         remainder += b;
                     }
-                    return Ok(Value::Float(remainder));
+                    return Ok(Value::float(remainder));
                 }
                 if has_big_integer(args) {
                     let a = integer_like_bigint(interp, &args[0])?;
@@ -222,7 +222,7 @@ define_dispatch!(
             "1+" => {
                 need_args(name, args, 1)?;
                 if matches!(args[0], Value::Float(_)) {
-                    Ok(Value::Float(numeric_to_f64(interp, &args[0])? + 1.0))
+                    Ok(Value::float(numeric_to_f64(interp, &args[0])? + 1.0))
                 } else if !matches!(args[0], Value::BigInteger(_))
                     && let Some(value) = integer_like_i64(interp, &args[0])?.checked_add(1)
                 {
@@ -236,7 +236,7 @@ define_dispatch!(
             "1-" => {
                 need_args(name, args, 1)?;
                 if matches!(args[0], Value::Float(_)) {
-                    Ok(Value::Float(numeric_to_f64(interp, &args[0])? - 1.0))
+                    Ok(Value::float(numeric_to_f64(interp, &args[0])? - 1.0))
                 } else if !matches!(args[0], Value::BigInteger(_))
                     && let Some(value) = integer_like_i64(interp, &args[0])?.checked_sub(1)
                 {
@@ -261,8 +261,8 @@ define_dispatch!(
             }
             "abs" => {
                 need_args(name, args, 1)?;
-                if let Value::Float(value) = args[0] {
-                    Ok(Value::Float(value.abs()))
+                if let Value::Float(value) = &args[0] {
+                    Ok(Value::float(value.abs()))
                 } else if matches!(args[0], Value::BigInteger(_)) {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])?.abs(),
@@ -277,30 +277,30 @@ define_dispatch!(
             }
             "sin" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.sin()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.sin()))
             }
             "cos" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.cos()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.cos()))
             }
             "tan" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.tan()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.tan()))
             }
             "asin" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.asin()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.asin()))
             }
             "acos" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.acos()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.acos()))
             }
             "atan" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let y = numeric_to_f64(interp, &args[0])?;
-                Ok(Value::Float(if let Some(x) = args.get(1) {
+                Ok(Value::float(if let Some(x) = args.get(1) {
                     y.atan2(numeric_to_f64(interp, x)?)
                 } else {
                     y.atan()
@@ -308,14 +308,14 @@ define_dispatch!(
             }
             "copysign" => {
                 need_args(name, args, 2)?;
-                Ok(Value::Float(
+                Ok(Value::float(
                     numeric_to_f64(interp, &args[0])?.copysign(numeric_to_f64(interp, &args[1])?),
                 ))
             }
             "isnan" => {
                 need_args(name, args, 1)?;
                 let value = match &args[0] {
-                    Value::Float(value) => *value,
+                    Value::Float(value) => value.get(),
                     Value::Integer(_) | Value::BigInteger(_) => {
                         return Ok(Value::Nil);
                     }
@@ -330,7 +330,7 @@ define_dispatch!(
             }
             "exp" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.exp()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.exp()))
             }
             "expt" => {
                 need_args(name, args, 2)?;
@@ -353,27 +353,27 @@ define_dispatch!(
                 } else {
                     value.ln()
                 };
-                Ok(Value::Float(result))
+                Ok(Value::float(result))
             }
             "sqrt" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.sqrt()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.sqrt()))
             }
             "float" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?))
             }
 
             "frexp" => {
                 need_args(name, args, 1)?;
                 let (sig, exp) = frexp_parts(numeric_to_f64(interp, &args[0])?);
-                Ok(Value::cons(Value::Float(sig), Value::Integer(exp)))
+                Ok(Value::cons(Value::float(sig), Value::Integer(exp)))
             }
             "ldexp" => {
                 need_args(name, args, 2)?;
                 let significand = numeric_to_f64(interp, &args[0])?;
                 let exponent = integer_like_i64(interp, &args[1])?;
-                Ok(Value::Float(ldexp_value(significand, exponent)))
+                Ok(Value::float(ldexp_value(significand, exponent)))
             }
             "logb" => {
                 need_args(name, args, 1)?;

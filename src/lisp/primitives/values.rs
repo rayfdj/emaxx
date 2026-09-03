@@ -564,13 +564,9 @@ pub(crate) fn values_eq_in_env(
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
         (Value::Integer(a), Value::Integer(b)) => a == b,
         (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-        // GNU's eq on floats is object identity; with immediate floats the
-        // faithful approximation is representation equality -- (eq X X) must
-        // hold for a NaN (macroexp-macroexpand's `while (not (eq form
-        // (macroexpand-1 form)))' spun forever on a NaN atom, hanging the
-        // load of every test file containing a NaN literal), and 0.0 is
-        // not -0.0.  IEEE == answered both wrongly.
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        // data.c:Feq compares the Lisp_Object words.  Float words point to
+        // allocated Lisp_Float objects, so only the same allocation is eq.
+        (Value::Float(a), Value::Float(b)) => a.ptr_eq(b),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
@@ -1356,14 +1352,16 @@ fn value_cmp_numeric_ordering(left: &Value, right: &Value) -> Option<std::cmp::O
     }
     match (left, right) {
         (Value::Integer(a), Value::Integer(b)) => Some(a.cmp(b)),
-        (Value::Integer(a), Value::Float(b)) => float_cmp(*a as f64, *b),
-        (Value::Float(a), Value::Integer(b)) => float_cmp(*a, *b as f64),
-        (Value::Float(a), Value::Float(b)) => float_cmp(*a, *b),
+        (Value::Integer(a), Value::Float(b)) => float_cmp(*a as f64, b.get()),
+        (Value::Float(a), Value::Integer(b)) => float_cmp(a.get(), *b as f64),
+        (Value::Float(a), Value::Float(b)) => float_cmp(a.get(), b.get()),
         (Value::Integer(_), Value::BigInteger(b)) => Some(bignum_sign(b).reverse()),
         (Value::BigInteger(a), Value::Integer(_)) => Some(bignum_sign(a)),
         (Value::BigInteger(a), Value::BigInteger(b)) => Some((**a).cmp(&**b)),
-        (Value::BigInteger(a), Value::Float(b)) => bignum_vs_float(a, *b),
-        (Value::Float(a), Value::BigInteger(b)) => bignum_vs_float(b, *a).map(Ordering::reverse),
+        (Value::BigInteger(a), Value::Float(b)) => bignum_vs_float(a, b.get()),
+        (Value::Float(a), Value::BigInteger(b)) => {
+            bignum_vs_float(b, a.get()).map(Ordering::reverse)
+        }
         _ => None,
     }
 }
@@ -1693,7 +1691,11 @@ pub(crate) fn runtime_hash_bucket_key(
         }
         Value::Float(number) => {
             hash_mix(&mut state, 15);
-            let normalized = if *number == 0.0 { 0.0f64 } else { *number };
+            let normalized = if number.get() == 0.0 {
+                0.0f64
+            } else {
+                number.get()
+            };
             hash_mix(&mut state, normalized.to_bits());
         }
         Value::BigInteger(number) => {
@@ -1927,7 +1929,7 @@ pub(crate) fn hash_value_equal_at(
         }
         Value::Float(number) => {
             hash_mix(state, 34);
-            let bits = if *number == 0.0 {
+            let bits = if number.get() == 0.0 {
                 0.0f64.to_bits()
             } else if number.is_nan() {
                 f64::NAN.to_bits()

@@ -709,6 +709,55 @@ impl fmt::Display for SharedBigInt {
     }
 }
 
+/// One allocated Lisp floating-point object.
+///
+/// GNU stores every float in a `struct Lisp_Float`; copying a `Lisp_Object`
+/// copies its pointer, not the double.  Keeping the payload behind `Rc`
+/// preserves that object identity while Rust ownership manages the storage.
+#[repr(transparent)]
+#[derive(Clone, Debug)]
+pub struct SharedFloat(Rc<f64>);
+
+impl SharedFloat {
+    pub(crate) fn identity_ptr(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub fn get(&self) -> f64 {
+        *self.0
+    }
+}
+
+impl PartialEq for SharedFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.get().to_bits() == other.get().to_bits()
+    }
+}
+
+impl From<f64> for SharedFloat {
+    fn from(value: f64) -> Self {
+        Self(Rc::new(value))
+    }
+}
+
+impl Deref for SharedFloat {
+    type Target = f64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Display for SharedFloat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub type SharedCons = Rc<ConsCell>;
 pub type ConsCells = (ConsSlot, ConsSlot);
 pub type SharedEnv = Rc<RefCell<Env>>;
@@ -1294,7 +1343,7 @@ pub enum Value {
     T,
     Integer(i64),
     BigInteger(SharedBigInt),
-    Float(f64),
+    Float(SharedFloat),
     String(SharedText),
     StringObject(Rc<RefCell<SharedStringState>>),
     Symbol(SymbolName),
@@ -1772,12 +1821,13 @@ pub(crate) fn format_float(value: f64) -> String {
 
 impl Value {
     /// Whether a reference-counted object wrapped for native code is still
-    /// owned outside that native wrapper.  Immediate/id-backed values return
-    /// true because their host representation has no reference count; their
+    /// owned outside that native wrapper.  Id-backed values return true
+    /// because their host representation has no reference count; their
     /// wrappers are the stable identities generated code observes.
     pub(crate) fn native_handle_has_external_owner(&self) -> bool {
         match self {
             Value::BigInteger(value) => Rc::strong_count(&value.0) > 1,
+            Value::Float(value) => Rc::strong_count(&value.0) > 1,
             Value::String(value) => Rc::strong_count(&value.0) > 1,
             Value::StringObject(value) => Rc::strong_count(value) > 1,
             Value::Cons(value) => Rc::strong_count(value) > 1,
@@ -1797,6 +1847,10 @@ impl Value {
 
     pub fn big_integer(n: BigInt) -> Self {
         Value::BigInteger(n.into())
+    }
+
+    pub fn float(value: f64) -> Self {
+        Value::Float(value.into())
     }
 
     pub fn string(s: &str) -> Self {
@@ -1949,7 +2003,7 @@ impl Value {
         // Arithmetic contexts: GNU's coercion check names
         // `number-or-marker-p' ((+ 'a 1) => (number-or-marker-p a)).
         match self {
-            Value::Float(f) => Ok(*f),
+            Value::Float(f) => Ok(f.get()),
             Value::Integer(n) => Ok(*n as f64),
             Value::BigInteger(n) => n.to_f64().ok_or_else(|| {
                 LispError::WrongTypeArgument("number-or-marker-p".into(), self.clone())
@@ -2188,7 +2242,7 @@ fn format_value(
         Value::T => write!(f, "t"),
         Value::Integer(n) => write!(f, "{}", n),
         Value::BigInteger(n) => write!(f, "{}", n),
-        Value::Float(v) => write!(f, "{}", format_float(*v)),
+        Value::Float(v) => write!(f, "{}", format_float(v.get())),
         Value::String(s) => write!(f, "\"{}\"", s),
         Value::StringObject(state) => {
             write!(f, "\"{}\"", state.as_ref().borrow().text)
@@ -2889,8 +2943,27 @@ mod tests {
 
     #[test]
     fn integral_floats_print_with_one_fractional_digit() {
-        assert_eq!(Value::Float(1.0).to_string(), "1.0");
-        assert_eq!(Value::Float(-10.0).to_string(), "-10.0");
-        assert_eq!(Value::Float(1.25).to_string(), "1.25");
+        assert_eq!(Value::float(1.0).to_string(), "1.0");
+        assert_eq!(Value::float(-10.0).to_string(), "-10.0");
+        assert_eq!(Value::float(1.25).to_string(), "1.25");
+    }
+
+    #[test]
+    fn float_values_preserve_lisp_object_identity() {
+        let original = Value::float(f64::NAN);
+        let shared = original.clone();
+        let distinct = Value::float(f64::NAN);
+        let Value::Float(original) = original else {
+            unreachable!();
+        };
+        let Value::Float(shared) = shared else {
+            unreachable!();
+        };
+        let Value::Float(distinct) = distinct else {
+            unreachable!();
+        };
+        assert!(original.ptr_eq(&shared));
+        assert!(!original.ptr_eq(&distinct));
+        assert_eq!(original.to_bits(), distinct.to_bits());
     }
 }

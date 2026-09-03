@@ -108,7 +108,7 @@ fn gnu_image_special_variables() -> [(&'static str, Value); 6] {
                 Value::symbol("tiff"),
             ]),
         ),
-        ("max-image-size", Value::Float(10.0)),
+        ("max-image-size", Value::float(10.0)),
         ("cross-disabled-images", Value::Nil),
         (
             "x-bitmap-file-path",
@@ -213,7 +213,6 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
 
 #[derive(Clone, Copy)]
 enum StaticStartupValue {
-    Nil,
     T,
     Integer(i64),
 }
@@ -221,7 +220,6 @@ enum StaticStartupValue {
 impl StaticStartupValue {
     fn value(self) -> Value {
         match self {
-            Self::Nil => Value::Nil,
             Self::T => Value::T,
             Self::Integer(value) => Value::Integer(value),
         }
@@ -261,25 +259,6 @@ const GNU_XDISP_GLOBAL_VARIABLES: &[NativeGlobalVariable] = &[
     NativeGlobalVariable {
         name: "message-log-max",
         default: StaticStartupValue::Integer(1000),
-    },
-];
-
-#[derive(Clone, Copy)]
-struct DumpedAutoBufferLocal {
-    name: &'static str,
-    default: StaticStartupValue,
-}
-
-// Dumped Lisp `defvar-local' contracts whose defaults are available before
-// their owning libraries load.  Locality and value come from the same entry.
-const DUMPED_AUTO_BUFFER_LOCALS: &[DumpedAutoBufferLocal] = &[
-    DumpedAutoBufferLocal {
-        name: "font-lock-defaults",
-        default: StaticStartupValue::Nil,
-    },
-    DumpedAutoBufferLocal {
-        name: "syntax-propertize--done",
-        default: StaticStartupValue::Integer(-1),
     },
 ];
 
@@ -406,6 +385,8 @@ const GNU_NATIVE_PER_BUFFER_VARIABLES: &[NativePerBufferVariable] = &[
     NativePerBufferVariable::new("scroll-up-aggressively"),
     NativePerBufferVariable::new("selective-display"),
     NativePerBufferVariable::new("selective-display-ellipses"),
+    // syntax.c defines this native value cell and then makes it buffer-local.
+    NativePerBufferVariable::new("syntax-propertize--done"),
     NativePerBufferVariable::new("tab-line-format"),
     NativePerBufferVariable::new("tab-width"),
     NativePerBufferVariable::new("text-conversion-style"),
@@ -1486,10 +1467,9 @@ pub(crate) struct SpecialBindingRestore {
 struct BacktraceFrame {
     function: Value,
     args: Vec<Value>,
-    /// eval.c:record_in_backtrace retains the existing Lisp_Object argument
-    /// vector for a native call instead of copying every object.  Keep the
-    /// same words lazy while that native activation is live; debugger-facing
-    /// APIs materialize Values only if somebody inspects the frame.
+    /// eval.c:record_in_backtrace retains the caller's Lisp_Object argument
+    /// vector.  Native Ffuncall already has that exact word vector, so keep
+    /// it lazy and materialize Values only if Lisp inspects the frame.
     native_args: Option<smallvec::SmallVec<[usize; 8]>>,
     /// Original list form for an unevaluated frame.  GNU backtraces retain
     /// the live Lisp form; keeping it here avoids cloning its function symbol
@@ -4126,10 +4106,7 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
-            auto_buffer_locals: DUMPED_AUTO_BUFFER_LOCALS
-                .iter()
-                .map(|variable| variable.name.to_string())
-                .collect(),
+            auto_buffer_locals: HashSet::default(),
             per_buffer_specials: HashSet::new(),
             always_buffer_local_specials: HashSet::new(),
             active_special_restores: Vec::new(),
@@ -4317,14 +4294,19 @@ impl Interpreter {
         // then see these bound, exactly as they see GNU's C state.
 
         // Second DEFVAR completeness tranche (finding 69): the remaining
-        // oracle-bound C DEFVARs with scalar values, seeded from the pinned
-        // dump's own post-load state (`emacs -Q -batch' probes, 2026-08-22).
-        // Post-load rather than C-initializer values because the dump
-        // carries loadup-time mutations (gc-cons-percentage above is the
-        // canonical case); the replay's own assignments are idempotent
-        // setqs, and the 229-name mass comparison verifies end-state
-        // parity.  Sixteen list-valued names remain unseeded and void,
-        // enumerated in the audit log.
+        // oracle-bound C DEFVARs.  These construction values belong to the
+        // corresponding syms_of_* initializers.  Later C init_* phases and
+        // unchanged GNU Lisp loadup own their subsequent mutations; folding
+        // an observed dumped value into this layer skips behavior.
+        let frame_title_format = Value::list([
+            Value::symbol("multiple-frames"),
+            Value::string("%b"),
+            Value::list([
+                Value::string(""),
+                Value::string("%b - GNU Emacs at "),
+                Value::symbol("system-name"),
+            ]),
+        ]);
         for (name, value) in [
             ("alternate-fontname-alist", Value::Nil),
             ("attempt-orderly-shutdown-on-fatal-signal", Value::T),
@@ -4377,7 +4359,7 @@ impl Interpreter {
             ("disable-point-adjustment", Value::Nil),
             ("display-line-numbers-offset", Value::Integer(0)),
             ("display-monitors-changed-functions", Value::Nil),
-            ("display-pixels-per-inch", Value::Float(72.0)),
+            ("display-pixels-per-inch", Value::float(72.0)),
             ("dynamic-library-alist", Value::Nil),
             ("echo-area-clear-hook", Value::Nil),
             (
@@ -4391,15 +4373,17 @@ impl Interpreter {
             // Zeroed like its *-consed siblings: live allocation telemetry
             // (the frozen oracle snapshot here survived the first sweep).
             ("floats-consed", Value::Integer(0)),
-            ("font-log", Value::T),
+            // font.c:5965; init_font later applies EMACS_FONT_LOG policy.
+            ("font-log", Value::Nil),
             ("fontification-functions", Value::Nil),
             ("frame-alpha-lower-limit", Value::Integer(20)),
             ("frame-size-history", Value::Nil),
-            ("frame-title-format", Value::String("%b".into())),
+            ("frame-title-format", frame_title_format.clone()),
             ("global-disable-point-adjustment", Value::Nil),
             ("global-mode-string", Value::Nil),
             ("glyph-table", Value::Nil),
-            ("icon-title-format", Value::String("%b".into())),
+            // xdisp.c assigns the very same Lisp object to both variables.
+            ("icon-title-format", frame_title_format),
             ("iconify-child-frame", Value::symbol("iconify-top-level")),
             ("inhibit--record-char", Value::Nil),
             ("inhibit-bidi-mirroring", Value::Nil),
@@ -4447,7 +4431,9 @@ impl Interpreter {
             ("move-frame-functions", Value::Nil),
             ("multiple-frames", Value::Nil),
             ("mwheel-coalesce-scroll-events", Value::T),
-            ("native-comp-enable-subr-trampolines", Value::T),
+            // comp.c leaves the zero-initialized Lisp_Object nil.  GNU's
+            // unchanged loadup.el enables this immediately before pdump.
+            ("native-comp-enable-subr-trampolines", Value::Nil),
             ("native-comp-jit-compilation", Value::T),
             ("nobreak-char-ascii-display", Value::Nil),
             ("nobreak-char-display", Value::T),
@@ -4524,8 +4510,7 @@ impl Interpreter {
 
         // Portable list-valued DEFVARs from the same completeness sweep.
         // The live native-comp backend initializes its comp-*-h tables and
-        // comp-subr-list separately; terminal-frame and redisplay cause
-        // tables still carry live object state and are not seedable data.
+        // comp-subr-list separately.
         for (name, value) in [
             (
                 "coding-category-list",
@@ -4590,6 +4575,19 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
+        // frame.c exposes the initial stdout frame itself, not a copied
+        // description or a nil placeholder.
+        interp.define_special_variable("terminal-frame", Value::Frame(interp.selected_frame_id));
+        // xdisp.c creates both diagnostic counters as ordinary default-test
+        // hash tables.  They are live Lisp objects and therefore participate
+        // in the same GC graph as every other C-owned table.
+        for name in [
+            "redisplay--all-windows-cause",
+            "redisplay--mode-lines-cause",
+        ] {
+            let table = crate::lisp::json::make_hash_table(&mut interp, "eql", Vec::new());
+            interp.define_special_variable(name, table);
+        }
 
         for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {
             if let Some(value) = interp.builtin_var_value(name) {
@@ -4603,11 +4601,12 @@ impl Interpreter {
         for variable in GNU_XDISP_GLOBAL_VARIABLES {
             interp.define_special_variable(variable.name, variable.default.value());
         }
-        // coding.c's end-of-line mnemonics, read by the dumped mode-line
-        // spec (mode-line-eol-desc).
+        // coding.c's end-of-line mnemonics.  startup.el later replaces the
+        // non-native platform labels; keep that Lisp-owned transition out of
+        // the C construction layer.
         interp.define_special_variable("eol-mnemonic-unix", Value::String(":".into()));
-        interp.define_special_variable("eol-mnemonic-dos", Value::String("(DOS)".into()));
-        interp.define_special_variable("eol-mnemonic-mac", Value::String("(Mac)".into()));
+        interp.define_special_variable("eol-mnemonic-dos", Value::String("\\".into()));
+        interp.define_special_variable("eol-mnemonic-mac", Value::String("/".into()));
         interp.define_special_variable("eol-mnemonic-undecided", Value::String(":".into()));
         interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
@@ -4864,9 +4863,9 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
-        // subr.el's prompt policy is let-bound by callers and consumed by
-        // separately defined save commands.
-        interp.define_special_variable("use-dialog-box", Value::Nil);
+        // fns.c initializes this true.  subr.el consumes the C-owned policy
+        // but does not replace its value during loadup.
+        interp.define_special_variable("use-dialog-box", Value::T);
         interp.define_special_variable("use-short-answers", Value::Nil);
         // fileio.c exposes this as a dynamically scoped DEFVAR_LISP.  Temp
         // helpers are defined separately and must observe callers' let-bindings.
@@ -5086,7 +5085,7 @@ impl Interpreter {
             ("auto-save-timeout", Value::Integer(30)),
             ("echo-keystrokes", Value::Integer(1)),
             ("echo-keystrokes-help", Value::T),
-            ("polling-period", Value::Float(2.0)),
+            ("polling-period", Value::float(2.0)),
             ("double-click-time", Value::Integer(500)),
             ("double-click-fuzz", Value::Integer(3)),
             ("num-input-keys", Value::Integer(0)),
@@ -5104,10 +5103,11 @@ impl Interpreter {
         // Their special declarations are part of the evaluator boundary:
         // ERT, Edebug, and command-loop code let-bind `debugger' or its
         // policy in one lexical function and expect separately defined error
-        // handlers to observe the active binding.  These are the dumped
-        // batch defaults, after debug.el has replaced `debug-early'.
+        // handlers to observe the active binding.  Keep eval.c's initial
+        // `debug-early' value here; unchanged loaddefs.el replaces it with
+        // `debug' while building the Lisp image.
         for (name, value) in [
-            ("debugger", Value::Symbol("debug".into())),
+            ("debugger", Value::Symbol("debug-early".into())),
             ("debug-on-error", Value::Nil),
             ("debug-on-quit", Value::Nil),
             ("debug-on-signal", Value::Nil),
@@ -5246,12 +5246,10 @@ impl Interpreter {
             ),
             ("frame-resize-pixelwise", Value::Nil),
             ("garbage-collection-messages", Value::Nil),
-            // The pinned dump carries 1.0, not alloc.c's 0.1 C initializer: the
-            // pdumper snapshot froze loadup-time GC state, and no Lisp file on
-            // disk re-sets it (probed: default-toplevel-value is 1.0 in
-            // emacs -Q -batch).  Mirror the artifact GNU executes; the
-            // mechanism is recorded as an open question in the audit log.
-            ("gc-cons-percentage", Value::Float(1.0)),
+            // alloc.c:8191.  emacs.c changes this later at executable startup:
+            // an initialized batch process gets 1.0, while temacs/loadup and
+            // interactive processes keep this C default.
+            ("gc-cons-percentage", Value::float(0.1)),
             ("highlight-nonselected-windows", Value::Nil),
             ("hourglass-delay", Value::Integer(1)),
             (
@@ -5264,7 +5262,7 @@ impl Interpreter {
             ("make-cursor-line-fully-visible", Value::T),
             ("make-pointer-invisible", Value::T),
             ("mark-even-if-inactive", Value::T),
-            ("maximum-scroll-margin", Value::Float(0.25)),
+            ("maximum-scroll-margin", Value::float(0.25)),
             ("menu-bar-mode", Value::T),
             ("menu-prompting", Value::T),
             ("minibuffer-follows-selected-frame", Value::T),
@@ -5294,10 +5292,9 @@ impl Interpreter {
             ("translate-upper-case-key-bindings", Value::T),
             ("underline-minimum-offset", Value::Integer(1)),
             ("undo-limit", Value::Integer(160000)),
-            // undo.c initializes 24000000, but the pinned dump observably
-            // carries nil (default-toplevel-value nil, standard-value still
-            // (24000000)); same dump-frozen class as gc-cons-percentage.
-            ("undo-outer-limit", Value::Nil),
+            // undo.c:474.  emacs.c changes this to nil when it processes the
+            // batch switch; keep the C initializer at the construction layer.
+            ("undo-outer-limit", Value::Integer(24_000_000)),
             ("undo-strong-limit", Value::Integer(240000)),
             ("unibyte-display-via-language-environment", Value::Nil),
             ("use-system-tooltips", Value::T),
@@ -5326,8 +5323,8 @@ impl Interpreter {
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
             ("eol-mnemonic-unix", Value::String(":".into())),
-            ("eol-mnemonic-dos", Value::String("(DOS)".into())),
-            ("eol-mnemonic-mac", Value::String("(Mac)".into())),
+            ("eol-mnemonic-dos", Value::String("\\".into())),
+            ("eol-mnemonic-mac", Value::String("/".into())),
             ("eol-mnemonic-undecided", Value::String(":".into())),
             ("recenter-redisplay", Value::Symbol("tty".into())),
             (
@@ -5340,13 +5337,6 @@ impl Interpreter {
             ),
         ] {
             interp.define_special_variable(name, value);
-        }
-        if let Some(temp_dir) = interp.lookup_var("temporary-file-directory", &Vec::new()) {
-            interp.put_symbol_property(
-                "temporary-file-directory",
-                "standard-value",
-                Value::list([quoted_literal(&temp_dir)]),
-            );
         }
         let selected_window = interp.create_pseudovector(
             RecordKind::Window,

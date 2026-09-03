@@ -2100,8 +2100,8 @@ fn hash_table_from_literal_fields(
 ) -> Result<Value, LispError> {
     let mut test = "eql".to_string();
     let mut size = Value::Integer(65);
-    let mut rehash_size = Value::Float(1.5);
-    let mut rehash_threshold = Value::Float(0.8125);
+    let mut rehash_size = Value::float(1.5);
+    let mut rehash_threshold = Value::float(0.8125);
     let mut weakness = Value::Nil;
     let mut purecopy = Value::Nil;
     let mut entries = Vec::new();

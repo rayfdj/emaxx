@@ -1728,13 +1728,13 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
     let obarray2 = call(&mut interp, "obarray-make", &[], &mut env).expect("obarray2");
 
     let cases = vec![
-        ("zero_float", Value::Integer(0), Value::Float(0.0)),
-        ("zero_neg_zero", Value::Integer(0), Value::Float(-0.0)),
-        ("float_neg_zero", Value::Float(0.0), Value::Float(-0.0)),
+        ("zero_float", Value::Integer(0), Value::float(0.0)),
+        ("zero_neg_zero", Value::Integer(0), Value::float(-0.0)),
+        ("float_neg_zero", Value::float(0.0), Value::float(-0.0)),
         (
             "large_int_float_equal",
             Value::big_integer(BigInt::from(72057594037927936_i128)),
-            Value::Float(72057594037927936.0),
+            Value::float(72057594037927936.0),
         ),
         // fns.c value_cmp promotes a fixnum to double before comparing, so
         // a fixnum the double cannot represent compares unordered against
@@ -1742,29 +1742,29 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
         (
             "fixnum_float_unrepresentable_1",
             Value::Integer(72057594037927935),
-            Value::Float(72057594037927936.0),
+            Value::float(72057594037927936.0),
         ),
         (
             "fixnum_float_unrepresentable_2",
-            Value::Float(72057594037927936.0),
+            Value::float(72057594037927936.0),
             Value::Integer(72057594037927937),
         ),
         (
             "fixnum_float_unrepresentable_3",
-            Value::Float(-72057594037927936.0),
+            Value::float(-72057594037927936.0),
             Value::Integer(-72057594037927935),
         ),
         (
             "fixnum_float_unrepresentable_4",
             Value::Integer(-72057594037927937),
-            Value::Float(-72057594037927936.0),
+            Value::float(-72057594037927936.0),
         ),
         (
             "fixnum_float_unrepresentable_5",
             Value::Integer(2305843009213693951),
-            Value::Float(2305843009213693952.0),
+            Value::float(2305843009213693952.0),
         ),
-        ("nan", Value::Integer(1), Value::Float(f64::NAN)),
+        ("nan", Value::Integer(1), Value::float(f64::NAN)),
         (
             "symbol_plain_uninterned_same_visible",
             Value::Symbol("a".into()),

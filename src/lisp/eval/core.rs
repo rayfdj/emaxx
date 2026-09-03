@@ -327,13 +327,10 @@ impl Interpreter {
             return result;
         }
         self.lisp_eval_depth += 1;
-        // eval.c:2504-2509.  NOTE: GNU increments at TWO sites -- `eval_sub'
-        // here and `Ffuncall' (eval.c:3078) -- while Emaxx increments only
-        // here, so a `funcall'/`apply' chain counts 2 units per level where
-        // GNU counts 3.  Emaxx therefore trips LATER on those paths, never
-        // earlier, so no honest program fails that GNU accepts; the limit
-        // simply means something slightly different there.  Tracked
-        // separately rather than claimed as done.
+        // eval.c:2504-2509.  GNU increments separately in `eval_sub' and
+        // `Ffuncall'; this is the eval_sub half.  Public
+        // `call_function_value' below owns the Ffuncall half, while direct
+        // source dispatch stays on `call_function_value_named'.
         //   if (++lisp_eval_depth > max_lisp_eval_depth) {
         //     if (max_lisp_eval_depth < 100) max_lisp_eval_depth = 100;
         //     if (lisp_eval_depth > max_lisp_eval_depth)
@@ -414,7 +411,7 @@ impl Interpreter {
     /// The effective `max-lisp-eval-depth', read through the DYNAMIC binding
     /// so a `let' is honoured, with eval.c:2506's floor: a limit below 100 is
     /// raised to 100 rather than rejected.
-    fn lisp_eval_depth_limit(&self, env: &Env) -> usize {
+    fn lisp_eval_depth_limit(&mut self, env: &mut Env) -> usize {
         // Clamp BEFORE converting: `usize::try_from(-5)' fails, so folding
         // the conversion into the default turned a negative limit into 1600 --
         // LARGER than requested, where eval.c:2506 floors it at 100.
@@ -422,7 +419,14 @@ impl Interpreter {
             .lookup_var("max-lisp-eval-depth", env)
             .and_then(|value| value.as_integer().ok())
             .unwrap_or(1600);
-        usize::try_from(requested.max(100)).unwrap_or(100)
+        if requested < 100 {
+            // eval.c changes the live DEFVAR_INT cell, so this mutation is
+            // observable for the remainder of the current dynamic binding.
+            self.set_variable("max-lisp-eval-depth", Value::Integer(100), env);
+            100
+        } else {
+            usize::try_from(requested).unwrap_or(usize::MAX)
+        }
     }
 
     fn eval_inner(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
@@ -701,7 +705,66 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.call_function_value_named(func, original_name.map(CallName::Text), args, env)
+        self.begin_funcall(env)?;
+        let result =
+            self.call_function_value_named(func, original_name.map(CallName::Text), args, env);
+        self.end_funcall();
+        result
+    }
+
+    /// eval.c:Ffuncall's entry sequence.  Generated code uses the same
+    /// boundary before it dispatches an already encoded Lisp_Object vector.
+    pub(crate) fn begin_funcall(&mut self, env: &mut Env) -> Result<(), LispError> {
+        self.maybe_quit(env)?;
+        self.lisp_eval_depth += 1;
+        let limit = self.lisp_eval_depth_limit(env);
+        if self.lisp_eval_depth > limit
+            || self.lisp_eval_depth.is_multiple_of(64) && !Self::stack_headroom_remains()
+        {
+            let reached = self.lisp_eval_depth;
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn end_funcall(&mut self) {
+        self.lisp_eval_depth = self
+            .lisp_eval_depth
+            .checked_sub(1)
+            .expect("Ffuncall depth is balanced");
+    }
+
+    /// eval.c:maybe_quit/probably_quit/process_quit_flag for the Lisp-visible
+    /// quit state.  Platform pending-signal delivery remains owned by the
+    /// process/terminal layer; once it sets quit-flag, this is the exact C
+    /// dispatch among kill-emacs, throw-on-input, and ordinary quit.
+    pub(crate) fn maybe_quit(&mut self, env: &mut Env) -> Result<(), LispError> {
+        let flag = self.symbol_value_cell("quit-flag").unwrap_or(Value::Nil);
+        if flag.is_nil()
+            || self
+                .symbol_value_cell("inhibit-quit")
+                .is_ok_and(|inhibited| inhibited.is_truthy())
+        {
+            return Ok(());
+        }
+
+        self.set_symbol_value_cell("quit-flag", Value::Nil);
+        if matches!(&flag, Value::Symbol(name) if name == "kill-emacs") {
+            return primitives::call(self, "kill-emacs", &[Value::Nil, Value::Nil], env).map(drop);
+        }
+
+        let throw_on_input = self
+            .symbol_value_cell("throw-on-input")
+            .unwrap_or(Value::Nil);
+        if primitives::values_eq_in_env(self, &throw_on_input, &flag, env) {
+            Err(LispError::Throw(throw_on_input, Value::T))
+        } else {
+            Err(LispError::SignalValue(Value::list([Value::symbol("quit")])))
+        }
     }
 
     fn call_function_value_named(
@@ -1277,6 +1340,10 @@ impl Interpreter {
                 self.pop_backtrace_frame();
                 result
             }
+            Value::Nil => Err(LispError::SignalValue(Value::list([
+                Value::Symbol("void-function".into()),
+                Value::Nil,
+            ]))),
             other => Err(LispError::SignalValue(Value::list([
                 Value::Symbol("invalid-function".into()),
                 other,

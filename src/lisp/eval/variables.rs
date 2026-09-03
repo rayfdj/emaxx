@@ -1197,7 +1197,9 @@ impl Interpreter {
             "scroll-up-aggressively" => match value {
                 Value::Nil => Ok(Value::Nil),
                 Value::Integer(number) if (0..=1).contains(&number) => Ok(Value::Integer(number)),
-                Value::Float(number) if (0.0..=1.0).contains(&number) => Ok(Value::Float(number)),
+                Value::Float(number) if (0.0..=1.0).contains(&number.get()) => {
+                    Ok(Value::Float(number))
+                }
                 other => Err(wrong_type_argument("numberp", other)),
             },
             "vertical-scroll-bar" => match value {

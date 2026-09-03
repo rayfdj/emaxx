@@ -33,6 +33,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+pub(crate) const PORTABLE_DUMPER_UNAVAILABLE: &str = "Portable dumper backend is unavailable";
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};

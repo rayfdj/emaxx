@@ -694,8 +694,8 @@ define_dispatch!(
             "make-hash-table" => {
                 let mut test = "eql".to_string();
                 let mut size = Value::Integer(65);
-                let mut rehash_size = Value::Float(1.5);
-                let mut rehash_threshold = Value::Float(0.8125);
+                let mut rehash_size = Value::float(1.5);
+                let mut rehash_threshold = Value::float(0.8125);
                 let mut weakness = Value::Nil;
                 // fns.c still accepts `:purecopy'; print.c:2609 reports it
                 // back, so the flag has to be recorded rather than dropped.
@@ -982,7 +982,7 @@ define_dispatch!(
                     interp,
                     &args[0],
                     3,
-                    Value::Float(1.5),
+                    Value::float(1.5),
                 )?)
             }
             "hash-table-rehash-threshold" => {
@@ -991,7 +991,7 @@ define_dispatch!(
                     interp,
                     &args[0],
                     4,
-                    Value::Float(0.8125),
+                    Value::float(0.8125),
                 )?)
             }
             "hash-table-size" => {

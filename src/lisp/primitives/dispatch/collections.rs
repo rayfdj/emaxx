@@ -659,7 +659,7 @@ define_dispatch!(
                 let average = sysinfo::System::load_average();
                 let values = [average.one, average.five, average.fifteen];
                 if args.first().is_some_and(Value::is_truthy) {
-                    Ok(Value::list(values.map(Value::Float)))
+                    Ok(Value::list(values.map(Value::float)))
                 } else {
                     // GNU multiplies the host values by 100 and truncates the
                     // resulting positive doubles to integers.

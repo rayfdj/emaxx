@@ -2453,7 +2453,7 @@ fn buffer_has_field_property(interp: &Interpreter) -> bool {
 fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> i64 {
     match spec {
         Value::Integer(value) => *value,
-        Value::Float(value) => *value as i64,
+        Value::Float(value) => value.get() as i64,
         Value::Symbol(name) => interp
             .lookup_var(name, env)
             .map(|value| display_spec_width(interp, env, &value))
@@ -3007,7 +3007,7 @@ fn line_number_display_width_value(
         if mode.is_nil() {
             return Ok(
                 if matches!(pixelwise, Some(Value::Symbol(name)) if name == "columns") {
-                    Value::Float(0.0)
+                    Value::float(0.0)
                 } else {
                     Value::Integer(0)
                 },
@@ -3044,7 +3044,7 @@ fn line_number_display_width_value(
         // left/right padding in GNU's headless terminal display.
         let pixels = columns + 2;
         Ok(match pixelwise {
-            Some(Value::Symbol(name)) if name == "columns" => Value::Float(pixels as f64),
+            Some(Value::Symbol(name)) if name == "columns" => Value::float(pixels as f64),
             Some(value) if value.is_truthy() => Value::Integer(pixels),
             _ => Value::Integer(columns),
         })

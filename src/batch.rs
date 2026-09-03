@@ -417,6 +417,10 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
     // defvars the -D/--basic-display flags before the walk; delayed
     // forms read them once `noninteractive' stops short-circuiting.
     interpreter.set_variable("noninteractive", Value::Nil, &mut Vec::new());
+    // emacs.c selects 0.1 for an initialized interactive process.  The helper
+    // above reconstructed the dump through its batch entry point, so apply the
+    // interactive branch before live-session initialization continues.
+    interpreter.set_variable("gc-cons-percentage", Value::float(0.1), &mut Vec::new());
     interpreter.set_variable("emacs-basic-display", Value::Nil, &mut Vec::new());
     interpreter.set_variable("no-blinking-cursor", Value::Nil, &mut Vec::new());
     // GNU's normal-top-level recomputes `user-emacs-directory' from the
@@ -478,6 +482,10 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     // override and restore this state around loads.
     interpreter.set_variable("lexical-binding", Value::T, &mut Vec::new());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
+    // emacs.c handles --batch before running loadup and clears the outer undo
+    // limit.  Interpreter::new retains undo.c's 24000000 initializer so the
+    // construction boundary itself remains faithful to syms_of_undo.
+    interpreter.set_variable("undo-outer-limit", Value::Nil, &mut Vec::new());
     interpreter.set_variable(
         "command-line-args-left",
         Value::list(
@@ -493,6 +501,18 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     // phase, where delayed Custom initializers accumulate until startup.
     interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());
     configure_batch_source_provenance(&mut interpreter)?;
+    // font.c:init_font runs after syms_of_font and before loadup.el.  Merely
+    // having EMACS_FONT_LOG in the environment enables logging, even when its
+    // value is the empty string.
+    interpreter.set_variable(
+        "font-log",
+        if env::var_os("EMACS_FONT_LOG").is_some() {
+            Value::Nil
+        } else {
+            Value::T
+        },
+        &mut Vec::new(),
+    );
     // The VM gate controls resolution for the reconstructed preload itself.
     // Setting it after `preload_batch_compat_libraries' made the flag
     // ineffective for precisely the GNU Elisp image it is meant to execute.
@@ -536,6 +556,11 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     interpreter.set_variable("inhibit-message", Value::Nil, &mut Vec::new());
     interpreter.set_variable("message-log-max", saved_message_log_max, &mut Vec::new());
     reconstruction?;
+    // emacs.c uses 0.1 while temacs builds the dump, then raises the value to
+    // 1.0 only when an initialized (dump-loaded) process starts in batch mode.
+    // The reconstructed image above is the temacs/loadup phase; user actions
+    // below run in the initialized batch phase.
+    interpreter.set_variable("gc-cons-percentage", Value::float(1.0), &mut Vec::new());
     // The image is built; now the session's own `load-path' applies, with the
     // user's `-L' entries ahead of the installation directories.
     interpreter.set_load_path(effective_batch_load_path(options)?);
@@ -916,34 +941,6 @@ fn has_configured_lisp_tree(interpreter: &Interpreter) -> bool {
         .is_some_and(|paths| !paths.is_empty())
 }
 
-fn form_contains_symbol(form: &Value, sought: &str) -> bool {
-    let mut pending = vec![form.clone()];
-    while let Some(value) = pending.pop() {
-        match value {
-            Value::Symbol(name) | Value::BuiltinFunc(name) if name == sought => return true,
-            Value::Cons(cell) => {
-                pending.push(cell.cdr.borrow().clone());
-                pending.push(cell.car.borrow().clone());
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-fn is_loadup_dump_handoff(form: &Value) -> bool {
-    let Ok(items) = form.to_vec() else {
-        return false;
-    };
-    items
-        .first()
-        .is_some_and(|head| head.as_symbol().is_ok_and(|name| name == "if"))
-        && form_contains_symbol(form, "dump-emacs-portable")
-        && form_contains_symbol(form, "dump-emacs")
-        && form_contains_symbol(form, "add-name-to-file")
-        && form_contains_symbol(form, "kill-emacs")
-}
-
 fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
     // GNU's executable starts from the state produced by loadup.el.  Emaxx
     // reconstructs that image by evaluating the unchanged GNU owner itself
@@ -957,22 +954,32 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
     let path = interpreter
         .resolve_load_target("loadup")
         .ok_or_else(|| "preload GNU loadup.el: cannot resolve loadup".to_string())?;
-    let stopped =
-        match crate::lisp::load_file_strict_until(interpreter, &path, is_loadup_dump_handoff) {
-            Ok(stopped) => stopped,
-            Err(error) => {
-                let backtrace = interpreter
-                    .take_batch_error_backtrace()
-                    .map(|snapshot| format_backtrace_frames(snapshot.frames))
-                    .unwrap_or_default();
-                let suffix = if backtrace.is_empty() {
-                    String::new()
-                } else {
-                    format!(" | backtrace: {backtrace}")
-                };
-                return Err(format!("preload GNU loadup.el: {error}{suffix}"));
-            }
-        };
+    let stopped = match crate::lisp::load_file_strict_until_or_error(
+        interpreter,
+        &path,
+        |_| false,
+        |error| {
+            matches!(
+                error,
+                LispError::Signal(message)
+                    if message == crate::lisp::primitives::PORTABLE_DUMPER_UNAVAILABLE
+            )
+        },
+    ) {
+        Ok(stopped) => stopped,
+        Err(error) => {
+            let backtrace = interpreter
+                .take_batch_error_backtrace()
+                .map(|snapshot| format_backtrace_frames(snapshot.frames))
+                .unwrap_or_default();
+            let suffix = if backtrace.is_empty() {
+                String::new()
+            } else {
+                format!(" | backtrace: {backtrace}")
+            };
+            return Err(format!("preload GNU loadup.el: {error}{suffix}"));
+        }
+    };
     if !stopped {
         return Err("preload GNU loadup.el: portable-dump handoff was not found".to_string());
     }
@@ -2472,6 +2479,25 @@ mod tests {
     }
 
     #[test]
+    fn batch_reconstruction_reaches_loadup_native_trampoline_transition() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            assert_eq!(
+                interpreter.lookup_var("native-comp-enable-subr-trampolines", &Env::new()),
+                Some(Value::T),
+                "unchanged loadup.el enables trampolines before calling the C dumper"
+            );
+        });
+    }
+
+    #[test]
     fn batch_reconstruction_registers_the_default_tty_colors() {
         // startup.el:1479 runs `tty-register-default-colors' for batch
         // sessions too.  Without it `tty-color-alist' is empty, so
@@ -2518,7 +2544,7 @@ mod tests {
                     ]),
                     Value::list([Value::Integer(65535), Value::Integer(0), Value::Integer(0),]),
                     Value::T,
-                    Value::list([Value::Float(1.0), Value::Float(0.0), Value::Float(0.0)]),
+                    Value::list([Value::float(1.0), Value::float(0.0), Value::float(0.0)]),
                 ])
             );
         });
