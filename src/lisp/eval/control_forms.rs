@@ -1,7 +1,7 @@
 use super::*;
 use crate::lisp::reader;
 impl Interpreter {
-    pub(super) fn sf_quote(&mut self, items: &[Value]) -> Result<Value, LispError> {
+    pub(super) fn sf_quote(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
@@ -36,7 +36,7 @@ impl Interpreter {
         } else if !reader::quote_template_needs_resolution(&items[1]) {
             return Ok(items[1].clone());
         }
-        self.materialize_read_object_literals(items[1].clone())
+        self.materialize_read_object_literals(items[1].clone(), env)
     }
 
     pub(super) fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {

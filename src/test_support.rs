@@ -208,6 +208,13 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
             .load_target(library)
             .unwrap_or_else(|error| panic!("load GNU early owner {library}: {error}"));
     }
+    // This deliberately-small fixture represents a running dumped Emacs,
+    // not the raw temacs state from `Interpreter::new'.  The production
+    // image builder reaches this transition by executing unchanged
+    // loadup.el, whose final pre-dump assignment clears `purify-flag'.
+    // Materialize that already-established phase boundary here so runtime
+    // definitions are not recursively copied into simulated pure storage.
+    interpreter.set_global_binding("purify-flag", Value::Nil);
     interpreter
 }
 

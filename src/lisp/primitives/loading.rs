@@ -39,7 +39,7 @@ pub(crate) fn resolve_callable_aliases(
     let mut current = func.clone();
     let mut seen = HashSet::new();
     while let Value::Symbol(name) = current.clone() {
-        if !seen.insert(name.clone()) {
+        if !seen.insert(name.as_str().to_owned()) {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("cyclic-function-indirection".into()),
                 Value::Symbol(name),

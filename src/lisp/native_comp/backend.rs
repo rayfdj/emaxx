@@ -1750,7 +1750,12 @@ impl Compiler {
             "set" => {
                 let destination = argument(0)?;
                 let expression = argument(1)?;
-                let expression_type = call_lisp_one(interp, env, "cl-type-of", expression.clone())?;
+                let expression_type = super::lisp::call_c_primitive(
+                    interp,
+                    env,
+                    "cl-type-of",
+                    std::slice::from_ref(expression),
+                )?;
                 let value = if expression_type
                     .as_symbol()
                     .is_ok_and(|name| name == "comp-mvar")

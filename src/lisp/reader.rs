@@ -116,9 +116,12 @@ fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
 fn circular_vector_skeleton(len: usize) -> Value {
     let mut tail = Value::Nil;
     for _ in 0..len {
-        tail = Value::cons(Value::Nil, tail);
+        tail = Value::vector_storage_cons(Value::Nil, tail);
     }
-    Value::cons(Value::symbol("vector-literal"), tail)
+    let vector = Value::vector_storage_cons(Value::symbol("vector-literal"), tail);
+    crate::lisp::native_comp::note_lisp_allocation((len + 1).saturating_mul(8));
+    crate::lisp::types::register_vector_object(&vector, len + 1);
+    vector
 }
 
 fn fill_circular_label_value(

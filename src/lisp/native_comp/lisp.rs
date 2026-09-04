@@ -310,7 +310,7 @@ fn read_relocation(
     let len = call_one(interp, env, "hash-table-count", index)?.as_integer()?;
     let len = usize::try_from(len).map_err(|_| native_ice("negative relocation array length"))?;
     let objects = call_one(interp, env, "comp-data-container-l", container)?;
-    let vector = call_one(interp, env, "vconcat", objects)?;
+    let vector = call_c_primitive(interp, env, "vconcat", &[objects])?;
     Ok(OwnedRelocation {
         len,
         printed: print_static(interp, env, &vector)?,
@@ -330,7 +330,7 @@ fn find_relocation(
         (RelocationArrayKind::Impure, impure_index),
         (RelocationArrayKind::Ephemeral, ephemeral_index),
     ] {
-        let value = call(
+        let value = call_c_primitive(
             interp,
             env,
             "gethash",
@@ -425,6 +425,24 @@ pub(crate) fn call(
 ) -> Result<Value, LispError> {
     let function = interp.lookup_function(name, env)?;
     interp.call_function_value(function, Some(name), arguments, env)
+}
+
+/// Invoke the Rust implementation of a GNU C primitive directly.  `Ffoo'
+/// calls in GNU do not resolve `foo' through its Lisp function cell, though
+/// the primitive itself can still honor mechanisms such as file handlers.
+pub(crate) fn call_c_primitive(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    crate::lisp::primitives::call_with_facts(
+        interp,
+        name,
+        crate::lisp::primitives::name_facts(name),
+        arguments,
+        env,
+    )
 }
 
 pub(crate) fn native_ice(message: &str) -> LispError {

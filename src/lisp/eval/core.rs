@@ -483,7 +483,7 @@ impl Interpreter {
             | Value::Finalizer(_)
             | Value::Unbound => Ok(expr.clone()),
 
-            Value::ReaderForm(_) => self.materialize_read_object_literals(expr.clone()),
+            Value::ReaderForm(_) => self.materialize_read_object_literals(expr.clone(), env),
 
             Value::Symbol(name) => self.lookup(name, env),
 
@@ -501,7 +501,7 @@ impl Interpreter {
 
                 match literal_kind {
                     SourceLiteralKind::Vector => {
-                        return self.materialize_read_object_literals(expr.clone());
+                        return self.materialize_read_object_literals(expr.clone(), env);
                     }
                     SourceLiteralKind::None => {}
                 }
@@ -537,7 +537,7 @@ impl Interpreter {
                     });
                     if let Some(native_form) = effective_native_form {
                         match native_form {
-                            NativeForm::Quote => return self.sf_quote(&items),
+                            NativeForm::Quote => return self.sf_quote(&items, env),
                             NativeForm::If => return self.sf_if(&items, env),
                             NativeForm::And => return self.sf_and(&items, env),
                             NativeForm::Or => return self.sf_or(&items, env),

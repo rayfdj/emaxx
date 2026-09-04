@@ -167,8 +167,10 @@ fn character_table_literal_materializes_nested_bytecode_decoder() {
     ));
 
     let mut interp = Interpreter::new();
-    let Value::CharTable(table_id) = materialize_read_char_table_literals(&mut interp, &literal)
-        .expect("materialize a character table with a bytecode decoder")
+    let mut env = Env::new();
+    let Value::CharTable(table_id) =
+        materialize_read_char_table_literals(&mut interp, &literal, &mut env)
+            .expect("materialize a character table with a bytecode decoder")
     else {
         panic!("character-table syntax must produce a typed table");
     };
@@ -11287,42 +11289,48 @@ fn propertize_preserves_existing_string_properties() {
 fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
+    let supplied_name = Value::String("help".into());
 
     let left = call(
         &mut interp,
         "make-symbol",
-        &[Value::String("help".into())],
+        std::slice::from_ref(&supplied_name),
         &mut env,
     )
     .expect("make-symbol should return a symbol");
     let right = call(
         &mut interp,
         "make-symbol",
-        &[Value::String("help".into())],
+        std::slice::from_ref(&supplied_name),
         &mut env,
     )
     .expect("make-symbol should return a distinct symbol");
 
     assert_ne!(left, right);
+    let left_name = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&left),
+        &mut env,
+    )
+    .expect("symbol-name should preserve the visible name");
+    let right_name = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&right),
+        &mut env,
+    )
+    .expect("symbol-name should preserve the visible name");
+    let (Value::String(supplied), Value::String(left), Value::String(right)) =
+        (&supplied_name, left_name, right_name)
+    else {
+        unreachable!("immutable symbol names")
+    };
+    assert!(left.ptr_eq(supplied));
+    assert!(right.ptr_eq(supplied));
     assert_eq!(
-        call(
-            &mut interp,
-            "symbol-name",
-            std::slice::from_ref(&left),
-            &mut env
-        )
-        .expect("symbol-name should preserve the visible name"),
-        Value::String("help".into())
-    );
-    assert_eq!(
-        call(
-            &mut interp,
-            "symbol-name",
-            std::slice::from_ref(&right),
-            &mut env
-        )
-        .expect("symbol-name should preserve the visible name"),
-        Value::String("help".into())
+        call(&mut interp, "symbol-name", &[Value::Nil], &mut env).expect("nil has a symbol name"),
+        Value::String("nil".into())
     );
 }
 

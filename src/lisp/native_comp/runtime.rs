@@ -509,6 +509,25 @@ pub(crate) fn synchronize_cons_read(address: usize) {
     });
 }
 
+thread_local! {
+    /// GNU has one process-wide `consing_until_gc'.  Emaxx's Lisp runtime is
+    /// single-threaded, so a thread-local monotonic byte total lets the native
+    /// collector consume every Lisp allocation, including those made before
+    /// generated code becomes active, without an atomic operation per cons.
+    static LISP_ALLOCATED_BYTES: Cell<u64> = const { Cell::new(0) };
+}
+
+fn lisp_allocated_bytes() -> u64 {
+    LISP_ALLOCATED_BYTES.get()
+}
+
+/// alloc.c:tally_consing for actual Lisp objects.  Rust bridge wrappers must
+/// not call this: GNU has no corresponding Lisp allocation for them.
+pub(crate) fn note_lisp_allocation(bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    LISP_ALLOCATED_BYTES.set(lisp_allocated_bytes().saturating_add(bytes));
+}
+
 pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R) -> Option<R> {
     ACTIVE_CALL.with(|active| {
         let active = active.get();
@@ -725,12 +744,16 @@ impl NativeRuntime {
     fn collect_native_heap(
         &mut self,
         stack_top: *const NativeWord,
-        threshold: usize,
-        percentage: f64,
-    ) {
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> Option<Vec<Value>> {
         if !self.heap.collection_due(threshold, percentage) {
-            return;
+            return None;
         }
+        Some(self.collect_native_heap_now(stack_top))
+    }
+
+    fn collect_native_heap_now(&mut self, stack_top: *const NativeWord) -> Vec<Value> {
         let mut roots = self
             .handlers
             .iter()
@@ -751,7 +774,22 @@ impl NativeRuntime {
                 roots.extend(unsafe { std::slice::from_raw_parts(range.start, range.len) });
             }
         }
-        self.heap.collect(stack_top, &roots, threshold, percentage);
+        self.heap.collect(stack_top, &roots)
+    }
+
+    pub(crate) fn begin_garbage_collection(&mut self) -> Vec<Value> {
+        let stack_marker = 0_usize;
+        self.collect_native_heap_now(std::ptr::from_ref(&stack_marker))
+    }
+
+    pub(crate) fn garbage_collection_finished(
+        &mut self,
+        live_bytes: usize,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) {
+        self.heap
+            .collection_finished(live_bytes, threshold, percentage);
     }
 
     pub(crate) fn register_permanent_root_range(&mut self, start: *const NativeWord, len: usize) {
@@ -2184,7 +2222,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
             if valid.is_truthy() {
                 return Ok(0);
             }
-            let _ = super::lisp::call(
+            let _ = super::lisp::call_c_primitive(
                 interpreter,
                 environment,
                 "message",
@@ -2298,17 +2336,35 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
 extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
     with_active(|active| {
         let interpreter = unsafe { &mut *active.interpreter };
+        if interpreter.garbage_collection_is_inhibited() {
+            return;
+        }
         let threshold = interpreter
             .symbol_value_cell("gc-cons-threshold")
             .ok()
             .and_then(|value| value.as_integer().ok())
-            .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
         let percentage = match interpreter.symbol_value_cell("gc-cons-percentage") {
-            Ok(Value::Float(value)) if value.is_finite() && value.get() >= 0.0 => value.get(),
-            _ => 0.0,
+            Ok(Value::Float(value)) => Some(value.get()),
+            _ => None,
         };
-        unsafe { &mut *active.runtime }.collect_native_heap(stack_top, threshold, percentage);
+        let runtime = unsafe { &mut *active.runtime };
+        if let Some(native_roots) = runtime.collect_native_heap(stack_top, threshold, percentage) {
+            if let Err(error) = crate::lisp::primitives::collect_weak_hash_tables(
+                interpreter,
+                unsafe { &*active.environment },
+                &native_roots,
+            ) {
+                remember_helper_error(active, error);
+                return;
+            }
+            let live_bytes = interpreter
+                .live_object_census()
+                .total_bytes_of_live_objects();
+            runtime
+                .heap
+                .collection_finished(live_bytes, threshold, percentage);
+        }
     });
 }
 
@@ -2388,8 +2444,9 @@ enum NativeIdentity {
 type NativeCons = ConsWords;
 
 const NATIVE_CONS_BLOCK_LEN: usize = 16 * 1024;
-const NATIVE_GC_DEFAULT_THRESHOLD: usize = 800_000;
-const NATIVE_GC_MINIMUM_THRESHOLD: usize = 80_000;
+const NATIVE_GC_DEFAULT_THRESHOLD: i64 = 800_000;
+const NATIVE_GC_MINIMUM_THRESHOLD: i64 = 80_000;
+const NATIVE_GC_HIGH_THRESHOLD: i64 = i64::MAX / 2;
 const NATIVE_CONS_MARK_WORDS: usize = NATIVE_CONS_BLOCK_LEN.div_ceil(u64::BITS as usize);
 
 struct NativeConsBlock {
@@ -2453,12 +2510,86 @@ impl NativeConsBlock {
 /// or returns that cell to the evaluator; transient compiler lists never pay
 /// for Rc allocation, hash-table registration, or mirror tracking.
 #[derive(Default)]
+struct NativeGcState {
+    /// alloc.c's `consing_until_gc'.  Lisp allocation subtracts bytes; GNU
+    /// only enters `maybe_garbage_collect' after this becomes negative.
+    consing_until_gc: i64,
+    /// alloc.c's `gc_threshold', retained separately because rebinding either
+    /// public threshold variable adjusts the remaining allowance by the
+    /// difference between the old and new effective thresholds.
+    gc_threshold: i64,
+    /// The allocator census captured by the most recent collection, matching
+    /// the `gcstat' input to `total_bytes_of_live_objects'.
+    live_bytes: usize,
+    /// Last point consumed from LISP_ALLOCATED_BYTES.  Keeping the source
+    /// monotonic makes allocations outside native activation visible here.
+    observed_allocated_bytes: u64,
+}
+
+impl NativeGcState {
+    fn tally_consing(&mut self, bytes: usize) {
+        let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+        self.consing_until_gc = self.consing_until_gc.saturating_sub(bytes);
+    }
+
+    fn synchronize_allocations(&mut self) {
+        let current = lisp_allocated_bytes();
+        let allocated = current.saturating_sub(self.observed_allocated_bytes);
+        self.observed_allocated_bytes = current;
+        self.tally_consing(usize::try_from(allocated).unwrap_or(usize::MAX));
+    }
+
+    /// alloc.c:consing_threshold, for the ordinary (non-memory-full) path.
+    fn consing_threshold(&self, threshold: i64, percentage: Option<f64>, since_gc: i64) -> i64 {
+        let mut threshold = threshold.max(NATIVE_GC_MINIMUM_THRESHOLD);
+        if let Some(percentage) = percentage {
+            let total = percentage * (self.live_bytes as f64 + since_gc as f64);
+            if (threshold as f64) < total {
+                threshold = if total < NATIVE_GC_HIGH_THRESHOLD as f64 {
+                    total as i64
+                } else {
+                    NATIVE_GC_HIGH_THRESHOLD
+                };
+            }
+        }
+        threshold.min(NATIVE_GC_HIGH_THRESHOLD)
+    }
+
+    /// alloc.c:bump_consing_until_gc.
+    fn bump_consing_until_gc(&mut self, threshold: i64, percentage: Option<f64>) -> i64 {
+        // GNU deliberately assumes half of the bytes allocated since the
+        // previous collection are still live while reconsidering the
+        // percentage threshold.
+        let since_gc = self.gc_threshold.saturating_sub(self.consing_until_gc) >> 1;
+        let new_gc_threshold = self.consing_threshold(threshold, percentage, since_gc);
+        self.consing_until_gc = self
+            .consing_until_gc
+            .saturating_add(new_gc_threshold.saturating_sub(self.gc_threshold));
+        self.gc_threshold = new_gc_threshold;
+        self.consing_until_gc
+    }
+
+    /// lisp.h:maybe_gc followed by alloc.c:maybe_garbage_collect.
+    fn collection_due(&mut self, threshold: i64, percentage: Option<f64>) -> bool {
+        self.consing_until_gc < 0 && self.bump_consing_until_gc(threshold, percentage) < 0
+    }
+
+    /// The post-sweep reset at the end of alloc.c:garbage_collect.
+    fn collection_finished(&mut self, live_bytes: usize, threshold: i64, percentage: Option<f64>) {
+        self.observed_allocated_bytes = lisp_allocated_bytes();
+        self.live_bytes = live_bytes;
+        self.gc_threshold = self.consing_threshold(threshold, percentage, 0);
+        self.consing_until_gc = self.gc_threshold;
+    }
+}
+
+#[derive(Default)]
 struct NativeConsArena {
     blocks: Vec<NativeConsBlock>,
     block_starts: BTreeMap<usize, usize>,
     free_list: Vec<*mut NativeCons>,
     live: usize,
-    allocated_since_gc: usize,
+    gc: NativeGcState,
 }
 
 impl NativeConsArena {
@@ -2489,12 +2620,8 @@ impl NativeConsArena {
             block.cells[slot].write(NativeCons::new(car, cdr))
         };
         self.live += 1;
-        self.note_allocation(std::mem::size_of::<NativeCons>());
+        note_lisp_allocation(std::mem::size_of::<NativeCons>());
         native
-    }
-
-    fn note_allocation(&mut self, bytes: usize) {
-        self.allocated_since_gc = self.allocated_since_gc.saturating_add(bytes);
     }
 
     fn locate(&self, pointer: usize, require_live: bool) -> Option<(usize, usize)> {
@@ -2518,21 +2645,9 @@ impl NativeConsArena {
         self.locate(native as usize, true).is_some()
     }
 
-    fn effective_threshold(&self, threshold: usize, percentage: f64) -> usize {
-        let threshold = threshold.max(NATIVE_GC_MINIMUM_THRESHOLD);
-        let live_bytes = self.live.saturating_mul(std::mem::size_of::<NativeCons>());
-        let percentage_threshold = if percentage <= 0.0 {
-            0
-        } else if percentage * live_bytes as f64 >= usize::MAX as f64 {
-            usize::MAX
-        } else {
-            (percentage * live_bytes as f64) as usize
-        };
-        threshold.max(percentage_threshold)
-    }
-
-    fn collection_due(&self, threshold: usize, percentage: f64) -> bool {
-        self.allocated_since_gc >= self.effective_threshold(threshold, percentage)
+    fn collection_due(&mut self, threshold: i64, percentage: Option<f64>) -> bool {
+        self.gc.synchronize_allocations();
+        self.gc.collection_due(threshold, percentage)
     }
 
     fn mark_word(&mut self, word: NativeWord) -> ArenaMark {
@@ -2595,7 +2710,6 @@ impl NativeConsArena {
                 }
             }
         }
-        self.allocated_since_gc = 0;
     }
 
     fn is_empty(&self) -> bool {
@@ -2691,19 +2805,46 @@ impl NativeHeap {
         }
     }
 
-    fn collection_due(&self, threshold: usize, percentage: f64) -> bool {
+    fn collection_due(&mut self, threshold: i64, percentage: Option<f64>) -> bool {
         self.native_conses.collection_due(threshold, percentage)
+    }
+
+    fn collection_finished(
+        &mut self,
+        rust_live_bytes: usize,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) {
+        // A generated cons gets a Rust ConsCell only when it crosses the ABI.
+        // Such a cell is already present in the Rust census; only arena cells
+        // without that materialized owner must be added here.
+        let materialized_arena_conses = self
+            .cons_values
+            .keys()
+            .filter(|address| {
+                self.native_conses
+                    .contains((**address) as *const NativeCons)
+            })
+            .count();
+        let arena_only_bytes = self
+            .native_conses
+            .live
+            .saturating_sub(materialized_arena_conses)
+            .saturating_mul(std::mem::size_of::<NativeCons>());
+        self.native_conses.gc.collection_finished(
+            rust_live_bytes.saturating_add(arena_only_bytes),
+            threshold,
+            percentage,
+        );
     }
 
     fn collect(
         &mut self,
         stack_top: *const NativeWord,
         runtime_roots: &[NativeWord],
-        threshold: usize,
-        percentage: f64,
-    ) {
-        if self.native_stack_bottom.is_null() || !self.collection_due(threshold, percentage) {
-            return;
+    ) -> Vec<Value> {
+        if self.native_stack_bottom.is_null() {
+            return Vec::new();
         }
         let mut pending = Vec::with_capacity(runtime_roots.len());
         pending.extend_from_slice(runtime_roots);
@@ -2760,6 +2901,31 @@ impl NativeHeap {
                 marked_handles[*index] = true;
             }
         }
+
+        // GNU's single mark pass makes objects reached from generated stack
+        // words visible to weak-hash processing as well as to ordinary heap
+        // sweeping.  Preserve that one-root-graph rule across Emaxx's typed
+        // Lisp heap and native ABI arena by publishing every marked bridge
+        // value to the subsequent Lisp reachability pass.
+        let mut lisp_roots = self
+            .handles
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                marked_handles[index]
+                    .then(|| entry.as_ref().map(|entry| entry.native.value.clone()))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        lisp_roots.extend(self.cons_values.iter().filter_map(|(&address, mirror)| {
+            let native = address as *const NativeCons;
+            let marked = if self.native_conses.contains(native) {
+                self.native_conses.is_marked(native)
+            } else {
+                mirror.gc_marked
+            };
+            marked.then(|| Value::Cons(mirror.value.clone()))
+        }));
 
         let mut unreachable = Vec::new();
         for (&address, mirror) in &self.cons_values {
@@ -2843,6 +3009,7 @@ impl NativeHeap {
             self.free_handle_slots.push(index);
         }
         self.native_conses.sweep();
+        lisp_roots
     }
 
     fn finish_nested_call(&mut self) {
@@ -2877,13 +3044,6 @@ impl NativeHeap {
 
     fn register_cons_value(&mut self, native: *mut NativeCons, value: &SharedCons) {
         let address = native as usize;
-        if !self.native_conses.contains(native) {
-            // GNU's Fcons charged this cell when the primitive created it.
-            // Rust ownership allocates it outside the native arena, so charge
-            // the same two-word Lisp object when it first crosses the ABI.
-            self.native_conses
-                .note_allocation(std::mem::size_of::<NativeCons>());
-        }
         let words = unsafe { [(*native).car(), (*native).cdr()] };
         unsafe { value.attach_native_words(native, words) };
         self.cons_values.insert(
@@ -3119,8 +3279,6 @@ impl NativeHeap {
                 tag,
                 identity: identity.clone(),
             };
-            self.native_conses
-                .note_allocation(std::mem::size_of::<NativeHandle>());
             let index = if let Some(index) = self.free_handle_slots.pop() {
                 self.handles[index] = Some(entry);
                 index
@@ -4203,6 +4361,53 @@ mod tests {
     }
 
     #[test]
+    fn native_gc_matches_gnu_threshold_boundary_and_half_live_adjustment() {
+        let mut gc = NativeGcState::default();
+
+        // lisp.h:maybe_gc tests for a negative counter, not <= 0.  The first
+        // reconsideration also installs alloc.c's default threshold.
+        gc.tally_consing(NATIVE_GC_DEFAULT_THRESHOLD as usize);
+        assert!(!gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
+        gc.tally_consing(1);
+        assert!(gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
+
+        // With 10 MB live after the last collection, GNU allows 10% plus its
+        // deliberate half-of-new-allocation live-data estimate.  1,052,631
+        // allocated bytes are therefore still permitted; the next byte is
+        // the first one that leaves the recalculated allowance negative.
+        gc.collection_finished(10_000_000, NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1));
+        gc.tally_consing(1_052_631);
+        assert!(!gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
+        gc.tally_consing(1);
+        assert!(gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
+    }
+
+    #[test]
+    fn native_gc_matches_gnu_percentage_type_and_saturation_rules() {
+        let gc = NativeGcState {
+            live_bytes: 10_000_000,
+            ..NativeGcState::default()
+        };
+
+        assert_eq!(
+            gc.consing_threshold(-1, None, 0),
+            NATIVE_GC_MINIMUM_THRESHOLD
+        );
+        assert_eq!(
+            gc.consing_threshold(NATIVE_GC_DEFAULT_THRESHOLD, Some(f64::NAN), 0),
+            NATIVE_GC_DEFAULT_THRESHOLD
+        );
+        assert_eq!(
+            gc.consing_threshold(NATIVE_GC_DEFAULT_THRESHOLD, Some(f64::INFINITY), 0),
+            NATIVE_GC_HIGH_THRESHOLD
+        );
+        assert_eq!(
+            gc.consing_threshold(i64::MAX, None, 0),
+            NATIVE_GC_HIGH_THRESHOLD
+        );
+    }
+
+    #[test]
     fn native_gc_marks_reachable_arena_conses_and_reuses_the_rest() {
         let mut heap = NativeHeap::default();
         heap.begin_call();
@@ -4215,7 +4420,7 @@ mod tests {
         let tail = heap.cons(TAG_FIXNUM_LOW, 0);
         let head = heap.cons((2 << FIXNUM_BITS) + TAG_FIXNUM_LOW, tail);
 
-        heap.collect(std::ptr::from_ref(&stack_marker), &[head], 0, 0.0);
+        heap.collect(std::ptr::from_ref(&stack_marker), &[head]);
 
         assert_eq!(heap.native_conses.live, 2);
         assert!(
@@ -4245,7 +4450,7 @@ mod tests {
             std::hint::black_box(heap.cons(value, 0));
         }
 
-        heap.collect(std::ptr::from_ref(&stack_marker), &[word], 0, 0.0);
+        heap.collect(std::ptr::from_ref(&stack_marker), &[word]);
         assert_eq!(
             heap.decode(word)
                 .expect("native root keeps the Rust cons alive")
@@ -4258,7 +4463,7 @@ mod tests {
             let value = (index << FIXNUM_BITS) + TAG_FIXNUM_LOW;
             std::hint::black_box(heap.cons(value, 0));
         }
-        heap.collect(std::ptr::from_ref(&stack_marker), &[], 0, 0.0);
+        heap.collect(std::ptr::from_ref(&stack_marker), &[]);
         assert!(!heap.cons_values.contains_key(&word.wrapping_sub(TAG_CONS)));
     }
 
@@ -4280,7 +4485,7 @@ mod tests {
             std::hint::black_box(heap.cons(value, 0));
         }
 
-        heap.collect(std::ptr::from_ref(&stack_marker), &[], 0, 0.0);
+        heap.collect(std::ptr::from_ref(&stack_marker), &[]);
 
         assert!(!heap.cons_values.contains_key(&word.wrapping_sub(TAG_CONS)));
         assert!(
@@ -4308,10 +4513,30 @@ mod tests {
             std::hint::black_box(heap.cons(value, 0));
         }
 
-        heap.collect(std::ptr::from_ref(&stack_marker), &[], 0, 0.0);
+        heap.collect(std::ptr::from_ref(&stack_marker), &[]);
 
         assert!(heap.handles.iter().all(Option::is_none));
         assert!(heap.decode(word).is_err());
+    }
+
+    #[test]
+    fn native_gc_publishes_native_only_handles_to_lisp_reachability() {
+        let mut heap = NativeHeap::default();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let word = heap
+            .encode(&Value::Record(42))
+            .expect("encode record reachable only through native storage");
+
+        let roots = heap.collect(std::ptr::from_ref(&stack_marker), &[word]);
+
+        assert!(roots.contains(&Value::Record(42)));
+        assert_eq!(
+            heap.decode(word)
+                .expect("published native root remains live"),
+            Value::Record(42)
+        );
     }
 
     #[test]

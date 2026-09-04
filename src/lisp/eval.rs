@@ -1354,6 +1354,91 @@ pub(crate) enum RecordKind {
     Keymap,
 }
 
+impl RecordKind {
+    fn gnu_vector_slots(self, logical_slots: usize) -> usize {
+        match self {
+            // alloc.c:allocate_record stores the type as the first payload
+            // word; vector accounting also includes the one-word header.
+            Self::Record => logical_slots.saturating_add(2),
+            // Both interpreted and byte-code closures are ordinary vectors
+            // retagged PVEC_CLOSURE.
+            Self::Closure => logical_slots.saturating_add(1),
+            // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
+            Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
+            Self::SymbolWithPos => 3,
+            // Verified from the configured GNU headers: 72 and 24 bytes.
+            Self::HashTable => 9,
+            Self::Obarray => 3,
+            // Both configured structs are 88 bytes on the supported GNU
+            // 64-bit ABI (comp.h and lisp.h:Lisp_Subr).
+            Self::NativeCompUnit | Self::NativeCompiledFunction => 11,
+            // Keymaps are Lisp cons structures in GNU, not pseudovectors.
+            Self::Keymap => 0,
+            // These fixed-layout host objects are added as their C allocation
+            // sites are mapped; never substitute the Rust struct size.
+            Self::Font
+            | Self::Process
+            | Self::Window
+            | Self::WindowConfiguration
+            | Self::Thread
+            | Self::Mutex
+            | Self::ConditionVariable
+            | Self::TreeSitterParser
+            | Self::TreeSitterNode
+            | Self::TreeSitterCompiledQuery
+            | Self::Sqlite => 0,
+        }
+    }
+}
+
+pub(crate) fn gnu_hash_grown_capacity(mut capacity: usize, high_water: usize) -> usize {
+    while capacity < high_water {
+        if capacity == 0 {
+            capacity = 6;
+            continue;
+        }
+        let base = capacity.max(6);
+        capacity = if base <= 64 {
+            base.saturating_mul(4)
+        } else {
+            base.saturating_mul(2)
+        };
+        if capacity == usize::MAX {
+            break;
+        }
+    }
+    capacity
+}
+
+pub(crate) fn gnu_hash_table_storage_bytes(capacity: usize) -> usize {
+    if capacity == 0 {
+        return 0;
+    }
+    let rounded = capacity.checked_next_power_of_two().unwrap_or(usize::MAX);
+    let index_slots = if rounded == capacity {
+        rounded.saturating_mul(2)
+    } else {
+        rounded
+    };
+    // fns.c: two Lisp_Object array words per entry, one u32 hash, one i32
+    // next link, and a power-of-two i32 bucket index.
+    capacity
+        .saturating_mul(24)
+        .saturating_add(index_slots.saturating_mul(4))
+}
+
+pub(crate) fn gnu_hash_table_index_slots(capacity: usize) -> usize {
+    if capacity == 0 {
+        return 1;
+    }
+    let rounded = capacity.checked_next_power_of_two().unwrap_or(usize::MAX);
+    if rounded == capacity {
+        rounded.saturating_mul(2)
+    } else {
+        rounded
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RecordState {
     pub id: u64,
@@ -1650,6 +1735,9 @@ pub(crate) enum RuntimeHashTest {
 #[derive(Clone, Debug, Default)]
 struct EqualHashTableState {
     test: RuntimeHashTest,
+    /// fns.c:Lisp_Hash_Table.table_size.  This is allocated capacity, not
+    /// entry count; removals and `clrhash' deliberately retain it.
+    capacity: usize,
     entries: Vec<(Value, Value)>,
     // fns.c stores entries in stable key/value slots.  Removing an entry
     // links its slot onto a LIFO free list; reinsertion reuses that slot,
@@ -1668,6 +1756,8 @@ struct EqualHashTableState {
 /// beside the entries so existing keys are not re-hashed on every lookup.
 #[derive(Clone)]
 struct CustomHashTableState {
+    /// fns.c:Lisp_Hash_Table.table_size.
+    capacity: usize,
     entries: Vec<(Value, Value)>,
     hashes: Vec<i64>,
     slot_indices: Vec<usize>,
@@ -1677,8 +1767,9 @@ struct CustomHashTableState {
 }
 
 impl CustomHashTableState {
-    fn empty() -> Self {
+    fn empty(capacity: usize) -> Self {
         Self {
+            capacity,
             entries: Vec::new(),
             hashes: Vec::new(),
             slot_indices: Vec::new(),
@@ -2397,7 +2488,7 @@ impl ImageGraphCopier {
                 if let Some(copied) = self.lambdas.get(&key) {
                     return copied.clone();
                 }
-                let copied = Value::Lambda(std::rc::Rc::new(crate::lisp::types::LambdaValue {
+                let copied = Value::allocated_lambda(crate::lisp::types::LambdaValue {
                     params: lambda.params.clone(),
                     public_parameters: lambda
                         .public_parameters
@@ -2419,7 +2510,7 @@ impl ImageGraphCopier {
                         .public_environment
                         .as_ref()
                         .map(|environment| self.copy(environment)),
-                }));
+                });
                 self.lambdas.insert(key, copied.clone());
                 self.fill_env(&lambda.env);
                 copied
@@ -2593,9 +2684,562 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) floats: usize,
     pub(crate) intervals: usize,
     pub(crate) buffers: usize,
+    pub(crate) hash_table_bytes: usize,
+}
+
+#[derive(Default)]
+struct LispReachability {
+    big_integers: HashSet<usize>,
+    floats: HashSet<usize>,
+    strings: HashSet<usize>,
+    string_objects: HashSet<usize>,
+    symbols: HashSet<String>,
+    conses: HashSet<usize>,
+    lambdas: HashSet<usize>,
+    buffers: HashSet<usize>,
+    markers: HashSet<u64>,
+    overlays: HashSet<u64>,
+    char_tables: HashSet<u64>,
+    frames: HashSet<u64>,
+    terminals: HashSet<u64>,
+    records: HashSet<u64>,
+    finalizers: HashSet<u64>,
+    reader_forms: HashSet<usize>,
+}
+
+pub(crate) struct WeakHashReachability {
+    pub(crate) tables: Vec<WeakHashTableReachability>,
+    pub(crate) live_records: HashSet<u64>,
+}
+
+pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
+
+impl LispReachability {
+    fn contains(&self, value: &Value) -> bool {
+        match value {
+            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
+                true
+            }
+            Value::BigInteger(value) => self.big_integers.contains(&value.identity_ptr()),
+            Value::Float(value) => self.floats.contains(&value.identity_ptr()),
+            Value::String(value) => self.strings.contains(&value.identity_ptr()),
+            Value::StringObject(value) => {
+                self.string_objects.contains(&(Rc::as_ptr(value) as usize))
+            }
+            Value::Symbol(symbol) => {
+                crate::lisp::types::visible_symbol_name(symbol) == symbol.as_str()
+                    || self.symbols.contains(symbol.as_str())
+            }
+            Value::Cons(value) => self.conses.contains(&ConsCell::identity(value)),
+            Value::Lambda(value) => self.lambdas.contains(&(Rc::as_ptr(value) as usize)),
+            Value::Buffer(value) => self.buffers.contains(&(Rc::as_ptr(value) as usize)),
+            Value::Marker(id) => self.markers.contains(id),
+            Value::Overlay(id) => self.overlays.contains(id),
+            Value::CharTable(id) => self.char_tables.contains(id),
+            Value::Frame(id) => self.frames.contains(id),
+            Value::Terminal(id) => self.terminals.contains(id),
+            Value::Record(id) => self.records.contains(id),
+            Value::Finalizer(id) => self.finalizers.contains(id),
+            Value::ReaderForm(value) => self.reader_forms.contains(&(Rc::as_ptr(value) as usize)),
+        }
+    }
+
+    fn mark_env(&mut self, interp: &Interpreter, env: &Env) -> bool {
+        let mut changed = false;
+        for frame in env {
+            for (_, value) in frame {
+                changed |= self.mark(interp, value);
+            }
+            if let Some(environment) = frame.lisp_environment() {
+                changed |= self.mark(interp, environment);
+            }
+        }
+        changed
+    }
+
+    fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
+        let newly_marked = match value {
+            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
+                false
+            }
+            Value::BigInteger(value) => self.big_integers.insert(value.identity_ptr()),
+            Value::Float(value) => self.floats.insert(value.identity_ptr()),
+            Value::String(value) => self.strings.insert(value.identity_ptr()),
+            Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
+            Value::Symbol(symbol) => self.symbols.insert(symbol.as_str().to_owned()),
+            Value::Cons(value) => self.conses.insert(ConsCell::identity(value)),
+            Value::Lambda(value) => self.lambdas.insert(Rc::as_ptr(value) as usize),
+            Value::Buffer(value) => self.buffers.insert(Rc::as_ptr(value) as usize),
+            Value::Marker(id) => self.markers.insert(*id),
+            Value::Overlay(id) => self.overlays.insert(*id),
+            Value::CharTable(id) => self.char_tables.insert(*id),
+            Value::Frame(id) => self.frames.insert(*id),
+            Value::Terminal(id) => self.terminals.insert(*id),
+            Value::Record(id) => self.records.insert(*id),
+            Value::Finalizer(id) => self.finalizers.insert(*id),
+            Value::ReaderForm(value) => self.reader_forms.insert(Rc::as_ptr(value) as usize),
+        };
+        if !newly_marked {
+            return false;
+        }
+
+        match value {
+            Value::StringObject(value) => {
+                let children = value
+                    .borrow()
+                    .props
+                    .iter()
+                    .flat_map(|span| span.props.iter().map(|(_, value)| value.clone()))
+                    .collect::<Vec<_>>();
+                for child in &children {
+                    self.mark(interp, child);
+                }
+            }
+            Value::Cons(cell) => {
+                let children = [
+                    Value::Cons(cell.clone()).car(),
+                    Value::Cons(cell.clone()).cdr(),
+                ];
+                for child in children.into_iter().flatten() {
+                    self.mark(interp, &child);
+                }
+            }
+            Value::Lambda(lambda) => {
+                if let Some(value) = &lambda.public_parameters {
+                    self.mark(interp, value);
+                }
+                for value in lambda.body.iter() {
+                    self.mark(interp, value);
+                }
+                self.mark_env(interp, &lambda.env.borrow());
+                for value in [
+                    lambda.documentation.as_ref(),
+                    lambda.interactive.as_ref(),
+                    lambda.public_environment.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    self.mark(interp, value);
+                }
+            }
+            Value::Buffer(buffer) => {
+                self.strings.insert(buffer.name.identity_ptr());
+            }
+            Value::CharTable(id) => {
+                if let Some(table) = interp.find_char_table(*id) {
+                    let children = std::iter::once(table.default.clone())
+                        .chain(table.extra_slots.iter().cloned())
+                        .chain(table.entries.iter().map(|entry| entry.value.clone()))
+                        .collect::<Vec<_>>();
+                    for child in &children {
+                        self.mark(interp, child);
+                    }
+                }
+            }
+            Value::Frame(id) => {
+                if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == *id) {
+                    let children = std::iter::once(frame.name.clone())
+                        .chain(
+                            frame
+                                .parameter_overrides
+                                .iter()
+                                .map(|(_, value)| value.clone()),
+                        )
+                        .collect::<Vec<_>>();
+                    for child in &children {
+                        self.mark(interp, child);
+                    }
+                }
+            }
+            Value::Record(id) => {
+                let Some(record) = interp.find_record(*id) else {
+                    return true;
+                };
+                let weak_hash = record.kind == RecordKind::HashTable
+                    && record.slots.get(5).is_some_and(Value::is_truthy);
+                let mut children = Vec::with_capacity(record.slots.len() + 1);
+                children.push(record.type_tag.clone());
+                children.extend(
+                    record
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| record.kind != RecordKind::HashTable || *index != 1)
+                        .map(|(_, value)| value.clone()),
+                );
+                if record.kind == RecordKind::HashTable
+                    && !weak_hash
+                    && let Some((_, entries)) = crate::lisp::json::hash_table_entries(interp, value)
+                {
+                    children.extend(entries.into_iter().flat_map(|(key, value)| [key, value]));
+                }
+                for child in &children {
+                    self.mark(interp, child);
+                }
+            }
+            Value::ReaderForm(form) => {
+                let children: &[Value] = match form.as_ref() {
+                    ReaderForm::CircularLabel { payload, .. } => std::slice::from_ref(payload),
+                    ReaderForm::HashTable { fields }
+                    | ReaderForm::CharTable { fields }
+                    | ReaderForm::SubCharTable { fields }
+                    | ReaderForm::Record { slots: fields }
+                    | ReaderForm::Closure { slots: fields, .. } => fields,
+                    ReaderForm::CircularReference(_)
+                    | ReaderForm::BoolVector { .. }
+                    | ReaderForm::PositionedSymbol { .. } => &[],
+                };
+                for child in children {
+                    self.mark(interp, child);
+                }
+            }
+            Value::Nil
+            | Value::T
+            | Value::Integer(_)
+            | Value::BigInteger(_)
+            | Value::Float(_)
+            | Value::String(_)
+            | Value::Symbol(_)
+            | Value::BuiltinFunc(_)
+            | Value::Marker(_)
+            | Value::Overlay(_)
+            | Value::Terminal(_)
+            | Value::Finalizer(_)
+            | Value::Unbound => {}
+        }
+        true
+    }
+}
+
+impl LiveObjectCensus {
+    /// alloc.c:total_bytes_of_live_objects.  These are the GNU C layouts for
+    /// the supported 64-bit ABI: Lisp_Cons=16, Lisp_Symbol=48,
+    /// Lisp_String=32, Lisp_Float=8, interval=56, and one vector word=8.
+    pub(crate) fn total_bytes_of_live_objects(&self) -> usize {
+        self.conses
+            .saturating_mul(16)
+            .saturating_add(self.symbols.saturating_mul(48))
+            .saturating_add(self.string_bytes)
+            .saturating_add(self.vector_slots.saturating_mul(8))
+            .saturating_add(self.floats.saturating_mul(8))
+            .saturating_add(self.intervals.saturating_mul(56))
+            .saturating_add(self.strings.saturating_mul(32))
+            .saturating_add(self.hash_table_bytes)
+    }
 }
 
 impl Interpreter {
+    /// Mark Lisp objects from the interpreter's actual roots, then apply
+    /// GNU's iterative weak-hash rule.  Hash entries are deliberately not
+    /// roots of a weak table; an entry that survives one table can mark an
+    /// object which in turn makes an entry in another table survive, so the
+    /// pass repeats to a fixed point exactly like alloc.c.
+    pub(crate) fn weak_hash_reachability(
+        &self,
+        env: &Env,
+        native_roots: &[Value],
+    ) -> WeakHashReachability {
+        let mut marked = LispReachability::default();
+        marked.mark_env(self, env);
+        for value in native_roots {
+            marked.mark(self, value);
+        }
+
+        let mut mark = |value: &Value| {
+            marked.mark(self, value);
+        };
+        for (_, value) in self.globals.iter() {
+            mark(value);
+        }
+        for bindings in self.buffer_locals.values() {
+            for (_, value) in bindings {
+                mark(value);
+            }
+        }
+        for hooks in self.buffer_local_hooks.values() {
+            for (_, functions) in hooks {
+                for function in functions {
+                    mark(function);
+                }
+            }
+        }
+        for value in &self.kbd_macro_definition {
+            mark(value);
+        }
+        mark(&self.local_time_zone_rule);
+        for (_, value) in &self.symbol_properties {
+            mark(value);
+        }
+        for (_, watchers) in &self.variable_watchers {
+            for watcher in watchers {
+                mark(watcher);
+            }
+        }
+        if let Some(value) = &self.current_global_map {
+            mark(value);
+        }
+        mark(&self.frame_and_buffer_state);
+        for (key, value) in &self.terminal_parameters {
+            mark(key);
+            mark(value);
+        }
+        for table in &self.char_tables {
+            mark(&Value::CharTable(table.id));
+        }
+        for (_, value) in &self.charset_plists {
+            mark(value);
+        }
+        for (_, value) in self.ccl_programs.iter().flatten() {
+            mark(value);
+        }
+        for execution in &self.kbd_macro_executions {
+            for event in &execution.events {
+                mark(event);
+            }
+        }
+        for event in self
+            .keyboard_input
+            .command_keys
+            .iter()
+            .chain(&self.keyboard_input.raw_keys)
+            .chain(&self.keyboard_input.recent_keys)
+        {
+            mark(event);
+        }
+        if let Some(value) = &self.keyboard_input.internal_last_event_frame {
+            mark(value);
+        }
+        for frame in &self.frame_states {
+            if frame.live {
+                mark(&Value::Frame(frame.id));
+            }
+        }
+        for coding in &self.coding_systems {
+            mark(&coding.plist);
+        }
+        for (_, function) in &self.functions {
+            mark(function);
+        }
+        for updates in self.lexical_cell_updates.values() {
+            for value in updates.values() {
+                mark(value);
+            }
+        }
+        if let Some(value) = &self.selected_frame_face_hash_table {
+            mark(value);
+        }
+        mark(&self.alternative_font_family_alist);
+        mark(&self.alternative_font_registry_alist);
+        for (_, value) in &self.deferred_defsubst_unbindings {
+            mark(value);
+        }
+        if let Some(value) = &self.last_thread_error {
+            mark(value);
+        }
+        for value in &self.active_catch_tags {
+            mark(value);
+        }
+        for timer in &self.pending_timers {
+            mark(&timer.function);
+            for argument in &timer.args {
+                mark(argument);
+            }
+        }
+        for notification in &self.pending_file_notifications {
+            for (_, callback) in &notification.callbacks {
+                mark(callback);
+            }
+        }
+        for watch in self.file_notify_watches.values() {
+            mark(&watch.callback);
+        }
+        for frame in &self.backtrace_frames {
+            mark(&frame.function);
+            for argument in &frame.args {
+                mark(argument);
+            }
+            if let Some(form) = &frame.source_form {
+                mark(form);
+            }
+            for (_, value) in &frame.locals {
+                mark(value);
+            }
+            if let Some(context) = &frame.lexical_context {
+                for lexical_frame in context {
+                    for (_, value) in lexical_frame {
+                        mark(value);
+                    }
+                    if let Some(environment) = lexical_frame.lisp_environment() {
+                        mark(environment);
+                    }
+                }
+            }
+        }
+        if let Some(backtrace) = &self.batch_error_backtrace {
+            for (_, function, arguments, _) in &backtrace.frames {
+                mark(function);
+                for argument in arguments {
+                    mark(argument);
+                }
+            }
+        }
+        for handler in &self.active_handlers {
+            match handler {
+                ActiveHandler::Bind(_, function) => mark(function),
+                ActiveHandler::Case(heads) => {
+                    for head in heads {
+                        mark(head);
+                    }
+                }
+            }
+        }
+        for face in &self.lisp_face_states {
+            for value in [face.global.as_ref(), face.selected_frame.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                mark(value);
+            }
+        }
+        for bitmap in &self.fringe_bitmap_states {
+            if let Some(value) = &bitmap.definition {
+                mark(value);
+            }
+            mark(&bitmap.face);
+        }
+        for composition in &self.composition_states {
+            mark(&composition.components);
+        }
+        for test in &self.ert_tests {
+            mark(&test.body);
+        }
+        for restore in &self.active_special_restores {
+            if let Some(value) = &restore.previous {
+                mark(value);
+            }
+        }
+        for restriction in &self.labeled_restrictions {
+            if let Some(value) = &restriction.label {
+                mark(value);
+            }
+        }
+        for process in &self.process_states {
+            mark(&Value::Record(process.record_id));
+            for value in [
+                process.filter.as_ref(),
+                process.sentinel.as_ref(),
+                process.log.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                mark(value);
+            }
+            for value in [
+                &process.decoding,
+                &process.encoding,
+                &process.plist,
+                &process.contact,
+            ] {
+                mark(value);
+            }
+        }
+        for thread in &self.thread_states {
+            mark(&Value::Record(thread.record_id));
+            if let ThreadProgram::Call(function) = &thread.program {
+                mark(function);
+            }
+            match &thread.outcome {
+                Some(ThreadOutcome::Returned(value))
+                | Some(ThreadOutcome::Signaled { value, .. }) => mark(value),
+                None => {}
+            }
+        }
+        for value in self.plain_quote_templates.values() {
+            mark(&value.value);
+        }
+        let mut visit_buffer = |value: &Value| {
+            mark(value);
+        };
+        self.buffer.visit_lisp_values(&mut visit_buffer);
+        for (_, buffer) in &self.inactive_buffers {
+            buffer.visit_lisp_values(&mut visit_buffer);
+        }
+        for id in [
+            self.standard_obarray_id,
+            self.selected_window_id,
+            self.root_window_id,
+            self.minibuffer_window_id,
+        ] {
+            mark(&Value::Record(id));
+        }
+
+        let weak_tables = self
+            .records
+            .iter()
+            .filter(|record| record.kind == RecordKind::HashTable)
+            .filter_map(|record| {
+                let weakness = record.slots.get(5)?.as_symbol().ok()?.to_owned();
+                let entries =
+                    crate::lisp::json::hash_table_entries(self, &Value::Record(record.id))?.1;
+                Some((record.id, weakness, entries))
+            })
+            .collect::<Vec<_>>();
+
+        loop {
+            let mut changed = false;
+            for (id, weakness, entries) in &weak_tables {
+                if !marked.records.contains(id) {
+                    continue;
+                }
+                for (key, value) in entries {
+                    let strong_key = marked.contains(key);
+                    let strong_value = marked.contains(value);
+                    let keep = match weakness.as_str() {
+                        "key" => strong_key,
+                        "value" => strong_value,
+                        "key-and-value" => strong_key && strong_value,
+                        "key-or-value" => strong_key || strong_value,
+                        _ => true,
+                    };
+                    if keep {
+                        changed |= marked.mark(self, key);
+                        changed |= marked.mark(self, value);
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        let tables = weak_tables
+            .into_iter()
+            .map(|(id, _, entries)| {
+                let keep = if marked.records.contains(&id) {
+                    entries
+                        .iter()
+                        .map(|(key, value)| marked.contains(key) && marked.contains(value))
+                        .collect()
+                } else {
+                    vec![false; entries.len()]
+                };
+                (id, entries, keep)
+            })
+            .collect();
+        WeakHashReachability {
+            tables,
+            live_records: marked.records,
+        }
+    }
+
+    pub(crate) fn install_gc_record_census(&mut self, live_records: HashSet<u64>) {
+        self.gc_live_record_ids = live_records;
+        self.gc_record_high_water = self.next_record_id;
+        self.gc_has_record_census = true;
+    }
+
     /// Assemble the live-object census from the allocation books (see
     /// `LiveObjectCensus' and types.rs's live-object accounting).  This is
     /// O(live strings), never a graph walk: loadup.el runs
@@ -2603,22 +3247,74 @@ impl Interpreter {
     /// the boot path.
     pub(crate) fn live_object_census(&self) -> LiveObjectCensus {
         let strings = crate::lisp::types::census_live_strings();
+        let vectors = crate::lisp::types::census_live_vectors();
+        let symbols = self
+            .known_symbol_count()
+            .saturating_add(crate::lisp::types::census_live_uninterned_symbols());
+        let mut vector_count = vectors.count;
+        let mut vector_slots = vectors.slots;
+        for record in self.records.iter().filter(|record| {
+            !self.gc_has_record_census
+                || record.id >= self.gc_record_high_water
+                || self.gc_live_record_ids.contains(&record.id)
+        }) {
+            let slots = record.kind.gnu_vector_slots(record.slots.len());
+            if slots != 0 {
+                vector_count += 1;
+                vector_slots = vector_slots.saturating_add(slots);
+            }
+        }
         let mut census = LiveObjectCensus {
-            conses: crate::lisp::types::census_live_conses(),
-            symbols: self.known_symbol_count(),
+            conses: crate::lisp::types::census_live_conses()
+                .saturating_sub(vectors.representation_conses),
+            symbols,
             strings: strings.count,
             string_bytes: strings.bytes,
-            vectors: 0,
-            vector_slots: 0,
-            floats: 0,
+            vectors: vector_count,
+            vector_slots,
+            floats: crate::lisp::types::census_live_floats(),
             intervals: strings.property_spans,
             buffers: 1 + self.inactive_buffers.len(),
+            hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
         };
         census.intervals += self.buffer.text_property_span_count();
         for (_, buffer) in &self.inactive_buffers {
             census.intervals += buffer.text_property_span_count();
         }
         census
+    }
+
+    fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
+        let mut bytes = 0_usize;
+        for record in self.records.iter().filter(|record| {
+            !self.gc_has_record_census
+                || record.id >= self.gc_record_high_water
+                || self.gc_live_record_ids.contains(&record.id)
+        }) {
+            match record.kind {
+                RecordKind::HashTable => {
+                    let capacity = self.gnu_hash_table_capacity(record.id).unwrap_or(0);
+                    bytes = bytes.saturating_add(gnu_hash_table_storage_bytes(capacity));
+                }
+                RecordKind::Obarray => {
+                    let capacity = if record.id == self.standard_obarray_id {
+                        let mut capacity = 1_usize << 15;
+                        while symbol_count > capacity {
+                            capacity = capacity.saturating_mul(2);
+                        }
+                        capacity
+                    } else {
+                        // lread.c:obarray_default_bits is 3.  Nonstandard
+                        // obarray growth is accounted when its symbol arena is
+                        // moved out of the encoded namespace representation.
+                        1_usize << 3
+                    };
+                    bytes = bytes.saturating_add(capacity.saturating_mul(8));
+                }
+                _ => {}
+            }
+        }
+        bytes
     }
 
     /// Issue #11: clone this interpreter for use as an independent image.
@@ -2984,6 +3680,9 @@ pub struct Interpreter {
     /// same-named lexical argument (bug#47552 semantics).
     pub(crate) special_scan_floor: usize,
     pub(crate) lisp_eval_depth: usize,
+    /// alloc.c's nesting counter.  Hash-table user tests enter this section
+    /// so arbitrary callback Lisp cannot collect the table being probed.
+    garbage_collection_inhibited: usize,
     /// Consecutive `thread-yield's from a stepped (non-main) thread during
     /// which drive_threads ran nothing else.  The parent that could change
     /// this thread's loop condition is suspended up-stack until the step
@@ -3204,6 +3903,13 @@ pub struct Interpreter {
     /// needs one runtime class (notably windows during buffer teardown).
     /// `create_record` and `retag_record` are the only mutation points.
     record_ids_by_type_index: HashMap<String, BTreeSet<u64>>,
+    /// Record mark bits from the most recent real reachability pass.  Dense
+    /// host storage keeps IDs stable, but dead records must not contribute to
+    /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
+    /// were allocated after that collection and remain live until the next.
+    gc_live_record_ids: HashSet<u64>,
+    gc_record_high_water: u64,
+    gc_has_record_census: bool,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
     /// dense and never freed, so the slot vector doubles as the cache map
     /// (see bytecode::vm).
@@ -3753,6 +4459,7 @@ impl Interpreter {
             dlet_active_names: HashMap::new(),
             special_scan_floor: 0,
             lisp_eval_depth: 0,
+            garbage_collection_inhibited: 0,
             fruitless_stepped_yields: 0,
             kbd_macro_executions: Vec::new(),
             kbd_macro_definition: Vec::new(),
@@ -4092,6 +4799,9 @@ impl Interpreter {
                 ("thread".into(), BTreeSet::from([main_thread_id])),
                 ("obarray".into(), BTreeSet::from([standard_obarray_id])),
             ]),
+            gc_live_record_ids: HashSet::new(),
+            gc_record_high_water: 0,
+            gc_has_record_census: false,
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
             keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),

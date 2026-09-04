@@ -848,6 +848,49 @@ impl Buffer {
         }
     }
 
+    /// Visit every Lisp value retained by this buffer.  Garbage collection
+    /// uses the same ownership boundary as `rewrite_lisp_values`: the rope,
+    /// positions and file metadata are native data, while properties, undo
+    /// payloads and overlay plists are Lisp roots.
+    pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
+        for span in &self.text_properties {
+            for (_, value) in &span.props {
+                visit(value);
+            }
+        }
+        fn visit_undo_entry(entry: &UndoEntry, visit: &mut impl FnMut(&Value)) {
+            match entry {
+                UndoEntry::Combined { display, entries } => {
+                    visit(display);
+                    for entry in entries {
+                        visit_undo_entry(entry, visit);
+                    }
+                }
+                UndoEntry::Opaque(value) => visit(value),
+                UndoEntry::Delete { props, .. } => {
+                    for span in props {
+                        for (_, value) in &span.props {
+                            visit(value);
+                        }
+                    }
+                }
+                UndoEntry::Insert { .. } | UndoEntry::Boundary => {}
+            }
+        }
+        for entry in &self.undo_list {
+            visit_undo_entry(entry, visit);
+        }
+        if let Some(view) = self.undo_list_view.0.borrow().as_ref() {
+            visit(&view.value);
+        }
+        for overlay in &self.overlays {
+            for (key, value) in &overlay.plist {
+                visit(key);
+                visit(value);
+            }
+        }
+    }
+
     /// How many text-property spans this buffer holds (the census's
     /// `intervals' analogue for buffer text).
     pub(crate) fn text_property_span_count(&self) -> usize {

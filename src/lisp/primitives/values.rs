@@ -3936,7 +3936,7 @@ pub(crate) fn active_minor_mode_bindings(
         .filter_map(|entry| {
             let (mode, _) = entry.cons_values()?;
             match mode {
-                Value::Symbol(name) => Some(name),
+                Value::Symbol(name) => Some(name.as_str().to_owned()),
                 _ => None,
             }
         })
@@ -3968,7 +3968,7 @@ pub(crate) fn active_minor_mode_bindings(
             let Value::Symbol(mode_name) = mode else {
                 continue;
             };
-            if index == ordinary_index && overridden_modes.contains(&mode_name) {
+            if index == ordinary_index && overridden_modes.contains(mode_name.as_str()) {
                 continue;
             }
             if !interp

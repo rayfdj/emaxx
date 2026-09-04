@@ -1,6 +1,19 @@
 use super::*;
 
 impl Interpreter {
+    pub(crate) fn inhibit_garbage_collection(&mut self) {
+        self.garbage_collection_inhibited = self.garbage_collection_inhibited.saturating_add(1);
+    }
+
+    pub(crate) fn allow_garbage_collection(&mut self) {
+        debug_assert!(self.garbage_collection_inhibited > 0);
+        self.garbage_collection_inhibited = self.garbage_collection_inhibited.saturating_sub(1);
+    }
+
+    pub(crate) fn garbage_collection_is_inhibited(&self) -> bool {
+        self.garbage_collection_inhibited != 0
+    }
+
     pub fn alloc_buffer_id(&mut self) -> u64 {
         let id = self.next_buffer_id;
         self.next_buffer_id += 1;
@@ -1554,6 +1567,14 @@ impl Interpreter {
         test: &str,
         entries: Vec<(Value, Value)>,
     ) {
+        let requested = self
+            .find_record(id)
+            .and_then(|record| record.slots.get(2))
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        let previous_capacity = self.gnu_hash_table_capacity(id).unwrap_or(requested);
+        let capacity = super::gnu_hash_grown_capacity(previous_capacity, entries.len());
         let test = match test {
             "eq" => RuntimeHashTest::Eq,
             "eql" => RuntimeHashTest::Eql,
@@ -1562,7 +1583,7 @@ impl Interpreter {
                 self.equal_hash_tables.remove(&id);
                 if entries.is_empty() {
                     self.custom_hash_tables
-                        .insert(id, CustomHashTableState::empty());
+                        .insert(id, CustomHashTableState::empty(capacity));
                 } else {
                     // Restoring a serialized custom table has no saved hash
                     // codes.  Leave it on the correct linear fallback until
@@ -1587,6 +1608,7 @@ impl Interpreter {
             id,
             EqualHashTableState {
                 test,
+                capacity,
                 slot_indices: (0..entries.len()).collect(),
                 next_slot: entries.len(),
                 entries,
@@ -1594,6 +1616,36 @@ impl Interpreter {
                 key_index,
             },
         );
+    }
+
+    pub(crate) fn gnu_hash_table_capacity(&self, id: u64) -> Option<usize> {
+        let record = self
+            .find_record(id)
+            .filter(|record| record.kind == RecordKind::HashTable)?;
+        if let Some(state) = self.equal_hash_tables.get(&id) {
+            return Some(state.capacity);
+        }
+        if let Some(state) = self.custom_hash_tables.get(&id) {
+            return Some(state.capacity);
+        }
+        let requested = record
+            .slots
+            .get(2)
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(0);
+        let high_water = record
+            .slots
+            .get(1)
+            .map(crate::lisp::json::hash_table_entry_list_len)
+            .unwrap_or(0);
+        Some(super::gnu_hash_grown_capacity(requested, high_water))
+    }
+
+    fn note_gnu_hash_table_growth(&self, before: usize, after: usize) {
+        let old_bytes = super::gnu_hash_table_storage_bytes(before);
+        let new_bytes = super::gnu_hash_table_storage_bytes(after);
+        crate::lisp::native_comp::note_lisp_allocation(new_bytes.saturating_sub(old_bytes));
     }
 
     pub fn hash_table_runtime_entries(&self, id: u64) -> Option<&Vec<(Value, Value)>> {
@@ -1637,6 +1689,7 @@ impl Interpreter {
         key: Value,
         value: Value,
     ) -> bool {
+        let capacity_before = self.gnu_hash_table_capacity(id).unwrap_or(0);
         let Some(state) = self.custom_hash_tables.get_mut(&id) else {
             return false;
         };
@@ -1666,6 +1719,11 @@ impl Interpreter {
         } else {
             state.key_index.entry(hash).or_default().push(index);
         }
+        if let Some(state) = self.custom_hash_tables.get_mut(&id) {
+            state.capacity = super::gnu_hash_grown_capacity(capacity_before, state.next_slot);
+        }
+        let capacity_after = self.gnu_hash_table_capacity(id).unwrap_or(capacity_before);
+        self.note_gnu_hash_table_growth(capacity_before, capacity_after);
         true
     }
 
@@ -1688,8 +1746,68 @@ impl Interpreter {
         let Some(state) = self.custom_hash_tables.get_mut(&id) else {
             return false;
         };
-        *state = CustomHashTableState::empty();
+        state.entries.clear();
+        state.hashes.clear();
+        state.slot_indices.clear();
+        state.free_slots.clear();
+        state.next_slot = 0;
+        state.key_index.clear();
         true
+    }
+
+    /// fns.c:sweep_weak_table removes entries inside the collector.  It does
+    /// not call `remhash', consult the public mutability guard, or invoke a
+    /// user hash function.  Preserve allocated capacity and slot/free-list
+    /// state while rebuilding only the derived lookup index.
+    pub(crate) fn sweep_weak_hash_table(
+        &mut self,
+        id: u64,
+        entries: Vec<(Value, Value)>,
+        keep: &[bool],
+    ) {
+        if let Some(mut state) = self.equal_hash_tables.remove(&id) {
+            for index in (0..state.entries.len()).rev() {
+                if !keep.get(index).copied().unwrap_or(false) {
+                    state.entries.remove(index);
+                    let freed_slot = state.slot_indices.remove(index);
+                    state.free_slots.push(freed_slot);
+                }
+            }
+            state.key_index.clear();
+            for (index, (key, _)) in state.entries.iter().enumerate() {
+                let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
+                state.key_index.entry(hash).or_default().push(index);
+            }
+            self.equal_hash_tables.insert(id, state);
+            return;
+        }
+        if let Some(mut state) = self.custom_hash_tables.remove(&id) {
+            for index in (0..state.entries.len()).rev() {
+                if !keep.get(index).copied().unwrap_or(false) {
+                    state.entries.remove(index);
+                    state.hashes.remove(index);
+                    let freed_slot = state.slot_indices.remove(index);
+                    state.free_slots.push(freed_slot);
+                }
+            }
+            state.rebuild_index();
+            self.custom_hash_tables.insert(id, state);
+            return;
+        }
+
+        let retained = entries
+            .into_iter()
+            .zip(keep.iter().copied())
+            .filter_map(|(entry, keep)| keep.then_some(entry))
+            .collect::<Vec<_>>();
+        if let Some(record) = self.find_record_mut(id)
+            && record.kind == RecordKind::HashTable
+        {
+            if record.slots.len() < 2 {
+                record.slots.resize(2, Value::Nil);
+            }
+            record.slots[1] = crate::lisp::primitives::hash_table_entries_to_value(retained);
+        }
     }
 
     /// Enter GNU fns.c's immutable critical section for a user-defined hash
@@ -1747,6 +1865,7 @@ impl Interpreter {
     }
 
     pub fn equal_hash_put(&mut self, id: u64, key: Value, value: Value, env: &Env) -> bool {
+        let capacity_before = self.gnu_hash_table_capacity(id).unwrap_or(0);
         let Some(state) = self.equal_hash_tables.get(&id) else {
             return false;
         };
@@ -1815,6 +1934,11 @@ impl Interpreter {
                 .expect("equal hash table disappeared after index rebuild")
                 .key_index = key_index;
         }
+        if let Some(state) = self.equal_hash_tables.get_mut(&id) {
+            state.capacity = super::gnu_hash_grown_capacity(capacity_before, state.next_slot);
+        }
+        let capacity_after = self.gnu_hash_table_capacity(id).unwrap_or(capacity_before);
+        self.note_gnu_hash_table_growth(capacity_before, capacity_after);
         true
     }
 
@@ -2159,6 +2283,10 @@ impl Interpreter {
         slots: Vec<Value>,
         kind: RecordKind,
     ) -> Value {
+        let vector_slots = kind.gnu_vector_slots(slots.len());
+        if vector_slots != 0 {
+            crate::lisp::native_comp::note_lisp_allocation(vector_slots.saturating_mul(8));
+        }
         let id = self.alloc_record_id();
         let indexed_type = type_tag.as_symbol().ok().map(str::to_owned);
         self.records.push(RecordState {
@@ -2357,6 +2485,7 @@ impl Interpreter {
 
     pub fn copy_record(&mut self, id: u64) -> Result<Value, LispError> {
         let hash_entries = self.hash_table_runtime_entries(id).cloned();
+        let equal_hash_state = self.equal_hash_tables.get(&id).cloned();
         let custom_hash_state = self.custom_hash_tables.get(&id).cloned();
         let record = self
             .find_record(id)
@@ -2366,12 +2495,10 @@ impl Interpreter {
         if let Some(entries) = &hash_entries
             && slots.len() >= 2
         {
-            slots[1] = Value::list(
-                entries
-                    .iter()
-                    .cloned()
-                    .map(|(key, value)| Value::cons(key, value)),
-            );
+            // The sidecar below is GNU's key_and_value storage.  A second
+            // Lisp-list representation would create non-GNU cons cells.
+            let _ = entries;
+            slots[1] = Value::Nil;
         }
         let test = slots
             .first()
@@ -2381,8 +2508,17 @@ impl Interpreter {
         let copy = self.create_record_with_kind(record.type_tag, slots, record.kind);
         if let Value::Record(copy_id) = &copy {
             if let Some(state) = custom_hash_state {
+                crate::lisp::native_comp::note_lisp_allocation(
+                    super::gnu_hash_table_storage_bytes(state.capacity),
+                );
                 self.equal_hash_tables.remove(copy_id);
                 self.custom_hash_tables.insert(*copy_id, state);
+            } else if let Some(state) = equal_hash_state {
+                crate::lisp::native_comp::note_lisp_allocation(
+                    super::gnu_hash_table_storage_bytes(state.capacity),
+                );
+                self.custom_hash_tables.remove(copy_id);
+                self.equal_hash_tables.insert(*copy_id, state);
             } else if let Some(entries) = hash_entries {
                 self.replace_hash_table_runtime_entries(*copy_id, &test, entries);
             }

@@ -37,17 +37,59 @@ impl StringLike {
     }
 
     pub(crate) fn byte_len(&self) -> Result<usize, LispError> {
-        if !self.multibyte {
-            return Ok(encode_raw_text_bytes(&self.text)?.len());
-        }
-        self.character_codes()
-            .into_iter()
-            .try_fold(0usize, |len, code| {
-                let code = u32::try_from(code)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                Ok(len + emacs_multibyte_char_len(code)?)
-            })
+        lisp_string_byte_len(&self.text, self.multibyte, &self.extended_chars)
     }
+}
+
+pub(crate) fn lisp_string_byte_len(
+    text: &str,
+    multibyte: bool,
+    extended_chars: &[(usize, u32)],
+) -> Result<usize, LispError> {
+    if !multibyte {
+        return Ok(encode_raw_text_bytes(text)?.len());
+    }
+    text.chars()
+        .enumerate()
+        .try_fold(0usize, |len, (index, ch)| {
+            let code = extended_chars
+                .binary_search_by_key(&index, |(position, _)| *position)
+                .ok()
+                .map(|position| extended_chars[position].1)
+                .unwrap_or_else(|| string_character_code(true, ch) as u32);
+            Ok(len + emacs_multibyte_char_len(code)?)
+        })
+}
+
+/// Infallible storage census counterpart of SBYTES.  Emaxx can temporarily
+/// represent an unibyte character above 255 as one Rust scalar while editing;
+/// it still occupies one logical Emacs byte and must not make GC fallible.
+pub(crate) fn lisp_string_storage_byte_len(
+    text: &str,
+    multibyte: bool,
+    extended_chars: &[(usize, u32)],
+) -> usize {
+    if !multibyte {
+        return text.chars().count();
+    }
+    text.chars()
+        .enumerate()
+        .map(|(index, ch)| {
+            let code = extended_chars
+                .binary_search_by_key(&index, |(position, _)| *position)
+                .ok()
+                .map(|position| extended_chars[position].1)
+                .unwrap_or_else(|| string_character_code(true, ch) as u32);
+            emacs_multibyte_char_len(code).unwrap_or(1)
+        })
+        .sum()
+}
+
+pub(crate) fn immutable_lisp_string_storage_byte_len(text: &str) -> usize {
+    let multibyte = text
+        .chars()
+        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
+    lisp_string_storage_byte_len(text, multibyte, &[])
 }
 
 pub(crate) fn emacs_multibyte_char_len(code: u32) -> Result<usize, LispError> {

@@ -58,6 +58,26 @@ fn purecopy_cons_chain(
     Ok(copied_tail)
 }
 
+fn purecopy_vector(
+    interp: &mut Interpreter,
+    value: &Value,
+    table: Option<u64>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let items = vector_items(value)?;
+    if items.is_empty() {
+        // GNU's zero-length vector is a static pure object, so PURE_P makes
+        // alloc.c:purecopy return it unchanged.
+        return Ok(value.clone());
+    }
+    let mut copied = Vec::with_capacity(items.len() + 1);
+    copied.push(Value::symbol("vector-literal"));
+    for item in items {
+        copied.push(purecopy_inner(interp, &item, table, env)?);
+    }
+    Ok(hash_cons_insert(interp, table, Value::list(copied), env))
+}
+
 fn purecopy_hash_table(
     interp: &mut Interpreter,
     id: u64,
@@ -209,6 +229,9 @@ fn purecopy_inner(
                 )
             }
         }
+        Value::Cons(_) if is_vector_value(value) => {
+            return purecopy_vector(interp, value, table, env);
+        }
         Value::Cons(_) => return purecopy_cons_chain(interp, value, table, env),
         Value::Lambda(lambda) => {
             let slots = interp.interpreted_closure_slots(lambda);
@@ -254,4 +277,48 @@ pub(crate) fn purecopy_value(
         return Ok(value.clone());
     }
     purecopy_inner(interp, value, purify_table(interp, env), env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    fn vector(values: impl IntoIterator<Item = Value>) -> Value {
+        Value::list(std::iter::once(Value::symbol("vector-literal")).chain(values))
+    }
+
+    #[test]
+    fn purecopy_keeps_vectors_vectorlike_and_hash_conses_equal_copies() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let purify = json::make_hash_table(&mut interp, "equal", Vec::new());
+        interp.define_special_variable("purify-flag", purify);
+
+        let source = vector([Value::Integer(7), vector([Value::string("nested")])]);
+        let equal_source = vector([Value::Integer(7), vector([Value::string("nested")])]);
+        let copied = purecopy_value(&mut interp, &source, &mut env)
+            .expect("vector should be copied into pure storage");
+        let equal_copy = purecopy_value(&mut interp, &equal_source, &mut env)
+            .expect("equal vector should be hash-consed in pure storage");
+
+        assert!(is_vector_value(&copied));
+        let (Value::Cons(source_head), Value::Cons(copied_head), Value::Cons(equal_copy_head)) =
+            (&source, &copied, &equal_copy)
+        else {
+            panic!("vectors use vector-storage conses internally")
+        };
+        assert!(!Rc::ptr_eq(source_head, copied_head));
+        assert!(Rc::ptr_eq(copied_head, equal_copy_head));
+
+        let source_items = vector_items(&source).expect("source should remain vectorlike");
+        let copied_items = vector_items(&copied).expect("copy should remain vectorlike");
+        let (Value::Cons(source_nested), Value::Cons(copied_nested)) =
+            (&source_items[1], &copied_items[1])
+        else {
+            panic!("nested values remain vectors")
+        };
+        assert!(is_vector_value(&copied_items[1]));
+        assert!(!Rc::ptr_eq(source_nested, copied_nested));
+    }
 }
