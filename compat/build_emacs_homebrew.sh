@@ -15,8 +15,8 @@ Options:
                              Default: detected logical CPU count.
   --configure-only           Run autogen/configure but skip the build.
   --clean                    Run `make distclean` first when possible.
-  --without-imagemagick      Disable ImageMagick even if installed.
-  --without-dbus             Disable D-Bus even if installed.
+  --with-imagemagick         Enable ImageMagick. Default: disabled.
+  --with-dbus                Enable D-Bus. Default: disabled.
   --without-tree-sitter      Disable tree-sitter support.
   --native-comp TYPE         Native compilation mode.
                              Default: aot
@@ -39,8 +39,8 @@ repo="$(cd -- "${script_dir}/../.." && pwd)/emacs"
 jobs="$(detect_default_jobs)"
 configure_only="no"
 clean_first="no"
-enable_imagemagick="yes"
-enable_dbus="yes"
+enable_imagemagick="no"
+enable_dbus="no"
 enable_tree_sitter="yes"
 native_comp="aot"
 
@@ -66,8 +66,16 @@ while [[ $# -gt 0 ]]; do
       enable_imagemagick="no"
       shift
       ;;
+    --with-imagemagick)
+      enable_imagemagick="yes"
+      shift
+      ;;
     --without-dbus)
       enable_dbus="no"
+      shift
+      ;;
+    --with-dbus)
+      enable_dbus="yes"
       shift
       ;;
     --without-tree-sitter)
@@ -158,6 +166,7 @@ need_formula libgccjit
 need_formula sqlite
 need_formula libxml2
 need_formula gnutls
+need_formula little-cms2
 need_formula librsvg
 need_formula webp
 
@@ -200,6 +209,7 @@ for formula in \
   sqlite \
   libxml2 \
   gnutls \
+  little-cms2 \
   librsvg \
   webp \
   "${tree_sitter_formula:-tree-sitter}" \
@@ -232,6 +242,7 @@ configure_args=(
   "--with-modules"
   "--with-rsvg"
   "--with-webp"
+  "--with-lcms2"
   "--with-ns"
   "--disable-ns-self-contained"
 )
@@ -241,6 +252,8 @@ if [[ "$enable_tree_sitter" == "yes" ]]; then
 fi
 if [[ "$enable_imagemagick" == "yes" ]]; then
   configure_args+=("--with-imagemagick")
+else
+  configure_args+=("--without-imagemagick")
 fi
 if [[ "$enable_dbus" == "yes" ]]; then
   configure_args+=("--with-dbus")
