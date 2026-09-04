@@ -36,19 +36,23 @@ Do not rely on configure auto-detection without checking the finished binary.
 | SQLite3, including extension loading | enabled | enabled | `sqlite-available-p` and `fboundp` of `sqlite-load-extension` are non-nil |
 | Dynamic modules | enabled | enabled | `fboundp` of `module-load` is non-nil |
 | Tree-sitter | enabled | enabled | `treesit-available-p` is non-nil |
-| Little CMS 2 | enabled | **required at the next repin** | `featurep 'lcms2` and `lcms2-available-p` are non-nil |
+| Little CMS 2 | enabled | enabled (since the 2026-09-04 repin) | `featurep 'lcms2` and `lcms2-available-p` are non-nil |
 | PNG, SVG/librsvg, and WebP | enabled | enabled | `PNG`, `RSVG`, and `WEBP` are listed |
 | JPEG, GIF, TIFF, and XPM | absent | enabled | Linux lists `JPEG`, `GIF`, `TIFF`, and `XPM`; Darwin does not |
 | Cairo and HarfBuzz | absent | enabled | Linux lists `CAIRO` and `HARFBUZZ`; Darwin does not |
 | zlib | enabled | enabled | `ZLIB` is listed |
 
-The current pinned Linux binary was explicitly configured
-`--without-lcms2`.  That is known configuration drift from this desired
-capability floor: GNU skips all six `test/src/lcms-tests.el` tests while Emaxx
-advertises LCMS2.  Do not "fix" those six comparisons by disabling Emaxx's
-working implementation.  The next coordinated Linux oracle rebuild must add
-`liblcms2-dev`, enable LCMS2, regenerate the Linux C-primitive manifest, repin
-the binary, and execute the six tests on both sides.
+Until 2026-09-04 the pinned Linux binary was configured `--without-lcms2`
+(and had picked up libotf and m17n-flt while lacking HarfBuzz), so GNU
+skipped all six `test/src/lcms-tests.el` tests while Emaxx advertised LCMS2.
+The Linux oracle was rebuilt on that date with the recipe below: the feature
+list now reads `CAIRO FREETYPE GIF GLIB GMP GNUTLS GSETTINGS HARFBUZZ JPEG
+LCMS2 LIBSELINUX LIBXML2 MODULES NATIVE_COMP NOTIFY INOTIFY OLDXMENU PDUMPER
+PNG RSVG SECCOMP SOUND SQLITE3 THREADS TIFF TREE_SITTER WEBP X11 XDBE XIM XPM
+ZLIB`, `(lcms2-available-p)` is `t`, the Linux C-primitive manifest records
+the eight `lcms.c` arities, and the six lcms tests execute and match on both
+sides.  Any future Linux rebuild must keep to this recipe; a binary that
+deviates from it mismatches the committed manifest and is rejected.
 
 ImageMagick remains explicitly disabled in the current contract.  D-Bus and
 additional text libraries such as libotf and m17n-flt must not be picked up
@@ -111,10 +115,12 @@ Then configure the clean pinned checkout with an explicit capability set:
 make -j"$(getconf _NPROCESSORS_ONLN)"
 ```
 
-This is the required recipe for the next Linux repin.  Until that coordinated
-change lands, the committed generated Linux manifest still describes the old
-`--without-lcms2` binary and will correctly reject a differently configured
-oracle.
+This is the recipe the pinned Linux binary was built with on 2026-09-04
+(the equivalent short form `--with-native-compilation --with-x
+--with-x-toolkit=no --with-tree-sitter --without-imagemagick --with-lcms2
+--with-harfbuzz --without-libotf --without-m17n-flt` produced the feature
+list recorded above), and the committed generated Linux manifest describes
+that binary.
 
 ## Verify before pinning
 
