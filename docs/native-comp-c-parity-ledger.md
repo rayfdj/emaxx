@@ -45,7 +45,7 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | P14 | `listp` | `data.c:Flistp` | registered |
 | P15 | `nlistp` | `data.c:Fnlistp` | registered |
 | P16 | `null` | `data.c:Fnull` | registered |
-| P17 | `symbol-value` | `data.c:Fsymbol_value` | registered |
+| P17 | `symbol-value` | `data.c:Fsymbol_value` | open; direct tagged-object access is R01b, but the value/redirect cell still lives outside the symbol object |
 | P18 | `symbolp` | `data.c:Fsymbolp` | registered |
 | P19 | `type-of` | `data.c:Ftype_of` | registered |
 | P20 | `assq` | `fns.c:Fassq` | registered |
@@ -89,7 +89,7 @@ cons-vector registration while `alloc.c:Fmake_closure` was hot.
 | S03 | `data.c:Faset` and `lisp.h:ASET` | verified | The same vector allocation is mutated in place with GNU identity, return value, bounds, and type behavior. |
 | S04 | `alloc.c:sweep_vectors` and `vector_cells_consed` accounting | partial | The tagged-cons representation and weak registration ledger are gone; prove GNU's allocation rounding and `vector_cells_consed` counter exactly. |
 
-## Native Lisp-word representation contracts (5)
+## Native Lisp-word representation contracts (6)
 
 These units split the profiled native-word bridge into exact GNU object-access
 contracts.  They do not permit changing the `.eln` ABI or exposing a second
@@ -97,10 +97,11 @@ Lisp object model.
 
 | ID | GNU C contract | Status | Exact remaining work |
 |---|---|---|---|
-| R01 | `lisp.h:XUNTAG`, `XPNTR`, and typed object access | verified | Live native words now reach their stable handle slot directly; swept diagnostic words retain a safe checked path. Focused lifetime tests, anti-cheating gates, exact unchanged `comp.el` output, and a 107.95s to 70.33s user-CPU improvement pass. |
+| R01a | `lisp.h:XUNTAG`, `XPNTR`, and generic typed object access | verified | Live native words now reach their stable pointed-to object directly; swept diagnostic words retain a safe checked path. Focused lifetime tests, anti-cheating gates, exact unchanged `comp.el` output, and a 107.95s to 70.33s user-CPU improvement pass. |
+| R01b | `lisp.h:XSYMBOL`; `data.c:find_symbol_value` initial symbol access | verified | The stable pointed-to object owns its value, tag, identity, and cache metadata, so live reads and updates dereference it directly without a reverse map or slot-vector lookup. Three focused contracts, 16/16 anti-cheating gates, warning gates, and whole-file unchanged `comp.el` identity (`da155503…e454b4`) pass. Low-load structural runs of 62.62s and 61.37s user CPU showed no regression against reverse-map controls of 61.80s and 64.73s. The earlier pointer-to-slot implementation was rejected after repeatable low-load regressions. This unit does not verify P17: Emaxx's value/redirect cell and epoch cache remain a separate documented deviation. |
 | R02a | `lisp.h:XSYMBOL` and `XSETSYMBOL` object identity | verified | Symbol and builtin handles use stable object identity, never symbol-name bytes; focused identity/symbol tests, anti-cheating gates, and exact unchanged `comp.el` output pass. |
 | R02b | `lisp.h:make_lisp_ptr` pointer tagging | verified | The private bridge cache indexes one pre-mixed identity word with exact equality and GC reuse. The rejected clustering mix was removed; lookup fell from 2,847 to 9 leaves in equal five-second samples, with no measured CPU regression. |
-| R02c | Native words remain native words across C-owned calls | open | Eliminate repeated encode-cache lookup where the Rust owner can safely retain its already assigned native word. |
+| R02c | Native words remain native words across C-owned calls | open | Eliminate repeated encode-cache lookup by carrying the assigned native word in the object representation itself. A separate 64-entry Rust cache was rejected after two exact-output runs regressed to 88.87s and 94.87s user CPU. |
 | R03 | GNU's single object storage across generated code and primitives | partial | Conses expose their two ABI words directly and vectors share one slot array; remove the remaining mirror/reconciliation work only where both mutation directions and GC visibility are proven. |
 
 ## Performance priority overlay
@@ -115,8 +116,8 @@ C contracts and added to the inventory.
 | 1 | Native-handle encoding | 477 / 5s | Complete R02c: retain an already assigned native word where GNU simply keeps its `Lisp_Object`. |
 | 2 | Remaining SipHash routing | 143 / 5s | Attribute callers and map Lisp hash behavior to GNU's exact `fns.c` functions before changing them. |
 | 3 | Rust `Value` clone/drop traffic | 111 drop, 94 clone / 5s | Attribute the traffic to exact object classes before adding a representation unit. |
-| 4 | Native-word decoding | 84 / 5s | R01 is verified; attribute the remaining cons-mirror branch to R03. |
-| 5 | Global symbol binding lookup | 72 / 5s | Audit `data.c:Fsymbol_value`/symbol-cell access (P17) against the Rust cache and fallback path. |
+| 4 | Native-word decoding | 84 / 5s | R01a-R01b are verified; attribute the remaining cons-mirror branch to R03. |
+| 5 | Global symbol binding lookup | 72 / 5s | Audit P17's external value/redirect cell and epoch cache against `data.c:find_symbol_value`. |
 
 The same profile recorded only 12 leaf samples in the general vector helper,
 so S01-S03 removed vector registration from the leading costs.  `funcall` is
