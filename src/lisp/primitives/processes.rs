@@ -556,15 +556,6 @@ pub(crate) fn parse_make_process_args(
     })
 }
 
-pub(crate) fn deliver_process_output(
-    interp: &mut Interpreter,
-    process_id: u64,
-    output: &str,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    deliver_process_output_decoded(interp, process_id, output, true, env)
-}
-
 pub(crate) fn deliver_process_output_decoded(
     interp: &mut Interpreter,
     process_id: u64,
@@ -2393,7 +2384,12 @@ fn pump_connection_processes_for(
             };
             let child = interp.create_network_process(
                 &child_name,
-                server_buffer,
+                // GNU's accepted process inherits the listener's filter,
+                // sentinel, log function, plist, and coding systems, but it
+                // does not inherit the listener's process buffer.  Giving
+                // the child that buffer makes killing the listener buffer
+                // prompt about a still-live accepted connection.
+                None,
                 child_inherit_coding_system,
                 server_filter,
                 server_sentinel,
@@ -2431,9 +2427,8 @@ fn pump_connection_processes_for(
         let (bytes, closed) = interp.poll_connection_stream(stream_id)?;
         if !bytes.is_empty() {
             progressed = true;
-            let output = crate::lisp::primitives::coding::bytes_to_shared_unibyte_value(&bytes);
-            let text = string_text(&output)?;
-            deliver_process_output(interp, stream_id, &text, env)?;
+            let (output, multibyte) = decode_process_output_bytes(interp, stream_id, &bytes);
+            deliver_process_output_decoded(interp, stream_id, &output, multibyte, env)?;
         }
         if closed {
             progressed = true;

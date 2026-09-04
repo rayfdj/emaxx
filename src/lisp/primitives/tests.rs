@@ -16248,6 +16248,99 @@ fn native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer() {
     );
 }
 
+#[test]
+fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
+    // This is a live loopback contract, not a synthetic call into the output
+    // helper.  Bytes above 0x7f expose accidental conversion to multibyte
+    // byte8 characters, while the listener buffer exposes whether accepted
+    // children incorrectly keep that buffer alive.
+    let program = r#"(progn
+                       (setq emaxx-test-tcp-received nil
+                             emaxx-test-tcp-accepted nil)
+                       (let*
+                           ((buffer
+                             (get-buffer-create
+                              " *emaxx-network-contract*"))
+                            (server
+                             (make-network-process
+                              :name "emaxx-network-contract"
+                              :family 'ipv4
+                              :server t
+                              :host "127.0.0.1"
+                              :service t
+                              :buffer buffer
+                              :coding 'binary
+                              :filter
+                              (lambda (process text)
+                                (setq
+                                 emaxx-test-tcp-accepted process
+                                 emaxx-test-tcp-received
+                                 (list
+                                  (multibyte-string-p text)
+                                  (vconcat text))))
+                              :sentinel 'ignore
+                              :noquery t))
+                            (local (process-contact server :local))
+                            (client
+                             (make-network-process
+                              :name "emaxx-network-contract-client"
+                              :family 'ipv4
+                              :host "127.0.0.1"
+                              :service (aref local 4)
+                              :coding 'binary
+                              :sentinel 'ignore
+                              :noquery t)))
+                         (unwind-protect
+                             (progn
+                               (process-send-string
+                                client
+                                (unibyte-string
+                                 0 127 128 184 216 255))
+                               (let ((attempts 0))
+                                 (while
+                                     (and
+                                      (null emaxx-test-tcp-received)
+                                      (< attempts 100))
+                                   (accept-process-output nil .02)
+                                   (setq attempts (1+ attempts))))
+                               (list
+                                emaxx-test-tcp-received
+                                (processp emaxx-test-tcp-accepted)
+                                (null
+                                 (process-buffer
+                                  emaxx-test-tcp-accepted))
+                                (process-status
+                                 emaxx-test-tcp-accepted)))
+                           (when (processp emaxx-test-tcp-accepted)
+                             (set-process-query-on-exit-flag
+                              emaxx-test-tcp-accepted nil)
+                             (delete-process
+                              emaxx-test-tcp-accepted))
+                           (when (process-live-p client)
+                             (delete-process client))
+                           (when (process-live-p server)
+                             (delete-process server))
+                           (kill-buffer buffer))))"#;
+    let expected = "((nil [0 127 128 184 216 255]) t t open)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("network accept contract should parse")
+        .expect("network accept contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("network accept contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("network accept result should parse")
+            .expect("network accept result should exist")
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn native_subprocess_job_control_uses_child_groups_and_reaps_signal_states() {

@@ -5062,3 +5062,59 @@ JUST-THIS-ONE wait.  That is a process.c mechanism to port on its own.
 With the test corrected, the grouped gate on this two-commit tree over main
 `e9778fb` passed every group (2303 library outcomes with the two opt-in TTY
 ignores, bins and integration green; run-1788447199271435854-9123).
+
+## 2026-09-04 Proced and SOCKS adversarial audit
+
+This candidate starts from refreshed main `be5e937`.  No native-comp work is
+included.  The six Proced outcomes were first attempted inside the restricted
+sandbox (`run-1788508362061428000-60937`), where both GNU and Emaxx saw an
+empty process table and four outcomes failed with only dynamic PID differences
+in their diagnostics.  That run is rejected, not normalized or counted.  The
+same unmodified upstream file passed 6/6 outside the sandbox before the fix
+(`run-1788508474446621000-61187`) and again on the final candidate
+(`run-1788509773203114000-63671`); therefore this batch makes no Proced code
+or test change.
+
+The initial SOCKS replay (`run-1788508578949258000-61386`) matched 4/10.  A
+real loopback trace identified two shared process mechanisms, rather than six
+test-specific exceptions.  Network reads discarded the string's unibyte flag
+and always delivered a multibyte filter argument, corrupting bytes 128--255.
+Accepted server children also inherited the listener buffer, unlike GNU; test
+cleanup then prompted about a live child and received EOF from the harness's
+closed stdin.  Connection reads now use the existing coding-aware raw-byte
+decoder, and accepted children retain the listener's filter, sentinel, log,
+plist, contact, and coding metadata but not its buffer.  The obsolete
+always-multibyte wrapper became dead and was removed.
+
+The permanent regression opens a real IPv4 loopback listener and client under
+the full GNU batch image, sends `[0 127 128 184 216 255]` with binary coding,
+and pins both the unibyte vector and nil accepted-child buffer to the live GNU
+Emacs 30.2 oracle result `((nil [0 127 128 184 216 255]) t t open)`.  A first
+test setup using only the early Lisp image was rejected because that image does
+not load GNU's `binary` coding alias; the assertion and binary input were kept,
+and the test was moved to the production-equivalent batch image.  The focused
+test then passed.  The final upstream SOCKS replay passed 10/10 with zero
+mismatches (`run-1788509716153045000-63470`).
+
+The formal diff audit found changes only in the process runtime, its regression
+module, and this ledger.  The upstream Proced and SOCKS files are untouched.
+No harness, selector, manifest, fixture, baseline, expected-result,
+normalization, timeout, retry, accepted-failure, skip, ignore, warning
+suppression, target-name branch, or runtime oracle path was added or changed.
+All 15 repository anti-cheat gates passed with zero failures and zero ignored.
+`cargo fmt --all -- --check` was clean, and `cargo clippy --profile gate
+--all-targets --all-features -- -D warnings` passed with zero warnings.
+
+The authoritative publication gate ran once outside the restricted sandbox,
+so its real loopback, PTY, subprocess, and process-inventory tests needed no
+sandbox-failure rerun: `LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1
+RUST_TEST_THREADS=1 RUST_MIN_STACK=134217728 cargo test --profile gate --
+--test-threads=1`.  The main branch's serial-safe image-template acceleration
+reduced repeated setup without changing the selected tests or assertions.  The
+library target reported 2301 passed, zero failed, and exactly the two reviewed
+opt-in TTY end-to-end wrappers ignored out of 2303 tests in 1393.45 seconds.
+The new live binary-network regression passed in that run.  The compat harness
+passed 38/38, perf harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle
+5/5; main and doc-test targets contained no tests.  No concurrent test or
+build was launched while this gate was active, and no Rust production or test
+source changed after it completed.
