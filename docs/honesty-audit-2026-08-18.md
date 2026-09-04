@@ -5480,3 +5480,58 @@ eval_02 284, eval_03 322, eval_04 248, eval_05 350, primitives 368,
 compat_runtime 82, tty 56 (the two reviewed opt-in end-to-end wrappers
 ignored), batch 43 and lightweight 207 library tests passed with zero
 failures, bins and integration passed, GROUPED GATE PASSED.
+
+## 2026-09-05 Eshell prompt fields through direct bytecode argument storage
+
+The Eshell work began on main f5577e8 and was refreshed before final
+verification to b50bdd2.  The five incoming commits covered
+expand-file-name, the Linux process/oracle work and their ledger entries;
+none overlapped the bytecode argument boundary or the Eshell regression.
+The branch was fast-forwarded to that main before the final focused replays.
+
+Baseline exact replay of
+em-prompt-test/next-previous-prompt-{1,2} was 0/2
+(target/compat/run-1788534663677528000-6196).  After a failed command,
+GNU's field at point contained the command input while Emaxx left the error
+diagnostic joined to it.  Instrumenting the actual Lisp call chain showed
+that interpreted lambda binding preserved the diagnostic string's identity,
+but the packed direct-argument path of a genuine byte-code function left a
+compact host Value::String on the VM stack.  put-text-property promoted and
+mutated a separate Lisp string object, so the caller never observed the new
+field property.  A tentative concatenation-level change did not alter
+either failure (target/compat/run-1788535753680690000-7311) and was removed
+in full.
+
+The production repair is at the general representation boundary:
+run_with_stack applies Interpreter::stored_value to supplied positional
+arguments, exactly as interpreted lambda binding already does.  There is no
+Eshell package name, test name, selector or expected output in production.
+A VM regression constructs a real packed byte-code object, passes it a
+compact native string, mutates the returned argument and requires the text
+property to remain visible.  A separate initialized-runtime regression
+executes the upstream Eshell prompt navigation test through its real Lisp
+owner.
+
+On the refreshed base the exact upstream pair passed 2/2
+(target/compat/run-1788538681872351000-11973) and the complete upstream file
+passed 9/9 (target/compat/run-1788538758913123000-12347).  The bytecode
+module passed 32/32; the two focused Rust regressions each ran and passed
+1/1.  The anti-cheat gates passed 15/15 with zero ignored, strict
+all-target/all-feature Clippy passed with -D warnings, and rustfmt plus
+git diff --check were clean.  The upstream
+test/lisp/eshell/em-prompt-tests.el, compatibility harness, selectors,
+manifests, fixtures, timeouts, normalizations and accepted-failure paths
+were unchanged.  The only two ignored Rust tests remain the reviewed,
+opt-in real-TTY wrappers.
+
+The optimized serial library gate was run once in the restricted runner:
+2,296 passed, the two reviewed TTY wrappers were ignored, and 13
+subprocess/socket/TLS/local-HTTP cases were denied by the sandbox.  Per the
+instruction not to repeat the full gate, only those exact 13 cases were
+replayed outside it: 12 passed and the remaining case exposed a fixed
+Linux-only expectation newly added by dc8ea49 against the Darwin oracle,
+not an Eshell failure.  That refreshed-main integration defect is repaired
+and audited separately below.  The targets the stopped library command had
+not reached were run serially: compat-harness 38/38, perf-harness 1/1,
+CLI 13/13, ERT runner 3/3, package lifecycle 5/5, and zero-test main/doc
+targets clean.

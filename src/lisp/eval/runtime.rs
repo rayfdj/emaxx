@@ -58,7 +58,7 @@ impl Interpreter {
             .unwrap_or_else(|_| path.to_path_buf())
     }
 
-    pub(super) fn stored_value(value: Value) -> Value {
+    pub(crate) fn stored_value(value: Value) -> Value {
         match value {
             Value::String(_) => {
                 let string = primitives::string_like(&value).expect("string_like handles strings");
