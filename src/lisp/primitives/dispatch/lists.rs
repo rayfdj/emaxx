@@ -162,7 +162,10 @@ fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
     );
 }
 
-fn sync_kbd_macro_execution(interp: &mut Interpreter, env: &Env) -> Result<(), LispError> {
+pub(crate) fn sync_kbd_macro_execution(
+    interp: &mut Interpreter,
+    env: &Env,
+) -> Result<(), LispError> {
     if interp.kbd_macro_executions.is_empty() {
         return Ok(());
     }
@@ -699,7 +702,19 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             return Ok(());
         }
         sync_kbd_macro_execution(interp, env)?;
-        let Some(mut event) = current_kbd_macro_event(interp, 0) else {
+        // read_char can push a non-digit terminator back onto
+        // `unread-command-events' while rewinding the public macro cursor.
+        // GNU's next command-loop read consumes that unread event before it
+        // returns to the same event in the keyboard macro.
+        let mut unread = crate::lisp::primitives::unread_command_events(interp, env)?;
+        let next_event = if unread.is_empty() {
+            current_kbd_macro_event(interp, 0).map(|event| (event, true))
+        } else {
+            let event = unread.remove(0);
+            interp.set_variable("unread-command-events", Value::list(unread), env);
+            Some((event, false))
+        };
+        let Some((mut event, from_macro)) = next_event else {
             // read_key_sequence increments this counter before reporting the
             // end of a keyboard macro to the command loop.
             increment_num_input_keys(interp, env);
@@ -750,11 +765,15 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         let binding = key_binding(interp, &binding_key, false, false, env)?;
         if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
             load_autoloaded_prefix_map(interp, &binding, env)?;
-            advance_kbd_macro_index(interp, 1, env);
+            if from_macro {
+                advance_kbd_macro_index(interp, 1, env);
+            }
             continue;
         }
         if !binding.is_nil() {
-            advance_kbd_macro_index(interp, 1, env);
+            if from_macro {
+                advance_kbd_macro_index(interp, 1, env);
+            }
             execute_kbd_macro_command(interp, &binding, &pending_events, env)?;
             pending_keys.clear();
             pending_events.clear();
@@ -763,7 +782,9 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         if pending_keys.len() == 1
             && let Some(text) = keyboard_macro_self_insert_text(&event)
         {
-            advance_kbd_macro_index(interp, 1, env);
+            if from_macro {
+                advance_kbd_macro_index(interp, 1, env);
+            }
             execute_kbd_macro_self_insert(interp, &text, &event, env)?;
             pending_keys.clear();
             pending_events.clear();
@@ -771,7 +792,9 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         }
         pending_keys.clear();
         pending_events.clear();
-        advance_kbd_macro_index(interp, 1, env);
+        if from_macro {
+            advance_kbd_macro_index(interp, 1, env);
+        }
         increment_num_input_keys(interp, env);
         set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
         interp.set_variable("last-command-event", event.clone(), env);

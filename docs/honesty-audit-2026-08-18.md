@@ -5230,3 +5230,60 @@ harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle 5/5; main and
 doc-test targets contained no tests.  No concurrent test or build ran while
 the gate was active, and no Rust production or regression source changed
 afterward.
+
+## 2026-09-04 Kmacro: rewound macro input and unread-event precedence
+
+The refreshed-main baseline was `165be13`.  The remaining Kmacro mismatch was
+the upstream expected-failure case
+`kmacro-tests-step-edit-with-quoted-insert`.  GNU and Emaxx both failed the
+assertion, but with materially different buffer contents: GNU produced its
+known `ḩii there` result while Emaxx produced ` i there`
+(`run-1788530907605950000-98015`).  Comparing only expected-failure status
+would therefore have hidden a real command-input divergence.
+
+An instrumented replay established the shared mechanism.  Kmacro's step
+editor speculatively calls `quoted-insert`, which reads the octal digits and
+their terminating `i`, pushes that terminator onto `unread-command-events`,
+and rewinds the public `executing-kbd-macro-index`.  GNU's real command then
+honors the rewound index, reads the digits again, and the command loop consumes
+the pushed-back `i` before returning to the still-present macro `i`.  Emaxx's
+typed cursor had remained at the speculative read's later internal index, so
+the real command read the following space instead.
+
+The repair makes every active-macro input read synchronize the typed event
+vector and cursor from the public GNU variables.  The keyboard-macro command
+loop now also consumes `unread-command-events` before the macro stream and
+advances the macro index only for events actually sourced from that stream.
+The implementation is generic: it contains no Kmacro symbol, test name, or
+quoted-insert branch.  A direct regression uses a fresh local keymap and an
+anonymous command to pin both behaviors independently: a pre-command hook
+speculatively reads and rewinds, the command pushes its reread event back, and
+the command loop must produce `bc` with no unread events left.
+
+The final exact replay matched 1/1 (`run-1788531529578441000-98984`), including
+GNU's unchanged expected-failure condition, and the complete Kmacro file
+matched 58/58 (`run-1788531744591804000-99355`).  Optimized adjacent Rust
+filters passed 13/13 keyboard-macro tests, 1/1 unread-command test, and 7/7
+Kmacro-frontier tests.
+
+The formal diff audit found changes only in the shared keyboard-macro input
+runtime, its direct Rust regression, and this ledger.  The pinned upstream
+Kmacro file is clean.  No upstream test, harness, selector, manifest, fixture,
+baseline, expected-result, normalization, timeout, retry, accepted-failure,
+skip, ignore, warning suppression, test-name production branch, or runtime
+oracle path was added or changed.  All 15 repository anti-cheat gates passed
+with zero failures and zero ignored.  `cargo fmt --all -- --check` and `git
+diff --check` were clean, and `cargo clippy --all-targets --all-features -- -D
+warnings` completed with zero warnings.
+
+After a global process scan found no Cargo, Emaxx, or compatibility-harness
+process, the authoritative publication gate ran once outside the restricted
+sandbox: `LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1 RUST_TEST_THREADS=1
+RUST_MIN_STACK=134217728 cargo test --profile gate -- --test-threads=1`.
+The optimized library target reported 2305 passed, zero failed, and exactly
+the two pre-existing reviewed opt-in TTY end-to-end wrappers ignored out of
+2307 tests.  The new regression and all adjacent macro-input cases passed in
+that run.  The compat harness passed 38/38, perf harness 1/1, CLI 13/13, ERT
+runner 3/3, and package lifecycle 5/5; main and doc-test targets contained no
+tests.  No concurrent test or build ran while the gate was active, and no Rust
+production or regression source changed afterward.

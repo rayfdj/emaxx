@@ -35,6 +35,7 @@ pub(crate) use display::{
 };
 pub(crate) use lists::{
     prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,
+    sync_kbd_macro_execution,
 };
 pub(crate) use misc_keymaps::oclosure_type_of;
 mod overlays;
