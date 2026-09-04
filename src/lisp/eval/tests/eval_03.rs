@@ -688,6 +688,63 @@ fn interpreted_closure_slots_follow_gnu_metadata_layout() {
 }
 
 #[test]
+fn interpreted_closure_printing_and_arity_condition_use_readable_slots() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((y 5))
+                  (let ((fun (lambda (x) (+ x y))))
+                    (list
+                     (prin1-to-string fun)
+                     (format "%S"
+                             (condition-case err
+                                 (funcall fun)
+                               (error err))))))
+            "#
+        ),
+        Value::list([
+            Value::String("#[(x) ((+ x y)) ((y . 5))]".into()),
+            Value::String("(wrong-number-of-arguments #[(x) ((+ x y)) ((y . 5))] 0)".into(),),
+        ])
+    );
+}
+
+#[test]
+fn interpreted_closure_printing_omits_unused_internal_activation_bindings() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((lexical-binding t))
+                  (let* ((maker (lambda (magic)
+                                  (lambda (x) (+ x 1))))
+                         (fun (funcall maker "This-is-a-magic-string")))
+                    (list (funcall fun 2)
+                          (prin1-to-string fun))))
+            "#
+        ),
+        Value::list([
+            Value::Integer(3),
+            Value::String("#[(x) ((+ x 1)) (t)]".into()),
+        ])
+    );
+}
+
+#[test]
+fn interpreted_closure_print_circle_tracks_the_closure_identity() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let (fun)
+                  (setq fun (lambda () fun))
+                  (let ((print-circle t))
+                    (prin1-to-string fun)))
+            "#
+        ),
+        Value::String("#1=#[nil (fun) ((fun . #1#))]".into())
+    );
+}
+
+#[test]
 fn make_interpreted_closure_preserves_environment_order_and_precedence() {
     assert_eq!(
         eval_str(
