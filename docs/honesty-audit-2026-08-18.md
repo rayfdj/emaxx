@@ -5173,3 +5173,60 @@ seconds.  The compat harness passed 38/38, perf harness 1/1, CLI 13/13, ERT
 runner 3/3, and package lifecycle 5/5; main and doc-test targets contained no
 tests.  No concurrent test or build ran in this checkout while the gate was
 active, and no Rust production or regression source changed afterward.
+
+## 2026-09-04 Print: continuous numbering across `cl-print` boundaries
+
+The refreshed-main baseline was `e5283e9`.  The only Print mismatch was the
+upstream expected-failure variant
+`print-tests-continuous-numbering-cl-print`.  Both GNU and Emaxx correctly
+failed `cl-print`'s unsupported continuous-numbering assertion, but their
+condition data differed: GNU's second fragment was `#1=#2=#:g...` and later
+referred to the native label as `#2#`, while Emaxx emitted two independent
+`#1=` labels and then reprinted the gensym.  The exact failing predecessor is
+recorded by `run-1788524336821328000-84640`.
+
+The repair follows GNU print.c's two distinct pieces of state.  Emaxx now
+keeps the native printer's largest allocated label as interpreter-owned state,
+separate from the dynamically bound public `print-number-table`.
+`print--preprocess` resets and advances that counter even when its temporary
+table is subsequently unwound.  Native print entry resets the counter when
+continuous numbering has no live table, while later calls reuse it when a
+table exists.  Finishing a print writes the table through the active special
+value cell instead of adding a private binding to a copied evaluator frame,
+and it creates an empty retained table only when the printed graph actually
+had a circle candidate.  This makes nested GNU Elisp printers observe the same
+state transitions without adding any `cl-print`-specific production path.
+
+The prior host regression only asserted that the `cl-print` variant did not
+pass its native-printer regex; arbitrary wrong failure output therefore also
+satisfied it.  The strengthened regression now pins the complete normalized
+GNU `cl-print` string, the public table size, and the gensym's retained native
+label `2`.  The existing native continuous-numbering regression still pins
+ordinary cross-call reuse, and all three native `print--preprocess` unit cases
+remain green.
+
+On final production source, the complete Print file matches 46/46
+(`run-1788527973609009000-91720`), including the exact expected-failure
+condition.  The adjacent Cconv file matches 18/18
+(`run-1788528056494762000-91945`) and Nadvice matches 13/13
+(`run-1788528084262349000-92117`).  The formal diff audit found changes only
+in typed interpreter printer state, the shared native printer implementation,
+the direct host regression, and this ledger.  No upstream test, harness,
+selector, manifest, fixture, baseline, timeout, normalization, retry,
+accepted-failure path, skip, ignore, expected-result annotation, warning
+suppression, test-name production branch, or runtime oracle path was added or
+changed.  All 15 anti-cheat tests passed with zero failures and zero ignored;
+`cargo fmt --all -- --check` and `git diff --check` were clean, and strict
+all-target/all-feature Clippy completed with zero warnings.
+
+The authoritative publication gate ran once outside the restricted sandbox,
+after a process scan confirmed that no Cargo, Emaxx, or compatibility-harness
+process was running: `LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1
+RUST_TEST_THREADS=1 RUST_MIN_STACK=134217728 cargo test --profile gate --
+--test-threads=1`.  The optimized library target reported 2304 passed, zero
+failed, and exactly the two reviewed opt-in TTY end-to-end wrappers ignored
+out of 2306 tests in 1562.91 seconds.  The compat harness passed 38/38, perf
+harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle 5/5; main and
+doc-test targets contained no tests.  No concurrent test or build ran while
+the gate was active, and no Rust production or regression source changed
+afterward.

@@ -167,7 +167,7 @@ fn native_prin1_respects_dynamic_charset_text_property_modes() {
 }
 
 #[test]
-fn cl_prin1_does_not_claim_unsupported_continuous_numbering() {
+fn cl_prin1_preserves_native_counter_and_public_table_boundaries() {
     run_with_large_stack(|| {
         assert_eq!(
             eval_str_with_upstream_batch(
@@ -179,14 +179,24 @@ fn cl_prin1_does_not_claim_unsupported_continuous_numbering() {
                            (print-gensym t)
                            (print-continuous-numbering t)
                            (print-number-table nil))
-                      (if (string-match
-                           "(#1=(1) #1# #2=\"hello\" #2#)(#3=#:g[[:digit:]]+ #3#)(#1# #2# #3#)#2#$"
-                           (mapconcat #'cl-prin1-to-string
-                                      `((,x ,x ,y ,y) (,g ,g) (,x ,y ,g) ,y)))
-                          t nil))
+                      (let ((printed
+                             (mapconcat #'cl-prin1-to-string
+                                        `((,x ,x ,y ,y) (,g ,g) (,x ,y ,g) ,y))))
+                        (list
+                         (replace-regexp-in-string
+                          "#:g[[:digit:]]+" "#:gN" printed)
+                         (hash-table-count print-number-table)
+                         (gethash g print-number-table))))
                     "##
             ),
-            Value::Nil
+            Value::list([
+                Value::String(
+                    "(#1=(1) #1# #2=\"hello\" #2#)(#1=#2=#:gN #1#)((1) \"hello\" #1=#2#)\"hello\""
+                        .into(),
+                ),
+                Value::Integer(1),
+                Value::Integer(2),
+            ])
         );
     });
 }

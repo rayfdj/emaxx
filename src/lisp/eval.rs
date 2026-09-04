@@ -3337,6 +3337,12 @@ pub struct Interpreter {
     /// interpreter-local because Rust tests run independent interpreters in
     /// parallel inside one host process.
     pub(crate) batch_standard_output_last_char: Option<char>,
+    /// Largest `#N=' label allocated by GNU's native printer.  print.c keeps
+    /// this counter separately from the dynamically bound
+    /// `print-number-table': `print--preprocess' resets it even when its
+    /// temporary table is later unwound, and continuous printer calls reuse
+    /// it while their public table remains non-nil.
+    pub(crate) print_number_index: usize,
     /// Identity of the function activation currently being evaluated, plus
     /// recently captured closure environments keyed by activation.  Sibling
     /// lambdas captured in one activation with an unchanged lexical
@@ -4157,6 +4163,7 @@ impl Interpreter {
             profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
             batch_standard_output_last_char: None,
+            print_number_index: 0,
             current_activation_id: 0,
             next_activation_id: 0,
             closure_capture_cache: Vec::new(),
