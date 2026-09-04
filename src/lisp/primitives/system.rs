@@ -794,6 +794,21 @@ pub(crate) fn expand_file_name_runtime(
     if let Some(base) = base {
         validate_file_name(base)?;
     }
+    // Fexpand_file_name substitutes the current buffer's `default-directory'
+    // for a nil DEFAULT-DIRECTORY before anything else.  Callers that pass
+    // None (the copy family's expand_cp_target, visited-name bookkeeping)
+    // must therefore resolve a relative NAME against that Lisp value, never
+    // against the process working directory.
+    let current_directory;
+    let base = match base {
+        Some(base) => Some(base),
+        None => {
+            current_directory = interp
+                .lookup_var("default-directory", env)
+                .and_then(|value| string_like(&value).map(|string| string.text));
+            current_directory.as_deref()
+        }
+    };
     // GNU resolves an explicitly relative DEFAULT-DIRECTORY against the
     // buffer's default-directory before it chooses a file-name handler.  In
     // particular, `("..", "./")' must retain a remote current directory.

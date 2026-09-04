@@ -78,7 +78,12 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 146 | rendering a non-selected mode line overwrote that window's independent point slot | FIXED 2026-09-02 |
 | 147 | graphical fringe display strings leaked their source text onto TTY frames | FIXED 2026-09-02 |
 | 148 | motion between edits left undo's point-before-command record stale when a boundary already existed | FIXED 2026-09-02 |
-| 149 | status_notify's drain of an exited process's remaining output is not modeled: during a JUST-THIS-ONE wait GNU still delivers a distractor's leftover output once it exits, Emaxx never does | OPEN (recorded 2026-09-03, Linux oracle) |
+| 149 | the TTY differential reused the host temporary namespace across killed editor sessions until Org's 1000 `babel-stable-N` names were exhausted (harness defect, recorded in the 2026-09-03 tty-frontend merge section) | FIXED 2026-09-03 |
+| 150 | the `supersession-accept-revisit` TTY scenario sent an extra `y` after a successful save and manufactured a divergence (harness defect, same section) | FIXED 2026-09-03 |
+| 151 | status_notify's drain of an exited process's remaining output is not modeled: during a JUST-THIS-ONE wait GNU still delivers a distractor's leftover output once it exits, Emaxx never does | OPEN (recorded 2026-09-03, Linux oracle; numbered 149 in its section until 2026-09-04) |
+| 152 | `(sleep-for 0)` runs due Lisp timers; Fsleep_for returns without entering the wait for a non-positive duration | OPEN (recorded 2026-09-04) |
+| 153 | batch `read-from-minibuffer` reads stdin even while `executing-kbd-macro` is non-nil, where read_minibuf takes the full path; the accepted-default history push is gated on TTY-reader presence rather than that condition | OPEN (recorded 2026-09-04) |
+| 154 | `expand_file_name_runtime` resolved a nil DEFAULT-DIRECTORY against the process cwd; exposed as a copy-family regression by the 2026-09-04 Linux frozen run | FIXED 2026-09-04 |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -5034,7 +5039,7 @@ replay, and again after rebasing onto the Darwin certification commit
 `1394e8d` (2277 library tests, bins and integration green;
 run-1788358068697089711-3005).
 
-## 2026-09-03 finding 149: a Darwin-pinned race in the JUST-THIS-ONE contract
+## 2026-09-03 finding 151 (formerly numbered 149 here): a Darwin-pinned race in the JUST-THIS-ONE contract
 
 Rebasing the copy-family change onto main `e9778fb` (eleven certification
 commits, none touching the copy family; `add-name-to-file` still fails on a
@@ -5053,11 +5058,14 @@ the test names.  With the distractor kept alive (`printf distractor; sleep
 2`) the Linux oracle answers the pinned literal three of three and Emaxx
 matches; the test now uses that form, its assertion unchanged.
 
-The probe also exposed a real gap, recorded as finding 149 rather than
+The probe also exposed a real gap, recorded as finding 151 rather than
 folded into this change: for the short-lived distractor Emaxx answers
 `(t "" "target" t "distractor")` on Linux, i.e. it never performs the
 status_notify drain of an exited process's leftover output during a
 JUST-THIS-ONE wait.  That is a process.c mechanism to port on its own.
+(Numbering note, 2026-09-04: the tty-frontend merge section above had
+already used 149 and 150 for its two harness defects, so this finding is
+151 in the table; the table now also carries rows for 149 and 150.)
 
 With the test corrected, the grouped gate on this two-commit tree over main
 `e9778fb` passed every group (2303 library outcomes with the two opt-in TTY
@@ -5287,3 +5295,62 @@ that run.  The compat harness passed 38/38, perf harness 1/1, CLI 13/13, ERT
 runner 3/3, and package lifecycle 5/5; main and doc-test targets contained no
 tests.  No concurrent test or build ran while the gate was active, and no Rust
 production or regression source changed afterward.
+
+## 2026-09-04 Linux de-cheating audit of main `225f6f0` (findings 152-154)
+
+Scope: everything that landed on main after the Linux integration audit of
+`3c78b1e` -- the networking (`dcd5b82`), TRAMP (`b5ee077`), minibuffer and
+completion (`e9778fb`), Vertico stack (`696fa6c`), Darwin certification
+(`1394e8d`), oracle-feature-contract (`be5e937`) and binary-network
+(`225f6f0`) commits, plus the two copy-family commits from this host.  Each
+production diff was re-read against its GNU 30.2 owner; the static scans
+covered test-only runtime branches (`cfg(test)` sites are test modules,
+counters and a bootstrap permit only), `EMAXX_*` knobs (the compat runner's
+`EMAXX_COMPAT_RUNNER` is a report label, never a branch), ignored tests
+(the two declared PTY gates), oracle delegation (harness and tests only),
+and fixture or package-name literals in dispatch (none).  The grouped gate
+on this exact main passed natively as the unprivileged runner
+(run-1788519823835685981-1802: 2304 library outcomes with the two opt-in
+ignores, bins and integration green), so the Darwin-certified Rust suite
+holds on Linux.
+
+Verified sound against the C owner: `network-lookup-address-info` through
+`getaddrinfo` with AI_NUMERICHOST; `make-process` returning nil for an empty
+plist and dispatching `:file-handler` before parsing; JUST-THIS-ONE's integer
+spelling suppressing timers (process.c 4920); SIGUSR1/2 through
+async-signal-safe counters into the keyboard path; `window-list`'s MINIBUF
+rule; post-command-hook at read_minibuf's command-loop entry; casefiddle's
+interval rule; the accepted connection's buffer and binary delivery.
+
+Findings:
+
+- 152 (OPEN): `(sleep-for 0)` runs due Lisp timers.  dispnew.c Fsleep_for
+  enters wait_reading_process_output only for a positive duration and
+  otherwise returns nil at once; oracle `(run-at-time 0 …) (sleep-for 0)`
+  reads nil, Emaxx t.  The TRAMP commit kept an Emaxx-only "delivery point"
+  there deliberately; it is a non-GNU accommodation and should go.
+- 153 (OPEN): batch `read-from-minibuffer` reads stdin even with
+  `executing-kbd-macro` bound; minibuf.c takes read_minibuf_noninteractive
+  only when `noninteractive && NILP (Vexecuting_kbd_macro)`.  Under a bound
+  macro GNU returns `("" ("dflt"))` -- and adds the accepted default to the
+  history, which the completion commit implemented but gated on
+  TTY-event-reader presence plus `noninteractive` nil rather than on GNU's
+  condition.  Equivalent for the live terminal, wrong for the macro path,
+  where Emaxx signals "Error reading from stdin".
+- 154 (FIXED here): `expand_file_name_runtime` treated a None
+  DEFAULT-DIRECTORY as the process cwd; Fexpand_file_name substitutes the
+  buffer's `default-directory`.  Latent while the helper only chose handlers,
+  it became a regression when the copy-family commit fed its expansions to
+  the native bodies: `(let ((default-directory "/tmp/zzdir/")) (copy-file
+  "a" "b"))` failed with `/tmp/a`.  The Linux frozen run of this main caught
+  it as `arc-mode-test-zip-ensure-ext` and
+  `bytecomp-tests--target-file-no-directory`, both passing on `e9778fb`.
+- Ledger hygiene: finding number 149 had been used twice (the tty-frontend
+  merge's harness defects in prose, the status_notify drain in the table);
+  the table now carries 149-151 unambiguously.
+
+The finding-154 fix was verified by the probe (`(t t)` on both binaries), the
+extended copy-family contract, replays of arc-mode-tests 4/4, bytecomp-tests
+100/100 and files-tests 116/116, and the grouped gate on the fixed tree
+(run-1788523328744887321-24455: 2304 library outcomes with the two opt-in
+ignores, bins and integration green).
