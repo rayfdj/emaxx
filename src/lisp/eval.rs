@@ -5632,6 +5632,29 @@ impl Interpreter {
         slots
     }
 
+    /// Project the closure through GNU's readable public slots without
+    /// changing Emaxx's conservative internal activation storage.  Generated
+    /// Lisp can use positional closed-variable access that requires the full
+    /// runtime frame, while print.c exposes only the source-visible prefix.
+    pub(crate) fn interpreted_closure_print_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
+        let mut slots = self.interpreted_closure_slots(lambda);
+        if definitions::body_closure_dont_trim_context(&lambda.body) {
+            return slots;
+        }
+        let mut capture_forms = lambda.body.as_ref().clone();
+        if let Some(interactive) = &lambda.interactive {
+            capture_forms.push(interactive.clone());
+        }
+        let trimmed = definitions::trim_lambda_closure_env(&lambda.env.borrow(), &capture_forms);
+        let trimmed = shared_env(trimmed);
+        let mut environment = self.materialize_public_interpreted_environment(&trimmed);
+        if environment.is_nil() && self.closure_env_is_lexical(&lambda.env) {
+            environment = Value::list([Value::T]);
+        }
+        slots[2] = environment;
+        slots
+    }
+
     /// Build the GNU-visible lexical-environment alist for a source lambda
     /// and attach its binding conses to the typed captured frames.  Each
     /// closure gets its own alist spine, while sibling closures reuse the

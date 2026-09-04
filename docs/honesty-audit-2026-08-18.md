@@ -5118,3 +5118,58 @@ passed 38/38, perf harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle
 5/5; main and doc-test targets contained no tests.  No concurrent test or
 build was launched while this gate was active, and no Rust production or test
 source changed after it completed.
+
+## 2026-09-04 Nadvice: interpreted closure identity in arity conditions
+
+The refreshed-main baseline was `225f6f0`.  The exact
+`advice-test-called-interactively-p-filter-args` replay failed only because
+GNU reported the actual interpreted closure in its expected arity condition,
+`(wrong-number-of-arguments #[nil ((cons 1 (called-interactively-p 'any)))
+(t) nil nil nil] 1)`, while Emaxx replaced the callee with the symbol
+`lambda` (`run-1788519522530890000-79557`).  The test is an upstream expected
+failure on both runners; matching only the status would therefore have hidden
+this real condition-data mismatch.
+
+The repair is at the shared closure boundary.  Interpreted-lambda arity
+checks now retain the actual function object in the condition datum.
+`prin1` projects typed closures through their GNU-visible three-to-six slots
+and emits readable `#[ARGS BODY ENV ...]` syntax.  The projection trims the
+public environment independently of Emaxx's conservative execution storage,
+so unused internal activation bindings cannot leak through printing while
+macro-converted closures keep the runtime cells they need.  Interpreted
+closures are also print-circle candidates and their projected slots are
+walked by the iterative cycle scanner.  Permanent tests pin a captured
+closure and its wrong-arity condition, an over-captured-but-correctly-running
+closure whose unused binding stays out of the printed form, and a closure
+whose environment points back to itself.
+
+The adjacent audit rejected two intermediate implementations.  Merely making
+all retained environments visible regressed `cconv-safe-for-space`
+(`run-1788523152761672000-81724`).  Trimming execution storage rather than
+only the public projection then lost generator closed variables and regressed
+three Cconv documentation cases (`run-1788523625782055000-82633`).  Neither
+result is counted.  On the final source, the complete Cconv file matched
+18/18 (`run-1788524218527277000-84146`) and the complete Nadvice file matched
+13/13 (`run-1788524273971683000-84144`).  The complete src print file remained
+45/46 (`run-1788524336821328000-84640`), with exactly its pre-existing
+`print-tests-continuous-numbering-cl-print` mismatch and no new regression.
+
+The formal diff audit found changes only in closure evaluation/projection,
+printing, direct Rust regressions, and this ledger.  No upstream test,
+harness, selector, manifest, fixture, baseline, timeout, normalization,
+retry, accepted-failure path, skip, ignore, expected-result annotation,
+warning suppression, test-name production branch, or runtime oracle path was
+added or changed.  All 15 anti-cheat tests passed with zero failures and zero
+ignored.  `cargo fmt --all -- --check` was clean, and `cargo clippy --profile
+gate --all-targets --all-features -- -D warnings` completed with zero
+warnings.
+
+The authoritative publication gate ran once outside the restricted sandbox:
+`LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1 RUST_TEST_THREADS=1
+RUST_MIN_STACK=134217728 cargo test --profile gate -- --test-threads=1`.
+The library target reported 2304 passed, zero failed, and exactly the two
+reviewed opt-in TTY end-to-end wrappers ignored out of 2306 tests in 1335.03
+seconds.  The compat harness passed 38/38, perf harness 1/1, CLI 13/13, ERT
+runner 3/3, and package lifecycle 5/5; main and doc-test targets contained no
+tests.  No concurrent test or build ran in this checkout while the gate was
+active, and no Rust production or regression source changed afterward.

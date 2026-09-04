@@ -68,6 +68,7 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PrintRefKey {
     Cons(usize),
+    Lambda(usize),
     Record(u64),
     StringObject(usize),
     Symbol(String),
@@ -200,6 +201,7 @@ pub(crate) fn print_ref_key(
         Value::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
             cell,
         ))),
+        Value::Lambda(lambda) => Some(PrintRefKey::Lambda(std::rc::Rc::as_ptr(lambda) as usize)),
         Value::StringObject(state) => Some(PrintRefKey::StringObject(Rc::as_ptr(state) as usize)),
         Value::Symbol(symbol)
             if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
@@ -363,6 +365,14 @@ fn walk_print_graph(
                         pending.push(key);
                     }
                 }
+            }
+            Value::Lambda(lambda) => {
+                pending.extend(
+                    interp
+                        .interpreted_closure_print_slots(lambda)
+                        .into_iter()
+                        .rev(),
+                );
             }
             _ => {}
         }
@@ -1050,33 +1060,25 @@ pub(crate) fn render_prin1_body(
         }
         Value::Cons(_) => render_prin1_list(interp, value, env, context, depth),
         Value::Lambda(lambda_value) => {
-            let params = &lambda_value.params;
-            let body = &lambda_value.body;
-            let closure_env = &lambda_value.env;
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
-            let captured = closure_env.borrow().clone();
-            let prints_closure_env = body.len() > 1
-                && matches!(
-                    body.first(),
-                    Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
-                );
-            if captured.is_empty() || !prints_closure_env {
-                return Ok(value.to_string());
+            let slots = interp.interpreted_closure_print_slots(lambda_value);
+            let mut rendered_slots = Vec::new();
+            for (index, slot) in slots.iter().enumerate() {
+                if context.options.length.is_some_and(|limit| index >= limit) {
+                    rendered_slots.push("...".into());
+                    break;
+                }
+                rendered_slots.push(render_prin1_with_context(
+                    interp,
+                    slot,
+                    env,
+                    context,
+                    depth + 1,
+                )?);
             }
-            let params_value = Value::list(
-                params
-                    .iter()
-                    .cloned()
-                    .map(|value| Value::Symbol(value.into())),
-            );
-            let env_value = closure_env_print_value(&captured);
-            Ok(format!(
-                "#<closure {} {}>",
-                render_prin1_with_context(interp, &params_value, env, context, depth + 1)?,
-                render_prin1_with_context(interp, &env_value, env, context, depth + 1)?
-            ))
+            Ok(format!("#[{}]", rendered_slots.join(" ")))
         }
         Value::BuiltinFunc(_)
         | Value::Buffer(_)
@@ -1233,16 +1235,6 @@ pub(crate) fn render_prin1_body(
         }
         _ => Ok(value.to_string()),
     }
-}
-
-fn closure_env_print_value(env: &Env) -> Value {
-    Value::list(env.iter().map(|frame| {
-        Value::list(
-            frame.iter().map(|(name, value)| {
-                Value::cons(Value::Symbol(name.clone().into()), value.clone())
-            }),
-        )
-    }))
 }
 
 pub(crate) fn finish_print_number_table(

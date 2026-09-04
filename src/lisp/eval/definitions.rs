@@ -1,6 +1,6 @@
 use super::*;
 
-fn body_closure_dont_trim_context(body: &[Value]) -> bool {
+pub(super) fn body_closure_dont_trim_context(body: &[Value]) -> bool {
     let mut start = 0usize;
     if body.len() > 1
         && matches!(
@@ -303,7 +303,7 @@ impl Interpreter {
     }
 }
 
-fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
+pub(super) fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
     let mut referenced = HashSet::new();
     for form in body {
         collect_referenced_symbols(form, &mut referenced);

@@ -1026,6 +1026,13 @@ impl Interpreter {
                 let params = &lambda.params;
                 let body = &lambda.body;
                 let closure_env = &lambda.env;
+                let wrong_arity = || {
+                    LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-number-of-arguments".into()),
+                        func.clone(),
+                        Value::Integer(args.len() as i64),
+                    ]))
+                };
                 self.register_captured_lexical_frames(closure_env);
                 if params.len() != args.len() {
                     let min_params = params
@@ -1039,10 +1046,7 @@ impl Interpreter {
                                 body.first()
                             );
                         }
-                        return Err(LispError::WrongNumberOfArgs(
-                            "lambda".to_string(),
-                            args.len(),
-                        ));
+                        return Err(wrong_arity());
                     }
                     // GNU also signals on EXCESS arguments (no &rest and more
                     // args than fixed + optional parameters).
@@ -1054,10 +1058,7 @@ impl Interpreter {
                                     "EMAXX-DBG arity-excess: params={params:?} args={args:?} name={original_name:?}",
                                 );
                             }
-                            return Err(LispError::WrongNumberOfArgs(
-                                "lambda".to_string(),
-                                args.len(),
-                            ));
+                            return Err(wrong_arity());
                         }
                     }
                 }
@@ -1091,10 +1092,7 @@ impl Interpreter {
                     } else if optional {
                         Value::Nil
                     } else {
-                        return Err(LispError::WrongNumberOfArgs(
-                            "lambda".to_string(),
-                            args.len(),
-                        ));
+                        return Err(wrong_arity());
                     };
                     frame.push((param.clone(), Self::stored_value(val)));
                     if consumed_arg {
