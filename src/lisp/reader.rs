@@ -1,6 +1,6 @@
 use super::types::{
     LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
-    make_uninterned_symbol_name,
+    VectorValue, make_uninterned_symbol_name,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -60,6 +60,7 @@ fn nonsensical_circular_self_reference() -> LispError {
 pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
     let mut pending = vec![value.clone()];
     let mut seen_cons = HashSet::new();
+    let mut seen_vectors = HashSet::new();
     while let Some(value) = pending.pop() {
         if circular_read_ref_form(&value).is_some() || circular_read_label_form(&value).is_some() {
             return true;
@@ -72,6 +73,11 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                 if seen_cons.insert(car.cell_id()) {
                     pending.push(cdr.borrow().clone());
                     pending.push(car.borrow().clone());
+                }
+            }
+            Value::Vector(vector) => {
+                if seen_vectors.insert(VectorValue::identity(&vector)) {
+                    pending.extend(vector.slots().iter().cloned());
                 }
             }
             Value::ReaderForm(form) => match form.as_ref() {
@@ -114,14 +120,7 @@ fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
 }
 
 fn circular_vector_skeleton(len: usize) -> Value {
-    let mut tail = Value::Nil;
-    for _ in 0..len {
-        tail = Value::vector_storage_cons(Value::Nil, tail);
-    }
-    let vector = Value::vector_storage_cons(Value::symbol("vector-literal"), tail);
-    crate::lisp::native_comp::note_lisp_allocation((len + 1).saturating_mul(8));
-    crate::lisp::types::register_vector_object(&vector, len + 1);
-    vector
+    Value::vector(std::iter::repeat_n(Value::Nil, len))
 }
 
 fn fill_circular_label_value(
@@ -132,16 +131,15 @@ fn fill_circular_label_value(
     if let Ok(items) = template.to_vec()
         && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
     {
-        let Some((_, target_cdr)) = target.cons_cells() else {
+        let Value::Vector(vector) = target else {
             return Err(invalid_circular_read_syntax());
         };
-        let mut current = target_cdr.borrow().clone();
-        for item in &items[1..] {
-            let Some((slot, next)) = current.cons_cells() else {
-                return Err(invalid_circular_read_syntax());
-            };
-            *slot.borrow_mut() = resolve_circular_read_syntax_inner(item, labels)?;
-            current = next.borrow().clone();
+        if vector.slots().len() != items.len().saturating_sub(1) {
+            return Err(invalid_circular_read_syntax());
+        }
+        for (index, item) in items[1..].iter().enumerate() {
+            let resolved = resolve_circular_read_syntax_inner(item, labels)?;
+            vector.slots_mut()[index] = resolved;
         }
         return Ok(());
     }
@@ -296,6 +294,7 @@ pub(crate) fn resolve_circular_read_syntax(value: Value) -> Result<Value, LispEr
 /// as-is, sharing structure exactly like GNU's quote.
 pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
     let mut seen = std::collections::HashSet::new();
+    let mut seen_vectors = std::collections::HashSet::new();
     let mut stack = vec![value.clone()];
     while let Some(current) = stack.pop() {
         match &current {
@@ -309,6 +308,11 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                 }
                 stack.push(car_cell.borrow().clone());
                 stack.push(cdr_cell.borrow().clone());
+            }
+            Value::Vector(vector) => {
+                if seen_vectors.insert(VectorValue::identity(vector)) {
+                    stack.extend(vector.slots().iter().cloned());
+                }
             }
             Value::StringObject(state) => {
                 for span in &state.borrow().props {

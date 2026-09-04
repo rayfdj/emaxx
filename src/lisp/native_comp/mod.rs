@@ -198,13 +198,8 @@ pub(crate) fn function_documentation(
     } else {
         docs
     };
-    let mut docs = docs.to_vec()?;
-    if !matches!(docs.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
-        return Err(lisp::native_ice(
-            "native compilation unit documentation is not a vector",
-        ));
-    }
-    docs.remove(0);
+    let docs = crate::lisp::primitives::vector_items(&docs)
+        .map_err(|_| lisp::native_ice("native compilation unit documentation is not a vector"))?;
     docs.get(index)
         .cloned()
         .ok_or_else(|| lisp::native_ice("native documentation index is out of range"))

@@ -68,6 +68,7 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PrintRefKey {
     Cons(usize),
+    Vector(usize),
     Record(u64),
     StringObject(usize),
     Symbol(String),
@@ -211,6 +212,9 @@ pub(crate) fn print_ref_key(
         Value::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
             cell,
         ))),
+        Value::Vector(vector) => Some(PrintRefKey::Vector(
+            crate::lisp::types::VectorValue::identity(vector),
+        )),
         // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
         // strings still have Lisp identity: cloning SharedText preserves its
         // Rc allocation, so repeated occurrences must receive one #N label.
@@ -378,7 +382,7 @@ fn walk_print_graph(
         }
 
         match &value {
-            Value::Cons(_) if is_vector_value(&value) => {
+            Value::Vector(_) | Value::Cons(_) if is_vector_value(&value) => {
                 let items = vector_items(&value)?;
                 pending.extend(items.into_iter().rev());
             }
@@ -1076,7 +1080,7 @@ pub(crate) fn render_prin1_body(
             Ok("\\,@".into())
         }
         Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
-        Value::Cons(_) if is_vector_value(value) => {
+        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             let items = vector_items(value)?;
             let mut rendered_items = Vec::new();
             for (index, item) in items.iter().enumerate() {
@@ -1713,6 +1717,17 @@ fn materialize_char_table_literals_inner(
     if let Some(fields) = char_table_literal_fields(value) {
         return char_table_from_literal_fields(interp, &fields, env, seen);
     }
+    if let Value::Vector(vector) = value {
+        if !seen.insert(crate::lisp::types::VectorValue::identity(vector)) {
+            return Ok(value.clone());
+        }
+        let slots = vector.slots().clone();
+        for (index, slot) in slots.iter().enumerate() {
+            vector.slots_mut()[index] =
+                materialize_char_table_literals_inner(interp, slot, env, seen)?;
+        }
+        return Ok(value.clone());
+    }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());
     };
@@ -2092,6 +2107,17 @@ fn materialize_hash_table_literals_inner(
     }
     if let Some(fields) = bare_hash_table_literal_fields(value) {
         return hash_table_from_literal_fields(interp, &fields, env, seen);
+    }
+    if let Value::Vector(vector) = value {
+        if !seen.insert(crate::lisp::types::VectorValue::identity(vector)) {
+            return Ok(value.clone());
+        }
+        let slots = vector.slots().clone();
+        for (index, slot) in slots.iter().enumerate() {
+            vector.slots_mut()[index] =
+                materialize_hash_table_literals_inner(interp, slot, env, seen)?;
+        }
+        return Ok(value.clone());
     }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());

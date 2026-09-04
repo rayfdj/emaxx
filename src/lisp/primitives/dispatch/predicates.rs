@@ -249,43 +249,8 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "make-closure" => {
-                // GNU Fmake_closure (alloc.c): copy PROTOTYPE, replacing the
-                // first CLOSURE-VARS elements of its constants vector.
                 need_args(name, args, 1)?;
-                let Value::Record(id) = &args[0] else {
-                    return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
-                };
-                let Some(record) = interp.find_record(*id) else {
-                    return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
-                };
-                if record.kind != crate::lisp::eval::RecordKind::Closure {
-                    return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
-                }
-                let mut slots = record.slots.clone();
-                let mut constants = slots
-                .get(2)
-                .and_then(|slot| slot.to_vec().ok())
-                .filter(|items| {
-                    matches!(items.first(), Some(Value::Symbol(marker)) if marker == "vector-literal")
-                })
-                .map(|items| items[1..].to_vec())
-                .ok_or_else(|| {
-                    LispError::Signal("make-closure prototype has no constants vector".into())
-                })?;
-                let vars = &args[1..];
-                if vars.len() > constants.len() {
-                    return Err(LispError::Signal(
-                        "Closure vars do not fit in constvec".into(),
-                    ));
-                }
-                constants[..vars.len()].clone_from_slice(vars);
-                slots[2] =
-                    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(constants));
-                Ok(interp.create_pseudovector(
-                    crate::lisp::eval::RecordKind::Closure,
-                    "byte-code-function",
-                    slots,
-                ))
+                interp.make_closure(&args[0], &args[1..])
             }
             "make-byte-code" => {
                 // GNU Fmake_byte_code (alloc.c): the arguments become the
@@ -341,6 +306,7 @@ define_dispatch!(
                     | Value::StringObject(_)
                     | Value::Symbol(_)
                     | Value::Cons(_)
+                    | Value::Vector(_)
                     | Value::BuiltinFunc(_)
                     | Value::Lambda(_)
                     | Value::Buffer(_)

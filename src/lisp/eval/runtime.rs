@@ -494,6 +494,9 @@ impl Interpreter {
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
         self.current_buffer_id = id;
+        // A localized GNU forwarding symbol loads the newly current
+        // buffer's cell into its C variable during a buffer switch.
+        self.refresh_forwarded_eval_cells();
         Ok(())
     }
 
@@ -1655,6 +1658,32 @@ impl Interpreter {
             .or_else(|| self.custom_hash_tables.get(&id).map(|state| &state.entries))
     }
 
+    /// Return the first live key/value slot at or after `minimum_slot`.
+    /// fns.c:DOHASH_SAFE advances through the hash table's numeric storage
+    /// slots and reloads each entry after the preceding callback, rather than
+    /// snapshotting the whole table.  The compact Rust vectors are maintained
+    /// in that same slot order, so a partition point recovers the next GNU
+    /// slot without scanning unused capacity.
+    pub(crate) fn hash_table_entry_at_or_after(
+        &self,
+        id: u64,
+        minimum_slot: usize,
+    ) -> Option<Option<(usize, Value, Value)>> {
+        let (entries, slot_indices) = if let Some(state) = self.equal_hash_tables.get(&id) {
+            (&state.entries, &state.slot_indices)
+        } else {
+            let state = self.custom_hash_tables.get(&id)?;
+            (&state.entries, &state.slot_indices)
+        };
+        let index = slot_indices.partition_point(|slot| *slot < minimum_slot);
+        Some(
+            entries
+                .get(index)
+                .zip(slot_indices.get(index))
+                .map(|((key, value), slot)| (*slot, key.clone(), value.clone())),
+        )
+    }
+
     pub(crate) fn has_custom_hash_table_index(&self, id: u64) -> bool {
         self.custom_hash_tables.contains_key(&id)
     }
@@ -2275,6 +2304,49 @@ impl Interpreter {
     ) -> Value {
         debug_assert_ne!(kind, RecordKind::Record);
         self.create_record_with_kind(Value::symbol(type_name), slots, kind)
+    }
+
+    /// alloc.c:Fmake_closure.  Both the ordinary primitive dispatcher and
+    /// the native Lisp_Object ABI use this one C-owned operation so the
+    /// prototype copy, constant-vector replacement, and errors cannot drift.
+    pub(crate) fn make_closure(
+        &mut self,
+        prototype: &Value,
+        closure_vars: &[Value],
+    ) -> Result<Value, LispError> {
+        let Value::Record(id) = prototype else {
+            return Err(LispError::WrongTypeArgument(
+                "byte-code-function-p".into(),
+                prototype.clone(),
+            ));
+        };
+        let Some(record) = self.find_record(*id) else {
+            return Err(LispError::WrongTypeArgument(
+                "byte-code-function-p".into(),
+                prototype.clone(),
+            ));
+        };
+        if record.kind != RecordKind::Closure {
+            return Err(LispError::WrongTypeArgument(
+                "byte-code-function-p".into(),
+                prototype.clone(),
+            ));
+        }
+        let mut slots = record.slots.clone();
+        let mut constants = slots
+            .get(2)
+            .and_then(|slot| crate::lisp::primitives::vector_items(slot).ok())
+            .ok_or_else(|| {
+                LispError::Signal("make-closure prototype has no constants vector".into())
+            })?;
+        if closure_vars.len() > constants.len() {
+            return Err(LispError::Signal(
+                "Closure vars do not fit in constvec".into(),
+            ));
+        }
+        constants[..closure_vars.len()].clone_from_slice(closure_vars);
+        slots[2] = Value::vector(constants);
+        Ok(self.create_pseudovector(RecordKind::Closure, "byte-code-function", slots))
     }
 
     fn create_record_with_kind(

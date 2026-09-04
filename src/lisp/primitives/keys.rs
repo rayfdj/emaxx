@@ -617,7 +617,7 @@ pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, Lis
 
     match sequence {
         Value::Nil => Ok(Vec::new()),
-        Value::Cons(_) => Ok(vector_items(sequence)?
+        value if is_vector_value(value) => Ok(vector_items(sequence)?
             .into_iter()
             .map(normalize_key_description_event)
             .collect()),
@@ -649,6 +649,8 @@ pub(crate) fn sequence_values(
         Ok(string_sequence_values(&string))
     } else if let Some(items) = keymap_list_items(interp, sequence)? {
         Ok(items)
+    } else if matches!(sequence, Value::Nil | Value::Cons(_)) {
+        sequence.to_vec()
     } else if is_bool_vector_value(interp, sequence) {
         bool_vector_values(interp, sequence)
     } else {

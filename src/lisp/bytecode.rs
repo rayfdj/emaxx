@@ -659,11 +659,10 @@ pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
 }
 
 fn vector_items(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(marker), rest)) if marker == "vector-literal" => Some(rest.to_vec()),
-        _ => None,
-    }
+    let Value::Vector(vector) = value else {
+        return None;
+    };
+    Some(vector.slots().clone())
 }
 
 impl ByteCodeObject {

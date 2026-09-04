@@ -1,5 +1,6 @@
 use super::*;
 use crate::lisp::types::StringPropertySpan;
+use crate::lisp::types::VectorValue;
 
 struct CircularReadMaterializer<'a> {
     interpreter: &'a mut Interpreter,
@@ -7,6 +8,7 @@ struct CircularReadMaterializer<'a> {
     labels: std::collections::HashMap<u32, Value>,
     records: std::collections::HashMap<usize, Value>,
     resolved_cons: std::collections::HashSet<usize>,
+    resolved_vectors: std::collections::HashSet<usize>,
 }
 
 impl CircularReadMaterializer<'_> {
@@ -205,6 +207,16 @@ impl CircularReadMaterializer<'_> {
                 *cdr_cell.borrow_mut() = self.resolve(&cdr)?;
                 Ok(value.clone())
             }
+            Value::Vector(vector) => {
+                if !self.resolved_vectors.insert(VectorValue::identity(vector)) {
+                    return Ok(value.clone());
+                }
+                let slots = vector.slots().clone();
+                for (index, slot) in slots.iter().enumerate() {
+                    vector.slots_mut()[index] = self.resolve(slot)?;
+                }
+                Ok(value.clone())
+            }
             Value::StringObject(state) => {
                 let spans = state.borrow().props.clone();
                 let mut resolved_spans = Vec::with_capacity(spans.len());
@@ -297,6 +309,7 @@ impl Interpreter {
                 labels: std::collections::HashMap::new(),
                 records: std::collections::HashMap::new(),
                 resolved_cons: std::collections::HashSet::new(),
+                resolved_vectors: std::collections::HashSet::new(),
             }
             .resolve(&value)?
         } else {
@@ -323,6 +336,7 @@ impl Interpreter {
             env,
             &mut std::collections::HashSet::new(),
             &mut std::collections::HashSet::new(),
+            &mut std::collections::HashSet::new(),
             &mut std::collections::HashMap::new(),
         )
     }
@@ -332,6 +346,7 @@ impl Interpreter {
         value: &Value,
         env: &mut Env,
         seen_cons: &mut std::collections::HashSet<usize>,
+        seen_vectors: &mut std::collections::HashSet<usize>,
         active_reader_forms: &mut std::collections::HashSet<usize>,
         records: &mut std::collections::HashMap<usize, Value>,
     ) -> Result<Value, LispError> {
@@ -374,6 +389,7 @@ impl Interpreter {
                     slot,
                     env,
                     seen_cons,
+                    seen_vectors,
                     active_reader_forms,
                     records,
                 )?;
@@ -409,6 +425,23 @@ impl Interpreter {
             records.insert(identity, record.clone());
             return Ok(record);
         }
+        if let Value::Vector(vector) = value {
+            if !seen_vectors.insert(VectorValue::identity(vector)) {
+                return Ok(value.clone());
+            }
+            let slots = vector.slots().clone();
+            for (index, slot) in slots.iter().enumerate() {
+                vector.slots_mut()[index] = self.materialize_read_record_literals_inner(
+                    slot,
+                    env,
+                    seen_cons,
+                    seen_vectors,
+                    active_reader_forms,
+                    records,
+                )?;
+            }
+            return Ok(value.clone());
+        }
         let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
             return Ok(value.clone());
         };
@@ -421,6 +454,7 @@ impl Interpreter {
             &car,
             env,
             seen_cons,
+            seen_vectors,
             active_reader_forms,
             records,
         )?;
@@ -429,6 +463,7 @@ impl Interpreter {
             &cdr,
             env,
             seen_cons,
+            seen_vectors,
             active_reader_forms,
             records,
         )?;

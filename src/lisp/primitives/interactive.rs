@@ -109,20 +109,21 @@ pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool 
 }
 
 pub(crate) fn is_vector_value(value: &Value) -> bool {
-    matches!(
-        value,
-        Value::Cons(cell)
-            if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal")
-    )
+    matches!(value, Value::Vector(_))
 }
 
-/// Whether VALUE has GNU cons identity despite Emaxx's internal facade
-/// representations.  Vector literals use cons storage but are not Lisp
-/// conses; runtime keymaps use records but project the list identity GNU
-/// exposes.  Keep this decision shared by native predicates and VM opcodes.
+pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
+    match value {
+        Value::Vector(vector) => Some(crate::lisp::types::VectorValue::identity(vector)),
+        _ => None,
+    }
+}
+
+/// Whether VALUE has GNU cons identity despite Emaxx's internal runtime-keymap
+/// projection.  Ordinary vectors have their own object class and never enter
+/// this predicate.
 pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
-    (matches!(value, Value::Cons(_)) && !is_vector_value(value))
-        || keymap_record_id(interp, value).is_some()
+    matches!(value, Value::Cons(_)) || keymap_record_id(interp, value).is_some()
 }
 
 pub(crate) fn fixnum_bounds(interp: &Interpreter) -> Result<(i64, i64), LispError> {
