@@ -155,6 +155,11 @@ Both sides are invoked with near-matching batch-style commands and upstream-like
 
 First pin the Emacs binary and source tree you want to compare against:
 
+Before building or repinning it, follow the platform capability matrix and
+finished-binary probe in [the oracle build contract](oracle-build-contract.md).
+The source revision alone does not identify an oracle: optional libraries can
+change executed tests into skips and change the native primitive inventory.
+
 ```bash
 cargo run --bin compat-harness -- oracle pin --emacs /path/to/emacs --repo ../emacs
 ```
