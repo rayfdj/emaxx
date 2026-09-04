@@ -1459,6 +1459,10 @@ pub(crate) fn pop_unread_command_event_value(
         }
         // GNU's input readers consume the executing keyboard macro's
         // remaining events (viper's `F'/`t' read their target char that way).
+        // Lisp hooks may have rewound the public index after a speculative
+        // read (kmacro's quoted-insert step editor does exactly this), so the
+        // typed cursor must observe that assignment before supplying input.
+        crate::lisp::primitives::dispatch::sync_kbd_macro_execution(interp, env)?;
         if let Some(state) = interp.kbd_macro_executions.last_mut()
             && let Some(event) = state.events.get(state.index).cloned()
         {
