@@ -6302,7 +6302,10 @@ policy, but `archive.ubuntu.com` is reachable:
    libtiff-dev libpng-dev libxft-dev libxrender-dev libxt-dev`.  Then
    `./autogen.sh && ./configure --with-native-compilation --with-x
    --with-x-toolkit=no --with-tree-sitter --without-imagemagick
-   --without-lcms2 && make -j$(nproc)`.
+   --with-lcms2 --with-harfbuzz --without-libotf --without-m17n-flt &&
+   make -j$(nproc)` (add `liblcms2-dev libharfbuzz-dev` to the apt list;
+   this is the docs/oracle-build-contract.md recipe, and the committed
+   Linux C-primitive manifest describes exactly this configuration).
 
    Do NOT configure `--without-x`: the anti-cheat gate
    `gnu_c_manifest_matches_fresh_regeneration` regenerates
