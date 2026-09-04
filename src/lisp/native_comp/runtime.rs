@@ -2371,11 +2371,7 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
     let symbol_state = if word == 0 || word == native_boolean(true) {
         None
     } else {
-        Some(
-            unsafe { &*active.runtime }
-                .heap
-                .bare_symbol_value_state(word)?,
-        )
+        Some(unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?)
     };
     let name = match &symbol_state {
         Some((symbol, _)) => symbol.as_str(),
@@ -2400,9 +2396,11 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
                     return Some(0);
                 }
             };
-            unsafe { &mut *active.runtime }
-                .heap
-                .cache_plain_symbol_value(word, epoch, encoded);
+            unsafe {
+                (&mut *active.runtime)
+                    .heap
+                    .cache_plain_symbol_value(word, epoch, encoded);
+            }
             return Some(encoded);
         }
     }
@@ -2706,9 +2704,7 @@ fn native_get_symbol_name(
         return Ok(SymbolName::from(name));
     }
     if symbol & TAG_MASK == TAG_SYMBOL
-        && let Some((name, _)) = unsafe { &*active.runtime }
-            .heap
-            .bare_symbol_value_state(symbol)
+        && let Some((name, _)) = unsafe { (&*active.runtime).heap.bare_symbol_value_state(symbol) }
     {
         return Ok(name);
     }
@@ -3697,12 +3693,7 @@ struct TouchedConses {
 
 #[repr(align(8))]
 struct NativeHandle {
-    slot: usize,
     value: Value,
-}
-
-struct HandleEntry {
-    native: Box<NativeHandle>,
     tag: usize,
     identity: NativeIdentity,
     plain_symbol_value_cache: Option<(u64, NativeWord)>,
@@ -3732,11 +3723,11 @@ pub(crate) struct NativeHeap {
     /// not recurse into themselves.
     reconciling: IdentitySet,
     interpreter_dirty: Rc<ConsMutationQueue>,
-    handles: Vec<Option<HandleEntry>>,
+    handles: Vec<Option<Box<NativeHandle>>>,
     // Each box retains the address previously exposed as a Lisp_Object.
     // Storing NativeHandle inline would let Vec growth move that address.
     #[allow(clippy::vec_box)]
-    free_handles: Vec<Box<NativeHandle>>,
+    free_handles: Vec<(usize, Box<NativeHandle>)>,
     handle_by_value: HashMap<NativeIdentity, usize, IdentityBuildHasher>,
     handle_by_address: IdentityMap<usize>,
     symbol_with_position_views: HashMap<u64, Box<NativeSymbolWithPosition>>,
@@ -3825,8 +3816,8 @@ impl NativeHeap {
         let mut pending = Vec::with_capacity(runtime_roots.len());
         pending.extend_from_slice(runtime_roots);
         for entry in self.handles.iter().flatten() {
-            if entry.native.value.native_handle_has_external_owner() {
-                pending.push((&*entry.native as *const NativeHandle) as usize + entry.tag);
+            if entry.value.native_handle_has_external_owner() {
+                pending.push((&**entry as *const NativeHandle) as usize + entry.tag);
             }
         }
 
@@ -3889,7 +3880,7 @@ impl NativeHeap {
             .enumerate()
             .filter_map(|(index, entry)| {
                 marked_handles[index]
-                    .then(|| entry.as_ref().map(|entry| entry.native.value.clone()))
+                    .then(|| entry.as_ref().map(|entry| entry.value.clone()))
                     .flatten()
             })
             .collect::<Vec<_>>();
@@ -3976,14 +3967,17 @@ impl NativeHeap {
             })
             .collect::<Vec<_>>();
         for index in dead_handles {
-            let mut entry = self.handles[index]
+            let mut native = self.handles[index]
                 .take()
                 .expect("dead handle index was occupied");
-            let address = (&*entry.native as *const NativeHandle) as usize;
-            self.handle_by_value.remove(&entry.identity);
+            let address = (&*native as *const NativeHandle) as usize;
+            self.handle_by_value.remove(&native.identity);
             self.handle_by_address.remove(&address);
-            entry.native.value = Value::Nil;
-            self.free_handles.push(entry.native);
+            native.value = Value::Nil;
+            native.identity = NativeIdentity::Unbound;
+            native.tag = TAG_SYMBOL;
+            native.plain_symbol_value_cache = None;
+            self.free_handles.push((index, native));
         }
         // Cached words are intentionally not GC roots: the matching Rust
         // global remains authoritative, and its bridge handle can be rebuilt
@@ -4005,35 +3999,79 @@ impl NativeHeap {
         self.encode_inner(value, &mut IdentitySet::default())
     }
 
-    fn bare_symbol_value_state(
+    /// Return the object selected by GNU's `XUNTAG`/typed-pointer access.
+    ///
+    /// # Safety
+    ///
+    /// `word` must name an object kept live by the active generated stack or
+    /// an explicit native root, which is the same precondition GNU places on
+    /// a `Lisp_Object` passed to `XSYMBOL` and the other typed accessors.
+    unsafe fn live_handle(&self, word: NativeWord) -> Option<&NativeHandle> {
+        if word == 0 || word == native_boolean(true) {
+            return None;
+        }
+        let tag = word & TAG_MASK;
+        let address = word.wrapping_sub(tag);
+        let native = unsafe { &*(address as *const NativeHandle) };
+        (native.tag == tag).then_some(native)
+    }
+
+    /// Mutable form of `live_handle` for C-owned object-field updates.
+    ///
+    /// # Safety
+    ///
+    /// `word` must satisfy `live_handle`'s live-object precondition and the
+    /// caller must hold the native heap exclusively.
+    unsafe fn live_handle_mut(&mut self, word: NativeWord) -> Option<&mut NativeHandle> {
+        if word == 0 || word == native_boolean(true) {
+            return None;
+        }
+        let tag = word & TAG_MASK;
+        let address = word.wrapping_sub(tag);
+        let native = unsafe { &mut *(address as *mut NativeHandle) };
+        (native.tag == tag).then_some(native)
+    }
+
+    /// Read the symbol object reached directly by `lisp.h:XSYMBOL`.
+    ///
+    /// # Safety
+    ///
+    /// `word` must satisfy `live_handle`'s live-object precondition.
+    unsafe fn bare_symbol_value_state(
         &self,
         word: NativeWord,
     ) -> Option<(SymbolName, Option<(u64, NativeWord)>)> {
         if let Some(name) = native_type_symbol_name(word) {
             return Some((SymbolName::from(name), None));
         }
-        let address = word.wrapping_sub(TAG_SYMBOL);
-        let index = *self.handle_by_address.get(&address)?;
-        let entry = self.handles.get(index)?.as_ref()?;
-        match &entry.identity {
-            NativeIdentity::Symbol(_) => match &entry.native.value {
-                Value::Symbol(name) => Some((name.clone(), entry.plain_symbol_value_cache)),
+        if word & TAG_MASK != TAG_SYMBOL {
+            return None;
+        }
+        let native = unsafe { self.live_handle(word)? };
+        match &native.identity {
+            NativeIdentity::Symbol(_) => match &native.value {
+                Value::Symbol(name) => Some((name.clone(), native.plain_symbol_value_cache)),
                 _ => None,
             },
             _ => None,
         }
     }
 
-    fn cache_plain_symbol_value(&mut self, word: NativeWord, epoch: u64, value: NativeWord) {
-        let address = word.wrapping_sub(TAG_SYMBOL);
-        let Some(index) = self.handle_by_address.get(&address).copied() else {
+    /// Update the plain-value cache through the same directly addressed
+    /// symbol object selected by `lisp.h:XSYMBOL`.
+    ///
+    /// # Safety
+    ///
+    /// `word` must satisfy `live_handle_mut`'s live-object precondition.
+    unsafe fn cache_plain_symbol_value(&mut self, word: NativeWord, epoch: u64, value: NativeWord) {
+        if word & TAG_MASK != TAG_SYMBOL {
+            return;
+        }
+        let Some(native) = (unsafe { self.live_handle_mut(word) }) else {
             return;
         };
-        let Some(entry) = self.handles.get_mut(index).and_then(Option::as_mut) else {
-            return;
-        };
-        if matches!(entry.identity, NativeIdentity::Symbol(_)) {
-            entry.plain_symbol_value_cache = Some((epoch, value));
+        if matches!(native.identity, NativeIdentity::Symbol(_)) {
+            native.plain_symbol_value_cache = Some((epoch, value));
         }
     }
 
@@ -4282,8 +4320,7 @@ impl NativeHeap {
         let index = if let Some(index) = self.handle_by_value.get(&identity).copied() {
             index
         } else {
-            let (index, native) = if let Some(mut native) = self.free_handles.pop() {
-                let index = native.slot;
+            let (index, mut native) = if let Some((index, mut native)) = self.free_handles.pop() {
                 debug_assert!(self.handles[index].is_none());
                 native.value = value.clone();
                 (index, native)
@@ -4292,25 +4329,24 @@ impl NativeHeap {
                 (
                     index,
                     Box::new(NativeHandle {
-                        slot: index,
                         value: value.clone(),
+                        tag,
+                        identity: identity.clone(),
+                        plain_symbol_value_cache: None,
                     }),
                 )
             };
+            native.tag = tag;
+            native.identity = identity.clone();
+            native.plain_symbol_value_cache = None;
             let address = (&*native as *const NativeHandle) as usize;
             if address & TAG_MASK != 0 {
                 return Err("native object allocation is not tag-aligned".to_string());
             }
-            let entry = HandleEntry {
-                native,
-                tag,
-                identity: identity.clone(),
-                plain_symbol_value_cache: None,
-            };
             if index < self.handles.len() {
-                self.handles[index] = Some(entry);
+                self.handles[index] = Some(native);
             } else {
-                self.handles.push(Some(entry));
+                self.handles.push(Some(native));
             }
             self.handle_by_value.insert(identity, index);
             self.handle_by_address.insert(address, index);
@@ -4322,7 +4358,7 @@ impl NativeHeap {
         if entry.tag != tag {
             return Err("native object identity changed Lisp tag".to_string());
         }
-        Ok((&*entry.native as *const NativeHandle) as usize + tag)
+        Ok((&**entry as *const NativeHandle) as usize + tag)
     }
 
     pub(crate) fn decode(&mut self, word: NativeWord) -> Result<Value, String> {
@@ -4399,27 +4435,29 @@ impl NativeHeap {
 
         let tag = word & TAG_MASK;
         let address = word.wrapping_sub(tag);
-        let index = if live_word {
+        if live_word {
             // GNU's lisp.h:XUNTAG/XPNTR reaches a live object's stable
-            // address directly.  The active stack/root precondition makes
-            // this pointer live; its stable slot then replaces Emaxx's old
-            // reverse-address hash lookup on every generated-code read.
-            unsafe { (*(address as *const NativeHandle)).slot }
-        } else {
-            self.handle_by_address
-                .get(&address)
-                .copied()
-                .ok_or_else(|| format!("unknown native Lisp word 0x{word:x}"))?
-        };
+            // address directly.  The active stack/root precondition keeps
+            // the complete pointed-to Rust object live, so generated-code
+            // reads need neither a reverse map nor a separate slot table.
+            let native = unsafe { self.live_handle(word) }
+                .ok_or_else(|| format!("native Lisp word 0x{word:x} has a mismatched tag"))?;
+            return Ok(native.value.clone());
+        }
+        let index = self
+            .handle_by_address
+            .get(&address)
+            .copied()
+            .ok_or_else(|| format!("unknown native Lisp word 0x{word:x}"))?;
         let entry = self
             .handles
             .get(index)
             .and_then(Option::as_ref)
             .ok_or_else(|| format!("native Lisp word 0x{word:x} names a reclaimed handle"))?;
-        if entry.tag != tag || (&*entry.native as *const NativeHandle) as usize != address {
+        if entry.tag != tag || (&**entry as *const NativeHandle) as usize != address {
             return Err(format!("native Lisp word 0x{word:x} has a mismatched tag"));
         }
-        Ok(entry.native.value.clone())
+        Ok(entry.value.clone())
     }
 
     #[cfg(test)]
@@ -6480,6 +6518,36 @@ mod tests {
         assert_eq!(
             unsafe { heap.decode_live(word) }.expect("live native word decodes directly"),
             value
+        );
+
+        heap.handle_by_address.insert(address, index);
+    }
+
+    #[test]
+    fn live_symbol_access_follows_xsymbol_without_reverse_lookup() {
+        let mut heap = NativeHeap::default();
+        let symbol = SymbolName::from("direct-symbol-cell-access");
+        let value = Value::Symbol(symbol.clone());
+        let word = heap.encode(&value).expect("encode native symbol handle");
+        let address = word.wrapping_sub(TAG_SYMBOL);
+        let index = heap
+            .handle_by_address
+            .remove(&address)
+            .expect("encoded symbol has a diagnostic reverse-map entry");
+
+        assert!(heap.decode(word).is_err());
+        assert_eq!(
+            unsafe { heap.bare_symbol_value_state(word) },
+            Some((symbol.clone(), None)),
+            "XSYMBOL follows the tagged address without the diagnostic map"
+        );
+
+        let cached_word = (42 << FIXNUM_BITS) + TAG_FIXNUM_LOW;
+        unsafe { heap.cache_plain_symbol_value(word, 7, cached_word) };
+        assert_eq!(
+            unsafe { heap.bare_symbol_value_state(word) },
+            Some((symbol, Some((7, cached_word)))),
+            "the addressed symbol object receives the cache update directly"
         );
 
         heap.handle_by_address.insert(address, index);
