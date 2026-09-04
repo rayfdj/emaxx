@@ -196,7 +196,10 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     // GNU bindings.el advertises this host-backed primitive family.
     StartupFeature::new("base64"),
     StartupFeature::new("emacs"),
+    #[cfg(target_os = "macos")]
     StartupFeature::new("kqueue"),
+    #[cfg(target_os = "linux")]
+    StartupFeature::new("inotify"),
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
@@ -1886,6 +1889,30 @@ pub(crate) struct RunningProcess {
     pub(crate) pty_slave_name: Option<String>,
 }
 
+impl Drop for RunningProcess {
+    fn drop(&mut self) {
+        // `Child' closes its pipe handles but deliberately leaves a running
+        // child alive.  Every RunningProcess is owned by one interpreter, so
+        // dropping an uninstalled runtime after a later setup error—or
+        // dropping the interpreter itself—must terminate and reap it.
+        match self.child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+            // The Unix status pump uses waitpid directly so it can observe
+            // stop/continue transitions.  ECHILD here means that pump has
+            // already reaped this PID; never signal a potentially reused PID.
+            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
+            Err(_) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for RunningProcess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunningProcess").finish_non_exhaustive()
@@ -2227,12 +2254,75 @@ pub(crate) struct WindowConfigurationSnapshot {
     frame_height: i64,
 }
 
-#[derive(Clone)]
 struct FileNotifyWatch {
+    descriptor: Value,
     path: Option<String>,
+    flags: Vec<String>,
     callback: Value,
     active: bool,
+    backend: FileNotifyBackend,
     fingerprint: Option<FileNotifyFingerprint>,
+    directory_snapshot: Option<Vec<FileNotifyDirectoryEntry>>,
+    #[cfg(target_os = "macos")]
+    host_handle: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
+    #[cfg(target_os = "linux")]
+    host_watch_descriptor: Option<i32>,
+    #[cfg(target_os = "linux")]
+    host_mask: u32,
+}
+
+/// Image templates may carry inert/remote watches, but sharing a live kernel
+/// watch between two interpreters would let either clone consume the other's
+/// events and close its descriptors.  Match the live-process clone contract:
+/// reject such a template loudly instead of manufacturing independence.
+impl Clone for FileNotifyWatch {
+    fn clone(&self) -> Self {
+        #[cfg(target_os = "macos")]
+        if self.host_handle.is_some() {
+            panic!("image-template clone with a live kqueue watch");
+        }
+        #[cfg(target_os = "linux")]
+        if self.host_watch_descriptor.is_some() {
+            panic!("image-template clone with a live inotify watch");
+        }
+        Self {
+            descriptor: self.descriptor.clone(),
+            path: self.path.clone(),
+            flags: self.flags.clone(),
+            callback: self.callback.clone(),
+            active: self.active,
+            backend: self.backend,
+            fingerprint: self.fingerprint.clone(),
+            directory_snapshot: self.directory_snapshot.clone(),
+            #[cfg(target_os = "macos")]
+            host_handle: None,
+            #[cfg(target_os = "linux")]
+            host_watch_descriptor: None,
+            #[cfg(target_os = "linux")]
+            host_mask: self.host_mask,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileNotifyBackend {
+    /// File-name handlers and the non-kernel compatibility surface use the
+    /// kqueue event shape already consumed by filenotify.el.
+    SyntheticKqueue,
+    #[cfg(target_os = "macos")]
+    Kqueue,
+    #[cfg(target_os = "linux")]
+    Inotify,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+struct FileNotifyHostQueue(std::sync::Arc<std::os::fd::OwnedFd>);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Clone for FileNotifyHostQueue {
+    fn clone(&self) -> Self {
+        panic!("image-template clone with a live file-notification queue");
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2245,11 +2335,25 @@ enum FileNotifyFingerprint {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileNotifyDirectoryEntry {
+    name: String,
+    inode: u64,
+    modified: Option<SystemTime>,
+    status_changed: Option<(i64, i64)>,
+    len: u64,
+}
+
 #[derive(Clone)]
 struct PendingFileNotification {
     path: String,
+    secondary_path: Option<String>,
     action: String,
-    callbacks: Vec<(i64, Value)>,
+    callbacks: Vec<(Value, Value)>,
+    /// inotify already supplies the complete low-level event, including its
+    /// aspect list, basename, and rename cookie.  kqueue notifications are
+    /// assembled from the path/action fields above.
+    raw_event: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -2404,6 +2508,7 @@ fn ordered_name_index(entries: &[(String, Value)]) -> OrderedNameIndex {
 pub(crate) struct MinibufferRuntimeState {
     active_buffer_id: Option<u64>,
     active_window_id: Option<u64>,
+    activation_id: Option<u64>,
     depth: usize,
     prompt: Option<String>,
 }
@@ -3505,11 +3610,16 @@ impl Interpreter {
                 }
             }
             for notification in &mut clone.pending_file_notifications {
-                for (_, callback) in &mut notification.callbacks {
+                if let Some(event) = &notification.raw_event {
+                    notification.raw_event = Some(c.copy(event));
+                }
+                for (descriptor, callback) in &mut notification.callbacks {
+                    *descriptor = c.copy(descriptor);
                     *callback = c.copy(callback);
                 }
             }
             for watch in clone.file_notify_watches.values_mut() {
+                watch.descriptor = c.copy(&watch.descriptor.clone());
                 watch.callback = c.copy(&watch.callback.clone());
             }
             for frame in &mut clone.backtrace_frames {
@@ -3649,6 +3759,22 @@ impl Interpreter {
             .drain(..)
             .filter_map(|(id, weak)| remap_weak(&copier, &weak).map(|weak| (id, weak)))
             .collect();
+        for owners in clone.captured_lexical_frames.values_mut() {
+            *owners = owners
+                .drain(..)
+                .filter_map(|weak| remap_weak(&copier, &weak))
+                .collect();
+        }
+        clone
+            .captured_lexical_frames
+            .retain(|_, owners| !owners.is_empty());
+        clone.registered_captured_envs = clone
+            .registered_captured_envs
+            .drain()
+            .filter_map(|(_, weak)| {
+                remap_weak(&copier, &weak).map(|weak| (weak.as_ptr() as usize, weak))
+            })
+            .collect();
         clone.closure_eval_contexts = clone
             .closure_eval_contexts
             .drain()
@@ -3762,6 +3888,11 @@ pub struct Interpreter {
     pub(crate) keyboard_input: KeyboardInputState,
     pub(crate) command_loop_recursion_depth: usize,
     minibuffer_runtime: MinibufferRuntimeState,
+    /// Monotonic identity for a read-minibuffer activation.  The TTY uses
+    /// it to distinguish a new read from another redraw of the same reused
+    /// ` *Minibuf-N*' buffer, so grow-only height does not leak between
+    /// consecutive or nested reads.
+    minibuffer_activation_count: u64,
     /// Destination installed by the native `redirect-debugging-output'
     /// primitive.  GNU keeps this in C state; it must not leak through a
     /// project-private Lisp variable.
@@ -4121,6 +4252,12 @@ pub struct Interpreter {
     /// interpreter-local because Rust tests run independent interpreters in
     /// parallel inside one host process.
     pub(crate) batch_standard_output_last_char: Option<char>,
+    /// Largest `#N=' label allocated by GNU's native printer.  print.c keeps
+    /// this counter separately from the dynamically bound
+    /// `print-number-table': `print--preprocess' resets it even when its
+    /// temporary table is later unwound, and continuous printer calls reuse
+    /// it while their public table remains non-nil.
+    pub(crate) print_number_index: usize,
     /// Identity of the function activation currently being evaluated, plus
     /// recently captured closure environments keyed by activation.  Sibling
     /// lambdas captured in one activation with an unchanged lexical
@@ -4135,6 +4272,17 @@ pub struct Interpreter {
     /// gives those snapshots GNU's shared-cell mutation semantics without
     /// ever aliasing unrelated frames that merely have the same shape.
     lexical_cell_updates: HashMap<i64, HashMap<String, Value>>,
+    /// Weak owners of captured frames.  This lets assignments distinguish a
+    /// genuinely captured lexical cell from an ordinary marked local without
+    /// retaining every closure ever created.
+    captured_lexical_frames: HashMap<i64, Vec<std::rc::Weak<std::cell::RefCell<Env>>>>,
+    /// Captured environments whose immutable frame-identity inventory has
+    /// already been added to `captured_lexical_frames'.  Pointer identity is
+    /// only a lookup accelerator: the weak witness rejects allocator-address
+    /// reuse, and periodic pruning bounds dead derived entries.
+    registered_captured_envs:
+        HashMap<usize, std::rc::Weak<std::cell::RefCell<Env>>, primitives::FnvBuildHasher>,
+    captured_env_registrations: usize,
     /// Evaluation context belongs to the closure object, not to its captured
     /// variable frames.  Keep weak identities here so metadata can never
     /// affect environment lookup, emptiness, or frame merging.  Absence is
@@ -4169,6 +4317,10 @@ pub struct Interpreter {
     require_nesting: Vec<String>,
     lambda_capture_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
+    /// Cooperative thread bodies currently suspended on Rust call stacks,
+    /// outermost first.  `active_thread_id' identifies only the deepest one;
+    /// event pumping from that body must not re-enter any suspended ancestor.
+    executing_thread_ids: Vec<u64>,
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
     combined_after_change: Option<CombinedAfterChangeState>,
@@ -4185,6 +4337,10 @@ pub struct Interpreter {
     plain_quote_templates: HashMap<usize, ConsMutationStamped<Value>>,
     pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
+    #[cfg(target_os = "macos")]
+    file_notify_kqueue: Option<FileNotifyHostQueue>,
+    #[cfg(target_os = "linux")]
+    file_notify_inotify: Option<FileNotifyHostQueue>,
     pub(crate) file_name_handler_match_cache: HashMap<
         (String, String),
         FileNameHandlerMatchCacheEntry,
@@ -4335,6 +4491,7 @@ impl Interpreter {
     }
 
     pub fn new() -> Self {
+        primitives::install_user_signal_handlers();
         let main_thread_id = 1u64;
         let standard_obarray_id = 2u64;
         let standard_syntax_table_id = 1u64;
@@ -4544,6 +4701,7 @@ impl Interpreter {
             keyboard_input: KeyboardInputState::default(),
             command_loop_recursion_depth: 0,
             minibuffer_runtime: MinibufferRuntimeState::default(),
+            minibuffer_activation_count: 0,
             external_debugging_output_target: None,
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: 0o755,
@@ -4931,10 +5089,14 @@ impl Interpreter {
             profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
             batch_standard_output_last_char: None,
+            print_number_index: 0,
             current_activation_id: 0,
             next_activation_id: 0,
             closure_capture_cache: Vec::new(),
             lexical_cell_updates: HashMap::new(),
+            captured_lexical_frames: HashMap::new(),
+            registered_captured_envs: HashMap::default(),
+            captured_env_registrations: 0,
             closure_eval_contexts: HashMap::new(),
             closure_eval_context_registrations: 0,
             lossage_size: 300,
@@ -4980,6 +5142,7 @@ impl Interpreter {
                 outcome: None,
                 waiting_for_user_input: false,
             }],
+            executing_thread_ids: Vec::new(),
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
             combined_after_change: None,
@@ -4990,6 +5153,10 @@ impl Interpreter {
             plain_quote_templates: HashMap::new(),
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),
+            #[cfg(target_os = "macos")]
+            file_notify_kqueue: None,
+            #[cfg(target_os = "linux")]
+            file_notify_inotify: None,
             file_name_handler_match_cache: HashMap::default(),
             main_thread_id,
             active_thread_id: main_thread_id,
@@ -6405,6 +6572,29 @@ impl Interpreter {
         slots
     }
 
+    /// Project the closure through GNU's readable public slots without
+    /// changing Emaxx's conservative internal activation storage.  Generated
+    /// Lisp can use positional closed-variable access that requires the full
+    /// runtime frame, while print.c exposes only the source-visible prefix.
+    pub(crate) fn interpreted_closure_print_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
+        let mut slots = self.interpreted_closure_slots(lambda);
+        if definitions::body_closure_dont_trim_context(&lambda.body) {
+            return slots;
+        }
+        let mut capture_forms = lambda.body.as_ref().clone();
+        if let Some(interactive) = &lambda.interactive {
+            capture_forms.push(interactive.clone());
+        }
+        let trimmed = definitions::trim_lambda_closure_env(&lambda.env.borrow(), &capture_forms);
+        let trimmed = shared_env(trimmed);
+        let mut environment = self.materialize_public_interpreted_environment(&trimmed);
+        if environment.is_nil() && self.closure_env_is_lexical(&lambda.env) {
+            environment = Value::list([Value::T]);
+        }
+        slots[2] = environment;
+        slots
+    }
+
     /// Build the GNU-visible lexical-environment alist for a source lambda
     /// and attach its binding conses to the typed captured frames.  Each
     /// closure gets its own alist spine, while sibling closures reuse the
@@ -6472,19 +6662,78 @@ impl Interpreter {
         self.active_catch_tags.pop();
     }
 
+    pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {
+        let identity = Rc::as_ptr(closure_env) as usize;
+        if self
+            .registered_captured_envs
+            .get(&identity)
+            .and_then(Weak::upgrade)
+            .is_some_and(|registered| Rc::ptr_eq(&registered, closure_env))
+        {
+            return;
+        }
+
+        self.captured_env_registrations = self.captured_env_registrations.wrapping_add(1);
+        if self.captured_env_registrations.is_multiple_of(4096) {
+            self.registered_captured_envs
+                .retain(|_, owner| owner.strong_count() > 0);
+        }
+        let frame_ids = closure_env
+            .borrow()
+            .iter()
+            .filter_map(Self::frame_identity)
+            .collect::<Vec<_>>();
+        let owner = Rc::downgrade(closure_env);
+        for frame_id in frame_ids {
+            let owners = self.captured_lexical_frames.entry(frame_id).or_default();
+            owners.retain(|weak| weak.strong_count() > 0);
+            if !owners
+                .iter()
+                .any(|weak| weak.as_ptr() == Rc::as_ptr(closure_env))
+            {
+                owners.push(owner.clone());
+            }
+        }
+        self.registered_captured_envs.insert(identity, owner);
+    }
+
     pub(crate) fn record_lexical_cell_update_if_captured(
         &mut self,
         frame_id: i64,
         name: &str,
         value: &Value,
-        captured: bool,
     ) {
         let already_shared = self.lexical_cell_updates.contains_key(&frame_id);
-        if already_shared || captured {
+        let has_live_owner =
+            self.captured_lexical_frames
+                .get_mut(&frame_id)
+                .is_some_and(|owners| {
+                    owners.retain(|weak| weak.strong_count() > 0);
+                    !owners.is_empty()
+                });
+        if !has_live_owner {
+            self.captured_lexical_frames.remove(&frame_id);
+        }
+        if already_shared || has_live_owner {
             self.lexical_cell_updates
                 .entry(frame_id)
                 .or_default()
                 .insert(name.to_string(), value.clone());
+            if let Some(owners) = self.captured_lexical_frames.get(&frame_id) {
+                for owner in owners.iter().filter_map(Weak::upgrade) {
+                    for frame in owner.borrow().iter() {
+                        if Self::frame_identity(frame) == Some(frame_id)
+                            && let Some(environment) = frame.lisp_environment()
+                        {
+                            bindings::set_lisp_environment_binding(
+                                environment,
+                                name,
+                                value.clone(),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -6512,6 +6761,7 @@ impl Interpreter {
     where
         F: FnOnce(&mut Self, &mut Env) -> Result<Value, LispError>,
     {
+        self.register_captured_lexical_frames(closure_env);
         self.refresh_captured_lexical_cells(env);
 
         // The common immediately-invoked-closure case still has every
@@ -6587,7 +6837,55 @@ impl Interpreter {
             }
         }
         self.refresh_captured_lexical_cells(env);
+        // Lexical bindings are shared cells in GNU Emacs.  Two sibling
+        // closures can capture different snapshots of the surrounding
+        // environment (for example, consecutive `let*' initializers) while
+        // still sharing the frames that already existed.  Propagate updates
+        // by the frames' stable identity stamps so a mutation through one
+        // closure is immediately visible through the other.
+        let shared_frame_updates = call_env
+            .iter()
+            .take(captured_snapshot.len())
+            .filter(|frame| Self::frame_identity(frame).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.sync_cached_closure_frames(&shared_frame_updates);
         result
+    }
+
+    fn sync_cached_closure_frames(&mut self, updates: &[EnvFrame]) {
+        if updates.is_empty() {
+            return;
+        }
+        let mut retired_frame_ids = Vec::new();
+        for update in updates {
+            let Some(frame_id) = Self::frame_identity(update) else {
+                continue;
+            };
+            let Some(owners) = self.captured_lexical_frames.get_mut(&frame_id) else {
+                continue;
+            };
+            owners.retain(|weak| weak.strong_count() > 0);
+            if owners.is_empty() {
+                retired_frame_ids.push(frame_id);
+                continue;
+            }
+            for weak in owners.iter() {
+                let Some(shared) = weak.upgrade() else {
+                    continue;
+                };
+                let mut captured = shared.borrow_mut();
+                if let Some(frame) = captured
+                    .iter_mut()
+                    .find(|frame| Self::frame_identity(frame) == Some(frame_id))
+                {
+                    *frame = update.clone();
+                }
+            }
+        }
+        for frame_id in retired_frame_ids {
+            self.captured_lexical_frames.remove(&frame_id);
+        }
     }
 
     // Append echo-area output to the active `ert-with-message-capture'
@@ -6615,9 +6913,6 @@ impl Interpreter {
     // is identical.
     pub(crate) fn capture_closure_env(&mut self, mut captured: Env) -> SharedEnv {
         self.refresh_captured_lexical_cells(&mut captured);
-        for frame in &captured {
-            frame.mark_captured();
-        }
         let activation = self.current_activation_id;
         self.closure_capture_cache
             .retain(|(_, weak)| weak.strong_count() > 0);
@@ -6632,6 +6927,7 @@ impl Interpreter {
             }
         }
         if let Some(existing) = matching {
+            self.register_captured_lexical_frames(&existing);
             return existing;
         }
         let shared = shared_env(captured);
@@ -6640,6 +6936,7 @@ impl Interpreter {
         if self.closure_capture_cache.len() > 128 {
             self.closure_capture_cache.remove(0);
         }
+        self.register_captured_lexical_frames(&shared);
         shared
     }
 

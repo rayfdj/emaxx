@@ -923,6 +923,12 @@ impl NativeRuntime {
             ));
         }
 
+        // GNU has one authoritative `thread_state.handlerlist`.  A generated
+        // caller can pop a handler and immediately enter another native
+        // function without crossing a C-subr wrapper, so reconcile the Rust
+        // registrations before snapshotting the nested call's handler depth.
+        self.sync_handlers(interpreter)?;
+
         // data.c exposes this as a forwarded C bool.  Since the variable is
         // intrinsically special, its value cell (including any buffer-local
         // forwarding) is the authority; walking lexical frames here is both
@@ -3340,7 +3346,7 @@ enum NativeIdentity {
     Vector(usize),
     Builtin(usize),
     Lambda(usize),
-    Buffer(usize),
+    Buffer(u64),
     Marker(u64),
     Overlay(u64),
     CharTable(u64),
@@ -3364,7 +3370,7 @@ impl NativeIdentity {
             Self::Vector(value) => (6, *value),
             Self::Builtin(value) => (7, *value),
             Self::Lambda(value) => (8, *value),
-            Self::Buffer(value) => (9, *value),
+            Self::Buffer(value) => (9, *value as usize),
             Self::Marker(value) => (10, *value as usize),
             Self::Overlay(value) => (11, *value as usize),
             Self::CharTable(value) => (12, *value as usize),
@@ -4603,10 +4609,7 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
             NativeIdentity::Lambda(std::rc::Rc::as_ptr(lambda) as usize),
             TAG_VECTORLIKE,
         ),
-        Value::Buffer(buffer) => (
-            NativeIdentity::Buffer(std::rc::Rc::as_ptr(buffer) as usize),
-            TAG_VECTORLIKE,
-        ),
+        Value::Buffer(buffer) => (NativeIdentity::Buffer(buffer.id), TAG_VECTORLIKE),
         Value::Marker(id) => (NativeIdentity::Marker(*id), TAG_VECTORLIKE),
         Value::Overlay(id) => (NativeIdentity::Overlay(*id), TAG_VECTORLIKE),
         Value::CharTable(id) => (NativeIdentity::CharTable(*id), TAG_VECTORLIKE),
@@ -6581,6 +6584,30 @@ mod tests {
         );
         assert!(heap.handle_by_value.contains_key(&symbol_identity));
         assert!(heap.handle_by_value.contains_key(&builtin_identity));
+    }
+
+    #[test]
+    fn native_buffer_words_preserve_lisp_buffer_identity() {
+        let mut heap = NativeHeap::default();
+        let first_reference = Value::buffer(42, "buffer-before-rename");
+        let same_buffer = Value::buffer(42, "buffer-after-rename");
+        let different_buffer = Value::buffer(43, "buffer-before-rename");
+
+        let first_word = heap
+            .encode(&first_reference)
+            .expect("encode first buffer reference");
+        assert_eq!(
+            heap.encode(&same_buffer)
+                .expect("encode another reference to the same buffer"),
+            first_word,
+            "one GNU Lisp_Buffer object must retain one Lisp_Object word"
+        );
+        assert_ne!(
+            heap.encode(&different_buffer)
+                .expect("encode a different buffer"),
+            first_word,
+            "different GNU Lisp_Buffer objects must retain different words"
+        );
     }
 
     #[test]

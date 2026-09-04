@@ -724,9 +724,19 @@ def action_timing(scenario, index, final, command):
 
 
 def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait):
-    gnu = Session(gnu_argv, gnu_env)
-    emaxx = Session(emaxx_argv, emaxx_env)
+    runtime_directory = tempfile.mkdtemp(prefix=f"ttydiff-runtime-{scenario}-")
+    gnu_env = dict(gnu_env, TMPDIR=runtime_directory)
+    emaxx_env = dict(emaxx_env, TMPDIR=runtime_directory)
+    gnu = None
+    emaxx = None
     try:
+        # Both editors share one disposable temp namespace for path-exact
+        # output, but no namespace survives the scenario.  Killing an editor
+        # bypasses Lisp shutdown hooks; without this boundary, Org's
+        # babel-stable-N directories accumulate until all 1,000 candidate
+        # names exist and the next Org startup loops forever.
+        gnu = Session(gnu_argv, gnu_env)
+        emaxx = Session(emaxx_argv, emaxx_env)
         gnu.wait_boot(boot_wait)
         emaxx.wait_boot(boot_wait)
         # A target basename is rendered in the mode line only after startup
@@ -807,8 +817,11 @@ def compare(scenario, keys, gnu_argv, emaxx_argv, gnu_env, emaxx_env, boot_wait)
             and not report_filesystem_comparison(final_label, gnu_target, emaxx_target)
         )
     finally:
-        gnu.close()
-        emaxx.close()
+        if gnu is not None:
+            gnu.close()
+        if emaxx is not None:
+            emaxx.close()
+        shutil.rmtree(runtime_directory)
 
 
 WIDE_SAMPLE = "left-margin " + "wide" * 40 + " right-end\nsecond line\nthird line\n"
@@ -2120,6 +2133,302 @@ SCENARIOS += [
     ),
 ]
 
+MINIBUFFER_COMPLETION_SCENARIO_NAMES = (
+    "minibuffer-default-history",
+    "completion-require-match-recovery",
+    "completion-metadata-navigation",
+    "completion-preview-capf",
+    "recursive-minibuffer",
+    "keyboard-macro-minibuffer",
+)
+
+SCENARIOS += [
+    # Accept a real default, then recall that submission through a named
+    # history variable.  The closing record proves values and cleanup rather
+    # than accepting two equally inert prompt implementations as parity.
+    (
+        "minibuffer-default-history",
+        "completion fixture\n",
+        [
+            action(
+                "open-defaulted-read",
+                b"\x1b:(progn (setq ttydiff--history nil) "
+                b"(setq ttydiff--first (read-string \"First: \" nil "
+                b"'ttydiff--history \"alpha\")))\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="First:",
+            ),
+            action("accept-default", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "inspect-default-and-history",
+                b"\x1b:(message \"I31 first=%S\" "
+                b"(list ttydiff--first ttydiff--history))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text="I31 first=",
+            ),
+            action(
+                "open-history-read",
+                b"\x1b:(setq ttydiff--second "
+                b"(read-string \"Second: \" nil 'ttydiff--history))\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="Second:",
+            ),
+            action("recall-default", b"\x1bp", require_text="alpha"),
+            action("submit-recalled-default", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-default-history-and-cleanup",
+                b"\x1b:(message \"I31 history=%S\" "
+                b"(list ttydiff--first ttydiff--second ttydiff--history "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text=
+                '"I31 history=(\\"alpha\\" \\"alpha\\" (\\"alpha\\") nil)"',
+            ),
+        ],
+    ),
+    # A require-match read must reject an invalid submission without losing
+    # the live minibuffer, then accept a valid correction and restore state.
+    (
+        "completion-require-match-recovery",
+        "completion fixture\n",
+        [
+            action(
+                "open-required-completion",
+                b"\x1b:(setq ttydiff--fruit "
+                b"(completing-read \"Fruit: \" "
+                b"'(\"apple\" \"apricot\" \"banana\") nil t))\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="Fruit:",
+            ),
+            action("type-invalid-candidate", b"pear"),
+            action(
+                "reject-invalid-candidate",
+                b"\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="Fruit: pear",
+            ),
+            action("replace-with-valid-candidate", b"\x01\x0bapple"),
+            action("accept-valid-candidate", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-required-result-and-cleanup",
+                b"\x1b:(message \"I31 require=%S\" "
+                b"(list ttydiff--fruit (active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text='"I31 require=(\\"apple\\" nil)"',
+            ),
+        ],
+    ),
+    # Exercise programmed metadata, a category-specific completion style,
+    # case folding, annotation rendering, and navigation in *Completions*.
+    (
+        "completion-metadata-navigation",
+        "completion fixture\n",
+        [
+            action(
+                "open-metadata-completion",
+                b"\x1b:(progn "
+                b"(defun ttydiff--annotate (candidate) "
+                b"(concat \" [\" (upcase candidate) \"]\")) "
+                b"(defun ttydiff--table (string predicate action) "
+                b"(if (eq action 'metadata) "
+                b"'(metadata (category . ttydiff-fruit) "
+                b"(annotation-function . ttydiff--annotate)) "
+                b"(complete-with-action action "
+                b"'(\"alpha\" \"alpine\" \"amber\") string predicate))) "
+                b"(setq completion-category-overrides "
+                b"'((ttydiff-fruit (styles basic))) "
+                b"completion-ignore-case t) "
+                b"(setq ttydiff--metadata-choice "
+                b"(completing-read \"Meta fruit: \" "
+                b"#'ttydiff--table nil t)))\r",
+                settle=4.0,
+                quiet=0.8,
+                require_text="Meta fruit:",
+            ),
+            action("type-case-folded-prefix", b"A"),
+            action(
+                "show-annotated-completions",
+                b"\t\t",
+                settle=4.0,
+                quiet=1.0,
+                require_text="[ALPHA]",
+            ),
+            action("enter-completions-window", b"\x1bv"),
+            action("select-next-completion", b"n"),
+            action("choose-completion", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-metadata-choice-and-cleanup",
+                b"\x1b:(message \"I31 metadata=%S\" "
+                b"(list ttydiff--metadata-choice "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text='"I31 metadata=(\\"alpine\\" nil)"',
+            ),
+        ],
+    ),
+    # Built-in completion-preview must render the CAPF candidate on the real
+    # terminal, cycle it, insert it, and remove its overlay afterwards.
+    (
+        "completion-preview-capf",
+        "; completion preview fixture\n",
+        [
+            action(
+                "configure-completion-preview",
+                b"\x1b:(progn "
+                b"(goto-char (point-max)) "
+                b"(defun ttydiff--preview-capf () "
+                b"(list (line-beginning-position) (point) "
+                b"'(\"alphaBeta\" \"alphaGamma\") :exclusive 'no)) "
+                b"(setq-local completion-at-point-functions "
+                b"'(ttydiff--preview-capf) "
+                b"completion-preview-minimum-symbol-length 1) "
+                b"(completion-preview-mode 1) "
+                b"(local-set-key (kbd \"C-n\") "
+                b"#'completion-preview-next-candidate) nil)\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action(
+                "show-first-preview",
+                b"alp",
+                settle=3.0,
+                quiet=0.5,
+                require_text="alphaBeta",
+            ),
+            action(
+                "cycle-preview",
+                b"\x0e",
+                settle=2.0,
+                quiet=0.5,
+                require_text="alphaGamma",
+            ),
+            action("insert-preview", b"\t", settle=2.0, quiet=0.5),
+            action(
+                "verify-preview-result-and-cleanup",
+                b"\x1b:(message \"I31 capf=%S\" "
+                b"(list (subst-char-in-string ?\\n ?| "
+                b"(buffer-substring-no-properties "
+                b"(point-min) (point-max))) "
+                b"(and (boundp 'completion-preview--overlay) "
+                b"(overlayp completion-preview--overlay)) "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text=
+                '"I31 capf=(\\"; completion preview fixture|alphaGamma\\" nil nil)"',
+            ),
+        ],
+        ".el",
+    ),
+    # Enter eval-expression from an active minibuffer and have that command
+    # start another read.  Record depths in setup hooks, then prove both reads
+    # returned and the minibuffer stack fully unwound.
+    (
+        "recursive-minibuffer",
+        "completion fixture\n",
+        [
+            action(
+                "open-outer-minibuffer",
+                b"\x1b:(progn (setq enable-recursive-minibuffers t "
+                b"ttydiff--outer-depth nil ttydiff--inner-depth nil) "
+                b"(setq ttydiff--outer "
+                b"(minibuffer-with-setup-hook "
+                b"(lambda () (setq ttydiff--outer-depth "
+                b"(minibuffer-depth))) (read-string \"Outer: \"))))\r",
+                settle=4.0,
+                quiet=0.8,
+                require_text="Outer:",
+            ),
+            action("type-outer-value", b"outer"),
+            action(
+                "open-inner-minibuffer",
+                b"\x1b:(setq ttydiff--inner "
+                b"(minibuffer-with-setup-hook "
+                b"(lambda () (setq ttydiff--inner-depth "
+                b"(minibuffer-depth))) (read-string \"Inner: \")))\r",
+                settle=4.0,
+                quiet=0.8,
+                require_text="Inner:",
+            ),
+            action("type-inner-value", b"inner"),
+            action(
+                "submit-inner-value",
+                b"\r",
+                settle=4.0,
+                quiet=0.5,
+                require_text="Outer: outer",
+            ),
+            action("submit-outer-value", b"\r", settle=2.0, quiet=0.5),
+            action(
+                "verify-recursive-values-depths-and-cleanup",
+                b"\x1b:(message \"I31 recursive=%S\" "
+                b"(list ttydiff--outer ttydiff--inner "
+                b"ttydiff--outer-depth ttydiff--inner-depth "
+                b"(minibuffer-depth) (active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text=
+                '"I31 recursive=(\\"outer\\" \\"inner\\" 1 2 0 nil)"',
+            ),
+        ],
+    ),
+    # Record and replay an actual keyboard macro whose interactive command
+    # performs a require-match completing read.  This crosses the terminal,
+    # command loop, macro recorder/player, and minibuffer input lifecycle.
+    (
+        "keyboard-macro-minibuffer",
+        "completion fixture\n",
+        [
+            action(
+                "define-macro-completion-command",
+                b"\x1b:(progn "
+                b"(defun ttydiff--macro-choice (value) "
+                b"(interactive (list (completing-read \"Macro fruit: \" "
+                b"'(\"apple\" \"banana\") nil t))) "
+                b"(setq ttydiff--macro-values "
+                b"(cons value ttydiff--macro-values))) "
+                b"(global-set-key (kbd \"C-c c\") "
+                b"#'ttydiff--macro-choice) "
+                b"(setq ttydiff--macro-values nil))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("start-minibuffer-macro", b"\x18("),
+            action(
+                "invoke-recorded-completion",
+                b"\x03c",
+                settle=2.0,
+                quiet=0.5,
+                require_text="Macro fruit:",
+            ),
+            action("record-candidate", b"ba\t\r", settle=2.0, quiet=0.5),
+            action("end-minibuffer-macro", b"\x18)"),
+            action(
+                "clear-recording-result",
+                b"\x1b:(setq ttydiff--macro-values nil)\r",
+            ),
+            action("replay-minibuffer-macro", b"\x18e", settle=3.0, quiet=0.5),
+            action(
+                "verify-replayed-minibuffer-value",
+                b"\x1b:(message \"I31 macro=%S\" "
+                b"(list ttydiff--macro-values "
+                b"(active-minibuffer-window)))\r",
+                settle=2.0,
+                quiet=0.5,
+                require_text='"I31 macro=((\\"banana\\") nil)"',
+            ),
+        ],
+    ),
+]
+
 ADVERSARIAL_COMMAND_SCENARIO_NAMES = (
     "kill-buffer-cancel-save",
     "revert-buffer-decline",
@@ -3394,6 +3703,259 @@ SCENARIOS += [
     ),
 ]
 
+COMPLETION_STACK_SCENARIO_NAMES = (
+    "stack-vertico",
+    "stack-consult-line",
+    "stack-consult-grep",
+    "stack-corfu",
+)
+
+COMPLETION_STACK_PACKAGE_SETUP = (
+    b"(setq user-emacs-directory (file-name-as-directory "
+    b"(getenv \"COMPLETION_STACK_GATE_ROOT\")) package-user-dir "
+    b"(expand-file-name \"packages\" user-emacs-directory)) "
+    b"(require 'package) (package-initialize) "
+    b"(require 'vertico) (require 'consult) (require 'corfu) "
+    b"(require 'popon) (require 'corfu-terminal) "
+    b"(setq vertico-count 6 vertico-cycle t consult-preview-key 'any "
+    b"consult-async-min-input 1 consult-async-input-throttle 0 "
+    b"consult-async-input-debounce 0 consult-async-refresh-delay 0 "
+    b"corfu-auto nil corfu-cycle t corfu-preselect 'first "
+    b"corfu-preview-current 'insert) "
+    b"(vertico-mode 1) (corfu-terminal-mode 1) "
+)
+
+COMPLETION_STACK_SETUP = action(
+    "load-installed-completion-stack",
+    b"\x1b:(progn " + COMPLETION_STACK_PACKAGE_SETUP + b"nil)\r",
+    settle=12.0,
+    quiet=2.0,
+)
+
+COMPLETION_STACK_OPTIONS = {"completion_stack_package_root": True}
+
+CONSULT_LINE_SAMPLE = """target-first live preview
+ordinary line 02
+ordinary line 03
+ordinary line 04
+ordinary line 05
+ordinary line 06
+ordinary line 07
+ordinary line 08
+ordinary line 09
+ordinary line 10
+ordinary line 11
+ordinary line 12
+ordinary line 13
+ordinary line 14
+ordinary line 15
+ordinary line 16
+ordinary line 17
+ordinary line 18
+ordinary line 19
+ordinary line 20
+target-second live preview
+ordinary line 22
+ordinary line 23
+ordinary line 24
+ordinary line 25
+ordinary line 26
+ordinary line 27
+ordinary line 28
+ordinary line 29
+ordinary line 30
+"""
+
+SCENARIOS += [
+    (
+        "stack-vertico",
+        "completion stack fixture\n",
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "open-vertico-completing-read",
+                b"\x1b:(setq ttydiff--choice "
+                b"(completing-read \"Fruit: \" "
+                b"'(\"apple\" \"banana\" \"cherry\" \"date\" "
+                b"\"elderberry\") nil t))\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="Fruit:",
+            ),
+            action("vertico-next-candidate", b"\x0e", settle=2.0, quiet=0.5),
+            action(
+                "vertico-filter-candidates",
+                b"ch",
+                settle=2.0,
+                quiet=0.5,
+                require_text="cherry",
+            ),
+            action(
+                "vertico-accept-candidate",
+                b"\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="cherry",
+            ),
+            action(
+                "verify-vertico-result-and-cleanup",
+                b"\x1b:(list ttydiff--choice vertico-mode "
+                b"(active-minibuffer-window))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        COMPLETION_STACK_OPTIONS,
+    ),
+    (
+        "stack-consult-line",
+        CONSULT_LINE_SAMPLE,
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "open-consult-line",
+                b"\x1bxconsult-line\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="Go to line:",
+            ),
+            action(
+                "filter-consult-lines",
+                b"target-",
+                settle=3.0,
+                quiet=0.8,
+                require_text="target-second",
+            ),
+            action(
+                "preview-next-consult-line",
+                b"\x0e",
+                settle=3.0,
+                quiet=0.8,
+                require_text="target-second live preview",
+            ),
+            action(
+                "accept-consult-line",
+                b"\r",
+                settle=3.0,
+                quiet=0.5,
+                require_text="target-second live preview",
+            ),
+            action(
+                "verify-consult-line-result",
+                b"\x1b:(list (line-number-at-pos) "
+                b"(thing-at-point 'line t) (active-minibuffer-window))\r",
+                settle=2.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        COMPLETION_STACK_OPTIONS,
+    ),
+    (
+        "stack-consult-grep",
+        "deterministic grep fixture anchor\n",
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "open-consult-grep",
+                b"\x1bxconsult-grep\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="Grep (",
+            ),
+            action(
+                "run-asynchronous-grep",
+                b"needle",
+                settle=10.0,
+                quiet=2.0,
+                require_text="needle-two",
+            ),
+            action(
+                "preview-next-grep-result",
+                b"\x0e",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "accept-grep-result",
+                b"\r",
+                settle=4.0,
+                quiet=1.0,
+            ),
+            action(
+                "verify-grep-result",
+                b"\x1b:(list (file-name-nondirectory buffer-file-name) "
+                b"(line-number-at-pos) (thing-at-point 'line t) "
+                b"(active-minibuffer-window))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        {
+            "separate_targets": True,
+            "target_parent": "grep",
+            "extra_files": {
+                "grep/alpha.txt": "plain line\nneedle-one alpha\ntrailer\n",
+                "grep/beta.txt": "header\nneedle-two beta\nneedle-three beta\n",
+            },
+            "completion_stack_package_root": True,
+        },
+    ),
+    (
+        "stack-corfu",
+        "",
+        [
+            COMPLETION_STACK_SETUP,
+            action(
+                "configure-corfu-capf",
+                b"\x1b:(progn "
+                b"(defun ttydiff--completion-capf () "
+                b"(list (save-excursion (skip-chars-backward \"a-z\") (point)) "
+                b"(point) '(\"alpha\" \"alpine\" \"amber\" \"azure\") "
+                b":exclusive 'no)) "
+                b"(setq-local completion-at-point-functions "
+                b"'(ttydiff--completion-capf)) (corfu-mode 1) nil)\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+            action("insert-completion-prefix", b"a", settle=2.0, quiet=0.5),
+            action(
+                "open-corfu-terminal-popup",
+                b"\x1bxcompletion-at-point\r",
+                settle=5.0,
+                quiet=1.0,
+                require_text="alpha",
+            ),
+            action(
+                "preview-next-corfu-candidate",
+                b"\x0e",
+                settle=3.0,
+                quiet=0.8,
+                require_text="amber",
+            ),
+            action(
+                "insert-corfu-candidate",
+                b"\r",
+                settle=4.0,
+                quiet=1.0,
+                require_text="amber",
+            ),
+            action(
+                "verify-corfu-result-and-cleanup",
+                b"\x1b:(list (buffer-string) corfu-mode corfu-terminal-mode "
+                b"(null corfu-terminal--popon))\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
+        ],
+        ".txt",
+        COMPLETION_STACK_OPTIONS,
+    ),
+]
+
+
 MAGIT_SCENARIO_NAMES = (
     "magit-status-sections-stage",
     "magit-diff-log-transient",
@@ -4197,19 +4759,17 @@ SCENARIOS += [
                 quiet=0.5,
             ),
             action(
-                "accept-supersession",
-                b"y",
-                checkpoint=False,
-                settle=2.0,
-                quiet=0.5,
-            ),
-            action(
                 "verify-accepted-supersession",
                 b'\x1b:(list (buffer-modified-p) '
                 b'(verify-visited-file-modtime))\r',
                 filesystem=True,
             ),
-            action("kill-saved-buffer", b"\x18k\r", checkpoint=False),
+            action(
+                "kill-saved-buffer",
+                b"\x18k\r",
+                settle=3.0,
+                quiet=0.5,
+            ),
             action(
                 "revisit-superseded-bytes",
                 b"\x18\x06\x01\x0bttydiff-supersession-accept-revisit.dat\r",
@@ -4362,7 +4922,10 @@ def select_scenarios(names):
     """
     if not names:
         package_scenarios = set(
-            MAGIT_SCENARIO_NAMES + LSP_MODE_SCENARIO_NAMES + FLYCHECK_SCENARIO_NAMES
+            COMPLETION_STACK_SCENARIO_NAMES
+            + MAGIT_SCENARIO_NAMES
+            + LSP_MODE_SCENARIO_NAMES
+            + FLYCHECK_SCENARIO_NAMES
         )
         return [entry for entry in SCENARIOS if entry[0] not in package_scenarios]
     by_name = {entry[0]: entry for entry in SCENARIOS}
@@ -4648,8 +5211,10 @@ def main():
         sys.exit(2)
 
     failures = 0
-    for entry in scenarios:
+    scenario_count = len(scenarios)
+    for scenario_number, entry in enumerate(scenarios, start=1):
         name, contents, keys = entry[0], entry[1], entry[2]
+        print(f"RUN [{scenario_number}/{scenario_count}] {name}", flush=True)
         # A scenario may carry a file suffix; `.el' engages lisp-mode and
         # font-lock through the ordinary auto-mode-alist path.
         suffix = entry[3] if len(entry) > 3 else ".dat"
@@ -4660,6 +5225,27 @@ def main():
         try:
             gnu_env = {}
             emaxx_env = {"EMACSLOADPATH": load_path}
+            if options.get("completion_stack_package_root"):
+                root_names = (
+                    "EMAXX_TTYDIFF_COMPLETION_GNU_ROOT",
+                    "EMAXX_TTYDIFF_COMPLETION_EMAXX_ROOT",
+                )
+                roots = tuple(os.environ.get(variable) for variable in root_names)
+                if not all(roots):
+                    print(
+                        "ERROR: completion-stack scenarios require %s"
+                        % " and ".join(root_names),
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if not all((Path(root) / "packages").is_dir() for root in roots):
+                    print(
+                        "ERROR: completion-stack package roots have no packages directory",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                gnu_env["COMPLETION_STACK_GATE_ROOT"] = os.path.abspath(roots[0])
+                emaxx_env["COMPLETION_STACK_GATE_ROOT"] = os.path.abspath(roots[1])
             if options.get("magit_package_root"):
                 root_names = (
                     "EMAXX_TTYDIFF_MAGIT_GNU_ROOT",

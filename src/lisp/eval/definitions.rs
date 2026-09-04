@@ -1,5 +1,21 @@
 use super::*;
 
+pub(super) fn body_closure_dont_trim_context(body: &[Value]) -> bool {
+    let mut start = 0usize;
+    if body.len() > 1
+        && matches!(
+            body.first(),
+            Some(Value::String(_) | Value::StringObject(_))
+        )
+    {
+        start = 1;
+    }
+    matches!(
+        body.get(start),
+        Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
+    ) && body.len().saturating_sub(start) > 1
+}
+
 type NormalizedClosureBody = (Option<Value>, Option<Value>, Vec<Value>);
 
 impl Interpreter {
@@ -314,4 +330,92 @@ impl Interpreter {
             public_environment,
         ))
     }
+}
+
+pub(super) fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
+    let mut referenced = HashSet::new();
+    for form in body {
+        collect_referenced_symbols(form, &mut referenced);
+    }
+
+    env.iter()
+        .filter_map(|frame| {
+            // Events at each position are locally-special declarations first,
+            // then the real binding at that position.  Preserve that order so
+            // trimming retains exactly the prefix GNU's environment alist did.
+            let mut cutoff = None;
+            for position in 0..=frame.len() {
+                for (declaration_index, (_, name)) in frame
+                    .local_special_declarations()
+                    .iter()
+                    .filter(|(declared_at, _)| *declared_at == position)
+                    .enumerate()
+                {
+                    if referenced.contains(name.as_str()) {
+                        cutoff = Some((position, Some(declaration_index)));
+                    }
+                }
+                if position < frame.len() && referenced.contains(frame[position].0.as_str()) {
+                    cutoff = Some((position, None));
+                }
+            }
+            let (cutoff_position, cutoff_declaration) = cutoff?;
+            let binding_count = cutoff_position + usize::from(cutoff_declaration.is_none());
+            let mut declarations_seen_at_cutoff = 0;
+            let local_special_declarations = frame
+                .local_special_declarations()
+                .iter()
+                .filter(|(position, _)| {
+                    if *position < cutoff_position {
+                        true
+                    } else if *position > cutoff_position {
+                        false
+                    } else if let Some(last_declaration) = cutoff_declaration {
+                        let keep = declarations_seen_at_cutoff <= last_declaration;
+                        declarations_seen_at_cutoff += 1;
+                        keep
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect();
+            Some(EnvFrame::from_parts(
+                frame[..binding_count].to_vec(),
+                frame.identity(),
+                frame.has_function_bindings(),
+                local_special_declarations,
+            ))
+        })
+        .collect()
+}
+
+fn collect_referenced_symbols(value: &Value, referenced: &mut HashSet<String>) {
+    match value {
+        Value::Symbol(symbol) => {
+            referenced.insert(symbol.to_string());
+        }
+        Value::Cons(_) => {
+            let Ok(items) = value.to_vec() else {
+                collect_dotted_list_symbols(value, referenced);
+                return;
+            };
+            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "quote") {
+                return;
+            }
+            for item in items {
+                collect_referenced_symbols(&item, referenced);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_dotted_list_symbols(value: &Value, referenced: &mut HashSet<String>) {
+    let Some((car, cdr)) = value.cons_values() else {
+        collect_referenced_symbols(value, referenced);
+        return;
+    };
+    collect_referenced_symbols(&car, referenced);
+    collect_referenced_symbols(&cdr, referenced);
 }

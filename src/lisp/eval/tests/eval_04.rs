@@ -1504,6 +1504,10 @@ fn auto_revert_mode_reloads_changed_file() {
                      (write-region "another text" nil "{path_text}" nil 'no-message)
                      (set-file-times "{path_text}" (time-subtract nil 1))
                      (ert-with-message-capture auto-revert-test-messages
+                       ;; autorevert-tests.el's auto-revert--wait-for-revert
+                       ;; waits with read-event when notifications are in
+                       ;; use: the kernel queue is keyboard-class, and a
+                       ;; sleep-for loop leaves the oracle at "any text".
                        (let ((started (current-time)))
                          (while
                              (and
@@ -1512,7 +1516,7 @@ fn auto_revert_mode_reloads_changed_file() {
                                (string-match
                                 "Reverting buffer"
                                 auto-revert-test-messages)))
-                           (sleep-for 0.05))))
+                           (read-event nil nil 0.05))))
                      (prog1 (buffer-string)
                        (set-buffer-modified-p nil)
                        (kill-buffer buf)))))"#
@@ -1698,10 +1702,11 @@ fn file_notifications_drive_global_auto_revert_without_polling() {
                          (global-auto-revert-mode 1)
                          (let ((desc auto-revert-notify-watch-descriptor))
                            (write-region "changed" nil "{path_text}" nil 'no-message)
-                           ;; Notifications are delivered when the command
-                           ;; loop goes idle, as in GNU Emacs.
-                           (sleep-for 0)
-                           (list (eq file-notify--library 'kqueue)
+                           ;; Kernel notifications reach Lisp through a
+                           ;; keyboard read (read_char), never through a
+                           ;; READ_KBD 0 wait such as sleep-for.
+                           (read-event nil nil 0.1)
+                           (list (and (memq file-notify--library '(kqueue inotify)) t)
                                  (file-notify-valid-p desc)
                                  (equal desc
                                         (buffer-local-value
@@ -1757,7 +1762,7 @@ fn file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths() {
                           (push 2 events)))))
                (file-notify-rm-watch first)
                (delete-file {file})
-               (sleep-for 0)
+               (read-event nil nil 0.1)
                (setq directory-watch
                      (file-notify-add-watch
                       {directory} '(change)
@@ -1765,7 +1770,7 @@ fn file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths() {
                         (when (eq (cadr event) 'deleted)
                           (push 'directory events)))))
                (delete-directory {directory})
-               (sleep-for 0)
+               (read-event nil nil 0.1)
                (list (reverse events)
                      (file-notify-valid-p first)
                      (file-notify-valid-p second)
@@ -1799,7 +1804,8 @@ fn file_notifications_do_not_replay_events_to_later_watches() {
              (require 'filenotify)
              (let (events first second)
                ;; Queue an event before either watch exists.  It must not be
-               ;; delivered retroactively when the command loop next idles.
+               ;; delivered retroactively when the next keyboard read drains
+               ;; the kernel queue.
                (write-region "before" nil {path_literal} nil 'no-message)
                (setq first
                      (file-notify-add-watch
@@ -1809,10 +1815,10 @@ fn file_notifications_do_not_replay_events_to_later_watches() {
                      (file-notify-add-watch
                       {path_literal} '(change)
                       (lambda (_event) (push 'second events))))
-               (sleep-for 0)
+               (read-event nil nil 0.1)
                (let ((before events))
                  (write-region "after" nil {path_literal} nil 'no-message)
-                 (sleep-for 0)
+                 (read-event nil nil 0.1)
                  (prog1
                      (list before
                            (length events)
@@ -2036,6 +2042,34 @@ fn buffer_size_ignores_narrowing_like_emacs() {
                      (list (buffer-size) (point-min) (point-max)))"#
         ),
         Value::list([Value::Integer(6), Value::Integer(2), Value::Integer(4)])
+    );
+}
+
+#[test]
+fn buffer_size_honors_optional_buffer_like_emacs() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(let ((other (get-buffer-create " *buffer-size-other*")))
+                  (unwind-protect
+                      (progn
+                        (with-current-buffer other
+                          (erase-buffer)
+                          (insert "abcd")
+                          (narrow-to-region 2 3))
+                        (with-temp-buffer
+                          (insert "xy")
+                          (list (buffer-size)
+                                (buffer-size nil)
+                                (buffer-size other)
+                                (buffer-size " *buffer-size-other*"))))
+                    (kill-buffer other)))"#
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(4),
+            Value::Integer(4),
+        ])
     );
 }
 
@@ -2989,12 +3023,20 @@ fn buffer_character_primitives_project_raw_bytes_like_gnu() {
 }
 
 #[test]
-#[ignore = "Emaxx substitutes SPACE for an unencodable character where GNU substitutes ?; probed: GNU (115 63 108 32 63 32 63 63 63 63)"]
 fn encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars() {
     assert_eq!(
         eval_str_with_upstream_batch(
-            r#"(list (string-to-list (encode-coding-string "sæl ö всем" 'iso-8859-1))
-                     (string-to-list (encode-coding-string "sæl ö всем" 'ascii)))"#
+            r#"(progn
+                  (define-coding-system 'zz-default-char "audit contract"
+                    :coding-type 'charset :mnemonic ?Z
+                    :charset-list '(ascii) :default-char ?!)
+                  (list
+                   (string-to-list
+                    (encode-coding-string "sæl ö всем" 'iso-8859-1))
+                   (string-to-list
+                    (encode-coding-string "sæl ö всем" 'ascii))
+                   (string-to-list
+                    (encode-coding-string (string 233) 'zz-default-char))))"#
         ),
         Value::list([
             Value::list([
@@ -3021,6 +3063,7 @@ fn encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars() {
                 Value::Integer(63),
                 Value::Integer(63),
             ]),
+            Value::list([Value::Integer(33)]),
         ])
     );
 }
@@ -3042,7 +3085,6 @@ fn url_insert_entities_in_string_escapes_html_markup_chars() {
 }
 
 #[test]
-#[ignore = "EUC-JP encoding is unimplemented (GNU encodes \u{3042} as (164 162)); the codec that stood in for it recognised only that one character"]
 fn decode_coding_region_rewrites_dos_eol_in_place() {
     assert_eq!(
         eval_str_with_upstream_batch(

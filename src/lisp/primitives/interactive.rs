@@ -1,5 +1,102 @@
 use super::*;
 
+#[cfg(unix)]
+use std::sync::atomic::{AtomicUsize, Ordering as UserSignalOrdering};
+
+#[cfg(unix)]
+static PENDING_SIGUSR1: AtomicUsize = AtomicUsize::new(0);
+#[cfg(unix)]
+static PENDING_SIGUSR2: AtomicUsize = AtomicUsize::new(0);
+
+/// sysdep.c registers SIGUSR1/SIGUSR2 as user-input signals.  The handler may
+/// only touch lock-free state; Lisp dispatch happens later from read_char's
+/// ordinary event pump.
+pub(crate) fn install_user_signal_handlers() {
+    #[cfg(unix)]
+    {
+        static INSTALLED: OnceLock<Result<(), String>> = OnceLock::new();
+        let result = INSTALLED.get_or_init(|| {
+            // SAFETY: both callbacks perform only an atomic increment, which
+            // is async-signal-safe, and signal-hook owns handler chaining.
+            unsafe {
+                signal_hook::low_level::register(libc::SIGUSR1, || {
+                    PENDING_SIGUSR1.fetch_add(1, UserSignalOrdering::Relaxed);
+                })
+                .map_err(|error| error.to_string())?;
+                signal_hook::low_level::register(libc::SIGUSR2, || {
+                    PENDING_SIGUSR2.fetch_add(1, UserSignalOrdering::Relaxed);
+                })
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        });
+        result
+            .as_ref()
+            .unwrap_or_else(|error| panic!("install SIGUSR1/SIGUSR2 handlers: {error}"));
+    }
+}
+
+#[cfg(unix)]
+fn take_pending_user_signal() -> Option<&'static str> {
+    // GNU prepends each add_user_signal registration.  sysdep.c registers
+    // SIGUSR1 and then SIGUSR2, so simultaneous pending events drain in this
+    // order, one occurrence at a time.
+    for (pending, name) in [(&PENDING_SIGUSR2, "sigusr2"), (&PENDING_SIGUSR1, "sigusr1")] {
+        if pending
+            .fetch_update(
+                UserSignalOrdering::Relaxed,
+                UserSignalOrdering::Relaxed,
+                |count| count.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn take_pending_user_signal() -> Option<&'static str> {
+    None
+}
+
+/// Convert pending host user signals into GNU keyboard events.  A binding in
+/// `special-event-map' executes through `command-execute'; an unbound event is
+/// appended to `unread-command-events' for the active input reader to return.
+pub(crate) fn run_pending_user_signal_events(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut handled = false;
+    while let Some(name) = take_pending_user_signal() {
+        handled = true;
+        let event = Value::Symbol(name.into());
+        let keymap = interp
+            .lookup_var("special-event-map", env)
+            .unwrap_or(Value::Nil);
+        let binding = keymap_lookup_binding_exact_parts(interp, &keymap, &[name.into()])?;
+        interp.set_variable("last-input-event", event.clone(), env);
+        if binding.is_nil() {
+            let mut unread = unread_command_events(interp, env)?;
+            unread.push(event);
+            interp.set_variable("unread-command-events", Value::list(unread), env);
+            // Keep later signals behind this unread event, matching the main
+            // keyboard queue's ordering.
+            break;
+        }
+
+        let keys = Value::list([Value::symbol("vector-literal"), event]);
+        interp.call_function_value(
+            Value::Symbol("command-execute".into()),
+            Some("command-execute"),
+            &[binding, Value::Nil, keys, Value::T],
+            env,
+        )?;
+    }
+    Ok(handled)
+}
+
 pub(crate) fn set_command_key_state(
     interp: &mut Interpreter,
     keys: Vec<Value>,
@@ -924,6 +1021,36 @@ pub(crate) fn execute_command_binding(
     keys: &[Value],
     last_event: Value,
 ) -> Result<(), LispError> {
+    execute_command_binding_inner(interp, env, binding, keys, last_event, true)
+}
+
+/// Execute a command whose input events were already recorded by a recursive
+/// reader.  `read_char' records those events as they arrive; adding the same
+/// resolved key sequence again would duplicate minibuffer input in a keyboard
+/// macro definition.
+pub(crate) fn execute_recorded_input_command_binding(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+) -> Result<(), LispError> {
+    execute_command_binding_inner(interp, env, binding, keys, last_event, false)
+}
+
+fn execute_command_binding_inner(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+    record_keys: bool,
+) -> Result<(), LispError> {
+    // keyboard.c refreshes point_before_last_command_or_undo at every
+    // command boundary, independently of whether simple.el decides that a
+    // new undo-list boundary is needed.  Without this, a motion between two
+    // edits leaves record_point using the earlier edit's position.
+    interp.buffer.note_undo_command_point();
     // keyboard.c:1537: before this command runs, boundaries for the
     // LAST command's changes are ensured through simple.el's own
     // `undo-auto--add-boundary', whose amalgamation policy (fusing runs
@@ -969,9 +1096,10 @@ pub(crate) fn execute_command_binding(
     // macro is being defined.  The command's end keys are deliberately
     // provisional: `end-kbd-macro' truncates back to the last command
     // boundary, while an ordinary completed command commits them below.
-    if interp
-        .lookup_var("defining-kbd-macro", env)
-        .is_some_and(|value| value.is_truthy())
+    if record_keys
+        && interp
+            .lookup_var("defining-kbd-macro", env)
+            .is_some_and(|value| value.is_truthy())
     {
         interp.kbd_macro_definition.extend_from_slice(keys);
     }
@@ -1018,36 +1146,42 @@ pub(crate) fn execute_command_binding(
         )
         .map(|_| ())
     };
-    let buffer_id = interp.current_buffer_id();
-    crate::lisp::primitives::safe_run_named_hooks(
-        interp,
-        "post-command-hook",
-        env,
-        Some(buffer_id),
-    )
-    .unwrap_or(());
-    // After post-command-hook GNU deactivates the mark when the command
-    // asked for it (keyboard.c calls the real `deactivate-mark' so its
-    // hook runs).  Buffer-modifying primitives are insdel.c's trigger
-    // for the same flag; until every native arm publishes it, a changed
-    // modification tick stands in for that side of the protocol.
-    let deactivate = interp
-        .lookup_var("deactivate-mark", env)
-        .is_some_and(|value| value.is_truthy())
-        || (interp.current_buffer_id() == modified_before.0
-            && interp.buffer.chars_modified_tick() != modified_before.1);
-    let mark_active = interp
-        .lookup_var("mark-active", env)
-        .is_some_and(|value| value.is_truthy());
-    if deactivate && mark_active {
-        // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
-        // an ordinary Lisp call (call0), never through native dispatch.
-        let _ = interp.call_function_value(
-            Value::Symbol("deactivate-mark".into()),
-            Some("deactivate-mark"),
-            &[],
+    // A command that leaves through `throw' or another nonlocal exit never
+    // reaches keyboard.c's command-completion boundary.  In particular,
+    // exit-minibuffer must not run the minibuffer's post-command hooks a
+    // second time after its initial pre-input boundary.
+    if result.is_ok() {
+        let buffer_id = interp.current_buffer_id();
+        crate::lisp::primitives::safe_run_named_hooks(
+            interp,
+            "post-command-hook",
             env,
-        );
+            Some(buffer_id),
+        )
+        .unwrap_or(());
+        // After post-command-hook GNU deactivates the mark when the command
+        // asked for it (keyboard.c calls the real `deactivate-mark' so its
+        // hook runs).  Buffer-modifying primitives are insdel.c's trigger
+        // for the same flag; until every native arm publishes it, a changed
+        // modification tick stands in for that side of the protocol.
+        let deactivate = interp
+            .lookup_var("deactivate-mark", env)
+            .is_some_and(|value| value.is_truthy())
+            || (interp.current_buffer_id() == modified_before.0
+                && interp.buffer.chars_modified_tick() != modified_before.1);
+        let mark_active = interp
+            .lookup_var("mark-active", env)
+            .is_some_and(|value| value.is_truthy());
+        if deactivate && mark_active {
+            // `deactivate-mark' is GNU simple.el's; keyboard.c reaches it as
+            // an ordinary Lisp call (call0), never through native dispatch.
+            let _ = interp.call_function_value(
+                Value::Symbol("deactivate-mark".into()),
+                Some("deactivate-mark"),
+                &[],
+                env,
+            );
+        }
     }
     // GNU takes last-command from this-command AFTER the command ran: a
     // prefix command (universal-argument) restores the previous value
@@ -1171,9 +1305,13 @@ pub(crate) fn tty_current_idle_duration() -> Option<std::time::Duration> {
         .map(|start| start.elapsed())
 }
 
-pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_seconds: f64) -> bool {
+pub(crate) fn run_due_timers(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    idle_seconds: f64,
+) -> Result<bool, LispError> {
     if interp.lookup_function("timer-event-handler", env).is_err() {
-        return false;
+        return Ok(false);
     }
     // keyboard.c's decode_timer reads the timer vector and compares its
     // exact timestamp against the C clock.  Going back through the Lisp
@@ -1224,16 +1362,19 @@ pub(crate) fn run_due_timers(interp: &mut Interpreter, env: &mut Env, idle_secon
             };
             if due {
                 ran = true;
-                let _ = interp.call_function_value(
+                interp.begin_timer_callback();
+                let outcome = interp.call_function_value(
                     Value::Symbol("timer-event-handler".into()),
-                    None,
+                    Some("timer-event-handler"),
                     std::slice::from_ref(&timer),
                     env,
                 );
+                interp.end_timer_callback();
+                outcome?;
             }
         }
     }
-    ran
+    Ok(ran)
 }
 
 /// The echo-area text for a command's error, GNU's
@@ -1309,8 +1450,20 @@ pub(crate) fn pop_unread_command_event_value(
         .unwrap_or(Value::Nil);
     let mut events = unread.to_vec()?;
     if events.is_empty() {
+        run_pending_user_signal_events(interp, env)?;
+        events = unread_command_events(interp, env)?;
+        if !events.is_empty() {
+            let event = events.remove(0);
+            interp.set_variable("unread-command-events", Value::list(events), env);
+            record_external_input_event(interp, &event, env);
+            return Ok(event);
+        }
         // GNU's input readers consume the executing keyboard macro's
         // remaining events (viper's `F'/`t' read their target char that way).
+        // Lisp hooks may have rewound the public index after a speculative
+        // read (kmacro's quoted-insert step editor does exactly this), so the
+        // typed cursor must observe that assignment before supplying input.
+        crate::lisp::primitives::dispatch::sync_kbd_macro_execution(interp, env)?;
         if let Some(state) = interp.kbd_macro_executions.last_mut()
             && let Some(event) = state.events.get(state.index).cloned()
         {
@@ -1344,12 +1497,31 @@ pub(crate) fn pop_unread_command_event_value(
                     let idle = idle_start
                         .get_or_insert_with(std::time::Instant::now)
                         .elapsed();
-                    if run_due_timers(interp, env, idle.as_secs_f64()) {
+                    let mut process_progress =
+                        crate::lisp::primitives::processes::pump_external_process_output(
+                            interp, env,
+                        )?;
+                    process_progress |=
+                        crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
+                    if process_progress
+                        || interp.service_async_runtime_events(
+                            env,
+                            true,
+                            Some(idle.as_secs_f64()),
+                        )?
+                    {
                         // A blocking Lisp reader owns the command thread, so
-                        // the outer terminal loop cannot observe timer work.
-                        // Redisplay here, as read_char does after timer_check;
-                        // query-replace's lazy-highlight overlays rely on it.
+                        // the outer terminal loop cannot observe asynchronous
+                        // work.  Redisplay here, as read_char does after
+                        // wait_reading_process_output.
                         run_tty_frame_redraw(interp, env);
+                    }
+                    let mut events = unread_command_events(interp, env)?;
+                    if !events.is_empty() {
+                        let event = events.remove(0);
+                        interp.set_variable("unread-command-events", Value::list(events), env);
+                        record_external_input_event(interp, &event, env);
+                        return Ok(event);
                     }
                 }
             }
@@ -2078,9 +2250,18 @@ pub(crate) fn read_tty_event_with_timeout(
         // is the cancel-on-input wait used by jsonrpc/Eglot completion: a
         // subprocess reply and the zero-delay continuation its filter
         // schedules must run even when no key arrives.
-        crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
-        crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
-        interp.drive_threads(env, true)?;
+        let mut process_progress =
+            crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
+        process_progress |=
+            crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
+        let async_progress = interp.service_async_runtime_events(
+            env,
+            true,
+            Some(started.elapsed().as_secs_f64()),
+        )?;
+        if process_progress || async_progress {
+            run_tty_frame_redraw(interp, env);
+        }
         let cursor_in_echo_area = interp
             .lookup_var("cursor-in-echo-area", env)
             .is_some_and(|value| value.is_truthy());
@@ -2097,7 +2278,6 @@ pub(crate) fn read_tty_event_with_timeout(
                 return Ok(Some(event));
             }
             Some(None) => {
-                run_due_timers(interp, env, started.elapsed().as_secs_f64());
                 if std::time::Instant::now() >= deadline {
                     return Ok(None);
                 }

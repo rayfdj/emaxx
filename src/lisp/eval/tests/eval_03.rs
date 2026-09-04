@@ -167,7 +167,7 @@ fn native_prin1_respects_dynamic_charset_text_property_modes() {
 }
 
 #[test]
-fn cl_prin1_does_not_claim_unsupported_continuous_numbering() {
+fn cl_prin1_preserves_native_counter_and_public_table_boundaries() {
     run_with_large_stack(|| {
         assert_eq!(
             eval_str_with_upstream_batch(
@@ -179,14 +179,24 @@ fn cl_prin1_does_not_claim_unsupported_continuous_numbering() {
                            (print-gensym t)
                            (print-continuous-numbering t)
                            (print-number-table nil))
-                      (if (string-match
-                           "(#1=(1) #1# #2=\"hello\" #2#)(#3=#:g[[:digit:]]+ #3#)(#1# #2# #3#)#2#$"
-                           (mapconcat #'cl-prin1-to-string
-                                      `((,x ,x ,y ,y) (,g ,g) (,x ,y ,g) ,y)))
-                          t nil))
+                      (let ((printed
+                             (mapconcat #'cl-prin1-to-string
+                                        `((,x ,x ,y ,y) (,g ,g) (,x ,y ,g) ,y))))
+                        (list
+                         (replace-regexp-in-string
+                          "#:g[[:digit:]]+" "#:gN" printed)
+                         (hash-table-count print-number-table)
+                         (gethash g print-number-table))))
                     "##
             ),
-            Value::Nil
+            Value::list([
+                Value::String(
+                    "(#1=(1) #1# #2=\"hello\" #2#)(#1=#2=#:gN #1#)((1) \"hello\" #1=#2#)\"hello\""
+                        .into(),
+                ),
+                Value::Integer(1),
+                Value::Integer(2),
+            ])
         );
     });
 }
@@ -684,6 +694,63 @@ fn interpreted_closure_slots_follow_gnu_metadata_layout() {
             Value::list([Value::Symbol("interactive".into()), Value::Nil]),
             Value::T,
         ])
+    );
+}
+
+#[test]
+fn interpreted_closure_printing_and_arity_condition_use_readable_slots() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((y 5))
+                  (let ((fun (lambda (x) (+ x y))))
+                    (list
+                     (prin1-to-string fun)
+                     (format "%S"
+                             (condition-case err
+                                 (funcall fun)
+                               (error err))))))
+            "#
+        ),
+        Value::list([
+            Value::String("#[(x) ((+ x y)) ((y . 5))]".into()),
+            Value::String("(wrong-number-of-arguments #[(x) ((+ x y)) ((y . 5))] 0)".into(),),
+        ])
+    );
+}
+
+#[test]
+fn interpreted_closure_printing_omits_unused_internal_activation_bindings() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((lexical-binding t))
+                  (let* ((maker (lambda (magic)
+                                  (lambda (x) (+ x 1))))
+                         (fun (funcall maker "This-is-a-magic-string")))
+                    (list (funcall fun 2)
+                          (prin1-to-string fun))))
+            "#
+        ),
+        Value::list([
+            Value::Integer(3),
+            Value::String("#[(x) ((+ x 1)) (t)]".into()),
+        ])
+    );
+}
+
+#[test]
+fn interpreted_closure_print_circle_tracks_the_closure_identity() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let (fun)
+                  (setq fun (lambda () fun))
+                  (let ((print-circle t))
+                    (prin1-to-string fun)))
+            "#
+        ),
+        Value::String("#1=#[nil (fun) ((fun . #1#))]".into())
     );
 }
 

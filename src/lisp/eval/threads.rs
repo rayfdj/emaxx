@@ -764,6 +764,16 @@ impl Interpreter {
     /// `status_notify' walks that alist in order, so a newer child is
     /// notified before the older pipe supplied through its `:stderr' option.
     pub fn take_pending_subprocess_exit_events(&mut self) -> Vec<(u64, String)> {
+        self.take_pending_subprocess_exit_events_for(None)
+    }
+
+    /// Restricted form used by `accept-process-output's JUST-THIS-ONE mode.
+    /// Status changes remain recorded on every process, but only the selected
+    /// process may run its sentinel during that wait.
+    pub fn take_pending_subprocess_exit_events_for(
+        &mut self,
+        only_process_id: Option<u64>,
+    ) -> Vec<(u64, String)> {
         let active_thread_id = self.active_thread_id;
         let completed_children = self
             .process_states
@@ -775,6 +785,9 @@ impl Interpreter {
                     && process
                         .thread_id
                         .is_none_or(|thread_id| thread_id == active_thread_id)
+                    && only_process_id.is_none_or(|id| {
+                        process.record_id == id || process.stderr_process_id == Some(id)
+                    })
             })
             .filter_map(|process| {
                 process
@@ -801,6 +814,7 @@ impl Interpreter {
                 || process
                     .thread_id
                     .is_some_and(|thread_id| thread_id != active_thread_id)
+                || only_process_id.is_some_and(|id| process.record_id != id)
             {
                 continue;
             }
@@ -1798,7 +1812,10 @@ impl Interpreter {
         let runtime = process.runtime.as_ref()?;
         let stream_matches = match stream.and_then(|value| value.as_symbol().ok()) {
             Some("stdin") => runtime.pty_input.is_some(),
-            Some("stdout") | Some("stderr") => runtime.pty_output.is_some(),
+            Some("stdout") => runtime.pty_output.is_some(),
+            // A separate :stderr destination is always a pipe.  Only merged
+            // stderr shares the output PTY and therefore has no Child handle.
+            Some("stderr") => runtime.pty_output.is_some() && runtime.child.stderr.is_none(),
             _ => runtime.pty_input.is_some() || runtime.pty_output.is_some(),
         };
         if stream_matches {
@@ -1999,13 +2016,120 @@ impl Interpreter {
         // would replay an old event to a newly registered watch for the same
         // path, which can tear down that new watch before its first real
         // event arrives.
-        let callbacks = self.file_notify_callbacks_for_path(path);
+        let callbacks = self.file_notify_callbacks_for_path(path, action);
         self.refresh_file_notify_fingerprints_for_path(path);
+        self.push_pending_file_notification(path, action, callbacks);
+    }
+
+    pub fn queue_file_rename_notification(&mut self, source: &str, target: &str) {
+        let source_normalized = source.trim_end_matches('/');
+        let mut paired = Vec::new();
+        let mut source_only = Vec::new();
+        let mut target_only = Vec::new();
+        for watch in self.file_notify_watches.values() {
+            if !watch.active {
+                continue;
+            }
+            if watch.backend != FileNotifyBackend::SyntheticKqueue {
+                continue;
+            }
+            let Some(watched) = watch.path.as_deref() else {
+                continue;
+            };
+            let covers_source = file_notify_watch_covers(watched, source);
+            let covers_target = file_notify_watch_covers(watched, target);
+            if covers_source
+                && covers_target
+                && watched.trim_end_matches('/') != source_normalized
+                && watch.flags.iter().any(|flag| flag == "rename")
+            {
+                paired.push((watch.descriptor.clone(), watch.callback.clone()));
+            } else if covers_source && watch.flags.iter().any(|flag| flag == "rename") {
+                source_only.push((watch.descriptor.clone(), watch.callback.clone()));
+            } else if covers_target && watch.flags.iter().any(|flag| flag == "create") {
+                target_only.push((watch.descriptor.clone(), watch.callback.clone()));
+            }
+        }
+        self.refresh_file_notify_fingerprints_for_path(source);
+        self.refresh_file_notify_fingerprints_for_path(target);
+        self.push_pending_file_notification_with_secondary(source, "renamed", Some(target), paired);
+        self.push_pending_file_notification(source, "renamed", source_only);
+        self.push_pending_file_notification(target, "created", target_only);
+    }
+
+    pub fn queue_directory_deletion_notification(&mut self, path: &str) {
+        // kqueue reports deletion of an entry to a parent-directory watch,
+        // but deletion of the watched directory itself as EV_REVOKE.  The
+        // latter becomes only `stopped' in filenotify.el; reporting both
+        // delete and revoke invents an extra `deleted' callback.
+        let normalized = path.trim_end_matches('/');
+        let mut parent_callbacks = Vec::new();
+        let mut exact_callbacks = Vec::new();
+        for watch in self.file_notify_watches.values() {
+            if !watch.active {
+                continue;
+            }
+            if watch.backend != FileNotifyBackend::SyntheticKqueue {
+                continue;
+            }
+            let Some(watched) = watch.path.as_deref() else {
+                continue;
+            };
+            if watched.trim_end_matches('/') == normalized
+                && watch.flags.iter().any(|f| f == "revoke")
+            {
+                exact_callbacks.push((watch.descriptor.clone(), watch.callback.clone()));
+            } else if file_notify_watch_covers(watched, path)
+                && watch.flags.iter().any(|f| f == "delete")
+            {
+                parent_callbacks.push((watch.descriptor.clone(), watch.callback.clone()));
+            }
+        }
+        self.refresh_file_notify_fingerprints_for_path(path);
+        self.push_pending_file_notification(path, "deleted", parent_callbacks);
+        self.push_pending_file_notification(path, "revoked", exact_callbacks);
+    }
+
+    fn push_pending_file_notification(
+        &mut self,
+        path: &str,
+        action: &str,
+        callbacks: Vec<(Value, Value)>,
+    ) {
+        self.push_pending_file_notification_with_secondary(path, action, None, callbacks);
+    }
+
+    fn push_pending_file_notification_with_secondary(
+        &mut self,
+        path: &str,
+        action: &str,
+        secondary_path: Option<&str>,
+        mut callbacks: Vec<(Value, Value)>,
+    ) {
+        // kqueue readiness is level/coalescing based: several operations on
+        // the same watched object before the next event-loop drain produce
+        // one callback per flag, not one synthetic callback per syscall.
+        callbacks.retain(|(descriptor, _)| {
+            !self.pending_file_notifications.iter().any(|pending| {
+                pending.action == action
+                    && pending.path == path
+                    && pending.secondary_path.as_deref() == secondary_path
+                    && pending
+                        .callbacks
+                        .iter()
+                        .any(|(pending_descriptor, _)| pending_descriptor == descriptor)
+            })
+        });
+        if callbacks.is_empty() {
+            return;
+        }
         self.pending_file_notifications
             .push(PendingFileNotification {
                 path: path.to_string(),
+                secondary_path: secondary_path.map(str::to_string),
                 action: action.to_string(),
                 callbacks,
+                raw_event: None,
             });
     }
 
@@ -2013,137 +2137,902 @@ impl Interpreter {
         &mut self,
         descriptor: i64,
         path: Option<String>,
+        flags: Vec<String>,
         callback: Value,
-    ) {
+    ) -> Result<(), LispError> {
         let fingerprint = path.as_deref().map(file_notify_fingerprint);
+        let directory_snapshot = path
+            .as_deref()
+            .map(|path| {
+                file_notify_directory_snapshot(path).map_err(|error| {
+                    primitives::file_operation_error("Reading directory", &error, path)
+                })
+            })
+            .transpose()?
+            .flatten();
         self.file_notify_watches.insert(
             descriptor,
             FileNotifyWatch {
+                descriptor: Value::Integer(descriptor),
                 path,
+                flags,
                 callback: Self::stored_value(callback),
                 active: true,
+                backend: FileNotifyBackend::SyntheticKqueue,
                 fingerprint,
+                directory_snapshot,
+                #[cfg(target_os = "macos")]
+                host_handle: None,
+                #[cfg(target_os = "linux")]
+                host_watch_descriptor: None,
+                #[cfg(target_os = "linux")]
+                host_mask: 0,
             },
         );
+        Ok(())
     }
 
-    pub(crate) fn remove_file_notify_watch(&mut self, descriptor: i64) {
-        self.file_notify_watches.remove(&descriptor);
+    #[cfg(target_os = "macos")]
+    fn close_empty_kqueue_queue(&mut self) {
+        if !self
+            .file_notify_watches
+            .values()
+            .any(|watch| watch.backend == FileNotifyBackend::Kqueue)
+        {
+            self.file_notify_kqueue = None;
+        }
     }
 
-    pub(crate) fn file_notify_watch_is_active(&self, descriptor: i64) -> bool {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn register_kqueue_file_notify_watch(
+        &mut self,
+        path: String,
+        flags: Vec<String>,
+        callback: Value,
+    ) -> Result<i64, LispError> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        let queue = if let Some(queue) = &self.file_notify_kqueue {
+            queue.0.clone()
+        } else {
+            // SAFETY: kqueue has no pointer arguments and returns a new owned
+            // descriptor on success.
+            let descriptor = unsafe { libc::kqueue() };
+            if descriptor < 0 {
+                let error = std::io::Error::last_os_error();
+                return Err(file_notify_host_error(
+                    "File watching is not available",
+                    None,
+                    &error,
+                ));
+            }
+            // SAFETY: DESCRIPTOR was returned by kqueue above and ownership
+            // is transferred exactly once into OwnedFd.
+            let queue = std::sync::Arc::new(unsafe { OwnedFd::from_raw_fd(descriptor) });
+            self.file_notify_kqueue = Some(FileNotifyHostQueue(queue.clone()));
+            queue
+        };
+
+        let encoded = match std::ffi::CString::new(path.as_bytes()) {
+            Ok(encoded) => encoded,
+            Err(_) => {
+                self.close_empty_kqueue_queue();
+                return Err(primitives::file_operation_error(
+                    "File cannot be opened",
+                    &std::io::Error::new(ErrorKind::InvalidInput, "file name contains a NUL byte"),
+                    &path,
+                ));
+            }
+        };
+        // GNU opens vnode watches without following symlinks.  O_EVTONLY
+        // obtains a descriptor that consumes no read permission and exists
+        // specifically for kqueue/FSEvents observation on Darwin.
+        let open_flags = libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_EVTONLY | libc::O_SYMLINK;
+        // SAFETY: ENCODED is NUL-terminated and OPEN_FLAGS requires no mode
+        // argument because O_CREAT is absent.
+        let descriptor = unsafe { libc::open(encoded.as_ptr(), open_flags) };
+        if descriptor < 0 {
+            let error = std::io::Error::last_os_error();
+            self.close_empty_kqueue_queue();
+            return Err(primitives::file_operation_error(
+                "File cannot be opened",
+                &error,
+                &path,
+            ));
+        }
+        // SAFETY: DESCRIPTOR was returned by open above and ownership is
+        // transferred exactly once into OwnedFd.
+        let handle = std::sync::Arc::new(unsafe { OwnedFd::from_raw_fd(descriptor) });
+
+        let mut filter_flags = 0_u32;
+        for flag in &flags {
+            filter_flags |= match flag.as_str() {
+                "delete" => libc::NOTE_DELETE,
+                "write" => libc::NOTE_WRITE,
+                "extend" => libc::NOTE_EXTEND,
+                "attrib" => libc::NOTE_ATTRIB,
+                "link" => libc::NOTE_LINK,
+                "rename" => libc::NOTE_RENAME,
+                "revoke" => libc::NOTE_REVOKE,
+                _ => 0,
+            };
+        }
+
+        // SAFETY: zero is a valid starting representation for kevent; every
+        // field consumed by kevent is initialized below.
+        let mut event = unsafe { std::mem::zeroed::<libc::kevent>() };
+        event.ident = descriptor as libc::uintptr_t;
+        event.filter = libc::EVFILT_VNODE;
+        event.flags = libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR;
+        event.fflags = filter_flags;
+        // SAFETY: EVENT points to one initialized change, the output list is
+        // empty, and QUEUE/HANDLE remain owned by Arc values.
+        let registered = unsafe {
+            libc::kevent(
+                queue.as_raw_fd(),
+                &event,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        if registered < 0 {
+            let error = std::io::Error::last_os_error();
+            self.close_empty_kqueue_queue();
+            return Err(primitives::file_operation_error(
+                "Cannot watch file",
+                &error,
+                &path,
+            ));
+        }
+
+        let fingerprint = file_notify_fingerprint(&path);
+        let directory_snapshot = match file_notify_directory_snapshot(&path) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.close_empty_kqueue_queue();
+                return Err(primitives::file_operation_error(
+                    "Reading directory",
+                    &error,
+                    &path,
+                ));
+            }
+        };
+        self.file_notify_watches.insert(
+            descriptor as i64,
+            FileNotifyWatch {
+                descriptor: Value::Integer(descriptor as i64),
+                path: Some(path),
+                flags,
+                callback: Self::stored_value(callback),
+                active: true,
+                backend: FileNotifyBackend::Kqueue,
+                fingerprint: Some(fingerprint),
+                directory_snapshot,
+                host_handle: Some(handle),
+            },
+        );
+        Ok(descriptor as i64)
+    }
+
+    /// aspect_to_inotifymask runs before Finotify_add_watch checks its
+    /// FILE-NAME, so callers validate the aspects first and only then look
+    /// at the other arguments.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn validate_inotify_aspects(&self, flags: &[String]) -> Result<(), LispError> {
+        inotify_mask_from_flags(flags).map(|_| ())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_empty_inotify_queue(&mut self) {
+        if !self
+            .file_notify_watches
+            .values()
+            .any(|watch| watch.backend == FileNotifyBackend::Inotify)
+        {
+            self.file_notify_inotify = None;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn register_inotify_file_notify_watch(
+        &mut self,
+        path: String,
+        flags: Vec<String>,
+        callback: Value,
+    ) -> Result<Value, LispError> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        let queue = if let Some(queue) = &self.file_notify_inotify {
+            queue.0.clone()
+        } else {
+            // SAFETY: inotify_init1 returns a new descriptor on success.
+            let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+            if descriptor < 0 {
+                let error = std::io::Error::last_os_error();
+                return Err(file_notify_host_error(
+                    "File watching is not available",
+                    None,
+                    &error,
+                ));
+            }
+            // SAFETY: ownership of the new descriptor transfers exactly once.
+            let queue = std::sync::Arc::new(unsafe { OwnedFd::from_raw_fd(descriptor) });
+            self.file_notify_inotify = Some(FileNotifyHostQueue(queue.clone()));
+            queue
+        };
+
+        let mask = match inotify_mask_from_flags(&flags) {
+            Ok(mask) => mask,
+            Err(error) => {
+                self.close_empty_inotify_queue();
+                return Err(error);
+            }
+        };
+        let encoded = match std::ffi::CString::new(path.as_bytes()) {
+            Ok(encoded) => encoded,
+            Err(_) => {
+                let error = std::io::Error::from_raw_os_error(libc::EINVAL);
+                self.close_empty_inotify_queue();
+                return Err(file_notify_host_error(
+                    "Could not add watch for file",
+                    Some(path.as_str()),
+                    &error,
+                ));
+            }
+        };
+        // GNU combines masks for callers that watch the same inode and then
+        // filters each callback with the mask stored on its logical watch.
+        // SAFETY: QUEUE is live and ENCODED is NUL-terminated.
+        let watch_descriptor = unsafe {
+            libc::inotify_add_watch(
+                queue.as_raw_fd(),
+                encoded.as_ptr(),
+                mask | libc::IN_MASK_ADD | libc::IN_EXCL_UNLINK,
+            )
+        };
+        if watch_descriptor < 0 {
+            let error = std::io::Error::last_os_error();
+            self.close_empty_inotify_queue();
+            return Err(file_notify_host_error(
+                "Could not add watch for file",
+                Some(path.as_str()),
+                &error,
+            ));
+        }
+
+        let mut id = 0_i64;
+        loop {
+            let occupied = self.file_notify_watches.values().any(|watch| {
+                watch.host_watch_descriptor == Some(watch_descriptor)
+                    && watch
+                        .descriptor
+                        .cons_values()
+                        .is_some_and(|(_, existing_id)| existing_id == Value::Integer(id))
+            });
+            if !occupied {
+                break;
+            }
+            id = id.checked_add(1).ok_or_else(|| {
+                file_notify_host_error(
+                    "Could not add watch for file",
+                    Some(path.as_str()),
+                    &std::io::Error::from_raw_os_error(libc::EINVAL),
+                )
+            })?;
+        }
+        let descriptor = Value::cons(
+            Value::Integer(i64::from(watch_descriptor)),
+            Value::Integer(id),
+        );
+        let mut internal_key = -1_i64;
+        while self.file_notify_watches.contains_key(&internal_key) {
+            internal_key = internal_key.checked_sub(1).ok_or_else(|| {
+                file_notify_host_error(
+                    "Could not add watch for file",
+                    Some(path.as_str()),
+                    &std::io::Error::from_raw_os_error(libc::EINVAL),
+                )
+            })?;
+        }
+        self.file_notify_watches.insert(
+            internal_key,
+            FileNotifyWatch {
+                descriptor: descriptor.clone(),
+                path: Some(path),
+                flags,
+                callback: Self::stored_value(callback),
+                active: true,
+                backend: FileNotifyBackend::Inotify,
+                fingerprint: None,
+                directory_snapshot: None,
+                host_watch_descriptor: Some(watch_descriptor),
+                host_mask: mask,
+            },
+        );
+        Ok(descriptor)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn remove_inotify_file_notify_watch(
+        &mut self,
+        descriptor: &Value,
+    ) -> Result<(), LispError> {
+        use std::os::fd::AsRawFd;
+
+        let Some((key, watch_descriptor)) =
+            self.file_notify_watches.iter().find_map(|(key, watch)| {
+                (watch.backend == FileNotifyBackend::Inotify && watch.descriptor == *descriptor)
+                    .then_some((*key, watch.host_watch_descriptor))
+            })
+        else {
+            // GNU accepts a well-formed descriptor that is no longer live.
+            return Ok(());
+        };
+        let Some(watch_descriptor) = watch_descriptor else {
+            return Ok(());
+        };
+        self.file_notify_watches.remove(&key);
+        let descriptor_still_shared = self.file_notify_watches.values().any(|watch| {
+            watch.backend == FileNotifyBackend::Inotify
+                && watch.host_watch_descriptor == Some(watch_descriptor)
+        });
+        if !descriptor_still_shared && let Some(queue) = &self.file_notify_inotify {
+            // SAFETY: WATCH_DESCRIPTOR belongs to this inotify instance and
+            // no remaining logical watch uses it.
+            if unsafe { libc::inotify_rm_watch(queue.0.as_raw_fd(), watch_descriptor) } != 0 {
+                let error = std::io::Error::last_os_error();
+                // GNU removes the logical descriptor (and closes the shared
+                // inotify fd when this was its last watch) before reporting
+                // the host removal error.  Keep that cleanup ordering so an
+                // already-invalid kernel watch cannot strand the queue.
+                self.close_empty_inotify_queue();
+                // remove_descriptor reports the kernel watch descriptor, not
+                // a file name, as the data element.
+                return Err(primitives::file_notify_error_with_errno(
+                    "Could not rm watch",
+                    &error,
+                    Value::Integer(i64::from(watch_descriptor)),
+                ));
+            }
+        }
+        if !self
+            .file_notify_watches
+            .values()
+            .any(|watch| watch.backend == FileNotifyBackend::Inotify)
+        {
+            self.file_notify_inotify = None;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn inotify_file_notify_watch_is_active(&self, descriptor: &Value) -> bool {
+        self.file_notify_watches.values().any(|watch| {
+            watch.backend == FileNotifyBackend::Inotify
+                && watch.active
+                && watch.descriptor == *descriptor
+        })
+    }
+
+    pub(crate) fn remove_file_notify_watch(&mut self, descriptor: &Value) -> bool {
+        let key = self
+            .file_notify_watches
+            .iter()
+            .find_map(|(key, watch)| (watch.descriptor == *descriptor).then_some(*key));
+        let removed = key
+            .and_then(|key| self.file_notify_watches.remove(&key))
+            .is_some();
+        #[cfg(target_os = "macos")]
+        if !self
+            .file_notify_watches
+            .values()
+            .any(|watch| watch.backend == FileNotifyBackend::Kqueue)
+        {
+            self.file_notify_kqueue = None;
+        }
+        removed
+    }
+
+    pub(crate) fn file_notify_watch_is_active(&self, descriptor: &Value) -> bool {
         self.file_notify_watches
-            .get(&descriptor)
-            .is_some_and(|watch| watch.active)
+            .values()
+            .any(|watch| watch.active && watch.descriptor == *descriptor)
+    }
+
+    pub(crate) fn file_notify_watch_count(&self) -> usize {
+        #[cfg(target_os = "macos")]
+        {
+            self.file_notify_watches
+                .values()
+                .filter(|watch| watch.backend == FileNotifyBackend::Kqueue)
+                .count()
+        }
+        #[cfg(not(target_os = "macos"))]
+        self.file_notify_watches.len()
     }
 
     pub(crate) fn invalidate_file_notify_watches_for_path(&mut self, path: &str) {
         for watch in self.file_notify_watches.values_mut() {
+            if watch.backend != FileNotifyBackend::SyntheticKqueue {
+                // The native backends' terminal event is authoritative:
+                // kqueue reports delete/rename/revoke and inotify reports
+                // delete-self/move-self followed by ignored.  Closing the
+                // host handle here would suppress that callback sequence.
+                continue;
+            }
             if watch.path.as_deref() == Some(path) {
                 watch.active = false;
             }
         }
     }
 
-    pub(crate) fn file_notify_callbacks_for_path(&self, path: &str) -> Vec<(i64, Value)> {
+    pub(crate) fn file_notify_callbacks_for_path(
+        &self,
+        path: &str,
+        action: &str,
+    ) -> Vec<(Value, Value)> {
+        let backend_flag = match action {
+            "created" => "create",
+            "deleted" => "delete",
+            "changed" => "write",
+            "attribute-changed" => "attrib",
+            "renamed" => "rename",
+            "revoked" => "revoke",
+            other => other,
+        };
         self.file_notify_watches
-            .iter()
-            .filter_map(|(descriptor, watch)| {
+            .values()
+            .filter_map(|watch| {
+                if watch.backend != FileNotifyBackend::SyntheticKqueue {
+                    return None;
+                }
                 watch
                     .path
                     .as_deref()
+                    .filter(|_| watch.active)
+                    .filter(|_| watch.flags.iter().any(|flag| flag == backend_flag))
                     .filter(|watched| file_notify_watch_covers(watched, path))
-                    .map(|_| (*descriptor, watch.callback.clone()))
+                    .map(|_| (watch.descriptor.clone(), watch.callback.clone()))
             })
             .collect()
     }
 
     fn refresh_file_notify_fingerprints_for_path(&mut self, event_path: &str) {
         for watch in self.file_notify_watches.values_mut() {
+            if watch.backend != FileNotifyBackend::SyntheticKqueue {
+                // Kernel events carry the authoritative flags, basenames,
+                // rename data, and lifetime.  Synthetic bookkeeping must
+                // neither consume nor reshape them.
+                continue;
+            }
             let Some(watched_path) = watch.path.as_deref() else {
                 continue;
             };
             if file_notify_watch_covers(watched_path, event_path) {
                 watch.fingerprint = Some(file_notify_fingerprint(watched_path));
-            }
-        }
-    }
-
-    fn poll_external_file_notifications(&mut self) {
-        let mut changed_paths = Vec::<(String, String)>::new();
-        for watch in self.file_notify_watches.values_mut() {
-            if !watch.active {
-                continue;
-            }
-            let Some(path) = watch.path.as_deref() else {
-                continue;
-            };
-            let current = file_notify_fingerprint(path);
-            if watch.fingerprint.as_ref() == Some(&current) {
-                continue;
-            }
-            watch.fingerprint = Some(current.clone());
-            if !changed_paths
-                .iter()
-                .any(|(changed_path, _)| changed_path == path)
-            {
-                let action = match current {
-                    FileNotifyFingerprint::Missing => "deleted",
-                    FileNotifyFingerprint::Present { .. } => "changed",
-                };
-                changed_paths.push((path.to_string(), action.to_string()));
-            }
-        }
-
-        for (path, action) in changed_paths {
-            let callbacks = self.file_notify_callbacks_for_path(&path);
-            self.pending_file_notifications
-                .push(PendingFileNotification {
-                    path,
-                    action,
-                    callbacks,
-                });
-        }
-    }
-
-    pub fn run_pending_file_notifications(&mut self, env: &mut Env) -> Result<(), LispError> {
-        let pending = std::mem::take(&mut self.pending_file_notifications);
-        for notification in pending {
-            let outcome = primitives::deliver_file_notification(
-                self,
-                env,
-                &notification.path,
-                &notification.action,
-                notification.callbacks,
-            );
-            match outcome {
-                Ok(()) => {}
-                Err(error @ LispError::Throw(_, _)) => return Err(error),
-                Err(error) => {
-                    // The command loop demotes errors from special event
-                    // handlers to a message.
-                    if self
-                        .lookup_var("debug-on-error", env)
-                        .is_some_and(|value| value.is_truthy())
-                    {
-                        return Err(error);
-                    }
-                    let _ = primitives::call(
-                        self,
-                        "message",
-                        &[
-                            Value::String("Error in file notification: %S".into()),
-                            super::error_condition_value(&error),
-                        ],
-                        env,
-                    );
+                // A native file operation has already succeeded at this
+                // point.  If an independent permissions race makes the
+                // watched directory unreadable, retain the last good image;
+                // the next host readiness poll reports that backend error.
+                if let Ok(snapshot) = file_notify_directory_snapshot(watched_path) {
+                    watch.directory_snapshot = snapshot;
                 }
             }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn poll_external_file_notifications(&mut self) -> Result<(), LispError> {
+        use std::os::fd::AsRawFd;
+
+        let Some(queue) = self
+            .file_notify_kqueue
+            .as_ref()
+            .map(|queue| queue.0.clone())
+        else {
+            return Ok(());
+        };
+        let mut ready = Vec::<(i64, u32)>::new();
+        loop {
+            // SAFETY: zero is a valid output buffer for kevent and TIMEOUT is
+            // a nonblocking zero-duration poll.
+            let mut event = unsafe { std::mem::zeroed::<libc::kevent>() };
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: EVENT is writable storage for one result; no change
+            // list is supplied; QUEUE remains owned for the whole call.
+            let count = unsafe {
+                libc::kevent(
+                    queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    &mut event,
+                    1,
+                    &timeout,
+                )
+            };
+            if count == 0 {
+                break;
+            }
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(file_notify_host_io_error(
+                    "Cannot read file notification queue",
+                    "",
+                    &error,
+                ));
+            }
+            ready.push((event.ident as i64, event.fflags));
+        }
+
+        for (descriptor, host_flags) in ready {
+            let Some((
+                active,
+                path,
+                public_descriptor,
+                callback_value,
+                fingerprint,
+                snapshot,
+                flags,
+            )) = self.file_notify_watches.get(&descriptor).map(|watch| {
+                (
+                    watch.active,
+                    watch.path.clone(),
+                    watch.descriptor.clone(),
+                    watch.callback.clone(),
+                    watch.fingerprint.clone(),
+                    watch.directory_snapshot.clone(),
+                    watch.flags.clone(),
+                )
+            })
+            else {
+                continue;
+            };
+            if !active {
+                continue;
+            }
+            let Some(path) = path else {
+                continue;
+            };
+            let callback = (public_descriptor, callback_value);
+            let is_directory = matches!(
+                fingerprint,
+                Some(FileNotifyFingerprint::Present {
+                    is_directory: true,
+                    ..
+                })
+            );
+
+            if is_directory
+                && host_flags & libc::NOTE_WRITE != 0
+                && let Some(next) = file_notify_directory_snapshot(&path).map_err(|error| {
+                    primitives::file_operation_error("Reading directory", &error, &path)
+                })?
+            {
+                for (event_path, action, secondary_path) in file_notify_directory_changes(
+                    &path,
+                    snapshot.as_deref().unwrap_or_default(),
+                    &next,
+                ) {
+                    let backend_flag = file_notify_backend_flag(&action);
+                    if flags.iter().any(|flag| flag == backend_flag) {
+                        self.push_pending_file_notification_with_secondary(
+                            &event_path,
+                            &action,
+                            secondary_path.as_deref(),
+                            vec![callback.clone()],
+                        );
+                    }
+                }
+                if let Some(live) = self.file_notify_watches.get_mut(&descriptor) {
+                    live.directory_snapshot = Some(next);
+                    live.fingerprint = Some(file_notify_fingerprint(&path));
+                }
+            }
+
+            let direct_host_flags = host_flags
+                & (libc::NOTE_DELETE
+                    | libc::NOTE_EXTEND
+                    | libc::NOTE_ATTRIB
+                    | libc::NOTE_LINK
+                    | libc::NOTE_RENAME
+                    | libc::NOTE_REVOKE
+                    | if is_directory { 0 } else { libc::NOTE_WRITE });
+            if direct_host_flags != 0 {
+                let current = file_notify_fingerprint(&path);
+                if let Some(live) = self.file_notify_watches.get_mut(&descriptor) {
+                    live.fingerprint = Some(current);
+                }
+                let mut actions = Vec::new();
+                for (mask, action) in [
+                    (libc::NOTE_DELETE, "delete"),
+                    (libc::NOTE_WRITE, "write"),
+                    (libc::NOTE_EXTEND, "extend"),
+                    (libc::NOTE_ATTRIB, "attrib"),
+                    (libc::NOTE_LINK, "link"),
+                    (libc::NOTE_RENAME, "rename"),
+                    (libc::NOTE_REVOKE, "revoke"),
+                ] {
+                    if direct_host_flags & mask != 0 && flags.iter().any(|flag| flag == action) {
+                        actions.insert(0, Value::Symbol(action.into()));
+                    }
+                }
+                if !actions.is_empty() {
+                    let raw_event = Value::list([
+                        callback.0.clone(),
+                        Value::list(actions),
+                        Value::String(path.clone().into()),
+                    ]);
+                    self.pending_file_notifications
+                        .push(PendingFileNotification {
+                            path: String::new(),
+                            secondary_path: None,
+                            action: String::new(),
+                            callbacks: vec![callback.clone()],
+                            raw_event: Some(raw_event),
+                        });
+                }
+            }
+
+            if host_flags & (libc::NOTE_DELETE | libc::NOTE_RENAME | libc::NOTE_REVOKE) != 0 {
+                self.file_notify_watches.remove(&descriptor);
+            }
+        }
+        if !self
+            .file_notify_watches
+            .values()
+            .any(|watch| watch.backend == FileNotifyBackend::Kqueue)
+        {
+            self.file_notify_kqueue = None;
         }
         Ok(())
     }
 
-    fn run_pending_native_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
+    #[cfg(target_os = "linux")]
+    fn poll_external_file_notifications(&mut self) -> Result<(), LispError> {
+        use std::os::fd::AsRawFd;
+
+        let Some(queue) = self
+            .file_notify_inotify
+            .as_ref()
+            .map(|queue| queue.0.clone())
+        else {
+            return Ok(());
+        };
+        let header_size = std::mem::size_of::<libc::inotify_event>();
+        let mut buffer = [0_u8; 65_536];
+        loop {
+            // SAFETY: BUFFER is writable for its full length and QUEUE stays
+            // open throughout the nonblocking read.
+            let count =
+                unsafe { libc::read(queue.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                if error.kind() == ErrorKind::WouldBlock {
+                    break;
+                }
+                return Err(file_notify_host_io_error(
+                    "Error while reading file system events",
+                    "",
+                    &error,
+                ));
+            }
+            if count == 0 {
+                break;
+            }
+
+            let count = count as usize;
+            let mut offset = 0_usize;
+            while offset < count {
+                if count - offset < header_size {
+                    return Err(file_notify_host_error(
+                        "Malformed file system event",
+                        None,
+                        &std::io::Error::from_raw_os_error(libc::EINVAL),
+                    ));
+                }
+                // SAFETY: the size check above establishes a complete header;
+                // kernel event records need not be aligned in a byte buffer.
+                let event = unsafe {
+                    std::ptr::read_unaligned(
+                        buffer[offset..].as_ptr().cast::<libc::inotify_event>(),
+                    )
+                };
+                let record_size = header_size.checked_add(event.len as usize).ok_or_else(|| {
+                    file_notify_host_error(
+                        "Malformed file system event",
+                        None,
+                        &std::io::Error::from_raw_os_error(libc::EINVAL),
+                    )
+                })?;
+                if record_size > count - offset {
+                    return Err(file_notify_host_error(
+                        "Malformed file system event",
+                        None,
+                        &std::io::Error::from_raw_os_error(libc::EINVAL),
+                    ));
+                }
+                let name = if event.len == 0 {
+                    None
+                } else {
+                    let bytes = &buffer[offset + header_size..offset + record_size];
+                    let end = bytes
+                        .iter()
+                        .position(|byte| *byte == 0)
+                        .unwrap_or(bytes.len());
+                    Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+                };
+
+                let mut recipients = self
+                    .file_notify_watches
+                    .values()
+                    .filter(|watch| {
+                        watch.active
+                            && watch.backend == FileNotifyBackend::Inotify
+                            && watch.host_watch_descriptor == Some(event.wd)
+                            && watch.host_mask & event.mask != 0
+                    })
+                    .filter_map(|watch| {
+                        name.clone()
+                            .or_else(|| watch.path.clone())
+                            .map(|event_name| {
+                                (watch.descriptor.clone(), watch.callback.clone(), event_name)
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                // inotify.c keeps logical watches for one kernel descriptor
+                // sorted by their public ID and enqueues callbacks in that
+                // order.  Hash-map iteration here would make delivery order
+                // nondeterministic whenever callers share an inode.
+                recipients.sort_by_key(|(descriptor, _, _)| {
+                    descriptor
+                        .cons_values()
+                        .and_then(|(_, id)| id.as_integer().ok())
+                        .unwrap_or(i64::MAX)
+                });
+                for (descriptor, callback, event_name) in recipients {
+                    let raw_event = Value::list([
+                        descriptor.clone(),
+                        inotify_aspects(event.mask),
+                        Value::String(event_name.into()),
+                        Value::Integer(i64::from(event.cookie)),
+                    ]);
+                    self.pending_file_notifications
+                        .push(PendingFileNotification {
+                            path: String::new(),
+                            secondary_path: None,
+                            action: String::new(),
+                            callbacks: vec![(descriptor, callback)],
+                            raw_event: Some(raw_event),
+                        });
+                }
+
+                if event.mask & libc::IN_IGNORED != 0 {
+                    let keys = self
+                        .file_notify_watches
+                        .iter()
+                        .filter_map(|(key, watch)| {
+                            (watch.backend == FileNotifyBackend::Inotify
+                                && watch.host_watch_descriptor == Some(event.wd))
+                            .then_some(*key)
+                        })
+                        .collect::<Vec<_>>();
+                    for key in keys {
+                        self.file_notify_watches.remove(&key);
+                    }
+                }
+                offset += record_size;
+            }
+        }
+
+        if !self
+            .file_notify_watches
+            .values()
+            .any(|watch| watch.backend == FileNotifyBackend::Inotify)
+        {
+            self.file_notify_inotify = None;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn poll_external_file_notifications(&mut self) -> Result<(), LispError> {
+        Ok(())
+    }
+
+    /// Dispatch queued notifications the way read_char dispatches buffered
+    /// FILE_NOTIFY_EVENTs: each callback runs through the special-event
+    /// binding, and a signal or nonlocal exit propagates to the reader while
+    /// the events behind it stay queued for the next read.  Only the command
+    /// loop's own condition handler turns such an error into a message, so
+    /// nothing is demoted here.
+    pub fn run_pending_file_notifications(&mut self, env: &mut Env) -> Result<bool, LispError> {
+        self.run_pending_file_notifications_inner(env, true)
+    }
+
+    /// Handler-backed watches model Tramp's monitor process filters, whose
+    /// callbacks fire inside any process wait.  Kernel watch descriptors are
+    /// keyboard-class in process.c (add_keyboard_wait_descriptor), so a
+    /// READ_KBD 0 wait never even reads them; their events stay queued for
+    /// the keyboard readers.
+    pub(crate) fn run_pending_synthetic_file_notifications(
+        &mut self,
+        env: &mut Env,
+    ) -> Result<bool, LispError> {
+        self.run_pending_file_notifications_inner(env, false)
+    }
+
+    fn run_pending_file_notifications_inner(
+        &mut self,
+        env: &mut Env,
+        include_kernel_events: bool,
+    ) -> Result<bool, LispError> {
+        let (pending, retained): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.pending_file_notifications)
+                .into_iter()
+                .partition(|notification| {
+                    include_kernel_events || notification.raw_event.is_none()
+                });
+        self.pending_file_notifications = retained;
+        let ran = !pending.is_empty();
+        let mut pending = pending.into_iter();
+        while let Some(mut notification) = pending.next() {
+            let mut callbacks = std::mem::take(&mut notification.callbacks).into_iter();
+            while let Some(callback) = callbacks.next() {
+                let outcome = if let Some(event) = &notification.raw_event {
+                    primitives::deliver_raw_file_notification(
+                        self,
+                        env,
+                        event.clone(),
+                        vec![callback],
+                    )
+                } else {
+                    primitives::deliver_file_notification(
+                        self,
+                        env,
+                        &notification.path,
+                        &notification.action,
+                        notification.secondary_path.as_deref(),
+                        vec![callback],
+                    )
+                };
+                let Err(error) = outcome else {
+                    continue;
+                };
+                // This input event was consumed, but later recipients and
+                // later kernel events remain queued.  Dropping the tail here
+                // made one failing callback erase unrelated watches.
+                let remaining_callbacks = callbacks.collect::<Vec<_>>();
+                let mut remaining = Vec::new();
+                if !remaining_callbacks.is_empty() {
+                    notification.callbacks = remaining_callbacks;
+                    remaining.push(notification);
+                }
+                remaining.extend(pending);
+                remaining.append(&mut self.pending_file_notifications);
+                self.pending_file_notifications = remaining;
+                return Err(error);
+            }
+        }
+        Ok(ran)
+    }
+
+    pub fn service_file_notifications(&mut self, env: &mut Env) -> Result<bool, LispError> {
+        self.poll_external_file_notifications()?;
+        self.run_pending_file_notifications(env)
+    }
+
+    fn run_pending_native_timers(&mut self, env: &mut Env) -> Result<bool, LispError> {
         // Only timers whose scheduled time has arrived fire; the rest stay
         // queued (GNU never runs a timer before it is due).  Due timers
         // fire in schedule order.
@@ -2153,6 +3042,7 @@ impl Interpreter {
             .into_iter()
             .partition(|timer| timer.due.is_none_or(|due| due <= now));
         self.pending_timers = not_yet;
+        let ran = !pending.is_empty();
         let mut pending = pending.into_iter();
         while let Some(timer) = pending.next() {
             if let Some(repeat) = timer.repeat {
@@ -2204,55 +3094,7 @@ impl Interpreter {
                 }
             }
         }
-        Ok(())
-    }
-
-    pub(super) fn run_due_elisp_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
-        if self
-            .raw_function_binding("timer-event-handler", env)
-            .is_none()
-            || self.raw_function_binding("timer--time", env).is_none()
-        {
-            return Ok(());
-        }
-
-        let timers = self
-            .lookup_var("timer-list", env)
-            .unwrap_or(Value::Nil)
-            .to_vec()
-            .unwrap_or_default();
-        for timer in timers {
-            if self
-                .call_function_value(
-                    Value::Symbol("timerp".into()),
-                    Some("timerp"),
-                    std::slice::from_ref(&timer),
-                    env,
-                )?
-                .is_nil()
-            {
-                continue;
-            }
-            let timer_time = self.call_function_value(
-                Value::Symbol("timer--time".into()),
-                Some("timer--time"),
-                std::slice::from_ref(&timer),
-                env,
-            )?;
-            let future = primitives::call(self, "time-less-p", &[Value::Nil, timer_time], env)?;
-            if future.is_nil() {
-                self.begin_timer_callback();
-                let outcome = self.call_function_value(
-                    Value::Symbol("timer-event-handler".into()),
-                    Some("timer-event-handler"),
-                    std::slice::from_ref(&timer),
-                    env,
-                );
-                self.end_timer_callback();
-                outcome?;
-            }
-        }
-        Ok(())
+        Ok(ran)
     }
 
     /// Pump every timer representation that can be live in an interpreter.
@@ -2261,9 +3103,54 @@ impl Interpreter {
     /// objects live in `timer-list`.  Keeping this as one event-loop operation
     /// prevents waits and recursive command loops from silently servicing
     /// only one side of that boundary.
-    pub(crate) fn run_pending_timer_events(&mut self, env: &mut Env) -> Result<(), LispError> {
-        self.run_pending_native_timers(env)?;
-        self.run_due_elisp_timers(env)
+    pub(crate) fn run_pending_timer_events(&mut self, env: &mut Env) -> Result<bool, LispError> {
+        let idle = primitives::tty_current_idle_duration()
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        self.run_pending_timer_events_with_idle(env, idle)
+    }
+
+    fn run_pending_timer_events_with_idle(
+        &mut self,
+        env: &mut Env,
+        idle: f64,
+    ) -> Result<bool, LispError> {
+        let native_ran = self.run_pending_native_timers(env)?;
+        let lisp_ran = primitives::run_due_timers(self, env, idle)?;
+        Ok(native_ran || lisp_ran)
+    }
+
+    /// Service the non-process half of wait_reading_process_output.  This is
+    /// shared by the top-level key wait and Lisp commands that perform their
+    /// own terminal read, so neither path can starve watches, timers, or
+    /// cooperative threads while waiting for keyboard input.
+    pub(crate) fn service_async_runtime_events(
+        &mut self,
+        env: &mut Env,
+        wake_sleepers: bool,
+        idle_seconds: Option<f64>,
+    ) -> Result<bool, LispError> {
+        let user_signal_events = if self.waiting_for_user_input()
+            && primitives::unread_command_events(self, env)?.is_empty()
+        {
+            primitives::run_pending_user_signal_events(self, env)?
+        } else {
+            false
+        };
+        let file_events = self.service_file_notifications(env)?;
+        let timer_events = if let Some(idle) = idle_seconds {
+            self.run_pending_timer_events_with_idle(env, idle)?
+        } else {
+            self.run_pending_timer_events(env)?
+        };
+        let thread_events = self.thread_states.iter().any(|thread| {
+            thread.record_id != self.main_thread_id
+                && (matches!(thread.status, ThreadStatus::Runnable)
+                    || wake_sleepers
+                        && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::Sleep)))
+        });
+        self.drive_threads_inner(env, wake_sleepers, false)?;
+        Ok(user_signal_events || file_events || timer_events || thread_events)
     }
 
     pub fn current_thread_value(&self) -> Value {
@@ -2521,7 +3408,11 @@ impl Interpreter {
             return Err(LispError::Signal("Cannot join the current thread".into()));
         }
         while self.thread_live(record_id) {
-            self.drive_threads(env, true)?;
+            // Fthread_join waits for the target without returning to the
+            // process event loop.  Sleeping cooperative threads must still
+            // advance, but unrelated timers and file notifications remain
+            // pending until an actual event-loop wait.
+            self.drive_threads_inner(env, true, false)?;
             if self.thread_live(record_id)
                 && self
                     .find_thread_state(record_id)
@@ -2575,6 +3466,15 @@ impl Interpreter {
     }
 
     pub fn drive_threads(&mut self, env: &mut Env, wake_sleepers: bool) -> Result<(), LispError> {
+        self.drive_threads_inner(env, wake_sleepers, wake_sleepers)
+    }
+
+    fn drive_threads_inner(
+        &mut self,
+        env: &mut Env,
+        wake_sleepers: bool,
+        service_events: bool,
+    ) -> Result<(), LispError> {
         let entry_yield_count = self.fruitless_stepped_yields;
         // Never re-step the thread that is currently executing: it reached
         // this scheduler pass from inside its own body (thread-yield, a
@@ -2584,7 +3484,9 @@ impl Interpreter {
             .thread_states
             .iter()
             .filter(|thread| {
-                thread.record_id != self.main_thread_id && thread.record_id != self.active_thread_id
+                thread.record_id != self.main_thread_id
+                    && thread.record_id != self.active_thread_id
+                    && !self.executing_thread_ids.contains(&thread.record_id)
             })
             .map(|thread| thread.record_id)
             .collect::<Vec<_>>();
@@ -2607,13 +3509,22 @@ impl Interpreter {
             }
         }
         let _ = entry_yield_count;
-        if wake_sleepers {
-            // Native file operations enqueue their own exact events.  This
-            // metadata scan supplies the host-backend half of kqueue for
-            // changes made by subprocesses or other processes.
-            self.poll_external_file_notifications();
-            self.run_pending_file_notifications(env)?;
-            self.run_pending_timer_events(env)?;
+        if service_events {
+            // wait_reading_process_output selects keyboard-class descriptors
+            // (the inotify/kqueue queue among them) only for a READ_KBD wait,
+            // and read_char then dispatches the buffered special events.  A
+            // READ_KBD 0 wait such as accept-process-output or sleep-for runs
+            // timers and delivers handler-backed notifications, which GNU
+            // receives as monitor process output, but never reads that queue.
+            if self.waiting_for_user_input() {
+                if primitives::unread_command_events(self, env)?.is_empty() {
+                    let _ = primitives::run_pending_user_signal_events(self, env)?;
+                }
+                let _ = self.service_file_notifications(env)?;
+            } else {
+                let _ = self.run_pending_synthetic_file_notifications(env)?;
+            }
+            let _ = self.run_pending_timer_events(env)?;
         }
         Ok(())
     }
@@ -2899,14 +3810,34 @@ impl Interpreter {
     }
 
     pub(super) fn step_thread(&mut self, record_id: u64, env: &mut Env) -> Result<(), LispError> {
+        // An event wait can nest scheduler passes: A waits for process I/O,
+        // the pump runs B, and B pumps again.  `active_thread_id' identifies
+        // B at that point but A is still live on the Rust stack.  Re-entering
+        // A from the top recursively restarts its Lisp body and eventually
+        // reports `excessive-lisp-nesting'.
+        if self.executing_thread_ids.contains(&record_id) {
+            return Ok(());
+        }
+        self.executing_thread_ids.push(record_id);
         let previous_active = self.active_thread_id;
+        let previous_buffer_id = self.current_buffer_id();
+        let thread_buffer_id = self
+            .find_thread_state(record_id)
+            .map(|thread| thread.buffer_id)
+            .unwrap_or(previous_buffer_id);
+        if self.has_buffer_id(thread_buffer_id)
+            && let Err(error) = self.set_current_buffer_id(thread_buffer_id)
+        {
+            self.executing_thread_ids.pop();
+            return Err(error);
+        }
         self.active_thread_id = record_id;
         let program = self
             .find_thread_state(record_id)
             .map(|thread| thread.program.clone())
             .unwrap_or(ThreadProgram::Noop);
 
-        let result = match program {
+        let mut result = match program {
             ThreadProgram::Main => Ok(()),
             ThreadProgram::Ignore | ThreadProgram::Noop => {
                 self.finish_thread_success(record_id, Value::Nil);
@@ -2972,17 +3903,31 @@ impl Interpreter {
             }
             ThreadProgram::InfiniteYield => Ok(()),
             ThreadProgram::SignalMainThread => {
-                self.deliver_signal_to_main_thread(
+                let delivered = self.deliver_signal_to_main_thread(
                     record_id,
                     Value::Symbol("error".into()),
                     Value::Nil,
                     env,
-                )?;
-                self.finish_thread_success(record_id, Value::Nil);
-                Ok(())
+                );
+                if delivered.is_ok() {
+                    self.finish_thread_success(record_id, Value::Nil);
+                }
+                delivered
             }
         };
+        let current_thread_buffer_id = self.current_buffer_id();
+        if let Some(thread) = self.find_thread_state_mut(record_id) {
+            thread.buffer_id = current_thread_buffer_id;
+        }
+        if self.has_buffer_id(previous_buffer_id)
+            && let Err(error) = self.set_current_buffer_id(previous_buffer_id)
+            && result.is_ok()
+        {
+            result = Err(error);
+        }
         self.active_thread_id = previous_active;
+        let popped = self.executing_thread_ids.pop();
+        debug_assert_eq!(popped, Some(record_id));
         result
     }
 
@@ -3062,6 +4007,232 @@ fn file_notify_watch_covers(watched_path: &str, event_path: &str) -> bool {
     event_path
         .rsplit_once('/')
         .is_some_and(|(parent, _)| parent == watched)
+}
+
+#[cfg(target_os = "macos")]
+fn file_notify_backend_flag(action: &str) -> &str {
+    match action {
+        "created" => "create",
+        "deleted" => "delete",
+        "changed" => "write",
+        "attribute-changed" => "attrib",
+        "renamed" => "rename",
+        "revoked" => "revoke",
+        other => other,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn inotify_mask_from_flags(flags: &[String]) -> Result<u32, LispError> {
+    let mut mask = 0_u32;
+    for flag in flags {
+        mask |= match flag.as_str() {
+            "access" => libc::IN_ACCESS,
+            "attrib" => libc::IN_ATTRIB,
+            "close-write" => libc::IN_CLOSE_WRITE,
+            "close-nowrite" => libc::IN_CLOSE_NOWRITE,
+            "create" => libc::IN_CREATE,
+            "delete" => libc::IN_DELETE,
+            "delete-self" => libc::IN_DELETE_SELF,
+            "modify" => libc::IN_MODIFY,
+            "move-self" => libc::IN_MOVE_SELF,
+            "moved-from" => libc::IN_MOVED_FROM,
+            "moved-to" => libc::IN_MOVED_TO,
+            "open" => libc::IN_OPEN,
+            "move" => libc::IN_MOVED_FROM | libc::IN_MOVED_TO,
+            "close" => libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE,
+            "dont-follow" => libc::IN_DONT_FOLLOW,
+            "onlydir" => libc::IN_ONLYDIR,
+            "ignored" => libc::IN_IGNORED,
+            "unmount" => libc::IN_UNMOUNT,
+            "t" | "all-events" => libc::IN_ALL_EVENTS,
+            _ => {
+                let aspect = if flag == "nil" {
+                    Value::Nil
+                } else {
+                    Value::Symbol(flag.clone().into())
+                };
+                // symbol_to_inotifymask sets errno to EINVAL before
+                // report_file_notify_error renders it into the data.
+                return Err(primitives::file_notify_error_with_errno(
+                    "Unknown aspect",
+                    &std::io::Error::from_raw_os_error(libc::EINVAL),
+                    aspect,
+                ));
+            }
+        };
+    }
+    Ok(mask)
+}
+
+#[cfg(target_os = "linux")]
+fn inotify_aspects(mask: u32) -> Value {
+    let mut aspects = Vec::new();
+    for (bit, name) in [
+        (libc::IN_ACCESS, "access"),
+        (libc::IN_ATTRIB, "attrib"),
+        (libc::IN_CLOSE_WRITE, "close-write"),
+        (libc::IN_CLOSE_NOWRITE, "close-nowrite"),
+        (libc::IN_CREATE, "create"),
+        (libc::IN_DELETE, "delete"),
+        (libc::IN_DELETE_SELF, "delete-self"),
+        (libc::IN_MODIFY, "modify"),
+        (libc::IN_MOVE_SELF, "move-self"),
+        (libc::IN_MOVED_FROM, "moved-from"),
+        (libc::IN_MOVED_TO, "moved-to"),
+        (libc::IN_OPEN, "open"),
+        (libc::IN_IGNORED, "ignored"),
+        (libc::IN_ISDIR, "isdir"),
+        (libc::IN_Q_OVERFLOW, "q-overflow"),
+        (libc::IN_UNMOUNT, "unmount"),
+    ] {
+        if mask & bit != 0 {
+            // GNU conses each match while walking this table, so the public
+            // list is the reverse of the test order above.
+            aspects.insert(0, Value::Symbol(name.into()));
+        }
+    }
+    Value::list(aspects)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn file_notify_host_error(message: &str, path: Option<&str>, error: &std::io::Error) -> LispError {
+    let rendered = error.to_string();
+    let detail = rendered
+        .split_once(" (os error")
+        .map_or(rendered.as_str(), |(detail, _)| detail);
+    let mut condition = vec![
+        Value::Symbol("file-notify-error".into()),
+        Value::String(message.into()),
+        Value::String(detail.into()),
+    ];
+    if let Some(path) = path {
+        condition.push(Value::String(path.into()));
+    }
+    LispError::SignalValue(Value::list(condition))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn file_notify_host_io_error(message: &str, path: &str, error: &std::io::Error) -> LispError {
+    let rendered = error.to_string();
+    let detail = rendered
+        .split_once(" (os error")
+        .map_or(rendered.as_str(), |(detail, _)| detail);
+    let mut condition = vec![
+        Value::Symbol("file-notify-error".into()),
+        Value::String(message.into()),
+        Value::String(detail.into()),
+    ];
+    if !path.is_empty() {
+        condition.push(Value::String(path.into()));
+    }
+    LispError::SignalValue(Value::list(condition))
+}
+
+fn file_notify_directory_snapshot(
+    path: &str,
+) -> Result<Option<Vec<FileNotifyDirectoryEntry>>, std::io::Error> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_dir() {
+        return Ok(None);
+    }
+    let mut snapshot = fs::read_dir(path)?
+        .map(|entry| {
+            let entry = entry?;
+            // `directory-files-and-attributes' obtains each entry with
+            // AT_SYMLINK_NOFOLLOW before kqueue.c extracts these fields.
+            // Following a child symlink here would compare the target's
+            // inode/times instead and misclassify link replacement/rename.
+            let metadata = fs::symlink_metadata(entry.path())?;
+            #[cfg(unix)]
+            let (inode, status_changed) = {
+                use std::os::unix::fs::MetadataExt;
+                (
+                    metadata.ino(),
+                    Some((metadata.ctime(), metadata.ctime_nsec())),
+                )
+            };
+            #[cfg(not(unix))]
+            let (inode, status_changed) = (0, None);
+            Ok(FileNotifyDirectoryEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                inode,
+                modified: metadata.modified().ok(),
+                status_changed,
+                len: metadata.len(),
+            })
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+    snapshot.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(Some(snapshot))
+}
+
+#[cfg(target_os = "macos")]
+fn file_notify_directory_changes(
+    directory: &str,
+    previous: &[FileNotifyDirectoryEntry],
+    current: &[FileNotifyDirectoryEntry],
+) -> Vec<(String, String, Option<String>)> {
+    let mut events = Vec::new();
+    let mut current_used = vec![false; current.len()];
+    let full_path = |name: &str| {
+        std::path::Path::new(directory)
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    for old in previous {
+        if let Some((index, new)) = current
+            .iter()
+            .enumerate()
+            .find(|(index, candidate)| !current_used[*index] && candidate.inode == old.inode)
+        {
+            current_used[index] = true;
+            let old_path = full_path(&old.name);
+            if old.name != new.name {
+                events.push((old_path, "renamed".into(), Some(full_path(&new.name))));
+            } else {
+                if old.modified != new.modified || old.len != new.len {
+                    events.push((old_path.clone(), "changed".into(), None));
+                }
+                if old.status_changed != new.status_changed {
+                    events.push((old_path, "attribute-changed".into(), None));
+                }
+            }
+            continue;
+        }
+
+        // Replacing a directory entry under the same name is neither a
+        // create/delete pair nor a rename in GNU's kqueue directory diff; it
+        // is a pending entry resolved as a write.
+        if let Some((index, _)) = current
+            .iter()
+            .enumerate()
+            .find(|(index, candidate)| !current_used[*index] && candidate.name == old.name)
+        {
+            current_used[index] = true;
+            events.push((full_path(&old.name), "changed".into(), None));
+        } else {
+            events.push((full_path(&old.name), "deleted".into(), None));
+        }
+    }
+
+    for (index, new) in current.iter().enumerate() {
+        if current_used[index] {
+            continue;
+        }
+        let path = full_path(&new.name);
+        events.push((path.clone(), "created".into(), None));
+        if new.len > 0 {
+            events.push((path, "changed".into(), None));
+        }
+    }
+    events
 }
 
 fn file_notify_fingerprint(path: &str) -> FileNotifyFingerprint {

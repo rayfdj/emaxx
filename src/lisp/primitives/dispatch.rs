@@ -36,6 +36,7 @@ pub(crate) use display::{
 };
 pub(crate) use lists::{
     prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,
+    sync_kbd_macro_execution,
 };
 pub(crate) use misc_keymaps::oclosure_type_of;
 mod overlays;
@@ -169,7 +170,15 @@ fn compute_name_facts(name: &str) -> NameFacts {
         prefer_override: native_owner && module.prefer_builtin(name),
         file_name_handler: file_name_handler_operation(name),
         module,
-        max_args: super::generated_builtin_arities::generated_builtin_arity(name)
+        // The source-tree arity table is regenerated from the pinned Darwin
+        // oracle for its audit.  Dispatch ownership is host-specific, so use
+        // the selected host C contract for the runtime maximum as well; this
+        // supplies Linux-only primitives such as inotify without reviving
+        // Darwin-only kqueue cells.
+        max_args: crate::lisp::primitives::GNU_C_PRIMITIVES
+            .binary_search_by_key(&name, |contract| contract.name)
+            .ok()
+            .and_then(|index| crate::lisp::primitives::GNU_C_PRIMITIVES[index].arity)
             .and_then(|(_, maximum)| u16::try_from(maximum).ok()),
     }
 }
@@ -257,10 +266,19 @@ pub(crate) fn call_with_facts(
     {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    if let Some(specification) = facts.file_name_handler
-        && let Some(result) = dispatch_file_name_handler(interp, env, name, specification, args)?
-    {
-        return Ok(result);
+    if let Some(specification) = facts.file_name_handler {
+        match dispatch_file_name_handler(interp, env, name, specification, args)? {
+            FileNameDispatch::Handled(result) => return Ok(result),
+            // fileio.c's copy family runs its native body on the names it
+            // expanded for the handler lookup (Fexpand_file_name and
+            // expand_cp_target go through handlers), not on the raw
+            // arguments; a handler that rewrites names during expansion
+            // and then declines the operation must see its rewrite honored.
+            FileNameDispatch::Native(Some(normalized)) => {
+                return facts.module.call(interp, name, &normalized, env);
+            }
+            FileNameDispatch::Native(None) => {}
+        }
     }
 
     facts.module.call(interp, name, args, env)

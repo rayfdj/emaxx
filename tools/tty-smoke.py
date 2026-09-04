@@ -10,8 +10,8 @@ Usage:
 
 EMAXX_BINARY defaults to target/release/emaxx.  GNU_LISP_DIR is a GNU
 Emacs `lisp/' tree used to build EMACSLOADPATH (interactive commands
-autoload their dumped Lisp owners); when omitted or missing the test
-exits 0 with a SKIP notice so unconfigured environments stay green.
+autoload their dumped Lisp owners).  Missing inputs normally produce a
+SKIP, but EMAXX_TTY_SMOKE_REQUIRE=1 makes an explicit gate fail closed.
 """
 
 import os
@@ -35,11 +35,18 @@ def fail(message):
 def main():
     binary = sys.argv[1] if len(sys.argv) > 1 else "target/release/emaxx"
     lisp_dir = sys.argv[2] if len(sys.argv) > 2 else "../emacs/lisp"
+    require_inputs = os.environ.get("EMAXX_TTY_SMOKE_REQUIRE") == "1"
     if not os.path.exists(binary):
-        print(f"SKIP: no emaxx binary at {binary}")
+        message = f"no emaxx binary at {binary}"
+        if require_inputs:
+            fail(message)
+        print(f"SKIP: {message}")
         return
     if not os.path.isdir(lisp_dir):
-        print(f"SKIP: no GNU lisp tree at {lisp_dir}")
+        message = f"no GNU lisp tree at {lisp_dir}"
+        if require_inputs:
+            fail(message)
+        print(f"SKIP: {message}")
         return
     load_path = os.pathsep.join(
         [lisp_dir]

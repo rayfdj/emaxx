@@ -75,6 +75,18 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 128 | encode substitution rules for the generic/charset arms never swept against the oracle | OPEN |
 | 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | OPEN |
 | 130 | a failed oracle load-path probe silently falls back to the manual tree walk, changing what the harness boots without a trace | OPEN (recorded 2026-08-29) |
+| 146 | rendering a non-selected mode line overwrote that window's independent point slot | FIXED 2026-09-02 |
+| 147 | graphical fringe display strings leaked their source text onto TTY frames | FIXED 2026-09-02 |
+| 148 | motion between edits left undo's point-before-command record stale when a boundary already existed | FIXED 2026-09-02 |
+| 149 | the TTY differential reused the host temporary namespace across killed editor sessions until Org's 1000 `babel-stable-N` names were exhausted (harness defect, recorded in the 2026-09-03 tty-frontend merge section) | FIXED 2026-09-03 |
+| 150 | the `supersession-accept-revisit` TTY scenario sent an extra `y` after a successful save and manufactured a divergence (harness defect, same section) | FIXED 2026-09-03 |
+| 151 | status_notify's drain of an exited process's remaining output is not modeled: during a JUST-THIS-ONE wait GNU still delivers a distractor's leftover output once it exits, Emaxx never does | OPEN (recorded 2026-09-03, Linux oracle; numbered 149 in its section until 2026-09-04) |
+| 152 | `(sleep-for 0)` runs due Lisp timers; Fsleep_for returns without entering the wait for a non-positive duration | OPEN (recorded 2026-09-04) |
+| 153 | batch `read-from-minibuffer` reads stdin even while `executing-kbd-macro` is non-nil, where read_minibuf takes the full path; the accepted-default history push is gated on TTY-reader presence rather than that condition | OPEN (recorded 2026-09-04) |
+| 154 | `expand_file_name_runtime` resolved a nil DEFAULT-DIRECTORY against the process cwd; exposed as a copy-family regression by the 2026-09-04 Linux frozen run | FIXED 2026-09-04 |
+| 155 | Linux `process-attributes` returns 15 of GNU's 31 keys (no pcpu, pmem, utime/stime/cutime/cstime/ctime, page-fault counts, tpgid, ttname, nice, pri, thcount), so Proced's %CPU refinement fails with `(wrong-type-argument integerp nil)`; the Darwin skip hid it | FIXED 2026-09-04 (sysdep.c /proc port; proced-tests 6/6 on Linux) |
+| 156 | `make-process` and `call-process` never searched `exec-path`/`exec-suffixes` (openp with X_OK): an empty `exec-path` still ran the program, misses surfaced as the spawn failure instead of "Searching for program" with openp's errno, a directory named as the program was a `(error "Permission denied (os error 13)")`, argv[0] was the bare name rather than the resolved path, EACCES rendered as `file-error` instead of `permission-denied` in every `report_file_errno` path, `file-executable-p` was nil for directories, an unexecutable absolute program was a synchronous host-error string instead of GNU's pty-path child exiting 127/126 (with the perror line) or the pipe-path "Doing vfork" signal, and glibc's `execvp` ran ENOEXEC files through `sh` where GNU's `execve` fails | FIXED 2026-09-04 |
+| 157 | `process-attributes` of the Emaxx process itself reports `state` "S" and `thcount` 2 where GNU reads "R" and 1: Lisp runs on a spawned thread while /proc/PID/stat describes the blocked main thread | OPEN (architectural, recorded 2026-09-04) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -4034,6 +4046,79 @@ Documented-open from this round:
   (supersession warning, special-character names, filename encoding)
   remain open with diagnosed directions.
 
+## 2026-09-01 issue 34: asynchronous process, timer, and file events
+
+This round replaces polling-shaped placeholders with the host event substrate
+needed by ordinary Emacs Lisp waits.  The implementation is anchored to
+`process.c`'s `wait_reading_process_output`, `Fmake_process`,
+`Faccept_process_output`, and `Fprocess_tty_name`; `keyboard.c`'s
+`timer_check`; `kqueue.c`'s `kqueue_callback`, directory-diff path,
+`Fkqueue_add_watch`, and `Fkqueue_rm_watch`; and `inotify.c`'s
+`inotify_callback`, `Finotify_add_watch`, and `Finotify_rm_watch`.
+
+The resulting runtime contract is:
+
+- Darwin registers real vnode descriptors with kqueue and translates the
+  coalesced flags and directory snapshots into GNU's callback order.  Linux
+  selects the generated Linux primitive inventory and uses a shared
+  nonblocking inotify descriptor, preserving masks, names, move cookies,
+  ignored-watch invalidation, and queue order.
+- The process wait path services filters, sentinels, connection progress,
+  child status, timers, file notifications, and cooperative threads.  The
+  blocking TTY paths use the same pump and redraw after timer or process
+  progress; nested readers pass their own idle duration rather than scanning
+  the Lisp timer list twice.
+- External processes honor the unhandled local form of `default-directory`,
+  stream-specific PTY reporting, stop validation, and deterministic child
+  cleanup.  Dropping an interpreter terminates and reaps live children.
+
+Adversarial review found and corrected these lifecycle defects before the
+gate:
+
+1. The kqueue reserve check underflowed when `RLIMIT_NOFILE` was below Emacs's
+   50-descriptor reserve.
+2. A failed final inotify watch removal could retain an otherwise empty shared
+   queue.
+3. Post-spawn descriptor setup could fail before the child was wrapped in its
+   terminating/reaping owner; synchronous stdin write failure likewise left
+   cleanup implicit.  Both paths now kill and wait deterministically.
+4. Deleting a nonexistent path fabricated a `deleted` event, and stale
+   fingerprint fields survived after the native backend became authoritative.
+5. A blocking terminal read pumped process output without reporting progress,
+   so the changed buffer was not redrawn until the next key.
+6. The unified timer pump reused a TTY helper that discarded callback errors
+   and nonlocal exits.  It now invokes `timer-event-handler` as a named timer
+   callback, balances timer callback state, propagates throws and debugger
+   errors, preserves the native exact clock, and performs one Lisp timer scan
+   per wait.
+
+Permanent Rust coverage includes independently created/renamed/deleted host
+files, kqueue directory creation, callback isolation and invalidation, raw
+inotify ordering/cookies, due and deferred timers, recursive-edit nonlocal
+exits, process cwd/PTY/EOF/drop cleanup, and TTY redraw after both timer and
+process progress.  Focused upstream runs matched 4/4 filenotify tests, 5/5
+timer tests, 2/2 inotify tests, and every issue-relevant process selector
+(pipe/PTY shapes, lifecycle, stderr, sentinels, stop/filter/multiwait, serial,
+and network descriptors).  The 15-test Rust timer cluster is also green.
+
+The cooperative thread model's previously disclosed gaps remain: the Lisp
+thread file matches 1/3 and the C-thread file 30/32, with the same blocked
+thread backtrace/list and preemptive mutex/condition-variable limitations
+already recorded above.  This change does not claim preemptive threads.
+
+macOS Clippy is warning-free for all targets and features.  The Linux target
+cross-compiles and passes the same Clippy `-D warnings` gate through Zig; no
+Linux runtime was available in this session, so native inotify execution is
+not claimed beyond source-oracle comparison, permanent tests, and the Linux
+build gate.
+
+The final unrestricted macOS gate (batch stdin closed so EOF-prompt tests use
+their documented contract) is green: the library reports 2263 passed, 0
+failed, and 4 documented ignores; compat-harness 38/38; CLI 12/12; ERT
+integration 3/3; package lifecycle 5/5; and perf-harness 1/1.  The localhost
+socket, UDP, GnuTLS transport/X.509, external kqueue, process cwd/PTY/drop,
+timer, file-notification, and blocking-TTY redraw cases all executed in that
+run rather than being inferred from compilation.
 Hard-third round 2 (2026-09-01, Linux): composition, tramp and coding
 mechanisms
 ----------------------------------------------------------------------
@@ -4136,3 +4221,1262 @@ Documented-open from this round:
   (probe ctx1.el).  The divergence is therefore in what the live
   session does around those calls, which needs an erc-d dialog to
   bisect.
+
+Hard-third round 3 (2026-09-01, Darwin): coding detection and ERC stamps
+------------------------------------------------------------------------
+This round closes all three concrete residuals documented at the end of
+round 2.  The pinned GNU 30.2 binary was probed before either mechanism
+changed.
+
+- coding.c detect_coding_sjis is now represented in undecided decoding:
+  ASCII passes, 0x81..0x9F and 0xE0..0xEF require a 0x40..0xFC trail
+  other than 0x7F, 0xA0..0xDF is a single-byte Japanese sequence, and an
+  incomplete lead in the final block rejects the category.  Because
+  Emacs-Mule has higher category priority, the overlapping portion of
+  detect_coding_emacs_mule is checked first from the live
+  `emacs-mule-charset-table`, rather than letting the new detector steal
+  those streams.  The preceding iso-latin-1 detector likewise reads the
+  mutable `latin-extra-code-table`; C1 is not treated as one hard-coded
+  invalid range.  Selected Emacs-Mule input is decoded through the live
+  charset table.  The sole residual from round 2's 132-case matrix now
+  matches exactly: undecided over 61 81 62 decodes to (97 65372) and records
+  japanese-shift-jis.  Oracle-backed boundary rows cover incomplete and
+  invalid SJIS leads, Latin-extra priority, ordinary/private Emacs-Mule,
+  unmappable-byte preservation, and live mutation of the Latin-extra table.
+- timefns.c Fformat_time_string returns a newly allocated mutable,
+  multibyte Lisp string.  Emaxx returned immutable host text and relied
+  on the interpreted evaluator to upgrade values when they entered a
+  variable.  Byte-compiled lexical locals bypass that upgrade, so
+  erc-format-timestamp's put-text-property calls were silently discarded
+  from the original timestamp string: the left-margin method inserted a
+  correct buffer display property whose nested string lacked `invisible',
+  and legacy date stamps inserted a string lacking the `erc-timestamp'
+  field.  The primitive now allocates shared mutable string state at its
+  boundary.  The adjacent Fcurrent_time_string twin was corrected at the
+  same ownership boundary; GNU specifies it as mutable but unibyte.
+  A compiled oracle contract checks mutation, intervals, and the two
+  multibyte flags, so an interpreted-only pass cannot hide this bug again.
+- Live erc-d tracing established that erc-stamp--setup,
+  erc-add-timestamp, and the specialized erc--insert-timestamp-left all
+  ran in the right buffer and that the outer buffer properties were
+  already present.  The real pre-fix comparison was 1/3 matching
+  (target/compat/run-1788273953352161000-80592); the rebuilt final tree is
+  3/3 matching with zero mismatches
+  (target/compat/run-1788276213505930000-86621).
+
+Environment correction: an initial sandboxed ERC comparison appeared to
+be 3/3 matching only because BOTH GNU and Emaxx failed to bind the local
+erc-d server with `Operation not permitted'
+(target/compat/run-1788273832246543000-80173).  That result was rejected,
+not counted as compatibility evidence; every before/after count above is
+from the unsandboxed localhost run.
+
+## 2026-09-02 tty/main integration audit for issue 34
+
+The publication candidate merges tty head
+`a45ac6ad555dcce9b1f8c7588ee1cdce28569104` with refreshed main head
+`f957201559ed10d34e4de3927465969af3dd2cb3`; their merge base is
+`beca258798e124c101e2558816d405097536fcf3`.  Main first resolved to
+`5a20e24871c6f5e67d87f3919c70cd9b9d010670`, and that integration completed
+an optimized full run, but main advanced during the run.  The result was
+rejected as publication evidence, the uncommitted merge was aborted, and the
+latest main was merged afresh so one merge commit will carry the actual
+reviewed parents.
+
+The formal adversarial review re-read every combined-diff mechanism against
+its GNU 30.2 owner: process.c's wait/process lifecycle, keyboard.c's timer
+pump, kqueue.c and inotify.c's watch/event paths, composite.c's automatic
+composition, charset.c/coding.c's charset and byte-stream conversions,
+fileio.c/filelock.c's replace/handler semantics, and timefns.c's returned
+string ownership.  Static scans found no project-private Lisp namespace,
+oracle delegation, silent TTY fallback, generated-manifest drift, test-only
+runtime dispatch, or compatibility loaddefs in production.  All 15 enforced
+anti-cheat gates passed from the optimized candidate.
+
+The refreshed-main audit did find a real defect before Clippy or the final
+gate: round 3 detected an Emacs-Mule/SJIS overlap but never selected or
+decoded Emacs-Mule, and treated all C1 bytes as Latin-invalid.  For example,
+GNU selects Emacs-Mule for bytes 81 A0 while the first integration returned
+raw-text; GNU keeps 91..96 in iso-latin-1 through its live Latin-extra table.
+The repair ports the relevant category order and table-driven layouts rather
+than special-casing samples.  A 714-row cross-binary matrix (every C1 lead,
+2/3-byte boundary families, and private 4-byte forms) now has identical
+coding-category decisions; the permanent contract pins representative
+decoded values and mutates `latin-extra-code-table` to prove the live table is
+consulted.  Emacs-Mule decoding matched the oracle except for 17 cases whose
+decoded private-charset character is above Unicode; those remain part of the
+existing structural finding 127 because Rust strings cannot represent GNU's
+up-to-0x3FFFFF character space.
+
+The ignore inventory was challenged before accepting the long gate.  Two
+functional ignores were stale: the real EUC-JP codec already made the
+EUC-JP/DOS in-place region test pass, and the US-ASCII replacement test still
+hid a genuine defect.  The first serial attempt was interrupted and rejected
+as soon as it printed the stale EUC-JP ignore.  Charset encoding had flattened
+all unencodable characters to SPACE; coding.c instead uses each coding
+system's `:default-char` (US-ASCII specifies `?`, while iso-latin-1 defaults
+to SPACE).  Both the substitution staging and byte encoder now share the live
+property.  The enabled oracle contract covers Latin-1, US-ASCII, and a newly
+defined charset coding with a nonstandard replacement, and both formerly
+ignored tests pass normally.  The only remaining ignores are two explicit
+end-to-end PTY gates whose contract requires separately built release binaries
+and the sibling GNU tree; they are opt-in gates, not unsupported feature skips.
+Adversarially invoking those gates exposed one harness-honesty defect:
+`tty-smoke.py` returned status zero after printing `SKIP` when an input was
+missing.  The ignored Rust gate now sets `EMAXX_TTY_SMOKE_REQUIRE=1`, matching
+the existing fail-closed differential gate.  A deliberately missing binary
+then exited 1, and the actual optimized PTY smoke workflow ran and passed
+(1 passed, 2269 filtered out) against `target/release/emaxx` and
+`../emacs/lisp`.
+
+Two evidence corrections are explicit:
+
+- The earlier issue-34 full run used two libtest threads.  It remains useful
+  regression evidence but is not the required authoritative serial gate;
+  the fresh one-thread run and its exact permission-denied reruns below are
+  the publication evidence.
+- kqueue/inotify event names are converted with lossy UTF-8, so a host path
+  containing invalid UTF-8 bytes is reported with U+FFFD.  Ordinary Unicode
+  names and raw inotify ordering/cookies are covered, but arbitrary Unix
+  filename-byte preservation is not claimed.
+
+Formatting is clean, and macOS plus `x86_64-unknown-linux-gnu` all-target,
+all-feature Clippy pass with `-D warnings`; the latter uses Zig only as the
+cross C compiler/linker and is not Linux runtime evidence.
+
+The exact optimized serial command was `LANG=C LC_ALL=C RUST_TEST_THREADS=1
+cargo test --profile gate -- --test-threads=1 < /dev/null`.  In the managed
+sandbox it exercised all 2270
+library tests for 8418.88 seconds: 2258 passed, 10 local socket/TLS tests
+failed, and the two explicit PTY gates were ignored.  Every failure reported
+the same environmental boundary, `Cannot bind server socket: Operation not
+permitted`; there was no mismatched semantic assertion.  On explicit review
+direction the entire suite was not repeated.  Instead, exactly those ten
+named failures were rerun outside the bind-denying sandbox, optimized and one
+at a time with `--exact --test-threads=1`; all 10 passed.  The composite
+library accounting is therefore 2268 passing tests plus the two documented
+opt-in PTY gates.  This is recorded as composite evidence, not misreported as
+one exit-zero `cargo test` invocation.
+
+Rejected evidence is also explicit: an earlier malformed `--exact` filter
+selected zero tests; the first serial attempt was stopped at the stale EUC-JP
+ignore; and an unnecessary outside-sandbox full restart was interrupted at
+the user's direction (exit 130) before the targeted reruns.  None contributes
+to the passing totals above.
+
+## 2026-09-02 issue 39: Eat 0.9.4 package and real-process certification
+
+The certified package is Eat 0.9.4 from the official NonGNU ELPA archive,
+whose package tarball has SHA-256
+`14971fc562f0820794eb6af78beebc7dc3ba898221e785c2d272a9f0fccfc54a`.
+The matching upstream source commit is
+`c91451f2d17453c19d3fa76faa4945cbe54e14ce`, and its source archive has
+SHA-256 `32a2793c1f203bf2e0fe67f79310c2389257e1338b191e017ea60dc68000c01a`.
+The local archive also pins Compat 31.0.0.2 at SHA-256
+`47d8693a10087f8b20c72e6a78b628db980cb7547c4f8f517fc5d11acd8b0f38`.
+Both subjects assert Lisp `emacs-version` is exactly 30.2.  The Compat package
+version does not imply Emacs 31: Emacs 30.2's built-in Compat satisfies Eat's
+`compat >= 29.1` dependency, so an ordinary package.el transaction installs
+only Eat 0.9.4.
+
+The work corrected three general runtime defects found by the unedited
+package and process workloads.  Evaluation of positioned source symbols now
+handles every bare-symbol value, including nil, t, keywords, and ordinary
+symbols, instead of assuming the ordinary-symbol representation.  Equal hash
+tables now use the active environment's positioned-symbol equality for
+lookup, insertion, deletion, and copying.  Key definition and lookup now
+normalize GNU symbolic vector events consistently and populate the same
+modifier cache for nil, t, mouse events, and positioned symbols.
+
+The adversarial review found and corrected two narrower versions of those
+repairs before publication.  The first keymap repair handled ordinary
+`Value::Symbol` events but omitted nil, t, and positioned events, and it used
+synthetic names rather than the canonical nil/t values.  The first hash-table
+expectation also assumed that a key inserted while positioned-symbol mode was
+enabled would remain visible after disabling the mode.  A direct GNU 30.2
+probe disproved that assumption: the correct enabled/disabled/re-enabled
+record is `(1 207 207 (missing missing missing missing) 207)`.  Emaxx now
+matches it, including copied-table behavior.  The other direct records also
+match exactly: `(t nil :eat-key 42 t)` for bare-symbol evaluation and
+`((nil) (t) (mouse-1 click) t)` for symbolic key events.
+
+The package gate creates separate clean GNU and Emaxx user roots and an
+artifact-pinned local package archive, then performs ordinary package refresh
+and installation.  It requires the exact transaction and installed inventory
+(`eat-0.9.4` only), exactly Eat's two compiled `.elc` files and generated
+autoload file, a fresh-process restart, and proof that the restarted runtime
+loads installed bytecode.  It extracts the official source archive's 57
+`eat-test-` ERT definitions without editing them; both GNU and Emaxx pass all
+57.  The shared process workload drives real Eat PTYs for shell input and
+output, terminal resizing, cursor and SGR state, alternate-screen removal,
+scrollback, EOF and exit status, Ctrl-C signal termination, and an interactive
+shell.  GNU and Emaxx emit the same pinned records.  The final optimized run
+reported, for each subject, two compiled files, 57 upstream tests, and a
+passing real-process gate, followed by an exact record match.
+
+Static review found no editor-name branch, oracle delegation, fixture-output
+dispatch, process shortcut, package skip, or test-only production hook.  The
+process gate contains no system-type branch and uses Eat's real PTY entry
+points rather than `call-process` or `start-process`.  The five Python
+anti-cheat/unit tests pass.  Formatting and `git diff --check` are clean;
+native and `x86_64-unknown-linux-gnu` all-target, all-feature Clippy both pass
+with `-D warnings`.  Zig is used only as the Linux cross C compiler/linker,
+not as Linux runtime evidence.
+
+The authoritative repository-wide command was exactly `LANG=C LC_ALL=C
+RUST_TEST_THREADS=1 cargo test --profile gate -- --test-threads=1 <
+/dev/null`.  It ran outside the managed socket-binding restriction once, in
+the optimized `gate` profile.  The main library result was 2271 passed, zero
+failed, and two ignored in 8330.65 seconds; all 59 executed follow-on tests
+also passed, including 5/5 package-lifecycle tests.  The two ignores are the
+explicit opt-in `tty_differential_end_to_end` and `tty_smoke_end_to_end`
+gates, whose contracts require separately built release binaries and the
+sibling GNU tree; they are not Eat skips or unsupported-feature waivers.
+
+Rejected evidence is explicit.  Short-name `--exact` filters that selected
+zero Rust tests were discarded and replaced by fully qualified focused runs.
+One malformed Emaxx key probe with an extra closing parenthesis was discarded
+and corrected.  An earlier long-gate attempt was interrupted when the Emacs
+31/Compat-version misunderstanding was corrected; it is not counted.  The
+initial stale-bucket expectation described above was rejected after the GNU
+probe.  Finally, a Python bytecode-cache `PermissionError` outside the
+workspace was an environmental write restriction, not a code result; the
+same syntax check passed with its cache under `/private/tmp`.
+
+## 2026-09-02 Linux integration audit of the tty/main candidate (issue 34)
+
+The candidate above (`0bbdb5b`, tty head merged with main `f957201`) was
+re-audited on a Linux host with the pinned GNU 30.2 oracle running natively,
+which the Darwin session could not do.  The diff was re-read against
+inotify.c, fileio.c, process.c and keyboard.c; every byte-stream probe below
+was run identically under both binaries before any change was made.  The
+integration is sound in its process, timer, kqueue and coding mechanisms;
+its Linux backend had four defects and one evidence gap, all corrected here.
+
+1. **inotify-tests.el could not load.**  `subr-arity`/`func-arity` consulted
+   only the Darwin-regenerated arity table, which has no inotify rows, so
+   the eager macroexpansion of `(should-not (inotify-valid-p 0))` signalled
+   "no GNU-derived arity for subr inotify-valid-p" and the harness recorded
+   LoadError with 0/2 (main: 0/2 as `ert-test-skipped`).  The arity
+   accessor now consults the host's C contract first, as dispatch already
+   did; oracle contract: `((1 . 1) (3 . 3) (1 . 1) t nil)`.  inotify-tests.el
+   is 2/2 matching.
+2. **Delivery timing.**  process.c registers the inotify (and kqueue)
+   descriptor with `add_keyboard_wait_descriptor`, and
+   `wait_reading_process_output` selects keyboard-class descriptors only for
+   a READ_KBD wait; `process_special_events` handles X selection events
+   only.  So `accept-process-output` and `sleep-for` never read the kernel
+   queue, `input-pending-p` neither reads nor dispatches, and callbacks run
+   from read_char.  The oracle for a watched file written moments earlier:
+   `(nil 0 0 0 0 1 ...)` across input-pending-p, accept-process-output,
+   sleep-for, `(input-pending-p t)` and read-event.  Emaxx ran the callback at
+   every one of those points.  Kernel-queue service now happens only while
+   the thread is in a keyboard read (`waiting_for_user_input`, which
+   `accept-process-output` and `sleep-for` clear for their own duration as
+   `waiting_for_user_input_p = read_kbd` does); handler-backed watches keep
+   delivering inside any wait, because GNU receives those as monitor process
+   output.  Four eval tests had pinned the old behaviour: three with
+   `(sleep-for 0)` waits and a kqueue-only library check, and
+   `auto_revert_mode_reloads_changed_file` with a `sleep-for` polling loop
+   that the oracle itself leaves at "any text" (autorevert-tests.el's own
+   `auto-revert--wait-for-revert` uses read-event once notifications are in
+   use).  They now use keyboard reads and a host-neutral check, and the same
+   watch scenarios are a Linux oracle contract:
+   `(((2 directory) nil nil nil) (nil 2 t t))`.
+3. **Callback errors.**  read_char executes the special-event binding without
+   a condition handler, so a signalling callback leaves `read-event` (the
+   oracle: `(error "boom")`, with the sibling watch's callback for the same
+   kernel event delivered by the next read).  Emaxx demoted every non-debug
+   error to a message reading "Error in file notification: %S", a string that
+   exists nowhere in GNU; that invented message is gone and errors propagate,
+   the remaining queue intact.  The tty command loop already reports such an
+   error the way cmd_error does.
+4. **Error data shapes.**  fileio.c `report_file_notify_error` always places
+   the rendered errno between the message and the object, splicing a list or
+   nil object in as the tail.  Emaxx omitted the errno text for "Unknown
+   aspect" (GNU: `"Invalid argument"`, set explicitly by
+   symbol_to_inotifymask) and "Invalid descriptor ", printed a nil aspect as
+   an extra element, wrapped a dotted descriptor in a list, and reported
+   "Could not rm watch" with an empty name instead of the kernel descriptor.
+   Aspects are also converted before FILE-NAME is type-checked, as
+   Finotify_add_watch orders them.  All shapes now match the oracle; the
+   "Invalid descriptor " errno text is whatever the previous host call left
+   behind in GNU as well, so the contract pins its presence and type, not its
+   value.
+5. **Clippy on Linux.**  The candidate's Linux Clippy evidence came from a Zig
+   cross-compile on the Darwin toolchain.  With the current stable toolchain
+   (rustc 1.98.0) the same gate fails on 15 pre-existing `chunks_exact(2)`
+   sites through the new `chunks_exact_to_as_chunks` lint; they are converted
+   to `as_chunks::<2>()`, which is behaviour-preserving.  `cargo fmt --check`
+   and `cargo clippy --profile gate --all-targets --all-features -- -D
+   warnings` are both clean natively on Linux.
+
+Cross-binary evidence: a 30-row inotify probe (error shapes, stale and
+duplicate removal, per-inode ID assignment, directory create/modify/rename/
+delete/delete-self event lists with cookies, ignored-watch invalidation,
+delivery stage, error propagation and isolation) is identical between GNU
+and emaxx except for one row, where emaxx reports an extra `modify` for the
+`.#file` lock entry because `lock-file` writes a regular file where GNU
+writes a dangling symlink -- the divergence already recorded in the
+2026-08-27 sweep, outside this change.  Harness replays on Linux after the
+fixes: inotify-tests.el 2/2 (from 0/2), filenotify-tests.el 4/4,
+timer-tests.el 5/5, process-tests.el 36/37.  The one process-tests miss,
+`lookup-hints-values`, fails identically on main (`--subject-root` baseline
+0/1): `network-lookup-address-info` rejects the glibc `inet_aton` forms
+("127.1", "0xe3010203", octal octets) that AI_NUMERICHOST accepts on
+GNU/Linux.  It predates this integration and stays OPEN as a new finding.
+
+The full serial Linux gate on the candidate plus the fixes above exposed
+what the branch's switch to the host C contract means for the Rust suite:
+four tests had been written against the Darwin contract and only ever ran
+there.  `x-load-color-file`, `x-file-dialog` and `system-move-file-to-trash`
+are not compiled into the X oracle (nor, now, into Emaxx on Linux), and
+`frame-windows-min-size` is window.el Lisp everywhere, which only the Darwin
+contract lists with an arity.  Those tests now consult `is_builtin` and
+assert the void-function or Lisp-defined behaviour the host's oracle shows;
+on Linux that closes the "Emaxx models the X-compiled headless build"
+divergence those tests used to record.  Routing `frame-windows-min-size`
+through window.el then uncovered two window.c gaps that the native stand-in
+had masked: a frame's root window had no sibling link to its minibuffer
+window (frame.c make_frame sets `wset_next (rw, mini_window)` and
+`wset_prev (mw, root_window)`), and `window-mode-line-height` reported the
+minibuffer's buffer format where `window_wants_mode_line` requires
+!MINI_WINDOW_P.  Oracle: `(8 10 5)` for the three frame-windows-min-size
+forms; Emaxx read `(4 10 4)` before and `(8 10 5)` after.
+
+Two gate observations are recorded, not hidden: the manifest anti-cheat
+test shells out to `rustfmt`, which the unprivileged gate user could not
+reach under /root's rustup (it passed once the toolchain was on that user's
+PATH), and `process_send_string_and_region_route_output_to_the_process_buffer`
+failed once under the serial gate's load with only the first echo line
+present, then passed on rerun and on the main baseline; its single
+`accept-process-output` returns on the first delivery from the named
+process, so it belongs to the KNOWN-RACY family already listed above.
+
+Gate accounting for this change, as composite evidence: the first full
+serial Linux gate (`lingate2`, LANG=C, one thread, unprivileged runner) on
+the candidate plus the notification fixes reported 2264 passed, 7 failed, 2
+ignored over 5845 s -- the rustfmt PATH artifact, the four Darwin-contract
+tests, the `sleep-for` auto-revert test, and the one load-sensitive process
+echo -- with bins and the CLI, package-lifecycle and ERT-runner integration
+suites all green.  After the corrections above the second full serial gate
+reported 2270 passed, 1 failed, 2 ignored over 5772 s, again with every
+other stage green; the single failure was the Todo-mode window-state test
+asserting that the batch root window has no next sibling, which is false in
+GNU (`(eq (window-next-sibling (selected-window)) (minibuffer-window))` is
+t there) and had only held because of the missing frame.c link.  That
+assertion now states the oracle's answer, and the test plus the 159-test
+window/frame subset were rerun green on the final tree; no production
+source changed after the second gate.
+
+The publication tree then also absorbed main's grouped test gate
+(`8b08bbf`) and tty-frontend's Eat certification (`59b4d18`), both merging
+without a source conflict (only this ledger and docs/testing.md overlapped,
+textually).  On that merged tree, natively on Linux as the unprivileged
+runner with git state recorded, `python3 tools/grouped_gate.py --scope full`
+passed every group: eval_01 349, eval_02 284, eval_03 319, eval_04 247,
+eval_05 349, primitives 349, compat_runtime 82, tty 45 (+2 opt-in PTY
+ignores), batch 43, lightweight 207 -- 2274 library tests -- plus the bins
+and integration targets, in about 57 minutes.  Per docs/testing.md that
+runner is still an experimental accelerator, so this is recorded as the
+grouped run it was, alongside the two serial gates above, not as a third
+serial gate.
+
+Not claimed: Darwin was not re-run here.  The kqueue backend is unchanged;
+the delivery-timing change applies to it through the same
+`waiting_for_user_input` gate, and the converted eval tests use the same
+keyboard-read waits on both hosts.
+
+## 2026-09-02 findings 146-148: Darwin post-merge certification and TTY correction
+
+The Linux integration publication above ended by stating that Darwin had not
+been rerun.  This audit starts from the resulting remote-main commit
+`3c78b1e93bdad5a2099e3b5d22a235b33d0f8d47` and closes that evidence gap on
+Darwin.  The first strict all-target, all-feature Clippy pass found one real
+host-configuration defect before runtime testing: `file_notify_error_with_errno`
+is used only by Linux-guarded inotify call sites but the helper itself was
+compiled on macOS, where `-D warnings` rejected it as dead code.  The helper
+now has the same Linux guard as all four callers.  Formatting, diff hygiene,
+and strict release Clippy then passed.
+
+The focused Darwin notification audit exercised the real kqueue backend:
+four eval_04 notification tests, the exact auto-revert regression, all 346
+then-current primitive tests (including kqueue, processes, timers, and GNU
+probes), and the Todo window regression all passed, 352/352.  The first full
+grouped gate on that production tree recorded artifact
+`target/grouped-gate/run-1788334198352310000-94983`: the library was green
+(2271 passed plus the two declared opt-in TTY ignores), every binary target,
+CLI, and ERT runner passed, but package lifecycle was 4/5.  The failed
+`local_package_vc_upgrade_matches_gnu_and_survives_restart` run was not
+retried or counted green.  GNU had checked out the 2.0 source while its 1.0
+bytecode and package descriptor were still active.
+
+Inspection of GNU package-vc.el established the test race: the Git process
+can become non-live before `vc-post-command-functions` runs
+`package-vc--unpack-1`, recompiles the checkout, and replaces package-alist.
+The integration test had waited only for `process-live-p`.  It now waits, with
+a 60-second bound, for the public semantic result -- the installed
+`package-desc-version` becoming `(2 0)` -- while continuing to service process
+output.  This is not a retry or a fixed sleep.  The exact formerly failing
+test then passed in 23.06 seconds and all five package-lifecycle tests passed
+under their original two-thread integration conditions in 116.27 seconds.
+
+The explicit release TTY smoke gate passed 1/1 in 53.85 seconds.  The complete
+217-scenario GNU-vs-Emaxx PTY differential then ran serially for 4644.19
+seconds.  It completed the whole inventory rather than stopping at the first
+failure: 211 scenarios matched and six diverged.  Those failures reduced to
+three production mechanisms, recorded rather than dismissed as timing:
+
+- Finding 146: while rendering a non-selected window's mode line, Emaxx
+  temporarily selected that window and made its buffer current.  Restoration
+  switched the current buffer back before restoring selection, which made
+  `set_current_buffer_id` save the buffer's live scan point into the temporary
+  window.  TMM consequently changed *Completions* from GNU's line 1 to line 5.
+  Restoring selection first makes redisplay state-preserving.  Folded-row
+  point deferral is also now limited to a window with an actual cursor; two
+  absent cursors are not a same-row motion.
+- Finding 147: Bookmark's graphical `(left-fringe ...)' display property on
+  an overlay before-string leaked the underlying `"x"` into a terminal text
+  row.  Left- and right-fringe display strings now occupy zero TTY cells;
+  the complete bookmark set-and-jump journey matches GNU.
+- Finding 148: Emaxx refreshed its point-before-command undo field only when
+  `undo-boundary` actually appended a boundary.  GNU refreshes the keyboard.c
+  command point even when simple.el suppresses a consecutive boundary.  A
+  motion between two edits therefore left Emaxx recording the earlier point.
+  Refreshing at every command dispatch fixes recorded and replayed keyboard
+  macro undo, selective region undo with a newer out-of-region edit, repeated
+  `C-_`, and repeated `C-x u`.
+
+All six formerly divergent journeys were rerun together against GNU after the
+fixes; every checkpoint, including the portions unreachable after each first
+failure, matched.  Native regressions separately cover graphical fringe
+suppression, the nested TMM window point, state-preserving non-selected
+mode-line rendering, and the selected-window folded-row deferral.  This is
+composite TTY evidence -- one complete 217-scenario run plus a complete
+focused rerun of its six failures -- not misreported as a second one-shot
+217-scenario pass.
+
+Finally, `python3 tools/grouped_gate.py --scope full` passed on the complete
+corrected dirty tree with artifact
+`target/grouped-gate/run-1788342414268828000-6860`.  Its dynamic inventory was
+2275 library outcomes: 2273 passed, zero failed, and exactly the two declared
+opt-in TTY gates were ignored.  The three discovered binary targets passed
+39 tests; CLI passed 12/12, ERT runner 3/3, and package lifecycle 5/5.  The
+runner used the recorded safe schedule (single-threaded within the evaluator,
+primitive, compatibility, and TTY groups; only proven-safe groups overlapped)
+and completed in about 22 minutes.  No production source changed after this
+gate; only this evidence record was appended.
+
+## 2026-09-02 issue 35 network/TLS/JSON-RPC adversarial audit
+
+The issue-35 candidate begins at pushed tty head `170f0dc` on the dedicated
+`issue-35-networking` branch; `tty-frontend` itself was left unmoved while its
+integration into main was owned elsewhere.  The exact candidate diff was
+reviewed against GNU 30.2 process.c's
+`Fnetwork_lookup_address_info`/`network_lookup_address_info_1`, the upstream
+network-stream, GnuTLS, JSON, and JSON-RPC suites, and the existing Eglot and
+lsp-mode application contracts.
+
+Before final certification, refreshed `origin/main` at `1394e8d` was merged
+into the issue branch, producing merge commit `7e389f9`.  Restoring the issue
+work produced no source conflict; the only textual conflict was between two
+independent audit-ledger sections, and both were retained.  The production
+file and new network-contract document match their pre-merge SHA-256 exactly.
+The test and testing-documentation changes have the same stable patch IDs as
+before the merge while preserving main's adjacent additions.
+
+The one production change removes Rust `IpAddr::parse` and
+`ToSocketAddrs` from `network-lookup-address-info`.  GNU initializes an
+`addrinfo` hint with the requested AF_UNSPEC/AF_INET/AF_INET6 family,
+SOCK_DGRAM, and (only for the `numeric` hint) AI_NUMERICHOST, traverses the
+returned list in resolver order, converts each sockaddr to the public vector,
+and frees the list.  Emaxx now does the same.  The audit verified that the
+string's C NUL boundary, family mapping, socket-type/flag selection, IPv4 and
+IPv6 network-byte-order conversion, port, resolver order, error path, and
+single free all follow that owner.  No address/sample literal occurs in the
+production path.
+
+Two findings were corrected before the gate:
+
+1. The first unsafe draft trusted `ai_family` but did not validate
+   `ai_addrlen` before casting `ai_addr` to `sockaddr_in`/`sockaddr_in6`.
+   Both casts now require a non-null pointer and the corresponding full
+   structure length.
+2. The first HTTP fixture used an unnecessary `X-Emaxx-Fixture` header and
+   compared only GNU/Emaxx derived body records.  The shared fixture now uses
+   the editor-neutral `X-Contract-Fixture`, both editors must parse its value,
+   and GNU's complete status/header/length/SHA-256/prefix/cleanup record is
+   pinned before Emaxx is compared.  Independent server-side assertions prove
+   that each editor opened a connection and sent the exact GET target and Host
+   header; no normalization is applied.
+
+The final static pass found no project-private Lisp namespace or fixture-name
+branch in production, editor identity branch, oracle path/delegation,
+generated answer table, test-only runtime hook, swallowed warning, retry,
+accepted failure, or weakened assertion.  The numeric contract sends the same
+29 valid/invalid inputs to GNU and Emaxx and compares complete vectors.  The
+HTTP servers are independent, loopback-only, one-shot, and bounded; the
+fixture response is identical, buffer cleanup is observed, and a fabricated
+response cannot satisfy the request capture.
+
+Focused evidence on the audited bytes: both new exact gate-profile tests pass;
+all-selector upstream replays match 9/9 JSON-RPC, 7/7 GnuTLS, 27/27
+network-stream, 59/59 Lisp JSON, and 23/23 native JSON outcomes.  The GnuTLS
+replay's 64x test-time slowdown is disclosed for the performance milestone.
+The HTTP bind-denied sandbox result, malformed initial test filter that
+selected zero tests, vacuous batch input-cancellation probe, and focused
+compat-harness runs killed after isolated-build time consumed their total
+timeout are rejected, not counted.  Full command details and scope boundaries
+are recorded in `docs/network-compatibility.md`.
+
+The formal static audit was then repeated against the exact working-tree diff
+from `7e389f9`.  It again found no fixture/sample literal or editor identity in
+the production path, no environment or target branch, no oracle execution or
+delegation, and no bypass, retry, accepted failure, or weakened assertion in
+the tests.  All 15 repository anti-cheat gates passed, with zero failures and
+zero ignored.  This post-merge audit precedes the final formatting, native and
+Linux cross-target Clippy, and repository-wide gate.  Any later source change
+to this candidate requires those claims to be established again.
+
+After the audit, `cargo fmt --check`, native all-target/all-feature gate-profile
+Clippy with `-D warnings`, and the equivalent `x86_64-unknown-linux-gnu` cross
+Clippy pass were clean.  The complete optimized grouped gate passed with
+artifact `target/grouped-gate/run-1788356614665579000-29565`: its dynamic
+library inventory was exactly 2,287 outcomes, with 2,285 passed, zero failed,
+and only the two declared opt-in TTY end-to-end gates ignored.  The three
+binary targets passed 39 tests, CLI passed 12/12, ERT runner 3/3, and package
+lifecycle 5/5.  The primitives group containing both new issue-35 contracts
+passed 353/353 with zero ignored.  A final remote refresh left `origin/main`
+unchanged at `1394e8d`; no production or test source changed after the audit or
+gate, only this evidence record was appended.
+
+## 2026-09-03 findings 149-150: tty-frontend merge certification and gate repairs
+
+The candidate is a clean no-conflict merge of main
+`1394e8d9c90398a4a978fc8fb3ed1015d4d9e7f5` and tty-frontend
+`170f0dcf6d058d9496320d4355f80705f45f3bc1`.  Adversarial inspection of the
+merged diff confirmed that main's selected-window/current-buffer restoration,
+folded-row cursor gate, TTY fringe suppression, command undo-point refresh,
+package-vc semantic-version wait, and Linux-gated notification helper remain
+present alongside tty-frontend's completion-stack and terminal changes.  No
+merge resolution discarded either side's production fixes.
+
+The full grouped gate passed on the exact merged production tree with artifact
+`target/grouped-gate/run-1788347588425925000-13645`.  Its dynamic inventory
+hash was `bb372db771bc2718596c3fbf8c9b5c97f9d2beea19f5fb6a15ab4fbe8e412073`:
+2285/2285 outcomes were observed, with 2283 passed, zero failed, and exactly
+the two declared opt-in PTY gates ignored.  The three discovered binary
+targets passed 39/39 tests, and the integration targets passed 20/20 (CLI
+12/12, ERT runner 3/3, package lifecycle 5/5).  The strict completion-stack
+package gate separately installed and restarted through all 6/6 pinned
+packages, validated 41 compiled/autoload artifacts, and matched all 25/25
+checkpoints across its four real TTY scenarios.  The release Emaxx binary was
+`9be0ff62f8ad4026889fdc2580f7611c4aa9592518ee3f84dd1527787dc5d76e`; the GNU
+oracle was `7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82`.
+
+Two harness defects were found during the required end-to-end TTY gate rather
+than hidden as flaky editor failures:
+
+- Finding 149: every scenario killed both editor processes, bypassing Org's
+  Lisp cleanup, but reused the host temporary namespace.  Exactly 1000 stale
+  `babel-stable-0` through `babel-stable-999` directories had accumulated;
+  Org chooses only those 1000 names, so later Org startup looped indefinitely.
+  Each comparison now gives both subjects the same fresh per-scenario TMPDIR
+  (preserving path-exact comparison) and removes it after closing both
+  sessions.  A regression constructs subject temp artifacts, proves the two
+  subjects received one namespace, and proves it was removed afterward.
+- Finding 150: `supersession-accept-revisit` sent `yes RET` to GNU's
+  save-anyway prompt and then sent a second `y`.  The first response had
+  already saved successfully, so the extra byte modified the buffer and the
+  later kill command stopped at a confirmation prompt; the scenario then
+  opened a second minibuffer and manufactured a divergence.  The redundant
+  byte is removed, the kill is now a real checkpoint with a complete dispatch
+  window, and a regression pins the exact action sequence and final filesystem
+  assertion.
+
+The discarded/red evidence is part of the record.  A first grouped-gate
+attempt inside the restricted sandbox failed because the tests could not bind
+their required localhost services; it was rerun natively and produced the
+passing artifact above.  Earlier TTY attempts stopped at changing startup
+locations under host pressure before the deterministic Org namespace
+exhaustion was isolated.  The first complete 217-scenario run then reported
+216/217 matches and the invalid supersession-script divergence described
+above; it was not counted green.  After both harness repairs, a new one-shot
+full run passed 217/217, including every screen, face, liveness, and requested
+filesystem checkpoint.  The explicit release TTY smoke passed 1/1.
+
+The final post-run audit passed `python3 -m unittest tools/test_ttydiff.py
+tools/test_completion_stack_package_gate.py` at 31/31, `cargo fmt --all --
+--check`, `cargo clippy --all-targets --all-features -- -D warnings`,
+`cargo check --all-targets --all-features`, and `git diff --check`.  A static
+scan found no debug probes, expected-failure markers, new ignores, skips, or
+normalization escape hatches in the repaired harness.  The package artifacts
+remain version-pinned, GNU and Emaxx use isolated roots, comparisons remain
+exact, and no production source changed after the complete grouped gate.
+
+## 2026-09-03 issue 36 TRAMP adversarial audit
+
+The issue-36 candidate starts from pushed issue-35 commit `dcd5b82` on the
+dedicated `issue-36-tramp` branch.  The initial remote refresh before
+certification found `origin/main` at `1394e8d`, already contained by the
+branch.  During the long gate, main advanced to merge `9f7c591`; final merge
+`b51ca69` integrated it before publication.  Comparing the two prior merge
+trees showed that this late integration changed only the audit ledger and the
+already-certified TTY differential Python runner/tests, not Rust production or
+Rust test bytes.  Both independent ledger sections were retained.  The target
+is GNU Emacs 30.2.  The work uses GNU TRAMP's own file-name-handler mechanisms
+and public process APIs; it does not add an Emaxx-specific remote API.
+
+Production corrections cover four contracts exposed by the selected upstream
+TRAMP tests.  `buffer-size` now accepts GNU's optional buffer designator and
+reports the complete buffer size despite narrowing.  `make-process` dispatches
+to a file-name handler before validating native-only keyword details, accepts
+the empty call's GNU nil result, and treats `:coding nil` as the default coding
+selection.  Remote `list-system-processes` and `process-attributes` calls now
+follow the handler selected by `default-directory`.  `accept-process-output`
+now implements GNU's target-only delivery boundary, accepts nil as an
+unbounded timeout, and distinguishes integer JUST-THIS-ONE from the ordinary
+truthy spelling; zero-duration `sleep-for` no longer consumes ready process
+output.  Finally, SIGUSR1 and SIGUSR2 are installed through async-signal-safe
+counters and enter the ordinary keyboard event path, including
+`special-event-map`, command dispatch, and the unread-event fallback.
+
+The first formal audit of the permanent deterministic journey found four real
+test-tool defects, all corrected before certification:
+
+1. Exact GNU/Emaxx equality alone allowed two false semantic records to agree.
+   Independent assertions now require the expected content, file operations,
+   handler prefixes, metadata, process result, connection reuse/reconnect,
+   integration results, and final cleanup.
+2. The first runner could start Emaxx after the GNU oracle failed.  Oracle
+   completion and validation are now prerequisites for starting the subject,
+   with an offline regression proving that boundary.
+3. Final Lisp cleanup used `ignore-errors`.  Cleanup now aggregates and reports
+   any buffer, file, directory, process, or connection failure and must emit
+   `cleanup.final=t`.
+4. The first process wrapper overstated its descendant cleanup guarantee and
+   mishandled byte output in `TimeoutExpired`.  The runner now owns each editor
+   with `Popen`, snapshots its exact descendant tree, terminates and reaps those
+   exact PIDs, and decodes partial byte output safely.
+
+The final runner has no retry, normalization, accepted-failure path, or
+warning suppression.  It runs the GNU oracle to completion before the Emaxx
+subject, compares complete structured records exactly, and retains raw stderr.
+Only TRAMP's blank progress lines plus the expected `Compilation finished`
+message are allowed; every other diagnostic fails.  Its default transport is
+the deterministic localhost `mock` method.  Real SSH requires both
+`--live-ssh` and an explicit `/ssh...:` root, so network availability cannot
+silently change the gate.  All 10 offline fail-closed runner tests passed, and
+the final GNU-30.2-versus-Emaxx journey passed at
+`target/tramp-compat-gate/journey-20260902T172315.597899Z.json`, covering remote
+visit/save/revert, directory and Dired operations, completion, metadata,
+copy/rename/delete, temporary files, subprocess and compilation invocation,
+project and VC discovery, connection reuse, forced reconnect, failure, and
+cleanup.  A post-run process-tree check was empty.
+
+Upstream TRAMP evidence is deliberately composite, not misreported as a new
+whole-suite rerun.  The seven previously divergent default selectors (tests
+08, 09, 10, 11, 12, 23, and 27) each matched GNU exactly after the
+`buffer-size` repair.  A serial non-default pass excluding test 45 initially
+matched 41 of 50 outcomes and exposed nine differences.  Only those nine were
+then rerun, as requested: test 29 normal and direct-async, test 30 normal and
+direct-async, test 31 list-system-processes, process-attributes, and
+signal-process, test 34's explicit-shell case, and test 47's read-password
+case all matched GNU exactly.  Test 45 separately passed an exact clean run.
+One rejected test-31 attempt failed on both editors with a generated process
+name; it was not counted as passing, and the clean exact rerun is the evidence.
+
+The final static audit found no fixture, selector, package, editor-identity,
+environment, or oracle branch in production; no runtime oracle execution or
+delegation; no generated answer table; no new ignore, skip, retry,
+normalization, accepted failure, or weakened assertion; and no warning
+suppression.  All 15 repository anti-cheat tests passed with zero ignored.
+`cargo fmt --check` was clean, and
+`cargo clippy --profile gate --all-targets --all-features -- -D warnings`
+passed with zero warnings.
+
+The authoritative publication gate was then run conventionally rather than
+with the concurrent grouped accelerator: `LANG=C LC_ALL=C
+RUST_TEST_THREADS=1 RUST_MIN_STACK=134217728 cargo test --profile gate --
+--test-threads=1`.  The optimized library binary reported 2291 passed, zero
+failed, and exactly the two reviewed opt-in TTY end-to-end gates ignored out
+of 2293 tests in 7097.99 seconds.  The compat-harness binary passed 38/38,
+the perf-harness binary 1/1, CLI 13/13 (including the real-process SIGUSR
+test), ERT runner 3/3, and package lifecycle 5/5; main and doc-test binaries
+contained no tests.  No second test or build was launched from this checkout
+while the gate was active, and the post-gate process-tree check was empty.
+After the late main merge, its affected TTY/completion offline tests passed
+31/31 serially and the TRAMP runner's offline tests passed 10/10 serially.  No
+Rust production or Rust test source changed after the full gate.  The merge
+added only its separately certified TTY Python runner/test correction and the
+two retained evidence sections described above.
+
+## 2026-09-03 issue 31 minibuffer/completion adversarial audit
+
+The issue-31 candidate starts from `origin/main` commit
+`589f82ba1c562c44b05cdea6a2d4c627e628e876` on the dedicated
+`issue-31-minibuffer-completion` branch.  A refreshed `tty-frontend` had no
+commit absent from main, so no tty merge was manufactured and the issue work
+was not placed directly on that shared branch.  The target is the pinned GNU
+Emacs 30.2 source at `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, not
+Emacs 31.
+
+Production corrections are at shared semantic boundaries.  Consecutive and
+nested minibuffer reads receive distinct activation identities so grow-only
+TTY height cannot leak through a reused minibuffer buffer.  An accepted string
+default enters the named history through the ordinary history-length and
+duplicate policy.  Events already consumed by the recursive minibuffer reader
+are not appended a second time to a keyboard macro.  Case-folded completion
+preserves an unextended input's spelling, while same-length case conversion
+preserves string properties and character-count-changing conversion follows
+GNU's rebuilt-string path.  Redisplay places point before an overlay
+after-string, invokes the Lisp pre-redisplay coordinator, highlights the
+selected completion through its real cursor-face overlay, assigns the hardware
+cursor to the selected window rather than every active minibuffer, and mirrors
+the active minibuffer buffer even while `*Completions*` is selected.
+
+The adversarial pass found and corrected two evidence defects before
+certification.  First, final TTY records initially required only an `I31`
+prefix.  All six now require an independently specified exact return,
+history/depth, buffer/overlay, and cleanup record in addition to exact
+GNU/Emaxx terminal comparison.  Second, checkpoints aimed at two-second
+transient messages were sensitive to the runner's deliberate serial subject
+startup.  The permanent checks compare the stable retained invalid input and
+restored outer prompt; the following correction/acceptance actions and exact
+final records prove that the reads rejected, recovered, returned, and unwound.
+The earlier timing-sensitive and geometry-divergent runs are rejected, not
+counted as passes.
+
+The final static scan found no issue fixture, scenario, expected answer,
+editor-identity, environment, target, or oracle branch in production; no
+runtime oracle execution or delegation; and no new ignore, skip, retry,
+normalization, accepted-failure path, weakened assertion, or warning
+suppression.  The only test-input literals found under `src` are inside
+regression modules.  All 15 repository anti-cheat tests passed with zero
+failures and zero ignored.  `python3 -m unittest tools/test_ttydiff.py` passed
+26/26, `cargo fmt --all -- --check` was clean, and
+`cargo clippy --profile gate --all-targets --all-features -- -D warnings`
+completed with zero warnings.
+
+The definitive six-scenario TTY run passed every named checkpoint against GNU
+Emacs 30.2, including exact text, attributes, mode lines, echo areas, cursor
+positions, and the pinned semantic records.  The final upstream replays share
+dirty-candidate source hash
+`d3e1e921facd94d3768aaae2bf9181ba3475d240901dd96b8c8bb996222f34e0`:
+`test/lisp/minibuffer-tests.el` matched 31/31 at
+`run-1788411883969644000-41459`, `completion-preview-tests.el` matched 11/11
+at `run-1788411929234693000-41669`, `completion-tests.el` matched 6/6 at
+`run-1788411944841031000-41823`, and `test/src/minibuf-tests.el` matched 65/65
+at `run-1788411959437722000-41458`.  The last three small suites reported
+test-body slowdowns of about 3.6x, 4.7x, and 7.2x respectively; those are
+disclosed performance results, not semantic mismatches.
+
+The authoritative publication gate then ran once, serially, with the optimized
+`gate` profile: `LANG=C LC_ALL=C RUST_TEST_THREADS=1
+RUST_MIN_STACK=134217728 cargo test --profile gate -- --test-threads=1`.
+It exited successfully.  The library target contained 2301 tests: 2299 passed,
+zero failed, and exactly two reviewed opt-in TTY end-to-end gates were ignored,
+`tty::tty_differential_end_to_end` and `tty::tty_smoke_end_to_end`.  Those
+wrappers are not substitutes for issue coverage: the six issue-specific TTY
+journeys above ran explicitly and passed, as did the library's minibuffer,
+completion, completion-preview, history, recursive-read, keyboard-macro,
+redisplay, cursor, and case-conversion regressions.  The compat harness passed
+38/38, perf harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle 5/5;
+the main and doc-test targets contained no tests.  No concurrent test or build
+was launched from this checkout while the gate was active, and no production
+or test source changed after it completed.
+
+## 2026-09-02 copy family: the native body must see the handler-expanded names
+
+A Linux frozen run of the integrated main (`3c78b1e`) surfaced one new
+files-tests mismatch, `files-tests-file-name-non-special-add-name-to-file`,
+failing with `(file-missing "Adding new name" ... "…add-name.special")`.
+The test installs a handler that rewrites names by stripping `.special`
+during any operation it receives, including `expand-file-name`.  In
+fileio.c, Fadd_name_to_file (and Fcopy_file, Frename_file,
+Fmake_symbolic_link) call Fexpand_file_name and expand_cp_target -- both
+handler-aware -- BEFORE the handler lookup; the rewritten names then match
+no handler, and the native body links the rewritten names.  Emaxx's
+round-1 normalization performed that same expansion but only to choose a
+handler: when none claimed the operation, the native arm re-resolved the
+raw arguments through the host path resolver and linked the unrewritten
+name.  The file-name-handler choke point now returns either the handler's
+value or the normalized arguments for the native call, so expansion happens
+once, as in C.  Oracle contract through a rewriting handler over all four
+operations: `((t t) (t t) ("base") (nil t) ("base" t) file-already-exists)`.
+files-tests.el is 116/116 matching (from 115/116).  The failure is
+identical on the pre-integration main `8b08bbf`, so it dates from the
+round-1 normalization, not from the tty merge.
+
+The same frozen run also stopped at simple-tests.el with "process timed
+out during test" and zero Emaxx outcomes.  That is not a hang: the two
+`shell-command-dont-erase-buffer` tests spawn a child
+`emacs -Q --batch --eval` about seventy times between them, and an Emaxx
+child boots in ~15 s (GNU: 0.04 s) because there is no portable dump, so
+the file needs well over the 900 s per-file timeout that run was given.
+The recorded frozen baselines use `--timeout-seconds 3600`; resumed at that
+value (same commit, 335 per-file comparisons reused) the run completed:
+**7738/7883 matching, 145 mismatching across 19 of 461 files**, with
+simple-tests.el at 52/53 (only the disclosed async-shell latency case).
+The boot latency stays the structural limitation it already was (erc's
+child-spawning tests, above).  The inventory: src/comp-tests 96 and
+lisp/comp-tests 3 (native compilation, in progress elsewhere);
+server-tests 7; semantic-utest-ia 6; socks-tests 6; lcms-tests 6;
+mml-sec 4; thread-tests 2 + src/thread-tests 2; proced 2; em-prompt 2;
+erc 2 (child-boot latency); and one each in files-tests (fixed here),
+nadvice, kmacro, editfns, print, process (`lookup-hints-values`) and
+simple.
+
+New finding from that inventory, OPEN: the six lcms-tests are skipped by
+the Linux oracle (built `--without-lcms2`, `lcms2-available-p` unbound)
+but run under Emaxx, because the `lcms2` startup feature is advertised
+unconditionally in `STARTUP_FEATURES` rather than following the host C
+contract the way `kqueue`/`inotify` now do.  The fix is the same
+host-manifest gate; it is recorded here rather than folded into this
+change so the copy-family fix stays a single mechanism.
+
+This change was gated with the grouped runner on Linux (2275 library
+tests, bins and integration all green; run-1788351345455641394-28877)
+after the targeted file-name-handler tests and a 116/116 files-tests
+replay, and again after rebasing onto the Darwin certification commit
+`1394e8d` (2277 library tests, bins and integration green;
+run-1788358068697089711-3005).
+
+## 2026-09-03 finding 151 (formerly numbered 149 here): a Darwin-pinned race in the JUST-THIS-ONE contract
+
+Rebasing the copy-family change onto main `e9778fb` (eleven certification
+commits, none touching the copy family; `add-name-to-file` still fails on a
+build of that main) and re-gating stopped the grouped runner at one
+primitives test that arrived with the Tramp certification (`b5ee077`):
+`accept_process_output_just_this_one_suspends_distractor_filters_like_emacs`.
+Its failure is on the ORACLE side of the contract -- the Linux GNU answers
+`(t "distractor" "target" nil "distractor")` where the literal, pinned on
+Darwin, says `(t "" "target" t "distractor")` -- deterministically, three of
+three runs in isolation.  The program's distractor is `printf distractor`,
+which exits inside the target's 0.15 s window; process.c's status_notify then
+"reads any output that remains" from a process whose status changed, whether
+or not the wait is JUST-THIS-ONE.  Whether that exit lands inside the window
+is host timing, so the literal encoded Darwin's schedule, not the mechanism
+the test names.  With the distractor kept alive (`printf distractor; sleep
+2`) the Linux oracle answers the pinned literal three of three and Emaxx
+matches; the test now uses that form, its assertion unchanged.
+
+The probe also exposed a real gap, recorded as finding 151 rather than
+folded into this change: for the short-lived distractor Emaxx answers
+`(t "" "target" t "distractor")` on Linux, i.e. it never performs the
+status_notify drain of an exited process's leftover output during a
+JUST-THIS-ONE wait.  That is a process.c mechanism to port on its own.
+(Numbering note, 2026-09-04: the tty-frontend merge section above had
+already used 149 and 150 for its two harness defects, so this finding is
+151 in the table; the table now also carries rows for 149 and 150.)
+
+With the test corrected, the grouped gate on this two-commit tree over main
+`e9778fb` passed every group (2303 library outcomes with the two opt-in TTY
+ignores, bins and integration green; run-1788447199271435854-9123).
+
+## 2026-09-04 Proced and SOCKS adversarial audit
+
+This candidate starts from refreshed main `be5e937`.  No native-comp work is
+included.  The six Proced outcomes were first attempted inside the restricted
+sandbox (`run-1788508362061428000-60937`), where both GNU and Emaxx saw an
+empty process table and four outcomes failed with only dynamic PID differences
+in their diagnostics.  That run is rejected, not normalized or counted.  The
+same unmodified upstream file passed 6/6 outside the sandbox before the fix
+(`run-1788508474446621000-61187`) and again on the final candidate
+(`run-1788509773203114000-63671`); therefore this batch makes no Proced code
+or test change.
+
+The initial SOCKS replay (`run-1788508578949258000-61386`) matched 4/10.  A
+real loopback trace identified two shared process mechanisms, rather than six
+test-specific exceptions.  Network reads discarded the string's unibyte flag
+and always delivered a multibyte filter argument, corrupting bytes 128--255.
+Accepted server children also inherited the listener buffer, unlike GNU; test
+cleanup then prompted about a live child and received EOF from the harness's
+closed stdin.  Connection reads now use the existing coding-aware raw-byte
+decoder, and accepted children retain the listener's filter, sentinel, log,
+plist, contact, and coding metadata but not its buffer.  The obsolete
+always-multibyte wrapper became dead and was removed.
+
+The permanent regression opens a real IPv4 loopback listener and client under
+the full GNU batch image, sends `[0 127 128 184 216 255]` with binary coding,
+and pins both the unibyte vector and nil accepted-child buffer to the live GNU
+Emacs 30.2 oracle result `((nil [0 127 128 184 216 255]) t t open)`.  A first
+test setup using only the early Lisp image was rejected because that image does
+not load GNU's `binary` coding alias; the assertion and binary input were kept,
+and the test was moved to the production-equivalent batch image.  The focused
+test then passed.  The final upstream SOCKS replay passed 10/10 with zero
+mismatches (`run-1788509716153045000-63470`).
+
+The formal diff audit found changes only in the process runtime, its regression
+module, and this ledger.  The upstream Proced and SOCKS files are untouched.
+No harness, selector, manifest, fixture, baseline, expected-result,
+normalization, timeout, retry, accepted-failure, skip, ignore, warning
+suppression, target-name branch, or runtime oracle path was added or changed.
+All 15 repository anti-cheat gates passed with zero failures and zero ignored.
+`cargo fmt --all -- --check` was clean, and `cargo clippy --profile gate
+--all-targets --all-features -- -D warnings` passed with zero warnings.
+
+The authoritative publication gate ran once outside the restricted sandbox,
+so its real loopback, PTY, subprocess, and process-inventory tests needed no
+sandbox-failure rerun: `LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1
+RUST_TEST_THREADS=1 RUST_MIN_STACK=134217728 cargo test --profile gate --
+--test-threads=1`.  The main branch's serial-safe image-template acceleration
+reduced repeated setup without changing the selected tests or assertions.  The
+library target reported 2301 passed, zero failed, and exactly the two reviewed
+opt-in TTY end-to-end wrappers ignored out of 2303 tests in 1393.45 seconds.
+The new live binary-network regression passed in that run.  The compat harness
+passed 38/38, perf harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle
+5/5; main and doc-test targets contained no tests.  No concurrent test or
+build was launched while this gate was active, and no Rust production or test
+source changed after it completed.
+
+## 2026-09-04 Nadvice: interpreted closure identity in arity conditions
+
+The refreshed-main baseline was `225f6f0`.  The exact
+`advice-test-called-interactively-p-filter-args` replay failed only because
+GNU reported the actual interpreted closure in its expected arity condition,
+`(wrong-number-of-arguments #[nil ((cons 1 (called-interactively-p 'any)))
+(t) nil nil nil] 1)`, while Emaxx replaced the callee with the symbol
+`lambda` (`run-1788519522530890000-79557`).  The test is an upstream expected
+failure on both runners; matching only the status would therefore have hidden
+this real condition-data mismatch.
+
+The repair is at the shared closure boundary.  Interpreted-lambda arity
+checks now retain the actual function object in the condition datum.
+`prin1` projects typed closures through their GNU-visible three-to-six slots
+and emits readable `#[ARGS BODY ENV ...]` syntax.  The projection trims the
+public environment independently of Emaxx's conservative execution storage,
+so unused internal activation bindings cannot leak through printing while
+macro-converted closures keep the runtime cells they need.  Interpreted
+closures are also print-circle candidates and their projected slots are
+walked by the iterative cycle scanner.  Permanent tests pin a captured
+closure and its wrong-arity condition, an over-captured-but-correctly-running
+closure whose unused binding stays out of the printed form, and a closure
+whose environment points back to itself.
+
+The adjacent audit rejected two intermediate implementations.  Merely making
+all retained environments visible regressed `cconv-safe-for-space`
+(`run-1788523152761672000-81724`).  Trimming execution storage rather than
+only the public projection then lost generator closed variables and regressed
+three Cconv documentation cases (`run-1788523625782055000-82633`).  Neither
+result is counted.  On the final source, the complete Cconv file matched
+18/18 (`run-1788524218527277000-84146`) and the complete Nadvice file matched
+13/13 (`run-1788524273971683000-84144`).  The complete src print file remained
+45/46 (`run-1788524336821328000-84640`), with exactly its pre-existing
+`print-tests-continuous-numbering-cl-print` mismatch and no new regression.
+
+The formal diff audit found changes only in closure evaluation/projection,
+printing, direct Rust regressions, and this ledger.  No upstream test,
+harness, selector, manifest, fixture, baseline, timeout, normalization,
+retry, accepted-failure path, skip, ignore, expected-result annotation,
+warning suppression, test-name production branch, or runtime oracle path was
+added or changed.  All 15 anti-cheat tests passed with zero failures and zero
+ignored.  `cargo fmt --all -- --check` was clean, and `cargo clippy --profile
+gate --all-targets --all-features -- -D warnings` completed with zero
+warnings.
+
+The authoritative publication gate ran once outside the restricted sandbox:
+`LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1 RUST_TEST_THREADS=1
+RUST_MIN_STACK=134217728 cargo test --profile gate -- --test-threads=1`.
+The library target reported 2304 passed, zero failed, and exactly the two
+reviewed opt-in TTY end-to-end wrappers ignored out of 2306 tests in 1335.03
+seconds.  The compat harness passed 38/38, perf harness 1/1, CLI 13/13, ERT
+runner 3/3, and package lifecycle 5/5; main and doc-test targets contained no
+tests.  No concurrent test or build ran in this checkout while the gate was
+active, and no Rust production or regression source changed afterward.
+
+## 2026-09-04 Print: continuous numbering across `cl-print` boundaries
+
+The refreshed-main baseline was `e5283e9`.  The only Print mismatch was the
+upstream expected-failure variant
+`print-tests-continuous-numbering-cl-print`.  Both GNU and Emaxx correctly
+failed `cl-print`'s unsupported continuous-numbering assertion, but their
+condition data differed: GNU's second fragment was `#1=#2=#:g...` and later
+referred to the native label as `#2#`, while Emaxx emitted two independent
+`#1=` labels and then reprinted the gensym.  The exact failing predecessor is
+recorded by `run-1788524336821328000-84640`.
+
+The repair follows GNU print.c's two distinct pieces of state.  Emaxx now
+keeps the native printer's largest allocated label as interpreter-owned state,
+separate from the dynamically bound public `print-number-table`.
+`print--preprocess` resets and advances that counter even when its temporary
+table is subsequently unwound.  Native print entry resets the counter when
+continuous numbering has no live table, while later calls reuse it when a
+table exists.  Finishing a print writes the table through the active special
+value cell instead of adding a private binding to a copied evaluator frame,
+and it creates an empty retained table only when the printed graph actually
+had a circle candidate.  This makes nested GNU Elisp printers observe the same
+state transitions without adding any `cl-print`-specific production path.
+
+The prior host regression only asserted that the `cl-print` variant did not
+pass its native-printer regex; arbitrary wrong failure output therefore also
+satisfied it.  The strengthened regression now pins the complete normalized
+GNU `cl-print` string, the public table size, and the gensym's retained native
+label `2`.  The existing native continuous-numbering regression still pins
+ordinary cross-call reuse, and all three native `print--preprocess` unit cases
+remain green.
+
+On final production source, the complete Print file matches 46/46
+(`run-1788527973609009000-91720`), including the exact expected-failure
+condition.  The adjacent Cconv file matches 18/18
+(`run-1788528056494762000-91945`) and Nadvice matches 13/13
+(`run-1788528084262349000-92117`).  The formal diff audit found changes only
+in typed interpreter printer state, the shared native printer implementation,
+the direct host regression, and this ledger.  No upstream test, harness,
+selector, manifest, fixture, baseline, timeout, normalization, retry,
+accepted-failure path, skip, ignore, expected-result annotation, warning
+suppression, test-name production branch, or runtime oracle path was added or
+changed.  All 15 anti-cheat tests passed with zero failures and zero ignored;
+`cargo fmt --all -- --check` and `git diff --check` were clean, and strict
+all-target/all-feature Clippy completed with zero warnings.
+
+The authoritative publication gate ran once outside the restricted sandbox,
+after a process scan confirmed that no Cargo, Emaxx, or compatibility-harness
+process was running: `LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1
+RUST_TEST_THREADS=1 RUST_MIN_STACK=134217728 cargo test --profile gate --
+--test-threads=1`.  The optimized library target reported 2304 passed, zero
+failed, and exactly the two reviewed opt-in TTY end-to-end wrappers ignored
+out of 2306 tests in 1562.91 seconds.  The compat harness passed 38/38, perf
+harness 1/1, CLI 13/13, ERT runner 3/3, and package lifecycle 5/5; main and
+doc-test targets contained no tests.  No concurrent test or build ran while
+the gate was active, and no Rust production or regression source changed
+afterward.
+
+## 2026-09-04 Kmacro: rewound macro input and unread-event precedence
+
+The refreshed-main baseline was `165be13`.  The remaining Kmacro mismatch was
+the upstream expected-failure case
+`kmacro-tests-step-edit-with-quoted-insert`.  GNU and Emaxx both failed the
+assertion, but with materially different buffer contents: GNU produced its
+known `ḩii there` result while Emaxx produced ` i there`
+(`run-1788530907605950000-98015`).  Comparing only expected-failure status
+would therefore have hidden a real command-input divergence.
+
+An instrumented replay established the shared mechanism.  Kmacro's step
+editor speculatively calls `quoted-insert`, which reads the octal digits and
+their terminating `i`, pushes that terminator onto `unread-command-events`,
+and rewinds the public `executing-kbd-macro-index`.  GNU's real command then
+honors the rewound index, reads the digits again, and the command loop consumes
+the pushed-back `i` before returning to the still-present macro `i`.  Emaxx's
+typed cursor had remained at the speculative read's later internal index, so
+the real command read the following space instead.
+
+The repair makes every active-macro input read synchronize the typed event
+vector and cursor from the public GNU variables.  The keyboard-macro command
+loop now also consumes `unread-command-events` before the macro stream and
+advances the macro index only for events actually sourced from that stream.
+The implementation is generic: it contains no Kmacro symbol, test name, or
+quoted-insert branch.  A direct regression uses a fresh local keymap and an
+anonymous command to pin both behaviors independently: a pre-command hook
+speculatively reads and rewinds, the command pushes its reread event back, and
+the command loop must produce `bc` with no unread events left.
+
+The final exact replay matched 1/1 (`run-1788531529578441000-98984`), including
+GNU's unchanged expected-failure condition, and the complete Kmacro file
+matched 58/58 (`run-1788531744591804000-99355`).  Optimized adjacent Rust
+filters passed 13/13 keyboard-macro tests, 1/1 unread-command test, and 7/7
+Kmacro-frontier tests.
+
+The formal diff audit found changes only in the shared keyboard-macro input
+runtime, its direct Rust regression, and this ledger.  The pinned upstream
+Kmacro file is clean.  No upstream test, harness, selector, manifest, fixture,
+baseline, expected-result, normalization, timeout, retry, accepted-failure,
+skip, ignore, warning suppression, test-name production branch, or runtime
+oracle path was added or changed.  All 15 repository anti-cheat gates passed
+with zero failures and zero ignored.  `cargo fmt --all -- --check` and `git
+diff --check` were clean, and `cargo clippy --all-targets --all-features -- -D
+warnings` completed with zero warnings.
+
+After a global process scan found no Cargo, Emaxx, or compatibility-harness
+process, the authoritative publication gate ran once outside the restricted
+sandbox: `LANG=C LC_ALL=C EMAXX_IMAGE_TEMPLATE=1 RUST_TEST_THREADS=1
+RUST_MIN_STACK=134217728 cargo test --profile gate -- --test-threads=1`.
+The optimized library target reported 2305 passed, zero failed, and exactly
+the two pre-existing reviewed opt-in TTY end-to-end wrappers ignored out of
+2307 tests.  The new regression and all adjacent macro-input cases passed in
+that run.  The compat harness passed 38/38, perf harness 1/1, CLI 13/13, ERT
+runner 3/3, and package lifecycle 5/5; main and doc-test targets contained no
+tests.  No concurrent test or build ran while the gate was active, and no Rust
+production or regression source changed afterward.
+
+## 2026-09-04 Linux de-cheating audit of main `225f6f0` (findings 152-154)
+
+Scope: everything that landed on main after the Linux integration audit of
+`3c78b1e` -- the networking (`dcd5b82`), TRAMP (`b5ee077`), minibuffer and
+completion (`e9778fb`), Vertico stack (`696fa6c`), Darwin certification
+(`1394e8d`), oracle-feature-contract (`be5e937`) and binary-network
+(`225f6f0`) commits, plus the two copy-family commits from this host.  Each
+production diff was re-read against its GNU 30.2 owner; the static scans
+covered test-only runtime branches (`cfg(test)` sites are test modules,
+counters and a bootstrap permit only), `EMAXX_*` knobs (the compat runner's
+`EMAXX_COMPAT_RUNNER` is a report label, never a branch), ignored tests
+(the two declared PTY gates), oracle delegation (harness and tests only),
+and fixture or package-name literals in dispatch (none).  The grouped gate
+on this exact main passed natively as the unprivileged runner
+(run-1788519823835685981-1802: 2304 library outcomes with the two opt-in
+ignores, bins and integration green), so the Darwin-certified Rust suite
+holds on Linux.
+
+Verified sound against the C owner: `network-lookup-address-info` through
+`getaddrinfo` with AI_NUMERICHOST; `make-process` returning nil for an empty
+plist and dispatching `:file-handler` before parsing; JUST-THIS-ONE's integer
+spelling suppressing timers (process.c 4920); SIGUSR1/2 through
+async-signal-safe counters into the keyboard path; `window-list`'s MINIBUF
+rule; post-command-hook at read_minibuf's command-loop entry; casefiddle's
+interval rule; the accepted connection's buffer and binary delivery.
+
+Findings:
+
+- 152 (OPEN): `(sleep-for 0)` runs due Lisp timers.  dispnew.c Fsleep_for
+  enters wait_reading_process_output only for a positive duration and
+  otherwise returns nil at once; oracle `(run-at-time 0 …) (sleep-for 0)`
+  reads nil, Emaxx t.  The TRAMP commit kept an Emaxx-only "delivery point"
+  there deliberately; it is a non-GNU accommodation and should go.
+- 153 (OPEN): batch `read-from-minibuffer` reads stdin even with
+  `executing-kbd-macro` bound; minibuf.c takes read_minibuf_noninteractive
+  only when `noninteractive && NILP (Vexecuting_kbd_macro)`.  Under a bound
+  macro GNU returns `("" ("dflt"))` -- and adds the accepted default to the
+  history, which the completion commit implemented but gated on
+  TTY-event-reader presence plus `noninteractive` nil rather than on GNU's
+  condition.  Equivalent for the live terminal, wrong for the macro path,
+  where Emaxx signals "Error reading from stdin".
+- 154 (FIXED here): `expand_file_name_runtime` treated a None
+  DEFAULT-DIRECTORY as the process cwd; Fexpand_file_name substitutes the
+  buffer's `default-directory`.  Latent while the helper only chose handlers,
+  it became a regression when the copy-family commit fed its expansions to
+  the native bodies: `(let ((default-directory "/tmp/zzdir/")) (copy-file
+  "a" "b"))` failed with `/tmp/a`.  The Linux frozen run of this main caught
+  it as `arc-mode-test-zip-ensure-ext` and
+  `bytecomp-tests--target-file-no-directory`, both passing on `e9778fb`.
+- Ledger hygiene: finding number 149 had been used twice (the tty-frontend
+  merge's harness defects in prose, the status_notify drain in the table);
+  the table now carries 149-151 unambiguously.
+
+The finding-154 fix was verified by the probe (`(t t)` on both binaries), the
+extended copy-family contract, replays of arc-mode-tests 4/4, bytecomp-tests
+100/100 and files-tests 116/116, and the grouped gate on the fixed tree
+(run-1788523328744887321-24455: 2304 library outcomes with the two opt-in
+ignores, bins and integration green).
+
+Frozen score of this main (`225f6f0`, unfixed) on Linux with the 3600 s
+per-file timeout: **7743/7883 matching, 140 mismatching across 461 files**,
+up from 7738 at `3c78b1e`.  Flipped since then: socks-tests 10/10 (from
+4/10), files-tests 116/116, process-tests `lookup-hints-values` (the
+getaddrinfo port).  Appeared: the two finding-154 regressions plus
+`wdired-test-symlink-name`, all three green again with the fix in this
+change (arc-mode 4/4, bytecomp 100/100, wdired 7/7), so the fixed tree
+stands at 7746 by that arithmetic.  Also present, and new as a Linux
+observation, is finding 155: proced-tests 4/6 here, because both refinement
+tests carry `(skip-when (eq system-type 'darwin))` and the Darwin
+certification's 6/6 was four passes plus two matching skips.  On Linux the
+oracle runs them and Emaxx's `process-attributes` lacks `pcpu` (and fifteen
+other sysdep.c keys), so `proced--cpu-at-point` reads nil.  That is a
+/proc/PID/stat port to schedule, not a test problem.  The remaining
+inventory is unchanged from the 2026-09-02 list: native comp 99, server 7,
+semantic 6, lcms 6 (the `lcms2` feature flag), mml-sec 4, threads 2+2,
+em-prompt 2, erc 2 (child-boot latency), and one each in nadvice, kmacro,
+editfns, print and simple.
+
+## 2026-09-04 Linux oracle repin, `process-attributes` (155) and program search (156)
+
+Base: main `f5577e8`, with the finding-154 fix rebased on top.
+
+**Linux oracle.**  The pinned Linux binary deviated from
+docs/oracle-build-contract.md: it was configured `--without-lcms2`, lacked
+HarfBuzz, and had picked up libotf and m17n-flt.  It was rebuilt at the same
+source commit (`7917fc9`) with `--with-native-compilation --with-x
+--with-x-toolkit=no --with-tree-sitter --without-imagemagick --with-lcms2
+--with-harfbuzz --without-libotf --without-m17n-flt`; `system-configuration-features`
+now lists HARFBUZZ and LCMS2 and neither LIBOTF nor M17N_FLT, and
+`(lcms2-available-p)` is `t`.  The Linux C-primitive manifest was regenerated
+from that binary with the generator and rustfmt: the only change is the eight
+`lcms.c` primitives gaining their arities (`GNU_C_PRIMITIVE_AVAILABLE_COUNT`
+1446 to 1454), which the anti-cheat regeneration gate now requires.  The
+local lock was repinned (uncommitted, as before).  test/src/lcms-tests.el
+executes on both sides and matches 6/6 with six real passes
+(run-1788531264408712921-10454); it was six matching skips before.  Both
+build documents now record this configuration.
+
+**Finding 155 (FIXED).**  `process-attributes` on Linux is a port of
+sysdep.c `system_process_attributes` (GNU_LINUX): euid/user/egid/group
+from the /proc/PID owner, comm and the `stat' fields between the last `)`
+and field 22, ttname through /proc/tty/drivers with GNU's major/minor
+decoding, the jiffies over `_SC_CLK_TCK` as old-style times, start/etime
+from /proc/uptime with `now` truncated to whole ticks, pcpu as
+`100 (s+u) / (hz etime)`, vsize/1024, rss*4, pmem against MemTotal, and the
+command line with the NUL separators as spaces and whitespace or backslashes
+inside an argument escaped (`c_isspace`, so vertical tab counts).  The 31
+keys come out in GNU's consed order.  Probe against the oracle on a `sleep`
+child: identical key order, identical types, identical fixed fields, and
+identical escaping of `"a b" "c\\d"`.  proced-tests is 6/6 on Linux, the
+two refinement tests now real passes on both sides.
+
+**Finding 156 (FIXED), found while comparing the `args` attribute.**  The
+oracle reported `/usr/bin/sleep 5` where Emaxx said `sleep 5`: `make-process`
+never ran process.c's openp search.  The full divergence set, each probed on
+both binaries before and after: an empty `exec-path` still started the
+program; a missing program surfaced as the spawn failure (`(error "No such
+file or directory (os error 2)")`) instead of `(file-missing "Searching for
+program" ...)`; a directory found through `exec-path` was a permission error
+instead of `(file-error "Searching for program" "Is a directory" ".")`; an
+absolute directory was not `(error "Specified program for new process is a
+directory")`; `call-process` had the same gaps and rendered EACCES as
+`file-error` where fileio.c report_file_errno says `permission-denied`;
+`file-executable-p` was nil for `/usr/bin` (fileio.c is a plain faccessat
+X_OK); an absolute program that cannot be executed was a synchronous host
+error string where GNU's pty path (callproc.c emacs_spawn, vfork) leaves a
+child that writes `<argv0>: <program>: <strerror>` and exits 127 for ENOENT
+or 126 otherwise, and GNU's pipe path (posix_spawn) signals
+`(file-missing "Doing vfork" "No such file or directory")` with no file in
+the data; and glibc's `execvp` ran an ENOEXEC file through `sh` (exit 2 and
+a shell syntax error) where GNU's `execve` fails with "Exec format error".
+
+The repair: `locate_file_search` is openp with GNU's errno bookkeeping
+(ENOENT initially, EISDIR for an accessible directory, any other failure
+replacing it) and a fixnum predicate now uses `faccessat` with AT_EACCESS;
+`locate_program_for_exec` applies process.c's and callproc.c's two call
+shapes; `report_file_errno`'s EACCES condition is `permission-denied`
+everywhere `file_operation_error_value` is used; `file_executable_p` is
+`faccessat X_OK`; and both spawn paths install a pre-exec hook that runs
+`execve` with the prepared argv/envp and, on failure, either exits like
+GNU's vfork child (pty) or hands the errno back so the parent signals
+"Doing vfork" (no pty).  The process's `process-command` keeps the name the
+caller gave.  All probe sets read identically on the two binaries afterwards
+(the perror prefix is each binary's own argv[0] by construction).
+
+**Finding 157 (OPEN, architectural).**  `(process-attributes (emacs-pid))`
+reports `state` "S" and `thcount` 2 in Emaxx where GNU reads "R" and 1,
+because Lisp runs on a spawned thread and /proc/PID/stat describes the
+blocked main thread.  No test depends on it; it is disclosed rather than
+special-cased.
+
+Three oracle contracts pin the work in-process against the live oracle:
+`process_attributes_follows_sysdep_procfs` (Linux),
+`program_search_follows_openp_over_exec_path` and
+`exec_failure_follows_emacs_spawn` (unix).  The gate-profile subset of 14
+process, call-process and locate-file tests passed; strict Clippy across all
+targets and features is clean; `cargo fmt` and `git diff --check` are clean.
+No upstream test, harness, selector, fixture, timeout, normalization or
+accepted-failure path changed; the manifest change is the reviewed baseline
+change the contract document called for.
+
+Upstream replays on the finished tree, against the rebuilt oracle:
+process-tests 37/37 (run-1788532988861563508-14438), callproc-tests 3/3
+(run-1788533097034612335-14752), fileio-tests 16/16
+(run-1788533311366938884-14878), files-tests 116/116
+(run-1788533333965301814-14956), proced-tests 6/6
+(run-1788533366766930806-15292), lcms-tests 6/6
+(run-1788533399318533597-15371) and subr-tests 61/61
+(run-1788533422743571228-15450).  A first simple-tests replay at the default
+180 s per-file timeout was cut off in the shell-command tests, as every
+Linux run of that file is; at 3600 s it is 52/53
+(run-1788533678234430000-15805), the one mismatch the boot-bound
+`simple-tests-async-shell-command-30280` already on the ledger.
+
+The grouped gate ran once on the final tree, rebased onto main `f5577e8`,
+as the unprivileged user with no other build or harness running
+(target/grouped-gate/run-1788534689653402280-16698): eval_01 351,
+eval_02 284, eval_03 322, eval_04 248, eval_05 350, primitives 368,
+compat_runtime 82, tty 56 (the two reviewed opt-in end-to-end wrappers
+ignored), batch 43 and lightweight 207 library tests passed with zero
+failures, bins and integration passed, GROUPED GATE PASSED.

@@ -1161,9 +1161,9 @@ fn resolve_tty_face_reference_options(
         return merged;
     }
 
-    let mut pairs = items.as_chunks::<2>().0.iter();
+    let pairs = items.as_chunks::<2>().0;
     let inherited = pairs
-        .clone()
+        .iter()
         .find(|pair| matches!(&pair[0], Value::Symbol(name) if name == ":inherit"))
         .map(|pair| &pair[1])
         .filter(|value| value.is_truthy());
@@ -1171,7 +1171,7 @@ fn resolve_tty_face_reference_options(
         .map(|value| resolve_tty_face_reference_options(interp, env, value, depth + 1))
         .unwrap_or_default();
     let color_index = tty_face_color_index;
-    for pair in &mut pairs {
+    for pair in pairs {
         let Value::Symbol(name) = &pair[0] else {
             continue;
         };
@@ -1456,10 +1456,15 @@ fn render_window_line_with_format(
         Ok((text, spans))
     })();
     interp.buffer.goto_char(saved_point);
+    // Restore selection before switching the current buffer back.  While a
+    // non-selected window's mode line is rendered we temporarily select it;
+    // switching away with that temporary selection still installed makes
+    // `set_current_buffer_id' save the buffer's live point into the window's
+    // independent point slot, corrupting the slot as a redisplay side effect.
+    interp.set_selected_window_id(saved_window);
     if switched {
         let _ = interp.set_current_buffer_id(saved_buffer);
     }
-    interp.set_selected_window_id(saved_window);
     set_interactive_window_metrics(saved_metrics);
     result
 }
@@ -1906,6 +1911,25 @@ fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i6
         .sum()
 }
 
+/// Screen rows owned by the window selected *now*.  During a minibuffer read,
+/// packages can temporarily select the shrunken ordinary window and call
+/// `recenter'.  The last published glyph metrics then belong to an earlier
+/// redisplay and can still describe the pre-minibuffer height; the live window
+/// tree is GNU's authoritative source for command-time geometry.  Batch mode
+/// has no realized window tree, so it retains the published/dumb-frame model.
+fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
+    if interp
+        .lookup_var("noninteractive", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return selected_window_text_height().max(1);
+    }
+    let window_id = interp.selected_window_id();
+    let buffer_id = interp.selected_window_buffer_id();
+    (window_geometry(interp, window_id).1 - window_non_body_height(interp, buffer_id, env)).max(1)
+        as usize
+}
+
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
     let (total, _, left, _) = window_geometry(interp, window_id);
     let root_id = match interp.root_window_value() {
@@ -2132,6 +2156,22 @@ fn window_list_value(
     start: Option<&Value>,
 ) -> Value {
     let mut ids = live_ordinary_window_ids(interp);
+    // GNU window.c includes the active minibuffer when MINIBUF is nil or
+    // omitted, and includes it unconditionally for t.  Any other non-nil
+    // value excludes it.  Add it before rotating so an active, selected
+    // minibuffer is first in the cyclic order; window.el's
+    // `get-buffer-window-list' relies on precisely this default contract.
+    let include_minibuffer = match minibuf {
+        Some(Value::T) => true,
+        None | Some(Value::Nil) => interp.active_minibuffer_buffer_id().is_some(),
+        Some(_) => false,
+    };
+    if include_minibuffer {
+        let minibuffer_id = interp.minibuffer_window_id();
+        if !ids.contains(&minibuffer_id) {
+            ids.push(minibuffer_id);
+        }
+    }
     // GNU lists windows in cyclic order starting from WINDOW (default
     // the selected window), not from the tree's first leaf.
     let start_id = start
@@ -2141,19 +2181,7 @@ fn window_list_value(
     if let Some(index) = ids.iter().position(|id| *id == start_id) {
         ids.rotate_left(index);
     }
-    let mut windows = ids.into_iter().map(Value::Record).collect::<Vec<_>>();
-    let include_minibuffer = matches!(minibuf, Some(Value::T));
-    if !include_minibuffer {
-        return Value::list(windows);
-    }
-    let minibuffer = interp.minibuffer_window_value();
-    if !windows
-        .iter()
-        .any(|window| values_equal(interp, window, &minibuffer))
-    {
-        windows.push(minibuffer);
-    }
-    Value::list(windows)
+    Value::list(ids.into_iter().map(Value::Record))
 }
 
 define_dispatch!(
@@ -2440,18 +2468,33 @@ define_dispatch!(
             "ding" => Ok(Value::Nil),
             "sleep-for" => {
                 need_arg_range(name, args, 1, 2)?;
+                let duration = wait_duration(args)?;
+                if duration.is_zero() {
+                    // Fsleep_for enters wait_reading_process_output only for
+                    // a positive duration.  Keep Emaxx's explicit delivery
+                    // point for already-due Lisp timers, but do not read a
+                    // ready subprocess: Tramp relies on `sit-for 0' reaching
+                    // its subsequent JUST-THIS-ONE accept before unrelated
+                    // filters can reenter the locked connection.
+                    interp.run_pending_timer_events(env)?;
+                    return Ok(Value::Nil);
+                }
                 // GNU processes subprocess output whenever it waits; epg relies
                 // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
                 // flush gpg's final status lines through the process filter.
-                wait_pumping_processes(interp, env, Some(wait_duration(args)?), false, None)?;
+                // wait_reading_process_output records READ_KBD 0 for the
+                // whole call, even when it nests inside a keyboard read.
+                let previous_wait = interp.set_waiting_for_user_input(false);
+                let wait_result =
+                    wait_pumping_processes(interp, env, Some(duration), false, None, None, true);
+                interp.set_waiting_for_user_input(previous_wait);
+                wait_result?;
                 Ok(Value::Nil)
             }
             "accept-process-output" => {
                 need_arg_range(name, args, 0, 4)?;
                 // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
-                // JUST-THIS-ONE) - the wait always comes from args 2 and 3.  GNU
-                // may service unrelated processes during the wait, but when
-                // PROCESS is non-nil their output does not satisfy this call.
+                // JUST-THIS-ONE) - the wait always comes from args 2 and 3.
                 let duration_args = if args.len() > 1 {
                     &args[1..args.len().min(3)]
                 } else {
@@ -2465,7 +2508,7 @@ define_dispatch!(
                 if let Some(process_id) = target_process_id {
                     interp.ensure_process_owned_by_current_thread(process_id)?;
                 }
-                let timeout = if !duration_args.is_empty() {
+                let timeout = if args.get(1).is_some_and(|seconds| !seconds.is_nil()) {
                     Some(wait_duration(duration_args)?)
                 } else if target_process_id.is_none() {
                     // With neither PROCESS nor a timeout GNU performs one event
@@ -2475,20 +2518,46 @@ define_dispatch!(
                 } else {
                     None
                 };
-                let delivered =
-                    wait_pumping_processes(interp, env, timeout, true, target_process_id)?;
+                // A non-nil JUST-THIS-ONE suspends output from every other
+                // process.  Its integer spelling also suppresses timers.
+                // GNU ignores the flag when PROCESS itself is nil.
+                let just_this_one = if target_process_id.is_some() {
+                    args.get(3).filter(|value| value.is_truthy())
+                } else {
+                    None
+                };
+                let only_process_id = just_this_one.and(target_process_id);
+                let run_timers =
+                    just_this_one.is_none_or(|value| !matches!(value, Value::Integer(_)));
+                // A READ_KBD 0 wait: it never selects the keyboard-class
+                // notification descriptor, even when a callback nests it
+                // inside a keyboard read.
+                let previous_wait = interp.set_waiting_for_user_input(false);
+                let wait_result = wait_pumping_processes(
+                    interp,
+                    env,
+                    timeout,
+                    true,
+                    target_process_id,
+                    only_process_id,
+                    run_timers,
+                );
+                interp.set_waiting_for_user_input(previous_wait);
+                let delivered = wait_result?;
                 Ok(if delivered { Value::T } else { Value::Nil })
             }
             "input-pending-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                // keyboard.c's Finput_pending_p: a non-nil CHECK-TIMERS
-                // runs ripe timers (READABLE_EVENTS_DO_TIMERS_NOW) before
-                // answering — sit-for's zero-second path depends on it.
+                // keyboard.c's process_special_events handles selection
+                // events only: buffered file notifications wait for read_char
+                // and the kernel notification queue is not read here at all
+                // (the oracle answers nil and runs no callback for a watched
+                // file written moments earlier).  A non-nil CHECK-TIMERS is
+                // READABLE_EVENTS_DO_TIMERS_NOW; `sit-for' deliberately calls
+                // `(input-pending-p t)', even for a zero-length no-redisplay
+                // wait.
                 if args.first().is_some_and(Value::is_truthy) {
-                    let idle = crate::lisp::primitives::tty_current_idle_duration()
-                        .map(|duration| duration.as_secs_f64())
-                        .unwrap_or(0.0);
-                    crate::lisp::primitives::run_due_timers(interp, env, idle);
+                    interp.run_pending_timer_events(env)?;
                 }
                 Ok(
                     if unread_command_events(interp, env)?.is_empty()
@@ -3522,6 +3591,20 @@ define_dispatch!(
             }
             "window-mode-line-height" | "window-header-line-height" | "window-tab-line-height" => {
                 need_arg_range(name, args, 0, 1)?;
+                // window.c window_wants_mode_line/header_line/tab_line all
+                // require !MINI_WINDOW_P: a minibuffer window has none of
+                // these lines whatever its buffer's format variables say.
+                let window = args.first().cloned().unwrap_or(Value::Nil);
+                let window_id = window_id_or_selected(interp, &window)?;
+                let is_minibuffer = interp
+                    .find_record(window_id)
+                    .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
+                    .is_some_and(
+                        |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                    );
+                if is_minibuffer {
+                    return Ok(Value::Integer(0));
+                }
                 let buffer_id = window_buffer_id_or_selected(interp, args.first())?;
                 let format_variable = match name {
                     "window-mode-line-height" => "mode-line-format",
@@ -3547,7 +3630,8 @@ define_dispatch!(
             }
             "move-to-window-line" => {
                 need_arg_range(name, args, 0, 1)?;
-                let line = resolve_window_line(args.first(), selected_window_text_height() / 2)?;
+                let height = selected_command_text_height(interp, env);
+                let line = resolve_window_line(args.first(), height / 2, height)?;
                 let window_start = current_window_start(interp);
                 let (target, shortage) = move_lines_from(interp, window_start, line);
                 interp.buffer.goto_char(target);
@@ -3566,7 +3650,8 @@ define_dispatch!(
                 let arg = args
                     .first()
                     .filter(|value| !matches!(value, Value::Cons(_)));
-                let line = resolve_window_line(arg, selected_window_text_height() / 2)?;
+                let height = selected_command_text_height(interp, env);
+                let line = resolve_window_line(arg, height / 2, height)?;
                 // Walk back whole screen lines: wrapped lines occupy one
                 // row per continuation, exactly as the display counts.
                 let point = interp.buffer.point();
@@ -3579,14 +3664,19 @@ define_dispatch!(
                 let sign: isize = if name == "scroll-up" { 1 } else { -1 };
                 match args.first() {
                     // nil scrolls a near-full screen.
-                    None | Some(Value::Nil) => scroll_selected_window(interp, env, None, sign)?,
+                    None | Some(Value::Nil) => {
+                        let height = selected_command_text_height(interp, env);
+                        scroll_selected_window(interp, env, None, sign, height)?
+                    }
                     // `-' scrolls a near-full screen the other way.
                     Some(Value::Symbol(minus)) if minus == "-" => {
-                        scroll_selected_window(interp, env, None, -sign)?
+                        let height = selected_command_text_height(interp, env);
+                        scroll_selected_window(interp, env, None, -sign, height)?
                     }
                     Some(value) => {
                         let lines = prefix_numeric_value(value)?.as_integer()? as isize;
-                        scroll_selected_window(interp, env, Some(sign * lines), sign)?
+                        let height = selected_command_text_height(interp, env);
+                        scroll_selected_window(interp, env, Some(sign * lines), sign, height)?
                     }
                 }
                 Ok(Value::Nil)
@@ -3818,6 +3908,9 @@ define_dispatch!(
             }
             "redisplay" => {
                 need_arg_range(name, args, 0, 1)?;
+                // `sit-for 0' redisplays instead of entering read-event, but
+                // GNU still dispatches timers that were already ripe.
+                interp.run_pending_timer_events(env)?;
                 // A live frontend repaints through its redraw hook
                 // (sit-for redisplays before waiting); the cache-free
                 // batch renderer cannot be preempted by pending terminal
@@ -4138,6 +4231,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args
                     .first()
+                    .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 if window_record_id_from_value(interp, &window).is_none() {
@@ -4371,6 +4465,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args
                     .first()
+                    .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let window_id = window_id_or_selected(interp, &window)?;
@@ -4413,9 +4508,21 @@ define_dispatch!(
                     "window-prev-sibling" => WINDOW_PREV_SIBLING_SLOT,
                     _ => WINDOW_NEXT_SIBLING_SLOT,
                 };
-                Ok(window_link(interp, window_id, slot)
-                    .map(Value::Record)
-                    .unwrap_or(Value::Nil))
+                if let Some(linked) = window_link(interp, window_id, slot) {
+                    return Ok(Value::Record(linked));
+                }
+                // frame.c make_frame links a frame's root and its own
+                // minibuffer window as siblings (wset_next (rw, mini_window);
+                // wset_prev (mw, root_window)); window.el's
+                // frame-windows-min-size reaches the minibuffer through that
+                // link.
+                let root = frame_root_window_value(interp);
+                let minibuffer = interp.minibuffer_window_value();
+                Ok(match name {
+                    "window-next-sibling" if root == Value::Record(window_id) => minibuffer,
+                    "window-prev-sibling" if minibuffer == Value::Record(window_id) => root,
+                    _ => Value::Nil,
+                })
             }
             "window-top-child" | "window-left-child" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4482,6 +4589,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args
                     .first()
+                    .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {

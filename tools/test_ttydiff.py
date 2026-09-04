@@ -2,15 +2,18 @@
 """Regression tests for the terminal stream decoder used by ttydiff."""
 
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
+import ttydiff
 from ttydiff import (
     Action,
     ADVERSARIAL_COMMAND_SCENARIO_NAMES,
     COLS,
     CORE_FREQUENCY_SCENARIO_NAMES,
+    COMPLETION_STACK_SCENARIO_NAMES,
     DIRED_BATCH_SCENARIO_NAMES,
     EGLOT_SCENARIO_NAMES,
     FAKE_LSP_FIXTURE_PATH,
@@ -23,6 +26,7 @@ from ttydiff import (
     HIGH_VALUE_COMMAND_SCENARIO_NAMES,
     MAGIT_PACKAGE_SETUP,
     MAGIT_SCENARIO_NAMES,
+    MINIBUFFER_COMPLETION_SCENARIO_NAMES,
     LSP_MODE_PACKAGE_SETUP,
     LSP_MODE_SCENARIO_NAMES,
     FLYCHECK_SCENARIO_NAMES,
@@ -87,6 +91,7 @@ class Vt100ScreenTests(unittest.TestCase):
                 not in MAGIT_SCENARIO_NAMES
                 + LSP_MODE_SCENARIO_NAMES
                 + FLYCHECK_SCENARIO_NAMES
+                + COMPLETION_STACK_SCENARIO_NAMES
             ],
         )
 
@@ -118,6 +123,68 @@ class Vt100ScreenTests(unittest.TestCase):
         self.assertEqual(command_dispatch_minimum(b"x" * 20, 2.0), 1.0)
         self.assertEqual(command_dispatch_minimum(b"x" * 100, 2.0), 2.0)
         self.assertEqual(command_dispatch_minimum(b"x", 2.0, True), 2.0)
+
+    def test_subject_temp_namespace_is_shared_and_removed(self) -> None:
+        runtime_directories = []
+
+        class FakeSession:
+            def __init__(self, argv, env):
+                self.name = argv[0]
+                self.screen = Vt100Screen()
+                runtime_directory = Path(env["TMPDIR"])
+                runtime_directories.append(runtime_directory)
+                (runtime_directory / f"babel-stable-{self.name}").mkdir()
+
+            def wait_boot(self, _timeout):
+                pass
+
+            def wait_for_screen_text(self, _text, _timeout, minimum=0.5):
+                pass
+
+            def drain(self, _timeout):
+                pass
+
+            def close(self):
+                pass
+
+        with patch.object(ttydiff, "Session", FakeSession):
+            self.assertTrue(
+                ttydiff.compare(
+                    "temp-namespace",
+                    [],
+                    ["gnu", "/tmp/gnu-target"],
+                    ["emaxx", "/tmp/emaxx-target"],
+                    {},
+                    {},
+                    1.0,
+                )
+            )
+
+        self.assertEqual(runtime_directories[0], runtime_directories[1])
+        self.assertFalse(runtime_directories[0].exists())
+
+    def test_supersession_acceptance_does_not_type_after_save(self) -> None:
+        scenario = next(
+            entry for entry in SCENARIOS if entry[0] == "supersession-accept-revisit"
+        )
+        actions = scenario[2]
+        self.assertEqual(
+            [action.name for action in actions],
+            [
+                "disable-lockfiles-and-autosave",
+                "insert-local-change",
+                "replace-disk-externally",
+                "request-save-after-external-change",
+                "confirm-save-after-supersession",
+                "verify-accepted-supersession",
+                "kill-saved-buffer",
+                "revisit-superseded-bytes",
+            ],
+        )
+        self.assertEqual(actions[4].keys, b"yes\r")
+        self.assertTrue(actions[6].checkpoint)
+        self.assertGreaterEqual(actions[6].settle, 3.0)
+        self.assertTrue(actions[7].filesystem)
 
     def test_legacy_final_checkpoint_gets_complete_dispatch_window(self) -> None:
         legacy = normalize_action(b"complete command", 0)
@@ -152,6 +219,7 @@ class Vt100ScreenTests(unittest.TestCase):
             GLYPHLESS_DISPLAY_SCENARIO_NAMES,
             HELP_FILE_DIRED_SCENARIO_NAMES,
             HIGH_VALUE_COMMAND_SCENARIO_NAMES,
+            MINIBUFFER_COMPLETION_SCENARIO_NAMES,
             ADVERSARIAL_COMMAND_SCENARIO_NAMES,
             FIELDNOTES_ADVANCED_SCENARIO_NAMES,
             UNDO_KILL_RING_SCENARIO_NAMES,
@@ -168,6 +236,66 @@ class Vt100ScreenTests(unittest.TestCase):
                 self.assertTrue(by_name[name][2])
                 self.assertTrue(all(isinstance(item, Action) for item in by_name[name][2]))
                 self.assertTrue(any(item.checkpoint for item in by_name[name][2]))
+
+    def test_minibuffer_completion_journeys_are_adversarial_and_absolute(self) -> None:
+        self.assertEqual(
+            MINIBUFFER_COMPLETION_SCENARIO_NAMES,
+            (
+                "minibuffer-default-history",
+                "completion-require-match-recovery",
+                "completion-metadata-navigation",
+                "completion-preview-capf",
+                "recursive-minibuffer",
+                "keyboard-macro-minibuffer",
+            ),
+        )
+        scenarios = {entry[0]: entry for entry in SCENARIOS}
+        for name in MINIBUFFER_COMPLETION_SCENARIO_NAMES:
+            actions = scenarios[name][2]
+            self.assertTrue(all(isinstance(item, Action) for item in actions))
+            self.assertTrue(any(item.require_text for item in actions))
+            verification = actions[-1]
+            self.assertTrue(verification.checkpoint)
+            self.assertIsNotNone(verification.require_text)
+            self.assertIn(b"active-minibuffer-window", verification.keys)
+
+        expected_records = {
+            "minibuffer-default-history":
+                '"I31 history=(\\"alpha\\" \\"alpha\\" (\\"alpha\\") nil)"',
+            "completion-require-match-recovery":
+                '"I31 require=(\\"apple\\" nil)"',
+            "completion-metadata-navigation":
+                '"I31 metadata=(\\"alpine\\" nil)"',
+            "completion-preview-capf":
+                '"I31 capf=(\\"; completion preview fixture|alphaGamma\\" nil nil)"',
+            "recursive-minibuffer":
+                '"I31 recursive=(\\"outer\\" \\"inner\\" 1 2 0 nil)"',
+            "keyboard-macro-minibuffer":
+                '"I31 macro=((\\"banana\\") nil)"',
+        }
+        self.assertEqual(
+            {
+                name: scenarios[name][2][-1].require_text
+                for name in MINIBUFFER_COMPLETION_SCENARIO_NAMES
+            },
+            expected_records,
+        )
+
+        metadata = scenarios["completion-metadata-navigation"][2][0].keys
+        self.assertIn(b"(category . ttydiff-fruit)", metadata)
+        self.assertIn(b"annotation-function", metadata)
+        self.assertIn(b"completion-category-overrides", metadata)
+        self.assertIn(b"completion-ignore-case t", metadata)
+
+        recursive = scenarios["recursive-minibuffer"][2]
+        self.assertIn(b"enable-recursive-minibuffers t", recursive[0].keys)
+        self.assertIn(b"minibuffer-depth", recursive[0].keys)
+        self.assertIn(b"minibuffer-depth", recursive[2].keys)
+
+        macro = scenarios["keyboard-macro-minibuffer"][2]
+        self.assertEqual(macro[1].keys, b"\x18(")
+        self.assertEqual(macro[4].keys, b"\x18)")
+        self.assertEqual(macro[6].keys, b"\x18e")
 
     def test_glyphless_journey_keeps_real_scalars_and_per_character_motion(self) -> None:
         self.assertEqual(

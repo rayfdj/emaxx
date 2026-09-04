@@ -39,21 +39,201 @@ fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
     }
 }
 
+/// callproc.c Fcall_process and process.c Fmake_process both locate the
+/// program with openp over `exec-path' and `exec-suffixes' asking for X_OK,
+/// and report a miss as "Searching for program" with the errno openp kept.
+/// `make-process' skips the search for a name that starts with a directory
+/// separator (a directory there is an error) and expands what openp found;
+/// `call-process' always searches, openp trying an absolute name as itself,
+/// and keeps openp's answer.  Both strip a "/:" quote from the result.
+pub(crate) fn locate_program_for_exec(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    program: &str,
+    make_process: bool,
+) -> Result<String, LispError> {
+    if make_process && program.starts_with('/') {
+        if fs::metadata(program).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(LispError::Signal(
+                "Specified program for new process is a directory".into(),
+            ));
+        }
+        return Ok(unquote_local_file_name(program).unwrap_or_else(|| program.to_string()));
+    }
+    let exec_path = interp.lookup_var("exec-path", env).unwrap_or(Value::Nil);
+    let exec_suffixes = interp
+        .lookup_var("exec-suffixes", env)
+        .unwrap_or(Value::Nil);
+    let (found, errno) = locate_file_search(
+        interp,
+        &Value::String(program.into()),
+        &exec_path,
+        &exec_suffixes,
+        &Value::Integer(i64::from(libc::X_OK)),
+        env,
+    )?;
+    if found.is_nil() {
+        return Err(LispError::SignalValue(file_errno_error_value(
+            "Searching for program",
+            errno,
+            program,
+        )));
+    }
+    let found = string_text(&found)?;
+    let found = unquote_local_file_name(&found).unwrap_or(found);
+    Ok(if make_process {
+        expand_file_name_in_env(interp, env, &found, None)
+    } else {
+        found
+    })
+}
+
+/// A spawn failure is what GNU's parent sees from `emacs_spawn' and reports
+/// as "Doing vfork" without naming a file.
+fn vfork_error(error: &std::io::Error) -> LispError {
+    LispError::SignalValue(file_operation_error_value_without_file(
+        "Doing vfork",
+        error,
+    ))
+}
+
+/// Everything the child-side exec needs, prepared before the fork so the
+/// child touches no allocator.
+#[cfg(unix)]
+struct ExecImage {
+    argv: Vec<*const libc::c_char>,
+    envp: Vec<*const libc::c_char>,
+    _strings: Vec<std::ffi::CString>,
+    /// "<emacs argv[0]>: <program>: " for the vfork-path diagnostic.
+    prefix: Vec<u8>,
+}
+
+// SAFETY: the pointers refer into `_strings', which the image owns, and the
+// image is only ever used from the forked child.
+#[cfg(unix)]
+unsafe impl Send for ExecImage {}
+#[cfg(unix)]
+unsafe impl Sync for ExecImage {}
+
+/// GNU's child runs `execve' (callproc.c emacs_exec_file), so a file the
+/// kernel refuses with ENOEXEC is not retried through a shell the way
+/// glibc's `execvp' does.  When exec fails on the vfork path used for
+/// pseudo-terminals the child prints "<emacs argv[0]>: <program>:
+/// <strerror>" on its stderr and `_exit's with EXIT_ENOENT (127) or
+/// EXIT_CANNOT_INVOKE (126); on the posix_spawn path used without a pty the
+/// errno goes back to the parent, which signals "Doing vfork".  Rust's
+/// `Command' would `execvp' after this hook, so the hook execs first and,
+/// on failure, either exits like GNU's child or hands Rust the errno to
+/// report.
+#[cfg(unix)]
+fn exec_like_gnu(command: &mut Command, program: &str, argv: &[String], pty: bool) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+
+    let mut strings = Vec::with_capacity(argv.len() + 1);
+    let Ok(path) = CString::new(program) else {
+        return;
+    };
+    strings.push(path);
+    for arg in argv {
+        let Ok(arg) = CString::new(arg.as_str()) else {
+            return;
+        };
+        strings.push(arg);
+    }
+    let argv_end = strings.len();
+    for (name, value) in command.get_envs() {
+        let Some(value) = value else {
+            continue;
+        };
+        let mut entry = name.as_bytes().to_vec();
+        entry.push(b'=');
+        entry.extend_from_slice(value.as_bytes());
+        let Ok(entry) = CString::new(entry) else {
+            return;
+        };
+        strings.push(entry);
+    }
+    let pointers = |range: std::ops::Range<usize>| {
+        strings[range]
+            .iter()
+            .map(|string| string.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect::<Vec<_>>()
+    };
+    let emacs = std::env::args_os()
+        .next()
+        .map(|argv0| argv0.as_bytes().to_vec())
+        .filter(|argv0| !argv0.is_empty())
+        .unwrap_or_else(|| b"emacs".to_vec());
+    let mut prefix = emacs;
+    prefix.extend_from_slice(b": ");
+    prefix.extend_from_slice(program.as_bytes());
+    prefix.extend_from_slice(b": ");
+    let image = ExecImage {
+        argv: pointers(0..argv_end),
+        envp: pointers(argv_end..strings.len()),
+        _strings: strings,
+        prefix,
+    };
+
+    // SAFETY: the child only calls execve, write, strerror and _exit on data
+    // owned by `image', which the closure owns whole; GNU's own vfork child
+    // makes the same strerror call.
+    unsafe {
+        command.pre_exec(move || image.exec_in_child(pty));
+    }
+}
+
+#[cfg(unix)]
+impl ExecImage {
+    /// The child side of `exec_like_gnu'.
+    ///
+    /// # Safety
+    /// Runs in the forked child between fork and exec.
+    unsafe fn exec_in_child(&self, pty: bool) -> std::io::Result<()> {
+        // SAFETY: argv and envp are NULL-terminated arrays of NUL-terminated
+        // strings owned by `self'; the failure path writes owned bytes and
+        // `strerror's static text.
+        unsafe {
+            libc::execve(self.argv[0], self.argv.as_ptr(), self.envp.as_ptr());
+            let error = std::io::Error::last_os_error();
+            if !pty {
+                return Err(error);
+            }
+            let errno = error.raw_os_error().unwrap_or(0);
+            let text = libc::strerror(errno);
+            libc::write(
+                libc::STDERR_FILENO,
+                self.prefix.as_ptr().cast(),
+                self.prefix.len(),
+            );
+            libc::write(libc::STDERR_FILENO, text.cast(), libc::strlen(text));
+            libc::write(libc::STDERR_FILENO, b"\n".as_ptr().cast(), 1);
+            libc::_exit(if errno == libc::ENOENT { 127 } else { 126 })
+        }
+    }
+}
+
 pub(crate) fn run_external_process(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     program: &str,
     argv: &[String],
     input: Option<&[u8]>,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<std::process::Output, LispError> {
     #[cfg(test)]
     crate::test_support::mark_process_test();
 
-    let mut command = Command::new(program);
+    let program = locate_program_for_exec(interp, env, program, false)?;
+    let mut command = Command::new(&program);
     command.args(argv);
     configure_external_command(interp, env, &mut command)?;
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, false);
+    #[cfg(unix)]
+    exec_like_gnu(&mut command, &program, argv, false);
     command.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -61,19 +241,17 @@ pub(crate) fn run_external_process(
     });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        LispError::SignalValue(file_operation_error_value(
-            "Searching for program",
-            &error,
-            program,
-        ))
-    })?;
+    let mut child = command.spawn().map_err(|error| vfork_error(&error))?;
     if let Some(stdin_data) = input
         && let Some(mut stdin) = child.stdin.take()
+        && let Err(error) = stdin.write_all(stdin_data)
     {
-        stdin
-            .write_all(stdin_data)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        // Dropping `Child' does not terminate it.  If the peer closes stdin
+        // while input is being copied, explicitly reap the child before
+        // returning the write error.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(LispError::Signal(error.to_string()));
     }
     child
         .wait_with_output()
@@ -81,8 +259,8 @@ pub(crate) fn run_external_process(
 }
 
 pub(crate) fn configure_external_command(
-    interp: &Interpreter,
-    env: &Env,
+    interp: &mut Interpreter,
+    env: &mut Env,
     command: &mut Command,
 ) -> Result<(), LispError> {
     if let Some(default_directory) = interp
@@ -90,16 +268,32 @@ pub(crate) fn configure_external_command(
         .and_then(|value| string_like(&value).map(|string| string.text))
         .filter(|directory| !directory.is_empty())
     {
-        // `Command::current_dir` is a host boundary.  A file-name handler may
-        // retain Lisp's logical remote directory while its transport runs the
-        // actual program locally, so resolve it through the same path policy
-        // as every other host filesystem operation.
-        let directory = resolve_file_name_in_env(interp, env, &default_directory);
+        // GNU's get_current_directory(true) asks a handler for the local
+        // directory without delegating the process operation itself.  This
+        // is what lets `:file-handler nil' run locally from a remote logical
+        // default-directory.
+        // callproc.c invokes Funhandled_file_name_directory directly, so a
+        // user redefinition of the Lisp function cell cannot replace the C
+        // mechanism.  Native dispatch still performs the legitimate
+        // file-name-handler call made inside that primitive.
+        let unhandled = call(
+            interp,
+            "unhandled-file-name-directory",
+            &[Value::String(default_directory.clone().into())],
+            env,
+        )?;
+        // A handler returns nil when its logical directory cannot be a host
+        // cwd.  GNU falls back to HOME, then expands the result without
+        // sending it back through remote-name resolution.
+        let unhandled = string_like(&unhandled)
+            .map(|directory| directory.text)
+            .unwrap_or_else(|| "~".into());
+        let directory = expand_file_name_in_env(interp, env, &unhandled, None);
         let metadata = fs::metadata(&directory).map_err(|error| {
             LispError::SignalValue(file_operation_error_value(
                 "Setting current directory",
                 &error,
-                &directory,
+                &default_directory,
             ))
         })?;
         if !metadata.is_dir() {
@@ -107,7 +301,7 @@ pub(crate) fn configure_external_command(
             return Err(LispError::SignalValue(file_operation_error_value(
                 "Setting current directory",
                 &error,
-                &directory,
+                &default_directory,
             )));
         }
         command.current_dir(directory);
@@ -117,10 +311,10 @@ pub(crate) fn configure_external_command(
 }
 
 pub(crate) fn spawn_persistent_process(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     program: &str,
     argv: &[String],
-    env: &Env,
+    env: &mut Env,
     connection_type: Option<&Value>,
     separate_stderr: bool,
 ) -> Result<RunningProcess, LispError> {
@@ -215,29 +409,33 @@ pub(crate) fn spawn_persistent_process(
 
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, input_pty);
-
-    let child = command
-        .spawn()
-        .map_err(|error| LispError::Signal(error.to_string()))?;
     #[cfg(unix)]
-    {
-        if let Some(stdout) = child.stdout.as_ref() {
-            set_nonblocking(stdout)?;
-        }
-        if let Some(stderr) = child.stderr.as_ref() {
-            set_nonblocking(stderr)?;
-        }
-        if let Some(output) = pty_output.as_ref() {
-            set_nonblocking(output)?;
-        }
-    }
-    Ok(RunningProcess {
+    exec_like_gnu(&mut command, program, argv, pty_slave_name.is_some());
+
+    let child = command.spawn().map_err(|error| vfork_error(&error))?;
+    // Put the child under RunningProcess's terminate-and-reap Drop guard
+    // before any fallible post-spawn setup.  A failed fcntl must not leak a
+    // subprocess whose runtime was never installed in the interpreter.
+    let runtime = RunningProcess {
         child,
         pty_input,
         pty_output,
         pty_slave_guard,
         pty_slave_name,
-    })
+    };
+    #[cfg(unix)]
+    {
+        if let Some(stdout) = runtime.child.stdout.as_ref() {
+            set_nonblocking(stdout)?;
+        }
+        if let Some(stderr) = runtime.child.stderr.as_ref() {
+            set_nonblocking(stderr)?;
+        }
+        if let Some(output) = runtime.pty_output.as_ref() {
+            set_nonblocking(output)?;
+        }
+    }
+    Ok(runtime)
 }
 
 fn process_connection_pty_modes(
@@ -456,7 +654,6 @@ pub(crate) struct MakeProcessArgs {
     pub(crate) stderr_process_id: Option<u64>,
     pub(crate) stderr_buffer_id: Option<u64>,
     pub(crate) query_on_exit_flag: bool,
-    pub(crate) file_handler: bool,
     pub(crate) connection_type: Option<Value>,
 }
 
@@ -480,7 +677,6 @@ pub(crate) fn parse_make_process_args(
     let mut stderr_process_id = None;
     let mut stderr_buffer_id = None;
     let mut query_on_exit_flag = true;
-    let mut file_handler = false;
     let mut connection_type = None;
 
     for pair in args.as_chunks::<2>().0 {
@@ -496,6 +692,7 @@ pub(crate) fn parse_make_process_args(
             }
             ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
             ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
+            ":coding" if value.is_nil() => coding = None,
             ":coding" => coding = Some(process_coding_pair(value)?),
             ":stderr" if !value.is_nil() => {
                 if let Ok(process_id) = interp.resolve_process_id(value) {
@@ -505,7 +702,14 @@ pub(crate) fn parse_make_process_args(
                 }
             }
             ":noquery" => query_on_exit_flag = !value.is_truthy(),
-            ":file-handler" => file_handler = value.is_truthy(),
+            // Normal asynchronous subprocesses cannot start stopped.  GNU's
+            // CHECK_TYPE accepts this compatibility keyword only when its
+            // value is nil.
+            ":stop" if value.is_truthy() => {
+                return Err(wrong_type_argument("null", value.clone()));
+            }
+            ":stop" => {}
+            ":file-handler" => {}
             ":connection-type" => connection_type = Some(value.clone()),
             _ => {}
         }
@@ -522,18 +726,8 @@ pub(crate) fn parse_make_process_args(
         stderr_process_id,
         stderr_buffer_id,
         query_on_exit_flag,
-        file_handler,
         connection_type,
     })
-}
-
-pub(crate) fn deliver_process_output(
-    interp: &mut Interpreter,
-    process_id: u64,
-    output: &str,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    deliver_process_output_decoded(interp, process_id, output, true, env)
 }
 
 pub(crate) fn deliver_process_output_decoded(
@@ -999,9 +1193,20 @@ pub(crate) fn pump_external_process_output(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<bool, LispError> {
+    pump_external_process_output_for(interp, env, None)
+}
+
+fn pump_external_process_output_for(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    only_process_id: Option<u64>,
+) -> Result<bool, LispError> {
     let ids = interp.live_external_process_ids();
     let mut progressed = false;
     for process_id in ids {
+        if only_process_id.is_some_and(|id| process_id != id) {
+            continue;
+        }
         if interp.process_output_paused(process_id) {
             // Status changes still arrive while output is held.  GNU removes
             // only the read descriptor, not SIGCHLD/status observation.
@@ -1011,7 +1216,7 @@ pub(crate) fn pump_external_process_output(
         let (stdout, stderr) = interp.poll_process_output(process_id)?;
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
-    for (process_id, event) in interp.take_pending_subprocess_exit_events() {
+    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(only_process_id) {
         run_process_sentinel(interp, process_id, &event, env)?;
         progressed = true;
     }
@@ -2128,6 +2333,8 @@ pub(crate) fn wait_pumping_processes(
     total: Option<std::time::Duration>,
     return_on_delivery: bool,
     target_process_id: Option<u64>,
+    only_process_id: Option<u64>,
+    run_timers: bool,
 ) -> Result<bool, LispError> {
     let deadline = total.map(|total| std::time::Instant::now() + total);
     let mut delivered = false;
@@ -2136,8 +2343,8 @@ pub(crate) fn wait_pumping_processes(
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
     let all_processes_start = interp.current_thread_process_output_delivery_count();
     loop {
-        let mut progressed = pump_external_process_output(interp, env)?;
-        progressed |= pump_connection_processes(interp, env)?;
+        let mut progressed = pump_external_process_output_for(interp, env, only_process_id)?;
+        progressed |= pump_connection_processes_for(interp, env, only_process_id)?;
         let any_process_delivered =
             interp.current_thread_process_output_delivery_count() != all_processes_start;
         delivered |= any_process_delivered;
@@ -2150,7 +2357,12 @@ pub(crate) fn wait_pumping_processes(
             delivery_grace_deadline =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(10));
         }
-        interp.drive_threads(env, true)?;
+        if run_timers {
+            interp.drive_threads(env, true)?;
+        }
+        if interp.waiting_for_user_input() && !unread_command_events(interp, env)?.is_empty() {
+            break;
+        }
         let requested_process_delivered = target_process_id.is_some_and(|process_id| {
             interp.process_output_delivery_count(process_id) != target_start
         });
@@ -2171,8 +2383,9 @@ pub(crate) fn wait_pumping_processes(
             // readiness once more before reporting a timeout; otherwise the
             // bytes are left for the next caller, producing a deterministic
             // one-wait lag under load.
-            let mut final_progress = pump_external_process_output(interp, env)?;
-            final_progress |= pump_connection_processes(interp, env)?;
+            let mut final_progress =
+                pump_external_process_output_for(interp, env, only_process_id)?;
+            final_progress |= pump_connection_processes_for(interp, env, only_process_id)?;
             delivered |= final_progress;
             break;
         }
@@ -2224,6 +2437,14 @@ pub(crate) fn pump_connection_processes(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<bool, LispError> {
+    pump_connection_processes_for(interp, env, None)
+}
+
+fn pump_connection_processes_for(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    only_process_id: Option<u64>,
+) -> Result<bool, LispError> {
     let mut progressed = false;
 
     // `:nowait t' exposes a freshly created client as `connect' until the
@@ -2231,6 +2452,9 @@ pub(crate) fn pump_connection_processes(
     // in this compatibility runtime, but deferring the `open' transition
     // lets callers install their sentinel before it runs, like GNU Emacs.
     for process_id in interp.connecting_network_processes() {
+        if only_process_id.is_some_and(|id| process_id != id) {
+            continue;
+        }
         progressed = true;
         match progress_async_gnutls(interp, process_id)? {
             AsyncGnuTlsProgress::NotRequested | AsyncGnuTlsProgress::Ready => {
@@ -2252,6 +2476,9 @@ pub(crate) fn pump_connection_processes(
 
     // Accept new connections on every server listener.
     for server_id in interp.network_listener_ids() {
+        if only_process_id.is_some_and(|id| server_id != id) {
+            continue;
+        }
         loop {
             let Some((child_runtime, peer_addr)) = interp.accept_network_connection(server_id)?
             else {
@@ -2331,7 +2558,12 @@ pub(crate) fn pump_connection_processes(
             };
             let child = interp.create_network_process(
                 &child_name,
-                server_buffer,
+                // GNU's accepted process inherits the listener's filter,
+                // sentinel, log function, plist, and coding systems, but it
+                // does not inherit the listener's process buffer.  Giving
+                // the child that buffer makes killing the listener buffer
+                // prompt about a still-live accepted connection.
+                None,
                 child_inherit_coding_system,
                 server_filter,
                 server_sentinel,
@@ -2360,15 +2592,17 @@ pub(crate) fn pump_connection_processes(
 
     // Deliver input / closure on every open network or serial stream.
     for stream_id in interp.connection_stream_ids() {
+        if only_process_id.is_some_and(|id| stream_id != id) {
+            continue;
+        }
         if interp.process_output_paused(stream_id) {
             continue;
         }
         let (bytes, closed) = interp.poll_connection_stream(stream_id)?;
         if !bytes.is_empty() {
             progressed = true;
-            let output = crate::lisp::primitives::coding::bytes_to_shared_unibyte_value(&bytes);
-            let text = string_text(&output)?;
-            deliver_process_output(interp, stream_id, &text, env)?;
+            let (output, multibyte) = decode_process_output_bytes(interp, stream_id, &bytes);
+            deliver_process_output_decoded(interp, stream_id, &output, multibyte, env)?;
         }
         if closed {
             progressed = true;

@@ -725,14 +725,14 @@ pub(crate) const GNU_C_PRIMITIVES: &[GnuCPrimitiveContract] = &[
     GnuCPrimitiveContract { name: "kqueue-rm-watch", arity: None, command: false, special_form: false, origins: "kqueue.c" },
     GnuCPrimitiveContract { name: "kqueue-valid-p", arity: None, command: false, special_form: false, origins: "kqueue.c" },
     GnuCPrimitiveContract { name: "last-nonminibuffer-frame", arity: Some((0, 0)), command: false, special_form: false, origins: "frame.c" },
-    GnuCPrimitiveContract { name: "lcms-cam02-ucs", arity: None, command: false, special_form: false, origins: "lcms.c" },
-    GnuCPrimitiveContract { name: "lcms-cie-de2000", arity: None, command: false, special_form: false, origins: "lcms.c" },
-    GnuCPrimitiveContract { name: "lcms-jab->jch", arity: None, command: false, special_form: false, origins: "lcms.c" },
-    GnuCPrimitiveContract { name: "lcms-jch->jab", arity: None, command: false, special_form: false, origins: "lcms.c" },
-    GnuCPrimitiveContract { name: "lcms-jch->xyz", arity: None, command: false, special_form: false, origins: "lcms.c" },
-    GnuCPrimitiveContract { name: "lcms-temp->white-point", arity: None, command: false, special_form: false, origins: "lcms.c" },
-    GnuCPrimitiveContract { name: "lcms-xyz->jch", arity: None, command: false, special_form: false, origins: "lcms.c" },
-    GnuCPrimitiveContract { name: "lcms2-available-p", arity: None, command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms-cam02-ucs", arity: Some((2, 4)), command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms-cie-de2000", arity: Some((2, 5)), command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms-jab->jch", arity: Some((1, 3)), command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms-jch->jab", arity: Some((1, 3)), command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms-jch->xyz", arity: Some((1, 3)), command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms-temp->white-point", arity: Some((1, 1)), command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms-xyz->jch", arity: Some((1, 3)), command: false, special_form: false, origins: "lcms.c" },
+    GnuCPrimitiveContract { name: "lcms2-available-p", arity: Some((0, 0)), command: false, special_form: false, origins: "lcms.c" },
     GnuCPrimitiveContract { name: "ldexp", arity: Some((2, 2)), command: false, special_form: false, origins: "floatfns.c" },
     GnuCPrimitiveContract { name: "length", arity: Some((1, 1)), command: false, special_form: false, origins: "fns.c" },
     GnuCPrimitiveContract { name: "length<", arity: Some((2, 2)), command: false, special_form: false, origins: "fns.c" },
@@ -1704,7 +1704,7 @@ pub(crate) const GNU_C_PRIMITIVES: &[GnuCPrimitiveContract] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const GNU_C_PRIMITIVE_SOURCE_COUNT: usize = 1685;
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const GNU_C_PRIMITIVE_AVAILABLE_COUNT: usize = 1446;
+pub(crate) const GNU_C_PRIMITIVE_AVAILABLE_COUNT: usize = 1454;
 
 pub(crate) fn generated_gnu_c_primitive_contract(
     name: &str,

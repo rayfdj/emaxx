@@ -427,9 +427,23 @@ pub(crate) fn casify_value(
             interp, &context, down_table, up_table, code, action,
         ) as i64));
     }
-    let input = string_text(value)?;
-    Ok(Value::String(
-        casify_string(interp, &input, action, env)?.into(),
+    let input = string_like(value)
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
+    let input_len = input.text.chars().count();
+    let output = casify_string(interp, &input.text, action, env)?;
+    // casefiddle.c copies intervals while casing can stay in the source
+    // string's character footprint.  A full Unicode mapping that changes
+    // the character count (for example, sharp-s -> "SS") takes GNU's
+    // rebuilt-string path and drops all intervals instead.
+    let props = if output.chars().count() == input_len {
+        input.props
+    } else {
+        Vec::new()
+    };
+    Ok(string_like_value_with_multibyte(
+        output,
+        props,
+        input.multibyte,
     ))
 }
 
