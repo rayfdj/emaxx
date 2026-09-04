@@ -592,12 +592,14 @@ fn darwin_process_inventory_available() -> bool {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn old_style_process_time(ticks: u64, ticks_per_second: u64) -> Value {
     let exact = exact_time_value(BigInt::from(ticks), BigInt::from(ticks_per_second))
         .expect("positive process time resolution");
     exact_time_to_old_style(&exact).expect("process times fit GNU's old-style time representation")
 }
 
+#[cfg(not(target_os = "linux"))]
 fn process_state_code(status: sysinfo::ProcessStatus) -> &'static str {
     use sysinfo::ProcessStatus;
 
@@ -615,6 +617,287 @@ fn process_state_code(status: sysinfo::ProcessStatus) -> &'static str {
     }
 }
 
+/// An exact rational time (NUMER / DENOM seconds) in GNU's old-style list
+/// form, which is what `time-convert' with a nil FORM yields under the
+/// default `current-time-list'.
+#[cfg(target_os = "linux")]
+fn old_style_rational_time(numer: i128, denom: u64) -> Value {
+    let exact = exact_time_value(BigInt::from(numer), BigInt::from(denom))
+        .expect("positive process time resolution");
+    exact_time_to_old_style(&exact).expect("process times fit GNU's old-style time representation")
+}
+
+/// sysdep.c procfs_ttyname: map a `tty_nr' device number to a name through
+/// /proc/tty/drivers, appending the minor number to the driver's node name
+/// exactly as the C does; an unmatched device yields "".
+#[cfg(target_os = "linux")]
+fn procfs_ttyname(rdev: u64) -> String {
+    let major = (rdev >> 8) & 0xfff;
+    let minor = (rdev & 0xff) | ((rdev & 0xfff0_0000) >> 12);
+    let Ok(drivers) = fs::read_to_string("/proc/tty/drivers") else {
+        return String::new();
+    };
+    for line in drivers.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(_), Some(node), Some(driver_major), Some(range)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if driver_major.parse::<u64>().ok() != Some(major) {
+            continue;
+        }
+        let (begin, end) = match range.split_once('-') {
+            Some((begin, end)) => (begin.parse::<u64>().ok(), end.parse::<u64>().ok()),
+            None => (range.parse::<u64>().ok(), range.parse::<u64>().ok()),
+        };
+        let (Some(begin), Some(end)) = (begin, end) else {
+            continue;
+        };
+        if (begin..=end).contains(&minor) {
+            return format!("{node}{minor}");
+        }
+    }
+    String::new()
+}
+
+/// sysdep.c procfs_get_total_memory: MemTotal in kB, defaulting to 2 GiB.
+#[cfg(target_os = "linux")]
+fn procfs_total_memory_kb() -> u128 {
+    fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines().find_map(|line| {
+                line.strip_prefix("MemTotal:")
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .and_then(|value| value.parse::<u128>().ok())
+            })
+        })
+        .unwrap_or(2 * 1024 * 1024)
+}
+
+/// sysdep.c get_up_time: /proc/uptime's first number as (TICKS, HZ) where HZ
+/// is the power of ten matching its printed fraction digits.
+#[cfg(target_os = "linux")]
+fn procfs_uptime() -> Option<(u128, u64)> {
+    let text = fs::read_to_string("/proc/uptime").ok()?;
+    let first = text.split_whitespace().next()?;
+    let (seconds, fraction) = first.split_once('.').unwrap_or((first, ""));
+    let seconds = seconds.parse::<u128>().ok()?;
+    let hz = 10_u64.pow(fraction.len() as u32);
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse::<u128>().ok()?
+    };
+    Some((seconds * u128::from(hz) + fraction, hz))
+}
+
+/// sysdep.c system_process_attributes for GNU/Linux: every attribute comes
+/// from /proc/PID (the directory's owner, `stat', `cmdline'), the CPU times
+/// are jiffies over `sysconf (_SC_CLK_TCK)', and `start'/`etime'/`pcpu'
+/// derive from /proc/uptime the way the C computes them.  The C conses each
+/// attribute onto the front of the list, so the public order is the reverse
+/// of the order assembled here.
+#[cfg(target_os = "linux")]
+pub(crate) fn process_attributes_value(pid: i64) -> Value {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return Value::Nil;
+    };
+    let procfn = format!("/proc/{pid}");
+    let Ok(metadata) = fs::metadata(&procfn) else {
+        return Value::Nil;
+    };
+    let mut attributes = Vec::new();
+    let mut push = |name: &str, value: Value| {
+        attributes.push(Value::cons(Value::symbol(name), value));
+    };
+
+    let uid = metadata.uid();
+    push("euid", Value::Integer(i64::from(uid)));
+    if let Some(user) = user_name_from_uid(uid) {
+        push("user", Value::String(user.into()));
+    }
+    let gid = metadata.gid();
+    push("egid", Value::Integer(i64::from(gid)));
+    if let Ok(Some(group)) = group_name_from_gid(i64::from(gid)) {
+        push("group", Value::String(group.into()));
+    }
+
+    // The C reads at most 1024 bytes of /proc/PID/stat.
+    let stat = fs::read(format!("{procfn}/stat"))
+        .map(|bytes| bytes.into_iter().take(1024).collect::<Vec<u8>>())
+        .unwrap_or_default();
+    let mut comm = "???".to_string();
+    if !stat.is_empty() {
+        let open = stat.iter().position(|byte| *byte == b'(');
+        let close = stat.iter().rposition(|byte| *byte == b')');
+        let mut after_close = None;
+        if let Some(open) = open
+            && let Some(close) = close
+            && open < close
+        {
+            comm = String::from_utf8_lossy(&stat[open + 1..close]).into_owned();
+            after_close = Some(close + 1);
+        }
+        push("comm", Value::String(comm.clone().into()));
+
+        // state ppid pgrp sess tty tpgid flags minflt cminflt majflt cmajflt
+        // utime stime cutime cstime priority nice thcount itrealvalue start
+        // vsize rss
+        let fields = after_close
+            .map(|start| String::from_utf8_lossy(&stat[start..]).into_owned())
+            .unwrap_or_default();
+        let fields = fields.split_whitespace().collect::<Vec<_>>();
+        let parsed = (fields.len() >= 22).then(|| {
+            let signed = |index: usize| fields[index].parse::<i64>().ok();
+            let unsigned = |index: usize| fields[index].parse::<u64>().ok();
+            Some((
+                fields[0].chars().next()?,
+                signed(1)?,
+                signed(2)?,
+                signed(3)?,
+                signed(4)?,
+                signed(5)?,
+                unsigned(7)?,
+                unsigned(8)?,
+                unsigned(9)?,
+                unsigned(10)?,
+                unsigned(11)?,
+                unsigned(12)?,
+                unsigned(13)?,
+                unsigned(14)?,
+                signed(15)?,
+                signed(16)?,
+                signed(17)?,
+                unsigned(19)?,
+                unsigned(20)?,
+                signed(21)?,
+            ))
+        });
+        if let Some(Some((
+            state,
+            ppid,
+            pgrp,
+            sess,
+            tty,
+            tpgid,
+            minflt,
+            cminflt,
+            majflt,
+            cmajflt,
+            utime,
+            stime,
+            cutime,
+            cstime,
+            priority,
+            niceness,
+            thcount,
+            start,
+            vsize,
+            rss,
+        ))) = parsed
+        {
+            push("state", Value::String(state.to_string().into()));
+            push("ppid", Value::Integer(ppid));
+            push("pgrp", Value::Integer(pgrp));
+            push("sess", Value::Integer(sess));
+            push(
+                "ttname",
+                Value::String(procfs_ttyname(u64::try_from(tty).unwrap_or(0)).into()),
+            );
+            push("tpgid", Value::Integer(tpgid));
+            push("minflt", Value::Integer(minflt as i64));
+            push("majflt", Value::Integer(majflt as i64));
+            push("cminflt", Value::Integer(cminflt as i64));
+            push("cmajflt", Value::Integer(cmajflt as i64));
+
+            // SAFETY: sysconf takes a plain integer selector.
+            let clocks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+            if clocks_per_sec > 0 {
+                let hz = clocks_per_sec as u64;
+                let jiffies = |ticks: u64| old_style_rational_time(i128::from(ticks), hz);
+                push("utime", jiffies(utime));
+                push("stime", jiffies(stime));
+                push("time", jiffies(stime + utime));
+                push("cutime", jiffies(cutime));
+                push("cstime", jiffies(cstime));
+                push("ctime", jiffies(cstime + cutime));
+
+                if let Some((up_ticks, up_hz)) = procfs_uptime() {
+                    // now is truncated to whole HZ ticks (time-convert nil HZ),
+                    // boot = now - uptime, start = boot + STARTTIME jiffies,
+                    // etime = uptime - STARTTIME jiffies; all exact rationals.
+                    let now_ns = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|elapsed| elapsed.as_nanos())
+                        .unwrap_or(0);
+                    let now_ticks = (now_ns * u128::from(hz)) / 1_000_000_000;
+                    let common = {
+                        let a = u128::from(hz);
+                        let b = u128::from(up_hz);
+                        let mut x = a;
+                        let mut y = b;
+                        while y != 0 {
+                            let r = x % y;
+                            x = y;
+                            y = r;
+                        }
+                        a / x * b
+                    };
+                    let per_hz = (common / u128::from(hz)) as i128;
+                    let per_up = (common / u128::from(up_hz)) as i128;
+                    let boot = now_ticks as i128 * per_hz - up_ticks as i128 * per_up;
+                    let tstart = i128::from(start) * per_hz;
+                    let denom = common as u64;
+                    push("start", old_style_rational_time(boot + tstart, denom));
+                    let etime = up_ticks as i128 * per_up - tstart;
+                    push("etime", old_style_rational_time(etime, denom));
+                    let etime_seconds = etime as f64 / common as f64;
+                    let pcpu = 100.0 * (stime + utime) as f64 / (hz as f64 * etime_seconds);
+                    push("pcpu", Value::Float(pcpu));
+                }
+            }
+
+            push("pri", Value::Integer(priority));
+            push("nice", Value::Integer(niceness));
+            push("thcount", Value::Integer(thcount));
+            push("vsize", Value::Integer((vsize / 1024) as i64));
+            push("rss", Value::Integer(4 * rss));
+            let pmem = (4.0 * 100.0 * rss as f64 / procfs_total_memory_kb() as f64).min(100.0);
+            push("pmem", Value::Float(pmem));
+        }
+    }
+
+    // args: the NUL separators become plain spaces, whitespace and
+    // backslashes inside an argument get a backslash (c_isspace, so vertical
+    // tab counts), an empty command line reads "[COMM]".
+    if let Ok(mut cmdline) = fs::read(format!("{procfn}/cmdline")) {
+        while cmdline.last() == Some(&0) {
+            cmdline.pop();
+        }
+        let args = if cmdline.is_empty() {
+            format!("[{comm}]")
+        } else {
+            let mut escaped = Vec::with_capacity(cmdline.len() * 2);
+            for byte in cmdline {
+                if matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b'\\') {
+                    escaped.push(b'\\');
+                }
+                escaped.push(if byte == 0 { b' ' } else { byte });
+            }
+            String::from_utf8_lossy(&escaped).into_owned()
+        };
+        push("args", Value::String(args.into()));
+    }
+
+    attributes.reverse();
+    Value::list(attributes)
+}
+
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn process_attributes_value(pid: i64) -> Value {
     let Ok(pid) = u32::try_from(pid) else {
         return Value::Nil;
@@ -1938,19 +2221,21 @@ fn directory_allows_create(directory: &Path) -> bool {
     false
 }
 
+/// fileio.c Ffile_executable_p is `file_access_p (name, X_OK)': a plain
+/// `faccessat' with AT_EACCESS, so a searchable directory is executable too.
 pub(crate) fn file_executable_p(path: &str) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
-        metadata.permissions().mode() & 0o111 != 0
+        let Ok(path) = std::ffi::CString::new(path) else {
+            return false;
+        };
+        // SAFETY: `path' is a valid NUL-terminated string for the call.
+        let status =
+            unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
+        status == 0
     }
     #[cfg(not(unix))]
     {
-        true
+        fs::metadata(path).is_ok()
     }
 }

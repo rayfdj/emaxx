@@ -254,20 +254,50 @@ pub(crate) fn file_operation_error_value(
     error: &std::io::Error,
     path: &str,
 ) -> Value {
-    let condition = match error.kind() {
+    Value::list([
+        Value::Symbol(file_error_condition(error).into()),
+        Value::String(message.into()),
+        Value::String(errno_text(error).into()),
+        Value::String(path.into()),
+    ])
+}
+
+/// fileio.c report_file_errno: EEXIST, ENOENT/ENOTDIR and EACCES have their
+/// own conditions; every other errno is a plain `file-error'.
+pub(crate) fn file_error_condition(error: &std::io::Error) -> &'static str {
+    match error.kind() {
         ErrorKind::NotFound => "file-missing",
         ErrorKind::AlreadyExists => "file-already-exists",
+        _ if error.raw_os_error() == Some(libc::EACCES) => "permission-denied",
         _ => "file-error",
-    };
+    }
+}
+
+/// The `strerror' text of an `io::Error', without Rust's "(os error N)".
+pub(crate) fn errno_text(error: &std::io::Error) -> String {
     let rendered = error.to_string();
-    let detail = rendered
+    rendered
         .split_once(" (os error")
-        .map_or(rendered.as_str(), |(detail, _)| detail);
+        .map_or(rendered.as_str(), |(detail, _)| detail)
+        .to_string()
+}
+
+/// `report_file_errno' with an explicit errno, for callers such as openp
+/// that carry the number rather than an `io::Error'.
+pub(crate) fn file_errno_error_value(message: &str, errno: i32, path: &str) -> Value {
+    file_operation_error_value(message, &std::io::Error::from_raw_os_error(errno), path)
+}
+
+/// `report_file_errno (MESSAGE, Qnil, errno)': the data names no file, so it
+/// is just the message and the errno text.
+pub(crate) fn file_operation_error_value_without_file(
+    message: &str,
+    error: &std::io::Error,
+) -> Value {
     Value::list([
-        Value::Symbol(condition.into()),
+        Value::Symbol(file_error_condition(error).into()),
         Value::String(message.into()),
-        Value::String(detail.into()),
-        Value::String(path.into()),
+        Value::String(errno_text(error).into()),
     ])
 }
 

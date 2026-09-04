@@ -9583,6 +9583,13 @@ fn inotify_directory_watch_reports_external_child_creation() {
 /// against a fresh interpreter, so the literal cannot drift from GNU.
 #[cfg(target_os = "linux")]
 fn assert_linux_inotify_contract(program: &str, expected: &str, label: &str) {
+    assert_oracle_contract_matches_interpreter(program, expected, label);
+}
+
+/// Pin PROGRAM's printed value against the oracle, then evaluate the same
+/// program in an initialized in-process interpreter and require the same
+/// text.
+fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, label: &str) {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let form = Reader::new(program)
@@ -9595,6 +9602,137 @@ fn assert_linux_inotify_contract(program: &str, expected: &str, label: &str) {
             .unwrap_or_else(|_| panic!("evaluate {label} program"))
             .to_string(),
         expected
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn process_attributes_follows_sysdep_procfs() {
+    // sysdep.c system_process_attributes (GNU_LINUX) conses 31 attributes
+    // from /proc/PID: owner ids and names, the `stat' fields, jiffies as
+    // old-style times, /proc/uptime-derived start/etime/pcpu, and the
+    // escaped command line.  The child is a fresh `sleep', so the parent
+    // linkage, the child-accounting fields and the argument escaping are
+    // exact; the live counters are pinned by type.
+    let program = r#"
+        (let* ((p (start-process "s" nil "sleep" "5" "a b" "c\\d"))
+               (a (process-attributes (process-id p)))
+               (keys '(euid user egid group comm state ppid pgrp sess ttname tpgid
+                       minflt majflt cminflt cmajflt utime stime time cutime cstime
+                       ctime start etime pcpu pri nice thcount vsize rss pmem args)))
+          (prog1
+              (list (mapcar #'car a)
+                    (mapcar (lambda (k) (type-of (cdr (assq k a)))) keys)
+                    (cdr (assq 'comm a))
+                    (and (member (cdr (assq 'state a)) '("R" "S")) t)
+                    (= (cdr (assq 'ppid a)) (emacs-pid))
+                    (= (cdr (assq 'euid a)) (user-uid))
+                    (equal (cdr (assq 'user a)) (user-login-name))
+                    (cdr (assq 'cminflt a)) (cdr (assq 'cmajflt a))
+                    (cdr (assq 'cutime a)) (cdr (assq 'cstime a)) (cdr (assq 'ctime a))
+                    (length (cdr (assq 'start a))) (length (cdr (assq 'etime a)))
+                    (cdr (assq 'thcount a))
+                    (let ((args (cdr (assq 'args a))))
+                      (list (file-name-absolute-p args)
+                            (string-suffix-p "/sleep 5 a\\ b c\\\\d" args)))
+                    (process-attributes 0))
+            (delete-process p)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((args pmem rss vsize thcount nice pri pcpu etime start ctime cstime cutime time stime \
+         utime cmajflt cminflt majflt minflt tpgid ttname sess pgrp ppid state comm group egid \
+         user euid) (integer string integer string string string integer integer integer string \
+         integer integer integer integer integer cons cons cons cons cons cons cons cons float \
+         integer integer integer integer integer float string) \"sleep\" t t t t 0 0 (0 0 0 0) \
+         (0 0 0 0) (0 0 0 0) 4 4 1 (t t) nil)",
+        "process-attributes",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn program_search_follows_openp_over_exec_path() {
+    // process.c Fmake_process and callproc.c Fcall_process locate the
+    // program with openp (X_OK over `exec-path' and `exec-suffixes'), report
+    // a miss as "Searching for program" with openp's errno (ENOENT, EISDIR
+    // for a directory, EACCES), and make-process rejects an absolute
+    // directory outright.  fileio.c's `file-executable-p' is a plain
+    // faccessat, so a searchable directory qualifies.
+    let program = r#"
+        (list
+         (condition-case e (start-process "x" nil "no-such-emaxx-program") (error e))
+         (let ((exec-path nil))
+           (condition-case e (start-process "x" nil "sleep" "1") (error e)))
+         (let ((exec-path '("/usr/bin")))
+           (condition-case e (start-process "x" nil ".") (error e)))
+         (condition-case e (start-process "x" nil "/usr/bin") (error e))
+         (condition-case e (start-process "x" nil "./no-such-emaxx-program") (error e))
+         (let ((exec-path nil))
+           (condition-case e (call-process "sleep" nil nil nil "0") (error e)))
+         (condition-case e (call-process "/etc/passwd") (error e))
+         (let ((exec-path '("/usr/bin")))
+           (condition-case e (call-process ".") (error e)))
+         (file-executable-p "/usr/bin")
+         (file-executable-p "/etc/passwd")
+         (with-temp-buffer
+           (call-process "sh" nil t nil "-c" "echo $0")
+           (equal (buffer-string) (concat (executable-find "sh") "\n")))
+         (let* ((b (generate-new-buffer "argv0"))
+                (p (start-process "argv0" b "sh" "-c" "echo $0")))
+           (while (process-live-p p) (sleep-for 0.05))
+           (equal (car (split-string (with-current-buffer b (buffer-string)) "\n"))
+                  (executable-find "sh"))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((file-missing \"Searching for program\" \"No such file or directory\" \
+         \"no-such-emaxx-program\") (file-missing \"Searching for program\" \
+         \"No such file or directory\" \"sleep\") (file-error \"Searching for program\" \
+         \"Is a directory\" \".\") (error \"Specified program for new process is a directory\") \
+         (file-missing \"Searching for program\" \"No such file or directory\" \
+         \"./no-such-emaxx-program\") (file-missing \"Searching for program\" \
+         \"No such file or directory\" \"sleep\") (permission-denied \"Searching for program\" \
+         \"Permission denied\" \"/etc/passwd\") (file-error \"Searching for program\" \
+         \"Is a directory\" \".\") t nil t t)",
+        "program search",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn exec_failure_follows_emacs_spawn() {
+    // callproc.c emacs_spawn: with a pseudo-terminal the vfork child reports
+    // a failed exec itself ("<emacs>: <program>: <strerror>" on its stderr,
+    // then _exit 127 for ENOENT or 126 otherwise), so Lisp gets a process
+    // that exits with that code; without a pty posix_spawn hands the errno
+    // to the parent, which signals "Doing vfork" naming no file.  The
+    // diagnostic's first field is the running Emacs's own argv[0], so the
+    // comparison starts after it.
+    let program = r#"
+        (let ((results nil))
+          (dolist (case '(("pty-missing" t "/no/such/emaxx-program")
+                          ("pty-denied" t "/etc/passwd")
+                          ("pipe-missing" nil "/no/such/emaxx-program")
+                          ("pipe-denied" nil "/etc/passwd")))
+            (let ((process-connection-type (nth 1 case))
+                  (b (generate-new-buffer (nth 0 case))))
+              (push (condition-case e
+                        (let ((p (start-process (nth 0 case) b (nth 2 case))))
+                          (while (process-live-p p) (sleep-for 0.05))
+                          (while (accept-process-output p 0.1))
+                          (list (process-exit-status p) (process-status p)
+                                (cdr (split-string (with-current-buffer b (buffer-string))
+                                                   ": "))))
+                      (error e))
+                    results)))
+          (nreverse results))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((127 exit (\"/no/such/emaxx-program\" \"No such file or directory\n\nProcess \
+         pty-missing exited abnormally with code 127\n\")) (126 exit (\"/etc/passwd\" \
+         \"Permission denied\n\nProcess pty-denied exited abnormally with code 126\n\")) \
+         (file-missing \"Doing vfork\" \"No such file or directory\") (permission-denied \
+         \"Doing vfork\" \"Permission denied\"))",
+        "exec failure",
     );
 }
 
