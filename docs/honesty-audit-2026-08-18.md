@@ -84,6 +84,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 152 | `(sleep-for 0)` runs due Lisp timers; Fsleep_for returns without entering the wait for a non-positive duration | OPEN (recorded 2026-09-04) |
 | 153 | batch `read-from-minibuffer` reads stdin even while `executing-kbd-macro` is non-nil, where read_minibuf takes the full path; the accepted-default history push is gated on TTY-reader presence rather than that condition | OPEN (recorded 2026-09-04) |
 | 154 | `expand_file_name_runtime` resolved a nil DEFAULT-DIRECTORY against the process cwd; exposed as a copy-family regression by the 2026-09-04 Linux frozen run | FIXED 2026-09-04 |
+| 155 | Linux `process-attributes` returns 15 of GNU's 31 keys (no pcpu, pmem, utime/stime/cutime/cstime/ctime, page-fault counts, tpgid, ttname, nice, pri, thcount), so Proced's %CPU refinement fails with `(wrong-type-argument integerp nil)`; the Darwin skip hid it | OPEN (recorded 2026-09-04, Linux oracle) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -5354,3 +5355,22 @@ extended copy-family contract, replays of arc-mode-tests 4/4, bytecomp-tests
 100/100 and files-tests 116/116, and the grouped gate on the fixed tree
 (run-1788523328744887321-24455: 2304 library outcomes with the two opt-in
 ignores, bins and integration green).
+
+Frozen score of this main (`225f6f0`, unfixed) on Linux with the 3600 s
+per-file timeout: **7743/7883 matching, 140 mismatching across 461 files**,
+up from 7738 at `3c78b1e`.  Flipped since then: socks-tests 10/10 (from
+4/10), files-tests 116/116, process-tests `lookup-hints-values` (the
+getaddrinfo port).  Appeared: the two finding-154 regressions plus
+`wdired-test-symlink-name`, all three green again with the fix in this
+change (arc-mode 4/4, bytecomp 100/100, wdired 7/7), so the fixed tree
+stands at 7746 by that arithmetic.  Also present, and new as a Linux
+observation, is finding 155: proced-tests 4/6 here, because both refinement
+tests carry `(skip-when (eq system-type 'darwin))` and the Darwin
+certification's 6/6 was four passes plus two matching skips.  On Linux the
+oracle runs them and Emaxx's `process-attributes` lacks `pcpu` (and fifteen
+other sysdep.c keys), so `proced--cpu-at-point` reads nil.  That is a
+/proc/PID/stat port to schedule, not a test problem.  The remaining
+inventory is unchanged from the 2026-09-02 list: native comp 99, server 7,
+semantic 6, lcms 6 (the `lcms2` feature flag), mml-sec 4, threads 2+2,
+em-prompt 2, erc 2 (child-boot latency), and one each in nadvice, kmacro,
+editfns, print and simple.
