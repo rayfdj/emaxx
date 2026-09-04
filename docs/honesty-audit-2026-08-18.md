@@ -84,7 +84,9 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 152 | `(sleep-for 0)` runs due Lisp timers; Fsleep_for returns without entering the wait for a non-positive duration | OPEN (recorded 2026-09-04) |
 | 153 | batch `read-from-minibuffer` reads stdin even while `executing-kbd-macro` is non-nil, where read_minibuf takes the full path; the accepted-default history push is gated on TTY-reader presence rather than that condition | OPEN (recorded 2026-09-04) |
 | 154 | `expand_file_name_runtime` resolved a nil DEFAULT-DIRECTORY against the process cwd; exposed as a copy-family regression by the 2026-09-04 Linux frozen run | FIXED 2026-09-04 |
-| 155 | Linux `process-attributes` returns 15 of GNU's 31 keys (no pcpu, pmem, utime/stime/cutime/cstime/ctime, page-fault counts, tpgid, ttname, nice, pri, thcount), so Proced's %CPU refinement fails with `(wrong-type-argument integerp nil)`; the Darwin skip hid it | OPEN (recorded 2026-09-04, Linux oracle) |
+| 155 | Linux `process-attributes` returns 15 of GNU's 31 keys (no pcpu, pmem, utime/stime/cutime/cstime/ctime, page-fault counts, tpgid, ttname, nice, pri, thcount), so Proced's %CPU refinement fails with `(wrong-type-argument integerp nil)`; the Darwin skip hid it | FIXED 2026-09-04 (sysdep.c /proc port; proced-tests 6/6 on Linux) |
+| 156 | `make-process` and `call-process` never searched `exec-path`/`exec-suffixes` (openp with X_OK): an empty `exec-path` still ran the program, misses surfaced as the spawn failure instead of "Searching for program" with openp's errno, a directory named as the program was a `(error "Permission denied (os error 13)")`, argv[0] was the bare name rather than the resolved path, EACCES rendered as `file-error` instead of `permission-denied` in every `report_file_errno` path, `file-executable-p` was nil for directories, an unexecutable absolute program was a synchronous host-error string instead of GNU's pty-path child exiting 127/126 (with the perror line) or the pipe-path "Doing vfork" signal, and glibc's `execvp` ran ENOEXEC files through `sh` where GNU's `execve` fails | FIXED 2026-09-04 |
+| 157 | `process-attributes` of the Emaxx process itself reports `state` "S" and `thcount` 2 where GNU reads "R" and 1: Lisp runs on a spawned thread while /proc/PID/stat describes the blocked main thread | OPEN (architectural, recorded 2026-09-04) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -5374,3 +5376,107 @@ inventory is unchanged from the 2026-09-02 list: native comp 99, server 7,
 semantic 6, lcms 6 (the `lcms2` feature flag), mml-sec 4, threads 2+2,
 em-prompt 2, erc 2 (child-boot latency), and one each in nadvice, kmacro,
 editfns, print and simple.
+
+## 2026-09-04 Linux oracle repin, `process-attributes` (155) and program search (156)
+
+Base: main `f5577e8`, with the finding-154 fix rebased on top.
+
+**Linux oracle.**  The pinned Linux binary deviated from
+docs/oracle-build-contract.md: it was configured `--without-lcms2`, lacked
+HarfBuzz, and had picked up libotf and m17n-flt.  It was rebuilt at the same
+source commit (`7917fc9`) with `--with-native-compilation --with-x
+--with-x-toolkit=no --with-tree-sitter --without-imagemagick --with-lcms2
+--with-harfbuzz --without-libotf --without-m17n-flt`; `system-configuration-features`
+now lists HARFBUZZ and LCMS2 and neither LIBOTF nor M17N_FLT, and
+`(lcms2-available-p)` is `t`.  The Linux C-primitive manifest was regenerated
+from that binary with the generator and rustfmt: the only change is the eight
+`lcms.c` primitives gaining their arities (`GNU_C_PRIMITIVE_AVAILABLE_COUNT`
+1446 to 1454), which the anti-cheat regeneration gate now requires.  The
+local lock was repinned (uncommitted, as before).  test/src/lcms-tests.el
+executes on both sides and matches 6/6 with six real passes
+(run-1788531264408712921-10454); it was six matching skips before.  Both
+build documents now record this configuration.
+
+**Finding 155 (FIXED).**  `process-attributes` on Linux is a port of
+sysdep.c `system_process_attributes` (GNU_LINUX): euid/user/egid/group
+from the /proc/PID owner, comm and the `stat' fields between the last `)`
+and field 22, ttname through /proc/tty/drivers with GNU's major/minor
+decoding, the jiffies over `_SC_CLK_TCK` as old-style times, start/etime
+from /proc/uptime with `now` truncated to whole ticks, pcpu as
+`100 (s+u) / (hz etime)`, vsize/1024, rss*4, pmem against MemTotal, and the
+command line with the NUL separators as spaces and whitespace or backslashes
+inside an argument escaped (`c_isspace`, so vertical tab counts).  The 31
+keys come out in GNU's consed order.  Probe against the oracle on a `sleep`
+child: identical key order, identical types, identical fixed fields, and
+identical escaping of `"a b" "c\\d"`.  proced-tests is 6/6 on Linux, the
+two refinement tests now real passes on both sides.
+
+**Finding 156 (FIXED), found while comparing the `args` attribute.**  The
+oracle reported `/usr/bin/sleep 5` where Emaxx said `sleep 5`: `make-process`
+never ran process.c's openp search.  The full divergence set, each probed on
+both binaries before and after: an empty `exec-path` still started the
+program; a missing program surfaced as the spawn failure (`(error "No such
+file or directory (os error 2)")`) instead of `(file-missing "Searching for
+program" ...)`; a directory found through `exec-path` was a permission error
+instead of `(file-error "Searching for program" "Is a directory" ".")`; an
+absolute directory was not `(error "Specified program for new process is a
+directory")`; `call-process` had the same gaps and rendered EACCES as
+`file-error` where fileio.c report_file_errno says `permission-denied`;
+`file-executable-p` was nil for `/usr/bin` (fileio.c is a plain faccessat
+X_OK); an absolute program that cannot be executed was a synchronous host
+error string where GNU's pty path (callproc.c emacs_spawn, vfork) leaves a
+child that writes `<argv0>: <program>: <strerror>` and exits 127 for ENOENT
+or 126 otherwise, and GNU's pipe path (posix_spawn) signals
+`(file-missing "Doing vfork" "No such file or directory")` with no file in
+the data; and glibc's `execvp` ran an ENOEXEC file through `sh` (exit 2 and
+a shell syntax error) where GNU's `execve` fails with "Exec format error".
+
+The repair: `locate_file_search` is openp with GNU's errno bookkeeping
+(ENOENT initially, EISDIR for an accessible directory, any other failure
+replacing it) and a fixnum predicate now uses `faccessat` with AT_EACCESS;
+`locate_program_for_exec` applies process.c's and callproc.c's two call
+shapes; `report_file_errno`'s EACCES condition is `permission-denied`
+everywhere `file_operation_error_value` is used; `file_executable_p` is
+`faccessat X_OK`; and both spawn paths install a pre-exec hook that runs
+`execve` with the prepared argv/envp and, on failure, either exits like
+GNU's vfork child (pty) or hands the errno back so the parent signals
+"Doing vfork" (no pty).  The process's `process-command` keeps the name the
+caller gave.  All probe sets read identically on the two binaries afterwards
+(the perror prefix is each binary's own argv[0] by construction).
+
+**Finding 157 (OPEN, architectural).**  `(process-attributes (emacs-pid))`
+reports `state` "S" and `thcount` 2 in Emaxx where GNU reads "R" and 1,
+because Lisp runs on a spawned thread and /proc/PID/stat describes the
+blocked main thread.  No test depends on it; it is disclosed rather than
+special-cased.
+
+Three oracle contracts pin the work in-process against the live oracle:
+`process_attributes_follows_sysdep_procfs` (Linux),
+`program_search_follows_openp_over_exec_path` and
+`exec_failure_follows_emacs_spawn` (unix).  The gate-profile subset of 14
+process, call-process and locate-file tests passed; strict Clippy across all
+targets and features is clean; `cargo fmt` and `git diff --check` are clean.
+No upstream test, harness, selector, fixture, timeout, normalization or
+accepted-failure path changed; the manifest change is the reviewed baseline
+change the contract document called for.
+
+Upstream replays on the finished tree, against the rebuilt oracle:
+process-tests 37/37 (run-1788532988861563508-14438), callproc-tests 3/3
+(run-1788533097034612335-14752), fileio-tests 16/16
+(run-1788533311366938884-14878), files-tests 116/116
+(run-1788533333965301814-14956), proced-tests 6/6
+(run-1788533366766930806-15292), lcms-tests 6/6
+(run-1788533399318533597-15371) and subr-tests 61/61
+(run-1788533422743571228-15450).  A first simple-tests replay at the default
+180 s per-file timeout was cut off in the shell-command tests, as every
+Linux run of that file is; at 3600 s it is 52/53
+(run-1788533678234430000-15805), the one mismatch the boot-bound
+`simple-tests-async-shell-command-30280` already on the ledger.
+
+The grouped gate ran once on the final tree, rebased onto main `f5577e8`,
+as the unprivileged user with no other build or harness running
+(target/grouped-gate/run-1788534689653402280-16698): eval_01 351,
+eval_02 284, eval_03 322, eval_04 248, eval_05 350, primitives 368,
+compat_runtime 82, tty 56 (the two reviewed opt-in end-to-end wrappers
+ignored), batch 43 and lightweight 207 library tests passed with zero
+failures, bins and integration passed, GROUPED GATE PASSED.
