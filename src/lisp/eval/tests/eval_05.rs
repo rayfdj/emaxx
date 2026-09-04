@@ -7928,6 +7928,22 @@ fn eshell_matching_input_navigation_crosses_nonsticky_prompts() {
 }
 
 #[test]
+fn eshell_prompt_navigation_keeps_failed_command_output_in_a_separate_field() {
+    run_exclusive_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-prompt-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (em-prompt-test/next-previous-prompt-1)
+                   t)"
+            ),
+            Value::T
+        );
+    });
+}
+
+#[test]
 fn eshell_paragraph_navigation_dynamically_inhibits_field_motion() {
     run_exclusive_with_large_stack(|| {
         let mut interp = eshell_test_interpreter("em-prompt-tests.el");

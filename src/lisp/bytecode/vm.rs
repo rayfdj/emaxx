@@ -427,7 +427,16 @@ fn run_with_stack(
                 ));
             }
             let pushed = args.len().min(nonrest);
-            stack.extend(args[..pushed].iter().cloned());
+            // Genuine GNU strings are heap objects before bytecode binds
+            // them.  Emaxx's native primitives can return compact host
+            // strings, so promote direct arguments exactly as interpreted
+            // lambda binding does before bytecode mutates them in place.
+            stack.extend(
+                args[..pushed]
+                    .iter()
+                    .cloned()
+                    .map(Interpreter::stored_value),
+            );
             if args.len() > nonrest {
                 stack.push(Value::list(args[nonrest..].iter().cloned()));
             } else {
@@ -1886,6 +1895,57 @@ mod native_surface_tests {
             .call_function_value(object, None, &[Value::Integer(41)], &mut env)
             .unwrap();
         assert_eq!(value, Value::Integer(42));
+    }
+
+    #[test]
+    fn byte_code_direct_string_arguments_are_mutable_lisp_objects() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        // argspec 257: one mandatory arg; code: return that argument.
+        let object = prim(
+            &mut interp,
+            "make-byte-code",
+            &[
+                Value::Integer(257),
+                Value::String("\u{87}".into()),
+                Value::list([Value::symbol("vector-literal")]),
+                Value::Integer(1),
+            ],
+            &mut env,
+        )
+        .unwrap();
+        let value = interp
+            .call_function_value(
+                object,
+                None,
+                &[Value::String("native diagnostic".into())],
+                &mut env,
+            )
+            .unwrap();
+
+        prim(
+            &mut interp,
+            "put-text-property",
+            &[
+                Value::Integer(0),
+                Value::Integer(17),
+                Value::Symbol("field".into()),
+                Value::Symbol("command-output".into()),
+                value.clone(),
+            ],
+            &mut env,
+        )
+        .unwrap();
+        assert_eq!(
+            prim(
+                &mut interp,
+                "get-text-property",
+                &[Value::Integer(0), Value::Symbol("field".into()), value,],
+                &mut env,
+            )
+            .unwrap(),
+            Value::Symbol("command-output".into())
+        );
     }
 
     /// GNU's `byte-code' executes a bare program against a constants
