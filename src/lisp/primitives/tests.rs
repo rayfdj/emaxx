@@ -9725,6 +9725,19 @@ fn exec_failure_follows_emacs_spawn() {
                       (error e))
                     results)))
           (nreverse results))"#;
+    // Darwin uses fork for the PTY path, and the pinned GNU 30.2 build keeps
+    // the same child exit codes without delivering exec_failed's diagnostic
+    // through the process buffer.  Keep both host contracts explicit rather
+    // than treating the Linux-oracle result as Unix-wide.
+    #[cfg(target_os = "macos")]
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((127 exit nil) (126 exit nil) (file-missing \"Doing vfork\" \
+         \"No such file or directory\") (permission-denied \"Doing vfork\" \
+         \"Permission denied\"))",
+        "exec failure",
+    );
+    #[cfg(not(target_os = "macos"))]
     assert_oracle_contract_matches_interpreter(
         program,
         "((127 exit (\"/no/such/emaxx-program\" \"No such file or directory\n\nProcess \

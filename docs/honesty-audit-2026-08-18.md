@@ -5535,3 +5535,35 @@ and audited separately below.  The targets the stopped library command had
 not reached were run serially: compat-harness 38/38, perf-harness 1/1,
 CLI 13/13, ERT runner 3/3, package lifecycle 5/5, and zero-test main/doc
 targets clean.
+
+## 2026-09-05 Darwin exec-failure contract after the main refresh
+
+Main b50bdd2 introduced dc8ea49 from a Linux-oracle investigation.  Its new
+exec_failure_follows_emacs_spawn test was enabled for every Unix host but
+hard-coded the Linux PTY diagnostic.  On this host the pinned GNU Emacs
+30.2 oracle consistently returned
+((127 exit nil) (126 exit nil) ...), while the new expectation required the
+diagnostic strings.  Emaxx itself returned the Linux form, so this was both
+a failing test on untouched refreshed-main code and a real Darwin
+compatibility difference; it was not classified as a sandbox failure.
+
+The correction keeps fixed, reviewable contracts on both sides of the
+platform boundary.  Linux and other Unix builds retain the child diagnostic
+and exit codes added by dc8ea49.  On macOS the child preserves exit 127 for
+ENOENT and 126 for other exec failures without writing that diagnostic into
+the PTY, matching the pinned Darwin oracle.  The Rust contract contains an
+explicit Darwin expected value and retains the existing explicit non-Darwin
+value.  It does not ignore the test, copy a live oracle answer into the
+expected result, branch on a test name, or weaken either assertion.
+
+The corrected exact contract ran outside the sandbox and passed 1/1 against
+both the GNU oracle and the in-process Emaxx interpreter.  The unchanged
+program-search neighbor had already passed in the optimized serial library
+gate.  Strict all-target/all-feature Clippy passed with -D warnings, rustfmt
+and git diff --check were clean, and the anti-cheat gates passed 15/15 with
+zero ignored.  No upstream file, compatibility harness, selector, manifest,
+fixture, timeout, normalization or accepted-failure path changed.  Per the
+instruction not to repeat the complete gate, the final evidence is the
+single earlier optimized serial run plus exact outside-sandbox replays of
+its 13 denied/failing cases, the corrected Darwin contract, and the
+separately completed bin, integration and doc targets recorded above.
