@@ -23,7 +23,9 @@ mod runtime;
 mod state;
 
 pub(crate) use loader::{RegistrationKind, UnitLibrary, open_unit};
-pub(crate) use runtime::{decode_active_backtrace_arguments, synchronize_cons_read};
+pub(crate) use runtime::{
+    decode_active_backtrace_arguments, note_lisp_allocation, synchronize_cons_read,
+};
 pub(crate) use state::NativeCompilerState;
 
 use crate::lisp::eval::Interpreter;
@@ -107,16 +109,31 @@ pub(crate) fn initialize_runtime(interpreter: &mut Interpreter) {
 pub(crate) fn load(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    filename: &str,
+    filename: &Value,
     library: UnitLibrary,
+    candidate_unit: &Value,
     late: bool,
 ) -> Result<Value, LispError> {
-    let library = match loader::load_active(interpreter, environment, filename, library, late) {
+    let library = match loader::load_active(
+        interpreter,
+        environment,
+        filename,
+        library,
+        candidate_unit,
+        late,
+    ) {
         Ok(result) => return result,
         Err(library) => library,
     };
     let mut state = std::mem::take(&mut interpreter.native_compiler);
-    let result = state.load(interpreter, environment, filename, library, late);
+    let result = state.load(
+        interpreter,
+        environment,
+        filename,
+        library,
+        candidate_unit,
+        late,
+    );
     interpreter.native_compiler = state;
     result
 }
@@ -139,35 +156,49 @@ pub(crate) fn call_function(
 }
 
 pub(crate) fn function_documentation(
-    interpreter: &Interpreter,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
     record_id: u64,
 ) -> Result<Value, LispError> {
-    let function = interpreter
-        .find_record(record_id)
-        .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction)
-        .ok_or_else(|| lisp::native_ice("native documentation requested for a non-function"))?;
-    let index = function
-        .slots
-        .get(5)
-        .ok_or_else(|| lisp::native_ice("native function has no documentation index"))?
-        .as_integer()
-        .and_then(|index| {
-            usize::try_from(index)
-                .map_err(|_| lisp::native_ice("negative native documentation index"))
-        })?;
-    let unit_id = match function.slots.get(8) {
-        Some(Value::Record(unit_id)) => *unit_id,
-        _ => return Err(lisp::native_ice("native function has no compilation unit")),
+    let (index, unit_id) = {
+        let function = interpreter
+            .find_record(record_id)
+            .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction)
+            .ok_or_else(|| lisp::native_ice("native documentation requested for a non-function"))?;
+        let index = function
+            .slots
+            .get(5)
+            .ok_or_else(|| lisp::native_ice("native function has no documentation index"))?
+            .as_integer()
+            .and_then(|index| {
+                usize::try_from(index)
+                    .map_err(|_| lisp::native_ice("negative native documentation index"))
+            })?;
+        let unit_id = match function.slots.get(8) {
+            Some(Value::Record(unit_id)) => *unit_id,
+            _ => return Err(lisp::native_ice("native function has no compilation unit")),
+        };
+        (index, unit_id)
     };
-    let unit = interpreter
+    let docs = interpreter
         .find_record(unit_id)
         .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompUnit)
+        .and_then(|record| record.slots.get(4))
+        .cloned()
         .ok_or_else(|| lisp::native_ice("native function compilation unit is missing"))?;
-    let mut docs = unit
-        .slots
-        .get(1)
-        .ok_or_else(|| lisp::native_ice("native compilation unit has no documentation vector"))?
-        .to_vec()?;
+    let docs = if docs.is_nil() {
+        if let Some(result) = loader::active_unit_documentation(interpreter, environment, unit_id) {
+            result?
+        } else {
+            let state = std::mem::take(&mut interpreter.native_compiler);
+            let result = state.unit_documentation(interpreter, environment, unit_id);
+            interpreter.native_compiler = state;
+            result?
+        }
+    } else {
+        docs
+    };
+    let mut docs = docs.to_vec()?;
     if !matches!(docs.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
         return Err(lisp::native_ice(
             "native compilation unit documentation is not a vector",
@@ -179,13 +210,28 @@ pub(crate) fn function_documentation(
         .ok_or_else(|| lisp::native_ice("native documentation index is out of range"))
 }
 
+pub(crate) fn function_name(interpreter: &Interpreter, record_id: u64) -> Option<String> {
+    loader::active_function_name(record_id).or_else(|| {
+        interpreter
+            .native_compiler
+            .function_name(record_id)
+            .map(str::to_owned)
+    })
+}
+
 pub(crate) fn register(
     interpreter: &mut Interpreter,
     environment: &mut Env,
     arguments: &[Value],
     kind: RegistrationKind,
 ) -> Result<Value, LispError> {
-    loader::register(interpreter, environment, arguments, kind)
+    if let Some(result) = loader::register_active(interpreter, environment, arguments, kind) {
+        return result;
+    }
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    let result = state.register(interpreter, environment, arguments, kind);
+    interpreter.native_compiler = state;
+    result
 }
 
 pub(crate) fn subroutine_index(name: &str) -> Option<usize> {
@@ -218,4 +264,42 @@ pub(crate) fn call_lisp(
     arguments: &[Value],
 ) -> Result<Value, LispError> {
     lisp::call(interpreter, environment, name, arguments)
+}
+
+pub(crate) fn call_c_primitive(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    lisp::call_c_primitive(interpreter, environment, name, arguments)
+}
+
+pub(crate) fn garbage_collection_finished(
+    interpreter: &mut Interpreter,
+    live_bytes: usize,
+    threshold: i64,
+    percentage: Option<f64>,
+) {
+    if runtime::with_current_runtime(|runtime| {
+        runtime.garbage_collection_finished(live_bytes, threshold, percentage);
+    })
+    .is_some()
+    {
+        return;
+    }
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    state.garbage_collection_finished(live_bytes, threshold, percentage);
+    interpreter.native_compiler = state;
+}
+
+pub(crate) fn begin_garbage_collection(interpreter: &mut Interpreter) -> Vec<Value> {
+    if let Some(roots) = runtime::with_current_runtime(|runtime| runtime.begin_garbage_collection())
+    {
+        return roots;
+    }
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    let roots = state.begin_garbage_collection();
+    interpreter.native_compiler = state;
+    roots
 }

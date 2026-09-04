@@ -1494,7 +1494,7 @@ fn read_one_positioned_form(
     // before read-positioning-symbols returns.  In particular, the byte
     // compiler must receive an actual hash table constant rather than
     // Emaxx's parser-private ReaderForm marker.
-    let value = interp.materialize_read_object_literals(value)?;
+    let value = interp.materialize_read_object_literals(value, env)?;
     Ok((value, consumed))
 }
 
@@ -1642,7 +1642,7 @@ pub(crate) fn read_from_lisp_source(
     // materializer the load path uses; the partial record/hash/char pass
     // left `#<reader-form>' placeholders in `#[...]' data for `read'
     // consumers (pp-tests--sanity).
-    interp.materialize_read_object_literals(value)
+    interp.materialize_read_object_literals(value, env)
 }
 
 // GNU's reader constructs real hash tables for `#s(hash-table ...)' input;
@@ -1653,16 +1653,18 @@ pub(crate) fn read_from_lisp_source(
 pub(crate) fn materialize_read_hash_table_literals(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut seen = HashSet::new();
-    materialize_hash_table_literals_inner(interp, value, &mut seen)
+    materialize_hash_table_literals_inner(interp, value, env, &mut seen)
 }
 
 pub(crate) fn materialize_read_hash_table_literal_fields(
     interp: &mut Interpreter,
     fields: &[Value],
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    hash_table_from_literal_fields(interp, fields, &mut HashSet::new())
+    hash_table_from_literal_fields(interp, fields, env, &mut HashSet::new())
 }
 
 const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
@@ -1676,9 +1678,10 @@ const MAX_CHAR: u32 = 0x3f_ffff;
 pub(crate) fn materialize_read_char_table_literals(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut seen = HashSet::new();
-    materialize_char_table_literals_inner(interp, value, &mut seen)
+    materialize_char_table_literals_inner(interp, value, env, &mut seen)
 }
 
 fn char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
@@ -1704,10 +1707,11 @@ fn sub_char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
 fn materialize_char_table_literals_inner(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     if let Some(fields) = char_table_literal_fields(value) {
-        return char_table_from_literal_fields(interp, &fields, seen);
+        return char_table_from_literal_fields(interp, &fields, env, seen);
     }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());
@@ -1717,9 +1721,9 @@ fn materialize_char_table_literals_inner(
         return Ok(value.clone());
     }
     let car = car_cell.borrow().clone();
-    *car_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &car, seen)?;
+    *car_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &car, env, seen)?;
     let cdr = cdr_cell.borrow().clone();
-    *cdr_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &cdr, seen)?;
+    *cdr_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &cdr, env, seen)?;
     Ok(value.clone())
 }
 
@@ -1730,14 +1734,15 @@ fn invalid_char_table_literal(message: &str) -> LispError {
 fn char_table_from_literal_fields(
     interp: &mut Interpreter,
     fields: &[Value],
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     if fields.len() < CHAR_TABLE_STANDARD_SLOTS {
         return Err(invalid_char_table_literal("invalid size char-table"));
     }
 
-    let default = materialize_literal_value(interp, &fields[0], seen)?;
-    let parent = materialize_literal_value(interp, &fields[1], seen)?;
+    let default = materialize_literal_value(interp, &fields[0], env, seen)?;
+    let parent = materialize_literal_value(interp, &fields[1], env, seen)?;
     let subtype = match &fields[2] {
         Value::Nil => None,
         Value::T => Some("t".into()),
@@ -1769,14 +1774,21 @@ fn char_table_from_literal_fields(
             let end = start + 0xffff;
             // GNU consults the dedicated ASCII slot for 0..127 and never
             // falls through to root slot zero.
-            flatten_char_table_value(interp, value, start.max(128), end, &mut flatten_context)?;
+            flatten_char_table_value(
+                interp,
+                value,
+                start.max(128),
+                end,
+                env,
+                &mut flatten_context,
+            )?;
         }
-        flatten_char_table_value(interp, &fields[3], 0, 127, &mut flatten_context)?;
+        flatten_char_table_value(interp, &fields[3], 0, 127, env, &mut flatten_context)?;
     }
 
     let extra_slots = fields[CHAR_TABLE_STANDARD_SLOTS..]
         .iter()
-        .map(|value| materialize_literal_value(interp, value, seen))
+        .map(|value| materialize_literal_value(interp, value, env, seen))
         .collect::<Result<Vec<_>, _>>()?;
     let state = interp
         .find_char_table_mut(id)
@@ -1802,6 +1814,7 @@ fn flatten_char_table_value(
     value: &Value,
     allowed_start: u32,
     allowed_end: u32,
+    env: &mut Env,
     context: &mut CharTableFlattenContext<'_>,
 ) -> Result<(), LispError> {
     if allowed_start > allowed_end || allowed_start > MAX_CHAR {
@@ -1836,6 +1849,7 @@ fn flatten_char_table_value(
                 content,
                 start.max(allowed_start),
                 end.min(allowed_end),
+                env,
                 context,
             )?;
         }
@@ -1856,7 +1870,7 @@ fn flatten_char_table_value(
         return Ok(());
     }
 
-    let value = materialize_literal_value(interp, value, context.seen)?;
+    let value = materialize_literal_value(interp, value, env, context.seen)?;
     if value.is_nil() {
         return Ok(());
     }
@@ -1994,6 +2008,7 @@ fn uncompress_decomposition_values(
 fn materialize_literal_value(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     // GNU's reader constructs every identity-bearing object recursively.  A
@@ -2002,9 +2017,9 @@ fn materialize_literal_value(
     // hash- and character-table passes.  Each object kind keeps an independent
     // cycle/identity context: sharing `seen` would make a later pass mistake an
     // ordinary cons already visited by an earlier pass for a cycle.
-    let value = interp.materialize_read_record_literals(value)?;
-    let value = materialize_read_hash_table_literals(interp, &value)?;
-    materialize_char_table_literals_inner(interp, &value, seen)
+    let value = interp.materialize_read_record_literals(value, env)?;
+    let value = materialize_read_hash_table_literals(interp, &value, env)?;
+    materialize_char_table_literals_inner(interp, &value, env, seen)
 }
 
 fn append_char_table_range(
@@ -2069,13 +2084,14 @@ fn bare_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
 fn materialize_hash_table_literals_inner(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     if let Some(fields) = quoted_hash_table_literal_fields(value) {
-        return hash_table_from_literal_fields(interp, &fields, seen);
+        return hash_table_from_literal_fields(interp, &fields, env, seen);
     }
     if let Some(fields) = bare_hash_table_literal_fields(value) {
-        return hash_table_from_literal_fields(interp, &fields, seen);
+        return hash_table_from_literal_fields(interp, &fields, env, seen);
     }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());
@@ -2085,10 +2101,10 @@ fn materialize_hash_table_literals_inner(
         return Ok(value.clone());
     }
     let car = car_cell.borrow().clone();
-    let new_car = materialize_hash_table_literals_inner(interp, &car, seen)?;
+    let new_car = materialize_hash_table_literals_inner(interp, &car, env, seen)?;
     *car_cell.borrow_mut() = new_car;
     let cdr = cdr_cell.borrow().clone();
-    let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, seen)?;
+    let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, env, seen)?;
     *cdr_cell.borrow_mut() = new_cdr;
     Ok(value.clone())
 }
@@ -2096,12 +2112,10 @@ fn materialize_hash_table_literals_inner(
 fn hash_table_from_literal_fields(
     interp: &mut Interpreter,
     fields: &[Value],
+    env: &mut Env,
     _seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     let mut test = "eql".to_string();
-    let mut size = Value::Integer(65);
-    let mut rehash_size = Value::float(1.5);
-    let mut rehash_threshold = Value::float(0.8125);
     let mut weakness = Value::Nil;
     let mut purecopy = Value::Nil;
     let mut entries = Vec::new();
@@ -2115,9 +2129,6 @@ fn hash_table_from_literal_fields(
         let field_value = fields[index + 1].clone();
         match key.as_str() {
             "test" => test = field_value.as_symbol()?.to_string(),
-            "size" => size = field_value,
-            "rehash-size" => rehash_size = field_value,
-            "rehash-threshold" => rehash_threshold = field_value,
             "weakness" => weakness = field_value,
             "purecopy" => purecopy = field_value,
             "data" => {
@@ -2125,9 +2136,9 @@ fn hash_table_from_literal_fields(
                 let mut cursor = 0usize;
                 while cursor + 1 < items.len() {
                     let entry_key =
-                        interp.materialize_read_object_literals(items[cursor].clone())?;
+                        interp.materialize_read_object_literals(items[cursor].clone(), env)?;
                     let entry_value =
-                        interp.materialize_read_object_literals(items[cursor + 1].clone())?;
+                        interp.materialize_read_object_literals(items[cursor + 1].clone(), env)?;
                     entries.push((entry_key, entry_value));
                     cursor += 2;
                 }
@@ -2136,20 +2147,38 @@ fn hash_table_from_literal_fields(
         }
         index += 2;
     }
-    let table = crate::lisp::json::make_hash_table(interp, &test, entries);
+    // lread.c:hash_table_from_plist ignores serialized size/rehash metadata,
+    // creates the table with exactly one slot per DATA pair, then calls
+    // Fputhash for every pair.  In particular, a user-defined test runs its
+    // hash/comparison functions here, while the object is read; delaying that
+    // work until the first lookup changes both side effects and bucket state.
+    let capacity = entries.len();
+    let table =
+        crate::lisp::json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
     if let Value::Record(id) = &table
         && let Some(record) = interp.find_record_mut(*id)
     {
         if record.slots.len() < 7 {
             record.slots.resize(7, Value::Nil);
         }
-        record.slots[2] = size;
-        record.slots[3] = rehash_size;
-        record.slots[4] = rehash_threshold;
+        record.slots[2] = Value::Integer(capacity as i64);
         record.slots[5] = weakness;
         record.slots[6] = purecopy;
     }
-    Ok(table)
+    let Value::Record(id) = table else {
+        unreachable!("make_hash_table_with_capacity returns a hash-table record")
+    };
+    for (key, value) in entries {
+        if matches!(test.as_str(), "eq" | "eql" | "equal") {
+            if !interp.equal_hash_put(id, key, value, env) {
+                return Err(LispError::Signal("Invalid hash table test".into()));
+            }
+        } else if !custom_hash_put_indexed(interp, &Value::Record(id), id, &test, key, value, env)?
+        {
+            return Err(LispError::Signal("Invalid hash table test".into()));
+        }
+    }
+    Ok(Value::Record(id))
 }
 
 fn read_from_lisp_source_raw(

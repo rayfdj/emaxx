@@ -13,7 +13,9 @@ use super::backend::{
 };
 use super::runtime::{NativeCallingConvention, NativeRuntime, NativeWord};
 use crate::lisp::eval::{Interpreter, RecordKind};
-use crate::lisp::primitives::{decode_utf8_bytes, read_one_form_in_env, string_like, values_equal};
+use crate::lisp::primitives::{
+    decode_utf8_bytes, is_vector_value, read_one_form_in_env, string_like, values_equal,
+};
 use crate::lisp::types::{Env, LispError, Value};
 use libloading::Library;
 use std::cell::{Cell, RefCell};
@@ -23,8 +25,6 @@ use std::path::Path;
 
 const TOP_LEVEL_RUN_SYM: &str = "top_level_run";
 const LATE_TOP_LEVEL_RUN_SYM: &str = "late_top_level_run";
-const MAX_STATIC_OBJECT_BYTES: usize = 1 << 30;
-
 #[repr(C)]
 struct StaticObjectHeader {
     len: isize,
@@ -35,6 +35,10 @@ pub(crate) type UnitLibrary = Library;
 struct LoadedUnit {
     library: Library,
     record_id: u64,
+    /// comp.c sets this when the shared object's saved unit pointer was
+    /// already non-nil.  Repeated top-level runs must not recreate anonymous
+    /// native lambdas.
+    loaded_once: bool,
     /// comp.c's `load_ongoing`: a unit whose top-level code is still running
     /// on this thread must not have its ephemeral relocations rewritten by
     /// a nested load of the same file.
@@ -42,7 +46,8 @@ struct LoadedUnit {
     _data: Value,
     _impure_data: Value,
     _optimization_qualities: Value,
-    _function_docs: Value,
+    data_relocations: *mut NativeWord,
+    data_relocation_count: usize,
     impure_relocations: *mut NativeWord,
     impure_relocation_count: usize,
 }
@@ -51,6 +56,35 @@ struct EphemeralRelocations {
     _guard: Value,
     start: *const NativeWord,
     len: usize,
+}
+
+/// GNU clears an ELN's saved compilation-unit word before its owning unit is
+/// finalized and the dynamic library is closed.  Until first-load validation
+/// succeeds, provide the same guarantee on every Rust error return.
+struct SavedUnitRollback {
+    saved_unit: *mut NativeWord,
+    armed: bool,
+}
+
+impl SavedUnitRollback {
+    fn new(saved_unit: *mut NativeWord) -> Self {
+        Self {
+            saved_unit,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SavedUnitRollback {
+    fn drop(&mut self) {
+        if self.armed {
+            unsafe { std::ptr::write(self.saved_unit, 0) };
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -78,11 +112,12 @@ pub(crate) struct DirectNativeFunction {
 pub(crate) struct NativeRegistry {
     units: Vec<LoadedUnit>,
     functions: HashMap<u64, NativeFunction>,
+    function_names: HashMap<u64, Box<str>>,
 }
 
 impl NativeRegistry {
     pub(crate) fn is_empty(&self) -> bool {
-        self.units.is_empty() && self.functions.is_empty()
+        self.units.is_empty() && self.functions.is_empty() && self.function_names.is_empty()
     }
 
     fn unit(&self, record_id: u64) -> Option<&LoadedUnit> {
@@ -91,6 +126,10 @@ impl NativeRegistry {
 
     fn function(&self, record_id: u64) -> Option<NativeFunction> {
         self.functions.get(&record_id).copied()
+    }
+
+    pub(crate) fn function_name(&self, record_id: u64) -> Option<&str> {
+        self.function_names.get(&record_id).map(AsRef::as_ref)
     }
 }
 
@@ -191,17 +230,17 @@ pub(super) fn with_active_compiler<R>(
     })
 }
 
-fn inconsistent(file: &str) -> LispError {
+fn inconsistent(file: &Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("native-lisp-file-inconsistent"),
-        Value::string(file),
+        file.clone(),
     ]))
 }
 
-fn load_failed(file: &str, message: impl Into<String>) -> LispError {
+fn load_failed(file: &Value, message: impl Into<String>) -> LispError {
     LispError::SignalValue(Value::list([
         Value::symbol("native-lisp-load-failed"),
-        Value::string(file),
+        file.clone(),
         Value::String(message.into().into()),
     ]))
 }
@@ -220,33 +259,46 @@ unsafe fn function_symbol(library: &Library, name: &str) -> Result<*const c_void
 
 unsafe fn read_static_object(
     library: &Library,
-    file: &str,
+    file: &Value,
     name: &str,
     interpreter: &mut Interpreter,
     environment: &mut Env,
 ) -> Result<Value, LispError> {
     let blob_name = format!("{name}_blob");
-    let blob = unsafe { data_symbol::<StaticObjectHeader>(library, &blob_name) }
-        .map_err(|_| inconsistent(file))?;
+    let blob = match unsafe { data_symbol::<StaticObjectHeader>(library, &blob_name) } {
+        Ok(blob) => blob,
+        Err(_) => {
+            let function = unsafe {
+                library.get::<unsafe extern "C" fn() -> *mut StaticObjectHeader>(name.as_bytes())
+            }
+            .map_err(|_| inconsistent(file))?;
+            unsafe { function() }
+        }
+    };
     if blob.is_null() {
         return Err(inconsistent(file));
     }
     let len = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*blob).len)) };
     let len = usize::try_from(len).map_err(|_| inconsistent(file))?;
-    if len == 0 || len > MAX_STATIC_OBJECT_BYTES {
-        return Err(inconsistent(file));
-    }
-    let bytes = unsafe {
-        std::slice::from_raw_parts(
-            blob.cast::<u8>()
-                .add(std::mem::size_of::<StaticObjectHeader>()),
-            len,
-        )
+    let bytes = if len == 0 {
+        &[]
+    } else {
+        unsafe {
+            std::slice::from_raw_parts(
+                blob.cast::<u8>()
+                    .add(std::mem::size_of::<StaticObjectHeader>()),
+                len,
+            )
+        }
     };
-    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    // comp.c:load_static_obj passes a freshly allocated Lisp string of this
+    // exact blob length (including its terminating NUL) to Fread.  Rust can
+    // parse the borrowed bytes directly, but GC timing must still account for
+    // the C-owned temporary allocation.
+    crate::lisp::types::note_string_allocation(len);
     let text = decode_utf8_bytes(bytes);
     let (value, _) = read_one_form_in_env(interpreter, &text, environment)?;
-    let value = interpreter.materialize_read_object_literals(value)?;
+    let value = interpreter.materialize_read_object_literals(value, environment)?;
     interpreter.intern_symbols_in_value(&value);
     Ok(value)
 }
@@ -260,6 +312,74 @@ fn vector_values(value: &Value) -> Result<Vec<Value>, LispError> {
     }
     values.remove(0);
     Ok(values)
+}
+
+fn comp_unit_relocations_match(
+    unit: &LoadedUnit,
+    runtime: &mut NativeRuntime,
+    interpreter: &Interpreter,
+    environment: &Env,
+) -> bool {
+    let Ok(data_values) = vector_values(&unit._data) else {
+        return false;
+    };
+    if data_values.len() != unit.data_relocation_count {
+        return false;
+    }
+    for (index, expected) in data_values.iter().enumerate() {
+        let word = unsafe { std::ptr::read(unit.data_relocations.add(index)) };
+        let Ok(actual) = runtime.decode_relocation(word) else {
+            return false;
+        };
+        if !crate::lisp::primitives::values_eq_in_env(interpreter, &actual, expected, environment) {
+            return false;
+        }
+    }
+
+    let Ok(impure_values) = vector_values(&unit._impure_data) else {
+        return false;
+    };
+    if impure_values.len() != unit.impure_relocation_count {
+        return false;
+    }
+    let Some(guard) = interpreter
+        .find_record(unit.record_id)
+        .and_then(|record| record.slots.get(2))
+    else {
+        return false;
+    };
+    for (index, expected) in impure_values.iter().enumerate() {
+        let word = unsafe { std::ptr::read(unit.impure_relocations.add(index)) };
+        let Ok(actual) = runtime.decode_relocation(word) else {
+            return false;
+        };
+        if actual.as_symbol().ok() == Some("lambda-fixup") {
+            return false;
+        }
+        let native_function = matches!(actual, Value::Record(id)
+            if interpreter.find_record(id).is_some_and(|record|
+                record.kind == RecordKind::NativeCompiledFunction));
+        if native_function {
+            let Value::Record(guard_id) = guard else {
+                return false;
+            };
+            if interpreter
+                .equal_hash_lookup(*guard_id, &actual, environment)
+                .flatten()
+                .is_none()
+            {
+                return false;
+            }
+        } else if !crate::lisp::primitives::values_eq_in_env(
+            interpreter,
+            &actual,
+            expected,
+            environment,
+        ) {
+            return false;
+        }
+    }
+    true
 }
 
 unsafe fn initialize_pointer<T>(
@@ -296,7 +416,7 @@ unsafe fn fill_relocations(
 /// comp.c:dynlib_open_for_eln.  `file` is the name the unit is known by;
 /// `path` is what the dynamic loader opens, which `native-elisp-load` may
 /// have renamed to force a fresh handle.
-pub(crate) fn open_unit(file: &str, path: &str) -> Result<Library, LispError> {
+pub(crate) fn open_unit(file: &Value, path: &str) -> Result<Library, LispError> {
     unsafe { Library::new(Path::new(path)) }.map_err(|error| load_failed(file, error.to_string()))
 }
 
@@ -305,8 +425,9 @@ pub(super) fn load(
     state: LoaderState<'_>,
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    filename: &str,
+    filename: &Value,
     library: Library,
+    candidate_unit: &Value,
     late: bool,
 ) -> Result<Value, LispError> {
     let LoaderState {
@@ -320,15 +441,8 @@ pub(super) fn load(
         return Err(inconsistent(filename));
     }
     let saved_word = unsafe { std::ptr::read(saved_unit) };
-    let top_level_name = if late {
-        LATE_TOP_LEVEL_RUN_SYM
-    } else {
-        TOP_LEVEL_RUN_SYM
-    };
-    let top_level =
-        unsafe { function_symbol(&library, top_level_name) }.map_err(|_| inconsistent(filename))?;
 
-    let (record_id, unit) = if saved_word != 0 {
+    let (record_id, unit, top_level) = if saved_word != 0 {
         // The dynamic loader handed back a unit this session already loaded
         // (dlopen returns the same handle for the same file).  Its static
         // relocations may be live in running frames and are never touched
@@ -340,16 +454,37 @@ pub(super) fn load(
         if registry.unit(record_id).is_none() {
             return Err(inconsistent(filename));
         }
-        (record_id, unit)
+        registry
+            .units
+            .iter_mut()
+            .find(|loaded| loaded.record_id == record_id)
+            .expect("unit existence checked above")
+            .loaded_once = true;
+        let unit_file = interpreter
+            .find_record(record_id)
+            .and_then(|record| record.slots.first())
+            .cloned()
+            .unwrap_or_else(|| filename.clone());
+        let top_level_name = if late {
+            LATE_TOP_LEVEL_RUN_SYM
+        } else {
+            TOP_LEVEL_RUN_SYM
+        };
+        let top_level = unsafe { function_symbol(&library, top_level_name) }
+            .map_err(|_| inconsistent(&unit_file))?;
+        (record_id, unit, top_level)
     } else {
         first_load(
             registry,
             runtime,
             interpreter,
             environment,
-            filename,
-            library,
-            saved_unit,
+            FirstLoadInput {
+                library,
+                saved_unit,
+                candidate_unit,
+                late,
+            },
         )?
     };
 
@@ -360,6 +495,11 @@ pub(super) fn load(
         .expect("unit registered before its top-level code runs");
     let recursive_load = registry.units[index].load_ongoing;
     registry.units[index].load_ongoing = true;
+    let unit_file = interpreter
+        .find_record(record_id)
+        .and_then(|record| record.slots.first())
+        .cloned()
+        .unwrap_or_else(|| filename.clone());
     let ephemeral = if recursive_load {
         // Another load of this unit is active on the stack and holds the
         // ephemeral data; rewriting it would clobber objects in use.
@@ -367,7 +507,7 @@ pub(super) fn load(
     } else {
         fill_ephemeral_relocations(
             &registry.units[index].library,
-            filename,
+            &unit_file,
             runtime,
             interpreter,
             environment,
@@ -398,6 +538,14 @@ pub(super) fn load(
         }
         Err(error) => Err(error),
     };
+    if result.is_ok() {
+        debug_assert!(comp_unit_relocations_match(
+            &registry.units[index],
+            runtime,
+            interpreter,
+            environment,
+        ));
+    }
     if !recursive_load {
         registry.units[index].load_ongoing = false;
     }
@@ -406,11 +554,11 @@ pub(super) fn load(
     let loaded_units = interpreter
         .lookup_var("comp-loaded-comp-units-h", environment)
         .unwrap_or(Value::Nil);
-    super::lisp::call(
+    super::lisp::call_c_primitive(
         interpreter,
         environment,
         "puthash",
-        &[Value::string(filename), unit, loaded_units],
+        &[unit_file, unit, loaded_units],
     )?;
     Ok(result)
 }
@@ -418,19 +566,75 @@ pub(super) fn load(
 /// The `!loaded_once` half of comp.c:load_comp_unit: verify the ABI hash,
 /// materialize the unit's static data, and install every runtime pointer
 /// and data relocation the generated code addresses.
+struct FirstLoadInput<'a> {
+    library: Library,
+    saved_unit: *mut NativeWord,
+    candidate_unit: &'a Value,
+    late: bool,
+}
+
 fn first_load(
     registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    filename: &str,
-    library: Library,
-    saved_unit: *mut NativeWord,
-) -> Result<(u64, Value), LispError> {
+    input: FirstLoadInput<'_>,
+) -> Result<(u64, Value, *const c_void), LispError> {
+    let FirstLoadInput {
+        library,
+        saved_unit,
+        candidate_unit,
+        late,
+    } = input;
+    let Value::Record(record_id) = candidate_unit else {
+        unreachable!("native load candidate is a native compilation unit")
+    };
+    let record_id = *record_id;
+    debug_assert!(
+        interpreter
+            .find_record(record_id)
+            .is_some_and(|record| record.kind == RecordKind::NativeCompUnit)
+    );
+    let unit = Value::Record(record_id);
+    let file = interpreter
+        .find_record(record_id)
+        .and_then(|record| record.slots.first())
+        .cloned()
+        .unwrap_or(Value::Nil);
+    let unit_word = runtime.encode_relocations(std::slice::from_ref(&unit))?[0];
+    unsafe { std::ptr::write(saved_unit, unit_word) };
+    let mut saved_unit_rollback = SavedUnitRollback::new(saved_unit);
+
+    let top_level_name = if late {
+        LATE_TOP_LEVEL_RUN_SYM
+    } else {
+        TOP_LEVEL_RUN_SYM
+    };
+    let top_level =
+        unsafe { function_symbol(&library, top_level_name) }.map_err(|_| inconsistent(&file))?;
+
+    // load_comp_unit verifies the complete relocation surface before it
+    // allocates the temporary ABI-hash reader string.
+    for symbol in [
+        CURRENT_THREAD_RELOC_SYM,
+        F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM,
+        PURE_RELOC_SYM,
+        DATA_RELOC_SYM,
+        DATA_RELOC_IMPURE_SYM,
+        DATA_RELOC_EPHEMERAL_SYM,
+        FUNC_LINK_TABLE_SYM,
+    ] {
+        let pointer =
+            unsafe { data_symbol::<u8>(&library, symbol) }.map_err(|_| inconsistent(&file))?;
+        if pointer.is_null() {
+            return Err(inconsistent(&file));
+        }
+    }
+
     let abi_hash = unsafe {
         read_static_object(
             &library,
-            filename,
+            &file,
             LINK_TABLE_HASH_SYM,
             interpreter,
             environment,
@@ -438,27 +642,50 @@ fn first_load(
     };
     let expected_hash = interpreter
         .lookup_var("comp-abi-hash", environment)
-        .filter(Value::is_truthy)
-        .ok_or_else(|| inconsistent(filename))?;
-    if !values_equal(interpreter, &abi_hash, &expected_hash) {
-        return Err(inconsistent(filename));
+        .unwrap_or(Value::Nil);
+    if !super::lisp::call_c_primitive(
+        interpreter,
+        environment,
+        "string-equal",
+        &[abi_hash, expected_hash],
+    )?
+    .is_truthy()
+    {
+        return Err(inconsistent(&file));
+    }
+
+    unsafe {
+        initialize_pointer(
+            &library,
+            CURRENT_THREAD_RELOC_SYM,
+            runtime.current_thread_relocation(),
+        )
+        .map_err(|_| inconsistent(&file))?;
+        initialize_pointer(
+            &library,
+            F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM,
+            runtime.symbols_with_positions_relocation(),
+        )
+        .map_err(|_| inconsistent(&file))?;
+        initialize_pointer(&library, PURE_RELOC_SYM, runtime.pure_relocation())
+            .map_err(|_| inconsistent(&file))?;
+        initialize_pointer(&library, FUNC_LINK_TABLE_SYM, runtime.function_link_table())
+            .map_err(|_| inconsistent(&file))?;
     }
 
     let optimization_qualities = unsafe {
         read_static_object(
             &library,
-            filename,
+            &file,
             TEXT_OPTIM_QLY_SYM,
             interpreter,
             environment,
         )?
     };
-    let function_docs =
-        unsafe { read_static_object(&library, filename, TEXT_FDOC_SYM, interpreter, environment)? };
-    let data = unsafe {
+    let mut data = unsafe {
         read_static_object(
             &library,
-            filename,
+            &file,
             TEXT_DATA_RELOC_SYM,
             interpreter,
             environment,
@@ -467,44 +694,27 @@ fn first_load(
     let impure_data = unsafe {
         read_static_object(
             &library,
-            filename,
+            &file,
             TEXT_DATA_RELOC_IMPURE_SYM,
             interpreter,
             environment,
         )?
     };
+    if interpreter
+        .lookup_var("purify-flag", environment)
+        .is_some_and(|value| value.is_truthy())
+    {
+        data = crate::lisp::primitives::purecopy_value(interpreter, &data, environment)?;
+    }
     let data_values = vector_values(&data)?;
     let impure_values = vector_values(&impure_data)?;
-
-    let unit = interpreter.create_pseudovector(
-        RecordKind::NativeCompUnit,
-        "native-comp-unit",
-        vec![Value::string(filename), function_docs.clone()],
-    );
-    let Value::Record(record_id) = unit else {
-        unreachable!("native compilation unit is a pseudovector")
-    };
-    let unit = Value::Record(record_id);
-    let unit_word = runtime.encode_relocations(std::slice::from_ref(&unit))?[0];
-    unsafe { std::ptr::write(saved_unit, unit_word) };
-    runtime.register_permanent_root_range(saved_unit, 1);
-    unsafe {
-        initialize_pointer(
-            &library,
-            CURRENT_THREAD_RELOC_SYM,
-            runtime.current_thread_relocation(),
-        )
-        .map_err(|_| inconsistent(filename))?;
-        initialize_pointer(
-            &library,
-            F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM,
-            runtime.symbols_with_positions_relocation(),
-        )
-        .map_err(|_| inconsistent(filename))?;
-        initialize_pointer(&library, PURE_RELOC_SYM, runtime.pure_relocation())
-            .map_err(|_| inconsistent(filename))?;
-        initialize_pointer(&library, FUNC_LINK_TABLE_SYM, runtime.function_link_table())
-            .map_err(|_| inconsistent(filename))?;
+    {
+        let record = interpreter
+            .find_record_mut(record_id)
+            .expect("new native compilation unit remains live");
+        record.slots[1] = optimization_qualities.clone();
+        record.slots[5] = data.clone();
+        record.slots[6] = impure_data.clone();
     }
     let data_relocations =
         unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
@@ -516,22 +726,26 @@ fn first_load(
     registry.units.push(LoadedUnit {
         library,
         record_id,
+        loaded_once: false,
         load_ongoing: false,
         _data: data,
         _impure_data: impure_data,
         _optimization_qualities: optimization_qualities,
-        _function_docs: function_docs,
+        data_relocations,
+        data_relocation_count: data_values.len(),
         impure_relocations,
         impure_relocation_count: impure_values.len(),
     });
-    Ok((record_id, unit))
+    runtime.register_permanent_root_range(saved_unit, 1);
+    saved_unit_rollback.disarm();
+    Ok((record_id, unit, top_level))
 }
 
 /// Ephemeral data is read and installed on every non-recursive load; GNU
 /// keeps it alive only for the duration of the top-level run.
 fn fill_ephemeral_relocations(
     library: &Library,
-    filename: &str,
+    filename: &Value,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -569,8 +783,9 @@ fn fill_ephemeral_relocations(
 pub(crate) fn load_active(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    filename: &str,
+    filename: &Value,
     library: Library,
+    candidate_unit: &Value,
     late: bool,
 ) -> Result<Result<Value, LispError>, Library> {
     if ACTIVE_REGISTRY.with(Cell::get).is_null() {
@@ -585,6 +800,7 @@ pub(crate) fn load_active(
                     environment,
                     filename,
                     library,
+                    candidate_unit,
                     late,
                 )
             })
@@ -610,7 +826,9 @@ pub(crate) enum RegistrationKind {
     LateSubroutine,
 }
 
-pub(crate) fn register(
+pub(super) fn register_with_state(
+    registry: &mut NativeRegistry,
+    runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     arguments: &[Value],
@@ -622,6 +840,41 @@ pub(crate) fn register(
             arguments.len(),
         ));
     }
+    let late_pending_table = if matches!(kind, RegistrationKind::LateSubroutine) {
+        let table = interpreter
+            .lookup_var("comp-deferred-pending-h", environment)
+            .unwrap_or(Value::Nil);
+        let pending = super::lisp::call_c_primitive(
+            interpreter,
+            environment,
+            "gethash",
+            &[arguments[0].clone(), table.clone(), Value::Nil],
+        )?;
+        let symbol = arguments[0].as_symbol().map(str::to_owned).or_else(|_| {
+            crate::lisp::primitives::symbols_with_pos_enabled(interpreter, environment)
+                .then(|| crate::lisp::primitives::symbol_with_pos_parts(interpreter, &arguments[0]))
+                .flatten()
+                .and_then(|(symbol, _)| symbol.as_symbol().ok().map(str::to_owned))
+                .ok_or_else(|| {
+                    crate::lisp::primitives::wrong_type_argument("symbolp", arguments[0].clone())
+                })
+        })?;
+        let current = interpreter
+            .logical_function_binding(&symbol, &Env::new())
+            .unwrap_or(Value::Nil);
+        if !values_equal(interpreter, &current, &pending) {
+            super::lisp::call_c_primitive(
+                interpreter,
+                environment,
+                "remhash",
+                &[arguments[0].clone(), table],
+            )?;
+            return Ok(Value::Nil);
+        }
+        Some(table)
+    } else {
+        None
+    };
     let c_name = string_like(&arguments[1])
         .map(|string| string.text)
         .ok_or_else(|| {
@@ -674,41 +927,13 @@ pub(crate) fn register(
         ));
     };
 
-    let late_pending_table = if matches!(kind, RegistrationKind::LateSubroutine) {
-        let table = interpreter
-            .lookup_var("comp-deferred-pending-h", environment)
-            .unwrap_or(Value::Nil);
-        let pending = super::lisp::call(
-            interpreter,
-            environment,
-            "gethash",
-            &[arguments[0].clone(), table.clone(), Value::Nil],
-        )?;
-        let current = arguments[0]
-            .as_symbol()
-            .ok()
-            .and_then(|name| interpreter.lookup_function(name, environment).ok());
-        if current
-            .as_ref()
-            .is_none_or(|current| !values_equal(interpreter, current, &pending))
-        {
-            super::lisp::call(
-                interpreter,
-                environment,
-                "remhash",
-                &[arguments[0].clone(), table],
-            )?;
+    let registered = (|| {
+        let unit = registry.unit(unit_record_id).ok_or_else(|| {
+            LispError::SignalValue(Value::list([Value::symbol("wrong-register-subr-call")]))
+        })?;
+        if matches!(kind, RegistrationKind::Lambda) && unit.loaded_once {
             return Ok(Value::Nil);
         }
-        Some(table)
-    } else {
-        None
-    };
-
-    let registered = with_active_registry(|registry| {
-        let unit = registry
-            .unit(unit_record_id)
-            .ok_or_else(|| super::lisp::native_ice("unknown native compilation unit"))?;
         let target = unsafe { function_symbol(&unit.library, &c_name) }
             .map_err(|error| super::lisp::native_ice(&error))?;
         let symbol_name = if matches!(kind, RegistrationKind::Lambda) {
@@ -721,10 +946,12 @@ pub(crate) fn register(
             RecordKind::NativeCompiledFunction,
             "subr",
             vec![
-                Value::string(&symbol_name),
+                // GNU keeps both names as C strings in Lisp_Subr.  Keeping a
+                // Lisp string here would invent two GC-visible objects.
+                Value::Nil,
                 Value::Integer(min_args as i64),
                 max_value.clone(),
-                Value::string(&c_name),
+                Value::Nil,
                 arguments[4].clone(),
                 rest.first().cloned().unwrap_or(Value::Nil),
                 rest.get(1).cloned().unwrap_or(Value::Nil),
@@ -747,16 +974,54 @@ pub(crate) fn register(
                 dynamic,
             },
         );
+        registry
+            .function_names
+            .insert(function_record_id, symbol_name.into_boxed_str());
 
         if matches!(kind, RegistrationKind::Lambda) {
+            let (lambda_guard, lambda_name_index) = {
+                let unit = interpreter
+                    .find_record(unit_record_id)
+                    .filter(|record| record.kind == RecordKind::NativeCompUnit)
+                    .ok_or_else(|| super::lisp::native_ice("missing native compilation unit"))?;
+                let guard = unit.slots.get(2).cloned().ok_or_else(|| {
+                    super::lisp::native_ice("native compilation unit has no lambda guard")
+                })?;
+                let index = unit.slots.get(3).cloned().ok_or_else(|| {
+                    super::lisp::native_ice("native compilation unit has no lambda name index")
+                })?;
+                (guard, index)
+            };
+            super::lisp::call_c_primitive(
+                interpreter,
+                environment,
+                "puthash",
+                &[function.clone(), Value::T, lambda_guard],
+            )?;
+            let old_index = super::lisp::call_c_primitive(
+                interpreter,
+                environment,
+                "gethash",
+                &[arguments[1].clone(), lambda_name_index.clone(), Value::Nil],
+            )?;
+            if old_index.is_truthy() {
+                return Err(super::lisp::native_ice(
+                    "duplicate anonymous native function C name",
+                ));
+            }
+            super::lisp::call_c_primitive(
+                interpreter,
+                environment,
+                "puthash",
+                &[
+                    arguments[1].clone(),
+                    arguments[0].clone(),
+                    lambda_name_index,
+                ],
+            )?;
             let relocation = usize::try_from(arguments[0].as_integer()?)
                 .map_err(|_| super::lisp::native_ice("negative lambda relocation index"))?;
-            let word = super::runtime::with_current_runtime(|runtime| {
-                runtime.encode_relocations(std::slice::from_ref(&function))
-            })
-            .ok_or_else(|| {
-                super::lisp::native_ice("native registration outside a native call")
-            })??[0];
+            let word = runtime.encode_relocations(std::slice::from_ref(&function))?[0];
             let unit = registry
                 .unit(unit_record_id)
                 .expect("unit checked before registration");
@@ -773,11 +1038,10 @@ pub(crate) fn register(
             )?;
         }
         Ok(function)
-    })
-    .ok_or_else(|| super::lisp::native_ice("native registration outside a native load"))??;
+    })()?;
 
     if let Some(table) = late_pending_table {
-        super::lisp::call(
+        super::lisp::call_c_primitive(
             interpreter,
             environment,
             "remhash",
@@ -787,6 +1051,30 @@ pub(crate) fn register(
     } else {
         Ok(registered)
     }
+}
+
+pub(crate) fn register_active(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    arguments: &[Value],
+    kind: RegistrationKind,
+) -> Option<Result<Value, LispError>> {
+    if ACTIVE_REGISTRY.with(Cell::get).is_null() {
+        return None;
+    }
+    Some(
+        with_active_registry(|registry| {
+            super::runtime::with_current_runtime(|runtime| {
+                register_with_state(registry, runtime, interpreter, environment, arguments, kind)
+            })
+            .unwrap_or_else(|| {
+                Err(super::lisp::native_ice(
+                    "active native registry has no active runtime",
+                ))
+            })
+        })
+        .expect("active registry checked above"),
+    )
 }
 
 pub(crate) fn call_active_function(
@@ -1020,6 +1308,65 @@ pub(crate) fn active_function_target(
     record_id: u64,
 ) -> Option<(*mut c_void, NativeCallingConvention)> {
     with_active_registry(|registry| function_target(registry, record_id)).flatten()
+}
+
+pub(crate) fn active_function_name(record_id: u64) -> Option<String> {
+    with_active_registry(|registry| registry.function_name(record_id).map(str::to_owned)).flatten()
+}
+
+/// comp.c:native_function_doc's lazy static-object load.  The returned
+/// vector is installed in the compilation unit before its indexed element is
+/// read, so every later request reuses the same Lisp object.
+pub(crate) fn unit_documentation(
+    registry: &NativeRegistry,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    record_id: u64,
+) -> Result<Value, LispError> {
+    let unit = registry
+        .unit(record_id)
+        .ok_or_else(|| super::lisp::native_ice("native compilation unit is not loaded"))?;
+    let file = interpreter
+        .find_record(record_id)
+        .filter(|record| record.kind == RecordKind::NativeCompUnit)
+        .and_then(|record| record.slots.first())
+        .cloned()
+        .ok_or_else(|| super::lisp::native_ice("native compilation unit record is missing"))?;
+    let docs = unsafe {
+        read_static_object(
+            &unit.library,
+            &file,
+            TEXT_FDOC_SYM,
+            interpreter,
+            environment,
+        )?
+    };
+    if !is_vector_value(&docs) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("native-lisp-file-inconsistent"),
+            file,
+            Value::string("missing documentation vector"),
+        ])));
+    }
+    let record = interpreter
+        .find_record_mut(record_id)
+        .filter(|record| record.kind == RecordKind::NativeCompUnit)
+        .ok_or_else(|| super::lisp::native_ice("native compilation unit record is missing"))?;
+    let slot = record.slots.get_mut(4).ok_or_else(|| {
+        super::lisp::native_ice("native compilation unit has no documentation slot")
+    })?;
+    *slot = docs.clone();
+    Ok(docs)
+}
+
+pub(crate) fn active_unit_documentation(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    record_id: u64,
+) -> Option<Result<Value, LispError>> {
+    with_active_registry(|registry| {
+        unit_documentation(registry, interpreter, environment, record_id)
+    })
 }
 
 pub(crate) fn active_direct_function(record_id: u64) -> Option<DirectNativeFunction> {

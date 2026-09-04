@@ -369,12 +369,24 @@ impl SharedText {
         if text.is_empty() {
             return EMPTY_SHARED_TEXT.with(Clone::clone);
         }
+        note_string_allocation(
+            crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text),
+        );
         let text = Rc::new(text);
         INTERNED_TEXT_BOOK.with(|book| {
             book.borrow_mut().push(Rc::downgrade(&text));
             INTERNED_TEXT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
         });
         Self(text)
+    }
+
+    /// Host-only text which is not a Lisp string allocation.  Uninterned
+    /// symbols need an identity-bearing lookup key in Emaxx, but GNU stores
+    /// that identity in the symbol object rather than appending bytes to its
+    /// Lisp-visible name string.  Keep the encoded key out of both allocation
+    /// and live-string accounting.
+    fn new_untracked(text: String) -> Self {
+        Self(Rc::new(text))
     }
 
     pub fn as_str(&self) -> &str {
@@ -519,35 +531,111 @@ impl PartialEq<SharedText> for SymbolName {
 /// Emaxx's single-threaded Lisp runtime.  Encoded
 /// `make-symbol` names bypass the table so transient uninterned symbols are
 /// still released when their last Lisp value dies.
+#[derive(Debug)]
+struct SymbolNameState {
+    internal: SharedText,
+    lisp_name: Value,
+}
+
 #[repr(transparent)]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SymbolName(SharedText);
+#[derive(Clone)]
+pub struct SymbolName(Rc<SymbolNameState>);
 
 thread_local! {
     static INTERNED_SYMBOL_NAMES: RefCell<HashSet<SymbolName>> = RefCell::new(HashSet::new());
+    static UNINTERNED_SYMBOL_BOOK: RefCell<Vec<Weak<SymbolNameState>>> = const { RefCell::new(Vec::new()) };
+    static UNINTERNED_SYMBOL_BOOK_LIMIT: Cell<usize> = const { Cell::new(1 << 16) };
 }
 
 impl SymbolName {
     pub fn intern(text: String) -> Self {
         if text.contains(UNINTERNED_SYMBOL_MARKER) {
-            return Self(SharedText::from(text));
+            let visible = visible_symbol_name(&text).to_owned();
+            return Self::new_uninterned(
+                Value::String(SharedText::from(visible)),
+                SharedText::new_untracked(text),
+            );
         }
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
             if let Some(name) = names.get(text.as_str()) {
                 return name.clone();
             }
-            let name = Self(SharedText::from(text));
+            crate::lisp::native_comp::note_lisp_allocation(48);
+            let text = SharedText::from(text);
+            let name = Self(Rc::new(SymbolNameState {
+                internal: text.clone(),
+                lisp_name: Value::String(text),
+            }));
             names.insert(name.clone());
             name
         })
     }
 
+    pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
+        Self::new_uninterned(
+            name,
+            SharedText::new_untracked(make_uninterned_symbol_name(visible, id)),
+        )
+    }
+
+    fn new_uninterned(lisp_name: Value, internal: SharedText) -> Self {
+        crate::lisp::native_comp::note_lisp_allocation(48);
+        let state = Rc::new(SymbolNameState {
+            internal,
+            lisp_name,
+        });
+        UNINTERNED_SYMBOL_BOOK.with(|book| {
+            book.borrow_mut().push(Rc::downgrade(&state));
+            UNINTERNED_SYMBOL_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+        });
+        Self(state)
+    }
+
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        self.0.internal.as_str()
     }
 
     pub fn into_string(self) -> String {
-        self.0.as_str().to_owned()
+        self.as_str().to_owned()
+    }
+
+    pub(crate) fn lisp_name(&self) -> Value {
+        self.0.lisp_name.clone()
+    }
+}
+
+pub(crate) fn census_live_uninterned_symbols() -> usize {
+    UNINTERNED_SYMBOL_BOOK.with(|book| {
+        let mut book = book.borrow_mut();
+        book.retain(|symbol| symbol.strong_count() != 0);
+        UNINTERNED_SYMBOL_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+        book.len()
+    })
+}
+
+impl PartialEq for SymbolName {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for SymbolName {}
+
+impl PartialOrd for SymbolName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SymbolName {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::hash::Hash for SymbolName {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(self.as_str(), state);
     }
 }
 
@@ -555,7 +643,7 @@ impl Deref for SymbolName {
     type Target = String;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.0.internal
     }
 }
 
@@ -573,13 +661,13 @@ impl Borrow<str> for SymbolName {
 
 impl fmt::Debug for SymbolName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.as_str().fmt(f)
     }
 }
 
 impl fmt::Display for SymbolName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.as_str().fmt(f)
     }
 }
 
@@ -621,7 +709,7 @@ impl From<SharedText> for SymbolName {
 
 impl From<SymbolName> for SharedText {
     fn from(name: SymbolName) -> Self {
-        name.0
+        name.0.internal.clone()
     }
 }
 
@@ -681,7 +769,13 @@ impl Deref for SharedBigInt {
 
 impl From<BigInt> for SharedBigInt {
     fn from(value: BigInt) -> Self {
-        Self(Rc::new(value))
+        crate::lisp::native_comp::note_lisp_allocation(24);
+        let value = Rc::new(value);
+        BIGNUM_OBJECT_BOOK.with(|book| {
+            book.borrow_mut().push(Rc::downgrade(&value));
+            BIGNUM_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+        });
+        Self(value)
     }
 }
 
@@ -740,7 +834,13 @@ impl PartialEq for SharedFloat {
 
 impl From<f64> for SharedFloat {
     fn from(value: f64) -> Self {
-        Self(Rc::new(value))
+        crate::lisp::native_comp::note_lisp_allocation(8);
+        let value = Rc::new(value);
+        FLOAT_OBJECT_BOOK.with(|book| {
+            book.borrow_mut().push(Rc::downgrade(&value));
+            FLOAT_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+        });
+        Self(value)
     }
 }
 
@@ -1016,6 +1116,37 @@ thread_local! {
     static INTERNED_TEXT_BOOK: RefCell<Vec<std::rc::Weak<String>>> =
         const { RefCell::new(Vec::new()) };
     static INTERNED_TEXT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+    static FLOAT_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<f64>>> =
+        const { RefCell::new(Vec::new()) };
+    static FLOAT_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+    static BIGNUM_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<BigInt>>> =
+        const { RefCell::new(Vec::new()) };
+    static BIGNUM_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+    static LAMBDA_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<LambdaValue>>> =
+        const { RefCell::new(Vec::new()) };
+    static LAMBDA_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+    static VECTOR_OBJECT_BOOK: RefCell<Vec<VectorCensusEntry>> = const { RefCell::new(Vec::new()) };
+    static VECTOR_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+}
+
+pub(crate) fn note_string_allocation(bytes: usize) {
+    // alloc.c allocates a 32-byte Lisp_String plus `sdata_size': an 8-byte
+    // back-pointer, the bytes, a terminating NUL, at least the 16-byte free
+    // form, rounded to the 8-byte sdata alignment on the supported GNU ABI.
+    let sdata = 8_usize
+        .saturating_add(bytes)
+        .saturating_add(1)
+        .max(16)
+        .div_ceil(8)
+        .saturating_mul(8);
+    crate::lisp::native_comp::note_lisp_allocation(32_usize.saturating_add(sdata));
+}
+
+struct VectorCensusEntry {
+    head: Weak<ConsCell>,
+    representation_conses: usize,
+    slots: usize,
+    logical_object: bool,
 }
 
 /// Drop the dead handles when a book outgrows its limit, so a session that
@@ -1033,6 +1164,15 @@ fn prune_book<T>(book: &RefCell<Vec<std::rc::Weak<T>>>, limit: &std::cell::Cell<
 /// Every new string OBJECT must pass through here (all four construction
 /// sites do); an unregistered object would be invisible to the census.
 pub(crate) fn register_string_object(state: &Rc<RefCell<SharedStringState>>) {
+    let bytes = {
+        let state = RefCell::borrow(state);
+        crate::lisp::primitives::lisp_string_storage_byte_len(
+            &state.text,
+            state.multibyte,
+            &state.extended_chars,
+        )
+    };
+    note_string_allocation(bytes);
     STRING_OBJECT_BOOK.with(|book| {
         book.borrow_mut().push(Rc::downgrade(state));
         STRING_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
@@ -1044,6 +1184,13 @@ pub(crate) struct StringCensus {
     pub(crate) count: usize,
     pub(crate) bytes: usize,
     pub(crate) property_spans: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct VectorCensus {
+    pub(crate) count: usize,
+    pub(crate) slots: usize,
+    pub(crate) representation_conses: usize,
 }
 
 pub(crate) fn census_live_conses() -> usize {
@@ -1058,7 +1205,11 @@ pub(crate) fn census_live_strings() -> StringCensus {
             Some(state) => {
                 let state = RefCell::borrow(&state);
                 census.count += 1;
-                census.bytes += state.text.len();
+                census.bytes += crate::lisp::primitives::lisp_string_storage_byte_len(
+                    &state.text,
+                    state.multibyte,
+                    &state.extended_chars,
+                );
                 census.property_spans += state.props.len();
                 true
             }
@@ -1071,7 +1222,8 @@ pub(crate) fn census_live_strings() -> StringCensus {
         book.retain(|weak| match weak.upgrade() {
             Some(text) => {
                 census.count += 1;
-                census.bytes += text.len();
+                census.bytes +=
+                    crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text);
                 true
             }
             None => false,
@@ -1081,8 +1233,105 @@ pub(crate) fn census_live_strings() -> StringCensus {
     census
 }
 
+pub(crate) fn census_live_floats() -> usize {
+    FLOAT_OBJECT_BOOK.with(|book| {
+        let mut book = book.borrow_mut();
+        book.retain(|weak| weak.strong_count() > 0);
+        FLOAT_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+        book.len()
+    })
+}
+
+pub(crate) fn census_live_vectors() -> VectorCensus {
+    VECTOR_OBJECT_BOOK.with(|book| {
+        let mut census = VectorCensus::default();
+        let mut book = book.borrow_mut();
+        book.retain(|entry| {
+            if entry.head.strong_count() == 0 {
+                return false;
+            }
+            census.count += usize::from(entry.logical_object);
+            census.slots += entry.slots;
+            census.representation_conses += entry.representation_conses;
+            true
+        });
+        VECTOR_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+        BIGNUM_OBJECT_BOOK.with(|book| {
+            let mut book = book.borrow_mut();
+            book.retain(|weak| weak.strong_count() > 0);
+            census.count += book.len();
+            // lisp.h:Lisp_Bignum is 24 bytes on the supported GNU ABI.
+            census.slots = census.slots.saturating_add(book.len().saturating_mul(3));
+            BIGNUM_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+        });
+        LAMBDA_OBJECT_BOOK.with(|book| {
+            let mut book = book.borrow_mut();
+            book.retain(|weak| match weak.upgrade() {
+                Some(lambda) => {
+                    census.count += 1;
+                    // eval.c:Fmake_interpreted_closure allocates an ordinary
+                    // vector and retags it PVEC_CLOSURE.  The header is one
+                    // word beyond the Lisp-visible slots.
+                    census.slots = census
+                        .slots
+                        .saturating_add(lambda.public_len().saturating_add(1));
+                    true
+                }
+                None => false,
+            });
+            LAMBDA_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+        });
+        census
+    })
+}
+
+fn register_lambda_object(lambda: &Rc<LambdaValue>) {
+    crate::lisp::native_comp::note_lisp_allocation(
+        lambda.public_len().saturating_add(1).saturating_mul(8),
+    );
+    LAMBDA_OBJECT_BOOK.with(|book| {
+        book.borrow_mut().push(Rc::downgrade(lambda));
+        LAMBDA_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+    });
+}
+
+pub(crate) fn register_vector_object(value: &Value, slots: usize) {
+    register_vector_representation(value, slots, slots, true);
+}
+
+fn register_vector_representation(
+    value: &Value,
+    slots: usize,
+    representation_conses: usize,
+    logical_object: bool,
+) {
+    let Value::Cons(head) = value else {
+        return;
+    };
+    VECTOR_OBJECT_BOOK.with(|book| {
+        book.borrow_mut().push(VectorCensusEntry {
+            head: Rc::downgrade(head),
+            representation_conses,
+            slots,
+            logical_object,
+        });
+        VECTOR_OBJECT_BOOK_LIMIT.with(|limit| {
+            let mut book = book.borrow_mut();
+            if book.len() >= limit.get() {
+                book.retain(|entry| entry.head.strong_count() > 0);
+                limit.set((book.len() * 2).max(1 << 16));
+            }
+        });
+    });
+}
+
 impl ConsCell {
     fn new(car: Value, cdr: Value) -> Self {
+        crate::lisp::native_comp::note_lisp_allocation(16);
+        Self::new_representation(car, cdr)
+    }
+
+    fn new_representation(car: Value, cdr: Value) -> Self {
         LIVE_CONSES.with(|count| count.set(count.get() + 1));
         Self {
             words: ConsWords::new(0, 0),
@@ -1382,7 +1631,13 @@ thread_local! {
     // alloc.c's zero_vector is the result of every zero-length vector
     // allocation.  Emaxx's vector representation is a tagged cons list, so
     // preserve that singleton identity at the common constructor boundary.
-    static EMPTY_VECTOR_VALUE: Value = Value::cons(Value::symbol("vector-literal"), Value::Nil);
+    static EMPTY_VECTOR_VALUE: Value = {
+        let value = Value::vector_storage_cons(Value::symbol("vector-literal"), Value::Nil);
+        // GNU's zero_vector is static: it contributes neither a heap vector
+        // nor a cons.  Only subtract Emaxx's one-cell tagged representation.
+        register_vector_representation(&value, 0, 1, false);
+        value
+    };
 }
 
 /// One lexical environment frame.
@@ -1595,6 +1850,33 @@ impl EnvFrame {
                 break;
             }
         }
+    }
+
+    /// Read GNU's canonical `(SYMBOL . VALUE)` cell for this binding when a
+    /// closure environment has materialized it.  A filtered closure may wrap
+    /// the same cell in a different typed frame, so the cell—not either
+    /// frame's snapshot—remains the authoritative lexical value.
+    pub(crate) fn canonical_lisp_binding_value(
+        &self,
+        position: usize,
+        name: &str,
+    ) -> Option<Value> {
+        let cell = self
+            .0
+            .state
+            .binding_cells
+            .borrow()
+            .get(position)?
+            .upgrade()?;
+        if !cell
+            .car
+            .borrow()
+            .as_symbol()
+            .is_ok_and(|bound| bound == name)
+        {
+            return None;
+        }
+        Some(cell.cdr.borrow().clone())
     }
 
     pub fn identity(&self) -> Option<i64> {
@@ -1865,6 +2147,10 @@ impl Value {
         Value::Cons(Rc::new(ConsCell::new(car, cdr)))
     }
 
+    pub(crate) fn vector_storage_cons(car: Value, cdr: Value) -> Self {
+        Value::Cons(Rc::new(ConsCell::new_representation(car, cdr)))
+    }
+
     pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: SharedEnv) -> Self {
         Self::lambda_with_documentation(params, body, env, None)
     }
@@ -1885,7 +2171,7 @@ impl Value {
         documentation: Option<Value>,
         interactive: Option<Value>,
     ) -> Self {
-        Value::Lambda(Rc::new(LambdaValue {
+        Self::allocated_lambda(LambdaValue {
             params,
             public_parameters: None,
             body,
@@ -1893,7 +2179,7 @@ impl Value {
             documentation,
             interactive,
             public_environment: None,
-        }))
+        })
     }
 
     pub fn lambda_with_public_environment(
@@ -1905,7 +2191,7 @@ impl Value {
         interactive: Option<Value>,
         public_environment: Value,
     ) -> Self {
-        Value::Lambda(Rc::new(LambdaValue {
+        Self::allocated_lambda(LambdaValue {
             params,
             public_parameters: Some(public_parameters),
             body,
@@ -1913,7 +2199,13 @@ impl Value {
             documentation,
             interactive,
             public_environment: Some(public_environment),
-        }))
+        })
+    }
+
+    pub(crate) fn allocated_lambda(lambda: LambdaValue) -> Self {
+        let lambda = Rc::new(lambda);
+        register_lambda_object(&lambda);
+        Value::Lambda(lambda)
     }
 
     pub fn buffer(id: u64, name: impl Into<SharedText>) -> Self {
@@ -1929,9 +2221,22 @@ impl Value {
         if matches!(items.as_slice(), [Value::Symbol(tag)] if tag == "vector-literal") {
             return EMPTY_VECTOR_VALUE.with(Clone::clone);
         }
+        let vector_slots = matches!(
+            items.first(),
+            Some(Value::Symbol(tag)) if tag == "vector-literal"
+        )
+        .then_some(items.len());
         let mut result = Value::Nil;
         for item in items.into_iter().rev() {
-            result = Value::cons(item, result);
+            result = if vector_slots.is_some() {
+                Value::vector_storage_cons(item, result)
+            } else {
+                Value::cons(item, result)
+            };
+        }
+        if let Some(slots) = vector_slots {
+            crate::lisp::native_comp::note_lisp_allocation(slots.saturating_mul(8));
+            register_vector_object(&result, slots);
         }
         result
     }
@@ -2610,7 +2915,8 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvFrame, LispError, SharedCons, SymbolName, Value, make_uninterned_symbol_name, shared_env,
+        EnvFrame, LispError, SharedCons, SymbolName, Value, census_live_conses, census_live_floats,
+        census_live_vectors, make_uninterned_symbol_name, shared_env,
     };
     use std::rc::Rc;
 
@@ -2653,6 +2959,70 @@ mod tests {
     }
 
     #[test]
+    fn live_census_counts_vector_storage_as_gnu_vector_slots() {
+        let conses_before = census_live_conses();
+        let vectors_before = census_live_vectors();
+        let vector = Value::list([
+            Value::symbol("vector-literal"),
+            Value::Integer(1),
+            Value::Integer(2),
+        ]);
+        let vectors_after = census_live_vectors();
+
+        assert_eq!(census_live_conses(), conses_before + 3);
+        assert_eq!(vectors_after.count, vectors_before.count + 1);
+        assert_eq!(vectors_after.slots, vectors_before.slots + 3);
+        assert_eq!(
+            vectors_after.representation_conses,
+            vectors_before.representation_conses + 3
+        );
+
+        drop(vector);
+        let vectors_after_drop = census_live_vectors();
+        assert_eq!(vectors_after_drop.count, vectors_before.count);
+        assert_eq!(vectors_after_drop.slots, vectors_before.slots);
+        assert_eq!(
+            vectors_after_drop.representation_conses,
+            vectors_before.representation_conses
+        );
+    }
+
+    #[test]
+    fn live_census_counts_float_allocations_once_across_clones() {
+        let before = census_live_floats();
+        let value = Value::float(1.5);
+        let clone = value.clone();
+        assert_eq!(census_live_floats(), before + 1);
+        drop(value);
+        assert_eq!(census_live_floats(), before + 1);
+        drop(clone);
+        assert_eq!(census_live_floats(), before);
+    }
+
+    #[test]
+    fn live_census_counts_bignums_and_interpreted_closures_as_gnu_vectors() {
+        let before = census_live_vectors();
+        let integer = Value::big_integer(num_bigint::BigInt::from(1_u8) << 128);
+        let closure = Value::lambda(
+            std::rc::Rc::new(Vec::new()),
+            std::rc::Rc::new(vec![Value::Nil]),
+            shared_env(Vec::new()),
+        );
+        let after = census_live_vectors();
+
+        assert_eq!(after.count, before.count + 2);
+        // Lisp_Bignum is three words.  A noninteractive interpreted closure
+        // has three visible slots plus its one-word vector header.
+        assert_eq!(after.slots, before.slots + 3 + 4);
+
+        drop(integer);
+        drop(closure);
+        let after_drop = census_live_vectors();
+        assert_eq!(after_drop.count, before.count);
+        assert_eq!(after_drop.slots, before.slots);
+    }
+
+    #[test]
     fn shared_text_equality_covers_shared_and_distinct_equal_allocations() {
         use std::hash::{Hash, Hasher};
 
@@ -2692,17 +3062,32 @@ mod tests {
         let first = SymbolName::from("emaxx-compact-symbol-test");
         let second = SymbolName::from("emaxx-compact-symbol-test");
 
-        assert!(Rc::ptr_eq(&first.0.0, &second.0.0));
+        assert!(Rc::ptr_eq(&first.0, &second.0));
     }
 
     #[test]
     fn uninterned_symbol_names_remain_reclaimable() {
         let weak = {
             let name = SymbolName::from(make_uninterned_symbol_name("temporary", 1));
-            Rc::downgrade(&name.0.0)
+            Rc::downgrade(&name.0)
         };
 
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn uninterned_symbol_keeps_its_supplied_lisp_name() {
+        let name = Value::string("temporary");
+        let Value::String(expected) = &name else {
+            unreachable!("constructed string")
+        };
+        let expected = expected.clone();
+        let symbol = SymbolName::make_uninterned(name, "temporary", 1);
+        let Value::String(actual) = symbol.lisp_name() else {
+            unreachable!("immutable supplied name")
+        };
+
+        assert!(actual.ptr_eq(&expected));
     }
 
     #[test]

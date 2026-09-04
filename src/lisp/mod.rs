@@ -1016,7 +1016,7 @@ pub(crate) fn load_file_strict_until_or_error(
                     return Err(error);
                 }
             };
-            let form = match interp.materialize_read_object_literals(form) {
+            let form = match interp.materialize_read_object_literals(form, &mut env) {
                 Ok(form) => form,
                 Err(error) => {
                     if trace_load_errors_enabled() {
@@ -1520,8 +1520,9 @@ mod tests {
                 ],
             }));
         let mut interp = super::eval::Interpreter::new();
+        let mut env = super::types::Env::new();
         let materialized = interp
-            .materialize_read_object_literals(literal)
+            .materialize_read_object_literals(literal, &mut env)
             .expect("reader construction must treat every closure slot as data");
         let super::types::Value::Record(record_id) = materialized else {
             panic!("byte-code reader form must become a closure pseudovector");

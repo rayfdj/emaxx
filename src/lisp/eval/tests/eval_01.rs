@@ -7435,26 +7435,6 @@ fn assoc_honors_optional_test_function() {
 }
 
 #[test]
-fn garbage_collect_prunes_synthetic_weak_hash_table_entries() {
-    assert_eq!(
-        eval_str(
-            "(let ((table (make-hash-table :test 'equal :weakness 'key)))
-                   (puthash \"00-key-alive\" \"00-val-alive\" table)
-                   (puthash \"01-key-dead\" \"01-val-alive\" table)
-                   (garbage-collect)
-                   (list (hash-table-count table)
-                         (gethash \"00-key-alive\" table)
-                         (gethash \"01-key-dead\" table 'missing)))"
-        ),
-        Value::list([
-            Value::Integer(1),
-            Value::String("00-val-alive".into()),
-            Value::Symbol("missing".into()),
-        ])
-    );
-}
-
-#[test]
 fn require_edmacro_supports_edmacro_parse_keys_cases() {
     run_with_large_stack(assert_require_edmacro_supports_edmacro_parse_keys_cases);
 }

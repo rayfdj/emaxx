@@ -41,6 +41,20 @@ impl NativeCompilerState {
         gccjit::available()
     }
 
+    pub(crate) fn begin_garbage_collection(&mut self) -> Vec<crate::lisp::types::Value> {
+        self.runtime.begin_garbage_collection()
+    }
+
+    pub(crate) fn garbage_collection_finished(
+        &mut self,
+        live_bytes: usize,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) {
+        self.runtime
+            .garbage_collection_finished(live_bytes, threshold, percentage);
+    }
+
     pub(crate) fn version() -> Option<(i32, i32, i32)> {
         gccjit::version()
     }
@@ -85,8 +99,9 @@ impl NativeCompilerState {
         &mut self,
         interp: &mut Interpreter,
         env: &mut Env,
-        filename: &str,
+        filename: &crate::lisp::types::Value,
         library: loader::UnitLibrary,
+        candidate_unit: &crate::lisp::types::Value,
         late: bool,
     ) -> Result<crate::lisp::types::Value, LispError> {
         loader::load(
@@ -95,6 +110,7 @@ impl NativeCompilerState {
             env,
             filename,
             library,
+            candidate_unit,
             late,
         )
     }
@@ -115,6 +131,36 @@ impl NativeCompilerState {
             record_id,
             arguments,
         )
+    }
+
+    pub(crate) fn register(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        arguments: &[crate::lisp::types::Value],
+        kind: loader::RegistrationKind,
+    ) -> Result<crate::lisp::types::Value, LispError> {
+        loader::register_with_state(
+            &mut self.registry,
+            &mut self.runtime,
+            interp,
+            env,
+            arguments,
+            kind,
+        )
+    }
+
+    pub(crate) fn function_name(&self, record_id: u64) -> Option<&str> {
+        self.registry.function_name(record_id)
+    }
+
+    pub(crate) fn unit_documentation(
+        &self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        record_id: u64,
+    ) -> Result<crate::lisp::types::Value, LispError> {
+        loader::unit_documentation(&self.registry, interp, env, record_id)
     }
 
     pub(crate) fn install_trampoline(

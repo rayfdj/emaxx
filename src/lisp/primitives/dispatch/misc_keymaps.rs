@@ -486,12 +486,27 @@ define_dispatch!(
             "symbol-name" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fsymbol_name uses CHECK_SYMBOL/XSYMBOL.
-                let s = checked_symbol_name(interp, &args[0], env)?;
-                Ok(Value::String(
-                    crate::lisp::types::visible_symbol_name(&s)
-                        .to_string()
-                        .into(),
-                ))
+                let symbol_name = match &args[0] {
+                    Value::Nil => {
+                        return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
+                    }
+                    Value::T => return Ok(crate::lisp::types::SymbolName::from("t").lisp_name()),
+                    Value::Symbol(symbol) => symbol.clone(),
+                    _ if symbols_with_pos_enabled(interp, env) => {
+                        match symbol_with_pos_parts(interp, &args[0]) {
+                            Some((Value::Nil, _)) => {
+                                return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
+                            }
+                            Some((Value::T, _)) => {
+                                return Ok(crate::lisp::types::SymbolName::from("t").lisp_name());
+                            }
+                            Some((Value::Symbol(symbol), _)) => symbol,
+                            _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
+                        }
+                    }
+                    _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
+                };
+                Ok(symbol_name.lisp_name())
             }
             "user-login-name" => {
                 if args.len() > 1 {
@@ -693,9 +708,9 @@ define_dispatch!(
             }
             "make-hash-table" => {
                 let mut test = "eql".to_string();
-                let mut size = Value::Integer(65);
-                let mut rehash_size = Value::float(1.5);
-                let mut rehash_threshold = Value::float(0.8125);
+                // fns.c:DEFAULT_HASH_SIZE is zero.  Storage is allocated on
+                // the first insertion via maybe_resize_hash_table.
+                let mut size = Value::Integer(0);
                 let mut weakness = Value::Nil;
                 // fns.c still accepts `:purecopy'; print.c:2609 reports it
                 // back, so the flag has to be recorded rather than dropped.
@@ -717,8 +732,9 @@ define_dispatch!(
                             };
                         }
                         ":size" => size = args[index + 1].clone(),
-                        ":rehash-size" => rehash_size = args[index + 1].clone(),
-                        ":rehash-threshold" => rehash_threshold = args[index + 1].clone(),
+                        // fns.c accepts these obsolete keyword/value pairs
+                        // but deliberately ignores their values.
+                        ":rehash-size" | ":rehash-threshold" => {}
                         ":weakness" => {
                             weakness = match &args[index + 1] {
                                 Value::T => Value::Symbol("key-and-value".into()),
@@ -739,7 +755,15 @@ define_dispatch!(
                 {
                     return Err(LispError::Signal("Invalid hash table test".into()));
                 }
-                let table = json::make_hash_table(interp, &test, Vec::new());
+                let capacity = size
+                    .as_integer()
+                    .ok()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| {
+                        LispError::WrongTypeArgument("wholenump".into(), size.clone())
+                    })?;
+                let table =
+                    json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
                 let Value::Record(id) = table.clone() else {
                     unreachable!("hash tables are represented as records")
                 };
@@ -750,8 +774,6 @@ define_dispatch!(
                     record.slots.resize(7, Value::Nil);
                 }
                 record.slots[2] = size;
-                record.slots[3] = rehash_size;
-                record.slots[4] = rehash_threshold;
                 record.slots[5] = weakness;
                 record.slots[6] = purecopy;
                 Ok(table)
@@ -978,28 +1000,36 @@ define_dispatch!(
             }
             "hash-table-rehash-size" => {
                 need_args(name, args, 1)?;
-                Ok(hash_table_metadata_slot(
-                    interp,
-                    &args[0],
-                    3,
-                    Value::float(1.5),
-                )?)
+                if !json::is_hash_table(interp, &args[0]) {
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
+                }
+                Ok(Value::float(1.5))
             }
             "hash-table-rehash-threshold" => {
                 need_args(name, args, 1)?;
-                Ok(hash_table_metadata_slot(
-                    interp,
-                    &args[0],
-                    4,
-                    Value::float(0.8125),
-                )?)
+                if !json::is_hash_table(interp, &args[0]) {
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
+                }
+                Ok(Value::float(0.8125))
             }
             "hash-table-size" => {
                 need_args(name, args, 1)?;
-                let default_size = json::hash_table_entries(interp, &args[0])
-                    .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
-                    .unwrap_or(Value::Integer(65));
-                Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
+                let Value::Record(id) = args[0] else {
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
+                };
+                let capacity = interp.gnu_hash_table_capacity(id).ok_or_else(|| {
+                    LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone())
+                })?;
+                Ok(Value::Integer(capacity as i64))
             }
             "hash-table-test" => {
                 need_args(name, args, 1)?;
@@ -1020,10 +1050,18 @@ define_dispatch!(
             "internal-complete-buffer" => internal_complete_buffer(interp, args, env),
             "internal--hash-table-index-size" => {
                 need_args(name, args, 1)?;
-                let default_size = json::hash_table_entries(interp, &args[0])
-                    .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
-                    .unwrap_or(Value::Integer(65));
-                Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
+                let Value::Record(id) = args[0] else {
+                    return Err(LispError::WrongTypeArgument(
+                        "hash-table-p".into(),
+                        args[0].clone(),
+                    ));
+                };
+                let capacity = interp.gnu_hash_table_capacity(id).ok_or_else(|| {
+                    LispError::WrongTypeArgument("hash-table-p".into(), args[0].clone())
+                })?;
+                Ok(Value::Integer(
+                    crate::lisp::eval::gnu_hash_table_index_slots(capacity) as i64,
+                ))
             }
             "internal--hash-table-histogram" => {
                 need_args(name, args, 1)?;
@@ -1556,11 +1594,31 @@ define_dispatch!(
             }
             "garbage-collect" => {
                 need_args(name, args, 0)?;
+                if interp.garbage_collection_is_inhibited() {
+                    return Ok(Value::Nil);
+                }
                 // The reclamation emaxx really performs: weak hash entries
                 // whose keys/values are no longer reachable are dropped, as
                 // GNU's sweep does.  Everything else is freed by ownership
                 // the moment it becomes unreachable.
-                collect_weak_hash_tables(interp)?;
+                let native_roots = crate::lisp::native_comp::begin_garbage_collection(interp);
+                collect_weak_hash_tables(interp, env, &native_roots)?;
+                let census = interp.live_object_census();
+                let threshold = interp
+                    .symbol_value_cell("gc-cons-threshold")
+                    .ok()
+                    .and_then(|value| value.as_integer().ok())
+                    .unwrap_or(800_000);
+                let percentage = match interp.symbol_value_cell("gc-cons-percentage") {
+                    Ok(Value::Float(value)) => Some(value.get()),
+                    _ => None,
+                };
+                crate::lisp::native_comp::garbage_collection_finished(
+                    interp,
+                    census.total_bytes_of_live_objects(),
+                    threshold,
+                    percentage,
+                );
                 // GNU returns ((TYPE SIZE USED FREE) ...) in exactly this
                 // row order (alloc.c, oracle-confirmed).  USED counts come
                 // from the live reachability census (finding 110 -- these
@@ -1568,7 +1626,6 @@ define_dispatch!(
                 // real per-object layout constants, so memory-report.el
                 // computes emaxx-true byte totals, not GNU's.  FREE columns
                 // are 0 truthfully: Rust ownership retains no free lists.
-                let census = interp.live_object_census();
                 let cons_size = std::mem::size_of::<crate::lisp::types::ConsCell>() as i64;
                 let entry = |name: &str, rest: &[i64]| {
                     Value::list(

@@ -176,7 +176,7 @@ fn materialize_constant_inner(
     seen: &mut std::collections::HashSet<usize>,
 ) -> Result<Value, LispError> {
     if matches!(constant, Value::ReaderForm(_)) {
-        return interp.materialize_read_object_literals(constant.clone());
+        return interp.materialize_read_object_literals(constant.clone(), env);
     }
     let head = constant.car().ok();
     match head.as_ref() {

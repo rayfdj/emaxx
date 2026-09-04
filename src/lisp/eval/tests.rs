@@ -189,6 +189,49 @@ fn run_exclusive_with_large_stack(test: impl FnOnce() + Send + 'static) {
         .unwrap();
 }
 
+#[test]
+fn gnu_hash_storage_layout_and_growth_match_fns_c() {
+    assert_eq!(gnu_hash_grown_capacity(0, 0), 0);
+    assert_eq!(gnu_hash_grown_capacity(0, 1), 6);
+    assert_eq!(gnu_hash_grown_capacity(0, 6), 6);
+    assert_eq!(gnu_hash_grown_capacity(0, 7), 24);
+    assert_eq!(gnu_hash_grown_capacity(1, 2), 24);
+    assert_eq!(gnu_hash_grown_capacity(64, 65), 256);
+    assert_eq!(gnu_hash_grown_capacity(65, 66), 130);
+
+    assert_eq!(gnu_hash_table_index_slots(0), 1);
+    assert_eq!(gnu_hash_table_index_slots(6), 8);
+    assert_eq!(gnu_hash_table_index_slots(64), 128);
+    assert_eq!(gnu_hash_table_index_slots(65), 128);
+    assert_eq!(gnu_hash_table_storage_bytes(0), 0);
+    assert_eq!(gnu_hash_table_storage_bytes(6), 176);
+    assert_eq!(gnu_hash_table_storage_bytes(65), 2_072);
+}
+
+#[test]
+fn gnu_hash_capacity_survives_clear_and_grows_at_the_same_boundary() {
+    let mut interp = Interpreter::new();
+    let Value::Record(id) =
+        crate::lisp::json::make_hash_table_with_capacity(&mut interp, "eql", Vec::new(), 0)
+    else {
+        unreachable!("hash-table constructor must return a record")
+    };
+    let env = Vec::new();
+    assert_eq!(interp.gnu_hash_table_capacity(id), Some(0));
+
+    for key in 0..6 {
+        assert!(interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,));
+    }
+    assert_eq!(interp.gnu_hash_table_capacity(id), Some(6));
+    interp.replace_hash_table_runtime_entries(id, "eql", Vec::new());
+    assert_eq!(interp.gnu_hash_table_capacity(id), Some(6));
+
+    for key in 0..7 {
+        assert!(interp.equal_hash_put(id, Value::Integer(key), Value::Integer(key), &env,));
+    }
+    assert_eq!(interp.gnu_hash_table_capacity(id), Some(24));
+}
+
 mod eval_01;
 mod eval_02;
 mod eval_03;

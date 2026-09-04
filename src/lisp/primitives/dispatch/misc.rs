@@ -359,7 +359,7 @@ define_dispatch!(
                         // references included.  Interning runs on the
                         // materialized value so symbols inside expanded
                         // literals (byte-code constant vectors) are covered.
-                        let materialized = interp.materialize_read_object_literals(val)?;
+                        let materialized = interp.materialize_read_object_literals(val, env)?;
                         interp.intern_symbols_in_value(&materialized);
                         Ok(Value::cons(
                             materialized,
@@ -739,7 +739,7 @@ define_dispatch!(
                 let base = string_text(&args[0])?;
                 let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                 Ok(Value::Symbol(
-                    crate::lisp::types::make_uninterned_symbol_name(&base, id).into(),
+                    crate::lisp::types::SymbolName::make_uninterned(args[0].clone(), &base, id),
                 ))
             }
             "autoload" => {
@@ -1795,7 +1795,7 @@ fn ensure_builtin_doc_offset(
 fn internal_subr_documentation(
     interp: &mut Interpreter,
     function: &Value,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     match function {
         Value::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
@@ -1806,7 +1806,7 @@ fn internal_subr_documentation(
                 record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
             }) =>
         {
-            crate::lisp::native_comp::function_documentation(interp, *id)
+            crate::lisp::native_comp::function_documentation(interp, env, *id)
         }
         _ => Ok(Value::T),
     }

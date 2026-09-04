@@ -791,13 +791,17 @@ define_dispatch!(
             "subr-name" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(Value::String(symbol.clone().into())),
+                    Value::BuiltinFunc(symbol) => Ok(Value::string(symbol.as_str())),
                     Value::Record(id)
                         if interp.find_record(*id).is_some_and(|record| {
                             record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
                         }) =>
                     {
-                        Ok(interp.find_record(*id).expect("record checked above").slots[0].clone())
+                        let name = crate::lisp::native_comp::function_name(interp, *id)
+                            .ok_or_else(|| {
+                                LispError::Signal("native subr is not registered".into())
+                            })?;
+                        Ok(Value::string(&name))
                     }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",

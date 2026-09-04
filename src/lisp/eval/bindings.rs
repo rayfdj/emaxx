@@ -175,12 +175,16 @@ impl Interpreter {
             }
             let shared_updates = Self::frame_identity(frame)
                 .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
-            for (k, v) in frame.iter().rev() {
+            for (position, (k, v)) in frame.iter().enumerate().rev() {
                 if k == name {
                     return Ok(Some(
-                        shared_updates
-                            .and_then(|updates| updates.get(name))
-                            .cloned()
+                        frame
+                            .canonical_lisp_binding_value(position, name)
+                            .or_else(|| {
+                                shared_updates
+                                    .and_then(|updates| updates.get(name))
+                                    .cloned()
+                            })
                             .unwrap_or_else(|| v.clone()),
                     ));
                 }

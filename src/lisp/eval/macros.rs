@@ -3,6 +3,7 @@ use crate::lisp::types::StringPropertySpan;
 
 struct CircularReadMaterializer<'a> {
     interpreter: &'a mut Interpreter,
+    environment: &'a mut Env,
     labels: std::collections::HashMap<u32, Value>,
     records: std::collections::HashMap<usize, Value>,
     resolved_cons: std::collections::HashSet<usize>,
@@ -110,14 +111,18 @@ impl CircularReadMaterializer<'_> {
         let mut resolved = Vec::with_capacity(slots.len());
         for slot in slots {
             let slot = self.resolve(slot)?;
-            let slot = self.interpreter.materialize_read_record_literals(&slot)?;
+            let slot = self
+                .interpreter
+                .materialize_read_record_literals(&slot, self.environment)?;
             let slot = crate::lisp::primitives::materialize_read_hash_table_literals(
                 self.interpreter,
                 &slot,
+                self.environment,
             )?;
             let slot = crate::lisp::primitives::materialize_read_char_table_literals(
                 self.interpreter,
                 &slot,
+                self.environment,
             )?;
             resolved.push(slot);
         }
@@ -235,6 +240,7 @@ impl CircularReadMaterializer<'_> {
                         return crate::lisp::primitives::materialize_read_hash_table_literal_fields(
                             self.interpreter,
                             &fields,
+                            self.environment,
                         );
                     }
                     ReaderForm::CharTable { fields } => ReaderForm::CharTable {
@@ -279,6 +285,7 @@ impl Interpreter {
     pub(crate) fn materialize_read_object_literals(
         &mut self,
         value: Value,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         if !crate::lisp::reader::quote_template_needs_resolution(&value) {
             return Ok(value);
@@ -286,6 +293,7 @@ impl Interpreter {
         let value = if crate::lisp::reader::contains_circular_read_syntax(&value) {
             CircularReadMaterializer {
                 interpreter: self,
+                environment: env,
                 labels: std::collections::HashMap::new(),
                 records: std::collections::HashMap::new(),
                 resolved_cons: std::collections::HashSet::new(),
@@ -294,9 +302,10 @@ impl Interpreter {
         } else {
             value
         };
-        let value = self.materialize_read_record_literals(&value)?;
-        let value = crate::lisp::primitives::materialize_read_hash_table_literals(self, &value)?;
-        crate::lisp::primitives::materialize_read_char_table_literals(self, &value)
+        let value = self.materialize_read_record_literals(&value, env)?;
+        let value =
+            crate::lisp::primitives::materialize_read_hash_table_literals(self, &value, env)?;
+        crate::lisp::primitives::materialize_read_char_table_literals(self, &value, env)
     }
 
     /// Materialize `#[...]' and ordinary `#s(...)' reader forms throughout a
@@ -307,9 +316,11 @@ impl Interpreter {
     pub(crate) fn materialize_read_record_literals(
         &mut self,
         value: &Value,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         self.materialize_read_record_literals_inner(
             value,
+            env,
             &mut std::collections::HashSet::new(),
             &mut std::collections::HashSet::new(),
             &mut std::collections::HashMap::new(),
@@ -319,6 +330,7 @@ impl Interpreter {
     fn materialize_read_record_literals_inner(
         &mut self,
         value: &Value,
+        env: &mut Env,
         seen_cons: &mut std::collections::HashSet<usize>,
         active_reader_forms: &mut std::collections::HashSet<usize>,
         records: &mut std::collections::HashMap<usize, Value>,
@@ -360,14 +372,17 @@ impl Interpreter {
             for slot in slots {
                 let value = self.materialize_read_record_literals_inner(
                     slot,
+                    env,
                     seen_cons,
                     active_reader_forms,
                     records,
                 )?;
-                let value =
-                    crate::lisp::primitives::materialize_read_hash_table_literals(self, &value)?;
-                let value =
-                    crate::lisp::primitives::materialize_read_char_table_literals(self, &value)?;
+                let value = crate::lisp::primitives::materialize_read_hash_table_literals(
+                    self, &value, env,
+                )?;
+                let value = crate::lisp::primitives::materialize_read_char_table_literals(
+                    self, &value, env,
+                )?;
                 materialized.push(value);
             }
             let record = match closure_kind {
@@ -404,6 +419,7 @@ impl Interpreter {
         let car = car_cell.borrow().clone();
         *car_cell.borrow_mut() = self.materialize_read_record_literals_inner(
             &car,
+            env,
             seen_cons,
             active_reader_forms,
             records,
@@ -411,6 +427,7 @@ impl Interpreter {
         let cdr = cdr_cell.borrow().clone();
         *cdr_cell.borrow_mut() = self.materialize_read_record_literals_inner(
             &cdr,
+            env,
             seen_cons,
             active_reader_forms,
             records,
