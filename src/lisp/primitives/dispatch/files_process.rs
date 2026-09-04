@@ -2955,7 +2955,13 @@ fn make_process_value(
     {
         parsed.program = Some(resolve_file_name_in_env(interp, env, program));
     }
-    let runtime = parsed.program.as_ref().map(|command| {
+    // process.c finds the executable before forking; `process-command'
+    // keeps the name the caller gave.
+    let executable = match parsed.program.as_deref() {
+        Some(program) => Some(locate_program_for_exec(interp, env, program, true)?),
+        None => None,
+    };
+    let runtime = executable.as_ref().map(|command| {
         spawn_persistent_process(
             interp,
             command,

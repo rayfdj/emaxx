@@ -39,6 +39,183 @@ fn configure_emacs_spawn(command: &mut Command, controlling_pty: bool) {
     }
 }
 
+/// callproc.c Fcall_process and process.c Fmake_process both locate the
+/// program with openp over `exec-path' and `exec-suffixes' asking for X_OK,
+/// and report a miss as "Searching for program" with the errno openp kept.
+/// `make-process' skips the search for a name that starts with a directory
+/// separator (a directory there is an error) and expands what openp found;
+/// `call-process' always searches, openp trying an absolute name as itself,
+/// and keeps openp's answer.  Both strip a "/:" quote from the result.
+pub(crate) fn locate_program_for_exec(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    program: &str,
+    make_process: bool,
+) -> Result<String, LispError> {
+    if make_process && program.starts_with('/') {
+        if fs::metadata(program).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(LispError::Signal(
+                "Specified program for new process is a directory".into(),
+            ));
+        }
+        return Ok(unquote_local_file_name(program).unwrap_or_else(|| program.to_string()));
+    }
+    let exec_path = interp.lookup_var("exec-path", env).unwrap_or(Value::Nil);
+    let exec_suffixes = interp
+        .lookup_var("exec-suffixes", env)
+        .unwrap_or(Value::Nil);
+    let (found, errno) = locate_file_search(
+        interp,
+        &Value::String(program.into()),
+        &exec_path,
+        &exec_suffixes,
+        &Value::Integer(i64::from(libc::X_OK)),
+        env,
+    )?;
+    if found.is_nil() {
+        return Err(LispError::SignalValue(file_errno_error_value(
+            "Searching for program",
+            errno,
+            program,
+        )));
+    }
+    let found = string_text(&found)?;
+    let found = unquote_local_file_name(&found).unwrap_or(found);
+    Ok(if make_process {
+        expand_file_name_in_env(interp, env, &found, None)
+    } else {
+        found
+    })
+}
+
+/// A spawn failure is what GNU's parent sees from `emacs_spawn' and reports
+/// as "Doing vfork" without naming a file.
+fn vfork_error(error: &std::io::Error) -> LispError {
+    LispError::SignalValue(file_operation_error_value_without_file(
+        "Doing vfork",
+        error,
+    ))
+}
+
+/// Everything the child-side exec needs, prepared before the fork so the
+/// child touches no allocator.
+#[cfg(unix)]
+struct ExecImage {
+    argv: Vec<*const libc::c_char>,
+    envp: Vec<*const libc::c_char>,
+    _strings: Vec<std::ffi::CString>,
+    /// "<emacs argv[0]>: <program>: " for the vfork-path diagnostic.
+    prefix: Vec<u8>,
+}
+
+// SAFETY: the pointers refer into `_strings', which the image owns, and the
+// image is only ever used from the forked child.
+#[cfg(unix)]
+unsafe impl Send for ExecImage {}
+#[cfg(unix)]
+unsafe impl Sync for ExecImage {}
+
+/// GNU's child runs `execve' (callproc.c emacs_exec_file), so a file the
+/// kernel refuses with ENOEXEC is not retried through a shell the way
+/// glibc's `execvp' does.  When exec fails on the vfork path used for
+/// pseudo-terminals the child prints "<emacs argv[0]>: <program>:
+/// <strerror>" on its stderr and `_exit's with EXIT_ENOENT (127) or
+/// EXIT_CANNOT_INVOKE (126); on the posix_spawn path used without a pty the
+/// errno goes back to the parent, which signals "Doing vfork".  Rust's
+/// `Command' would `execvp' after this hook, so the hook execs first and,
+/// on failure, either exits like GNU's child or hands Rust the errno to
+/// report.
+#[cfg(unix)]
+fn exec_like_gnu(command: &mut Command, program: &str, argv: &[String], pty: bool) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+
+    let mut strings = Vec::with_capacity(argv.len() + 1);
+    let Ok(path) = CString::new(program) else {
+        return;
+    };
+    strings.push(path);
+    for arg in argv {
+        let Ok(arg) = CString::new(arg.as_str()) else {
+            return;
+        };
+        strings.push(arg);
+    }
+    let argv_end = strings.len();
+    for (name, value) in command.get_envs() {
+        let Some(value) = value else {
+            continue;
+        };
+        let mut entry = name.as_bytes().to_vec();
+        entry.push(b'=');
+        entry.extend_from_slice(value.as_bytes());
+        let Ok(entry) = CString::new(entry) else {
+            return;
+        };
+        strings.push(entry);
+    }
+    let pointers = |range: std::ops::Range<usize>| {
+        strings[range]
+            .iter()
+            .map(|string| string.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect::<Vec<_>>()
+    };
+    let emacs = std::env::args_os()
+        .next()
+        .map(|argv0| argv0.as_bytes().to_vec())
+        .filter(|argv0| !argv0.is_empty())
+        .unwrap_or_else(|| b"emacs".to_vec());
+    let mut prefix = emacs;
+    prefix.extend_from_slice(b": ");
+    prefix.extend_from_slice(program.as_bytes());
+    prefix.extend_from_slice(b": ");
+    let image = ExecImage {
+        argv: pointers(0..argv_end),
+        envp: pointers(argv_end..strings.len()),
+        _strings: strings,
+        prefix,
+    };
+
+    // SAFETY: the child only calls execve, write, strerror and _exit on data
+    // owned by `image', which the closure owns whole; GNU's own vfork child
+    // makes the same strerror call.
+    unsafe {
+        command.pre_exec(move || image.exec_in_child(pty));
+    }
+}
+
+#[cfg(unix)]
+impl ExecImage {
+    /// The child side of `exec_like_gnu'.
+    ///
+    /// # Safety
+    /// Runs in the forked child between fork and exec.
+    unsafe fn exec_in_child(&self, pty: bool) -> std::io::Result<()> {
+        // SAFETY: argv and envp are NULL-terminated arrays of NUL-terminated
+        // strings owned by `self'; the failure path writes owned bytes and
+        // `strerror's static text.
+        unsafe {
+            libc::execve(self.argv[0], self.argv.as_ptr(), self.envp.as_ptr());
+            let error = std::io::Error::last_os_error();
+            if !pty {
+                return Err(error);
+            }
+            let errno = error.raw_os_error().unwrap_or(0);
+            let text = libc::strerror(errno);
+            libc::write(
+                libc::STDERR_FILENO,
+                self.prefix.as_ptr().cast(),
+                self.prefix.len(),
+            );
+            libc::write(libc::STDERR_FILENO, text.cast(), libc::strlen(text));
+            libc::write(libc::STDERR_FILENO, b"\n".as_ptr().cast(), 1);
+            libc::_exit(if errno == libc::ENOENT { 127 } else { 126 })
+        }
+    }
+}
+
 pub(crate) fn run_external_process(
     interp: &mut Interpreter,
     program: &str,
@@ -49,11 +226,14 @@ pub(crate) fn run_external_process(
     #[cfg(test)]
     crate::test_support::mark_process_test();
 
-    let mut command = Command::new(program);
+    let program = locate_program_for_exec(interp, env, program, false)?;
+    let mut command = Command::new(&program);
     command.args(argv);
     configure_external_command(interp, env, &mut command)?;
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, false);
+    #[cfg(unix)]
+    exec_like_gnu(&mut command, &program, argv, false);
     command.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -61,13 +241,7 @@ pub(crate) fn run_external_process(
     });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        LispError::SignalValue(file_operation_error_value(
-            "Searching for program",
-            &error,
-            program,
-        ))
-    })?;
+    let mut child = command.spawn().map_err(|error| vfork_error(&error))?;
     if let Some(stdin_data) = input
         && let Some(mut stdin) = child.stdin.take()
         && let Err(error) = stdin.write_all(stdin_data)
@@ -235,10 +409,10 @@ pub(crate) fn spawn_persistent_process(
 
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, input_pty);
+    #[cfg(unix)]
+    exec_like_gnu(&mut command, program, argv, pty_slave_name.is_some());
 
-    let child = command
-        .spawn()
-        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let child = command.spawn().map_err(|error| vfork_error(&error))?;
     // Put the child under RunningProcess's terminate-and-reap Drop guard
     // before any fallible post-spawn setup.  A failed fcntl must not leak a
     // subprocess whose runtime was never installed in the interpreter.
