@@ -163,6 +163,88 @@ impl AddressFamily {
             Self::Ipv6 => address.is_ipv6(),
         }
     }
+
+    fn resolver_family(self) -> libc::c_int {
+        match self {
+            Self::Both => libc::AF_UNSPEC,
+            Self::Ipv4 => libc::AF_INET,
+            Self::Ipv6 => libc::AF_INET6,
+        }
+    }
+}
+
+fn network_lookup_addresses(
+    host: &str,
+    family: AddressFamily,
+    numeric: bool,
+) -> Result<Vec<std::net::SocketAddr>, String> {
+    // process.c passes the string data to getaddrinfo, so an embedded NUL
+    // terminates the name instead of making construction of a Rust CString
+    // fail.  The public primitive has already rejected non-ASCII names.
+    let host_prefix = host
+        .as_bytes()
+        .split(|byte| *byte == 0)
+        .next()
+        .unwrap_or_default();
+    let host = std::ffi::CString::new(host_prefix).expect("NUL-free hostname prefix");
+    let mut hints = unsafe { std::mem::zeroed::<libc::addrinfo>() };
+    hints.ai_family = family.resolver_family();
+    hints.ai_socktype = libc::SOCK_DGRAM;
+    if numeric {
+        hints.ai_flags = libc::AI_NUMERICHOST;
+    }
+
+    let mut result = std::ptr::null_mut();
+    let status = unsafe { libc::getaddrinfo(host.as_ptr(), std::ptr::null(), &hints, &mut result) };
+    if status != 0 {
+        let message = unsafe { libc::gai_strerror(status) };
+        return Err(if message.is_null() {
+            format!("getaddrinfo error {status}")
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(message) }
+                .to_string_lossy()
+                .into_owned()
+        });
+    }
+
+    let mut addresses = Vec::new();
+    let mut current = result;
+    while !current.is_null() {
+        let entry = unsafe { &*current };
+        let address = match entry.ai_family {
+            libc::AF_INET
+                if !entry.ai_addr.is_null()
+                    && entry.ai_addrlen as usize >= std::mem::size_of::<libc::sockaddr_in>() =>
+            {
+                let address = unsafe { &*entry.ai_addr.cast::<libc::sockaddr_in>() };
+                Some(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(
+                        address.sin_addr.s_addr,
+                    ))),
+                    u16::from_be(address.sin_port),
+                ))
+            }
+            libc::AF_INET6
+                if !entry.ai_addr.is_null()
+                    && entry.ai_addrlen as usize >= std::mem::size_of::<libc::sockaddr_in6>() =>
+            {
+                let address = unsafe { &*entry.ai_addr.cast::<libc::sockaddr_in6>() };
+                Some(std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                    std::net::Ipv6Addr::from(address.sin6_addr.s6_addr),
+                    u16::from_be(address.sin6_port),
+                    address.sin6_flowinfo,
+                    address.sin6_scope_id,
+                )))
+            }
+            _ => None,
+        };
+        if let Some(address) = address {
+            addresses.push(address);
+        }
+        current = entry.ai_next;
+    }
+    unsafe { libc::freeaddrinfo(result) };
+    Ok(addresses)
 }
 
 fn interface_broadcast(ip: std::net::IpAddr, mask: std::net::IpAddr) -> std::net::IpAddr {
@@ -479,6 +561,16 @@ define_dispatch!(
                 } else {
                     interp.current_buffer_id()
                 };
+                // `buffer-file-name' is a per-buffer special variable.  A
+                // dynamic binding in the current buffer is observable both
+                // through the variable and through this primitive; reading
+                // only the host Buffer field lost bindings used by ordinary
+                // save code (including backup creation).
+                if buffer_id == interp.current_buffer_id() {
+                    return Ok(interp
+                        .lookup_var("buffer-file-name", env)
+                        .unwrap_or(Value::Nil));
+                }
                 Ok(interp
                     .get_buffer_by_id(buffer_id)
                     .and_then(|buffer| buffer.file.clone())
@@ -1095,7 +1187,8 @@ define_dispatch!(
                 if directory_name_p(&target) {
                     target = file_name_concat(&[target, file_name_nondirectory(&source)]);
                 }
-                if fs::symlink_metadata(&target).is_ok() && args.get(2).is_none_or(Value::is_nil) {
+                let target_existed = fs::symlink_metadata(&target).is_ok();
+                if target_existed && args.get(2).is_none_or(Value::is_nil) {
                     return Err(file_operation_error(
                         "Copying file",
                         &std::io::Error::from(ErrorKind::AlreadyExists),
@@ -1131,6 +1224,10 @@ define_dispatch!(
                         let _ = file.set_times(times);
                     }
                 }
+                if !target_existed {
+                    dispatch_file_notification(interp, env, &target, "created")?;
+                }
+                dispatch_file_notification(interp, env, &target, "changed")?;
                 Ok(Value::Nil)
             }
             "rename-file" => {
@@ -1160,9 +1257,8 @@ define_dispatch!(
                     };
                     file_operation_error("Renaming file", &error, path)
                 })?;
+                interp.queue_file_rename_notification(&source, &target);
                 interp.invalidate_file_notify_watches_for_path(&source);
-                dispatch_file_notification(interp, env, &source, "deleted")?;
-                dispatch_file_notification(interp, env, &target, "created")?;
                 Ok(Value::Nil)
             }
             "system-move-file-to-trash" => {
@@ -1179,21 +1275,23 @@ define_dispatch!(
                         &path,
                     ))
                 })?;
-                interp.invalidate_file_notify_watches_for_path(&path);
                 dispatch_file_notification(interp, env, &path, "deleted")?;
+                interp.invalidate_file_notify_watches_for_path(&path);
                 Ok(Value::Nil)
             }
             "delete-file-internal" => {
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
-                match fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                let removed = match fs::remove_file(&path) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == ErrorKind::NotFound => false,
                     Err(error) => return Err(LispError::Signal(error.to_string())),
+                };
+                if removed {
+                    dispatch_file_notification(interp, env, &path, "deleted")?;
+                    interp.invalidate_file_notify_watches_for_path(&path);
                 }
-                interp.invalidate_file_notify_watches_for_path(&path);
-                dispatch_file_notification(interp, env, &path, "deleted")?;
                 Ok(Value::Nil)
             }
             "delete-directory-internal" => {
@@ -1201,8 +1299,8 @@ define_dispatch!(
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
                 fs::remove_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                interp.queue_directory_deletion_notification(&path);
                 interp.invalidate_file_notify_watches_for_path(&path);
-                dispatch_file_notification(interp, env, &path, "deleted")?;
                 Ok(Value::Nil)
             }
 
@@ -1210,7 +1308,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
-                fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::create_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                dispatch_file_notification(interp, env, &path, "created")?;
                 Ok(Value::Nil)
             }
             "add-name-to-file" => {
@@ -1297,22 +1396,113 @@ define_dispatch!(
                 }
                 write_region_value(interp, args, env)
             }
+            #[cfg(target_os = "linux")]
+            "inotify-add-watch" => {
+                need_args(name, args, 3)?;
+                // Finotify_add_watch converts ASPECT to its mask before
+                // CHECK_STRING examines FILE-NAME, and symbol_to_inotifymask
+                // reports any entry it cannot map -- a non-symbol included --
+                // as an unknown aspect with errno set to EINVAL.
+                let aspects = if args[1].is_nil() {
+                    Vec::new()
+                } else if args[1].cons_values().is_some() {
+                    args[1].to_vec()?
+                } else {
+                    vec![args[1].clone()]
+                };
+                let flags = aspects
+                    .iter()
+                    .map(|aspect| {
+                        aspect.as_symbol().map(str::to_string).map_err(|_| {
+                            crate::lisp::primitives::file_notify_error_with_errno(
+                                "Unknown aspect",
+                                &std::io::Error::from_raw_os_error(libc::EINVAL),
+                                aspect.clone(),
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                interp.validate_inotify_aspects(&flags)?;
+                let path = string_text(&args[0])?;
+                interp.register_inotify_file_notify_watch(path, flags, args[2].clone())
+            }
+            #[cfg(target_os = "linux")]
+            "inotify-rm-watch" => {
+                need_args(name, args, 1)?;
+                let valid = args[0].cons_values().is_some_and(|(watch, id)| {
+                    matches!(watch, Value::Integer(value) if value >= 0 && value <= i64::from(i32::MAX))
+                        && matches!(id, Value::Integer(value) if value >= 0)
+                });
+                if !valid {
+                    // report_file_notify_error renders whatever errno the
+                    // preceding host call left behind, so GNU's own text here
+                    // depends on session history; only the shape is stable.
+                    return Err(crate::lisp::primitives::file_notify_error_with_errno(
+                        "Invalid descriptor ",
+                        &std::io::Error::last_os_error(),
+                        args[0].clone(),
+                    ));
+                }
+                interp.remove_inotify_file_notify_watch(&args[0])?;
+                Ok(Value::T)
+            }
+            #[cfg(target_os = "linux")]
+            "inotify-valid-p" => {
+                need_args(name, args, 1)?;
+                Ok(if interp.inotify_file_notify_watch_is_active(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
+            }
             "kqueue-add-watch" => {
                 need_args(name, args, 3)?;
-                let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+                let path = directory_file_name(&resolve_file_name_in_env(
+                    interp,
+                    env,
+                    &string_text(&args[0])?,
+                ));
                 // kqueue.c signals file-missing before registering anything;
                 // Emaxx accepted any path and returned a live descriptor
                 // (finding 13's "never fails" half, per the second audit).
-                if std::fs::symlink_metadata(&path).is_err() {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("file-missing"),
-                        Value::String("File does not exist".into()),
-                        Value::String("No such file or directory".into()),
-                        Value::String(string_text(&args[0])?.into()),
-                    ])));
+                if let Err(error) = std::fs::metadata(&path) {
+                    return Err(file_operation_error("File does not exist", &error, &path));
                 }
-                let descriptor =
-                    FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
+                let flags = args[1]
+                    .to_vec()?
+                    .into_iter()
+                    .filter_map(|flag| flag.as_symbol().ok().map(str::to_string))
+                    .collect::<Vec<_>>();
+                if !function_value_p(interp, &args[2], env) {
+                    return Err(wrong_type_argument("invalid-function", args[2].clone()));
+                }
+                // kqueue.c deliberately reserves fifty descriptors for the
+                // rest of Emacs and reports `file-notify-error' before a
+                // watch can exhaust the process limit.  Besides matching the
+                // public failure contract, this keeps callers able to remove
+                // every watch and clean up after the limit is reached.
+                #[cfg(unix)]
+                {
+                    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                    // SAFETY: getrlimit initializes LIMIT on success.
+                    let maximum =
+                        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } == 0
+                        {
+                            // SAFETY: the successful call above initialized LIMIT.
+                            unsafe { limit.assume_init() }.rlim_cur as usize
+                        } else {
+                            256
+                        };
+                    if maximum < 50 || maximum - 50 < interp.file_notify_watch_count() {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("file-notify-error".into()),
+                            Value::String(
+                                "File watching not possible, no file descriptor left".into(),
+                            ),
+                            Value::Integer(interp.file_notify_watch_count() as i64),
+                        ])));
+                    }
+                }
                 // Watches taken from a remotely visited buffer model Tramp's
                 // gio monitors: they outlive deletions of the watched file, so
                 // they get no local path registration to invalidate.
@@ -1320,23 +1510,36 @@ define_dispatch!(
                     || interp
                         .buffer_remote_prefix(interp.current_buffer_id())
                         .is_some();
+                #[cfg(target_os = "macos")]
+                if !remote_watch {
+                    let descriptor =
+                        interp.register_kqueue_file_notify_watch(path, flags, args[2].clone())?;
+                    return Ok(Value::Integer(descriptor));
+                }
+                let descriptor =
+                    FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
                 interp.register_file_notify_watch(
                     descriptor,
                     (!remote_watch).then_some(path),
+                    flags,
                     args[2].clone(),
-                );
+                )?;
                 Ok(Value::Integer(descriptor))
             }
             "kqueue-rm-watch" => {
                 need_args(name, args, 1)?;
-                let descriptor = args[0].as_integer()?;
-                interp.remove_file_notify_watch(descriptor);
-                Ok(Value::Nil)
+                if !interp.remove_file_notify_watch(&args[0]) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("file-notify-error".into()),
+                        Value::String("Not a watch descriptor".into()),
+                        args[0].clone(),
+                    ])));
+                }
+                Ok(Value::T)
             }
             "kqueue-valid-p" => {
                 need_args(name, args, 1)?;
-                let descriptor = args[0].as_integer()?;
-                Ok(if interp.file_notify_watch_is_active(descriptor) {
+                Ok(if interp.file_notify_watch_is_active(&args[0]) {
                     Value::T
                 } else {
                     Value::Nil
@@ -1393,6 +1596,7 @@ define_dispatch!(
                         file_operation_error("Setting file modes", &error, &path)
                     })?;
                 }
+                dispatch_file_notification(interp, env, &path, "attribute-changed")?;
                 Ok(Value::Nil)
             }
             "file-name-all-completions" => {
@@ -1961,6 +2165,15 @@ define_dispatch!(
             "process-tty-name" => {
                 need_arg_range(name, args, 1, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
+                if let Some(stream) = args.get(1).filter(|stream| stream.is_truthy())
+                    && !matches!(stream.as_symbol(), Ok("stdin" | "stdout" | "stderr"))
+                {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String("Unknown stream".into()),
+                        stream.clone(),
+                    ])));
+                }
                 // process.c: the name of the process's terminal, nil for a
                 // pipe.  The stale nil-for-everything answer here made
                 // python.el treat pty processes as pipes and send a
@@ -2074,16 +2287,7 @@ define_dispatch!(
                     Some(Value::Symbol(hint)) if hint == "numeric" => true,
                     _ => return Err(LispError::Signal("Unsupported hints value".into())),
                 };
-                let resolved = if numeric {
-                    host.parse::<std::net::IpAddr>()
-                        .map(|address| vec![std::net::SocketAddr::new(address, 0)])
-                        .map_err(|error| error.to_string())
-                } else {
-                    std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0))
-                        .map(|addresses| addresses.collect::<Vec<_>>())
-                        .map_err(|error| error.to_string())
-                };
-                let addresses = match resolved {
+                let addresses = match network_lookup_addresses(&host, family, numeric) {
                     Ok(addresses) => addresses,
                     Err(error) => {
                         let _ = super::call(
@@ -2095,12 +2299,7 @@ define_dispatch!(
                         return Ok(Value::Nil);
                     }
                 };
-                Ok(Value::list(
-                    addresses
-                        .into_iter()
-                        .filter(|address| family.includes(address.ip()))
-                        .map(sockaddr_vector),
-                ))
+                Ok(Value::list(addresses.into_iter().map(sockaddr_vector)))
             }
             "delete-process" => {
                 need_args(name, args, 1)?;
@@ -2720,8 +2919,20 @@ fn make_process_value(
     env: &mut Env,
     args: &[Value],
 ) -> Result<Value, LispError> {
-    let mut parsed = parse_make_process_args(interp, args)?;
-    if parsed.file_handler {
+    // process.c:Fmake_process returns nil before parsing an empty plist.
+    // For nonempty plists it performs :file-handler dispatch before
+    // validating any other keyword value, so a remote handler owns even
+    // contracts such as `:command nil'.
+    if args.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let file_handler = args
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .find(|pair| matches!(&pair[0], Value::Symbol(key) if key == ":file-handler"))
+        .is_some_and(|pair| pair[1].is_truthy());
+    if file_handler {
         let default_directory = interp
             .lookup_var("default-directory", env)
             .and_then(|value| string_like(&value).map(|string| string.text))
@@ -2735,6 +2946,7 @@ fn make_process_value(
             return interp.call_function_value(handler, None, &handler_args, env);
         }
     }
+    let mut parsed = parse_make_process_args(interp, args)?;
     let inherit_coding_system = parsed.buffer_id.is_some()
         && interp
             .lookup_var("inherit-process-coding-system", env)
@@ -2744,7 +2956,13 @@ fn make_process_value(
     {
         parsed.program = Some(resolve_file_name_in_env(interp, env, program));
     }
-    let runtime = parsed.program.as_ref().map(|command| {
+    // process.c finds the executable before forking; `process-command'
+    // keeps the name the caller gave.
+    let executable = match parsed.program.as_deref() {
+        Some(program) => Some(locate_program_for_exec(interp, env, program, true)?),
+        None => None,
+    };
+    let runtime = executable.as_ref().map(|command| {
         spawn_persistent_process(
             interp,
             command,

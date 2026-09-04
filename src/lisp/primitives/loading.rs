@@ -873,7 +873,24 @@ pub(crate) fn locate_file_internal(
     predicate: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    Ok(locate_file_search(interp, file, path, suffixes, predicate, env)?.0)
+}
+
+/// lread.c openp: search PATH for FILE with SUFFIXES, returning the found
+/// name (or nil) together with the errno openp leaves for its caller's
+/// `report_file_error'.  Only an access-mask predicate tracks errno: the
+/// value starts at ENOENT, an accessible directory records EISDIR, and any
+/// failure other than ENOENT/ENOTDIR replaces it.
+pub(crate) fn locate_file_search(
+    interp: &mut Interpreter,
+    file: &Value,
+    path: &Value,
+    suffixes: &Value,
+    predicate: &Value,
+    env: &mut Env,
+) -> Result<(Value, i32), LispError> {
     let file = string_text(file)?;
+    let mut last_errno = libc::ENOENT;
     let mut path_entries = path.to_vec()?;
     // openp treats an empty search path as one empty element, and an empty
     // element means the dynamically current `default-directory'.
@@ -909,18 +926,33 @@ pub(crate) fn locate_file_internal(
                 expand_file_name_in_env(interp, env, &format!("{file}{suffix}"), Some(&directory));
             let candidate = unquote_local_file_name(&candidate).unwrap_or(candidate);
             let predicate = (!predicate.is_nil()).then_some(predicate);
-            if locate_file_candidate_matches(interp, predicate, &candidate, env)? {
+            let found = match predicate.and_then(locate_file_access_mask) {
+                Some(mask) => match locate_file_access_probe(mask, &candidate) {
+                    Ok(()) => true,
+                    Err(errno) => {
+                        if errno != libc::ENOENT && errno != libc::ENOTDIR {
+                            last_errno = errno;
+                        }
+                        false
+                    }
+                },
+                None => locate_file_candidate_matches(interp, predicate, &candidate, env)?,
+            };
+            if found {
                 // Search the isolated physical tree, but report the same
                 // standard-Lisp source provenance exposed by GNU's build-tree
                 // load path.  Test-owned paths are outside the configured
                 // prefix and remain untouched.
                 let provenance = interp.load_source_provenance_path(Path::new(&candidate));
-                return Ok(Value::String(provenance.display().to_string().into()));
+                return Ok((
+                    Value::String(provenance.display().to_string().into()),
+                    last_errno,
+                ));
             }
         }
     }
 
-    Ok(Value::Nil)
+    Ok((Value::Nil, last_errno))
 }
 
 pub(crate) fn locate_file_candidate_matches(
@@ -976,10 +1008,31 @@ pub(crate) fn locate_file_access_symbol_mask(symbol: &str) -> Option<i64> {
 }
 
 pub(crate) fn locate_file_access_matches(mask: i64, candidate: &str) -> bool {
-    fs::metadata(candidate).is_ok()
-        && (mask & 1 == 0 || file_executable_p(candidate))
-        && (mask & 2 == 0 || file_writable_p(candidate))
-        && (mask & 4 == 0 || file_readable_p(candidate))
+    locate_file_access_probe(mask, candidate).is_ok()
+}
+
+/// openp's access check for a fixnum predicate: `faccessat' with the mask
+/// and AT_EACCESS, then an accessible directory counts as EISDIR rather
+/// than a match.  The error is the errno openp records.
+pub(crate) fn locate_file_access_probe(mask: i64, candidate: &str) -> Result<(), i32> {
+    let Ok(path) = std::ffi::CString::new(candidate) else {
+        return Err(libc::ENOENT);
+    };
+    let Ok(mode) = libc::c_int::try_from(mask) else {
+        return Err(libc::EINVAL);
+    };
+    // SAFETY: `path' is a valid NUL-terminated string for the call's duration.
+    let accessible =
+        unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) } == 0;
+    if !accessible {
+        return Err(std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::ENOENT));
+    }
+    if fs::metadata(candidate).is_ok_and(|metadata| metadata.is_dir()) {
+        return Err(libc::EISDIR);
+    }
+    Ok(())
 }
 
 pub(crate) fn history_args_for_call(

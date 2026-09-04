@@ -225,7 +225,7 @@ pub(crate) fn parse_event_symbol_modifiers(
         modifiers |= EVENT_CLICK_BIT;
     }
 
-    let base = Value::symbol(base);
+    let base = crate::lisp::types::interned_symbol_value(base.to_string());
     let element_mask = Value::list([base.clone(), Value::Integer(modifiers)]);
     let elements =
         Value::list(std::iter::once(base.clone()).chain(event_modifier_elements(modifiers)));
@@ -376,22 +376,35 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
 
 /// keymap.c's Fdefine_key/lookup_key_1 convert each Lucid-style event
 /// description in a key vector through Fevent_convert_list before storing
-/// or traversing, so `[(control meta shift kp-9)]' and `[C-M-S-kp-9]' name
-/// the same binding.  Returns KEY unchanged when no element needs it.
+/// or traversing.  When `symbols-with-pos-enabled' is non-nil, GNU's SYMBOLP
+/// and XSYMBOL also make a positioned event name the same key as its bare
+/// symbol.  Returns KEY unchanged when no element needs conversion.
 pub(crate) fn normalize_lucid_key_events(
     interp: &mut Interpreter,
     key: &Value,
+    env: &Env,
 ) -> Result<Value, LispError> {
     let Ok(events) = vector_items(key) else {
         return Ok(key.clone());
     };
-    if !events.iter().any(lucid_event_type_list_p) {
+    let positions_enabled = symbols_with_pos_enabled(interp, env);
+    if !events.iter().any(|event| {
+        lucid_event_type_list_p(event)
+            || (positions_enabled && symbol_with_pos_parts(interp, event).is_some())
+    }) {
         return Ok(key.clone());
     }
     let mut converted = vec![Value::Symbol("vector-literal".into())];
     for event in events {
-        converted.push(if lucid_event_type_list_p(&event) {
+        let event = if lucid_event_type_list_p(&event) {
             event_convert_list_value(interp, &event)?
+        } else {
+            event
+        };
+        converted.push(if positions_enabled {
+            symbol_with_pos_parts(interp, &event)
+                .map(|(symbol, _)| symbol)
+                .unwrap_or(event)
         } else {
             event
         });

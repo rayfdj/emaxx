@@ -907,8 +907,20 @@ pub(crate) fn try_completion(
     // `set-text-properties' silently rewrite only the caller's environment
     // binding, which bytecode stack slots never see; a shared string gives
     // every holder the same mutable object, like `all-completions' above.
+    let common = completion_common_prefix(&matches, &input, ignore_case);
+    // When case folding finds no extension, GNU preserves the user's exact
+    // spelling ("A" stays "A").  Once completion extends the input it uses
+    // the candidates' canonical case ("AL" becomes "alp").
+    let completed = if ignore_case
+        && common.chars().count() == input.chars().count()
+        && common.eq_ignore_ascii_case(&input)
+    {
+        input
+    } else {
+        common
+    };
     Ok(make_shared_string_value_with_multibyte(
-        completion_common_prefix(&matches, &input, ignore_case),
+        completed,
         Vec::new(),
         false,
     ))
@@ -1180,6 +1192,7 @@ pub(crate) struct ActiveMinibuffer {
     saved_buffer_id: u64,
     saved_selected_window_id: u64,
     saved_selected_window_buffer_id: u64,
+    previous_minibuffer_selected_window_id: Option<u64>,
     previous_runtime: crate::lisp::eval::MinibufferRuntimeState,
 }
 
@@ -1251,15 +1264,29 @@ pub(crate) fn activate_minibuffer(
     let initial_length = initial_string.text.chars().count();
     let saved_windows = interp.snapshot_window_configuration();
     let depth = interp.minibuffer_depth().saturating_add(1);
-    let buffer_id = interp
-        .find_buffer(&format!(" *Minibuf-{depth}*"))
-        .map(|(id, _)| id)
-        .unwrap_or_else(|| interp.create_buffer(&format!(" *Minibuf-{depth}*")).0);
+    let buffer_name = format!(" *Minibuf-{depth}*");
+    let (buffer_id, reused) = interp
+        .find_buffer(&buffer_name)
+        .map(|(id, _)| (id, true))
+        .unwrap_or_else(|| (interp.create_buffer(&buffer_name).0, false));
     let saved_buffer_id = interp.current_buffer_id();
     let saved_selected_window_id = interp.selected_window_id();
     let saved_selected_window_buffer_id = interp.selected_window_buffer_id();
+    let previous_minibuffer_selected_window_id =
+        interp.replace_minibuffer_selected_window_id(Some(saved_selected_window_id));
     let default_directory = interp.lookup_var("default-directory", env);
     interp.clear_buffer_local_state(buffer_id);
+    if reused {
+        // GNU get_minibuffer deletes both overlay trees before reset_buffer.
+        // Reusing a minibuffer without this step leaves completion UI from
+        // the preceding read (for example M-x's Vertico count) attached to
+        // the next Consult prompt.
+        interp
+            .get_buffer_by_id_mut(buffer_id)
+            .expect("reused minibuffer remains live")
+            .overlays
+            .clear();
+    }
     if let Some(default_directory) = default_directory {
         interp.set_buffer_local_value(buffer_id, "default-directory", default_directory);
     }
@@ -1376,12 +1403,14 @@ pub(crate) fn activate_minibuffer(
         saved_buffer_id,
         saved_selected_window_id,
         saved_selected_window_buffer_id,
+        previous_minibuffer_selected_window_id,
         previous_runtime,
     })
 }
 
 pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveMinibuffer) {
     interp.restore_minibuffer_runtime(state.previous_runtime);
+    interp.replace_minibuffer_selected_window_id(state.previous_minibuffer_selected_window_id);
 
     interp.set_selected_window_id(state.saved_selected_window_id);
     if interp.has_buffer_id(state.saved_selected_window_buffer_id) {
@@ -1819,7 +1848,7 @@ fn apply_minibuffer_edit_key(contents: &mut Vec<char>, cursor: &mut usize, ch: c
 /// The history variable a minibuffer read records into: HIST arg shapes
 /// are SYMBOL, (SYMBOL . STARTPOS), nil (the default
 /// `minibuffer-history'), and t (no recording).
-fn history_variable_name(spec: &Value) -> Option<String> {
+pub(crate) fn history_variable_name(spec: &Value) -> Option<String> {
     match spec {
         Value::Nil => Some("minibuffer-history".to_string()),
         Value::Symbol(name) if name == "t" => None,
@@ -1844,7 +1873,12 @@ fn ensure_history_variable_bound(interp: &mut Interpreter, env: &mut Env, variab
 
 /// Record submitted minibuffer input, GNU's add_to_history: skip empty
 /// input and an immediate duplicate, honor `history-length'.
-fn push_minibuffer_history(interp: &mut Interpreter, env: &mut Env, variable: &str, text: &str) {
+pub(crate) fn push_minibuffer_history(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    variable: &str,
+    text: &str,
+) {
     if text.is_empty() {
         return;
     }
@@ -1966,10 +2000,34 @@ pub(crate) fn interactive_minibuffer_command_loop(
         // A command error or an undefined key echoes its message until
         // the next keystroke, GNU's transient echo.
         let mut hold_echo = false;
+        // read_minibuf enters its recursive command loop through the same
+        // initial command-loop boundary as GNU keyboard.c: local
+        // post-command hooks run once before the first input wait.  Vertico
+        // deliberately uses that boundary to compute and display its first
+        // candidate set, before the user presses a key.
+        crate::lisp::primitives::safe_run_named_hooks(
+            interp,
+            "post-command-hook",
+            env,
+            Some(buffer_id),
+        )
+        .unwrap_or(());
         loop {
             if pending.is_empty() {
                 if !hold_echo {
-                    super::set_echo_area_message(Some(interp.buffer.buffer_string()));
+                    let minibuffer_text = interp
+                        .active_minibuffer_buffer_id()
+                        .and_then(|id| {
+                            if id == interp.current_buffer_id() {
+                                Some(interp.buffer.buffer_string())
+                            } else {
+                                interp
+                                    .get_buffer_by_id(id)
+                                    .map(|buffer| buffer.buffer_string())
+                            }
+                        })
+                        .unwrap_or_else(|| interp.buffer.buffer_string());
+                    super::set_echo_area_message(Some(minibuffer_text));
                 }
                 // Window-configuration changes made mid-read (the
                 // completion help pop-up) reach the glass before the next
@@ -1984,7 +2042,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
                 crate::lisp::primitives::KeyResolution::Command(binding) => {
                     let keys = std::mem::take(&mut pending);
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);
-                    match crate::lisp::primitives::execute_command_binding(
+                    match crate::lisp::primitives::execute_recorded_input_command_binding(
                         interp, env, binding, &keys, last_event,
                     ) {
                         Ok(()) => {}

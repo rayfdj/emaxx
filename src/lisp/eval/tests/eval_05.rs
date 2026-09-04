@@ -2986,6 +2986,37 @@ fn keyboard_macro_pre_command_hook_can_preserve_the_previous_prefix() {
 }
 
 #[test]
+fn keyboard_macro_honors_lisp_cursor_rewinds_and_unread_event_precedence() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"(save-window-excursion
+                     (with-temp-buffer
+                       (set-window-buffer (selected-window) (current-buffer))
+                       (let ((map (make-sparse-keymap))
+                             (probed nil))
+                         (define-key map "a"
+                           (lambda ()
+                             (interactive)
+                             (setq unread-command-events (list (read-event)))))
+                         (use-local-map map)
+                         (add-hook 'pre-command-hook
+                           (lambda ()
+                             (unless probed
+                               (setq probed t)
+                               ;; Model a step editor that speculatively reads
+                               ;; input and then rewinds the public macro cursor.
+                               (read-event)
+                               (setq executing-kbd-macro-index 1))))
+                         (execute-kbd-macro "abc")
+                         (list (buffer-string) unread-command-events))))"#,
+            ),
+            Value::list([Value::String("bc".into()), Value::Nil])
+        );
+    });
+}
+
+#[test]
 fn keyboard_macro_prefix_transient_map_falls_through_to_local_binding() {
     assert_eq!(
         eval_str_with_upstream_batch(

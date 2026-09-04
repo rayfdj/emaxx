@@ -294,6 +294,13 @@ fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) ->
     })
 }
 
+fn coding_system_default_char_byte(interp: &Interpreter, coding: &str) -> u8 {
+    coding_system_property(interp, coding, ":default-char")
+        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(b' ')
+}
+
 fn coding_system_requires_bom(interp: &Interpreter, coding: &str) -> bool {
     coding_system_property(interp, coding, ":bom")
         .is_some_and(|value| !value.is_nil() && value.cons_values().is_none())
@@ -417,6 +424,12 @@ fn encode_charset_coding_bytes(
 ) -> Result<Vec<u8>, LispError> {
     let charsets = coding_system_charset_names(interp, coding);
     let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
+    // setup_coding_system takes the codec's default character from its
+    // attributes.  Charset codings do not share one replacement: us-ascii
+    // specifies `?' while iso-latin-1 and the Japanese families default to
+    // SPACE.  Reading the live property also preserves package-defined
+    // charset codings instead of special-casing these builtins.
+    let default_char = coding_system_default_char_byte(interp, coding);
     let mut encoded = Vec::new();
     for character in text.chars() {
         let scalar = raw_byte_from_regex_char(character)
@@ -432,7 +445,7 @@ fn encode_charset_coding_bytes(
         let code = if let Some(code) = code {
             code
         } else if ascii_compatible {
-            encoded.push(b' ');
+            encoded.push(default_char);
             continue;
         } else {
             charsets
@@ -1658,6 +1671,7 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
         "charset" => {
             let charsets = coding_system_charset_names(interp, coding);
             let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
+            let default_char = char::from(coding_system_default_char_byte(interp, coding));
             text.chars()
                 .map(|ch| {
                     let scalar = raw_byte_from_regex_char(ch)
@@ -1670,11 +1684,7 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
                     {
                         ch
                     } else {
-                        // GNU's charset coders use a space as their default
-                        // replacement for an unrepresentable character.  The
-                        // selected coding system remains authoritative; this
-                        // is not an implicit fallback to UTF-8.
-                        ' '
+                        default_char
                     }
                 })
                 .collect()
@@ -1732,6 +1742,7 @@ pub(crate) fn decode_text_bytes(
         "euc-jp" => Ok(decode_euc_jp_bytes(interp, bytes)),
         "sjis" => Ok(decode_sjis_bytes(interp, bytes)),
         "big5" => Ok(decode_big5_bytes(interp, bytes)),
+        "emacs-mule" => Ok(decode_emacs_mule_bytes(interp, bytes)),
         "charset" => Ok(decode_charset_coding_bytes(interp, bytes, &canonical)),
         _ => Ok(decode_raw_text_bytes(bytes)),
     }
@@ -1849,6 +1860,197 @@ pub(crate) fn string_identity_for_coding(
     true
 }
 
+fn detect_sjis_bytes(bytes: &[u8]) -> bool {
+    // coding.c:detect_coding_sjis.  japanese-shift-jis has three charsets,
+    // so its two-byte lead range ends at 0xEF (the wider Shift-JIS-2004
+    // definition uses 0xFC).  Detection must see at least one non-ASCII
+    // sequence, and a lead at end-of-input is rejected in the last block.
+    let mut index = 0;
+    let mut found = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            0x00..=0x7F => index += 1,
+            0x81..=0x9F | 0xE0..=0xEF => {
+                let Some(&trail) = bytes.get(index + 1) else {
+                    return false;
+                };
+                if !(0x40..=0xFC).contains(&trail) || trail == 0x7F {
+                    return false;
+                }
+                found = true;
+                index += 2;
+            }
+            0xA0..=0xDF => {
+                found = true;
+                index += 1;
+            }
+            _ => return false,
+        }
+    }
+    found
+}
+
+struct EmacsMuleLayout {
+    lengths: [usize; 256],
+    charsets: Vec<Option<String>>,
+}
+
+fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
+    // charset.c keeps these two tables in lockstep with `define-charset'.
+    // The Lisp table is the exact last-definition-wins charset map; deriving
+    // lengths from its live entries also honors packages which add charsets.
+    let mut lengths = [1_usize; 256];
+    lengths[0x9A] = 3;
+    lengths[0x9B] = 3;
+    lengths[0x9C] = 4;
+    lengths[0x9D] = 4;
+    let mut charsets = vec![None; 256];
+    if let Some(table) = interp.lookup_var("emacs-mule-charset-table", &Vec::new())
+        && let Ok(entries) = vector_items(&table)
+    {
+        for (id, entry) in entries.into_iter().take(256).enumerate() {
+            let Ok(charset) = entry.as_symbol() else {
+                continue;
+            };
+            let Some(dimension) = charset_plist_property(interp, charset, ":dimension")
+                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| usize::try_from(value).ok())
+            else {
+                continue;
+            };
+            charsets[id] = Some(charset.to_string());
+            lengths[id] = dimension + usize::from(id >= 0xA0) + 1;
+        }
+    }
+    EmacsMuleLayout { lengths, charsets }
+}
+
+fn latin1_detector_accepts(interp: &Interpreter, bytes: &[u8]) -> bool {
+    // coding.c:detect_coding_charset rejects C1 bytes for iso-latin-1 unless
+    // their slot in the mutable `latin-extra-code-table' is non-nil.  The
+    // dumped GNU image enables 0x91..0x96, so hard-coding the whole C1 range
+    // as invalid incorrectly lets Shift-JIS steal those byte streams.
+    let extras = interp
+        .lookup_var("latin-extra-code-table", &Vec::new())
+        .and_then(|table| vector_items(&table).ok());
+    bytes.iter().all(|byte| {
+        !(0x80..=0x9F).contains(byte)
+            || extras
+                .as_ref()
+                .and_then(|table| table.get(usize::from(*byte)))
+                .is_some_and(Value::is_truthy)
+    })
+}
+
+fn detect_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> bool {
+    // Emacs-Mule precedes Shift-JIS in the default category priority.  Port
+    // the overlapping part of coding.c:detect_coding_emacs_mule so a valid
+    // Emacs-Mule byte stream is not stolen by the SJIS detector.  The 0x80
+    // composition form cannot itself be valid SJIS, so it remains outside
+    // this deliberately bounded overlap detector.
+    let layout = emacs_mule_layout(interp);
+
+    let mut index = 0;
+    let mut found = false;
+    while index < bytes.len() {
+        let lead = bytes[index];
+        index += 1;
+        if lead < 0x80 {
+            if matches!(lead, 0x0E | 0x0F | 0x1B) {
+                return false;
+            }
+            continue;
+        }
+        if lead == 0x80 {
+            return false;
+        }
+        let following = layout.lengths[usize::from(lead)].saturating_sub(1);
+        let Some(end) = index
+            .checked_add(following)
+            .filter(|end| *end <= bytes.len())
+        else {
+            return false;
+        };
+        if bytes[index..end].iter().any(|byte| *byte < 0xA0) {
+            return false;
+        }
+        found = true;
+        index = end;
+    }
+    found
+}
+
+pub(crate) fn decode_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> String {
+    // coding.c:emacs_mule_char.  Invalid or unmappable sequences are retried
+    // from the next byte, which preserves each offending byte as GNU's
+    // eight-bit character instead of consuming a superficially valid run.
+    let layout = emacs_mule_layout(interp);
+    let mut out = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let lead = bytes[index];
+        if lead < 0x80 {
+            out.push(char::from(lead));
+            index += 1;
+            continue;
+        }
+
+        let decoded = match lead {
+            0x9A | 0x9B => bytes
+                .get(index + 1..index + 3)
+                .filter(|tail| tail[0] >= 0xA0 && tail[1] >= 0xA0)
+                .and_then(|tail| {
+                    layout.charsets[usize::from(tail[0])]
+                        .as_deref()
+                        .map(|charset| (charset, tail))
+                })
+                .and_then(|(charset, tail)| {
+                    decode_charset_code(interp, charset, u32::from(tail[1] & 0x7F))
+                })
+                .and_then(char::from_u32)
+                .map(|character| (character, 3)),
+            0x9C | 0x9D => bytes
+                .get(index + 1..index + 4)
+                .filter(|tail| tail[1] >= 0xA0 && tail[2] >= 0xA0)
+                .and_then(|tail| {
+                    layout.charsets[usize::from(tail[0])]
+                        .as_deref()
+                        .map(|charset| (charset, tail))
+                })
+                .and_then(|(charset, tail)| {
+                    let code = u32::from(tail[1] & 0x7F) << 8 | u32::from(tail[2] & 0x7F);
+                    decode_charset_code(interp, charset, code)
+                })
+                .and_then(char::from_u32)
+                .map(|character| (character, 4)),
+            _ if lead < 0xA0 && layout.lengths[usize::from(lead)] > 1 => {
+                let length = layout.lengths[usize::from(lead)];
+                bytes
+                    .get(index + 1..index + length)
+                    .filter(|tail| tail.iter().all(|byte| *byte >= 0xA0))
+                    .and_then(|tail| {
+                        let charset = layout.charsets[usize::from(lead)].as_deref()?;
+                        let code = tail
+                            .iter()
+                            .fold(0_u32, |code, byte| code << 8 | u32::from(byte & 0x7F));
+                        decode_charset_code(interp, charset, code)
+                    })
+                    .and_then(char::from_u32)
+                    .map(|character| (character, length))
+            }
+            _ => None,
+        };
+        if let Some((character, consumed)) = decoded {
+            out.push(character);
+            index += consumed;
+        } else {
+            out.push(raw_byte_regex_char(lead));
+            index += 1;
+        }
+    }
+    out
+}
+
 pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
     // None when no eol byte exists: the name then stays the bare base,
     // which is what GNU records in last-coding-system-used and what lets
@@ -1902,15 +2104,26 @@ pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String,
         }
         return (coding_variant_name(interp, "utf-8", actual_eol), normalized);
     }
-    // Non-UTF-8 8-bit data without a null byte: GNU's detector falls to
-    // the highest-priority charset coding, iso-latin-1 under the harness's
-    // LANG=C environment -- every byte decodes (mojibake, not raw bytes).
-    // A byte in 0x80..=0x9F is a C1 control, which no ISO 8859 text uses:
-    // its presence rejects the latin-1 category and the read stays
-    // raw-text (the oracle: (97 255) is latin-1, (97 129) is raw-text,
-    // and a stray valid UTF-8 sequence like C3 80 forces raw-text through
-    // its 0x80 continuation byte).
+    // Non-UTF-8 8-bit data without a null byte: try the same relevant default
+    // category order as coding.c -- iso-latin-1, Emacs-Mule, then Shift-JIS.
+    // The mutable Latin-extra table and the live Emacs-Mule charset table are
+    // both part of detection; byte-range shortcuts are not equivalent.
     if bomless.iter().any(|byte| (0x80..=0x9F).contains(byte)) {
+        if latin1_detector_accepts(interp, bomless) {
+            return (
+                coding_variant_name(interp, "iso-latin-1", actual_eol),
+                normalized,
+            );
+        }
+        if detect_emacs_mule_bytes(interp, bomless) {
+            return (
+                coding_variant_name(interp, "emacs-mule", actual_eol),
+                normalized,
+            );
+        }
+        if detect_sjis_bytes(bomless) {
+            return (coding_variant_name(interp, "sjis", actual_eol), normalized);
+        }
         return (
             coding_variant_name(interp, "raw-text", actual_eol),
             normalized,

@@ -1066,26 +1066,22 @@ impl Interpreter {
             }
             if let Some(environment) = frame.lisp_environment().cloned() {
                 let frame_id = Self::frame_identity(frame);
-                let captured = frame.is_captured();
                 let stored = Self::stored_value(value.clone());
                 if set_lisp_environment_binding_checked(&environment, name, stored.clone())? {
                     if let Some(frame_id) = frame_id {
-                        self.record_lexical_cell_update_if_captured(
-                            frame_id, name, &stored, captured,
-                        );
+                        self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
                     }
                     return Ok(true);
                 }
                 continue;
             }
             let frame_id = Self::frame_identity(frame);
-            let captured = frame.is_captured();
             if let Some(binding_index) = frame.iter().rposition(|(key, _)| key == name) {
                 let stored = Self::stored_value(value);
                 frame[binding_index].1 = stored.clone();
                 if let Some(frame_id) = frame_id {
                     frame.update_canonical_lisp_binding(name, stored.clone());
-                    self.record_lexical_cell_update_if_captured(frame_id, name, &stored, captured);
+                    self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
                 }
                 return Ok(true);
             }

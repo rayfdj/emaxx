@@ -50,6 +50,52 @@ Use this when:
 - You want the fastest feedback loop
 - You are working on one subsystem and want targeted regressions
 
+### Experimental resource-grouped gate
+
+The full library suite contains two very different costs: lightweight Rust
+tests and tests that reconstruct or consume the complete GNU Lisp image.  The
+experimental grouped runner reuses a validated image only inside isolated,
+single-threaded worker processes and runs at most two measured-safe workers at
+once:
+
+```bash
+python3 tools/grouped_gate.py --scope full
+```
+
+Its current resource schedule is deliberately fixed:
+
+| Phase | Concurrency | Image policy |
+|---|---:|---|
+| `eval_01` + `eval_02` | 2 processes | one cached image per serial process |
+| `eval_03` + `eval_04` | 2 processes | one cached image per serial process |
+| `eval_05` | exclusive | cached; Eshell/process timing cluster isolated |
+| primitives | exclusive | cached; oracle/network/process tests isolated |
+| compat-runtime + TTY unit tests | 2 processes | one cached image per serial process |
+| batch reconstruction | one process, 2 test threads | fresh images; construction is the subject |
+| lightweight remainder | one process, 2 test threads | no image template |
+
+The runner builds the test binary first, discovers that exact binary's test
+inventory, and proves that every selected name occurs in exactly one group.
+Each group must report the expected outcome count and complementary
+`filtered out` count.  New `eval_*` modules are rejected until explicitly
+classified.  There are no retries, accepted failures, or additional ignores.
+The runner discovers ignored names separately and rejects any name outside the
+four reviewed, pre-existing opt-outs; removing an opt-out remains allowed.
+For `--scope full`, binary and integration-test targets are discovered from
+Cargo metadata rather than maintained as a list, and every target must emit
+one successful test result.  Adding a new test binary therefore cannot
+silently leave it outside the gate.
+Per-group logs, timings, test-binary hash, inventory hash, Git state, and a
+machine-readable summary are written under `target/grouped-gate/`.
+The runner pins the gate locale, stack size, and two-thread ceiling instead of
+inheriting a caller's potentially unsafe test-thread override.
+
+Use `--scope eval --repetitions 3` to stress only the five eval groups, or
+`--scope lib` to omit the binary and integration stages.  Until repeated
+grouped runs and a complete conventional gate agree on the same tree, treat
+this as an experimental accelerator rather than replacing the authoritative
+gate.
+
 ## 2. Smoke Integration Tests
 
 Run:
@@ -143,6 +189,11 @@ Both sides are invoked with near-matching batch-style commands and upstream-like
 ### Pin The Oracle
 
 First pin the Emacs binary and source tree you want to compare against:
+
+Before building or repinning it, follow the platform capability matrix and
+finished-binary probe in [the oracle build contract](oracle-build-contract.md).
+The source revision alone does not identify an oracle: optional libraries can
+change executed tests into skips and change the native primitive inventory.
 
 ```bash
 cargo run --bin compat-harness -- oracle pin --emacs /path/to/emacs --repo ../emacs
@@ -293,6 +344,21 @@ The supported pass-through environment knobs are:
 
 ## Recommended Workflow
 
+The built-in minibuffer and completion contract combines 113 exact upstream
+GNU Emacs 30.2 outcome comparisons with six strict interactive TTY journeys
+covering defaults/history, require-match recovery, metadata and annotations,
+the `*Completions*` window, completion preview/CAPF, recursive reads, and
+keyboard macros.  See
+[`docs/minibuffer-completion-compatibility.md`](minibuffer-completion-compatibility.md)
+for the commands, permanent scenario inventory, anti-cheat boundary, and
+scope.
+
+The deterministic network contract combines the complete upstream JSON-RPC,
+GnuTLS, network-stream, and JSON suites with a real one-shot localhost HTTP
+retrieval and the existing Eglot/lsp-mode application journeys.  See
+[`docs/network-compatibility.md`](network-compatibility.md) for the exact
+commands, outcome counts, rejected evidence, and public-network boundary.
+
 The built-in Eglot contract has its own permanent upstream outcome inventory,
 deterministic JSON-RPC server, and strict interactive TTY journeys.  See
 [`docs/eglot-compatibility.md`](eglot-compatibility.md) for the exact oracle,
@@ -304,6 +370,23 @@ checks the installed origins and compiled inventory, and then runs strict TTY
 journeys against deterministic Git repositories.  See
 [`docs/magit-compatibility.md`](magit-compatibility.md) for the exact command,
 scenario inventory, determinism boundary, and anti-cheat evidence.
+
+The third-party Eat contract installs the hash-pinned 0.9.4 release through
+real `package.el`, restarts both editors into separate clean package trees,
+runs all 57 unedited upstream tests from installed bytecode, and compares
+structured records from real PTY children covering input, resize, cursor and
+color state, alternate screen, scrollback, EOF, signals, exit, and cleanup.
+See [`docs/eat-compatibility.md`](eat-compatibility.md) for the artifact hashes,
+exact command, process inventory, and scope boundary.
+
+The third-party Vertico/Consult/Corfu contract installs hash-pinned releases
+and their exact dependency closure through `package.el`, verifies 41 compiled
+files and installed-bytecode origins after clean restarts, and exercises strict
+Vertico selection, Consult line/real-grep preview, and Corfu Terminal CAPF
+journeys.  See
+[`docs/completion-stack-compatibility.md`](completion-stack-compatibility.md)
+for the artifact/source hashes, Emacs 30.2 terminal boundary, exact command,
+and scope.
 
 The third-party lsp-mode contract likewise installs a hash-pinned release and
 dependency closure through `package.el`, verifies the exact compiled payload

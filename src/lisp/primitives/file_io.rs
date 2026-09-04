@@ -254,20 +254,50 @@ pub(crate) fn file_operation_error_value(
     error: &std::io::Error,
     path: &str,
 ) -> Value {
-    let condition = match error.kind() {
+    Value::list([
+        Value::Symbol(file_error_condition(error).into()),
+        Value::String(message.into()),
+        Value::String(errno_text(error).into()),
+        Value::String(path.into()),
+    ])
+}
+
+/// fileio.c report_file_errno: EEXIST, ENOENT/ENOTDIR and EACCES have their
+/// own conditions; every other errno is a plain `file-error'.
+pub(crate) fn file_error_condition(error: &std::io::Error) -> &'static str {
+    match error.kind() {
         ErrorKind::NotFound => "file-missing",
         ErrorKind::AlreadyExists => "file-already-exists",
+        _ if error.raw_os_error() == Some(libc::EACCES) => "permission-denied",
         _ => "file-error",
-    };
+    }
+}
+
+/// The `strerror' text of an `io::Error', without Rust's "(os error N)".
+pub(crate) fn errno_text(error: &std::io::Error) -> String {
     let rendered = error.to_string();
-    let detail = rendered
+    rendered
         .split_once(" (os error")
-        .map_or(rendered.as_str(), |(detail, _)| detail);
+        .map_or(rendered.as_str(), |(detail, _)| detail)
+        .to_string()
+}
+
+/// `report_file_errno' with an explicit errno, for callers such as openp
+/// that carry the number rather than an `io::Error'.
+pub(crate) fn file_errno_error_value(message: &str, errno: i32, path: &str) -> Value {
+    file_operation_error_value(message, &std::io::Error::from_raw_os_error(errno), path)
+}
+
+/// `report_file_errno (MESSAGE, Qnil, errno)': the data names no file, so it
+/// is just the message and the errno text.
+pub(crate) fn file_operation_error_value_without_file(
+    message: &str,
+    error: &std::io::Error,
+) -> Value {
     Value::list([
-        Value::Symbol(condition.into()),
+        Value::Symbol(file_error_condition(error).into()),
         Value::String(message.into()),
-        Value::String(detail.into()),
-        Value::String(path.into()),
+        Value::String(errno_text(error).into()),
     ])
 }
 
@@ -521,6 +551,7 @@ pub(crate) fn write_region_value_with_logical_path(
     let requested_path = string_text(&args[2])?;
     let path = resolve_file_name_in_env(interp, env, &requested_path);
     validate_file_name(&path)?;
+    let existed_before_write = fs::symlink_metadata(&path).is_ok();
     let (text, source_multibyte) = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
         (interp.buffer.buffer_string(), interp.buffer.is_multibyte())
     } else if string_like(&args[0]).is_some() {
@@ -637,7 +668,21 @@ pub(crate) fn write_region_value_with_logical_path(
         (Ok(()), Ok(())) => {}
     }
     set_last_coding_system_used(interp, &coding, env);
-    dispatch_file_notification(interp, env, &path, "changed")?;
+    if !existed_before_write {
+        dispatch_file_notification(interp, env, &path, "created")?;
+    }
+    // Creating an empty file changes the directory but writes no file data;
+    // kqueue therefore exposes CREATE without WRITE for that transition.
+    if existed_before_write || !bytes.is_empty() {
+        dispatch_file_notification(interp, env, &path, "changed")?;
+    }
+    // Darwin kqueue reports the metadata transition caused by replacing the
+    // file contents separately from the write readiness flag.  Watches that
+    // did not request attribute changes filter this event at the backend.
+    #[cfg(target_os = "macos")]
+    if existed_before_write || !bytes.is_empty() {
+        dispatch_file_notification(interp, env, &path, "attribute-changed")?;
+    }
     if let Some(visit) = args.get(4)
         && (matches!(visit, Value::T) || string_like(visit).is_some())
     {

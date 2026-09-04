@@ -162,7 +162,10 @@ fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
     );
 }
 
-fn sync_kbd_macro_execution(interp: &mut Interpreter, env: &Env) -> Result<(), LispError> {
+pub(crate) fn sync_kbd_macro_execution(
+    interp: &mut Interpreter,
+    env: &Env,
+) -> Result<(), LispError> {
     if interp.kbd_macro_executions.is_empty() {
         return Ok(());
     }
@@ -699,7 +702,19 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             return Ok(());
         }
         sync_kbd_macro_execution(interp, env)?;
-        let Some(mut event) = current_kbd_macro_event(interp, 0) else {
+        // read_char can push a non-digit terminator back onto
+        // `unread-command-events' while rewinding the public macro cursor.
+        // GNU's next command-loop read consumes that unread event before it
+        // returns to the same event in the keyboard macro.
+        let mut unread = crate::lisp::primitives::unread_command_events(interp, env)?;
+        let next_event = if unread.is_empty() {
+            current_kbd_macro_event(interp, 0).map(|event| (event, true))
+        } else {
+            let event = unread.remove(0);
+            interp.set_variable("unread-command-events", Value::list(unread), env);
+            Some((event, false))
+        };
+        let Some((mut event, from_macro)) = next_event else {
             // read_key_sequence increments this counter before reporting the
             // end of a keyboard macro to the command loop.
             increment_num_input_keys(interp, env);
@@ -750,11 +765,15 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         let binding = key_binding(interp, &binding_key, false, false, env)?;
         if is_keymap_value(interp, &binding) || key_sequence_is_prefix(interp, &binding_key, env)? {
             load_autoloaded_prefix_map(interp, &binding, env)?;
-            advance_kbd_macro_index(interp, 1, env);
+            if from_macro {
+                advance_kbd_macro_index(interp, 1, env);
+            }
             continue;
         }
         if !binding.is_nil() {
-            advance_kbd_macro_index(interp, 1, env);
+            if from_macro {
+                advance_kbd_macro_index(interp, 1, env);
+            }
             execute_kbd_macro_command(interp, &binding, &pending_events, env)?;
             pending_keys.clear();
             pending_events.clear();
@@ -763,7 +782,9 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         if pending_keys.len() == 1
             && let Some(text) = keyboard_macro_self_insert_text(&event)
         {
-            advance_kbd_macro_index(interp, 1, env);
+            if from_macro {
+                advance_kbd_macro_index(interp, 1, env);
+            }
             execute_kbd_macro_self_insert(interp, &text, &event, env)?;
             pending_keys.clear();
             pending_events.clear();
@@ -771,7 +792,9 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         }
         pending_keys.clear();
         pending_events.clear();
-        advance_kbd_macro_index(interp, 1, env);
+        if from_macro {
+            advance_kbd_macro_index(interp, 1, env);
+        }
         increment_num_input_keys(interp, env);
         set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
         interp.set_variable("last-command-event", event.clone(), env);
@@ -836,8 +859,8 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
         // timer.el owns GNU timer objects in `timer-list'; the native queue
         // remains the bootstrap path, so a real command-loop pump must drain
         // both representations just like the other event-waiting paths.
-        .and_then(|()| interp.run_pending_file_notifications(env))
-        .and_then(|()| interp.run_pending_timer_events(env));
+        .and_then(|()| interp.service_file_notifications(env).map(|_| ()))
+        .and_then(|()| interp.run_pending_timer_events(env).map(|_| ()));
     interp.pop_handler_bindings(handler_start);
     interp.command_loop_recursion_depth -= 1;
     match result {
@@ -2120,7 +2143,7 @@ define_dispatch!(
                     }
                     let previous_wait = interp.set_waiting_for_user_input(true);
                     let wait_result =
-                        wait_pumping_processes(interp, env, Some(timeout), false, None);
+                        wait_pumping_processes(interp, env, Some(timeout), false, None, None, true);
                     interp.set_waiting_for_user_input(previous_wait);
                     wait_result?;
                     if !interaction_allowed(interp, env) {
@@ -2228,6 +2251,26 @@ define_dispatch!(
                                 Some((head, _)) => head,
                                 None => default.clone(),
                             };
+                            // In a live interactive read GNU records the
+                            // accepted default, not the empty text that RET
+                            // submitted.  Batch/macro-only reads retain the
+                            // noninteractive contract and leave history
+                            // unchanged.
+                            let history = args.get(2).cloned().unwrap_or(Value::Nil);
+                            if crate::lisp::primitives::has_tty_event_reader()
+                                && interp
+                                    .lookup_var("noninteractive", env)
+                                    .is_some_and(|value| value.is_nil())
+                                && let Some(text) = string_like(&default).map(|text| text.text)
+                                && let Some(variable) =
+                                    crate::lisp::primitives::completion::history_variable_name(
+                                        &history,
+                                    )
+                            {
+                                crate::lisp::primitives::completion::push_minibuffer_history(
+                                    interp, env, &variable, &text,
+                                );
+                            }
                             return Ok(default);
                         }
                     }

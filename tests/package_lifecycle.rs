@@ -1008,8 +1008,18 @@ fn local_package_vc_upgrade_matches_gnu_and_survives_restart() {
         format!(
             "(let ((desc (cadr (assq 'journey-vc package-alist))))\n\
                (package-vc-upgrade desc)\n\
-               (while (seq-some #'process-live-p (process-list))\n\
-                 (accept-process-output nil 0.05)))\n\
+               ;; GNU runs package-vc--unpack-1 from a VC post-command hook.\n\
+               ;; A Git process can become non-live before that hook replaces\n\
+               ;; package-alist and recompiles the checked-out source, so wait\n\
+               ;; for the semantic upgrade result rather than process status.\n\
+               (let ((deadline (+ (float-time) 60.0)))\n\
+                 (while (and (< (float-time) deadline)\n\
+                             (let ((current\n\
+                                    (cadr (assq 'journey-vc package-alist))))\n\
+                               (not (and current\n\
+                                         (equal (package-desc-version current)\n\
+                                                '(2 0))))))\n\
+                   (accept-process-output nil 0.05))))\n\
              (require 'journey-vc)\n\
              (let* ((desc (cadr (assq 'journey-vc package-alist)))\n\
                     (main (expand-file-name \"journey-vc.el\"\n\

@@ -1581,7 +1581,7 @@ fn make_temp_name_preserves_prefix_and_changes_across_calls() {
 #[test]
 fn temporary_file_directory_names_a_directory_with_trailing_separator() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(list (string-suffix-p "/" temporary-file-directory)
                      (equal temporary-file-directory
                             (file-name-as-directory temporary-file-directory)))"#
@@ -3288,9 +3288,11 @@ fn file_name_handlers_honor_precedence_operations_and_inhibition() {
 
 #[test]
 fn file_name_handler_match_cache_reuses_stable_scans() {
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     crate::lisp::primitives::reset_file_name_handler_scan_count();
     assert_eq!(
-        eval_str(
+        eval_str_with(
+            &mut interp,
             r#"(let ((file-name-handler-alist
                       '(("cache-target" . emaxx-cache-handler))))
                  (list (find-file-name-handler
@@ -3831,6 +3833,66 @@ fn make_process_file_handler_uses_the_registered_gnu_dispatch_route() {
 }
 
 #[test]
+fn make_process_delegates_before_command_validation_and_empty_call_returns_nil() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defalias
+                  'process-handler
+                  #'(lambda (operation &rest arguments)
+                      (list operation arguments)))
+                 (let ((default-directory "/sample:host:/tmp/")
+                       (file-name-handler-alist
+                        '(("\\`/sample:" . process-handler))))
+                   (list
+                    (make-process)
+                    (make-process :name "sample"
+                                  :command nil
+                                  :file-handler t))))"#,
+        ),
+        Value::list([
+            Value::Nil,
+            Value::list([
+                Value::symbol("make-process"),
+                Value::list([
+                    Value::symbol(":name"),
+                    Value::String("sample".into()),
+                    Value::symbol(":command"),
+                    Value::Nil,
+                    Value::symbol(":file-handler"),
+                    Value::T,
+                ]),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn system_process_queries_use_remote_default_directory_handlers_like_emacs() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defalias
+                  'process-query-handler
+                  #'(lambda (operation &rest arguments)
+                      (list operation arguments)))
+                 (let ((default-directory "/sample:host:/tmp/")
+                       (file-name-handler-alist
+                        '(("\\`/sample:" . process-query-handler))))
+                   (list (list-system-processes)
+                         (process-attributes 42))))"#,
+        ),
+        Value::list([
+            Value::list([Value::symbol("list-system-processes"), Value::Nil,]),
+            Value::list([
+                Value::symbol("process-attributes"),
+                Value::list([Value::Integer(42)]),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn lexical_file_name_operations_ignore_a_remote_default_directory() {
     assert_eq!(
         eval_str(
@@ -4239,8 +4301,10 @@ fn native_minibuffer_completion_session_state_is_bound_and_special() {
 
 #[test]
 fn evaluator_debugger_policy_is_bound_and_dynamic_across_function_calls() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
-        eval_str(
+        eval_str_with(
+            &mut interp,
             r#"(progn
                  (defun emaxx-test-active-debugger-policy ()
                    (list debugger debug-on-error debug-on-quit debug-on-signal
@@ -4612,6 +4676,128 @@ fn evaluator_dispatches_positioned_callees_only_while_enabled() {
             Value::T,
             Value::T,
             Value::Symbol("invalid-function".into()),
+        ])
+    );
+}
+
+#[test]
+fn evaluator_handles_every_bare_symbol_variant_inside_positioned_symbols() {
+    // GNU eval.c evaluates a symbol-with-position through its underlying
+    // symbol, including the dedicated nil/t representations and keywords.
+    // Byte compilation routinely evaluates positioned `t' forms.
+    assert_eq!(
+        eval_str(
+            "(progn
+               (setq positioned-eval-probe 42)
+               (let* ((symbols-with-pos-enabled t)
+                      (truth (read-positioning-symbols \"t\"))
+                      (nothing (position-symbol nil 1))
+                      (keyword (read-positioning-symbols \":eat-key\"))
+                      (ordinary
+                       (read-positioning-symbols \"positioned-eval-probe\"))
+                      (void
+                       (read-positioning-symbols \"positioned-eval-void\")))
+                 (list
+                  (eval truth t)
+                  (eval nothing t)
+                  (eval keyword t)
+                  (eval ordinary t)
+                  (condition-case error
+                      (eval void t)
+                    (void-variable (eq (cadr error) void)))
+                  (let ((symbols-with-pos-enabled nil))
+                    (eq (eval truth t) truth)))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Symbol(":eat-key".into()),
+            Value::Integer(42),
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn equal_hash_tables_match_positioned_and_bare_keys_while_enabled() {
+    // GNU's byte compiler builds pcase jump tables from positioned source
+    // forms, then replaces TAG values through equivalent bare keys.  The
+    // dynamic `equal' contract must prevent duplicate table entries.
+    assert_eq!(
+        eval_str(
+            "(let* ((symbols-with-pos-enabled t)
+                    (positioned (read-positioning-symbols \"(read-esc)\"))
+                    (table (make-hash-table :test 'equal)))
+               (puthash positioned '(TAG 207 . 3) table)
+               (puthash '(read-esc) 207 table)
+               (let ((copy (copy-hash-table table)))
+                 (list
+                  (hash-table-count table)
+                  (gethash positioned table 'missing)
+                  (gethash '(read-esc) table 'missing)
+                  (let ((symbols-with-pos-enabled nil))
+                    (list (gethash positioned table 'missing)
+                          (gethash '(read-esc) table 'missing)
+                          (gethash positioned copy 'missing)
+                          (gethash '(read-esc) copy 'missing)))
+                  (gethash '(read-esc) copy 'missing))))"
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(207),
+            Value::Integer(207),
+            Value::list([
+                Value::Symbol("missing".into()),
+                Value::Symbol("missing".into()),
+                Value::Symbol("missing".into()),
+                Value::Symbol("missing".into()),
+            ]),
+            Value::Integer(207),
+        ])
+    );
+}
+
+#[test]
+fn define_key_populates_symbolic_event_parse_caches() {
+    // GNU keymap.c parses every symbolic vector event during define-key.
+    // subr.el's event-basic-type deliberately reads that populated cache.
+    // SYMBOLP includes nil, t, and an enabled symbol-with-position in GNU.
+    assert_eq!(
+        eval_str(
+            "(let ((map (make-sparse-keymap))
+                   (positioned
+                    (let ((symbols-with-pos-enabled t))
+                      (read-positioning-symbols \"mouse-1\"))))
+               (put 'mouse-1 'event-symbol-element-mask nil)
+               (put 'mouse-1 'event-symbol-elements nil)
+               (put nil 'event-symbol-element-mask nil)
+               (put nil 'event-symbol-elements nil)
+               (put t 'event-symbol-element-mask nil)
+               (put t 'event-symbol-elements nil)
+               (define-key map [nil] 'ignore)
+               (define-key map [t] 'ignore)
+               (let ((symbols-with-pos-enabled t))
+                 (define-key map (vector positioned) 'ignore)
+                 (setq positioned-lookup
+                       (eq (lookup-key map (vector positioned)) 'ignore)))
+               (list (event-basic-type '(mouse-1 nil))
+                     (event-modifiers '(mouse-1 nil))
+                     (get 'mouse-1 'event-symbol-elements)
+                     (get nil 'event-symbol-elements)
+                     (get t 'event-symbol-elements)
+                     positioned-lookup))"
+        ),
+        Value::list([
+            Value::Symbol("mouse-1".into()),
+            Value::list([Value::Symbol("click".into())]),
+            Value::list([
+                Value::Symbol("mouse-1".into()),
+                Value::Symbol("click".into()),
+            ]),
+            Value::list([Value::Nil]),
+            Value::list([Value::T]),
+            Value::T,
         ])
     );
 }

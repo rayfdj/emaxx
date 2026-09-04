@@ -69,6 +69,7 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
 pub(crate) enum PrintRefKey {
     Cons(usize),
     Vector(usize),
+    Lambda(usize),
     Record(u64),
     StringObject(usize),
     Symbol(String),
@@ -117,10 +118,18 @@ impl PrintContext {
         let number_table = interp
             .lookup_var("print-number-table", env)
             .filter(|value| json::is_hash_table(interp, value));
-        let (mut labels, mut next_label) = if options.circle && options.continuous_numbering {
+        let mut labels = if options.circle && options.continuous_numbering {
             parse_print_number_table(interp, number_table.as_ref(), options)
         } else {
-            (HashMap::new(), 1)
+            HashMap::new()
+        };
+        // print.c's `print_number_index' is independent of the public hash
+        // table.  In particular, `print--preprocess' can advance the counter
+        // in a temporary dynamic binding before a nested printer reuses it.
+        let mut next_label = if options.continuous_numbering {
+            interp.print_number_index.saturating_add(1)
+        } else {
+            1
         };
         let mut counts = HashMap::new();
         if options.circle {
@@ -219,6 +228,7 @@ pub(crate) fn print_ref_key(
         // strings still have Lisp identity: cloning SharedText preserves its
         // Rc allocation, so repeated occurrences must receive one #N label.
         Value::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
+        Value::Lambda(lambda) => Some(PrintRefKey::Lambda(std::rc::Rc::as_ptr(lambda) as usize)),
         Value::StringObject(state) => Some(PrintRefKey::StringObject(Rc::as_ptr(state) as usize)),
         Value::Symbol(symbol)
             if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
@@ -251,12 +261,12 @@ fn parse_print_number_table(
     interp: &Interpreter,
     value: Option<&Value>,
     options: PrintOptions,
-) -> (HashMap<PrintRefKey, PrintLabel>, usize) {
+) -> HashMap<PrintRefKey, PrintLabel> {
     let Some(value) = value else {
-        return (HashMap::new(), 1);
+        return HashMap::new();
     };
     let Some((_, entries)) = json::hash_table_entries(interp, value) else {
-        return (HashMap::new(), 1);
+        return HashMap::new();
     };
 
     let mut labels = HashMap::new();
@@ -284,8 +294,7 @@ fn parse_print_number_table(
         );
     }
 
-    let next_label = labels.values().map(|label| label.number).max().unwrap_or(0) + 1;
-    (labels, next_label)
+    labels
 }
 
 pub(crate) fn set_env_binding(env: &mut Env, name: &str, value: Value) {
@@ -414,6 +423,14 @@ fn walk_print_graph(
                     }
                 }
             }
+            Value::Lambda(lambda) => {
+                pending.extend(
+                    interp
+                        .interpreted_closure_print_slots(lambda)
+                        .into_iter()
+                        .rev(),
+                );
+            }
             _ => {}
         }
     }
@@ -431,6 +448,10 @@ pub(crate) fn print_preprocess(
     {
         return Ok(Value::Nil);
     }
+
+    // Fprint_preprocess resets the process-local counter on every call,
+    // independently of `print-number-table'.
+    interp.print_number_index = 0;
 
     let table = match interp.lookup_var("print-number-table", env) {
         Some(existing) if json::is_hash_table(interp, &existing) => existing,
@@ -485,6 +506,7 @@ pub(crate) fn print_preprocess(
     })?;
 
     set_hash_table_entries(interp, &table, entries)?;
+    interp.print_number_index = usize::try_from(number_index).unwrap_or(usize::MAX);
     Ok(Value::Nil)
 }
 
@@ -1100,33 +1122,25 @@ pub(crate) fn render_prin1_body(
         }
         Value::Cons(_) => render_prin1_list(interp, value, env, context, depth),
         Value::Lambda(lambda_value) => {
-            let params = &lambda_value.params;
-            let body = &lambda_value.body;
-            let closure_env = &lambda_value.env;
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
-            let captured = closure_env.borrow().clone();
-            let prints_closure_env = body.len() > 1
-                && matches!(
-                    body.first(),
-                    Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
-                );
-            if captured.is_empty() || !prints_closure_env {
-                return Ok(value.to_string());
+            let slots = interp.interpreted_closure_print_slots(lambda_value);
+            let mut rendered_slots = Vec::new();
+            for (index, slot) in slots.iter().enumerate() {
+                if context.options.length.is_some_and(|limit| index >= limit) {
+                    rendered_slots.push("...".into());
+                    break;
+                }
+                rendered_slots.push(render_prin1_with_context(
+                    interp,
+                    slot,
+                    env,
+                    context,
+                    depth + 1,
+                )?);
             }
-            let params_value = Value::list(
-                params
-                    .iter()
-                    .cloned()
-                    .map(|value| Value::Symbol(value.into())),
-            );
-            let env_value = closure_env_print_value(&captured);
-            Ok(format!(
-                "#<closure {} {}>",
-                render_prin1_with_context(interp, &params_value, env, context, depth + 1)?,
-                render_prin1_with_context(interp, &env_value, env, context, depth + 1)?
-            ))
+            Ok(format!("#[{}]", rendered_slots.join(" ")))
         }
         Value::BuiltinFunc(_)
         | Value::Buffer(_)
@@ -1285,22 +1299,16 @@ pub(crate) fn render_prin1_body(
     }
 }
 
-fn closure_env_print_value(env: &Env) -> Value {
-    Value::list(env.iter().map(|frame| {
-        Value::list(
-            frame.iter().map(|(name, value)| {
-                Value::cons(Value::Symbol(name.clone().into()), value.clone())
-            }),
-        )
-    }))
-}
-
 pub(crate) fn finish_print_number_table(
     interp: &mut Interpreter,
     env: &mut Env,
     context: &PrintContext,
 ) -> Result<(), LispError> {
     if !context.options.circle || !context.options.continuous_numbering {
+        return Ok(());
+    }
+    interp.print_number_index = context.next_label.saturating_sub(1);
+    if context.number_table.is_none() && context.counts.is_empty() {
         return Ok(());
     }
     let table = context
@@ -1319,8 +1327,25 @@ pub(crate) fn finish_print_number_table(
         (label.object.clone(), Value::Integer(state))
     }));
     set_hash_table_entries(interp, &table, entries)?;
-    set_env_binding(env, "print-number-table", table);
+    // This is a native special variable, so update its active dynamic value
+    // cell.  Writing only the evaluator frame makes the table disappear at a
+    // function boundary (and leaks a fake lexical binding to the caller).
+    interp.set_variable("print-number-table", table, env);
     Ok(())
+}
+
+fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: PrintOptions) {
+    // print.c resets both pieces of state unless continuous numbering has a
+    // live public table.  A nil table therefore starts numbering over even
+    // when `print-continuous-numbering' itself is non-nil.
+    if !options.continuous_numbering
+        || interp
+            .lookup_var("print-number-table", env)
+            .is_none_or(|value| value.is_nil())
+    {
+        interp.print_number_index = 0;
+        interp.set_variable("print-number-table", Value::Nil, env);
+    }
 }
 
 pub(crate) fn render_prin1(
@@ -1328,7 +1353,9 @@ pub(crate) fn render_prin1(
     value: &Value,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
-    let mut context = PrintContext::new(interp, value, env, print_options(interp, env))?;
+    let options = print_options(interp, env);
+    prepare_print_numbering(interp, env, options);
+    let mut context = PrintContext::new(interp, value, env, options)?;
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
     finish_print_number_table(interp, env, &context)?;
     Ok(rendered)
@@ -1343,6 +1370,7 @@ pub(crate) fn render_princ_object(
 ) -> Result<String, LispError> {
     let mut options = print_options(interp, env);
     options.escape = false;
+    prepare_print_numbering(interp, env, options);
     let mut context = PrintContext::new(interp, value, env, options)?;
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
     finish_print_number_table(interp, env, &context)?;

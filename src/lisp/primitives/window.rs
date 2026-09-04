@@ -252,6 +252,7 @@ fn scroll_preserve_screen_position(interp: &Interpreter, env: &Env) -> bool {
 pub(crate) fn resolve_window_line(
     value: Option<&Value>,
     default_line: usize,
+    text_height: usize,
 ) -> Result<isize, LispError> {
     let line = match value {
         None | Some(Value::Nil) => default_line as i64,
@@ -260,7 +261,7 @@ pub(crate) fn resolve_window_line(
     Ok(if line >= 0 {
         line as isize
     } else {
-        (selected_window_text_height() as isize + line as isize).max(0)
+        (text_height as isize + line as isize).max(0)
     })
 }
 
@@ -317,11 +318,12 @@ pub(crate) fn scroll_selected_window(
     env: &mut Env,
     arg: Option<isize>,
     default_sign: isize,
+    text_height: usize,
 ) -> Result<(), LispError> {
     let point_min = interp.buffer.point_min();
     let point_max = interp.buffer.point_max();
     let metrics = interactive_window_metrics();
-    let text_height = selected_window_text_height().max(1);
+    let text_height = text_height.max(1);
     let context = interp
         .lookup_var("next-screen-context-lines", env)
         .and_then(|value| value.as_integer().ok())

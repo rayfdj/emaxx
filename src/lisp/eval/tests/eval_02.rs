@@ -4946,14 +4946,22 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
                      (= (frame-right-divider-width) 0)
                      (= (frame-bottom-divider-width) 0)
                      (window-valid-p (selected-window))
-                     (null
-                      (delq nil
-                            (list
-                             (window-parent (selected-window))
-                             (window-prev-sibling (selected-window))
-                             (window-next-sibling (selected-window))
-                             (window-top-child (selected-window))
-                             (window-left-child (selected-window))))))"#,
+                     ;; frame.c make_frame links the root window and the
+                     ;; frame's minibuffer window as siblings, so the sole
+                     ;; live window's next sibling is the minibuffer window
+                     ;; (oracle: t) while every other link stays nil.
+                     (and
+                      (eq (window-next-sibling (selected-window))
+                          (minibuffer-window))
+                      (eq (window-prev-sibling (minibuffer-window))
+                          (selected-window))
+                      (null
+                       (delq nil
+                             (list
+                              (window-parent (selected-window))
+                              (window-prev-sibling (selected-window))
+                              (window-top-child (selected-window))
+                              (window-left-child (selected-window)))))))"#,
         ),
         Value::list([
             Value::T,
