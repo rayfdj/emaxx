@@ -2421,6 +2421,7 @@ pub(crate) struct MinibufferRuntimeState {
 /// representations (interned strings, big integers, symbols) shared.
 struct ImageGraphCopier {
     cons: std::collections::HashMap<usize, Value>,
+    vectors: std::collections::HashMap<usize, Value>,
     strings: std::collections::HashMap<usize, Value>,
     lambdas: std::collections::HashMap<usize, Value>,
     reader_forms: std::collections::HashMap<usize, Value>,
@@ -2436,6 +2437,7 @@ impl ImageGraphCopier {
     fn new() -> Self {
         Self {
             cons: Default::default(),
+            vectors: Default::default(),
             strings: Default::default(),
             lambdas: Default::default(),
             reader_forms: Default::default(),
@@ -2448,6 +2450,25 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value {
             Value::Cons(_) => self.copy_cons_chain(value),
+            Value::Vector(vector) => {
+                if vector.slots().is_empty() {
+                    return value.clone();
+                }
+                let key = crate::lisp::types::VectorValue::identity(vector);
+                if let Some(copied) = self.vectors.get(&key) {
+                    return copied.clone();
+                }
+                let source_slots = vector.slots().clone();
+                let copied = Value::vector(std::iter::repeat_n(Value::Nil, source_slots.len()));
+                self.vectors.insert(key, copied.clone());
+                let Value::Vector(copied_vector) = &copied else {
+                    unreachable!("nonempty vector copy has vector storage")
+                };
+                for (index, slot) in source_slots.iter().enumerate() {
+                    copied_vector.slots_mut()[index] = self.copy(slot);
+                }
+                copied
+            }
             Value::StringObject(state) => {
                 let key = std::rc::Rc::as_ptr(state) as usize;
                 if let Some(copied) = self.strings.get(&key) {
@@ -2695,6 +2716,7 @@ struct LispReachability {
     string_objects: HashSet<usize>,
     symbols: HashSet<String>,
     conses: HashSet<usize>,
+    vectors: HashSet<usize>,
     lambdas: HashSet<usize>,
     buffers: HashSet<usize>,
     markers: HashSet<u64>,
@@ -2731,6 +2753,7 @@ impl LispReachability {
                     || self.symbols.contains(symbol.as_str())
             }
             Value::Cons(value) => self.conses.contains(&ConsCell::identity(value)),
+            Value::Vector(value) => self.vectors.contains(&(Rc::as_ptr(value) as usize)),
             Value::Lambda(value) => self.lambdas.contains(&(Rc::as_ptr(value) as usize)),
             Value::Buffer(value) => self.buffers.contains(&(Rc::as_ptr(value) as usize)),
             Value::Marker(id) => self.markers.contains(id),
@@ -2768,6 +2791,7 @@ impl LispReachability {
             Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
             Value::Symbol(symbol) => self.symbols.insert(symbol.as_str().to_owned()),
             Value::Cons(value) => self.conses.insert(ConsCell::identity(value)),
+            Value::Vector(value) => self.vectors.insert(Rc::as_ptr(value) as usize),
             Value::Lambda(value) => self.lambdas.insert(Rc::as_ptr(value) as usize),
             Value::Buffer(value) => self.buffers.insert(Rc::as_ptr(value) as usize),
             Value::Marker(id) => self.markers.insert(*id),
@@ -2802,6 +2826,12 @@ impl LispReachability {
                 ];
                 for child in children.into_iter().flatten() {
                     self.mark(interp, &child);
+                }
+            }
+            Value::Vector(vector) => {
+                let children = vector.slots().clone();
+                for child in &children {
+                    self.mark(interp, child);
                 }
             }
             Value::Lambda(lambda) => {
@@ -3333,6 +3363,29 @@ impl Interpreter {
             for (_, value) in clone.globals.iter_mut() {
                 *value = c.copy(value);
             }
+            // The forwarded eval.c cells alias their Lisp-visible value
+            // cells.  Re-point the direct C-side view at the copied graph,
+            // never at Rc storage retained by the image template.
+            clone.quit_flag = clone
+                .globals
+                .get("quit-flag")
+                .cloned()
+                .unwrap_or(Value::Nil);
+            clone.inhibit_quit = clone
+                .globals
+                .get("inhibit-quit")
+                .cloned()
+                .unwrap_or(Value::Nil);
+            clone.throw_on_input = clone
+                .globals
+                .get("throw-on-input")
+                .cloned()
+                .unwrap_or(Value::Nil);
+            clone.overriding_plist_environment = clone
+                .globals
+                .get("overriding-plist-environment")
+                .cloned()
+                .unwrap_or(Value::Nil);
             for bindings in clone.buffer_locals.values_mut() {
                 for (_, value) in bindings.iter_mut() {
                     *value = c.copy(value);
@@ -3656,6 +3709,20 @@ pub struct Interpreter {
     /// deterministic symbol enumeration while value-cell access and removal
     /// are hash operations, so keep both properties in one canonical store.
     globals: OrderedBindings,
+    /// Version of the C-owned symbol value-cell state.  Native symbol handles
+    /// use it to retain GNU's direct value-word reads without keeping stale
+    /// words across a set, alias, or localization transition.
+    symbol_value_cell_epoch: u64,
+    /// Directly forwarded Lisp_Object cells read by the C implementation.
+    /// GNU reads these globals without doing symbol-table work; keep the same
+    /// direct state while ordinary Lisp access remains visible through the
+    /// canonical global value cells below.
+    quit_flag: Value,
+    inhibit_quit: Value,
+    throw_on_input: Value,
+    overriding_plist_environment: Value,
+    max_lisp_eval_depth: i64,
+    debug_on_next_call: bool,
     /// Variable aliases keyed by alias name.
     variable_aliases: Vec<(String, String)>,
     /// Alias → target index mirroring `variable_aliases` (at most one entry
@@ -3953,6 +4020,10 @@ pub struct Interpreter {
     buffer_syntax_tables: Vec<(u64, u64)>,
     /// Variables that automatically become buffer-local when set.
     auto_buffer_locals: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
+    /// Symbols whose value cells can forward through a buffer-local binding.
+    /// GNU records this on the symbol itself, so ordinary value-cell reads
+    /// skip the current buffer's local table entirely for every other name.
+    buffer_local_capable_variables: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Native DEFVAR_PER_BUFFER variables, kept as host metadata rather than
     /// exposed through private Lisp symbol properties.
     per_buffer_specials: HashSet<String>,
@@ -4208,7 +4279,6 @@ struct SourceFormCacheEntry {
 struct SourceFormAnalysis {
     items: Rc<Vec<Value>>,
     native_form: Option<core::NativeForm>,
-    literal_kind: core::SourceLiteralKind,
     /// The generation-stamped non-macro verdict shares the source-analysis
     /// lifetime.  Actual macro expansions are deliberately never cached:
     /// GNU's interpreted evaluator invokes the macro expander on every
@@ -4452,6 +4522,13 @@ impl Interpreter {
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
             ]),
+            symbol_value_cell_epoch: 0,
+            quit_flag: Value::Nil,
+            inhibit_quit: Value::Nil,
+            throw_on_input: Value::Nil,
+            overriding_plist_environment: Value::Nil,
+            max_lisp_eval_depth: 1600,
+            debug_on_next_call: false,
             variable_aliases: Vec::new(),
             variable_aliases_index: HashMap::new(),
             special_variables_index: HashSet::default(),
@@ -4817,6 +4894,7 @@ impl Interpreter {
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
             auto_buffer_locals: HashSet::default(),
+            buffer_local_capable_variables: HashSet::default(),
             per_buffer_specials: HashSet::new(),
             always_buffer_local_specials: HashSet::new(),
             active_special_restores: Vec::new(),
@@ -5877,7 +5955,7 @@ impl Interpreter {
             Value::Symbol("truncate-sym-name-if-fit".into()),
         );
         interp.set_global_binding("tab-bar-new-tab-choice", Value::T);
-        interp.set_global_binding("max-lisp-eval-depth", Value::Integer(1600));
+        interp.define_special_variable("max-lisp-eval-depth", Value::Integer(1600));
         interp.put_symbol_property(
             "tab-bar-new-tab-choice",
             "custom-type",

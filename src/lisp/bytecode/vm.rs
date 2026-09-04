@@ -287,19 +287,13 @@ fn build_cached(
         .iter()
         .any(super::super::reader::contains_circular_read_syntax)
     {
-        let vector = Value::list(
-            std::iter::once(Value::symbol("vector-literal"))
-                .chain(object.constants.iter().cloned()),
-        );
+        let vector = Value::vector(object.constants.iter().cloned());
         let resolved = super::super::reader::resolve_circular_read_syntax(vector)?;
-        let mut items = resolved.to_vec()?;
-        if !matches!(items.first(), Some(Value::Symbol(marker)) if marker == "vector-literal") {
-            return Err(LispError::Signal(
-                "byte-code constants did not resolve to a vector".into(),
-            ));
-        }
-        items.remove(0);
-        Some(items)
+        Some(
+            crate::lisp::primitives::vector_items(&resolved).map_err(|_| {
+                LispError::Signal("byte-code constants did not resolve to a vector".into())
+            })?,
+        )
     } else {
         None
     };
@@ -1384,11 +1378,16 @@ fn run_with_stack(
                         Value::Nil
                     });
                 }
+                Op::Length => {
+                    let sequence = pop!();
+                    stack.push(Value::Integer(primitives::sequence_length_value(
+                        interp, &sequence,
+                    )?));
+                }
                 // One-argument primitive ops.
                 Op::Symbolp
                 | Op::Stringp
                 | Op::Listp
-                | Op::Length
                 | Op::SymbolValue
                 | Op::SymbolFunction
                 | Op::Nreverse
@@ -1401,7 +1400,6 @@ fn run_with_stack(
                         Op::Symbolp => "symbolp",
                         Op::Stringp => "stringp",
                         Op::Listp => "listp",
-                        Op::Length => "length",
                         Op::SymbolValue => "symbol-value",
                         Op::SymbolFunction => "symbol-function",
                         Op::Nreverse => "nreverse",

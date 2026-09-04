@@ -909,6 +909,33 @@ define_dispatch!(
             }
             "maphash" => {
                 need_args(name, args, 2)?;
+                if let Value::Record(id) = &args[1]
+                    && interp.hash_table_entry_at_or_after(*id, 0).is_some()
+                {
+                    let mut slot = 0;
+                    loop {
+                        let Some(capacity) = interp.gnu_hash_table_capacity(*id) else {
+                            return Err(LispError::WrongTypeArgument(
+                                "hash-table-p".into(),
+                                args[1].clone(),
+                            ));
+                        };
+                        if slot >= capacity {
+                            break;
+                        }
+                        let Some((entry_slot, key, value)) =
+                            interp.hash_table_entry_at_or_after(*id, slot).flatten()
+                        else {
+                            break;
+                        };
+                        if entry_slot >= capacity {
+                            break;
+                        }
+                        slot = entry_slot + 1;
+                        call_function_value(interp, &args[0], &[key, value], env)?;
+                    }
+                    return Ok(Value::Nil);
+                }
                 let Some((_, entries)) = json::hash_table_entries(interp, &args[1]) else {
                     return Err(LispError::WrongTypeArgument(
                         "hash-table-p".into(),
@@ -1729,6 +1756,7 @@ define_dispatch!(
                     Value::String(_) => "string",
                     Value::StringObject(_) => "string",
                     Value::Symbol(_) => "symbol",
+                    Value::Vector(_) => "vector",
                     Value::Cons(_) if is_vector_value(&args[0]) => "vector",
                     Value::Cons(_) => "cons",
                     Value::BuiltinFunc(_) => "subr",

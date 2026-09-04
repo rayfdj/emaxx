@@ -98,11 +98,10 @@ pub(crate) fn obarray_symbols(
     // already carrying an obarray in slot 0 reads through it, and an
     // untouched one (slot 0 still the fixnum 0) reads as empty.
     if is_vector_value(obarray) {
-        let slots = vector_slot_refs(obarray)?;
-        if let Some(first) = slots.first() {
-            let current = first.borrow().clone();
-            if is_obarray_like_value(interp, &current) {
-                return obarray_symbols(interp, &current);
+        let slots = vector_items(obarray)?;
+        if let Some(current) = slots.first() {
+            if is_obarray_like_value(interp, current) {
+                return obarray_symbols(interp, current);
             }
             if matches!(current, Value::Integer(0)) {
                 return Ok(Vec::new());
@@ -168,20 +167,19 @@ pub(crate) fn coerce_legacy_vector_obarray(
     if !is_vector_value(obarray) {
         return Ok(obarray.clone());
     }
-    let slots = vector_slot_refs(obarray)?;
-    let Some(first) = slots.first() else {
+    let slots = vector_items(obarray)?;
+    let Some(current) = slots.first().cloned() else {
         return Err(LispError::WrongTypeArgument(
             "obarrayp".into(),
             obarray.clone(),
         ));
     };
-    let current = first.borrow().clone();
     if is_obarray_like_value(interp, &current) {
         return Ok(current);
     }
     if matches!(current, Value::Integer(0)) {
         let fresh = make_obarray(interp);
-        *first.borrow_mut() = fresh.clone();
+        aset_vector_value(obarray, 0, fresh.clone())?;
         return Ok(fresh);
     }
     Err(LispError::WrongTypeArgument(
@@ -365,6 +363,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
@@ -379,6 +378,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
 pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
     match value {
         Value::Cons(cell) => Some((0, crate::lisp::types::ConsCell::identity(cell))),
+        Value::Vector(vector) => Some((4, crate::lisp::types::VectorValue::identity(vector))),
         Value::StringObject(state) => Some((1, Rc::as_ptr(state) as usize)),
         Value::Record(id) => Some((2, *id as usize)),
         Value::CharTable(id) => Some((3, *id as usize)),
@@ -405,6 +405,16 @@ pub(crate) fn substitute_object_recurse(
     }
 
     match subtree {
+        Value::Vector(vector) => {
+            let slot_count = vector.slots().len();
+            for index in 0..slot_count {
+                let current = vector.slots()[index].clone();
+                let updated =
+                    substitute_object_recurse(interp, object, placeholder, &current, seen)?;
+                vector.slots_mut()[index] = updated;
+            }
+            Ok(subtree.clone())
+        }
         Value::Cons(_) => {
             let Some((car, cdr)) = subtree.cons_values() else {
                 return Ok(subtree.clone());

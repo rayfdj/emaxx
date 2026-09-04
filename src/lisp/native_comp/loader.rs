@@ -304,14 +304,8 @@ unsafe fn read_static_object(
 }
 
 fn vector_values(value: &Value) -> Result<Vec<Value>, LispError> {
-    let mut values = value.to_vec()?;
-    if !matches!(values.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
-        return Err(super::lisp::native_ice(
-            "serialized native relocation data is not a vector",
-        ));
-    }
-    values.remove(0);
-    Ok(values)
+    crate::lisp::primitives::vector_items(value)
+        .map_err(|_| super::lisp::native_ice("serialized native relocation data is not a vector"))
 }
 
 fn comp_unit_relocations_match(

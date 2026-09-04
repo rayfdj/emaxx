@@ -178,8 +178,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 extended_chars: state.extended_chars.clone(),
             })
         }
-        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") =>
-        {
+        value if is_vector_value(value) => {
             let items = vector_items(value).ok()?;
             if items.len() < 4 {
                 return None;
@@ -686,7 +685,7 @@ pub(crate) fn reverse_sequence_value(
         return Ok(make_bool_vector_value(interp, bits));
     }
     match value {
-        Value::Cons(_) if is_vector_value(value) => {
+        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             let mut items = value.to_vec()?;
             items[1..].reverse();
             Ok(Value::list(items))
@@ -720,7 +719,7 @@ pub(crate) fn nreverse_sequence_value(
         return Ok(value.clone());
     }
     match value {
-        Value::Cons(_) if is_vector_value(value) => {
+        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             let mut items = vector_items(value)?;
             items.reverse();
             for (index, item) in items.into_iter().enumerate() {

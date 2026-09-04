@@ -5648,10 +5648,10 @@ fn cached_source_dispatch_analysis_observes_head_mutation() {
         .read()
         .expect("literal should parse")
         .expect("literal should exist");
-    assert_eq!(
-        literal.cons_id(),
-        interp.eval(&literal, &mut env).unwrap().cons_id()
-    );
+    assert!(matches!(
+        interp.eval(&literal, &mut env),
+        Err(LispError::VoidFunction(name)) if name == "vector-literal"
+    ));
     literal
         .set_car(Value::symbol("quote"))
         .expect("literal head should be mutable");

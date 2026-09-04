@@ -206,9 +206,12 @@ fn overriding_plist_property(
     symbol: &str,
     property: &str,
 ) -> Option<Value> {
-    let mut entries = interp
-        .lookup_var("overriding-plist-environment", env)
-        .filter(|value| !value.is_nil())?;
+    // fns.c:Fget reads Voverriding_plist_environment directly.  Its
+    // DEFVAR_LISP cell already reflects any active dynamic binding.
+    let mut entries = interp.overriding_plist_environment_value();
+    if entries.is_nil() {
+        return None;
+    }
     let mut entry_guard = crate::lisp::types::CycleGuard::new();
     while let Value::Cons(ref entries_cell) = entries {
         if entry_guard.step(crate::lisp::types::ConsCell::identity(entries_cell)) {
@@ -976,7 +979,7 @@ define_dispatch!(
                 internal_subr_documentation(interp, &args[0], env)
             }
             "get" => {
-                need_arg_range(name, args, 2, 3)?;
+                need_args(name, args, 2)?;
                 // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
                 // XSYMBOL to the same underlying bare symbol.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;

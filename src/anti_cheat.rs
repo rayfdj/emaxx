@@ -366,6 +366,305 @@ pub(crate) fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
     }
 }
 
+#[derive(Clone, Copy)]
+struct NativeCFastPathContract {
+    primitive: &'static str,
+    owner: &'static str,
+    contract_test: &'static str,
+}
+
+const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
+    NativeCFastPathContract {
+        primitive: "<",
+        owner: "data.c:Flss",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: "<=",
+        owner: "data.c:Fleq",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: "=",
+        owner: "data.c:Feqlsign",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: ">",
+        owner: "data.c:Fgtr",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: ">=",
+        owner: "data.c:Fgeq",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: "apply",
+        owner: "eval.c:Fapply",
+        contract_test: "native_apply_spreads_the_final_list_into_funcall_words",
+    },
+    NativeCFastPathContract {
+        primitive: "assq",
+        owner: "fns.c:Fassq",
+        contract_test: "native_assq_uses_the_fns_c_cons_walk",
+    },
+    NativeCFastPathContract {
+        primitive: "atom",
+        owner: "data.c:Fatom",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "bare-symbol-p",
+        owner: "data.c:Fbare_symbol_p",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "car",
+        owner: "data.c:Fcar",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "car-safe",
+        owner: "data.c:Fcar_safe",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "cdr",
+        owner: "data.c:Fcdr",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "cdr-safe",
+        owner: "data.c:Fcdr_safe",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "cons",
+        owner: "alloc.c:Fcons",
+        contract_test: "native_cons_uses_one_two_word_body",
+    },
+    NativeCFastPathContract {
+        primitive: "consp",
+        owner: "data.c:Fconsp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "eq",
+        owner: "data.c:Feq",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "eql",
+        owner: "fns.c:Feql",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "funcall",
+        owner: "eval.c:Ffuncall",
+        contract_test: "native_funcall_dispatches_builtin_on_the_word_abi",
+    },
+    NativeCFastPathContract {
+        primitive: "get",
+        owner: "fns.c:Fget",
+        contract_test: "native_get_follows_fns_c_word_path",
+    },
+    NativeCFastPathContract {
+        primitive: "identity",
+        owner: "fns.c:Fidentity",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "length",
+        owner: "fns.c:Flength",
+        contract_test: "native_length_uses_fns_c_list_traversal",
+    },
+    NativeCFastPathContract {
+        primitive: "list",
+        owner: "alloc.c:Flist",
+        contract_test: "native_list_is_the_alloc_c_reverse_cons_loop",
+    },
+    NativeCFastPathContract {
+        primitive: "listp",
+        owner: "data.c:Flistp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "make-closure",
+        owner: "alloc.c:Fmake_closure",
+        contract_test: "native_make_closure_follows_alloc_c_copy_contract",
+    },
+    NativeCFastPathContract {
+        primitive: "mapcar",
+        owner: "fns.c:Fmapcar",
+        contract_test: "native_mapcar_follows_fns_c_list_branch",
+    },
+    NativeCFastPathContract {
+        primitive: "maphash",
+        owner: "fns.c:Fmaphash",
+        contract_test: "native_maphash_calls_each_live_slot_through_funcall",
+    },
+    NativeCFastPathContract {
+        primitive: "memq",
+        owner: "fns.c:Fmemq",
+        contract_test: "native_memq_uses_the_fns_c_cons_walk",
+    },
+    NativeCFastPathContract {
+        primitive: "nlistp",
+        owner: "data.c:Fnlistp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "nreverse",
+        owner: "fns.c:Fnreverse",
+        contract_test: "native_nreverse_follows_fns_c_list_branch",
+    },
+    NativeCFastPathContract {
+        primitive: "null",
+        owner: "data.c:Fnull",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "plist-member",
+        owner: "fns.c:Fplist_member",
+        contract_test: "native_plist_member_follows_fns_c_pair_traversal",
+    },
+    NativeCFastPathContract {
+        primitive: "symbol-value",
+        owner: "data.c:Fsymbol_value",
+        contract_test: "native_symbol_value_and_type_of_follow_data_c",
+    },
+    NativeCFastPathContract {
+        primitive: "symbolp",
+        owner: "data.c:Fsymbolp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "type-of",
+        owner: "data.c:Ftype_of",
+        contract_test: "native_symbol_value_and_type_of_follow_data_c",
+    },
+];
+
+/// Deliberate semantic differences from GNU C require Ray's explicit approval
+/// plus a regression test and a defensible written reason.  This list is empty
+/// by default; adding an entry makes the exception visible to code review and
+/// to the executable gate instead of hiding it inside a fast path.
+struct ApprovedNativeCDeviation {
+    primitive: &'static str,
+    approval: &'static str,
+    justification: &'static str,
+    contract_test: &'static str,
+}
+
+const APPROVED_NATIVE_C_DEVIATIONS: &[ApprovedNativeCDeviation] = &[];
+
+pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
+    use std::collections::BTreeSet;
+
+    let runtime_path = repo_root().join("src/lisp/native_comp/runtime.rs");
+    let runtime = fs::read_to_string(&runtime_path).expect("read native runtime source");
+    let comments =
+        regex::Regex::new(r"(?s:/\*.*?\*/)|(?m://.*$)").expect("compile Rust-comment pattern");
+    let production = comments.replace_all(&runtime, "");
+    let string_literal =
+        regex::Regex::new(r#""([^"\\]+)""#).expect("compile native fast-path literal pattern");
+
+    let mut audited_source = String::new();
+    for (start, end) in [
+        ("fn invoke_context_free_subr", "pub(crate) fn invoke_subr"),
+        ("pub(crate) fn invoke_subr", "fn slow_unary_subr"),
+        ("fn native_subr_address", "enum DirectFuncallTarget"),
+    ] {
+        let body = production
+            .split_once(start)
+            .unwrap_or_else(|| panic!("native runtime lost audited boundary `{start}`"))
+            .1
+            .split_once(end)
+            .unwrap_or_else(|| panic!("native runtime lost audited boundary `{end}`"))
+            .0;
+        audited_source.push_str(body);
+    }
+    let actual = string_literal
+        .captures_iter(&audited_source)
+        .map(|capture| capture[1].to_owned())
+        .filter(|name| {
+            crate::lisp::primitives::generated_gnu_c_primitive_available(name) == Some(true)
+        })
+        .collect::<BTreeSet<_>>();
+
+    let gnu_root = repo_root().join("../emacs/src");
+    let mut declared = BTreeSet::new();
+    for contract in EXACT_NATIVE_C_FAST_PATHS {
+        assert!(
+            declared.insert(contract.primitive),
+            "native C fast-path contract is duplicated for `{}`",
+            contract.primitive
+        );
+        assert_eq!(
+            crate::lisp::primitives::generated_gnu_c_primitive_available(contract.primitive),
+            Some(true),
+            "native fast path `{}` is not an available GNU C primitive",
+            contract.primitive
+        );
+        let (file, function) = contract.owner.split_once(':').unwrap_or_else(|| {
+            panic!(
+                "native fast path `{}` has malformed GNU owner `{}`",
+                contract.primitive, contract.owner
+            )
+        });
+        let owner = fs::read_to_string(gnu_root.join(file)).unwrap_or_else(|error| {
+            panic!(
+                "read GNU owner {} for `{}`: {error}",
+                contract.owner, contract.primitive
+            )
+        });
+        assert!(
+            owner.contains(function),
+            "GNU owner {} for native fast path `{}` no longer exists",
+            contract.owner,
+            contract.primitive
+        );
+        assert!(
+            runtime.contains(&format!("fn {}", contract.contract_test)),
+            "native fast path `{}` lacks declared contract test `{}`",
+            contract.primitive,
+            contract.contract_test
+        );
+    }
+    for exception in APPROVED_NATIVE_C_DEVIATIONS {
+        assert!(
+            declared.insert(exception.primitive),
+            "approved native C deviation duplicates `{}`",
+            exception.primitive
+        );
+        assert!(
+            exception.approval.starts_with("Ray approved "),
+            "native C deviation `{}` lacks Ray's explicit dated approval",
+            exception.primitive
+        );
+        assert!(
+            !exception.justification.trim().is_empty(),
+            "native C deviation `{}` lacks a written justification",
+            exception.primitive
+        );
+        assert!(
+            runtime.contains(&format!("fn {}", exception.contract_test)),
+            "native C deviation `{}` lacks regression test `{}`",
+            exception.primitive,
+            exception.contract_test
+        );
+    }
+    let expected = declared
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual, expected,
+        "native C fast paths changed without updating the exact-contract or explicitly-approved-deviation inventory"
+    );
+}
+
 pub(crate) fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
     use crate::lisp::eval::Interpreter;
     use crate::lisp::types::{Env, Value};
@@ -759,6 +1058,10 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             runtime_native_dispatch_calls_only_configured_gnu_c_primitives as fn(),
         ),
         (
+            "native_comp_fast_paths_are_audited_against_gnu_c",
+            native_comp_fast_paths_are_audited_against_gnu_c as fn(),
+        ),
+        (
             "bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values",
             bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values as fn(),
         ),
@@ -838,6 +1141,10 @@ mod gate_tests {
     #[test]
     fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
         super::runtime_native_dispatch_calls_only_configured_gnu_c_primitives();
+    }
+    #[test]
+    fn native_comp_fast_paths_are_audited_against_gnu_c() {
+        super::native_comp_fast_paths_are_audited_against_gnu_c();
     }
     #[test]
     fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {

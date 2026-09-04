@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::SymbolName;
 
 fn dynamic_library_suffix_values() -> Vec<Value> {
     #[cfg(target_os = "macos")]
@@ -131,7 +132,7 @@ impl Interpreter {
                 .unwrap_or_else(|_| name.to_string())
                 .into()
         };
-        self.lookup_var_with_resolved_name(name, resolved.as_ref(), env)
+        self.lookup_var_with_resolved_name(name, resolved.as_ref(), env, None)
             .ok()
             .flatten()
     }
@@ -141,6 +142,7 @@ impl Interpreter {
         name: &str,
         resolved: &str,
         env: &Env,
+        resolved_symbol: Option<&SymbolName>,
     ) -> Result<Option<Value>, LispError> {
         if resolved == "buffer-undo-list" {
             return Ok(Some(crate::lisp::primitives::buffer_undo_list_value(
@@ -190,6 +192,20 @@ impl Interpreter {
                 }
             }
         }
+        // data.c:find_symbol_value dispatches on the symbol's redirect tag.
+        // A SYMBOL_PLAINVAL cell returns immediately; it never probes the
+        // current buffer or the dynamic-binding stack.  Names enter this set
+        // at the same transition where Emaxx creates localized symbol state,
+        // and remain there just as GNU's SYMBOL_LOCALIZED redirect does.
+        if !self.buffer_local_capable_variables.contains(resolved) {
+            let global = if let Some(symbol) = resolved_symbol {
+                debug_assert_eq!(symbol.as_str(), resolved);
+                self.global_binding_value_symbol(symbol)
+            } else {
+                self.global_value(resolved)
+            };
+            return Ok(global.or_else(|| self.builtin_var_value(resolved)));
+        }
         // A buffer-local cell always wins over a dynamically bound default.
         // This also covers a plain special that becomes buffer-local while
         // its global `let' is active: GNU then reads the newly created local
@@ -201,7 +217,13 @@ impl Interpreter {
         if let Some(value) = self.active_global_special_value(resolved) {
             return Ok(value.or_else(|| self.builtin_var_value(resolved)));
         }
-        if let Some(value) = self.global_value(resolved) {
+        let global = if let Some(symbol) = resolved_symbol {
+            debug_assert_eq!(symbol.as_str(), resolved);
+            self.global_binding_value_symbol(symbol)
+        } else {
+            self.global_value(resolved)
+        };
+        if let Some(value) = global {
             return Ok(Some(value));
         }
         Ok(self.builtin_var_value(resolved))
@@ -218,8 +240,43 @@ impl Interpreter {
         } else {
             self.resolve_variable_name(name)?.into()
         };
-        self.lookup_var_with_resolved_name(resolved.as_ref(), resolved.as_ref(), &Env::new())?
+        if resolved != "buffer-undo-list"
+            && !self
+                .buffer_local_capable_variables
+                .contains(resolved.as_ref())
+        {
+            return self
+                .global_value(resolved.as_ref())
+                .or_else(|| self.builtin_var_value(resolved.as_ref()))
+                .ok_or_else(|| LispError::Void(resolved.into_owned()));
+        }
+        self.lookup_var_with_resolved_name(resolved.as_ref(), resolved.as_ref(), &Env::new(), None)?
             .ok_or_else(|| LispError::Void(resolved.into_owned()))
+    }
+
+    /// The SYMBOL_PLAINVAL case of data.c:find_symbol_value.  Native symbol
+    /// handles may retain its already-encoded word until the value-cell epoch
+    /// changes.  Redirected, localized, synthesized, and void cells stay on
+    /// the complete lookup path above.
+    pub(crate) fn plain_global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
+        if self.direct_variable_alias(name.as_str()).is_some()
+            || self.buffer_local_capable_variables.contains(name.as_str())
+        {
+            return None;
+        }
+        self.global_binding_value_symbol(name)
+    }
+
+    pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
+        if self.direct_variable_alias(name.as_str()).is_some()
+            || name.as_str() == "buffer-undo-list"
+            || self.buffer_local_capable_variables.contains(name.as_str())
+        {
+            return self.symbol_value_cell(name.as_str());
+        }
+        self.global_binding_value_symbol(name)
+            .or_else(|| self.builtin_var_value(name.as_str()))
+            .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
     }
 
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
@@ -675,8 +732,25 @@ impl Interpreter {
     /// Look up a variable in the given local env, then globals.
     pub(crate) fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
-        self.lookup_var_with_resolved_name(name, &resolved, env)?
+        self.lookup_var_with_resolved_name(name, &resolved, env, None)?
             .ok_or(LispError::Void(resolved))
+    }
+
+    /// Evaluate an already-interned symbol without rebuilding and rehashing
+    /// its name.  In GNU the Lisp_Object points straight at a Lisp_Symbol,
+    /// whose plain value cell is read directly; SymbolName is the equivalent
+    /// stable identity in Emaxx.  Redirected symbols still take the complete
+    /// alias path above.
+    pub(crate) fn lookup_symbol(&self, name: &SymbolName, env: &Env) -> Result<Value, LispError> {
+        let resolved: std::borrow::Cow<'_, str> =
+            if self.direct_variable_alias(name.as_str()).is_none() {
+                name.as_str().into()
+            } else {
+                self.resolve_variable_name(name.as_str())?.into()
+            };
+        let resolved_symbol = matches!(resolved, std::borrow::Cow::Borrowed(_)).then_some(name);
+        self.lookup_var_with_resolved_name(name.as_str(), resolved.as_ref(), env, resolved_symbol)?
+            .ok_or_else(|| LispError::Void(resolved.into_owned()))
     }
 
     /// Whether NAME has a user-level function definition (defun/fset).

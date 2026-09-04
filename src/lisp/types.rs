@@ -7,7 +7,7 @@ use std::{
     borrow::Borrow,
     cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
     collections::{HashMap, HashSet},
-    hash::{BuildHasherDefault, Hasher},
+    hash::{BuildHasher, BuildHasherDefault, Hasher},
     iter::FromIterator,
     ops::{Deref, DerefMut},
     path::Path,
@@ -535,6 +535,7 @@ impl PartialEq<SharedText> for SymbolName {
 struct SymbolNameState {
     internal: SharedText,
     lisp_name: Value,
+    ordered_binding_hash: u64,
 }
 
 #[repr(transparent)]
@@ -561,10 +562,13 @@ impl SymbolName {
                 return name.clone();
             }
             crate::lisp::native_comp::note_lisp_allocation(48);
+            let ordered_binding_hash =
+                crate::lisp::primitives::FnvBuildHasher::default().hash_one(text.as_str());
             let text = SharedText::from(text);
             let name = Self(Rc::new(SymbolNameState {
                 internal: text.clone(),
                 lisp_name: Value::String(text),
+                ordered_binding_hash,
             }));
             names.insert(name.clone());
             name
@@ -580,9 +584,12 @@ impl SymbolName {
 
     fn new_uninterned(lisp_name: Value, internal: SharedText) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(48);
+        let ordered_binding_hash =
+            crate::lisp::primitives::FnvBuildHasher::default().hash_one(internal.as_str());
         let state = Rc::new(SymbolNameState {
             internal,
             lisp_name,
+            ordered_binding_hash,
         });
         UNINTERNED_SYMBOL_BOOK.with(|book| {
             book.borrow_mut().push(Rc::downgrade(&state));
@@ -593,6 +600,14 @@ impl SymbolName {
 
     pub fn as_str(&self) -> &str {
         self.0.internal.as_str()
+    }
+
+    pub(crate) fn identity_ptr(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+
+    pub(crate) fn ordered_binding_hash(&self) -> u64 {
+        self.0.ordered_binding_hash
     }
 
     pub fn into_string(self) -> String {
@@ -959,6 +974,67 @@ pub struct BufferValue {
     pub name: SharedText,
 }
 
+/// One ordinary GNU vector: stable object identity plus contiguous mutable
+/// Lisp slots.  The Rust owner is reference counted, while the payload shape
+/// follows `struct Lisp_Vector` instead of the historical tagged-cons facade.
+#[derive(Debug)]
+pub struct VectorValue {
+    slots: RefCell<Vec<Value>>,
+    accounted_slots: usize,
+}
+
+impl VectorValue {
+    fn allocated(slots: Vec<Value>) -> Rc<Self> {
+        let accounted_slots = slots.len().saturating_add(1);
+        crate::lisp::native_comp::note_lisp_allocation(accounted_slots.saturating_mul(8));
+        LIVE_VECTORS.set(LIVE_VECTORS.get().saturating_add(1));
+        LIVE_VECTOR_SLOTS.set(LIVE_VECTOR_SLOTS.get().saturating_add(accounted_slots));
+        Rc::new(Self {
+            slots: RefCell::new(slots),
+            accounted_slots,
+        })
+    }
+
+    fn static_zero() -> Rc<Self> {
+        Rc::new(Self {
+            slots: RefCell::new(Vec::new()),
+            accounted_slots: 0,
+        })
+    }
+
+    pub(crate) fn identity(value: &Rc<Self>) -> usize {
+        Rc::as_ptr(value) as usize
+    }
+
+    pub(crate) fn slots(&self) -> Ref<'_, Vec<Value>> {
+        self.slots.borrow()
+    }
+
+    pub(crate) fn slots_mut(&self) -> RefMut<'_, Vec<Value>> {
+        self.slots.borrow_mut()
+    }
+}
+
+impl Drop for VectorValue {
+    fn drop(&mut self) {
+        if self.accounted_slots == 0 {
+            return;
+        }
+        LIVE_VECTORS.set(
+            LIVE_VECTORS
+                .get()
+                .checked_sub(1)
+                .expect("live GNU vector count is balanced"),
+        );
+        LIVE_VECTOR_SLOTS.set(
+            LIVE_VECTOR_SLOTS
+                .get()
+                .checked_sub(self.accounted_slots)
+                .expect("live GNU vector slot count is balanced"),
+        );
+    }
+}
+
 /// The two tagged Lisp words generated code reads and writes directly.
 ///
 /// This is the Rust representation of GNU `struct Lisp_Cons`'s live fields.
@@ -1125,8 +1201,8 @@ thread_local! {
     static LAMBDA_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<LambdaValue>>> =
         const { RefCell::new(Vec::new()) };
     static LAMBDA_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    static VECTOR_OBJECT_BOOK: RefCell<Vec<VectorCensusEntry>> = const { RefCell::new(Vec::new()) };
-    static VECTOR_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+    static LIVE_VECTORS: Cell<usize> = const { Cell::new(0) };
+    static LIVE_VECTOR_SLOTS: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn note_string_allocation(bytes: usize) {
@@ -1140,13 +1216,6 @@ pub(crate) fn note_string_allocation(bytes: usize) {
         .div_ceil(8)
         .saturating_mul(8);
     crate::lisp::native_comp::note_lisp_allocation(32_usize.saturating_add(sdata));
-}
-
-struct VectorCensusEntry {
-    head: Weak<ConsCell>,
-    representation_conses: usize,
-    slots: usize,
-    logical_object: bool,
 }
 
 /// Drop the dead handles when a book outgrows its limit, so a session that
@@ -1243,46 +1312,37 @@ pub(crate) fn census_live_floats() -> usize {
 }
 
 pub(crate) fn census_live_vectors() -> VectorCensus {
-    VECTOR_OBJECT_BOOK.with(|book| {
-        let mut census = VectorCensus::default();
+    let mut census = VectorCensus {
+        count: LIVE_VECTORS.get(),
+        slots: LIVE_VECTOR_SLOTS.get(),
+        representation_conses: 0,
+    };
+    BIGNUM_OBJECT_BOOK.with(|book| {
         let mut book = book.borrow_mut();
-        book.retain(|entry| {
-            if entry.head.strong_count() == 0 {
-                return false;
+        book.retain(|weak| weak.strong_count() > 0);
+        census.count += book.len();
+        // lisp.h:Lisp_Bignum is 24 bytes on the supported GNU ABI.
+        census.slots = census.slots.saturating_add(book.len().saturating_mul(3));
+        BIGNUM_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+    });
+    LAMBDA_OBJECT_BOOK.with(|book| {
+        let mut book = book.borrow_mut();
+        book.retain(|weak| match weak.upgrade() {
+            Some(lambda) => {
+                census.count += 1;
+                // eval.c:Fmake_interpreted_closure allocates an ordinary
+                // vector and retags it PVEC_CLOSURE.  The header is one
+                // word beyond the Lisp-visible slots.
+                census.slots = census
+                    .slots
+                    .saturating_add(lambda.public_len().saturating_add(1));
+                true
             }
-            census.count += usize::from(entry.logical_object);
-            census.slots += entry.slots;
-            census.representation_conses += entry.representation_conses;
-            true
+            None => false,
         });
-        VECTOR_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-        BIGNUM_OBJECT_BOOK.with(|book| {
-            let mut book = book.borrow_mut();
-            book.retain(|weak| weak.strong_count() > 0);
-            census.count += book.len();
-            // lisp.h:Lisp_Bignum is 24 bytes on the supported GNU ABI.
-            census.slots = census.slots.saturating_add(book.len().saturating_mul(3));
-            BIGNUM_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-        });
-        LAMBDA_OBJECT_BOOK.with(|book| {
-            let mut book = book.borrow_mut();
-            book.retain(|weak| match weak.upgrade() {
-                Some(lambda) => {
-                    census.count += 1;
-                    // eval.c:Fmake_interpreted_closure allocates an ordinary
-                    // vector and retags it PVEC_CLOSURE.  The header is one
-                    // word beyond the Lisp-visible slots.
-                    census.slots = census
-                        .slots
-                        .saturating_add(lambda.public_len().saturating_add(1));
-                    true
-                }
-                None => false,
-            });
-            LAMBDA_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-        });
-        census
-    })
+        LAMBDA_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
+    });
+    census
 }
 
 fn register_lambda_object(lambda: &Rc<LambdaValue>) {
@@ -1292,36 +1352,6 @@ fn register_lambda_object(lambda: &Rc<LambdaValue>) {
     LAMBDA_OBJECT_BOOK.with(|book| {
         book.borrow_mut().push(Rc::downgrade(lambda));
         LAMBDA_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
-    });
-}
-
-pub(crate) fn register_vector_object(value: &Value, slots: usize) {
-    register_vector_representation(value, slots, slots, true);
-}
-
-fn register_vector_representation(
-    value: &Value,
-    slots: usize,
-    representation_conses: usize,
-    logical_object: bool,
-) {
-    let Value::Cons(head) = value else {
-        return;
-    };
-    VECTOR_OBJECT_BOOK.with(|book| {
-        book.borrow_mut().push(VectorCensusEntry {
-            head: Rc::downgrade(head),
-            representation_conses,
-            slots,
-            logical_object,
-        });
-        VECTOR_OBJECT_BOOK_LIMIT.with(|limit| {
-            let mut book = book.borrow_mut();
-            if book.len() >= limit.get() {
-                book.retain(|entry| entry.head.strong_count() > 0);
-                limit.set((book.len() * 2).max(1 << 16));
-            }
-        });
     });
 }
 
@@ -1597,6 +1627,8 @@ pub enum Value {
     StringObject(Rc<RefCell<SharedStringState>>),
     Symbol(SymbolName),
     Cons(SharedCons),
+    /// An ordinary vector with GNU vector identity and contiguous slots.
+    Vector(Rc<VectorValue>),
     /// Built-in function: name, arity (min, max), function pointer handled in eval
     BuiltinFunc(SymbolName),
     /// A lambda or closure: params, immutable shared body, captured env.
@@ -1628,16 +1660,9 @@ pub enum Value {
 }
 
 thread_local! {
-    // alloc.c's zero_vector is the result of every zero-length vector
-    // allocation.  Emaxx's vector representation is a tagged cons list, so
-    // preserve that singleton identity at the common constructor boundary.
-    static EMPTY_VECTOR_VALUE: Value = {
-        let value = Value::vector_storage_cons(Value::symbol("vector-literal"), Value::Nil);
-        // GNU's zero_vector is static: it contributes neither a heap vector
-        // nor a cons.  Only subtract Emaxx's one-cell tagged representation.
-        register_vector_representation(&value, 0, 1, false);
-        value
-    };
+    // alloc.c:zero_vector is one static object returned by every zero-length
+    // ordinary-vector allocation and is outside the heap vector census.
+    static EMPTY_VECTOR_VALUE: Value = Value::Vector(VectorValue::static_zero());
 }
 
 /// One lexical environment frame.
@@ -2113,6 +2138,7 @@ impl Value {
             Value::String(value) => Rc::strong_count(&value.0) > 1,
             Value::StringObject(value) => Rc::strong_count(value) > 1,
             Value::Cons(value) => Rc::strong_count(value) > 1,
+            Value::Vector(value) => Rc::strong_count(value) > 1,
             Value::Lambda(value) => Rc::strong_count(value) > 1,
             Value::Buffer(value) => Rc::strong_count(value) > 1,
             Value::ReaderForm(value) => Rc::strong_count(value) > 1,
@@ -2147,8 +2173,13 @@ impl Value {
         Value::Cons(Rc::new(ConsCell::new(car, cdr)))
     }
 
-    pub(crate) fn vector_storage_cons(car: Value, cdr: Value) -> Self {
-        Value::Cons(Rc::new(ConsCell::new_representation(car, cdr)))
+    pub fn vector(items: impl IntoIterator<Item = Value>) -> Self {
+        let slots = items.into_iter().collect::<Vec<_>>();
+        if slots.is_empty() {
+            EMPTY_VECTOR_VALUE.with(Clone::clone)
+        } else {
+            Value::Vector(VectorValue::allocated(slots))
+        }
     }
 
     pub fn lambda(params: SharedLambdaParams, body: SharedLambdaBody, env: SharedEnv) -> Self {
@@ -2218,25 +2249,15 @@ impl Value {
     /// Build a proper list from an iterator of values.
     pub fn list(items: impl IntoIterator<Item = Value>) -> Self {
         let items: Vec<Value> = items.into_iter().collect();
-        if matches!(items.as_slice(), [Value::Symbol(tag)] if tag == "vector-literal") {
-            return EMPTY_VECTOR_VALUE.with(Clone::clone);
-        }
-        let vector_slots = matches!(
+        if matches!(
             items.first(),
             Some(Value::Symbol(tag)) if tag == "vector-literal"
-        )
-        .then_some(items.len());
+        ) {
+            return Value::vector(items.into_iter().skip(1));
+        }
         let mut result = Value::Nil;
         for item in items.into_iter().rev() {
-            result = if vector_slots.is_some() {
-                Value::vector_storage_cons(item, result)
-            } else {
-                Value::cons(item, result)
-            };
-        }
-        if let Some(slots) = vector_slots {
-            crate::lisp::native_comp::note_lisp_allocation(slots.saturating_mul(8));
-            register_vector_object(&result, slots);
+            result = Value::cons(item, result);
         }
         result
     }
@@ -2393,6 +2414,13 @@ impl Value {
 
     /// Convert a proper list to a Vec.
     pub fn to_vec(&self) -> Result<Vec<Value>, LispError> {
+        if let Value::Vector(vector) = self {
+            let slots = vector.slots();
+            let mut result = Vec::with_capacity(slots.len().saturating_add(1));
+            result.push(Value::symbol("vector-literal"));
+            result.extend(slots.iter().cloned());
+            return Ok(result);
+        }
         let mut result = Vec::new();
         self.extend_list_elements(&mut result)?;
         Ok(result)
@@ -2436,6 +2464,7 @@ impl Value {
             Value::StringObject(_) => "string".into(),
             Value::Symbol(_) => "symbol".into(),
             Value::Cons(_) => "cons".into(),
+            Value::Vector(_) => "vector".into(),
             Value::BuiltinFunc(name) => format!("builtin<{}>", name),
             Value::Lambda(_) => "lambda".into(),
             Value::Buffer(buffer) => format!("buffer<{}>", buffer.name),
@@ -2513,6 +2542,21 @@ fn values_equal_recursive(
             values_equal_recursive(&a.car.borrow(), &b.car.borrow(), seen)
                 && values_equal_recursive(&a.cdr.borrow(), &b.cdr.borrow(), seen)
         }
+        (Value::Vector(a), Value::Vector(b)) => {
+            if Rc::ptr_eq(a, b) {
+                return true;
+            }
+            let ids = (VectorValue::identity(a), VectorValue::identity(b));
+            if !seen.get_or_insert_with(HashSet::new).insert(ids) {
+                return true;
+            }
+            let a = a.slots();
+            let b = b.slots();
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(a, b)| values_equal_recursive(a, b, seen))
+        }
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Lambda(a), Value::Lambda(b)) => {
             a.params == b.params
@@ -2553,6 +2597,21 @@ fn format_value(
             write!(f, "\"{}\"", state.as_ref().borrow().text)
         }
         Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
+        Value::Vector(vector) => {
+            let id = VectorValue::identity(vector);
+            if !seen.insert(id) {
+                return write!(f, "#<circular-vector>");
+            }
+            write!(f, "[")?;
+            for (index, value) in vector.slots().iter().enumerate() {
+                if index != 0 {
+                    write!(f, " ")?;
+                }
+                format_value(value, f, seen)?;
+            }
+            seen.remove(&id);
+            write!(f, "]")
+        }
         Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(head) if head == "vector-literal") =>
         {
             // Vector literals ride on conses internally but print as vectors.
@@ -2959,7 +3018,7 @@ mod tests {
     }
 
     #[test]
-    fn live_census_counts_vector_storage_as_gnu_vector_slots() {
+    fn live_census_counts_one_gnu_vector_without_representation_conses() {
         let conses_before = census_live_conses();
         let vectors_before = census_live_vectors();
         let vector = Value::list([
@@ -2969,12 +3028,12 @@ mod tests {
         ]);
         let vectors_after = census_live_vectors();
 
-        assert_eq!(census_live_conses(), conses_before + 3);
+        assert_eq!(census_live_conses(), conses_before);
         assert_eq!(vectors_after.count, vectors_before.count + 1);
         assert_eq!(vectors_after.slots, vectors_before.slots + 3);
         assert_eq!(
             vectors_after.representation_conses,
-            vectors_before.representation_conses + 3
+            vectors_before.representation_conses
         );
 
         drop(vector);

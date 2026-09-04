@@ -137,13 +137,13 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
         Value::Integer(1),
         Value::Integer(2),
     ]);
-    let (_, tail) = vector
-        .cons_cells()
-        .expect("the vector facade should have a tagged cons root");
-    let _exclusive_tail_borrow = tail.borrow_mut();
+    let Value::Vector(vector_storage) = &vector else {
+        panic!("vector syntax must construct a GNU-class vector object")
+    };
+    let _exclusive_slots_borrow = vector_storage.slots_mut();
 
-    // Holding the tail exclusively makes any attempted traversal panic.
-    // Record detection must reject the vector solely from its distinct tag.
+    // Holding the slots exclusively makes any attempted traversal panic.
+    // Record detection must reject the vector solely from its object class.
     assert!(record_literal_items(&vector).is_none());
 }
 

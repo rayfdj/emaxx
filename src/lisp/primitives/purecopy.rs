@@ -229,6 +229,7 @@ fn purecopy_inner(
                 )
             }
         }
+        Value::Vector(_) => return purecopy_vector(interp, value, table, env),
         Value::Cons(_) if is_vector_value(value) => {
             return purecopy_vector(interp, value, table, env);
         }
@@ -303,22 +304,24 @@ mod tests {
             .expect("equal vector should be hash-consed in pure storage");
 
         assert!(is_vector_value(&copied));
-        let (Value::Cons(source_head), Value::Cons(copied_head), Value::Cons(equal_copy_head)) =
-            (&source, &copied, &equal_copy)
+        let (
+            Value::Vector(source_vector),
+            Value::Vector(copied_vector),
+            Value::Vector(equal_copy_vector),
+        ) = (&source, &copied, &equal_copy)
         else {
-            panic!("vectors use vector-storage conses internally")
+            panic!("purecopy must preserve GNU's vector object class")
         };
-        assert!(!Rc::ptr_eq(source_head, copied_head));
-        assert!(Rc::ptr_eq(copied_head, equal_copy_head));
+        assert!(!Rc::ptr_eq(source_vector, copied_vector));
+        assert!(Rc::ptr_eq(copied_vector, equal_copy_vector));
 
         let source_items = vector_items(&source).expect("source should remain vectorlike");
         let copied_items = vector_items(&copied).expect("copy should remain vectorlike");
-        let (Value::Cons(source_nested), Value::Cons(copied_nested)) =
+        let (Value::Vector(source_nested), Value::Vector(copied_nested)) =
             (&source_items[1], &copied_items[1])
         else {
             panic!("nested values remain vectors")
         };
-        assert!(is_vector_value(&copied_items[1]));
         assert!(!Rc::ptr_eq(source_nested, copied_nested));
     }
 }

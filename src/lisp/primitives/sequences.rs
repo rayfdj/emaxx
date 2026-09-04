@@ -472,13 +472,12 @@ pub(crate) fn write_vector_items_in_place(
         return Err(list_or_vector_type_error(target));
     }
 
-    let slots = vector_slot_refs(target)?;
-    if slots.len() != items.len() {
+    if vector_items(target)?.len() != items.len() {
         return Err(LispError::Signal("Args out of range".into()));
     }
 
-    for (slot, item) in slots.iter().zip(items.iter()) {
-        *slot.borrow_mut() = item.clone();
+    for (index, item) in items.iter().enumerate() {
+        aset_vector_value(target, index, item.clone())?;
     }
 
     Ok(())

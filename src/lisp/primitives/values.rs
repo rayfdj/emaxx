@@ -314,11 +314,11 @@ fn values_equal_recursive_with_env(
         if !left_is_vector || !right_is_vector {
             return false;
         }
-        let (Some((left_car, _)), Some((right_car, _))) = (left.cons_cells(), right.cons_cells())
+        let (Some(left_id), Some(right_id)) = (vector_identity(left), vector_identity(right))
         else {
             return false;
         };
-        if !seen.insert((left_car.cell_id(), right_car.cell_id())) {
+        if !seen.insert((left_id, right_id)) {
             return true;
         }
         let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right)) else {
@@ -515,6 +515,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Value::String(left), Value::String(right)) => left.ptr_eq(right),
         (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
@@ -575,6 +576,7 @@ pub(crate) fn values_eq_in_env(
             false
         }
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
@@ -682,7 +684,9 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
     match value {
         item if string_like(item).is_some() => Ok(string_text(item)?.chars().count() as i64),
         Value::Nil => Ok(0),
-        Value::Cons(_) if is_vector_value(value) => Ok(vector_items(value)?.len() as i64),
+        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
+            Ok(vector_items(value)?.len() as i64)
+        }
         // fns.c Flength: a char-table's length is MAX_CHAR (0x3FFFFF),
         // not the number of covered codepoints.
         Value::CharTable(_) => Ok(0x3f_ffff),
@@ -1604,16 +1608,16 @@ fn sxhash_value_with_symbol_positions(
 /// Return the structural hash used to index a GNU `equal' hash table.
 ///
 /// Some runtime objects can compare equal to a different representation
-/// (keymap records and their public list projection, for example), and cyclic
-/// cons graphs need bounded traversal.  Keep those values in a collision
-/// bucket.  Ordinary source forms are acyclic cons trees of scalar values, so
-/// they retain the O(1)-bucket behavior of GNU's native hash tables.
+/// (keymap records and their public list projection, for example).  Keep
+/// those values in a collision bucket.  The compatibility check follows only
+/// the portion GNU's `sxhash_obj' will inspect: depth is capped at three and a
+/// list contributes at most seven elements.  Walking the entire key first is
+/// both unnecessary and unlike fns.c, especially for compiler IR lists.
 pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> Option<i64> {
-    fn indexable(
-        value: &Value,
-        visiting: &mut HashSet<usize>,
-        visited: &mut HashSet<usize>,
-    ) -> bool {
+    fn indexable(value: &Value, depth: u32) -> bool {
+        if depth > SXHASH_MAX_DEPTH {
+            return true;
+        }
         match value {
             Value::Record(_)
             | Value::Buffer(_)
@@ -1622,38 +1626,38 @@ pub(crate) fn equal_hash_table_key_hash(interp: &Interpreter, value: &Value) -> 
             | Value::CharTable(_)
             | Value::Lambda(_)
             | Value::ReaderForm(_) => false,
-            Value::Cons(cons_cell) => {
-                let car = &cons_cell.car;
-                let cdr = &cons_cell.cdr;
-                let identity = crate::lisp::types::ConsCell::identity(cons_cell);
-                if visited.contains(&identity) {
-                    return true;
+            Value::Cons(_) => {
+                let mut tail = value.clone();
+                let limit = if depth < SXHASH_MAX_DEPTH {
+                    SXHASH_MAX_LEN
+                } else {
+                    1
+                };
+                for _ in 0..limit {
+                    let Some((car, cdr)) = tail.cons_values() else {
+                        break;
+                    };
+                    if matches!(
+                            &car,
+                        Value::Symbol(symbol) if symbol == "keymap"
+                    ) {
+                        return false;
+                    }
+                    if depth < SXHASH_MAX_DEPTH && !indexable(&car, depth + 1) {
+                        return false;
+                    }
+                    tail = cdr;
                 }
-                if !visiting.insert(identity) {
-                    return false;
+                if depth < SXHASH_MAX_DEPTH && !tail.is_nil() {
+                    return indexable(&tail, depth + 1);
                 }
-                let car_value = car.borrow();
-                if matches!(
-                    &*car_value,
-                    Value::Symbol(symbol) if symbol == "keymap"
-                ) {
-                    visiting.remove(&identity);
-                    return false;
-                }
-                let result = indexable(&car_value, visiting, visited)
-                    && indexable(&cdr.borrow(), visiting, visited);
-                visiting.remove(&identity);
-                if result {
-                    visited.insert(identity);
-                }
-                result
+                true
             }
             _ => true,
         }
     }
 
-    indexable(value, &mut HashSet::new(), &mut HashSet::new())
-        .then(|| sxhash_value(interp, value, HashMode::Equal))
+    indexable(value, 0).then(|| sxhash_value(interp, value, HashMode::Equal))
 }
 
 /// Bucket key for a runtime-accelerated hash table.  The invariant is that
@@ -1807,6 +1811,13 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, text.as_ptr() as usize as u64);
             hash_mix(state, text.len() as u64);
         }
+        Value::Vector(vector) => {
+            hash_mix(state, 16);
+            hash_mix(
+                state,
+                crate::lisp::types::VectorValue::identity(vector) as u64,
+            );
+        }
         Value::BuiltinFunc(name) => {
             hash_mix(state, 6);
             hash_str(state, name);
@@ -1957,6 +1968,19 @@ pub(crate) fn hash_value_equal_at(
         Value::Symbol(symbol) => {
             hash_mix(state, 37);
             hash_str(state, symbol);
+        }
+        Value::Vector(vector) => {
+            hash_mix(state, 40);
+            for slot in vector.slots().iter().take(SXHASH_MAX_LEN) {
+                hash_value_equal_at(
+                    interp,
+                    state,
+                    slot,
+                    include_properties,
+                    depth + 1,
+                    remove_symbol_positions,
+                );
+            }
         }
         Value::Cons(_) => {
             hash_mix(state, 38);
