@@ -9851,11 +9851,24 @@ fn copy_family_native_path_uses_handler_expanded_names() {
                            (equal (file-symlink-p (expand-file-name "l2" dir))
                                   (expand-file-name "~/zz-target"))
                            (file-symlink-p (expand-file-name "l3" dir))
-                           (file-symlink-p (expand-file-name "l4" dir))))))
+                           (file-symlink-p (expand-file-name "l4" dir))))
+                   ;; Relative names resolve against the Lisp
+                   ;; `default-directory' (Fexpand_file_name's nil rule),
+                   ;; never the process working directory.  The Linux
+                   ;; frozen run caught the cwd form through arc-mode and
+                   ;; bytecomp tests that bind default-directory.
+                   (let ((default-directory dir))
+                     (copy-file "base" "rel-copy")
+                     (rename-file "rel-copy" "rel-moved")
+                     (add-name-to-file "base" "rel-name")
+                     (make-symbolic-link "base" "rel-link")
+                     (list (file-exists-p (expand-file-name "rel-moved" dir))
+                           (file-exists-p (expand-file-name "rel-name" dir))
+                           (file-symlink-p (expand-file-name "rel-link" dir))))))
               (delete-directory dir t))))"#;
     let expected = concat!(
         "((t t) (t t) (\"base\") (nil t) (\"base\" t) file-already-exists ",
-        "(\"~/zz-target\" t \"/tmp/zz-q\" \"/:/tmp/zz-q\"))"
+        "(\"~/zz-target\" t \"/tmp/zz-q\" \"/:/tmp/zz-q\") (t t \"base\"))"
     );
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
