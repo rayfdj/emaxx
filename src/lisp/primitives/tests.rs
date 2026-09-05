@@ -2181,6 +2181,56 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
 }
 
 #[test]
+fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for character in [0xd800, 0x110000, 0x3fffff] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "internal-char-font",
+                &[Value::Nil, Value::Integer(character)],
+                &mut env
+            )
+            .expect("GNU character accepted by the initial terminal"),
+            Value::Nil,
+        );
+    }
+    for character in [Value::Integer(-1), Value::Integer(0x400000), Value::Nil] {
+        assert!(matches!(
+            call(&mut interp, "internal-char-font", &[Value::Nil, character.clone()], &mut env),
+            Err(LispError::WrongTypeArgument(predicate, value))
+                if predicate == "characterp" && value == character
+        ));
+    }
+    interp.buffer.insert("A");
+    assert_eq!(
+        call(
+            &mut interp,
+            "internal-char-font",
+            &[Value::Integer(1), Value::Integer(0x400000)],
+            &mut env
+        )
+        .expect("positive fixnum outside the character range returns nil"),
+        Value::Nil,
+    );
+    assert!(matches!(
+        call(&mut interp, "internal-char-font", &[Value::Integer(1), Value::Integer(-1)], &mut env),
+        Err(LispError::WrongTypeArgument(predicate, value))
+            if predicate == "wholenump" && value == Value::Integer(-1)
+    ));
+    let error = call(
+        &mut interp,
+        "internal-char-font",
+        &[Value::Integer(2), Value::Integer(-1)],
+        &mut env,
+    )
+    .expect_err("check position before the optional character");
+    assert!(matches!(error, LispError::SignalValue(value)
+        if value.car().is_ok_and(|head| head == Value::symbol("args-out-of-range"))));
+}
+
+#[test]
 fn internal_char_font_matches_the_headless_gnu_font_boundary() {
     assert_upstream_primitive_contract(
         r#"(prin1 (list (internal-char-font nil ?A)
@@ -11922,6 +11972,112 @@ fn minor_mode_keymap_consumers_share_gnu_order_replacement_and_default_rules() {
 }
 
 #[test]
+fn keymap_parent_primitives_keep_constructor_object_identity() {
+    // keymap.c:Fmake_sparse_keymap / Fset_keymap_parent / Fkeymap_parent:
+    // the public constructor result is the object these primitives mutate.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    for constructor in ["make-sparse-keymap", "make-keymap"] {
+        let child = call(&mut interp, constructor, &[], &mut env).expect("child map");
+        let parent = call(&mut interp, constructor, &[], &mut env).expect("parent map");
+        assert!(matches!(child, Value::Cons(_)));
+        let returned = call(
+            &mut interp,
+            "set-keymap-parent",
+            &[child.clone(), parent.clone()],
+            &mut env,
+        )
+        .expect("set parent of the original map");
+        assert!(values_eq_in_env(&interp, &returned, &parent, &env));
+        let found = call(
+            &mut interp,
+            "keymap-parent",
+            std::slice::from_ref(&child),
+            &mut env,
+        )
+        .expect("read parent of the original map");
+        assert!(values_eq_in_env(&interp, &found, &parent, &env));
+        // The returned object is not a detached snapshot. A later binding
+        // in it must be visible through the child's inheritance chain.
+        let key = Value::vector(vec![Value::Integer(13)]);
+        call(
+            &mut interp,
+            "define-key",
+            &[parent, key.clone(), Value::symbol("ignore")],
+            &mut env,
+        )
+        .expect("define inherited command");
+        assert_eq!(
+            call(&mut interp, "lookup-key", &[child, key], &mut env).expect("inherited lookup"),
+            Value::symbol("ignore")
+        );
+    }
+}
+
+#[test]
+fn keymap_parent_replacement_keeps_lookup_and_mutation_shared() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let child = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("child");
+    let first = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("first parent");
+    let second = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("second parent");
+    let key = Value::vector(vec![Value::Integer(13)]);
+    for (parent, command) in [(first.clone(), "ignore"), (second.clone(), "newline")] {
+        call(
+            &mut interp,
+            "define-key",
+            &[parent, key.clone(), Value::symbol(command)],
+            &mut env,
+        )
+        .expect("define parent command");
+    }
+    for (parent, command) in [(first, "ignore"), (second, "newline")] {
+        let result = call(
+            &mut interp,
+            "set-keymap-parent",
+            &[child.clone(), parent.clone()],
+            &mut env,
+        )
+        .expect("replace parent");
+        assert!(values_eq_in_env(&interp, &result, &parent, &env));
+        assert_eq!(
+            call(
+                &mut interp,
+                "lookup-key",
+                &[child.clone(), key.clone()],
+                &mut env
+            )
+            .expect("lookup after replacing parent"),
+            Value::symbol(command)
+        );
+    }
+    assert_eq!(
+        call(
+            &mut interp,
+            "set-keymap-parent",
+            &[child.clone(), Value::Nil],
+            &mut env,
+        )
+        .expect("detach parent"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "keymap-parent",
+            std::slice::from_ref(&child),
+            &mut env
+        )
+        .expect("no parent"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(&mut interp, "lookup-key", &[child, key], &mut env).expect("no inherited binding"),
+        Value::Nil
+    );
+}
+
+#[test]
 fn map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent() {
     let program = r#"
         (let* ((parent (make-sparse-keymap))
@@ -19120,9 +19276,9 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
 
 #[test]
 fn format_mode_line_renders_the_dumped_spec_interactively() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     call(
         &mut interp,
@@ -19164,9 +19320,9 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
 
 #[test]
 fn mode_line_line_number_is_relative_to_the_accessible_region() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     call(
         &mut interp,
@@ -19206,9 +19362,12 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
 /// accumulated `contract-out' string; the same program princs it for the
 /// oracle's stdout comparison.
 fn emaxx_batch_output(program: &str) -> String {
-    let mut interp =
-        crate::batch::initialize_interactive_interpreter().expect("batch interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
+    // These unchanged samples assume an empty buffer. GNU executes their
+    // --eval action before command-line-1 inserts initial-scratch-message;
+    // the in-process fixture now returns after complete GNU startup.
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the sample buffer");
     let forms = Reader::new(program).read_all().expect("program parses");
     for form in &forms {
         interp
@@ -19302,9 +19461,9 @@ fn paging_keys_carry_the_gnu_bindings() {
 
 #[test]
 fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     for n in 0..60 {
         call(
@@ -19341,9 +19500,9 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
 
 #[test]
 fn glass_mode_line_honors_font_lock_face_string_properties() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let form = Reader::new(
         "(setq mode-line-format

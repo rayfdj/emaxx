@@ -85,109 +85,11 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
-        let direct = PathBuf::from(target);
-        if direct.is_file() {
-            return Some(direct);
-        }
-
-        let with_el = if target.ends_with(".el") || target.ends_with(".elc") {
-            None
-        } else {
-            Some(format!("{target}.el"))
-        };
-        if let Some(with_el) = &with_el {
-            let candidate = PathBuf::from(with_el);
-            if candidate.is_file() {
-                if self.load_source_prefers_elc(&candidate)
-                    && let Some(with_elc) = if target.ends_with(".el") || target.ends_with(".elc") {
-                        None
-                    } else {
-                        Some(PathBuf::from(format!("{target}.elc")))
-                    }
-                    && with_elc.is_file()
-                {
-                    return Some(with_elc);
-                }
-                return Some(candidate);
-            }
-        }
-        let with_elc = if target.ends_with(".el") || target.ends_with(".elc") {
-            None
-        } else {
-            Some(format!("{target}.elc"))
-        };
-        if let Some(with_elc) = &with_elc {
-            let candidate = PathBuf::from(with_elc);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        for root in &self.load_path {
-            let candidate = root.join(target);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            if let Some(with_el) = &with_el {
-                let candidate = root.join(with_el);
-                if candidate.is_file() {
-                    if self.load_source_prefers_elc(&candidate)
-                        && let Some(with_elc) = &with_elc
-                    {
-                        let elc_candidate = root.join(with_elc);
-                        if elc_candidate.is_file() {
-                            return Some(elc_candidate);
-                        }
-                    }
-                    return Some(candidate);
-                }
-            }
-            if let Some(with_elc) = &with_elc {
-                let candidate = root.join(with_elc);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        if let Some(alias) = repeated_directory_load_alias(target) {
-            let alias_with_el = if alias.ends_with(".el") || alias.ends_with(".elc") {
-                None
-            } else {
-                Some(format!("{alias}.el"))
-            };
-            let alias_with_elc = if alias.ends_with(".el") || alias.ends_with(".elc") {
-                None
-            } else {
-                Some(format!("{alias}.elc"))
-            };
-            for root in &self.load_path {
-                let candidate = root.join(&alias);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-                if let Some(alias_with_el) = &alias_with_el {
-                    let candidate = root.join(alias_with_el);
-                    if candidate.is_file() {
-                        if self.load_source_prefers_elc(&candidate)
-                            && let Some(alias_with_elc) = &alias_with_elc
-                        {
-                            let elc_candidate = root.join(alias_with_elc);
-                            if elc_candidate.is_file() {
-                                return Some(elc_candidate);
-                            }
-                        }
-                        return Some(candidate);
-                    }
-                }
-                if let Some(alias_with_elc) = &alias_with_elc {
-                    let candidate = root.join(alias_with_elc);
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
-            }
-        }
-        None
+    pub(crate) fn resolve_load_target(
+        &mut self,
+        target: &str,
+    ) -> Result<Option<PathBuf>, LispError> {
+        crate::lisp::primitives::resolve_load_target_in_env(self, target, &Env::new())
     }
 
     pub fn load_target(&mut self, target: &str) -> Result<PathBuf, LispError> {
@@ -199,131 +101,71 @@ impl Interpreter {
         target: &str,
         env: &Env,
     ) -> Result<PathBuf, LispError> {
-        let Some(path) = crate::lisp::primitives::resolve_load_target_in_env(self, target, env)
-        else {
-            return Err(load_file_missing_error(target));
-        };
-        let path = crate::lisp::primitives::maybe_swap_for_native(self, target, &path, env)?;
-        self.load_resolved_path(&path, env, true)?;
-        Ok(path)
+        let (_, found) = primitives::load_file(
+            self,
+            &[Value::string(target), Value::Nil, Value::T],
+            &mut env.clone(),
+        )?;
+        Ok(PathBuf::from(primitives::string_text(&found)?))
     }
 
-    pub(crate) fn load_resolved_path(
+    /// Fload's native branch, after descriptor closure and the outer load
+    /// bindings. The common Fload owner runs the final hook after unwinding.
+    pub(crate) fn load_native_resolved_path(
         &mut self,
         path: &std::path::Path,
+        history_filename: &str,
         env: &Env,
-        nomessage: bool,
     ) -> Result<Value, LispError> {
-        let force_message = self
-            .lookup_var("force-load-messages", env)
-            .is_some_and(|value| value.is_truthy());
-        if !nomessage || force_message {
-            let _ = crate::lisp::primitives::call(
-                self,
-                "message",
-                &[Value::String(
-                    format!("Loading {}...", path.display()).into(),
-                )],
-                &mut env.clone(),
-            )?;
-        }
-        if path.extension().is_some_and(|extension| extension == "eln") {
-            let filename = path.to_str().ok_or_else(|| {
-                LispError::SignalValue(Value::list([
-                    Value::symbol("file-error"),
-                    Value::string("Invalid native Lisp filename"),
-                ]))
-            })?;
-            // lread.c:Fload computes the source-facing .elc name before it
-            // crosses comp.c's Fnative_elisp_load boundary.  A manual .eln
-            // load has no mapping and keeps its own file name.
-            let native_basename = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| filename.to_string());
-            let mut load_environment = env.clone();
-            let mapped_source = self
-                .lookup_var("comp-eln-to-el-h", env)
-                .map(|table| {
-                    crate::lisp::primitives::call(
-                        self,
-                        "gethash",
-                        &[Value::string(&native_basename), table, Value::Nil],
-                        &mut load_environment,
-                    )
-                })
-                .transpose()?
-                .unwrap_or(Value::Nil);
-            let history_filename = crate::lisp::primitives::string_like(&mapped_source)
-                .map(|source| {
-                    let source = source.text;
-                    let source = source.strip_suffix(".gz").unwrap_or(&source);
-                    format!("{source}c")
-                })
-                .unwrap_or_else(|| filename.to_string());
-
-            // lread.c:Fload owns the dynamic load context and load-history;
-            // comp.c:Fnative_elisp_load owns only the native compilation unit.
-            let previous_file = self.set_current_load_file(Some(history_filename.clone()));
-            let mut restores = Vec::with_capacity(7);
-            for (name, value) in [
-                ("lexical-binding", Value::Nil),
-                ("lread--unescaped-character-literals", Value::Nil),
-                ("load-file-name", Value::string(&history_filename)),
-                ("load-true-file-name", Value::string(filename)),
-                ("inhibit-file-name-operation", Value::Nil),
-                ("load-in-progress", Value::T),
-                (
-                    "current-load-list",
-                    Value::list([Value::string(&history_filename)]),
-                ),
-            ] {
-                match self.bind_special_variable(name, value, &mut load_environment) {
-                    Ok(restore) => restores.push(restore),
-                    Err(error) => {
-                        while let Some(restore) = restores.pop() {
-                            let _ = self.restore_special_binding(restore, &mut load_environment);
-                        }
-                        self.set_current_load_file(previous_file);
-                        return Err(error);
+        let filename = path.to_str().ok_or_else(|| {
+            LispError::SignalValue(Value::list([
+                Value::symbol("file-error"),
+                Value::string("Invalid native Lisp filename"),
+            ]))
+        })?;
+        let previous_file = self.set_current_load_file(Some(history_filename.to_owned()));
+        let mut load_environment = env.clone();
+        let mut restores = Vec::with_capacity(5);
+        for (name, value) in [
+            ("load-file-name", Value::string(history_filename)),
+            ("load-true-file-name", Value::string(filename)),
+            ("inhibit-file-name-operation", Value::Nil),
+            ("load-in-progress", Value::T),
+            (
+                "current-load-list",
+                Value::list([Value::string(history_filename)]),
+            ),
+        ] {
+            match self.bind_special_variable(name, value, &mut load_environment) {
+                Ok(restore) => restores.push(restore),
+                Err(error) => {
+                    while let Some(restore) = restores.pop() {
+                        let _ = self.restore_special_binding(restore, &mut load_environment);
                     }
-                }
-            }
-            let load_result = crate::lisp::primitives::native_elisp_load(
-                self,
-                &Value::string(filename),
-                false,
-                &mut load_environment,
-            );
-            if load_result.is_ok() {
-                let current = self
-                    .lookup_var("current-load-list", &load_environment)
-                    .unwrap_or_else(|| Value::list([Value::string(&history_filename)]));
-                self.commit_entire_load_history(&history_filename, current);
-            }
-            while let Some(restore) = restores.pop() {
-                if let Err(error) = self.restore_special_binding(restore, &mut load_environment) {
                     self.set_current_load_file(previous_file);
                     return Err(error);
                 }
             }
-            self.set_current_load_file(previous_file);
-            load_result?;
-
-            // lread.c calls the Lisp-owned after-load hook only after all
-            // bindings above have unwound.
-            if let Ok(after_load) = self.lookup_function("do-after-load-evaluation", env) {
-                self.call_function_value(
-                    after_load,
-                    Some("do-after-load-evaluation"),
-                    &[Value::string(&history_filename)],
-                    &mut load_environment,
-                )?;
-            }
-            return Ok(Value::T);
         }
-        crate::lisp::load_file_strict(self, path)?;
-        Ok(Value::T)
+        let mut result = primitives::native_elisp_load(
+            self,
+            &Value::string(filename),
+            false,
+            &mut load_environment,
+        );
+        if result.is_ok() {
+            let current = self
+                .lookup_var("current-load-list", &load_environment)
+                .unwrap_or_else(|| Value::list([Value::string(history_filename)]));
+            self.commit_entire_load_history(&Value::string(history_filename), current);
+        }
+        while let Some(restore) = restores.pop() {
+            if let Err(error) = self.restore_special_binding(restore, &mut load_environment) {
+                result = Err(error);
+            }
+        }
+        self.set_current_load_file(previous_file);
+        result.map(|_| Value::T)
     }
 
     /// The quote characters `error' will requote a message with, per the
@@ -382,17 +224,27 @@ impl Interpreter {
         }
         let load_target = target.unwrap_or(feature);
         let (open, close) = self.effective_quote_pair(env);
-        self.with_require_nesting(feature, (open, close), |interp| {
-            let Some(path) =
-                crate::lisp::primitives::resolve_load_target_in_env(interp, load_target, env)
-            else {
-                return Err(load_file_missing_error(load_target));
-            };
-            let path =
-                crate::lisp::primitives::maybe_swap_for_native(interp, load_target, &path, env)?;
-            interp.load_resolved_path(&path, env, true)?;
-            Ok(())
+        let loaded = self.with_require_nesting(feature, (open, close), |interp| {
+            primitives::load_file(
+                interp,
+                &[
+                    Value::string(load_target),
+                    Value::Nil,
+                    Value::T,
+                    Value::Nil,
+                    if target.is_none() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                ],
+                env,
+            )
+            .map(|(value, _)| value)
         })?;
+        if loaded.is_nil() {
+            return Ok(Value::Nil);
+        }
         // fns.c Frequire signals through `error', whose format string is
         // processed with `format-message' semantics: the quotes follow the
         // effective `text-quoting-style', which is grave in a non-UTF-8
@@ -2913,20 +2765,19 @@ impl Interpreter {
     /// GNU's `build_load_history' replaces every older entry for an entire
     /// file evaluation.  Keeping duplicate entries makes `unload-feature'
     /// remove only the newest one and leaves the previous definitions live.
-    pub(crate) fn commit_entire_load_history(&mut self, filename: &str, current: Value) {
+    pub(crate) fn commit_entire_load_history(&mut self, filename: &Value, current: Value) {
         let mut entry = current.to_vec().unwrap_or_default();
         entry.reverse();
         if entry.is_empty() {
             return;
         }
 
-        let filename = Value::String(filename.to_string().into());
         let mut history = self
             .lookup_var("load-history", &Env::new())
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default();
         history.retain(|existing| match existing.car() {
-            Ok(existing_filename) => existing_filename != filename,
+            Ok(existing_filename) => &existing_filename != filename,
             Err(_) => true,
         });
         history.insert(0, Value::list(entry));
@@ -3018,35 +2869,6 @@ impl Interpreter {
 
     pub(crate) fn take_combined_after_change(&mut self) -> Option<CombinedAfterChangeState> {
         self.combined_after_change.take()
-    }
-}
-
-fn repeated_directory_load_alias(target: &str) -> Option<String> {
-    let (directory, file) = target.rsplit_once('/')?;
-    let directory_name = directory.rsplit('/').next()?;
-    let alias_file = file.strip_prefix(&format!("{directory_name}-"))?;
-    Some(format!("{directory}/{alias_file}"))
-}
-
-impl Interpreter {
-    pub(crate) fn load_source_prefers_elc(&self, path: &std::path::Path) -> bool {
-        load_source_prefers_elc_for_vm(path, self.prefer_compiled_loads)
-    }
-}
-
-fn load_source_prefers_elc_for_vm(path: &std::path::Path, vm_enabled: bool) -> bool {
-    vm_enabled || fs::metadata(path).is_ok_and(|metadata| metadata.len() == 0)
-}
-
-#[cfg(test)]
-mod load_resolution_tests {
-    use super::load_source_prefers_elc_for_vm;
-
-    #[test]
-    fn bytecode_vm_selects_compiled_file_even_with_nonempty_source() {
-        let missing_source = std::path::Path::new("definitely-not-an-emaxx-source-file.el");
-        assert!(load_source_prefers_elc_for_vm(missing_source, true));
-        assert!(!load_source_prefers_elc_for_vm(missing_source, false));
     }
 }
 

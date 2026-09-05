@@ -5817,11 +5817,10 @@ fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
                 Value::String("Demo".into()),
                 Value::Symbol("ignore".into()),
                 Value::T,
-                // The sibling GNU build native-compiles `last' into a subr;
-                // Emaxx models a no-native-comp GNU (native-comp-available-p
-                // is nil), whose dumped Lisp owners are byte-code functions
-                // loaded from their compiled `.elc' representation.
-                Value::Symbol("byte-code-function".into()),
+                // Both ordinary native-enabled runtimes load `last' as a
+                // native subr. The separate pinned GNU terminal oracle
+                // confirms this existing expression's complete result.
+                Value::Symbol("subr".into()),
                 Value::BuiltinFunc("re-search-forward".into()),
                 Value::String("subr.elc".into()),
                 Value::String("subr.elc".into()),

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used)]
-
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -59,11 +57,19 @@ const FIXTURES: &[Fixture] = &[
     },
 ];
 
-fn run_compiler(binary: &Path, source: &Path, home: &Path) -> Output {
+fn run_compiler(binary: &Path, source: &Path, home: &Path, temporary: &Path) -> Output {
     Command::new(binary)
         .args(["-Q", "--batch", "-f", "batch-native-compile"])
         .arg(source)
+        .env_clear()
+        .env(
+            "PATH",
+            std::env::var_os("PATH").expect("compiler toolchain PATH"),
+        )
         .env("HOME", home)
+        .env("TMPDIR", temporary)
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
         .output()
         .unwrap_or_else(|error| panic!("run {}: {error}", binary.display()))
 }
@@ -96,7 +102,9 @@ fn artifacts_below(root: &Path, source: &Path) -> Vec<PathBuf> {
     let prefix = artifact_prefix(source);
     let mut artifacts = walkdir::WalkDir::new(root)
         .into_iter()
-        .filter_map(Result::ok)
+        .map(|entry| {
+            entry.unwrap_or_else(|error| panic!("inspect native cache {}: {error}", root.display()))
+        })
         .filter(|entry| entry.file_type().is_file())
         .map(walkdir::DirEntry::into_path)
         .filter(|path| {
@@ -120,14 +128,7 @@ fn only_artifact(mut artifacts: Vec<PathBuf>, compiler: &Path, source: &Path) ->
         artifacts.len(),
         source.display(),
     );
-    artifacts.pop().unwrap()
-}
-
-fn newly_created(before: &[PathBuf], after: Vec<PathBuf>) -> Vec<PathBuf> {
-    after
-        .into_iter()
-        .filter(|path| !before.contains(path))
-        .collect()
+    artifacts.pop().expect("exactly one artifact")
 }
 
 fn first_difference(left: &[u8], right: &[u8]) -> Option<usize> {
@@ -144,11 +145,6 @@ fn unchanged_gnu_sources_produce_identical_native_artifacts() {
     let gnu_root = project.join("../emacs");
     let gnu = gnu_root.join("src/emacs");
     let subject = PathBuf::from(env!("CARGO_BIN_EXE_emaxx"));
-    let subject_cache = subject
-        .parent()
-        .and_then(Path::parent)
-        .expect("Emaxx binary is inside a Cargo profile directory")
-        .join("native-lisp");
 
     assert!(gnu.is_file(), "GNU oracle is missing: {}", gnu.display());
 
@@ -161,11 +157,19 @@ fn unchanged_gnu_sources_produce_identical_native_artifacts() {
         std::process::id()
     ));
     std::fs::create_dir(&work).expect("create native-comp identity work directory");
-    let home = work.join("home");
-    let gnu_cache = home.join(".emacs.d/eln-cache");
-    std::fs::create_dir_all(&gnu_cache).expect("create isolated GNU native-comp cache");
-
-    for fixture in FIXTURES {
+    for (index, fixture) in FIXTURES.iter().enumerate() {
+        // GNU startup.el owns both editors' user cache. Give every editor
+        // and fixture a fresh home, with no inherited compiler/test knobs.
+        let case = work.join(format!("case-{index}"));
+        let subject_home = case.join("subject-home");
+        let gnu_home = case.join("gnu-home");
+        let subject_tmp = case.join("subject-tmp");
+        let gnu_tmp = case.join("gnu-tmp");
+        for directory in [&subject_home, &gnu_home, &subject_tmp, &gnu_tmp] {
+            std::fs::create_dir_all(directory).expect("create isolated compiler directory");
+        }
+        let subject_cache = subject_home.join(".emacs.d/eln-cache");
+        let gnu_cache = gnu_home.join(".emacs.d/eln-cache");
         let upstream = gnu_root.join(fixture.relative_path);
         let source = work.join(fixture.relative_path);
         std::fs::create_dir_all(source.parent().expect("fixture has a parent directory"))
@@ -180,25 +184,26 @@ fn unchanged_gnu_sources_produce_identical_native_artifacts() {
         println!(
             "native-comp identity: {} bytes, {}: {}",
             std::fs::metadata(&source).expect("stat fixture").len(),
-            source.file_name().unwrap().to_string_lossy(),
+            source
+                .file_name()
+                .expect("fixture filename")
+                .to_string_lossy(),
             fixture.coverage,
         );
 
-        let gnu_before = artifacts_below(&gnu_cache, &source);
-        let gnu_output = run_compiler(&gnu, &source, &home);
+        // Subject first: the oracle's answer does not exist when Emaxx runs.
+        let subject_output = run_compiler(&subject, &source, &subject_home, &subject_tmp);
+        assert_compiler_succeeded(&subject, &source, &subject_output);
+        let subject_artifacts = artifacts_below(&subject_cache, &source);
+        let gnu_output = run_compiler(&gnu, &source, &gnu_home, &gnu_tmp);
         assert_compiler_succeeded(&gnu, &source, &gnu_output);
-        let gnu_artifacts = newly_created(&gnu_before, artifacts_below(&gnu_cache, &source));
+        let gnu_artifacts = artifacts_below(&gnu_cache, &source);
 
         if !fixture.expected_artifact {
             assert!(
                 gnu_artifacts.is_empty(),
                 "GNU ignored the fixture's no-byte-compile policy: {gnu_artifacts:?}"
             );
-            let subject_before = artifacts_below(&subject_cache, &source);
-            let subject_output = run_compiler(&subject, &source, &home);
-            assert_compiler_succeeded(&subject, &source, &subject_output);
-            let subject_artifacts =
-                newly_created(&subject_before, artifacts_below(&subject_cache, &source));
             assert!(
                 subject_artifacts.is_empty(),
                 "Emaxx ignored the fixture's no-byte-compile policy: {subject_artifacts:?}"
@@ -210,24 +215,9 @@ fn unchanged_gnu_sources_produce_identical_native_artifacts() {
             continue;
         }
 
-        let gnu_artifact = only_artifact(gnu_artifacts, &gnu, &source);
-        let reference = work.join(format!(
-            "{}.gnu.eln",
-            source.file_stem().unwrap().to_string_lossy()
-        ));
-        std::fs::copy(&gnu_artifact, &reference).expect("save GNU artifact outside its cache");
-        std::fs::remove_file(&gnu_artifact)
-            .expect("remove test-owned GNU artifact before Emaxx compilation");
-
-        let subject_before = artifacts_below(&subject_cache, &source);
-        let subject_output = run_compiler(&subject, &source, &home);
-        assert_compiler_succeeded(&subject, &source, &subject_output);
-        let subject_artifact = only_artifact(
-            newly_created(&subject_before, artifacts_below(&subject_cache, &source)),
-            &subject,
-            &source,
-        );
-        let expected = std::fs::read(&reference).expect("read saved GNU artifact");
+        let reference = only_artifact(gnu_artifacts, &gnu, &source);
+        let subject_artifact = only_artifact(subject_artifacts, &subject, &source);
+        let expected = std::fs::read(&reference).expect("read GNU artifact");
         let actual = std::fs::read(&subject_artifact).expect("read Emaxx artifact");
         if let Some(offset) = first_difference(&expected, &actual) {
             panic!(

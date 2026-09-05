@@ -1317,6 +1317,290 @@ mod eval_value_buffer_tests {
     use super::*;
 
     #[test]
+    fn load_path_forwarding_preserves_the_original_list() {
+        let mut interpreter = Interpreter::new();
+        interpreter.set_load_path(vec![PathBuf::from("/source/lisp")]);
+        let first = interpreter
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        let second = interpreter
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        assert_eq!(
+            primitives::call(&mut interpreter, "eq", &[first, second], &mut Env::new())
+                .expect("ordinary primitive succeeds"),
+            Value::T,
+            "lread.c Vload_path and data.c Lisp_Fwd_Obj return the stored list"
+        );
+    }
+
+    #[test]
+    fn load_path_forwarding_exposes_spliced_directories() {
+        let mut interpreter = Interpreter::new();
+        interpreter.set_load_path(vec![PathBuf::from("/source/lisp")]);
+        let original = interpreter
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        let tail = Value::list([Value::string("/source/lisp/emacs-lisp")]);
+        primitives::call(
+            &mut interpreter,
+            "setcdr",
+            &[original, tail.clone()],
+            &mut Env::new(),
+        )
+        .expect("ordinary primitive succeeds");
+        let current = interpreter
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        assert_eq!(
+            primitives::call(
+                &mut interpreter,
+                "eq",
+                &[current.cdr().expect("load-path is a cons"), tail],
+                &mut Env::new(),
+            )
+            .expect("ordinary primitive succeeds"),
+            Value::T,
+            "GNU startup.el splices subdirectories into the live Vload_path list"
+        );
+        assert_eq!(
+            interpreter.configured_load_path(),
+            [
+                PathBuf::from("/source/lisp"),
+                PathBuf::from("/source/lisp/emacs-lisp")
+            ]
+        );
+    }
+
+    #[test]
+    fn load_path_forwarding_tracks_binding_restore_and_buffer_selection() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        interpreter.set_load_path(vec![PathBuf::from("/source/lisp")]);
+        let original = interpreter
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        let temporary = Value::list([Value::string("/temporary")]);
+        let restore = interpreter
+            .bind_special_dynamic("load-path", temporary.clone(), &mut env)
+            .expect("bind forwarded load-path");
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter.load_path,
+            &temporary,
+            &env
+        ));
+        interpreter
+            .restore_special_dynamic(restore, &mut env)
+            .expect("restore forwarded load-path");
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter.load_path,
+            &original,
+            &env
+        ));
+
+        let first_buffer = interpreter.current_buffer_id();
+        let (second_buffer, _) = interpreter.create_buffer(" *load-path forwarding*");
+        interpreter.set_buffer_local_value(first_buffer, "load-path", temporary.clone());
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter.load_path,
+            &temporary,
+            &env
+        ));
+        interpreter
+            .set_current_buffer_id(second_buffer)
+            .expect("select default-path buffer");
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter.load_path,
+            &original,
+            &env
+        ));
+        interpreter
+            .set_current_buffer_id(first_buffer)
+            .expect("select local-path buffer");
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter.load_path,
+            &temporary,
+            &env
+        ));
+        interpreter.remove_buffer_local_value(first_buffer, "load-path");
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter.load_path,
+            &original,
+            &env
+        ));
+    }
+
+    #[test]
+    fn load_path_forwarding_keeps_detached_c_roots_without_stale_snapshots() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        interpreter.set_load_path(vec![PathBuf::from("/source/lisp")]);
+        let original = interpreter
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        let table = primitives::call(
+            &mut interpreter,
+            "make-hash-table",
+            &[
+                Value::symbol(":test"),
+                Value::symbol("eq"),
+                Value::symbol(":weakness"),
+                Value::symbol("key"),
+            ],
+            &mut env,
+        )
+        .expect("ordinary primitive succeeds");
+        interpreter.set_global_binding("weak-table-root", table.clone());
+        for key in [original.clone(), Value::cons(Value::Integer(7), Value::Nil)] {
+            primitives::call(
+                &mut interpreter,
+                "puthash",
+                &[key, Value::T, table.clone()],
+                &mut env,
+            )
+            .expect("ordinary primitive succeeds");
+        }
+        primitives::call(
+            &mut interpreter,
+            "makunbound",
+            &[Value::symbol("load-path")],
+            &mut env,
+        )
+        .expect("ordinary primitive succeeds");
+        assert!(interpreter.symbol_value_cell("load-path").is_err());
+        let plain = Value::list([Value::string("/plain")]);
+        interpreter.set_symbol_value_cell("load-path", plain.clone());
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter.load_path,
+            &original,
+            &env
+        ));
+        let reachability = interpreter.weak_hash_reachability(&env, &[]);
+        let Value::Record(id) = table else {
+            panic!("hash table")
+        };
+        let (_, entries, retained) = reachability
+            .tables
+            .iter()
+            .find(|(key, _, _)| *key == id)
+            .expect("weak table participates in root traversal");
+        assert_eq!(entries.len(), 2, "rooted key and unrooted negative control");
+        assert_eq!(retained.len(), 2);
+        for ((key, _), retained) in entries.iter().zip(retained) {
+            assert_eq!(
+                *retained,
+                primitives::values_eq_in_env(&interpreter, key, &original, &env)
+            );
+        }
+
+        interpreter.set_load_path(vec![PathBuf::from("/replacement")]);
+        assert!(primitives::values_eq_in_env(
+            &interpreter,
+            &interpreter
+                .symbol_value_cell("load-path")
+                .expect("load-path is bound"),
+            &plain,
+            &env
+        ));
+        let reachability = interpreter.weak_hash_reachability(&env, &[]);
+        let (_, _, retained) = reachability
+            .tables
+            .iter()
+            .find(|(key, _, _)| *key == id)
+            .expect("weak table participates in root traversal");
+        assert_eq!(retained.len(), 2);
+        assert!(
+            retained.iter().all(|retained| !retained),
+            "C replacement releases the old root"
+        );
+    }
+
+    #[test]
+    fn load_path_forwarding_image_copy_preserves_sharing_without_sharing_the_template() {
+        let mut interpreter = Interpreter::new();
+        interpreter.set_load_path(vec![PathBuf::from("/source/lisp")]);
+        let original = interpreter
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        interpreter.set_global_binding("saved-load-path", original.clone());
+        let copied = interpreter.deep_clone_image();
+        let copied_path = copied
+            .symbol_value_cell("load-path")
+            .expect("load-path is bound");
+        assert!(primitives::values_eq_in_env(
+            &copied,
+            &copied_path,
+            &copied.load_path,
+            &Env::new()
+        ));
+        assert!(primitives::values_eq_in_env(
+            &copied,
+            &copied_path,
+            &copied
+                .symbol_value_cell("saved-load-path")
+                .expect("saved list is bound"),
+            &Env::new()
+        ));
+        assert!(!primitives::values_eq_in_env(
+            &copied,
+            &copied_path,
+            &original,
+            &Env::new()
+        ));
+        copied_path
+            .set_cdr(Value::list([Value::string("/extra")]))
+            .expect("mutate copied list");
+        assert!(original.cdr().expect("load-path is a cons").is_nil());
+        // This checks the existing in-process fixture copier only, not pdumper.
+    }
+
+    #[test]
+    fn load_path_forwarding_loader_uses_the_c_slot_after_makunbound() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../emacs/lisp/emacs-lisp")
+            .canonicalize()
+            .expect("GNU fixture directory");
+        let source = root.join("seq.el");
+        assert!(source.is_file(), "unchanged GNU fixture must exist");
+        interpreter.set_load_path(vec![root]);
+        interpreter.set_variable(
+            "load-suffixes",
+            Value::list([Value::string(".el")]),
+            &mut env,
+        );
+        for detached in [false, true] {
+            if detached {
+                primitives::call(
+                    &mut interpreter,
+                    "makunbound",
+                    &[Value::symbol("load-path")],
+                    &mut env,
+                )
+                .expect("ordinary primitive succeeds");
+                interpreter.set_symbol_value_cell(
+                    "load-path",
+                    Value::list([Value::string("/not-the-c-path")]),
+                );
+            }
+            assert_eq!(
+                primitives::resolve_load_target_in_env(&mut interpreter, "seq", &env)
+                    .expect("resolve GNU source"),
+                Some(source.clone()),
+                "lread.c:Fload passes Vload_path to openp, detached={detached}"
+            );
+        }
+    }
+
+    #[test]
     fn lexical_binding_symbols_are_gc_roots_before_closure_projection() {
         let interpreter = Interpreter::new();
         let lisp_name = Value::string("binding");

@@ -18,6 +18,7 @@ use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
+pub(crate) use bindings::dynamic_library_suffix_values;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
@@ -3117,6 +3118,8 @@ impl Interpreter {
         mark(&self.inhibit_quit);
         mark(&self.throw_on_input);
         mark(&self.overriding_plist_environment);
+        mark(&self.load_path);
+        mark(&self.loads_in_progress);
         for value in self.detached_forwarded_variables.values() {
             mark(value);
         }
@@ -3517,6 +3520,8 @@ impl Interpreter {
             clone.inhibit_quit = c.copy(&self.inhibit_quit);
             clone.throw_on_input = c.copy(&self.throw_on_input);
             clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
+            clone.load_path = c.copy(&self.load_path);
+            clone.loads_in_progress = c.copy(&self.loads_in_progress);
             for value in clone.detached_forwarded_variables.values_mut() {
                 *value = c.copy(value);
             }
@@ -4364,10 +4369,11 @@ pub struct Interpreter {
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
-    load_path: Vec<PathBuf>,
-    /// Prefer GNU bytecode artifacts after the source-based bootstrap has
-    /// established the dumped Lisp runtime expected by compiled libraries.
-    prefer_compiled_loads: bool,
+    // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
+    // directory vector from which reads reconstruct new Lisp objects.
+    load_path: Value,
+    /// lread.c's static-protected Vloads_in_progress, not a Lisp variable.
+    pub(crate) loads_in_progress: Value,
     /// Features whose `require' loads are active, innermost last.  This is
     /// GNU's `require_nesting_list', not an alternate source of provided
     /// features: bounded recursive requires are part of the loader contract.
@@ -5194,8 +5200,8 @@ impl Interpreter {
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
-            load_path: Vec::new(),
-            prefer_compiled_loads: false,
+            load_path: Value::Nil,
+            loads_in_progress: Value::Nil,
             require_nesting: Vec::new(),
             lambda_capture_overrides: Vec::new(),
             thread_states: vec![ThreadState {
@@ -6499,19 +6505,32 @@ impl Interpreter {
     }
 
     pub fn set_load_path(&mut self, load_path: Vec<PathBuf>) {
-        self.load_path = load_path;
+        let value = Value::list(
+            load_path
+                .into_iter()
+                .map(|path| Self::stored_value(Value::String(path.display().to_string().into()))),
+        );
+        self.set_load_path_value(value);
     }
 
-    pub(crate) fn set_prefer_compiled_loads(&mut self, prefer: bool) {
-        self.prefer_compiled_loads = prefer;
+    pub(crate) fn set_load_path_value(&mut self, value: Value) {
+        self.load_path = value.clone();
+        // init_lread writes the C slot. After makunbound that slot is
+        // independent of the now-plain Lisp symbol (data.c:set_internal).
+        if !self.detached_forwarded_variables.contains_key("load-path") {
+            self.set_symbol_value_cell("load-path", value);
+        }
     }
 
-    pub(crate) fn prefers_compiled_loads(&self) -> bool {
-        self.prefer_compiled_loads
-    }
-
-    pub(crate) fn configured_load_path(&self) -> &[PathBuf] {
-        &self.load_path
+    pub(crate) fn configured_load_path(&self) -> Vec<PathBuf> {
+        // Host path consumers project the current Lisp object on demand;
+        // this vector is never stored or used as a second source of truth.
+        self.load_path
+            .to_vec()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|entry| primitives::string_text(entry).ok().map(PathBuf::from))
+            .collect()
     }
 
     pub(crate) fn push_lambda_capture_override(&mut self, capture: bool) {
@@ -7316,15 +7335,6 @@ fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
         Value::Symbol("wrong-type-argument".into()),
         Value::Symbol(predicate.into()),
         value,
-    ]))
-}
-
-fn load_file_missing_error(target: &str) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::Symbol("file-missing".into()),
-        Value::String("Cannot open load file".into()),
-        Value::String("No such file or directory".into()),
-        Value::String(target.into()),
     ]))
 }
 

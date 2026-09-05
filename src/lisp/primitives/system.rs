@@ -1747,7 +1747,6 @@ pub(crate) fn file_name_handler_operation(operation: &str) -> Option<FileNameHan
         | "get-file-buffer"
         | "insert-directory"
         | "insert-file-contents"
-        | "load"
         | "lock-file"
         | "make-directory"
         | "make-nearby-temp-file"
@@ -2145,6 +2144,40 @@ pub(crate) fn path_to_directory_string(path: &Path) -> String {
 
 pub(crate) fn file_readable_p(path: &str) -> bool {
     fs::File::open(path).is_ok()
+}
+
+/// fileio.c:file_accessible_directory_p on POSIX: check DIR/./ with
+/// faccessat(F_OK, AT_EACCESS). Search permission, not read permission,
+/// permits opening children. This internal path does not invoke Lisp handlers.
+pub(crate) fn accessible_directory(path: &[u8]) -> std::io::Result<()> {
+    let mut candidate = Vec::with_capacity(path.len() + 4);
+    candidate.extend_from_slice(path);
+    if let Some(last) = path.last() {
+        candidate.extend_from_slice(if *last == b'/' { b"./" } else { b"/./" });
+    }
+    candidate.push(0);
+    // The internal C API passes SSDATA to the system call. Its first NUL
+    // terminates the pathname; public callers validate filenames separately.
+    if let Some(end) = candidate.iter().position(|byte| *byte == 0) {
+        candidate.truncate(end + 1);
+    }
+    let candidate = std::ffi::CString::from_vec_with_nul(candidate)
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    // SAFETY: candidate owns a valid NUL-terminated path throughout this
+    // synchronous OS call. No GNU runtime code is called or linked.
+    let status = unsafe {
+        libc::faccessat(
+            libc::AT_FDCWD,
+            candidate.as_ptr(),
+            libc::F_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 pub(crate) fn file_writable_p(path: &str) -> bool {

@@ -197,7 +197,6 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
         crate::compat::emaxx_upstream_load_path(&upstream)
             .expect("resolve upstream GNU Lisp load path"),
     );
-    interpreter.set_prefer_compiled_loads(crate::lisp::bytecode_vm_enabled());
     for library in [
         "emacs-lisp/debug-early",
         "emacs-lisp/byte-run",
@@ -231,7 +230,7 @@ pub(crate) fn replace_with_gnu_batch_runtime(interpreter: &mut Interpreter) {
             .expect("resolve upstream GNU Lisp load path"),
         ..Default::default()
     };
-    *interpreter = crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
+    *interpreter = crate::batch::initialize_batch_interpreter(&options)
         .expect("reconstruct compiled GNU batch Lisp image");
 }
 
@@ -259,6 +258,19 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter_with(libraries: &[&str]) ->
             .load_target(library)
             .unwrap_or_else(|error| panic!("load GNU library {library}: {error}"));
     }
+    interpreter
+}
+
+/// Run the production C entry and unchanged GNU interactive startup. Quick
+/// startup skips init files, but still reads GNU's normal abbrev file. Run
+/// this fixture in a process with an isolated HOME; -Q alone is not isolation.
+pub(crate) fn initialized_upstream_interactive_interpreter() -> Interpreter {
+    let mut interpreter = crate::batch::initialize_interactive_interpreter(true)
+        .expect("reconstruct interactive runtime");
+    crate::batch::initialize_initial_frame_faces(&mut interpreter).expect("initialize frame faces");
+    crate::batch::run_startup_top_level(&mut interpreter, &["emaxx".into(), "-Q".into()])
+        .expect("GNU interactive startup completes");
+    assert!(interpreter.take_pending_termination().is_none());
     interpreter
 }
 
@@ -317,7 +329,7 @@ fn build_upstream_batch_interpreter() -> Interpreter {
             .expect("upstream GNU Emacs load path"),
         ..Default::default()
     };
-    crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
+    crate::batch::initialize_batch_interpreter(&options)
         .expect("initialize compiled GNU-compatible batch interpreter")
 }
 

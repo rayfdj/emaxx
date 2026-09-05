@@ -30,13 +30,12 @@ struct Cli {
     #[arg(long)]
     no_site_lisp: bool,
     // `emacs.c' recognizes and orders this switch, while startup.el owns its
-    // effect on the Elisp compiler state.  Invocations carrying it are routed
-    // through unchanged GNU startup instead of recreating that effect here.
+    // effect on the Elisp compiler state. All batch invocations go through
+    // unchanged GNU startup, which interprets this switch itself.
     #[arg(long = "no-comp-spawn")]
     no_comp_spawn: bool,
-    // Emaxx does not load user/site init files yet, so GNU's -Q/--quick is
-    // already the effective startup mode.  Keep the parsed flag for command-
-    // line compatibility even though it requires no additional action.
+    // C uses quick to suppress site-lisp paths; GNU startup.el owns its
+    // remaining effects and still receives the original argument.
     #[arg(short = 'Q', long = "quick")]
     _quick: bool,
     #[arg(short = 'L', value_name = "DIR")]
@@ -55,30 +54,6 @@ struct Cli {
     _seccomp: Option<String>,
     #[arg(value_name = "FILE")]
     file: Vec<PathBuf>,
-}
-
-/// GNU's `-L DIR' prepends `(expand-file-name DIR)': the entry recorded in
-/// `load-path' is absolute, resolved against the working directory, with `.'
-/// and `..' components folded away and no trailing separator.
-fn expand_load_path_entry(directory: PathBuf) -> PathBuf {
-    let absolute = if directory.is_absolute() {
-        directory
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&directory))
-            .unwrap_or(directory)
-    };
-    let mut folded = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                folded.pop();
-            }
-            other => folded.push(other),
-        }
-    }
-    folded
 }
 
 fn main() -> ExitCode {
@@ -110,37 +85,17 @@ fn try_main() -> Result<u8, String> {
     let original_args = std::env::args_os().collect::<Vec<_>>();
     let args = normalize_gnu_single_dash_long_options(original_args.iter().cloned());
     let matches = Cli::command().get_matches_from(args.clone());
-    let startup_command_line_args = matches
-        .get_flag("no_comp_spawn")
-        .then(|| startup_command_line_args(&original_args))
-        .transpose()?;
+    let startup_args = startup_command_line_args(&original_args)?;
     let actions = ordered_batch_actions(&matches);
     let cli = Cli::from_arg_matches(&matches).map_err(|error| error.to_string())?;
+    let no_site_lisp = cli.no_site_lisp || cli._quick;
     if cli.batch {
-        let startup_owns_command_line = startup_command_line_args.is_some();
         let outcome = run_batch_with_large_stack(
             BatchRunOptions {
-                load_path: if startup_owns_command_line {
-                    Vec::new()
-                } else {
-                    cli.load_path
-                        .into_iter()
-                        .map(expand_load_path_entry)
-                        .collect()
-                },
-                load: cli.load,
-                eval: cli.eval,
-                funcall: cli.funcall,
-                args_left: if startup_owns_command_line {
-                    Vec::new()
-                } else {
-                    cli.file
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect()
-                },
-                defer_delayed_custom_init: startup_owns_command_line,
-                startup_command_line_args,
+                no_site_lisp,
+                startup_command_line_args: Some(startup_args),
+                defer_delayed_custom_init: true,
+                ..Default::default()
             },
             actions,
         )?;
@@ -150,21 +105,7 @@ fn try_main() -> Result<u8, String> {
         };
     }
 
-    if cli.no_init_file
-        || cli.no_site_file
-        || cli.no_site_lisp
-        || cli.no_comp_spawn
-        || !cli.load_path.is_empty()
-        || !cli.load.is_empty()
-        || !cli.eval.is_empty()
-        || !cli.funcall.is_empty()
-    {
-        return Err(
-            "`--no-init-file`, `--no-site-file`, `--no-site-lisp`, `-L`, `-l`, `--eval`, and `-f` are only supported together with `--batch`".into(),
-        );
-    }
-
-    run_interactive(cli.file.into_iter().next())
+    run_interactive(&startup_args, no_site_lisp)
 }
 
 /// emacs.c's `maybe_load_seccomp'/`load_seccomp': read a Secure Computing
@@ -406,8 +347,8 @@ fn restart_current_process() -> Result<u8, String> {
     Ok(status.code().unwrap_or(1) as u8)
 }
 
-fn run_interactive(file: Option<PathBuf>) -> Result<u8, String> {
-    tty::run(file).map(|code| code as u8)
+fn run_interactive(args: &[String], no_site_lisp: bool) -> Result<u8, String> {
+    tty::run(args, no_site_lisp).map(|code| code as u8)
 }
 
 #[cfg(test)]
