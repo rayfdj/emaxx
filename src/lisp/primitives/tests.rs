@@ -2,6 +2,8 @@ use super::*;
 use crate::lisp::reader::Reader;
 use std::io::{Read, Write};
 
+mod finalizers;
+
 fn upstream_emacs_repo() -> PathBuf {
     crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
         .expect("canonical sibling GNU checkout")
@@ -1529,6 +1531,103 @@ fn native_comp_mutating_entry_points_report_the_unavailable_backend_honestly() {
 }
 
 #[test]
+fn portable_dump_checks_real_threads_before_the_filename() {
+    // pdumper.c rejects every other live thread, including one blocked on
+    // a mutex; a retained but terminated thread object is not on that list.
+    let program = r#"
+      (let ((mutex (make-mutex)) worker)
+        (mutex-lock mutex)
+        (unwind-protect
+            (progn
+              (setq worker
+                    (make-thread
+                     #'(lambda () (mutex-lock mutex) (mutex-unlock mutex))))
+              (while (null (thread--blocker worker)) (thread-yield))
+              (list
+               (condition-case data (dump-emacs-portable 42) (error data))
+               (progn
+                 (mutex-unlock mutex)
+                 (thread-join worker)
+                 (condition-case data (dump-emacs-portable 42) (error data)))
+               (thread-join
+                (make-thread
+                 #'(lambda ()
+                   (condition-case data (dump-emacs-portable 42) (error data)))))))
+          (condition-case nil (mutex-unlock mutex) (error nil))
+          (if worker (thread-join worker))))"#;
+    let expected = concat!(
+        "((error \"No other Lisp threads can be running when this function is called\") ",
+        "(wrong-type-argument stringp 42) ",
+        "(error \"This function can be called only in the main thread\"))"
+    );
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    interp.noninteractive = true;
+    let form = Reader::new(program)
+        .read()
+        .expect("read dump thread contract")
+        .expect("dump thread contract has a form");
+    let value = interp
+        .eval(&form, &mut Env::new())
+        .expect("dump thread checks");
+    assert_eq!(value.to_string(), expected);
+    assert!(interp.is_main_thread());
+    assert_eq!(interp.live_threads().len(), 1);
+}
+
+#[test]
+fn portable_dump_batch_mode_is_not_the_lisp_noninteractive_variable() {
+    let program = r#"
+      (let ((saved-noninteractive noninteractive))
+        (unwind-protect
+            (list
+             (let ((noninteractive nil))
+               (condition-case data (dump-emacs-portable 42) (error data)))
+             (progn
+               (makunbound 'noninteractive)
+               (setq noninteractive nil)
+               (condition-case data (dump-emacs-portable 42) (error data))))
+          (setq noninteractive saved-noninteractive)))"#;
+    let expected = "((wrong-type-argument stringp 42) (wrong-type-argument stringp 42))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = Interpreter::new();
+    interp.noninteractive = true;
+    let form = Reader::new(program)
+        .read()
+        .expect("read dump mode contract")
+        .expect("dump mode contract has a form");
+    let value = interp
+        .eval(&form, &mut Env::new())
+        .expect("batch mode checks");
+    assert_eq!(value.to_string(), expected);
+    assert!(interp.noninteractive);
+
+    // Conversely, assigning Lisp's flag cannot turn an interactive process
+    // into a batch one. Mode rejection precedes filename and thread checks.
+    let mut interactive = Interpreter::new();
+    interactive.set_global_binding("noninteractive", Value::T);
+    for (style, apostrophe) in [("grave", '\''), ("straight", '\''), ("curve", '\u{2019}')] {
+        interactive.set_variable("text-quoting-style", Value::symbol(style), &mut Env::new());
+        let error = call(
+            &mut interactive,
+            "dump-emacs-portable",
+            &[Value::Integer(42)],
+            &mut Env::new(),
+        )
+        .expect_err("an interactive process cannot dump");
+        let expected = Value::list([
+            Value::symbol("error"),
+            Value::string(&format!(
+                "Dumping Emacs currently works only in batch mode.  \
+                 If you{apostrophe}d like it to work interactively, please consider \
+                 contributing a patch to Emacs."
+            )),
+        ]);
+        assert!(matches!(error, LispError::SignalValue(value) if value == expected));
+    }
+}
+
+#[test]
 fn portable_dump_introspection_and_backend_boundary_are_honest() {
     let sort_program = r#"
         (list
@@ -1539,6 +1638,9 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
     assert_upstream_primitive_contract(&format!("(prin1 {sort_program})"), expected);
 
     let mut interp = Interpreter::new();
+    // Match the real --batch process used for the GNU comparison, not an
+    // interactive raw interpreter with only Lisp's public flag changed.
+    interp.noninteractive = true;
     let mut env = Vec::new();
     let form = Reader::new(sort_program)
         .read()
@@ -9763,6 +9865,41 @@ fn suspended_bytecode_retains_operand_and_unwind_roots() {
         "vm-suspension-result",
         "((1 t 0) (1 t 0))",
     );
+}
+
+#[test]
+fn suspended_bytecode_observes_live_constant_vector_mutation() {
+    let program = r#";;; -*- lexical-binding: t; -*-
+(defvar gc-vector-table (make-hash-table :test 'eq :weakness 'key))
+(defvar gc-vector-ready nil)
+(defvar gc-vector-resume nil)
+(defvar gc-vector-constants
+  (vector (lambda ()
+            (setq gc-vector-ready t)
+            (while (not gc-vector-resume) (thread-yield)))
+          (list 'old)))
+(puthash (aref gc-vector-constants 1) t gc-vector-table)
+(defvar gc-vector-thread
+  (make-thread
+   (make-byte-code 0 (unibyte-string 192 32 136 193 135)
+                   gc-vector-constants 1)))
+(while (not gc-vector-ready) (thread-yield))
+(aset gc-vector-constants 1 (list 'new))
+(puthash (aref gc-vector-constants 1) t gc-vector-table)
+(garbage-collect)
+(defvar gc-vector-result (list (hash-table-count gc-vector-table)))
+(setq gc-vector-resume t)
+(setq gc-vector-result
+      (append gc-vector-result
+              (list (eq (thread-join gc-vector-thread)
+                        (aref gc-vector-constants 1)))))
+(setq gc-vector-thread nil gc-vector-constants nil)
+(garbage-collect)
+(setq gc-vector-result
+      (append gc-vector-result (list (hash-table-count gc-vector-table))))
+(prin1 gc-vector-result)
+"#;
+    assert_oracle_file_contract_matches_interpreter(program, "gc-vector-result", "(1 t 0)");
 }
 
 #[test]

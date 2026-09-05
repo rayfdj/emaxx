@@ -1615,11 +1615,11 @@ define_dispatch!(
                 }
                 // The reclamation emaxx really performs: weak hash entries
                 // whose keys/values are no longer reachable are dropped, as
-                // GNU's sweep does.  Everything else is freed by ownership
-                // the moment it becomes unreachable.
+                // GNU's sweep does. Finalizer callbacks are marked before
+                // that sweep and invoked afterward, not by Rust Drop.
                 let native_roots = crate::lisp::native_comp::begin_garbage_collection(interp);
                 collect_weak_hash_tables(interp, env, &native_roots)?;
-                let census = interp.live_object_census();
+                let mut census = interp.live_object_census();
                 let threshold = interp
                     .symbol_value_cell("gc-cons-threshold")
                     .ok()
@@ -1635,6 +1635,15 @@ define_dispatch!(
                     threshold,
                     percentage,
                 );
+                // alloc.c runs callbacks only after sweeping and resetting
+                // the collection threshold. A callback may collect again.
+                let finalizers_before = interp.number_finalizers_run;
+                interp.run_finalizers(env)?;
+                if interp.number_finalizers_run != finalizers_before {
+                    // Fgarbage_collect reports the counters after callbacks;
+                    // they may have allocated objects or performed another GC.
+                    census = interp.live_object_census();
+                }
                 // GNU returns ((TYPE SIZE USED FREE) ...) in exactly this
                 // row order (alloc.c, oracle-confirmed).  USED counts come
                 // from the live reachability census (finding 110 -- these

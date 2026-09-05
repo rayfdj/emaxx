@@ -1384,12 +1384,6 @@ impl Interpreter {
         id
     }
 
-    pub fn alloc_finalizer_id(&mut self) -> u64 {
-        let id = self.next_finalizer_id;
-        self.next_finalizer_id += 1;
-        id
-    }
-
     /// Allocate a new marker.
     pub fn make_marker(&mut self) -> Value {
         let id = self.next_marker_id;

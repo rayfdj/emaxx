@@ -3401,6 +3401,12 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
             runtime
                 .heap
                 .collection_finished(live_bytes, threshold, percentage);
+            // The generated-code GC entry has the same post-sweep phase as
+            // Fgarbage_collect. Do not retain a runtime borrow across Lisp:
+            // a finalizer can reenter native code or switch Lisp threads.
+            if let Err(error) = interpreter.run_finalizers(unsafe { &mut *active.environment }) {
+                remember_helper_error(active, error);
+            }
         }
     });
 }
@@ -3674,6 +3680,10 @@ impl NativeGcState {
 struct NativeConsArena {
     blocks: Vec<NativeConsBlock>,
     block_starts: BTreeMap<usize, usize>,
+    // alloc.c:mem_find rejects addresses outside the enclosing heap range
+    // before searching its tree. As in mem_insert, these bounds may remain
+    // wider after a block is freed; the tree still decides actual membership.
+    address_bounds: Option<(usize, usize)>,
     free_list: Vec<*mut NativeCons>,
     live: usize,
     gc: NativeGcState,
@@ -3696,6 +3706,11 @@ impl NativeConsArena {
             {
                 let block = NativeConsBlock::new();
                 let start = block.start();
+                let end = block.cells.as_ptr_range().end as usize;
+                self.address_bounds = Some(match self.address_bounds {
+                    Some((minimum, maximum)) => (minimum.min(start), maximum.max(end)),
+                    None => (start, end),
+                });
                 let index = self.blocks.len();
                 self.blocks.push(block);
                 self.block_starts.insert(start, index);
@@ -3712,6 +3727,18 @@ impl NativeConsArena {
     }
 
     fn locate(&self, pointer: usize, require_live: bool) -> Option<(usize, usize)> {
+        let (minimum, maximum) = self.address_bounds?;
+        // live_cons_holding accepts the raw car address, its Lisp_Cons tag,
+        // or the raw cdr address. Both fields are word-aligned. The exact
+        // offset/allocated-slot/liveness checks below remain authoritative.
+        let low_bits = pointer & TAG_MASK;
+        let cdr_bits = std::mem::size_of::<NativeWord>() & TAG_MASK;
+        if pointer < minimum
+            || pointer >= maximum
+            || low_bits != 0 && low_bits != TAG_CONS && low_bits != cdr_bits
+        {
+            return None;
+        }
         let (&start, &block_index) = self.block_starts.range(..=pointer).next_back()?;
         let block = &self.blocks[block_index];
         let offset = pointer.checked_sub(start)?;
@@ -7186,6 +7213,87 @@ mod tests {
             gc.consing_threshold(i64::MAX, None, 0),
             NATIVE_GC_HIGH_THRESHOLD
         );
+    }
+
+    #[test]
+    fn native_gc_arena_lookup_preserves_gnu_offsets_and_freed_slot_reuse() {
+        let mut arena = NativeConsArena::default();
+        assert_eq!(arena.locate(0, true), None);
+        assert_eq!(arena.locate(usize::MAX, false), None);
+        let first = arena.allocate(TAG_FIXNUM_LOW, 0) as usize;
+        let second = arena.allocate((7 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0) as usize;
+        let size = std::mem::size_of::<NativeCons>();
+        assert_eq!(second, first + size);
+        let (_, end) = arena.address_bounds.expect("allocated block has bounds");
+        for address in [0, first - 1, first + 2 * size, end, usize::MAX] {
+            assert_eq!(arena.locate(address, true), None);
+        }
+        for (slot, address) in [first, second].into_iter().enumerate() {
+            for offset in 0..size {
+                let expected =
+                    matches!(offset, 0 | TAG_CONS) || offset == std::mem::size_of::<NativeWord>();
+                assert_eq!(
+                    arena.locate(address + offset, true),
+                    expected.then_some((0, slot)),
+                    "slot {slot}, byte offset {offset}",
+                );
+            }
+        }
+
+        // A raw cdr pointer alone retains its containing cell, as in GNU's
+        // conservative stack marking; the other cell really becomes free.
+        assert!(matches!(
+            arena.mark_word(second + std::mem::size_of::<NativeWord>()),
+            ArenaMark::NewlyMarked(_)
+        ));
+        arena.sweep();
+        assert_eq!(arena.live, 1);
+        assert_eq!(arena.locate(first, true), None);
+        assert_eq!(arena.locate(first, false), Some((0, 0)));
+        assert_eq!(arena.locate(second + TAG_CONS, true), Some((0, 1)));
+        assert_eq!(arena.allocate(0, 0) as usize, first);
+        assert_eq!(arena.locate(first + TAG_CONS, true), Some((0, 0)));
+    }
+
+    #[test]
+    fn native_gc_arena_bounds_survive_block_removal_and_growth() {
+        let mut arena = NativeConsArena::default();
+        let mut starts = Vec::new();
+        for index in 0..3 * NATIVE_CONS_BLOCK_LEN + 1 {
+            let address = arena.allocate(TAG_FIXNUM_LOW, 0) as usize;
+            if index % NATIVE_CONS_BLOCK_LEN == 0 {
+                starts.push(address);
+            }
+        }
+        assert_eq!(starts.len(), 4);
+        let old_bounds = arena.address_bounds.expect("four blocks have bounds");
+        assert!(matches!(
+            arena.mark_word(starts[3] + TAG_CONS),
+            ArenaMark::NewlyMarked(_)
+        ));
+        arena.sweep();
+        assert_eq!(arena.blocks.len(), 3, "empty excess block is released");
+        assert_eq!(arena.live, 1);
+        assert_eq!(arena.address_bounds, Some(old_bounds));
+        assert_eq!(arena.locate(starts[0], false), None);
+        assert!(arena.locate(starts[3], true).is_some());
+
+        // Consume reclaimed slots and the partial block, then grow again.
+        // Every returned cell must be located in the current tree, even if
+        // the allocator reuses the address of the released block.
+        for _ in 0..3 * NATIVE_CONS_BLOCK_LEN {
+            let address = arena.allocate(TAG_FIXNUM_LOW, 0) as usize;
+            assert!(arena.locate(address, true).is_some());
+            assert!(arena.locate(address + TAG_CONS, true).is_some());
+        }
+        assert_eq!(arena.blocks.len(), 4);
+        let (minimum, maximum) = arena.address_bounds.expect("grown arena has bounds");
+        assert!(minimum <= old_bounds.0 && maximum >= old_bounds.1);
+        for (index, block) in arena.blocks.iter().enumerate() {
+            assert!(minimum <= block.start());
+            assert!(maximum >= block.cells.as_ptr_range().end as usize);
+            assert_eq!(arena.locate(block.start(), true), Some((index, 0)));
+        }
     }
 
     #[test]

@@ -429,6 +429,7 @@ pub fn initialize_interactive_interpreter() -> Result<Interpreter, String> {
     // blink-cursor-mode) sees nil there, as it does in GNU.  startup.el
     // defvars the -D/--basic-display flags before the walk; delayed
     // forms read them once `noninteractive' stops short-circuiting.
+    interpreter.noninteractive = false;
     interpreter.set_variable("noninteractive", Value::Nil, &mut Vec::new());
     // emacs.c selects 0.1 for an initialized interactive process.  The helper
     // above reconstructed the dump through its batch entry point, so apply the
@@ -494,6 +495,7 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     // `lexical-binding' is t while the default remains nil.  File cookies
     // override and restore this state around loads.
     interpreter.set_variable("lexical-binding", Value::T, &mut Vec::new());
+    interpreter.noninteractive = true;
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     // emacs.c handles --batch before running loadup and clears the outer undo
     // limit.  Interpreter::new retains undo.c's 24000000 initializer so the
@@ -1392,6 +1394,8 @@ mod tests {
     fn batch_runtime_binds_command_line_args_left_to_nil() {
         let options = BatchRunOptions::default();
         let interpreter = initialize_batch_interpreter(&options).expect("init batch interpreter");
+        assert!(interpreter.noninteractive);
+        assert!(interpreter.is_main_thread());
         assert_eq!(
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)

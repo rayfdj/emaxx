@@ -188,6 +188,7 @@ pub(crate) fn collect_weak_hash_tables(
     native_roots: &[Value],
 ) -> Result<(), LispError> {
     let reachability = interp.weak_hash_reachability(env, native_roots);
+    interp.install_gc_finalizers(reachability.live_finalizers, reachability.doomed_finalizers);
     for (id, entries, keep) in reachability.tables {
         interp.sweep_weak_hash_table(id, entries, &keep);
     }

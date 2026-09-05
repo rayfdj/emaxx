@@ -129,7 +129,13 @@ define_dispatch!(
             }
             "make-finalizer" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Finalizer(interp.alloc_finalizer_id()))
+                if !function_value_p(interp, &args[0], env) {
+                    return Err(LispError::WrongTypeArgument(
+                        "functionp".into(),
+                        args[0].clone(),
+                    ));
+                }
+                Ok(interp.make_finalizer(args[0].clone()))
             }
 
             // ── String operations ──

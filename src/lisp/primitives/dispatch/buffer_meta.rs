@@ -925,6 +925,38 @@ define_dispatch!(
             }
             "dump-emacs-portable" => {
                 need_arg_range(name, args, 1, 2)?;
+                // pdumper.c:Fdump_emacs_portable checks the actual process
+                // mode and thread list before touching FILENAME. In GNU,
+                // Lisp's `noninteractive' forwards to noninteractive1, not
+                // the C noninteractive flag tested here.
+                if !interp.noninteractive {
+                    // eval.c:error -> vformat_string uses doprnt's quote
+                    // substitution, including the apostrophe in "you'd".
+                    let message = crate::lisp::primitives::call(
+                        interp,
+                        "format-message",
+                        &[Value::string(
+                            "Dumping Emacs currently works only in batch mode.  \
+                         If you'd like it to work interactively, please consider \
+                         contributing a patch to Emacs.",
+                        )],
+                        env,
+                    )?;
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("error"),
+                        message,
+                    ])));
+                }
+                if !interp.is_main_thread() {
+                    return Err(LispError::Signal(
+                        "This function can be called only in the main thread".into(),
+                    ));
+                }
+                if interp.live_threads().len() > 1 {
+                    return Err(LispError::Signal(
+                        "No other Lisp threads can be running when this function is called".into(),
+                    ));
+                }
                 if string_like(&args[0]).is_none() {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("wrong-type-argument"),

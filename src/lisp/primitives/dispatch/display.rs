@@ -2219,43 +2219,7 @@ define_dispatch!(
                         let formatted = super::call(interp, "format-message", args, env)?;
                         (string_text(&formatted)?, Some(formatted))
                     };
-                let buffer_name = interp
-                    .lookup_var("messages-buffer-name", env)
-                    .and_then(|value| string_like(&value).map(|string| string.text))
-                    .unwrap_or_else(|| "*Messages*".into());
-                // GNU message_dolog: nothing is logged for an empty message or
-                // with `message-log-max' nil; a fixnum keeps that many lines.
-                let log_max = interp
-                    .lookup_var("message-log-max", env)
-                    .unwrap_or(Value::T);
-                if !text.is_empty() && !log_max.is_nil() {
-                    let buffer_id = interp
-                        .find_buffer(&buffer_name)
-                        .map(|(id, _)| id)
-                        .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
-                    if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-                        let end = buffer.point_max();
-                        buffer.goto_char(end);
-                        buffer.insert(&(text.clone() + "\n"));
-                        if let Ok(max_lines) = log_max.as_integer()
-                            && max_lines >= 0
-                        {
-                            let contents = buffer.full_buffer_string();
-                            let lines = contents.matches('\n').count();
-                            if lines > max_lines as usize {
-                                let drop = lines - max_lines as usize;
-                                let mut offset = 0usize;
-                                for _ in 0..drop {
-                                    if let Some(next) = contents[offset..].find('\n') {
-                                        offset += next + 1;
-                                    }
-                                }
-                                let char_end = contents[..offset].chars().count();
-                                let _ = buffer.delete_region(1, char_end + 1);
-                            }
-                        }
-                    }
-                }
+                super::super::messages::append_message_log(interp, &text, env);
                 // The upstream capture advice ignores `(message nil)' and
                 // `(message "")', which edebug uses to clear the echo area.
                 let capturable = !args.is_empty()

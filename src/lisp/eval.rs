@@ -26,6 +26,7 @@ mod control_forms;
 mod core;
 mod definitions;
 mod faces;
+mod finalizers;
 mod loops;
 mod macros;
 mod resource_forms;
@@ -2795,35 +2796,61 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) hash_table_bytes: usize,
 }
 
-#[derive(Default)]
+// These are internal mark sets, not Lisp hash tables. FNV retains ordinary
+// key equality while avoiding a keyed hash for every numeric identity.
+type GcMarkSet<T> = HashSet<T, primitives::FnvBuildHasher>;
+
+#[derive(Clone, Default)]
 struct LispReachability {
-    big_integers: HashSet<usize>,
-    floats: HashSet<usize>,
-    strings: HashSet<usize>,
-    string_objects: HashSet<usize>,
-    symbols: HashSet<String>,
-    conses: HashSet<usize>,
-    vectors: HashSet<usize>,
-    lambdas: HashSet<usize>,
-    buffers: HashSet<usize>,
-    markers: HashSet<u64>,
-    overlays: HashSet<u64>,
-    char_tables: HashSet<u64>,
-    frames: HashSet<u64>,
-    terminals: HashSet<u64>,
-    records: HashSet<u64>,
-    finalizers: HashSet<u64>,
-    reader_forms: HashSet<usize>,
+    big_integers: GcMarkSet<usize>,
+    floats: GcMarkSet<usize>,
+    strings: GcMarkSet<usize>,
+    string_objects: GcMarkSet<usize>,
+    symbols: GcMarkSet<SymbolName>,
+    conses: GcMarkSet<usize>,
+    vectors: GcMarkSet<usize>,
+    lambdas: GcMarkSet<usize>,
+    buffers: GcMarkSet<usize>,
+    markers: GcMarkSet<u64>,
+    overlays: GcMarkSet<u64>,
+    char_tables: GcMarkSet<u64>,
+    frames: GcMarkSet<u64>,
+    terminals: GcMarkSet<u64>,
+    records: GcMarkSet<u64>,
+    finalizers: GcMarkSet<u64>,
+    reader_forms: GcMarkSet<usize>,
 }
 
 pub(crate) struct WeakHashReachability {
     pub(crate) tables: Vec<WeakHashTableReachability>,
-    pub(crate) live_records: HashSet<u64>,
+    pub(crate) live_records: GcMarkSet<u64>,
+    pub(crate) live_finalizers: GcMarkSet<u64>,
+    pub(crate) doomed_finalizers: Vec<u64>,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
 
 impl LispReachability {
+    fn clear(&mut self) {
+        self.big_integers.clear();
+        self.floats.clear();
+        self.strings.clear();
+        self.string_objects.clear();
+        self.symbols.clear();
+        self.conses.clear();
+        self.vectors.clear();
+        self.lambdas.clear();
+        self.buffers.clear();
+        self.markers.clear();
+        self.overlays.clear();
+        self.char_tables.clear();
+        self.frames.clear();
+        self.terminals.clear();
+        self.records.clear();
+        self.finalizers.clear();
+        self.reader_forms.clear();
+    }
+
     fn contains(&self, value: &Value) -> bool {
         match value {
             Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
@@ -2879,7 +2906,10 @@ impl LispReachability {
             Value::Float(value) => self.floats.insert(value.identity_ptr()),
             Value::String(value) => self.strings.insert(value.identity_ptr()),
             Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
-            Value::Symbol(symbol) => self.symbols.insert(symbol.as_str().to_owned()),
+            // SymbolName clones share the immutable name storage. Hash/Eq
+            // still use the internal name, including uninterned identity;
+            // distinct Rc allocations must not become distinct mark keys.
+            Value::Symbol(symbol) => self.symbols.insert(symbol.clone()),
             Value::Cons(value) => self.conses.insert(ConsCell::identity(value)),
             Value::Vector(value) => self.vectors.insert(Rc::as_ptr(value) as usize),
             Value::Lambda(value) => self.lambdas.insert(Rc::as_ptr(value) as usize),
@@ -2903,14 +2933,14 @@ impl LispReachability {
                 self.mark(interp, &symbol.lisp_name());
             }
             Value::StringObject(value) => {
-                let children = value
-                    .borrow()
-                    .props
-                    .iter()
-                    .flat_map(|span| span.props.iter().map(|(_, value)| value.clone()))
-                    .collect::<Vec<_>>();
-                for child in &children {
-                    self.mark(interp, child);
+                // Marking executes no Lisp callbacks and only reads these
+                // slots. Trace the live storage, as alloc.c does, without
+                // cloning each edge into a temporary snapshot. The object's
+                // mark above cuts cycles before borrowing its children.
+                for span in &value.borrow().props {
+                    for (_, child) in &span.props {
+                        self.mark(interp, child);
+                    }
                 }
             }
             Value::Cons(cell) => {
@@ -2923,8 +2953,7 @@ impl LispReachability {
                 }
             }
             Value::Vector(vector) => {
-                let children = vector.slots().clone();
-                for child in &children {
+                for child in vector.slots().iter() {
                     self.mark(interp, child);
                 }
             }
@@ -2955,26 +2984,19 @@ impl LispReachability {
             }
             Value::CharTable(id) => {
                 if let Some(table) = interp.find_char_table(*id) {
-                    let children = std::iter::once(table.default.clone())
-                        .chain(table.extra_slots.iter().cloned())
-                        .chain(table.entries.iter().map(|entry| entry.value.clone()))
-                        .collect::<Vec<_>>();
-                    for child in &children {
+                    for child in std::iter::once(&table.default)
+                        .chain(&table.extra_slots)
+                        .chain(table.entries.iter().map(|entry| &entry.value))
+                    {
                         self.mark(interp, child);
                     }
                 }
             }
             Value::Frame(id) => {
                 if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == *id) {
-                    let children = std::iter::once(frame.name.clone())
-                        .chain(
-                            frame
-                                .parameter_overrides
-                                .iter()
-                                .map(|(_, value)| value.clone()),
-                        )
-                        .collect::<Vec<_>>();
-                    for child in &children {
+                    for child in std::iter::once(&frame.name)
+                        .chain(frame.parameter_overrides.iter().map(|(_, value)| value))
+                    {
                         self.mark(interp, child);
                     }
                 }
@@ -2985,21 +3007,28 @@ impl LispReachability {
                 };
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
-                let mut children = Vec::with_capacity(record.slots.len() + 1);
-                children.push(record.type_tag.clone());
-                children.extend(
-                    record
-                        .slots
-                        .iter()
-                        .enumerate()
-                        .filter(|(index, _)| record.kind != RecordKind::HashTable || *index != 1)
-                        .map(|(_, value)| value.clone()),
-                );
-                if record.kind == RecordKind::HashTable
-                    && !weak_hash
-                    && let Some((_, entries)) = crate::lisp::json::hash_table_entries(interp, value)
-                {
-                    children.extend(entries.into_iter().flat_map(|(key, value)| [key, value]));
+                self.mark(interp, &record.type_tag);
+                for (index, child) in record.slots.iter().enumerate() {
+                    if record.kind != RecordKind::HashTable || index != 1 {
+                        self.mark(interp, child);
+                    }
+                }
+                if record.kind == RecordKind::HashTable && !weak_hash {
+                    if let Some(entries) = interp.hash_table_runtime_entries(*id) {
+                        for (key, value) in entries {
+                            self.mark(interp, key);
+                            self.mark(interp, value);
+                        }
+                    } else if let Some((_, entries)) =
+                        crate::lisp::json::hash_table_entries(interp, value)
+                    {
+                        // Serialized custom tables can still use Lisp-list
+                        // storage instead of the indexed runtime sidecar.
+                        for (key, value) in &entries {
+                            self.mark(interp, key);
+                            self.mark(interp, value);
+                        }
+                    }
                 }
                 // A dead thread is no longer an independent GC root
                 // (thread.c:run_thread unlinks it). Its result and injected
@@ -3007,12 +3036,14 @@ impl LispReachability {
                 if record.kind == RecordKind::Thread
                     && let Some(thread) = interp.find_thread_state(*id)
                 {
-                    children.extend(thread.entry.iter().cloned());
-                    children.extend(thread.pending_signal.iter().cloned());
-                    children.extend(thread.outcome.iter().cloned());
-                }
-                for child in &children {
-                    self.mark(interp, child);
+                    for child in thread
+                        .entry
+                        .iter()
+                        .chain(&thread.pending_signal)
+                        .chain(&thread.outcome)
+                    {
+                        self.mark(interp, child);
+                    }
                 }
             }
             Value::ReaderForm(form) => {
@@ -3031,6 +3062,14 @@ impl LispReachability {
                     self.mark(interp, child);
                 }
             }
+            Value::Finalizer(id) => {
+                // alloc.c's ordinary pseudovector marking traces FUNCTION
+                // only when the finalizer itself is reached. The registry
+                // of all allocated finalizers is not an independent root.
+                if let Some(finalizer) = interp.finalizers.get(id) {
+                    self.mark(interp, &finalizer.function);
+                }
+            }
             Value::Nil
             | Value::T
             | Value::Integer(_)
@@ -3041,7 +3080,6 @@ impl LispReachability {
             | Value::Marker(_)
             | Value::Overlay(_)
             | Value::Terminal(_)
-            | Value::Finalizer(_)
             | Value::Unbound => {}
         }
         true
@@ -3076,7 +3114,10 @@ impl Interpreter {
         env: &Env,
         native_roots: &[Value],
     ) -> WeakHashReachability {
-        let mut marked = LispReachability::default();
+        // Reuse capacity only, never the previous collection's reachability.
+        // Own the workspace outside the RefCell while tracing; a panic drops
+        // it and leaves an empty replacement, with no stale borrowed roots.
+        let mut marked = self.gc_reachability_scratch.take();
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);
@@ -3350,12 +3391,27 @@ impl Interpreter {
             mark(&Value::Record(id));
         }
 
+        // alloc.c: queue_doomed_finalizers precedes marking their callbacks
+        // and weak-table processing. First select ALL unreachable objects;
+        // callback-to-finalizer cycles must not rescue one another.
+        let doomed_finalizers = self.mark_doomed_finalizers(&mut marked);
+
         let weak_tables = self
             .records
             .iter()
             .filter(|record| record.kind == RecordKind::HashTable)
             .filter_map(|record| {
-                let weakness = record.slots.get(5)?.as_symbol().ok()?.to_owned();
+                let weakness = record.slots.get(5)?;
+                // alloc.c:mark_object traces a live strong table's entries
+                // in the ordinary mark pass; it never adds that table to
+                // the weak sweep list. Recopying and rehashing those same
+                // entries here is unnecessary. Keep initially unmarked
+                // strong tables: the weak fixed point can still reach them,
+                // and dead record-backed tables must release their entries.
+                if weakness.is_nil() && marked.records.contains(&record.id) {
+                    return None;
+                }
+                let weakness = weakness.as_symbol().ok()?.to_owned();
                 let entries =
                     crate::lisp::json::hash_table_entries(self, &Value::Record(record.id))?.1;
                 Some((record.id, weakness, entries))
@@ -3403,14 +3459,24 @@ impl Interpreter {
                 (id, entries, keep)
             })
             .collect();
+        let live_records = std::mem::take(&mut marked.records);
+        let live_finalizers = std::mem::take(&mut marked.finalizers);
+        // In particular, release all SymbolName references before sweeping
+        // or the live-object census. Scratch storage is not a Lisp GC root.
+        marked.clear();
+        self.gc_reachability_scratch.replace(marked);
         WeakHashReachability {
             tables,
-            live_records: marked.records,
+            live_records,
+            live_finalizers,
+            doomed_finalizers,
         }
     }
 
-    pub(crate) fn install_gc_record_census(&mut self, live_records: HashSet<u64>) {
-        self.gc_live_record_ids = live_records;
+    pub(crate) fn install_gc_record_census(&mut self, live_records: GcMarkSet<u64>) {
+        let mut previous = std::mem::replace(&mut self.gc_live_record_ids, live_records);
+        previous.clear();
+        self.gc_reachability_scratch.borrow_mut().records = previous;
         self.gc_record_high_water = self.next_record_id;
         self.gc_has_record_census = true;
     }
@@ -3428,6 +3494,11 @@ impl Interpreter {
             .saturating_add(crate::lisp::types::census_live_uninterned_symbols());
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
+        // alloc.c allocates Lisp_Finalizer as a four-word pseudovector
+        // (header, function, prev, next); retained/queued objects remain in
+        // the census until a later sweep actually removes them.
+        vector_count = vector_count.saturating_add(self.finalizers.len());
+        vector_slots = vector_slots.saturating_add(self.finalizers.len().saturating_mul(4));
         for record in self.records.iter().filter(|record| {
             !self.gc_has_record_census
                 || record.id >= self.gc_record_high_water
@@ -3971,6 +4042,10 @@ pub struct InterpreterState {
     pub(crate) kbd_macro_committed_len: usize,
     pub(crate) keyboard_input: KeyboardInputState,
     pub(crate) command_loop_recursion_depth: usize,
+    /// emacs.c's process-mode flag, distinct from the Lisp-visible
+    /// `noninteractive' (which forwards to noninteractive1). Lisp binding,
+    /// assignment or makunbound must not change this C-owned flag.
+    pub(crate) noninteractive: bool,
     minibuffer_runtime: MinibufferRuntimeState,
     /// Monotonic identity for a read-minibuffer activation.  The TTY uses
     /// it to distinguish a new read from another redraw of the same reused
@@ -4201,9 +4276,12 @@ pub struct InterpreterState {
     /// host storage keeps IDs stable, but dead records must not contribute to
     /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
     /// were allocated after that collection and remain live until the next.
-    gc_live_record_ids: HashSet<u64>,
+    gc_live_record_ids: GcMarkSet<u64>,
     gc_record_high_water: u64,
     gc_has_record_census: bool,
+    /// Empty mark-set workspace. Capacity survives collections, but object
+    /// identities and symbol references are cleared before returning it.
+    gc_reachability_scratch: RefCell<LispReachability>,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
     /// dense and never freed, so the slot vector doubles as the cache map
     /// (see bytecode::vm).
@@ -4237,6 +4315,12 @@ pub struct InterpreterState {
     next_record_id: u64,
     /// Next finalizer ID for identity tracking.
     next_finalizer_id: u64,
+    /// alloc.c's allocation list and post-collection callback queue. Neither
+    /// the allocation list nor Rust ownership establishes Lisp reachability.
+    finalizers: LinkedHashMap<u64, finalizers::FinalizerState>,
+    doomed_finalizers: std::collections::VecDeque<u64>,
+    /// pdumper.c repeats collection until this counter stops changing.
+    pub(crate) number_finalizers_run: u64,
     /// Next generated symbol ID used by built-in macro expansion helpers.
     /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
     /// order.  This is the sole backing store for local hook metadata.
@@ -4789,6 +4873,7 @@ impl Interpreter {
             kbd_macro_committed_len: 0,
             keyboard_input: KeyboardInputState::default(),
             command_loop_recursion_depth: 0,
+            noninteractive: false,
             minibuffer_runtime: MinibufferRuntimeState::default(),
             minibuffer_activation_count: 0,
             external_debugging_output_target: None,
@@ -5132,9 +5217,10 @@ impl Interpreter {
                 ("thread".into(), BTreeSet::from([main_thread_id])),
                 ("obarray".into(), BTreeSet::from([standard_obarray_id])),
             ]),
-            gc_live_record_ids: HashSet::new(),
+            gc_live_record_ids: GcMarkSet::default(),
             gc_record_high_water: 0,
             gc_has_record_census: false,
+            gc_reachability_scratch: RefCell::default(),
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
             keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
@@ -5147,6 +5233,9 @@ impl Interpreter {
             treesit_nodes: Vec::new(),
             next_record_id: 3,
             next_finalizer_id: 1,
+            finalizers: LinkedHashMap::new(),
+            doomed_finalizers: std::collections::VecDeque::new(),
+            number_finalizers_run: 0,
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),

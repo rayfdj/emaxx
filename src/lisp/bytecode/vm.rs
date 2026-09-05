@@ -10,8 +10,9 @@
 use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
 use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
-use super::super::types::{Env, LispError, Value};
+use super::super::types::{Env, LispError, Value, VectorValue};
 use super::{ArgSpec, ByteCodeObject, Instr, Op};
+use std::rc::Rc;
 
 /// One specpdl-style entry the VM must undo on Bunbind or error unwind.
 enum UnwindEntry {
@@ -194,57 +195,6 @@ fn trace_load_errors() -> bool {
     crate::lisp::trace_load_errors_enabled()
 }
 
-/// Materialize a constant still in reader form.  GNU's reader constructs
-/// `#[...]` functions and `#s(hash-table ...)` objects before bytecode sees
-/// them, including when they are nested inside an arbitrary list-valued
-/// constant.  Emaxx's parser leaves explicit marker forms, so walk the
-/// constant graph once and replace those markers in place.  Mutating the
-/// freshly-read graph preserves sharing (and cycles) without rebuilding
-/// every surrounding list.
-fn materialize_constant(
-    interp: &mut Interpreter,
-    constant: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    materialize_constant_inner(interp, constant, env, &mut std::collections::HashSet::new())
-}
-
-fn materialize_constant_inner(
-    interp: &mut Interpreter,
-    constant: &Value,
-    env: &mut Env,
-    seen: &mut std::collections::HashSet<usize>,
-) -> Result<Value, LispError> {
-    if matches!(constant, Value::ReaderForm(_)) {
-        return interp.materialize_read_object_literals(constant.clone(), env);
-    }
-    let head = constant.car().ok();
-    match head.as_ref() {
-        Some(_) => materialize_constant_cons(interp, constant, env, seen),
-        None => Ok(constant.clone()),
-    }
-}
-
-fn materialize_constant_cons(
-    interp: &mut Interpreter,
-    constant: &Value,
-    env: &mut Env,
-    seen: &mut std::collections::HashSet<usize>,
-) -> Result<Value, LispError> {
-    let Some((car, cdr)) = constant.cons_cells() else {
-        return Ok(constant.clone());
-    };
-    let identity = car.cell_id();
-    if !seen.insert(identity) {
-        return Ok(constant.clone());
-    }
-    let materialized_car = materialize_constant_inner(interp, &car.borrow().clone(), env, seen)?;
-    let materialized_cdr = materialize_constant_inner(interp, &cdr.borrow().clone(), env, seen)?;
-    *car.borrow_mut() = materialized_car;
-    *cdr.borrow_mut() = materialized_cdr;
-    Ok(constant.clone())
-}
-
 type PrimitiveFactBucket = Vec<(usize, crate::lisp::primitives::NameFacts)>;
 type PrimitiveFactCache =
     std::collections::HashMap<usize, PrimitiveFactBucket, crate::lisp::types::IdentityBuildHasher>;
@@ -291,22 +241,24 @@ fn prim(
     })
 }
 
-/// A byte-code function decoded, validated, and materialized once:
+/// A byte-code function decoded and validated once:
 /// instructions, an O(1) byte-offset -> instruction-index table for
 /// jumps, and live constants.  Cached per record so repeated calls skip
-/// all of that setup (GNU decodes lazily inside its dispatch loop and
-/// its closures are already live objects).
+/// instruction decoding (GNU decodes inside its dispatch loop). Constants
+/// remain the original live vector supplied by the reader or make-byte-code.
 pub struct CachedProgram {
     pub argspec: ArgSpec,
     pub instrs: Vec<Instr>,
     pub offset_index: Vec<u32>,
-    pub constants: Vec<Value>,
+    pub constants: Rc<VectorValue>,
     pub stack_depth: usize,
 }
 
 impl TraceLispRoots for CachedProgram {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
-        self.constants.trace_lisp_roots(marker);
+        // Keep the original vector itself live, and trace its current slots
+        // after another thread or an in-frame callback mutates them.
+        marker.value(&Value::Vector(Rc::clone(&self.constants)));
         if let ArgSpec::Legacy(arguments) = &self.argspec {
             marker.value(arguments);
         }
@@ -318,67 +270,36 @@ impl CachedProgram {
     fn instr_at(&self, byte_offset: usize) -> usize {
         self.offset_index[byte_offset] as usize
     }
+
+    #[inline]
+    fn constant(&self, index: u16) -> Value {
+        // bytecode.c reads vectorp[index] at the instruction, not a copy
+        // captured during decoding. End the borrow before Lisp can run.
+        self.constants.slots()[usize::from(index)].clone()
+    }
 }
 
-fn build_cached(
-    interp: &mut Interpreter,
-    object: &ByteCodeObject,
-    env: &mut Env,
-) -> Result<CachedProgram, LispError> {
-    let instrs = super::decode_program(&object.code, object.constants.len())
+fn build_cached(object: &ByteCodeObject) -> Result<CachedProgram, LispError> {
+    let instrs = super::decode_program(&object.code, object.constants.slots().len())
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let mut offset_index = vec![u32::MAX; object.code.len() + 1];
     for (index, instr) in instrs.iter().enumerate() {
         offset_index[instr.offset] = index as u32;
     }
-    // GNU's reader labels are scoped to the entire object being read.  ELC
-    // constants commonly share `#N=' / `#N#' labels across distinct nested
-    // `#[...]' closures, so resolving each closure independently loses the
-    // label table before a later reference is reached.
-    let resolved_constants = if object
-        .constants
-        .iter()
-        .any(super::super::reader::contains_circular_read_syntax)
-    {
-        let vector = Value::vector(object.constants.iter().cloned());
-        let resolved = super::super::reader::resolve_circular_read_syntax(vector)?;
-        Some(
-            crate::lisp::primitives::vector_items(&resolved).map_err(|_| {
-                LispError::Signal("byte-code constants did not resolve to a vector".into())
-            })?,
-        )
-    } else {
-        None
-    };
-    let source_constants = resolved_constants
-        .as_deref()
-        .unwrap_or(object.constants.as_slice());
-    let mut constants = Vec::with_capacity(source_constants.len());
-    for (index, constant) in source_constants.iter().enumerate() {
-        match materialize_constant(interp, constant, env) {
-            Ok(constant) => constants.push(constant),
-            Err(error) => {
-                if trace_load_errors() {
-                    eprintln!(
-                        "bytecode constant {index} failed to materialize ({}): {error:?}",
-                        constant.type_name()
-                    );
-                }
-                return Err(error);
-            }
-        }
-    }
+    // lread.c constructs reader objects before execution. The existing
+    // reader boundary owns that work; the VM neither rebuilds its graph nor
+    // copies CLOSURE_CONSTANTS into another vector.
     Ok(CachedProgram {
         argspec: object.argspec.clone(),
         instrs,
         offset_index,
-        constants,
+        constants: Rc::clone(&object.constants),
         stack_depth: object.stack_depth,
     })
 }
 
 /// Execute the genuine byte-code function stored in RECORD_ID, decoding
-/// and materializing it once and reusing the cached program afterwards.
+/// its instructions once and reusing the decoded program afterwards.
 pub fn execute_record(
     interp: &mut Interpreter,
     record_id: u64,
@@ -393,11 +314,12 @@ pub fn execute_record(
         let program = std::rc::Rc::clone(program);
         return run(interp, &program, args, env);
     }
-    let slots = interp
+    let record = interp
         .find_record(record_id)
-        .map(|record| record.slots.clone())
         .ok_or_else(|| LispError::Signal("byte-code record vanished".into()))?;
-    let object = super::ByteCodeObject::from_slots(&slots)
+    // GNU reads the closure fields directly. Decoding retains its own
+    // handles and needs no mutable interpreter or copied outer slot array.
+    let object = super::ByteCodeObject::from_slots(&record.slots)
         .map_err(|error| LispError::Signal(error.to_string()))?
         .ok_or_else(|| {
             LispError::SignalValue(Value::list([
@@ -405,7 +327,7 @@ pub fn execute_record(
                 Value::Record(record_id),
             ]))
         })?;
-    let program = std::rc::Rc::new(build_cached(interp, &object, env)?);
+    let program = std::rc::Rc::new(build_cached(&object)?);
     if interp.bytecode_program_cache.len() <= index {
         interp.bytecode_program_cache.resize(index + 1, None);
     }
@@ -420,7 +342,7 @@ pub fn execute(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let program = build_cached(interp, object, env)?;
+    let program = build_cached(object)?;
     run(interp, &program, args, env)
 }
 
@@ -630,7 +552,7 @@ fn run_with_stack(
                 continue;
             }
             Op::Constant(index) | Op::Constant2(index) => {
-                stack.push(object.constants[index as usize].clone());
+                stack.push(object.constant(index));
                 continue;
             }
             Op::Goto { target } => {
@@ -843,20 +765,21 @@ fn run_with_stack(
                     stack.push(top);
                 }
                 Op::Constant(index) | Op::Constant2(index) => {
-                    stack.push(object.constants[index as usize].clone());
+                    stack.push(object.constant(index));
                 }
                 Op::VarRef(index) => {
-                    let name = object.constants[index as usize].clone();
+                    let name = object.constant(index);
                     let value = prim!(interp, "symbol-value", &[name], env)?;
                     stack.push(value);
                 }
                 Op::VarSet(index) => {
-                    let name = object.constants[index as usize].clone();
+                    let name = object.constant(index);
                     let value = pop!();
                     prim!(interp, "set", &[name, value], env)?;
                 }
                 Op::VarBind(index) => {
-                    let name = object.constants[index as usize]
+                    let name = object
+                        .constant(index)
                         .as_symbol()
                         .map_err(|_| LispError::Signal("varbind constant must be a symbol".into()))?
                         .to_string();
@@ -1692,6 +1615,12 @@ mod tests {
         let object = fixture_objects()
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
+        // The decoder fixture helper returns reader syntax. Complete the
+        // existing C-owned reader step before handing live objects to the VM.
+        interp.materialize_read_object_literals(
+            Value::Vector(Rc::clone(&object.constants)),
+            &mut env,
+        )?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -1735,7 +1664,8 @@ mod tests {
                 .expect("constant form");
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let materialized = materialize_constant(&mut interp, &constant, &mut env)
+        let materialized = interp
+            .materialize_read_object_literals(constant, &mut env)
             .expect("materialize nested byte-code function");
         let items = materialized.to_vec().expect("proper list constant");
 
@@ -1797,6 +1727,9 @@ mod tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         let object = fixture_objects().remove("emaxx-fx-catch").unwrap();
+        interp
+            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .expect("materialize unchanged fixture reader objects");
         // Non-signaling: (lambda () 42) via a builtin-friendly stand-in.
         let ok = execute(
             &mut interp,
@@ -1839,6 +1772,10 @@ mod phase_c_tests {
         let object = named_objects(ORACLE_ELC2)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
+        interp.materialize_read_object_literals(
+            Value::Vector(Rc::clone(&object.constants)),
+            &mut env,
+        )?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -1848,6 +1785,10 @@ mod phase_c_tests {
         let object = named_objects(ORACLE_ELC2)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
+        interp.materialize_read_object_literals(
+            Value::Vector(Rc::clone(&object.constants)),
+            &mut env,
+        )?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -1874,6 +1815,9 @@ mod phase_c_tests {
         let object = named_objects(ORACLE_ELC2)
             .remove("emaxx-fx2-unwind")
             .unwrap();
+        interp
+            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .expect("materialize unchanged fixture reader objects");
         let log = Value::list([Value::symbol("payload"), Value::symbol("untouched")]);
         let value = execute(&mut interp, &object, std::slice::from_ref(&log), &mut env).unwrap();
         assert_eq!(format!("{value}"), "payload");
@@ -1907,6 +1851,9 @@ mod phase_c_tests {
         let object = named_objects(ORACLE_ELC2)
             .remove("emaxx-fx2-dynbind")
             .unwrap();
+        interp
+            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .expect("materialize unchanged fixture reader objects");
         let value = execute(&mut interp, &object, &[Value::symbol("bound")], &mut env).unwrap();
         assert_eq!(format!("{value}"), "bound");
         // The binding must be undone after the call.
@@ -1926,6 +1873,9 @@ mod phase_c_tests {
         let object = super::super::tests::named_objects(super::super::tests::ORACLE_ELC3)
             .remove("emaxx-fx3-legacy")
             .unwrap();
+        interp
+            .materialize_read_object_literals(Value::Vector(Rc::clone(&object.constants)), &mut env)
+            .expect("materialize unchanged fixture reader objects");
         assert!(matches!(object.argspec, ArgSpec::Legacy(_)));
         let value = execute(
             &mut interp,
@@ -1966,6 +1916,145 @@ mod phase_c_tests {
 #[allow(clippy::unwrap_used)]
 mod native_surface_tests {
     use super::*;
+
+    #[test]
+    fn bytecode_reads_original_constants_after_vector_mutation() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let constants = Value::vector([Value::Integer(11)]);
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{c0}\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
+        let function = prim(
+            &mut interp,
+            "make-byte-code",
+            &[
+                Value::Integer(0),
+                code,
+                constants.clone(),
+                Value::Integer(1),
+            ],
+            &mut env,
+        )
+        .expect("alloc.c:Fmake_byte_code retains the supplied constants vector");
+        let stored = prim(
+            &mut interp,
+            "aref",
+            &[function.clone(), Value::Integer(2)],
+            &mut env,
+        )
+        .expect("CLOSURE_CONSTANTS");
+        assert_eq!(
+            prim(&mut interp, "eq", &[constants.clone(), stored], &mut env)
+                .expect("original vector identity"),
+            Value::T,
+        );
+        assert_eq!(
+            interp
+                .call_function_value(function.clone(), None, &[], &mut env)
+                .expect("first execution"),
+            Value::Integer(11),
+        );
+        prim(
+            &mut interp,
+            "aset",
+            &[constants, Value::Integer(0), Value::Integer(29)],
+            &mut env,
+        )
+        .expect("data.c:Faset changes the original vector slot");
+        assert_eq!(
+            interp
+                .call_function_value(function, None, &[], &mut env)
+                .expect("execution after constants-vector mutation"),
+            Value::Integer(29),
+            "bytecode.c:Bconstant reads the original vector, not a snapshot",
+        );
+    }
+
+    #[test]
+    fn bytecode_reads_original_constants_during_vector_mutation() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let constants = Value::vector([Value::Integer(11), Value::Integer(77), Value::Integer(0)]);
+        // Argument: the constants vector itself. Push index 0 and value 77,
+        // Baset, discard its result, then read constant 0 and return it.
+        // GNU's saved vectorp sees a mutation made during the same frame.
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{c2}\u{c1}\u{49}\u{88}\u{c0}\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
+        let function = prim(
+            &mut interp,
+            "make-byte-code",
+            &[
+                Value::Integer(257),
+                code,
+                constants.clone(),
+                Value::Integer(3),
+            ],
+            &mut env,
+        )
+        .expect("bytecode function with one stack argument");
+        assert_eq!(
+            interp
+                .call_function_value(function, None, &[constants], &mut env)
+                .expect("mutation during execution"),
+            Value::Integer(77),
+            "bytecode.c:Bconstant sees the preceding Baset store",
+        );
+    }
+
+    #[test]
+    fn bytecode_constant_storage_does_not_retain_removed_values() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let removed = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "original constant".to_owned(),
+            Vec::new(),
+            false,
+        );
+        let Value::StringObject(string) = &removed else {
+            panic!("mutable string object")
+        };
+        let lifetime = Rc::downgrade(string);
+        let constants = Value::vector([removed]);
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{c0}\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
+        let slots = [
+            Value::Integer(0),
+            code,
+            constants.clone(),
+            Value::Integer(1),
+        ];
+        let object = ByteCodeObject::from_slots(&slots)
+            .expect("valid bytecode")
+            .expect("bytecode slots");
+        let program = build_cached(&object).expect("decoded program");
+        let Value::Vector(vector) = &constants else {
+            panic!("constants vector")
+        };
+        assert!(Rc::ptr_eq(vector, &object.constants));
+        assert!(Rc::ptr_eq(vector, &program.constants));
+        prim(
+            &mut interp,
+            "aset",
+            &[constants, Value::Integer(0), Value::Nil],
+            &mut env,
+        )
+        .expect("replace the sole reference to the old constant");
+        assert_eq!(program.constant(0), Value::Nil);
+        assert_eq!(
+            lifetime.strong_count(),
+            0,
+            "a decoded program must not retain a stale constant snapshot",
+        );
+    }
 
     /// `make-byte-code` output must execute through `byte-code`-adjacent
     /// dispatch: build (lambda (x) (1+ x)) by hand and funcall it.

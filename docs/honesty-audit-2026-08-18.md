@@ -6792,3 +6792,752 @@ rechecked against the current scheduler. No production change followed the
 136-test/34-upstream-pass result; only the additional tested regression and
 ledger updates are newer. The local checkpoint remains explicitly short of
 the final publication requirements listed above.
+
+### 2026-09-05 startup: GC mark-workspace optimization under validation
+
+The local integration checkpoint is `e479386`; main/origin/main remain at
+`84f342a`, with no push. The next change addresses the profiled collector
+bookkeeping cost, not test deadlines. Internal mark sets use the existing
+FNV hasher while retaining full key equality, and symbol marks share the
+existing immutable `SymbolName` instead of allocating a `String` per visit.
+Symbol equality remains based on the encoded internal name, not an Rc address.
+
+Each collection owns an emptied workspace outside its RefCell, traverses the
+same roots and object edges, and runs the unchanged weak-table fixed point.
+All 17 mark sets are cleared before the workspace is returned, including all
+symbol references before sweep/census. The completed record census remains
+separate; only its emptied previous allocation is recycled. A panic drops the
+owned workspace instead of publishing incomplete marks. There is no loadup
+special case, skipped collection, retained reachability result, threshold
+change, timer relaxation, ignored test or altered oracle expectation.
+GNU references remain `loadup.el:134` and
+`alloc.c:mark_and_sweep_weak_table_contents` (repeat marking until stable,
+then remove dead entries).
+
+Three new regressions exercise alternating rooted/unrooted collections,
+empty reusable sets and current record census, reverse-order weak-table
+dependencies requiring another marking pass, and equal encoded symbols in
+distinct Rc allocations with a genuinely distinct-symbol negative control.
+`gc-workspace-clippy.log` passes optimized all-target/all-feature Clippy with
+`-D warnings` (20.24s); the focused runtime build is in progress. No speedup
+or Simple/ERC closure is claimed yet. The immutable pre-change CLI is saved
+as `emaxx-checkpoint-e479386` in the session evidence directory (SHA256
+`ff026fb2a75c28f25d48f0ffa0da01747b114c64d94ae87d41e79c1260575507`)
+for a controlled, uninstrumented comparison after correctness validation.
+
+The focused run subsequently passes 144/144 optimized tests, zero failures
+or ignores (`gc-workspace-focused.log`; 2m37 build, 134.32s tests). All three
+new workspace regressions, the four real continuation tests, actual suspended
+bytecode roots, caller/dead-thread retention and release, weak-table/C-slot
+controls, live GC census, native/bytecode contracts and all 18 anti-cheating
+checks pass. Formatting/diff checks remain clean. This proves the selected
+correctness checks only; incidental suite duration is not a controlled
+startup speed measurement. A fresh CLI build and direct comparison follow.
+
+The fresh GC-workspace CLI build succeeds in 3m24, SHA256
+`5e291d9b7b81b171578380cb966c084d5e529e4bd8ba9cafe2c386564349d9fe`.
+`gc-workspace-startup-comparison.jsonl` records a prescribed before/after/
+after/before comparison, with fresh homes/temp directories and no profiler
+or image template. All four runs return `t`, exit zero, no timeout. Before
+durations are 21.066s and 18.476s; after durations are 17.269s and 14.551s.
+Another worktree's build was active, explicitly recorded in the artifact;
+these exploratory pairs support keeping the optimization but do not certify
+an uncontended or precise speedup. This is still well above Simple's original
+four-second child-output requirement. No Simple/ERC closure is claimed.
+
+### 2026-09-05 refresh: native-comp original constants-vector integration
+
+The next fetch leaves main at `84f342a` and advances native-comp from
+`c236c21` to `b432d8641b351d69620ec59a68161b3b85acc80c`. The complete
+five-file delta was reviewed. GNU `alloc.c:Fmake_byte_code` retains the
+original constants vector, `bytecode.c:exec_byte_code` reads its current
+slots through `vectorp`, and `lread.c:bytecode_from_rev_list` owns reader
+construction before VM execution. Fresh pinned-GNU controls return
+`((11 29) 77)` for between-call and in-frame mutation
+(`b432-gnu-vector-controls.log`). Incoming tests retain their fixtures and
+assertions and complete the existing reader boundary explicitly; the removed
+VM materializer was a duplicate of that boundary, not permission to omit
+production reader construction. Incoming native/artifact results belong to
+the sender's tree and do not establish this merged tree's results.
+
+The pending merge is on `integrate-native-threads-startup`, with parents
+`e479386` and `b432d86`; no new commit or push yet. One textual VM conflict
+was resolved by combining the live `object.constant(index)` read with the
+existing `prim!` scoped operand/unwind-root wrapper. The cached-program root
+tracer now marks the original `Value::Vector` itself and its current slots,
+not a snapshot. Legacy argument roots and all other suspension/callout roots
+remain. The uncommitted GC-workspace change is preserved.
+
+A new same-file GNU/Emaxx regression mutates the constant vector while an
+actual bytecode frame is suspended, checking old-key release, the new joined
+result, and final key release. Runtime validation is pending, along with
+the incoming three vector contracts. The pre-merge 144 passes and startup
+timings do not cover this newly changed tree. Its fresh Clippy/focused tests
+come next; unchanged Simple/ERC replays are deferred to the rebuilt merged
+executable rather than rerunning them on the now-superseded CLI.
+
+The exact new file-level suspension control has a verified red baseline:
+GNU returns `(1 t 0)` and the immutable pre-merge `5e291d` Emaxx returns
+`(2 nil 0)`, both exit zero as observational probes. The latter incorrectly
+retains the old constant and returns it after resumption. Files:
+`b432-suspended-constants.el`, `b432-suspended-constants-gnu.log`, and
+`b432-suspended-constants-before.log`. The Rust regression requires GNU's
+`(1 t 0)`, unchanged. Merged all-target/all-feature strict Clippy passes
+(`b432-gc-merge-clippy.log`, 38.70s), formatting/diff checks are clean, and
+the focused runtime build is now started. No passing merged runtime result
+is asserted until that run finishes.
+
+That merged runtime run now passes 148/148 optimized tests, zero failures
+or ignores (`b432-gc-merge-focused.log`; 5m16 build, 182.06s tests). The
+new suspension/mutation regression returns GNU's `(1 t 0)`; the three
+incoming constants-vector contracts, existing VM/native/thread/GC coverage,
+the workspace regressions and all 18 anti-cheating checks pass together.
+Caught panic/unwind probes pass as designed. The duration is not a performance
+measurement on this shared host. A fresh merged CLI is being built; the
+previous `5e291d` executable remains pre-merge evidence only. Simple/ERC,
+the full optimized serial gate, frozen corpus and publication remain open.
+
+The merged CLI build now succeeds (3m31), SHA256
+`6560ade1121fd8dbe667195fb845e75a7a325ba81145000f8bdbbaaf42d04052`.
+`b432-gc-merge-upstream-threads.jsonl` replays both unchanged upstream thread
+files together: GNU and Emaxx each pass 34 tests, zero unexpected results,
+one identical configuration skip, no timeout. The skip explicitly requires
+a build without threads; both tested editors have threads enabled. All four
+original thread mismatches therefore remain closed on this newer merged
+production tree, not only the checkpoint. No other build/test process was
+present in the host process snapshot before this run. Simple/ERC replay is
+next, with original assertions and deadlines unchanged.
+
+`b432-gc-merge-startup.jsonl` now records GNU's three actual passes and
+Emaxx's three actual failures on this executable. Simple still returns nil
+from its unchanged four-second output wait. Both ERC cases still reach
+`end-of-file` after their unchanged ten-second waits. All parents exit
+normally with the corresponding test status; no outer watchdog expires.
+The earlier ERC shutdown hang was not reproduced, which is not evidence
+that its cause has been fixed. No speculative process-teardown change is
+made. A fresh single-startup profile follows to target the remaining cost.
+
+### 2026-09-05 startup: immutable string census metadata
+
+The fresh profile completes normally, returning `t`
+(`b432-gc-merge-startup-profile.jsonl`, `startup-profile-rais24u9/`). It is
+instrumented, and another worker's native-worktree build was active; its
+22.374s wall duration is not a benchmark. The sampled census repeatedly
+rescans immutable text: `immutable_lisp_string_storage_byte_len` accounts
+for 468 top-of-stack samples, and its storage-length helper for another 264
+across all callers. The call graph confirms census paths, not just initial
+allocation. GC marking, native collection and value cloning also remain
+substantial costs. No claim is made that this one optimization is sufficient
+to meet the upstream startup deadlines.
+
+GNU `alloc.c:sweep_strings` adds each live string's stored `STRING_BYTES`.
+Emaxx now records the already-computed Emacs byte count alongside the weak
+registration of each immutable `SharedText`, rather than recomputing it at
+every census. The `Rc<String>` exposes no mutable access; consuming it yields
+a host String and ends that Lisp allocation when its last strong owner is
+gone. Every collection still tests actual liveness and removes dead entries.
+The book has no new strong references, no identity changes, and retains its
+existing amortized pruning threshold. Mutable string objects still compute
+their current count, encoding length and property spans. Empty singleton and
+host-only encoded-name accounting remain unchanged.
+
+Three new tests check ASCII/multibyte/raw-byte-proxy accounting, cloned and
+consumed lifetimes, repeated censuses, excluded host-only names, empty-string
+identity and allocation-triggered pruning. The exact Emacs lengths are
+asserted independently of Rust UTF-8 length. The initially suspected duplicate
+cons-field copies were not present in the current accessors, so no cons-trace
+change was made. Formatting/diff checks pass; fresh strict Clippy and focused
+runtime validation follow. The pre-change merged CLI is retained as
+`emaxx-b432-gc-workspace-v1` (SHA256 `6560ade1…`) for a measured comparison.
+
+The fresh optimized all-target/all-feature Clippy run passes with zero
+warnings (`immutable-string-census-clippy.log`, 39.12s); rustfmt and both
+staged/unstaged whitespace checks pass. Pinned GNU confirms the exact six
+storage lengths `(5 2 3 4 2 4)` used by the new regression
+(`immutable-string-byte-oracle.el` / `.log`). The optimized serial runtime
+run now selects the previous 148 checks plus the types module, including
+the three new census tests. Its result is pending, not inferred from Clippy.
+
+The runtime run now passes all 177 selected Rust checks, zero failures or
+ignores (`immutable-string-census-focused.log`; 5m19 optimized build,
+213.23s tests). All three new census regressions, previous native/bytecode/
+thread/GC contracts and anti-cheating checks pass. This is a focused Rust
+selection, not the separate 177-case upstream native suite or frozen corpus.
+Another fetch leaves origin/main at `84f342a` and origin/native-comp at
+`b432d86`; no integration change is needed from that refresh. A fresh CLI
+build follows for the startup comparison. No speedup or Simple/ERC closure
+is claimed from these correctness results.
+
+The fresh CLI build succeeds in 3m11, SHA256
+`beaf385ef7e8c506f1c5f99546f39c415cddcd2f6280286a944ab3b27962f03e`.
+`immutable-string-census-startup-comparison.jsonl` completes the prescribed
+before/after/after/before runs with fresh homes/temp directories, no profiler
+or template: all return `t`, exit zero, no timeout. Before durations are
+20.763s and 17.931s; after durations are 18.201s and 17.111s. Another
+worktree's test process was active and recorded. The differences support
+retaining this small optimization, not a precise or uncontended speedup
+claim. Startup remains far above the unchanged upstream deadlines.
+
+### 2026-09-05 startup: strong-table collection work
+
+GNU `alloc.c:mark_object` (PVEC_HASH_TABLE, line 7313) marks strong-table
+contents in its ordinary traversal and links only weak tables into the
+weak-table work list. Emaxx's list included already-marked strong tables,
+because nil is also accepted by `as_symbol`; each collection recopied their
+entries, retested their reachability and rebuilt their lookup indexes.
+The previous profile explicitly contains the weak-sweep/index-rebuild/hash
+calculation stack. A small guard now omits only already-marked strong tables
+from that redundant work. Their normal root/entry tracing is unchanged.
+
+Initially unmarked strong tables remain in the work list: a weak-table
+fixed-point pass may discover them later, or their dead record-backed
+storage must release its entries. Two new tests cover eq/eql/equal tables,
+unchanged live contents/slots/capacity, removal of roots from a self-referential
+strong table, actual weak Rc expiry after cleanup, and a reverse dependency
+chain requiring weak-to-strong-to-weak propagation over multiple passes.
+The same-file `gc-strong-bridge.el` control already returns `(1 1 1)` then
+`(0 0)` in GNU and pre-change Emaxx (`gc-strong-bridge-gnu.log` and
+`gc-strong-bridge-before.log`); that behavior must be retained, not relaxed.
+Strict all-target/all-feature optimized Clippy passes with zero warnings
+(`strong-table-gc-clippy.log`, 29.54s), and formatting/whitespace checks pass.
+Focused runtime validation is now in progress; the previous 177 passes do
+not cover this newly added guard and its tests.
+
+The user's fidelity concern also prompted checking the actual startup
+architecture: GNU `emacs.c:load_pdump` restores the saved image, whereas
+`batch.rs:preload_batch_compat_libraries` reruns unchanged `loadup.el` and
+stops at the unavailable portable-dumper boundary. Emaxx has no persisted
+image writer/loader. The GC changes do not close that architectural gap or
+prove the original subprocess deadlines pass. The existing in-process test
+template is not a substitute: native function pointers, loaded-unit roots,
+and runtime ownership require real restoration, as GNU's pdumper native
+subr/unit relocations demonstrate. No template bypass or fabricated image
+has been introduced.
+
+The strong-table focused run completes with 25 actual passes, zero failures
+or ignores (`strong-table-gc-focused.log`; 3m02 optimized build, 31.67s
+serial tests). It includes both new strong-table regressions, the native GC
+contracts, suspended-bytecode and thread-root checks, and live census tests.
+A fresh executable is being built before testing the same-file bridge and
+unchanged startup cases. No startup outcome is inferred from these passes.
+
+The new executable builds successfully in 2m11, SHA256
+`0d736fffde5c3b5ce8fd6f7ec0cde7eaf008ddb2a3f0d88dfaf9a543b8333795`.
+Same-file GNU/Emaxx controls both return `(1 1 1)` followed by `(0 0)`.
+A separate ordinary Lisp observation in that same run confirms all seven
+sampled startup functions are genuinely native in both editors; startup is
+not falling back to interpreted versions of those functions. Emaxx takes
+8.998s for this diagnostic, not a paired/uncontended benchmark or a timing
+test result. `strong-table-gc-controls.jsonl` records both binary/source
+hashes and outputs. The unchanged Simple/ERC replay follows.
+
+The unchanged upstream replay now has both ERC cases actually PASS in
+Emaxx and GNU (`erc--find-mode`, `erc--essential-hook-ordering`), with no
+watchdog timeout or parent teardown hang. Emaxx's whole ERC process takes
+46.860s and the two test bodies take 19.100s/17.743s; those complete-body
+times are not the individual subprocess-output deadlines, which the
+unchanged assertions enforce. Simple still FAILS its actual four-second
+`accept-process-output` assertion (13.441s full process). The combined
+diagnostic correctly exits one. Evidence:
+`strong-table-gc-upstream-startup.jsonl`, `startup-frontier-khfkumuq/`.
+This is the first fresh positive ERC result on this integration, not a
+claim that all startup work or the final gate/corpus has finished.
+
+### 2026-09-05 startup: trace stored GC edges without temporary copies
+
+The fresh remaining-cost profile (`startup-profile-ndm8eowv/`, instrumented
+9.385s) still shows GC marking, mark-set hashing and Value clone/drop work.
+The 128 unchanged `do-after-load-evaluation` calls total 3.323s. GNU
+`alloc.c:mark_stack_push_values` stores a reference to the live slots, not
+a cloned graph. Emaxx's marker now borrows string properties, vector slots,
+character-table children, frame parameters, record slots, indexed strong
+hash entries and thread payloads while tracing. Marking calls no Lisp
+callbacks; marking the parent before descending breaks cycles before a
+second borrow of that parent. Native cons lazy-read behavior and serialized
+custom-table fallback remain unchanged. No roots, GC calls, thresholds,
+weak fixed-point rules or test deadlines are removed.
+
+A new ordinary Lisp regression constructs a vector/record/propertized-string
+cycle, replaces its key between actual collections, and then removes the
+root. It checks weak-table counts and lookup of the currently live key:
+`((1 t) (1 t) 0)`. The same file already produces that result in GNU and the
+pre-change executable (`gc-cyclic-live-slots-before.jsonl`); it is retained
+behavior, not a claimed pre-existing mismatch. New-code Clippy/runtime and
+startup measurements are pending. Formatting and whitespace checks pass.
+
+Fresh optimized all-target/all-feature Clippy is clean with zero warnings
+(`borrowed-gc-slots-clippy.log`, 20.52s). The same 25 focused runtime checks
+plus the new cyclic live-slot regression are now building/running serially;
+their outcome and the new executable's timings are not yet known.
+
+That run finishes with the previous 25 checks PASS and the new regression
+FAIL (`borrowed-gc-slots-focused.log`, 2m44 build/33.54s tests). The failure
+is fixture setup: a bare `Interpreter` does not preload GNU's `push` macro.
+Only the new fixture's result accumulation is changed to equivalent
+`setq`/`cons` primitives; its graph, mutations, collections and exact
+assertions are unchanged. No production fix or upstream test modification
+is involved. Pinned GNU again returns `((1 t) (1 t) 0)` for the corrected
+same-file control. Only the failed new check is being rerun; the 25 passing
+checks already cover the unchanged production tree.
+
+The corrected single regression now PASSes (`borrowed-gc-slots-cyclic-recheck.log`,
+2m48 optimized build/0.06s test, zero ignores). Together with the previous
+25 passes, all 26 focused checks pass on the unchanged borrowed-slot
+production code. The failed setup attempt remains recorded above. Remote
+refresh still shows main `84f342a` and native-comp `b432d86`. A fresh gate
+executable is being built for a like-profile startup comparison.
+
+The executable build succeeds in 2m03, SHA256
+`566641d1241edcd187967fafdd0a1c7d25dd3608d351f9e3cbdc51f993f909ff`.
+The prescribed ABBA comparison completes with `t`/exit zero throughout:
+before 8.607s/8.129s, after 8.755s/7.824s. Other worktrees have active tests
+and builds. These overlapping timings do not establish a material speedup
+(`borrowed-gc-slots-startup-comparison.jsonl`). Simple is being replayed
+alone with its unchanged four-second assertion.
+
+Read-only inspection of the active native-comp worktree finds that its
+owner is already implementing the real startup/dump prerequisites. Their
+uncommitted `docs/pdump-c-parity-ledger.md` records a reproduced startup
+GNU-executable dependency in `compat::emaxx_upstream_load_path`, plus an
+audit truncation bug at an inline `#[cfg(test)]` attribute. This is a
+limitation of the current integration's final audit, not a completed fix:
+normal startup must stop requiring that oracle probe. The latest remote
+still ends at `b432d86`; no unfinished files from the other worktree have
+been copied, merged or modified. Reconcile the completed incoming fix when
+published, and rerun the expanded independence audit before publication.
+
+Our own read-only negative control confirms this on executable `566641d1…`:
+ordinary `-Q --batch` under macOS sandbox rules permitting normal operations
+but denying execution of the canonical GNU editor and sibling alias exits
+2 with the load-path probe's `Operation not permitted` error. GNU files
+are not moved or changed; there is no injected Lisp or test reporter.
+`borrowed-gc-startup-independence.jsonl` records the exact policy, binary
+hash and output. This is an OPEN independence failure, not a pass.
+The unchanged Simple gate-profile replay also still fails the four-second
+assertion (13.271s total, no watchdog timeout). A shipping-release build is
+underway to observe that profile separately; gate safety flags are unchanged.
+
+The shipping-release build completes without compiler warnings in 1m39,
+SHA256 `6f9fe3e6ab70d24e2d89209b9c72d4191578a64a02335ca1f6e01bdacf391644`.
+Its unchanged Simple replay also FAILS the actual four-second assertion
+(11.808s total, no timeout/hang). Evidence: `startup-shipping-release-build.log`
+and `shipping-release-upstream-simple.jsonl`. The build profile alone does
+not resolve Simple; neither the upstream assertion nor gate flags changed.
+
+### 2026-09-05 startup: reject non-arena addresses before native GC lookup
+
+GNU `alloc.c:mem_find` checks enclosing heap bounds before tree lookup;
+`mem_insert` extends those bounds as blocks are allocated. Its
+`live_cons_holding` accepts exactly raw car, tagged cons and raw cdr
+addresses. Emaxx's native cons arena now uses the same early bounds and
+alignment rejection before its existing BTree search. The original exact
+offset, allocated-slot and occupied-bit checks still decide membership.
+Bounds can remain conservatively wide after block removal, never creating
+a new root or accepting a freed address. Native ABI layout, GC thresholds,
+root collection and sweep policy are unchanged.
+
+Two new Rust controls enumerate every byte offset of adjacent cells, reject
+unused and out-of-range addresses, retain a cell from its raw cdr pointer,
+reclaim/reuse another cell, then exercise excess-block removal and growth
+with actual address checks. This is independent of the other owner's
+startup/lifecycle work. Formatting and whitespace checks pass; strict
+Clippy, runtime validation and performance evidence are pending. Earlier
+binary results do not cover this new change.
+
+Strict optimized all-target/all-feature Clippy is clean with zero warnings
+(`native-arena-bounds-clippy-final.log`, 22.39s). The early rejection derives
+the raw-cdr low bits from the native word size; exact cell-offset checks
+remain unchanged. The focused runtime selection now includes the entire
+native runtime module, plus the previous GC/weak/census/suspended-bytecode/
+thread-root checks. It is running serially; its result is still pending.
+
+That selection now passes 79/79, zero failures or ignores
+(`native-arena-bounds-focused.log`; 3m02 build, 32.25s serial tests). Both
+new arena controls and all 60 native-runtime tests pass, alongside the GC,
+weak-table, census, bytecode-suspension and thread-root checks. The normal
+hot-path check still performs its real 998,001 comparison assertions and
+checks the allocated 250,000-cell list; its printed words are not test counts.
+Existing continuation and register-spill tests are being run separately
+because their sibling modules are outside the native `runtime::tests` filter.
+
+Those additional five checks also pass, zero failures or ignores
+(`native-arena-bounds-continuations.log`, 0.07s tests with no rebuild).
+They cover actual native suspension/GC roots, non-LIFO returns, termination
+unwinding and register-spill handling; the printed panic is an explicitly
+caught control, with final test status `ok`. All 84 selected checks now
+pass on this production change. A fresh shipping-release executable is
+being built for a same-profile comparison against the saved `6f9fe3e6…` binary.
+
+That shipping build succeeds without compiler warnings (1m41s), SHA256
+`c64b7b23359939428f7567104b5bbe26ca7168fe7da740db71c031c09f37b180`.
+The fixed ABBA comparison records before 6.855s/6.253s and after
+6.643s/6.205s, with `t`, exit zero, and no timeouts throughout. These
+overlapping shared-host measurements do not establish a material speedup
+(`native-arena-bounds-release-comparison.jsonl`).
+
+Fresh unchanged upstream replays on that executable now confirm all 34
+applicable thread tests PASS in both GNU and Emaxx, with the identical
+without-thread-support configuration test skipped in both. The original
+four thread failures remain closed. Both ERC cases also PASS in both
+editors. Simple still FAILS its actual four-second output assertion in
+Emaxx, while GNU passes; no watchdog timeout occurred. Evidence:
+`native-arena-bounds-release-upstream-threads.jsonl` and
+`native-arena-bounds-release-upstream-startup.jsonl`. These are selected
+upstream checks, not the full corpus. The separate startup independence
+finding remains OPEN. No new commit or push has occurred.
+
+The mandatory native artifact integration test now passes all nine fixtures
+on the current gate-profile executable: eight complete `.eln` files are
+byte-for-byte identical to GNU's, including the 881,800-byte `comp.el`
+artifact, and the unchanged no-byte-compile fixture emits no artifact in
+either editor. Zero failed or ignored integration tests. Build 4m33s;
+serial comparison 206.94s; `native-arena-bounds-identity.log`.
+Subject SHA256:
+`91b2c1d12d1c700292cce128be22db5ff2e74c51c75c2a91593a2b32e5b78e7b`.
+Test-binary SHA256:
+`80829ff17d103b9a6715cea2d08b49a73674f86ce0383a1497c43b41156f8538`.
+The `git diff HEAD -- src tests Cargo.toml Cargo.lock build.rs` stream hashes
+to `1a8dfc53aa1281c6941862eeb31176e1a7b5b968277f6b02e3a4cb673ae5b27e`
+at HEAD `e479386`. Source is held fixed while the unchanged default-selected
+native execution suite runs next, GNU then Emaxx, with fresh separate homes
+and unchanged copied resources. No full-corpus score is inferred from these
+artifact results.
+
+GNU's fresh native execution reference completes with 177 actual passes,
+zero failures/skips, exit zero (81.043s process, 78.166s ERT). Emaxx is
+running next on the same fixed source. Its return-type cases each start a
+fresh editor through unchanged `comp.el:comp--final`: GNU deliberately runs
+the C backend in a subprocess outside bootstrap/async compilation. Read-only
+process inspection confirms those children belong to the current suite;
+they are not extra concurrent gate runs. No flag is set to bypass that
+upstream lifecycle. Their startup cost is further evidence for the existing
+startup-image work, not permission to force batch compilation in-process.
+
+The Emaxx run now also completes with 177 actual passes, zero failures,
+skips or timeouts, exit zero (796.419s process, 768.352s ERT). GNU and
+Emaxx executed the identical 177-name inventory. Evidence:
+`native-arena-bounds-upstream-native.jsonl` and
+`native-execution-current-izxbnq10/{gnu,emaxx}/stderr.log` in the session
+directory. Both test/resource copies and editor hashes are verified
+unchanged after execution. The ERT file itself freshly compiled and loaded
+its native helpers in each editor, using separate homes and caches. This
+is actual upstream native execution, distinct from the earlier 177 selected
+Rust checks. The current tree therefore has the nine artifact fixtures and
+177 upstream native outcomes passing; the full serial gate, frozen corpus,
+Simple repair and startup independence finding still remain.
+
+The two freshly generated helper files actually loaded in that run also
+have matching GNU/Emaxx SHA256 values: `comp-test-funcs` is
+`6150f6c1787cba98af62c114388338b09209738fd7a248ebc05d4a95ee16d430`,
+and `comp-test-funcs-dyn` is
+`a462180823860f955fe9f213a6c35e1e66adb2677773ffb95ec0103785c236cf`.
+Their load paths are recorded in each editor's stderr; GNU's files are in
+its fresh home cache and Emaxx's are in this worktree's native cache.
+
+One fresh startup profile on the same gate executable finishes with `t`,
+exit zero and 8.713s instrumented wall time (`native-arena-bounds-startup-profile.jsonl`,
+`startup-profile-wvdhx3hx`). The 128 `do-after-load-evaluation` calls total
+2.861s. Exclusive samples still concentrate in native collection (622),
+Lisp marking (461), symbol mark-set insertion (405), and numeric mark-set
+insertion (361); Value clone/drop contribute 187/178. The waiting main
+thread's 6,033 samples are not worker CPU cost. As before, sampled dyld
+debugger notifications are not evidence of a production loader defect.
+This diagnostic does not establish a four-second startup or justify
+removing GNU's explicit after-load collections. No further production
+change is made from these samples alone, and Simple remains a measured
+failure rather than a claimed fix.
+
+### 2026-09-05 incomplete checkpoint: awaiting the startup owner
+
+Three consecutive goal turns have encountered the same external dependency.
+The latest completed fetch still has main `84f342a` and native-comp
+`b432d86`. The separate native-comp worktree is still at `b432d86` with
+uncommitted startup/lifecycle, loader, and audit changes. Its completed
+commit or an explicit ownership handover is needed before continuing that
+overlapping work. No unfinished files from that worktree were copied.
+
+The integration is **blocked, not complete**. Requirements still open are
+Simple's actual four-second startup assertion, this tree's startup
+independence failure, integration of the completed startup changes, the
+final-tree warning/audit/full serial gate, the frozen 7,883-outcome report,
+and final main commit/push/remote verification/temporary-branch pruning.
+The four thread fixes, two ERC passes, nine native artifact fixtures and
+177 selected native passes are preserved evidence, not substitutes for
+those outstanding requirements. Server/MML ownership remains unchanged.
+
+The worktree remains on `integrate-native-threads-startup` at checkpoint
+`e479386`, with the pending `b432d86` merge and local GC changes intact.
+The runtime-source diff hash remains `1a8dfc53aa1281c6941862eeb31176e1a7b5b968277f6b02e3a4cb673ae5b27e`.
+No owned test/build process remains running; staged and unstaged whitespace
+checks are clean. No final merge commit, main push or branch deletion was
+performed. Resume from this checkpoint when the completed incoming change
+or ownership decision is available; do not restart the unchanged green
+suites merely because the goal resumes.
+
+### 2026-09-05 resumed: follow GNU's startup mechanism
+
+The preceding claim that another ownership authorization was required was
+too strong: the user had already authorized this integration. Waiting for
+the other worktree was a coordination decision, not a permissions failure.
+The resumed fetch completed successfully and still shows main `84f342a`
+and native-comp `b432d86`. No unfinished files from the other tree were
+copied or modified.
+
+A proposed extension of the internal identity-hash mixing was removed at
+the user's direction to follow GNU's C approach. Both new experiment tests
+were removed with it. No experimental executable was built: the attempted
+Cargo invocation rejected multiple positional filters before compilation.
+Its error is retained in `identity-mixing-focused.log` in the task evidence
+directory. There is no new test result or speedup claim. The exact runtime
+diff hash is restored to
+`1a8dfc53aa1281c6941862eeb31176e1a7b5b968277f6b02e3a4cb673ae5b27e`;
+the previously verified thread/ERC/GC changes and pending merge remain.
+
+Direct source review confirms the relevant lifecycle difference:
+`emacs.c:1432` invokes `load_pdump`; `emacs.c:2580` chooses `loadup.el`
+only for an uninitialized process. By contrast, Emaxx's
+`batch.rs:preload_batch_compat_libraries` reconstructs the image by running
+unchanged `loadup.el` on every startup, stopping at the unavailable dumper.
+GNU `loadup.el:134` explicitly collects after each loaded library. Those
+collections must not be skipped or redefined to meet Simple's deadline.
+The GNU-faithful startup/image path, including its actual object ownership,
+relocations and fresh-process initialization, remains the implementation
+direction; neither a test-specific child path nor another hash experiment
+is a substitute. This source review does not itself close Simple or the
+separate GNU-executable load-path dependency.
+
+### 2026-09-05 GNU dumper entry: process mode and real thread restrictions
+
+The next bounded C port is the entry portion of
+`pdumper.c:Fdump_emacs_portable` (4111-4138). It rejects an interactive
+process, then a non-main caller, then the presence of another live thread,
+before examining the filename. Emaxx previously checked the filename
+immediately and otherwise reported the unavailable backend. The new checks
+use the actual scheduler's main-thread identity and live-thread inventory;
+blocked threads still count and terminated threads do not. Keeping a dead
+thread object is not a claim that it can be serialized: GNU's later
+`dump_vectorlike` rejects non-main thread objects.
+
+Source review identified a necessary distinction, not a new policy:
+`emacs.c:228` declares the internal `noninteractive` flag,
+`emacs.c:1963` copies it to `noninteractive1`, and `emacs.c:3640` exposes
+only the latter as Lisp's `noninteractive`. The port adds the former as
+typed process state, sets it at the existing batch/interactive startup
+boundaries, and shares it across the editor's Lisp threads. The dumper does
+not consult lexical bindings, an overridden Lisp predicate, or the detached
+public variable. This is not a claim that every other existing C consumer
+has been audited for this distinction.
+
+A real GNU -nw -Q terminal control, with fresh task-specific HOME/TMPDIR
+and no valid dump filename, confirms the same mode error before and after
+binding or detaching/reassigning Lisp's public flag. The initial sandbox
+attempt could not open /dev/tty. The terminal-enabled attempt exited zero
+but disproved the probe's straight-apostrophe expectation: GNU's
+`eval.c:error -> vformat_string -> doprnt.c:490` applies its effective quote
+style. The production port now uses the existing format-message primitive
+for this diagnostic, and tests grave/straight/curve behavior. The corrected
+terminal control passes in 2.285s, with all three complete errors recorded
+in `gnu-dump-mode-quoted.jsonl` / `gnu-dump-mode-iggahg10/result.el` under
+the task evidence directory. The earlier failed observations are retained.
+
+The focused Rust controls compare GNU/Emaxx errors for a genuinely
+mutex-blocked worker, its subsequent termination, a child caller, and Lisp
+variable binding/detachment. The existing backend-boundary test now explicitly
+sets actual batch process state to match its GNU --batch oracle. The normal
+batch initialization test also checks the internal flag and main-thread
+identity. Test-only compile mistakes (LispError equality, denied unwraps,
+and borrowing a formatted string) were corrected; their logs are retained.
+The current optimized focused build is running (`dump-entry-focused-final.log`);
+no passing Rust result is claimed yet.
+
+This does not implement a dump writer/loader or close Simple. The unexec-mode
+restriction, native-unit fixup, finalizer/GC loop, command-line binding,
+serialization and restoration portions remain outside this bounded entry
+patch. In particular, the existing unavailable-backend boundary is still
+explicit; a lookalike image file, replaced loadup policy, altered deadline,
+new ignore, or GNU delegation was not introduced. The final whole-tree audit,
+warning gates, full serial gate and 7,883-outcome run remain required.
+
+The first focused executable build completed in 2m55. Its four selected
+tests finished with two passes and two fixture failures, zero ignored
+(`dump-entry-focused-final.log`). Normal batch initialization and the
+existing explicit backend boundary passed. The new batch-mode program had
+left Lisp's `noninteractive` nil: GNU `startup.el:1633` therefore did not
+take its normal batch-exit branch. After identifying its exact live child
+PID 60128 and streams, only that owned GNU child was terminated. The
+corrected program restores the original public value in unwind-protect;
+the assertions and production guard are unchanged. The thread comparison
+passed its GNU assertion, then the raw Rust fixture failed because it does
+not preload subr.el's ignore-errors macro. Cleanup now uses the underlying
+condition-case form directly, retaining the same error/result assertions.
+Only those two failed checks are being rerun
+(`dump-entry-fixtures-recheck.log`), with no production change or deadline
+adjustment. The two earlier passing checks are not being rerun.
+
+That two-test replay built in 2m46 and passed the mode/quoting check. The
+remaining thread fixture then exposed its other subr.el macro dependency:
+bare `(lambda ...)` is a macro in GNU, not the C `function` special form.
+Both callback literals now use `#'(lambda ...)`, the reader spelling of
+that C-owned form, rather than requiring a preload just for macro expansion.
+The same program is still sent to GNU, and all original expected errors
+remain. Only this last failed test is rebuilding/running
+(`dump-entry-thread-fixture-recheck.log`). These fixture corrections do not
+change production thread semantics or the measured compatibility results.
+
+That single-test replay then failed on the last Lisp-only alias in the bare
+fixture: `subr.el:71` defines `not` as `null`. The condition now calls GNU's
+C `null` primitive directly. Every remaining call was checked against
+`core.rs` special forms and the generated/actual C dispatch registrations.
+The production code and all assertions are still unchanged. The one-test
+recheck is `dump-entry-thread-c-forms.log`; the preceding failure remains
+in `dump-entry-thread-fixture-recheck.log`.
+
+The final single-test recheck passes (2m51 build, 0.27s test, zero ignored).
+All four focused checks now have passing results on the unchanged
+production patch; only failed fixtures were rerun. This is four Rust
+controls, not four additional compatibility outcomes. Strict all-target,
+all-feature gate-profile Clippy passes with zero warnings (23.69s,
+`dump-entry-clippy-verified.log`), and rustfmt plus staged/unstaged
+whitespace checks pass. The lib-test executable SHA256 is
+`eafd3b4689679db25f6760060c05553506abefa268b640a90c6bb6b5aaa9a871`.
+The runtime/test diff against HEAD hashes to
+`cd4f6afd41b60b5ced3f2026cc930fed2e0b930a0b2b0aa0464c38eb7cabb8c2`.
+The CLI executables have not been rebuilt for this entry patch, so earlier
+CLI/native-suite results must not be described as fresh validation of it.
+
+### 2026-09-05 open dumper prerequisite: finalizer implementation
+
+Direct review of GNU 30.2 `alloc.c:4135-4246,6665-6698` finds a prerequisite
+for the dumper's collect-until-no-finalizers-run loop. GNU validates
+FUNCTIONP, stores the callback, distinguishes normal reachability from
+references through finalizers, preserves doomed callbacks before sweeping
+weak tables, and runs them once after collection with inhibit-quit bound.
+The current Emaxx `dispatch/strings.rs:make-finalizer` instead allocates
+only an ID: it does not validate/store the function, and its collector has
+no finalizer callback phase. This is an existing incomplete implementation,
+not a regression from the dump-entry patch.
+
+A same-file authored diagnostic `(make-finalizer 42)` confirms the first
+observable difference: GNU reports `(wrong-type-argument functionp 42)`;
+Emaxx returns `#<finalizer id:1>`. Both processes exit zero because the
+diagnostic catches errors; exit status alone is not a semantic match.
+Evidence: `finalizer-constructor-control.jsonl` and
+`same-file-controls-142ko_4c` in the session directory. GNU SHA256 is
+`7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82`;
+the Emaxx CLI is the prior gate executable `91b2c1d12d1c700292cce128be22db5ff2e74c51c75c2a91593a2b32e5b78e7b`
+(the finalizer implementation is unchanged by the entry patch).
+The upstream `alloc-tests.el:finalizer-object-type` checks only the type;
+its pass cannot certify callback behavior. This authored finding is not
+an extra measured 7,883-corpus failure. No finalizer implementation or
+portable-image support is claimed here.
+
+### 2026-09-05 finalizer implementation in progress
+
+The next patch replaces the ID-only finalizer stub with the phases in
+`alloc.c`: an ordered allocation registry that is not itself a Lisp root;
+normal tracing of the function when its finalizer is reachable; selection
+of all doomed finalizers before marking their callbacks; callback marking
+before weak-table sweeping; and post-sweep execution with the function
+cleared before invocation. The shared pending queue survives nested GC and
+nonlocal exits. Callback execution binds inhibit-quit, installs an internal
+catch-all condition handler, logs caught signals, and restores the binding.
+Both explicit `garbage-collect` and the generated-code collection helper
+call the post-sweep phase after resetting collection accounting. Actual
+finalizer allocations now contribute their four-word GNU pseudovector
+layout to the live-object census.
+
+The constructor uses the existing internal FUNCTIONP helper, not the Lisp
+function cell. `xdisp.c:vadd_to_log` uses C format-message and log-only
+output; the patch extracts the existing message-log writer for sharing,
+without invoking Lisp message/echo callbacks or printing to stderr. This
+mechanical extraction is not a claim that every pre-existing message_dolog
+detail (duplicate coalescing, narrowing/point restoration, and buffer-mode
+initialization) was already complete. Those remain separate inherited
+logging limitations and must not be hidden by a passing finalizer test.
+
+Five new same-program GNU/Rust controls cover constructor validation,
+rooted callbacks and weak entries, finalizer cycles/resurrection/nested
+collection, caught error/quit signals without message dispatch, and throw
+unwinding with subsequent queued work. The first all-target/all-feature
+Clippy pass is clean (19.94s, `finalizer-clippy-initial.log`), before the
+subsequent census-accounting addition. The optimized focused build is
+running in `finalizer-focused-initial.log`; no new passing semantic result
+is claimed yet. Native bridge reachability also needs an adversarial
+control: keeping an ABI allocation alive through Rust ownership must not
+turn a callback owned only by the finalizer registry into a normal Lisp
+root. Simple, saved-image support, startup independence, the full serial
+gate, frozen corpus, and final publication remain open.
+
+The first finalizer selection built in 2m44 and finished with two passes
+and three failures, zero ignored. Constructor dispatch and throw unwinding
+passed. The three failures were GNU rejecting the authored expected
+collection timing, before the Rust comparison ran; these are not evidence
+that the production callback phase passed. A fixed five-phase diagnostic
+(`finalizer-gnu-phases.el/.log`) confirmed that repeating GC alone does not
+remove the extra roots. No acceptance loop or timeout was added.
+
+The relevant C roots are explicit: `thread.c:mark_one_thread` scans native
+stacks, and `eval.c:Flet` retains the initializer array `temps` until
+`SAFE_FREE_UNBIND_TO` after its entire body. Consequently, assigning nil to
+the Lisp binding does not remove the copy of a cons used as a let
+initializer. The controls now allocate their disposable objects on a
+joined worker, and initialize the main thread's key binding to nil before
+assigning it in that worker. The original result assertions remain
+unchanged. GNU now confirms all five expected results, including the weak
+entry's eventual removal (`finalizer-oracle-worker-controls.log` and the
+failed-case-only `finalizer-oracle-weak-worker.log`). The three previously
+failed Rust controls are rebuilding in `finalizer-worker-fixtures.log`;
+the two passing controls are not rerun. This fixes the test's object
+lifetimes, not GNU semantics, production timeouts, or collection thresholds.
+
+The worker-based Rust replay passes the weak-entry and cyclic/nested
+collection controls, but the log/error control still differs (callback
+observation nil versus GNU t). Its bare host `Interpreter::eval` entry did
+not explicitly install GNU's dynamic evaluation environment. The same
+fixture now goes through `(eval 'FORM nil)` in both editors; GNU confirms
+the unchanged expected output in `finalizer-oracle-dynamic.log`. The
+failed-test-only Rust replay is `finalizer-dynamic-fixture.log`. The
+production patch has not been changed to force the fixture's answer.
+
+The native-comp owner has now published `a92e6208825149b42b7f04b6ec254faf9a1f5156`
+(startup and shared C-owned load paths). A completed fetch confirms that
+origin/native-comp points there; origin/main remains `84f342a`. This is a
+new integration input, superseding the earlier unpublished-startup wait.
+It is not yet merged or validated in this worktree. Review identifies two
+specific interactions to preserve: the new unified initialization boundary
+must set the actual internal process-mode flag added here, and the incoming
+redisplay callback logger and finalizer logger must share one log-only sink.
+The other worktree's subsequent, still-uncommitted native GC/root rewrite
+is not part of this incoming commit and has not been copied or claimed.
+
+The explicit dynamic-evaluation logging control now passes (4m27 optimized
+build, 0.44s test, zero ignored). All five new finalizer controls have
+passing GNU/Rust results; each failed fixture was replayed without rerunning
+the already-passing controls. Final strict all-target/all-feature Clippy
+passes with zero warnings (22.96s, `finalizer-clippy-final.log`). Rustfmt
+and staged/unstaged whitespace checks are clean. The affected optimized
+GC/native-runtime/weak-table/census/message-log/dumper selection then passes
+78/78, zero ignored, in 9.23s (`finalizer-adjacent.log`); it explicitly skips
+the five already-validated new controls. This establishes 83 distinct
+focused checks, not a full runtime gate or a new compatibility-corpus score.
+
+The tested lib executable SHA256 is
+`88fcb20aaedf6800a835b2bac79c1570d800215de44fb872e374f7d82080a300`.
+New-file hashes are `3475615ecdc08ad26aaba9c7d053d073f06b3b8bade22606f86af8a0f65ec364`
+(`eval/finalizers.rs`),
+`a3e0da39b31c6a6bb946151483b97f3682cae3e8b6e0b1ede4855594f9f8224e`
+(`primitives/messages.rs`), and
+`e7c33138aa79c4108c5e7d447e562940adaed67c3f1190d4b2263043b3b3902a`
+(`primitives/tests/finalizers.rs`). The CLI has not been rebuilt for this
+patch. The source audit finds no added production test-name selection,
+oracle calls, result substitution, ignores, execution-mode bypass, or
+threshold/deadline changes. Internal FUNCTIONP's inherited alias/special-form
+edge cases, native bridge root classification, and the shared logging
+limitations remain open; these focused controls do not certify those wider
+contracts or actual native-generated finalizer execution.
+
+A local checkpoint is being made solely to conclude the existing b432d86
+merge and preserve this work before integrating a92e620. It is not final
+publication or a claim that main is ready: startup independence, Simple's
+four-second requirement, affected validation after the new merge, the full
+optimized serial gate and frozen 7,883-outcome report still remain.

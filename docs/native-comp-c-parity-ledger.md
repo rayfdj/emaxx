@@ -65,7 +65,7 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | P34 | `funcall` | `eval.c:Ffuncall` and `funcall_subr` | partial; see L04-L07 |
 | P35 | `stringp` | `data.c:Fstringp`; `lisp.h:STRINGP` | verified; direct tagged-word test, see L14 |
 
-## Cross-cutting hot-path contracts (14)
+## Cross-cutting hot-path contracts (15)
 
 | ID | GNU C contract | Status | Exact remaining work |
 |---|---|---|---|
@@ -83,6 +83,40 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | L12 | `bytecode.c:exec_byte_code` argument words; `print.c:Ferror_message_string` result ownership | verified | Bytecode preserves original argument objects; diagnostics are mutable at their C-owned producer, with the original-string fast return preserved. Caller identity/mutation, unchanged Eshell, 177 native cases, nine artifact fixtures and paired timing checks pass. Other string-representation and error-rendering gaps are not closed by this bounded ownership correction. |
 | L13 | `data.c:Fbyte_code_function_p`; allocation-free bytecode slot-type inspection | verified | Removed the parameter-name-based interpreted-lambda false positive and type-name spoofing; classify closures by their code-slot tag. Internal shape checks no longer copy string/vector payloads just to inspect their types. Both contracts failed before the repair; final 116 Rust tests, 177 GNU native tests and nine artifact fixtures pass, with paired measurements recorded below. This does not close all VM storage or closure-dispatch gaps. |
 | L14 | `data.c:Fstringp`, `Farrayp`, `Fsequencep`, `Fchar_or_string_p`; `doc.c:Fdocumentation_stringp`; `lisp.h:CHECK_STRING` | verified | Replaced copying predicate calls with GNU tag checks, included char-tables in sequence classification and corrected `character.h:MAX_CHAR`. Native stringp keeps its argument as a tagged word. Three contracts failed on old code. The shared vector-as-string fallback is removed too, with ordinary/native `Fstring_bytes` argument-identity checks. Final Rust/native/artifact gates pass; timing differences reverse sign, with no demonstrated speedup. Remaining integer/record/string representations are separate audits; no new cache is introduced. |
+| L15 | `alloc.c:Fmake_byte_code`; `bytecode.c:exec_byte_code` original constants-vector ownership; `lread.c:bytecode_from_rev_list` reader ownership | verified | Two Rust controls fail on the old copied constants (stale values between and during calls). The correction retains the original vector, reads its current slots and removes duplicate VM-side reader construction. Original-vector identity/lifetime and executable adversarial controls pass. Final 109 focused tests, warning gates, all nine artifact fixtures and 177/177 unchanged GNU native execution tests pass. Both timing pairs use less CPU with identical artifacts; see evidence below. No invalidation cache or Elisp change is introduced. Broader opcode caching and make-byte-code validation remain separate work. |
+
+L15 evidence (2026-09-05, baseline `c236c21`):
+`/private/tmp/emaxx-bytecode-constants.aiZp6U`. The two mutation controls
+fail before the repair (`red.log`); final focused optimized verification
+passes 109 tests, zero failures, one separate timing probe ignored (44.72s).
+The third contract proves that no constant snapshot retains a removed value;
+it is not a claim of universal GC timing equivalence. The existing decoder
+fixtures and assertions are unchanged, with the existing reader boundary
+now explicitly completed before their VM execution. The ordinary production
+reader is independently exercised by the nine unchanged-source artifact
+fixtures (eight complete `.eln` files identical, one correctly absent).
+Ordinary native execution passes 177/177 with fresh native helpers and GNU's
+native-enabled default selector (ERT 2394.882872s, zero unexpected).
+
+Full unchanged `comp.el` timing pairs, all serial and unprofiled:
+
+| Pair/order | Before wall/user/system | After wall/user/system | GNU wall/user/system |
+|---|---|---|---|
+| 1: before, after, GNU | 125.25 / 115.53 / 6.62 | 122.45 / 112.95 / 6.75 | 19.27 / 18.26 / 0.49 |
+| 2: after, before, GNU | 157.43 / 143.26 / 8.87 | 141.64 / 129.79 / 7.87 | 18.81 / 18.10 / 0.44 |
+
+Each pair uses one identical source path and fresh per-editor homes. GNU
+runs last, preventing reuse of its oracle output by either Emaxx run. All
+three 881,800-byte files match within each pair, SHA-256
+`341e99373c8cab5ad30e33aa366c917bde6ba6c6d7f7cb6c129623b8acb02b4c` (pair 1),
+`89e4886cbdb286396ef4ca202fdc92965e8de8520e51f115cadfd5f50dc5833d` (pair 2).
+User CPU is 2.23% and 9.40% lower after the correction. Neither pair shows
+a regression, but the host variability prevents claiming a precise stable
+speedup. Means are 129.395 / 121.37 / 18.18s before / after / GNU; current
+Emaxx is still about 6.68x GNU including startup. R02c, V02-V05, the full
+live-object census and broader VM contracts remain open. Final formatting,
+all-target check and strict all-target/all-feature Clippy are clean; the
+pre-commit adversarial gate passes 17/17. Repeat it before pushing.
 
 The L11 audit also requires the symbol's stored name to be a traced child,
 as in `alloc.c:mark_objects` (including string intervals). The internal lookup

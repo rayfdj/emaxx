@@ -369,13 +369,18 @@ impl SharedText {
         if text.is_empty() {
             return EMPTY_SHARED_TEXT.with(Clone::clone);
         }
-        note_string_allocation(
-            crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text),
-        );
+        let storage_bytes = crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text);
+        note_string_allocation(storage_bytes);
         let text = Rc::new(text);
         INTERNED_TEXT_BOOK.with(|book| {
-            book.borrow_mut().push(Rc::downgrade(&text));
-            INTERNED_TEXT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+            let mut book = book.borrow_mut();
+            book.push((Rc::downgrade(&text), storage_bytes));
+            INTERNED_TEXT_BOOK_LIMIT.with(|limit| {
+                if book.len() >= limit.get() {
+                    book.retain(|(weak, _)| weak.strong_count() > 0);
+                    limit.set((book.len() * 2).max(1 << 16));
+                }
+            });
         });
         Self(text)
     }
@@ -1195,15 +1200,18 @@ impl ConsValueCell {
 // on one thread (Rc is !Send), so plain thread-locals are exact and each
 // test interpreter thread keeps its own books.  Cons cells are counted at
 // construction and un-counted in Drop -- Rust ownership is the sweep.
-// Strings register a Weak handle at allocation; the census upgrades each
+// Strings register a Weak handle at allocation; the census checks each
 // handle and prunes the dead ones, which is the lazy equivalent of GNU's
-// sweep visiting every string block.
+// sweep visiting every string block. Immutable SharedText also records its
+// Emacs byte length once, like STRING_BYTES in alloc.c:sweep_strings. The
+// Rc<String> has no mutable access, so its length cannot become stale. The
+// mutable StringObject census still reads its current contents and encoding.
 thread_local! {
     static LIVE_CONSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static STRING_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<RefCell<SharedStringState>>>> =
         const { RefCell::new(Vec::new()) };
     static STRING_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    static INTERNED_TEXT_BOOK: RefCell<Vec<std::rc::Weak<String>>> =
+    static INTERNED_TEXT_BOOK: RefCell<Vec<(std::rc::Weak<String>, usize)>> =
         const { RefCell::new(Vec::new()) };
     static INTERNED_TEXT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
     static FLOAT_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<f64>>> =
@@ -1302,14 +1310,14 @@ pub(crate) fn census_live_strings() -> StringCensus {
     });
     INTERNED_TEXT_BOOK.with(|book| {
         let mut book = book.borrow_mut();
-        book.retain(|weak| match weak.upgrade() {
-            Some(text) => {
+        book.retain(|(weak, storage_bytes)| {
+            if weak.strong_count() > 0 {
                 census.count += 1;
-                census.bytes +=
-                    crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text);
+                census.bytes += storage_bytes;
                 true
+            } else {
+                false
             }
-            None => false,
         });
         INTERNED_TEXT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
     });
@@ -2970,8 +2978,9 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvFrame, LispError, SharedCons, SymbolName, Value, census_live_conses, census_live_floats,
-        census_live_vectors, make_uninterned_symbol_name, shared_env,
+        EnvFrame, LispError, SharedCons, SharedText, SymbolName, Value, census_live_conses,
+        census_live_floats, census_live_strings, census_live_vectors, make_uninterned_symbol_name,
+        shared_env,
     };
     use std::rc::Rc;
 
@@ -3011,6 +3020,102 @@ mod tests {
         };
 
         assert!(Rc::ptr_eq(&text.0, &cloned_text.0));
+    }
+
+    #[test]
+    fn live_census_preserves_immutable_emacs_bytes_and_clone_lifetimes() {
+        let before = census_live_strings();
+        let raw = crate::lisp::primitives::raw_byte_regex_char(0x80);
+        let cases = [
+            ("ascii".to_owned(), 5),
+            ("é".to_owned(), 2),
+            ("中".to_owned(), 3),
+            ("🙂".to_owned(), 4),
+            (format!("{raw}{raw}"), 2),
+            (format!("é{raw}"), 4),
+        ];
+        // Raw-byte proxies occupy three Rust UTF-8 bytes each, but one
+        // Emacs byte in an unibyte string and two in a multibyte string.
+        assert_eq!(cases[4].0.len(), 6);
+        let bytes: usize = cases.iter().map(|(_, bytes)| bytes).sum();
+        let values: Vec<_> = cases
+            .into_iter()
+            .map(|(text, _)| SharedText::new(text))
+            .collect();
+        let clones = values.clone();
+        for _ in 0..3 {
+            let live = census_live_strings();
+            assert_eq!(live.count, before.count + values.len());
+            assert_eq!(live.bytes, before.bytes + bytes);
+            assert_eq!(live.property_spans, before.property_spans);
+        }
+        drop(values);
+        let live = census_live_strings();
+        assert_eq!(live.count, before.count + clones.len());
+        assert_eq!(live.bytes, before.bytes + bytes);
+        drop(clones);
+        let after = census_live_strings();
+        assert_eq!(after.count, before.count);
+        assert_eq!(after.bytes, before.bytes);
+    }
+
+    #[test]
+    fn live_census_releases_consumed_text_and_excludes_host_only_names() {
+        let before = census_live_strings();
+        let empty = SharedText::new(String::new());
+        let other_empty = SharedText::new(String::new());
+        assert!(empty.ptr_eq(&other_empty));
+        let host_only = SharedText::new_untracked("encoded host-only key".to_owned());
+        assert_eq!(census_live_strings().count, before.count);
+        assert_eq!(census_live_strings().bytes, before.bytes);
+
+        let text = SharedText::new("held".to_owned());
+        let alias = text.clone();
+        let mut host_copy = text.into_string();
+        host_copy.push_str(" changed outside Lisp");
+        let live = census_live_strings();
+        assert_eq!(live.count, before.count + 1);
+        assert_eq!(live.bytes, before.bytes + 4);
+        assert_eq!(alias.as_str(), "held");
+        drop(alias);
+        assert_eq!(census_live_strings().count, before.count);
+        assert_eq!(census_live_strings().bytes, before.bytes);
+
+        let unique = SharedText::new("owned".to_owned());
+        assert_eq!(census_live_strings().bytes, before.bytes + 5);
+        let mut moved_host_text = unique.into_string();
+        moved_host_text.push_str(" also outside Lisp");
+        assert_eq!(census_live_strings().count, before.count);
+        assert_eq!(census_live_strings().bytes, before.bytes);
+        drop((host_copy, moved_host_text, host_only, empty, other_empty));
+    }
+
+    #[test]
+    fn live_census_text_registration_prunes_dead_metadata_only() {
+        let before = census_live_strings();
+        let registrations_before = super::INTERNED_TEXT_BOOK.with(|book| book.borrow().len());
+        super::INTERNED_TEXT_BOOK_LIMIT.with(|limit| limit.set(registrations_before + 4));
+        let first = SharedText::new("first".to_owned());
+        let dead = SharedText::new("dead".to_owned());
+        let dead_handle = Rc::downgrade(&dead.0);
+        drop(dead);
+        let second = SharedText::new("second".to_owned());
+        let third = SharedText::new("third".to_owned());
+        super::INTERNED_TEXT_BOOK.with(|book| {
+            let book = book.borrow();
+            assert_eq!(book.len(), registrations_before + 3);
+            assert!(book.iter().all(|(weak, _)| weak.strong_count() > 0));
+            assert!(book.iter().all(|(weak, _)| !weak.ptr_eq(&dead_handle)));
+        });
+        super::INTERNED_TEXT_BOOK_LIMIT.with(|limit| {
+            assert_eq!(limit.get(), ((registrations_before + 3) * 2).max(1 << 16));
+        });
+        let live = census_live_strings();
+        assert_eq!(live.count, before.count + 3);
+        assert_eq!(live.bytes, before.bytes + 16);
+        drop((first, second, third));
+        assert_eq!(census_live_strings().count, before.count);
+        assert_eq!(census_live_strings().bytes, before.bytes);
     }
 
     #[test]

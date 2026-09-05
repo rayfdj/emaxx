@@ -3136,6 +3136,10 @@ impl Interpreter {
         Value::Record(self.active_thread_id)
     }
 
+    pub(crate) fn is_main_thread(&self) -> bool {
+        self.active_thread_id == self.main_thread_id
+    }
+
     pub(crate) fn make_thread(
         &mut self,
         function: Value,
