@@ -6081,3 +6081,38 @@ file-modes contract had a literal 755 for the startup
 with the same escaped arguments).  Strict gate Clippy and
 `cargo fmt --check' are clean; `compat/oracle.lock.linux.json' stays
 uncommitted as before.
+
+## 2026-09-05 frozen run on the coding and file-modes series: 7763/7883
+
+Frozen replay of the pinned manifest on `50ade8d` (main `84f342a` plus
+this series; `frozen-1788596001721596265-1737`, 461 files, 3600 s
+per-phase timeout): 7763/7883 matching, 120 mismatching outcomes in 10
+files, against 7757 (126 in 11 files) for the previous run.  Closed since
+that run: the four umask-caused server-tests (finding 158), the two
+em-prompt-tests field-boundary tests and editfns-tests'
+before/after-change-functions (both from main's Editfns and Eshell
+commits).  No previously matching test regressed.
+
+One new mismatch appeared and is not a divergence: flymake-tests'
+`ruby-backend' was *skipped by the oracle* (its `skip-unless
+(executable-find "ruby")') and passed by Emaxx in this run.  The same
+oracle passed it in the previous frozen run, both binaries find
+/usr/local/bin/ruby, and two harness replays of the file immediately
+afterwards match 9/9 (`run` artifacts under target/compat, both PASS).  It
+is a one-off skip on the oracle side, recorded here as such.
+
+What still stands, by cause:
+
+| Cause | Outcomes | Files |
+|---|---|---|
+| native compilation (`native-compile' feature absent) | 99 | src/comp-tests (96), lisp/emacs-lisp/comp-tests (3) |
+| semantic completion subtests, undiagnosed | 6 | cedet/semantic-utest-ia |
+| mml-sec ciphertext nondeterminism (no divergence) | 4 | gnus/mml-sec-tests |
+| thread model: `thread-list' Blocked state, condvar/mutex contention deadlock guard (finding 157 family) | 4 | lisp/thread-tests (2), src/thread-tests (2) |
+| multi-terminal tty frames (finding 159) | 3 | server-tests |
+| `erc--find-mode' and `erc--essential-hook-ordering' end with `end-of-file', undiagnosed | 2 | erc/erc-tests |
+| `accept-process-output' JUST-THIS-ONE returning nil in async-shell-command-30280, undiagnosed | 1 | simple-tests |
+| one-off oracle skip (above) | 1 | progmodes/flymake-tests |
+
+Outside native compilation, the thread model and the frame model, the
+open work is 9 outcomes: semantic (6), erc (2), simple (1).
