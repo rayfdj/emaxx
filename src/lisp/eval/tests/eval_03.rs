@@ -144,11 +144,28 @@ fn native_prin1_respects_dynamic_charset_text_property_modes() {
                      print-charset-text-property
                      (let ((print-charset-text-property nil))
                        (emaxx-test--native-prints-charset-p "ö" 'ascii))
+                     ;; print.c print_prune_string_charset decides by
+                     ;; CHAR_CHARSET: before any `set-charset-priority'
+                     ;; (a LANG-less GNU session) the ordered list walk
+                     ;; answers iso-8859-1 for U+00F6, so a `unicode'
+                     ;; charset property is unsafe and printed; the
+                     ;; batch gate's LANG=C selects the ASCII language
+                     ;; environment, whose `(set-charset-priority 'ascii)'
+                     ;; sets Vcharset_non_preferred_head so the same
+                     ;; character answers `unicode' and the property is
+                     ;; pruned (both observed on the oracle).
                      (let ((print-charset-text-property 'default))
                        (list
                         (emaxx-test--native-prints-charset-p "ö" 'ascii)
                         (emaxx-test--native-prints-charset-p "ö" 'unicode)
                         (emaxx-test--native-prints-charset-p "a" 'unicode)))
+                     (progn
+                       (set-charset-priority 'ascii)
+                       (let ((print-charset-text-property 'default))
+                         (list
+                          (emaxx-test--native-prints-charset-p "ö" 'ascii)
+                          (emaxx-test--native-prints-charset-p "ö" 'unicode)
+                          (emaxx-test--native-prints-charset-p "a" 'unicode))))
                      (let ((print-charset-text-property t))
                        (list
                         (emaxx-test--native-prints-charset-p "ö" 'unicode)
@@ -159,6 +176,7 @@ fn native_prin1_respects_dynamic_charset_text_property_modes() {
                 Value::T,
                 Value::Symbol("default".into()),
                 Value::Nil,
+                Value::list([Value::T, Value::T, Value::Nil]),
                 Value::list([Value::T, Value::Nil, Value::Nil]),
                 Value::list([Value::T, Value::T]),
             ])

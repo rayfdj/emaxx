@@ -3199,6 +3199,10 @@ pub struct Interpreter {
     /// byte, in definition order until `set-charset-priority' reorders
     /// them by priority.
     iso_2022_charset_list: Vec<String>,
+    /// charset.c Vcharset_non_preferred_head: the first charset of the
+    /// ordered list that `set-charset-priority' did not move to the front;
+    /// char_charset answers `unicode' for a Unicode character on reaching it.
+    charset_non_preferred_head: Option<String>,
     /// Coding systems keyed by canonical name.
     coding_systems: Vec<CodingSystemState>,
     /// GNU ccl.c's private registration table.  Lisp symbols refer to these
@@ -4119,6 +4123,7 @@ impl Interpreter {
             big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             iso_2022_charset_list: vec!["ascii".into()],
+            charset_non_preferred_head: None,
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],
             coding_aliases: builtin_coding_aliases(),

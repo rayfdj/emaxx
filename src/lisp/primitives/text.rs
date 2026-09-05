@@ -300,7 +300,10 @@ pub(crate) fn format_s_conversion(
             .unwrap_or_else(|| string.text.chars().count())
             .min(string.text.chars().count());
         let text = string.text.chars().take(end).collect::<String>();
-        let props = slice_string_props(&string.props, 0, end);
+        // styled_format copies an argument's intervals with
+        // add_text_properties_from_list: onto the fresh result, each
+        // span's pairs come out reversed (`copied_string_props').
+        let props = copied_string_props(&slice_string_props(&string.props, 0, end), 0);
         return Ok((text, props));
     }
     // format.c's %s is print.c's `print_object' with `escapeflag' cleared,

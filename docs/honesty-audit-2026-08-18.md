@@ -5892,3 +5892,116 @@ zero failures and only the two reviewed TTY wrappers ignored; compat-harness
 passed 38/38, perf-harness 1/1, CLI 13/13, ERT integration 3/3, package
 lifecycle 5/5, and doc tests were clean.  No 7,883-test corpus run was made as
 part of this integration.
+
+## 2026-09-05 coding residuals: every decoder's `charset' properties, charset.c helpers, print pruning, text-property copy order
+
+Base: main `84f342a`.  This closes the residual disclosed in the
+2026-09-04 section ("the sjis, big5, euc-jp, emacs-mule and charset-type
+decoders still produce no `charset' properties") and the neighbouring
+charset.c and print.c behaviour that came out while probing it.  Every
+item was probed on the Linux oracle first (with LANG unset and under the
+gate's LANG=C, which differ, see below) and is covered by an in-process
+oracle contract; the probe file was diffed against the oracle in both
+locale states with no remaining difference (127 lines).
+
+**Decoders (coding.c).**  decode_coding_sjis, _big5, _euc_jp,
+_emacs_mule and _charset are ports with ADD_CHARSET_DATA, so
+`decode-coding-string', `decode-coding-region' and `insert-file-contents'
+carry produce_charset's `charset' text properties for all of them, the
+single-byte charset codings included (koi8-r, windows-125x used to bypass
+the charset decoder through a Rust single-byte table; they now decode
+through the charset like everything else and answer `(charset koi8-r)'
+over the whole string, as the oracle does).  The sjis decoder takes its
+roman/kana/kanji/kanji2 charsets from the coding's `:charset-list' and
+SJIS_TO_JIS2 is ported; the charset decoder reads Fdefine_coding_system_internal's
+`charset_valids' table (smaller dimensions first per first byte); the
+emacs-mule decoder closes a run at ASCII as GNU's does.  A multibyte source
+(a multibyte buffer region, a multibyte string) hands the decoder its raw
+bytes and passes its other characters through unchanged, as ONE_MORE_BYTE
+does, and the runs are re-based on the output, so `decode-coding-region'
+in a multibyte buffer gets the properties too.  Contract:
+`charset_decoders_annotate_like_produce_charset_and_emacs_mule_encodes_like_coding_c`.
+
+**encode_coding_emacs_mule** is now a real encoder (it wrote internal
+UTF-8 before): EMACS_MULE_LEADING_CODES of the charset's emacs-mule id
+plus the code bytes with their high bits set, the charset being the first
+of Vemacs_mule_charset_list (the charsets with an `:emacs-mule-id', in the
+current priority order) that encodes the character, and the coding's
+default char (a space) for the rest.  The encoder's `charset'-annotation
+branch never runs in GNU because setup_coding_system sets
+CODING_ANNOTATE_CHARSET_MASK for ISO-2022 designation codings only; the
+oracle re-encodes a jisx0208-annotated hiragana through chinese-gb2312
+(the list's first match), so Emaxx ignores the property there too.
+`char-charset' with a coding-system RESTRICTION reads
+coding_system_charset_list, which substitutes Vemacs_mule_charset_list for
+emacs-mule as it substitutes Viso_2022_charset_list for `iso-2022'.
+
+**charset.c character helpers.**  `char_charset' is the ordered-list
+walk with Vcharset_non_preferred_head: a Unicode character answers
+`unicode' as soon as the walk reaches the part of the order the last
+`set-charset-priority' did not move (and `emacs'/`eight-bit' past the
+whole list); `split-char' is the code's bytes per dimension;
+`charset-after', `find-charset-string' and `find-charset-region' report raw
+bytes as `eight-bit' and list charsets in id order.  ENCODE_CHAR/DECODE_CHAR
+speak GNU's character numbers (a raw byte is #x3fff80..#x3fffff, never a
+member of `unicode' or `emacs'; `encode-char' used to answer the
+Rust-internal spelling of a raw byte for `unicode'), the `unicode' and
+`emacs' code spaces end at MAX_UNICODE_CHAR and MAX_5_BYTE_CHAR, an offset
+charset's index counts from `:min-code' and stops at `:max-code'
+(gb18030-4-byte-smp's last code decodes to U+10FFFF and the next is nil),
+and a map file's `FROM-TO C' line advances by code-space index as
+load_charset_map does -- Emaxx expanded the range as consecutive
+integers, which made GB180304.map's first line 774 entries instead of 36
+and let gb18030-4-byte-bmp claim characters up to #x3fff7f.
+`decode-char'/`encode-char' signal `(wrong-type-argument charsetp X)' for
+an unknown charset (CHECK_CHARSET_GET_CHARSET) instead of answering nil.
+Contract: `char_charset_family_follows_charset_c`.
+
+**The dump boundary.**  Vcharset_non_preferred_head is not staticpro'd,
+so the value loadup leaves in temacs (english.el's
+`set-language-info-alist' re-runs `set-language-environment' for the
+default "English") is not in the dumped image: a fresh GNU session has it
+nil until a `set-charset-priority' of the session.  With LANG unset
+nothing calls it, and `(char-charset #xe9)' is `iso-8859-1'; under LANG=C
+the ASCII language environment's `(set-charset-priority 'ascii)' sets the
+head and the same call answers `unicode'.  Emaxx reconstructs loadup in
+the live process, so batch.rs clears the head at its dump boundary (after
+the loadup preloads, before the startup phases), and both states match
+the oracle.  This is the reason the earlier probe of `iso-latin-1'
+printing looked locale-dependent: it is, in GNU too.
+
+**print.c print_prune_string_charset** is ported as a per-string
+decision: `print-charset-text-property' t keeps the `charset' properties,
+nil drops them, `default' keeps them only when some charset span holds a
+non-ASCII character whose CHAR_CHARSET is not the span's charset, other
+properties surviving either way; a unibyte string's bytes count as Latin-1
+characters (fetch_string_char_advance), so `(propertize "\351" 'charset
+'eight-bit)' on a unibyte string prints its property and the same on a
+multibyte raw byte does not.  Contract:
+`print_prunes_charset_properties_like_print_prune_string_charset`; the
+older `native_prin1_respects_dynamic_charset_text_property_modes' now
+states both head states explicitly (its `nil' for U+00F6 under `unicode'
+was the LANG=C state on an interpreter that had never set a priority).
+
+**Text-property copy order (textprop.c/fns.c/editfns.c).**  Found by the
+same probe: add_properties conses each new property onto the head of the
+plist, so every copy that goes through `add_text_properties' reverses a
+span's pairs -- Fsubstring (copy_text_properties), `concat' and
+`mapconcat' (concat_to_string), styled_format's argument and
+format-string intervals -- while copy_intervals (`copy-sequence', buffer
+insertion) keeps them: `(substring (propertize "x" 'a 1 'b 2) 0)' prints
+`(b 2 a 1)' in GNU and now in Emaxx.  styled_format's fast path returns a
+string argument itself for a property-less "%s" format (`eq' holds).
+Contract: `text_property_copies_follow_add_text_properties_order`.
+
+**Still disclosed.**  ISO-2022 compositions produce their characters but
+not the `composition' property (unchanged from 2026-09-04).  The charset
+map lookups are linear scans of the parsed map per character, as before;
+correct, not fast.
+
+Verification: the four contracts above plus the existing coding, charset,
+print and text-property tests in the serial gate subset (232 passed, none
+failed after the two test corrections described above), strict gate
+Clippy and `cargo fmt --check' clean.  The full grouped gate for this
+change runs together with the next items of the same series and is
+recorded there.
