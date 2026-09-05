@@ -603,11 +603,13 @@ define_dispatch!(
                 let source_spans = string_like(&args[0])
                     .map(|source| (source.text.chars().count(), source.props))
                     .unwrap_or((0, Vec::new()));
-                let mut replacement =
+                let replacement =
                     regexp::expand_replace_match(interp, &replacement, &match_data, literal)?;
-                if !fixedcase && let Some(action) = replacement_case_action(interp, &matched, env) {
-                    replacement = casify_string(interp, &replacement, action, env)?;
-                }
+                let case_action = if fixedcase {
+                    None
+                } else {
+                    replacement_case_action(interp, &matched, env)
+                };
                 let replacement_len = replacement.chars().count();
                 let saved_markers =
                     interp.live_marker_positions_for_buffer(interp.current_buffer_id());
@@ -636,6 +638,9 @@ define_dispatch!(
                             );
                         }
                     });
+                }
+                if let Some(action) = case_action {
+                    casify_buffer_region(interp, start, start + replacement_len, action, env)?;
                 }
                 let removed_len = end.saturating_sub(start);
                 for (marker_id, original) in saved_markers {
@@ -988,10 +993,22 @@ define_dispatch!(
                 let transformed = if name == "encode-coding-region" {
                     encode_coding_value(interp, &region, coding.as_deref(), return_string, env)?
                 } else {
-                    decode_coding_text(interp, &region, coding.as_deref(), return_string, env)?
+                    decode_coding_text(
+                        interp,
+                        &region,
+                        coding.as_deref(),
+                        return_string,
+                        true,
+                        env,
+                    )?
                 };
                 let transformed_text = string_text(&transformed)?;
                 let transformed_length = transformed_text.chars().count();
+                // produce_charset's `charset' properties land in the
+                // destination buffer along with the decoded text.
+                let transformed_props = string_like(&transformed)
+                    .map(|string| string.props)
+                    .unwrap_or_default();
                 let text_for_buffer = |multibyte: bool| -> Result<String, LispError> {
                     if name == "decode-coding-region" && !multibyte {
                         Ok(decode_raw_text_bytes(&encode_utf8_bytes(
@@ -1006,7 +1023,42 @@ define_dispatch!(
                     Destination::Return => Ok(transformed),
                     Destination::Replace => {
                         let text = text_for_buffer(interp.buffer.is_multibyte())?;
+                        let old_length = end - start;
+                        let new_end = start + text.chars().count();
+                        ensure_region_modifiable(interp, start, end, env)?;
+                        ensure_no_supersession_threat(interp, env)?;
+                        let overlay_calls =
+                            overlay_change_hook_calls(&interp.buffer, start, end, new_end);
+                        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+                        run_change_hooks(
+                            interp,
+                            "before-change-functions",
+                            &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                            env,
+                        )?;
                         replace_buffer_region_with_text(interp, start, end, &text)?;
+                        // decode_coding counts produced characters even
+                        // into a unibyte destination, so the spans keep
+                        // their character offsets there.
+                        for span in &transformed_props {
+                            interp.buffer.add_text_properties(
+                                start + span.start,
+                                start + span.end,
+                                &span.props,
+                            );
+                        }
+                        run_change_hooks(
+                            interp,
+                            "after-change-functions",
+                            &[
+                                Value::Integer(start as i64),
+                                Value::Integer(new_end as i64),
+                                Value::Integer(old_length as i64),
+                            ],
+                            env,
+                        )?;
+                        let _ = maybe_lock_current_buffer_on_change(interp, env);
+                        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
                         Ok(Value::Integer(transformed_length as i64))
                     }
                     Destination::Buffer(buffer_id) => {
@@ -1014,8 +1066,15 @@ define_dispatch!(
                         interp.switch_to_buffer_id(buffer_id)?;
                         let insert_at = interp.buffer.point();
                         let text = text_for_buffer(interp.buffer.is_multibyte())?;
-                        let insertion =
-                            insert_text_with_hooks(interp, &text, &[], &[], false, false, env);
+                        let insertion = insert_text_with_hooks(
+                            interp,
+                            &text,
+                            &transformed_props,
+                            &[],
+                            false,
+                            false,
+                            env,
+                        );
                         interp.buffer.goto_char(insert_at);
                         let restore = interp.switch_to_buffer_id(saved_buffer_id);
                         insertion?;
@@ -1043,7 +1102,8 @@ define_dispatch!(
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
-                let decoded = decode_coding_text(interp, &args[0], coding.as_deref(), nocopy, env)?;
+                let decoded =
+                    decode_coding_text(interp, &args[0], coding.as_deref(), nocopy, false, env)?;
                 if let Some(buffer) = args.get(3)
                     && !buffer.is_nil()
                 {
@@ -1052,7 +1112,10 @@ define_dispatch!(
                     interp.switch_to_buffer_id(buffer_id)?;
                     let insert_at = interp.buffer.point();
                     let decoded_text = string_text(&decoded)?;
-                    insert_text_with_hooks(interp, &decoded_text, &[], &[], false, false, env)?;
+                    let props = string_like(&decoded)
+                        .map(|string| string.props)
+                        .unwrap_or_default();
+                    insert_text_with_hooks(interp, &decoded_text, &props, &[], false, false, env)?;
                     interp.buffer.goto_char(insert_at);
                     let _ = interp.switch_to_buffer_id(saved_buffer_id);
                 }

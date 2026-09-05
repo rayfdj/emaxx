@@ -1342,13 +1342,16 @@ fn native_timer_queues_are_special_and_waits_drain_the_dynamic_queue() {
 
 #[test]
 fn loaded_timer_queue_fires_during_waits() {
+    // dispnew.c Fsleep_for returns before the wait for a non-positive
+    // duration, so `(sleep-for 0)' runs no timer (the oracle answers nil
+    // there); a positive wait drains the due queue.
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
                    (require 'timer)
                    (setq fired nil)
                    (run-with-timer 0 nil (lambda () (setq fired t)))
-                   (sleep-for 0)
+                   (sleep-for 0.01)
                    fired)"
         ),
         Value::T
@@ -1385,14 +1388,16 @@ fn timer_callbacks_finish_with_defsubsts_from_their_unloaded_feature() {
 
 #[test]
 fn nonlocal_exit_from_timer_preserves_later_due_timers() {
+    // Positive waits: `(sleep-for 0)' never enters the wait (dispnew.c
+    // Fsleep_for), so the oracle leaves both timers unrun there.
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
                  (setq later-timer-fired nil)
                  (run-at-time nil nil (lambda () (throw 'timer-stop t)))
                  (run-at-time nil nil (lambda () (setq later-timer-fired t)))
-                 (catch 'timer-stop (sleep-for 0))
-                 (sleep-for 0)
+                 (catch 'timer-stop (sleep-for 0.01))
+                 (sleep-for 0.01)
                  later-timer-fired)"
         ),
         Value::T
@@ -2975,6 +2980,9 @@ fn encode_coding_region_returns_region_text_when_requested() {
 
 #[test]
 fn encode_coding_region_binary_returns_unibyte_string() {
+    // coding.c encode_coding_raw_text writes a multibyte source's U+0089 in
+    // its internal spelling (C2 89), as the oracle answers; only a raw
+    // byte8 character is written as its own byte.
     assert_eq!(
         eval_str_with_upstream_batch(
             r#"(with-temp-buffer
@@ -2986,9 +2994,92 @@ fn encode_coding_region_binary_returns_unibyte_string() {
                              (multibyte-string-p encoded))))"#
         ),
         Value::list([
-            Value::list([Value::Integer(137), Value::Integer(65)]),
+            Value::list([Value::Integer(194), Value::Integer(137), Value::Integer(65)]),
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn coding_region_replacements_signal_one_change_pair_with_the_old_length() {
+    assert_string_value(
+        eval_str_with_upstream_batch(
+            r#"(with-temp-buffer
+                 (insert "prefix")
+                 (let ((beg (point))
+                       (events nil))
+                   (insert "ééé")
+                   (add-hook 'before-change-functions
+                             (lambda (start end)
+                               (push (list 'before start end (buffer-size)) events))
+                             nil t)
+                   (add-hook 'after-change-functions
+                             (lambda (start end old-length)
+                               (push (list 'after start end old-length (buffer-size))
+                                     events))
+                             nil t)
+                   (encode-coding-region beg (point) 'utf-8)
+                   (decode-coding-region beg (point) 'utf-8)
+                   (prin1-to-string
+                    (list (nreverse events) (buffer-string) (point)))))"#,
+        ),
+        "(((before 7 10 9) (after 7 13 3 12) (before 7 13 12) \
+          (after 7 10 6 9)) \"prefixééé\" 10)",
+    );
+}
+
+#[test]
+fn replace_match_case_adaptation_reports_the_nested_region_change() {
+    assert_string_value(
+        eval_str_with_upstream_batch(
+            r#"(with-temp-buffer
+                 (insert "ABC")
+                 (goto-char (point-min))
+                 (search-forward "ABC")
+                 (let ((events nil))
+                   (add-hook 'before-change-functions
+                             (lambda (start end)
+                               (push (list 'before start end
+                                           (buffer-size) (buffer-string))
+                                     events))
+                             nil t)
+                   (add-hook 'after-change-functions
+                             (lambda (start end old-length)
+                               (push (list 'after start end old-length
+                                           (buffer-size) (buffer-string))
+                                     events))
+                             nil t)
+                   (replace-match "abcde" nil t)
+                   (prin1-to-string
+                    (list (nreverse events) (buffer-string) (point)))))"#,
+        ),
+        "(((before 1 4 3 \"ABC\") (before 1 6 5 \"abcde\") \
+          (after 1 6 5 5 \"ABCDE\") (after 1 6 3 5 \"ABCDE\")) \"ABCDE\" 6)",
+    );
+}
+
+#[test]
+fn case_region_change_hooks_report_only_the_changed_span() {
+    assert_string_value(
+        eval_str_with_upstream_batch(
+            r#"(with-temp-buffer
+                 (insert "ABC def XYZ")
+                 (let ((events nil))
+                   (add-hook 'before-change-functions
+                             (lambda (start end)
+                               (push (list 'before start end (buffer-size)) events))
+                             nil t)
+                   (add-hook 'after-change-functions
+                             (lambda (start end old-length)
+                               (push (list 'after start end old-length (buffer-size))
+                                     events))
+                             nil t)
+                   (upcase-region (point-min) (point-max))
+                   (upcase-region (point-min) (point-max))
+                   (prin1-to-string
+                    (list (nreverse events) (buffer-string)))))"#,
+        ),
+        "(((before 1 12 11) (after 5 8 3 11) (before 1 12 11)) \"ABC DEF XYZ\")",
     );
 }
 

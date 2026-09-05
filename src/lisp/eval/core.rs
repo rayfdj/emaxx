@@ -675,9 +675,13 @@ impl Interpreter {
                 self.dispatch_named_builtin(name, facts, Some(CallName::Symbol(name)), &args, env)
             }
             (Some(name), FunctionResolution::Resolved(func)) => {
+                // eval_sub applies the function itself (apply_lambda /
+                // funcall_lambda), without passing through Ffuncall.
+                self.direct_form_call = true;
                 self.call_function_value_named(func, Some(CallName::Symbol(name)), &args, env)
             }
             (None, FunctionResolution::Resolved(func)) => {
+                self.direct_form_call = true;
                 self.call_function_value_named(func, None, &args, env)
             }
             (None, FunctionResolution::DirectBuiltin(_)) => {
@@ -706,6 +710,39 @@ impl Interpreter {
         if let Some(termination) = self.pending_termination().cloned() {
             return Err(LispError::Terminate(termination));
         }
+        // eval.c increments `lisp_eval_depth' at TWO sites: eval_sub (the
+        // `eval' above) and Ffuncall (eval.c:3078).  Every call that does
+        // not come straight from a form's application -- `funcall',
+        // `apply', mapc, hooks, sort predicates, call1..N -- is an Ffuncall
+        // entry and costs a unit of its own; eval_call marks its direct
+        // applications so they cost only the eval_sub unit.
+        let via_ffuncall = !std::mem::take(&mut self.direct_form_call);
+        if via_ffuncall {
+            self.lisp_eval_depth += 1;
+            let limit = self.lisp_eval_depth_limit(env);
+            if self.lisp_eval_depth > limit {
+                let reached = self.lisp_eval_depth;
+                self.lisp_eval_depth -= 1;
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("excessive-lisp-nesting"),
+                    Value::Integer(reached as i64),
+                ])));
+            }
+        }
+        let result = self.call_function_value_counted(func, original_name, args, env);
+        if via_ffuncall {
+            self.lisp_eval_depth -= 1;
+        }
+        result
+    }
+
+    fn call_function_value_counted(
+        &mut self,
+        func: Value,
+        original_name: Option<CallName<'_>>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         // Dev-only flat profiler: EMAXX_PROFILE=<path> accumulates per-name
         // call counts and self-time, periodically rewriting <path>.
         if let Some(path) = profile_path() {
@@ -1013,12 +1050,15 @@ impl Interpreter {
                     };
                     (inner, byte_code_function_uses_dynamic_binding(record))
                 };
+                // Unwrapping the record is still the same Ffuncall entry.
                 if uses_dynamic_binding {
                     self.push_lambda_capture_override(false);
+                    self.direct_form_call = true;
                     let result = self.call_function_value_named(inner, original_name, args, env);
                     self.pop_lambda_capture_override();
                     result
                 } else {
+                    self.direct_form_call = true;
                     self.call_function_value_named(inner, original_name, args, env)
                 }
             }

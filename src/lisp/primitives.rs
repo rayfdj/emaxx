@@ -54,6 +54,7 @@ mod completion;
 mod dispatch;
 mod file_io;
 mod generated_builtin_arities;
+pub(crate) mod generated_gnu_c_bool_variables;
 mod generated_gnu_c_defsyms;
 pub(crate) use generated_gnu_c_defsyms::GNU_C_DEFSYMS;
 #[allow(dead_code)]
@@ -147,7 +148,6 @@ pub(crate) const STANDARD_FRINGE_BITMAPS: &[&str] = &[
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 type VectorSlotCache = HashMap<usize, (WeakConsSlot, Rc<Vec<ConsSlot>>), dispatch::FnvBuildHasher>;
-static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);

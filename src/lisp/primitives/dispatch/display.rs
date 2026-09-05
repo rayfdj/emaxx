@@ -2217,7 +2217,9 @@ define_dispatch!(
                     if args.is_empty() || args.first().is_some_and(Value::is_nil) {
                         (String::new(), None)
                     } else {
-                        let formatted = super::call(interp, "format", args, env)?;
+                        // editfns.c Fmessage formats through Fformat_message,
+                        // so grave quotes follow `text-quoting-style'.
+                        let formatted = super::call(interp, "format-message", args, env)?;
                         (string_text(&formatted)?, Some(formatted))
                     };
                 let buffer_name = interp
@@ -2401,12 +2403,31 @@ define_dispatch!(
                     data = data.get(1..).unwrap_or_default();
                     message
                 } else {
-                    interp
+                    let message = interp
                         .get_symbol_property(condition, "error-message")
                         .as_ref()
                         .and_then(string_like)
                         .map(|message| message.text)
-                        .unwrap_or_else(|| "peculiar error".to_string())
+                        .unwrap_or_else(|| "peculiar error".to_string());
+                    // print.c passes the error-message property through
+                    // `substitute-command-keys' when it is fboundp (so the
+                    // apostrophe in "Symbol's" follows `text-quoting-style'),
+                    // keeping the raw text if that call fails.
+                    if interp
+                        .lookup_function("substitute-command-keys", env)
+                        .is_ok()
+                        && let Ok(substituted) = interp.call_function_value(
+                            Value::Symbol("substitute-command-keys".into()),
+                            Some("substitute-command-keys"),
+                            &[Value::String(message.clone().into())],
+                            env,
+                        )
+                        && let Some(substituted) = string_like(&substituted)
+                    {
+                        substituted.text
+                    } else {
+                        message
+                    }
                 };
                 if file_error && !data.is_empty() {
                     text =
@@ -2471,12 +2492,10 @@ define_dispatch!(
                 let duration = wait_duration(args)?;
                 if duration.is_zero() {
                     // Fsleep_for enters wait_reading_process_output only for
-                    // a positive duration.  Keep Emaxx's explicit delivery
-                    // point for already-due Lisp timers, but do not read a
-                    // ready subprocess: Tramp relies on `sit-for 0' reaching
-                    // its subsequent JUST-THIS-ONE accept before unrelated
-                    // filters can reenter the locked connection.
-                    interp.run_pending_timer_events(env)?;
+                    // a positive duration and otherwise returns nil at once:
+                    // no subprocess output, no timers (in batch `sit-for'
+                    // is this call, and the oracle leaves a due
+                    // `run-at-time' timer unrun across it).
                     return Ok(Value::Nil);
                 }
                 // GNU processes subprocess output whenever it waits; epg relies
@@ -3993,19 +4012,61 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "color-distance" => {
-                need_args(name, args, 2)?;
-                let left = parse_color_spec(&string_text(&args[0])?)
-                    .ok_or_else(|| LispError::Signal("Invalid color specification".into()))?;
-                let right = parse_color_spec(&string_text(&args[1])?)
-                    .ok_or_else(|| LispError::Signal("Invalid color specification".into()))?;
-                let distance = left
-                    .into_iter()
-                    .zip(right)
-                    .map(|(a, b)| {
-                        let diff = i64::from(a) - i64::from(b);
-                        diff * diff
+                need_arg_range(name, args, 2, 4)?;
+                // xfaces.c Fcolor_distance: a (R G B) list of fixnums
+                // (parse_rgb_list, stored into unsigned shorts) or a string
+                // through the tty frame's defined_color_hook; anything else
+                // is (error "Invalid color" COLOR).  METRIC, when given, is
+                // called with the two color lists; otherwise the distance
+                // is Riemersma's metric in 64-bit arithmetic.
+                let mut color = |value: &Value| -> Result<[u16; 3], LispError> {
+                    let rgb = match value.to_vec() {
+                        Ok(items) if value.cons_values().is_some() => match items.as_slice() {
+                            [Value::Integer(r), Value::Integer(g), Value::Integer(b), ..] => {
+                                Some([*r as u16, *g as u16, *b as u16])
+                            }
+                            _ => None,
+                        },
+                        _ => match string_like(value) {
+                            Some(text) => super::faces::tty_defined_color(interp, env, &text.text)?,
+                            None => None,
+                        },
+                    };
+                    rgb.ok_or_else(|| {
+                        LispError::SignalValue(Value::list([
+                            Value::symbol("error"),
+                            Value::string("Invalid color"),
+                            value.clone(),
+                        ]))
                     })
-                    .sum::<i64>();
+                };
+                let left = color(&args[0])?;
+                let right = color(&args[1])?;
+                let as_list = |[r, g, b]: [u16; 3]| {
+                    Value::list([
+                        Value::Integer(i64::from(r)),
+                        Value::Integer(i64::from(g)),
+                        Value::Integer(i64::from(b)),
+                    ])
+                };
+                if let Some(metric) = args.get(3).filter(|metric| !metric.is_nil()) {
+                    return interp.call_function_value(
+                        metric.clone(),
+                        metric.as_symbol().ok(),
+                        &[as_list(left), as_list(right)],
+                        env,
+                    );
+                }
+                let (r, g, b) = (
+                    i64::from(left[0]) - i64::from(right[0]),
+                    i64::from(left[1]) - i64::from(right[1]),
+                    i64::from(left[2]) - i64::from(right[2]),
+                );
+                let r_mean = (i64::from(left[0]) + i64::from(right[0])) >> 1;
+                let distance = ((((2 * 65536 + r_mean) * r * r) >> 16)
+                    + 4 * g * g
+                    + (((2 * 65536 + 65535 - r_mean) * b * b) >> 16))
+                    >> 16;
                 Ok(Value::Integer(distance))
             }
             "color-values-from-color-spec" => {

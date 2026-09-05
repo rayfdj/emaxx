@@ -763,6 +763,17 @@ impl Interpreter {
     /// sentinel call.  GNU prepends every process to `Vprocess_alist' and
     /// `status_notify' walks that alist in order, so a newer child is
     /// notified before the older pipe supplied through its `:stderr' option.
+    /// A real or pipe process that has exited and whose sentinel has not
+    /// run yet: the "tick != update_tick" state process.c status_notify
+    /// drains and notifies.
+    pub fn process_exit_awaits_notification(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id).is_some_and(|process| {
+            matches!(process.kind, ProcessKind::Real | ProcessKind::Pipe)
+                && matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal)
+                && !process.sentinel_notified
+        })
+    }
+
     pub fn take_pending_subprocess_exit_events(&mut self) -> Vec<(u64, String)> {
         self.take_pending_subprocess_exit_events_for(None)
     }
@@ -3394,6 +3405,12 @@ impl Interpreter {
         data: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        // thread.c Fthread_signal: the current thread signals itself at once;
+        // the main thread receives a THREAD_EVENT through the input queue;
+        // any other thread has the error stored for delivery when it runs.
+        if record_id == self.active_thread_id {
+            return Err(LispError::SignalValue(build_signal_value(condition, data)));
+        }
         if record_id == self.main_thread_id {
             self.deliver_signal_to_main_thread(self.active_thread_id, condition, data, env)?;
             return Ok(Value::Nil);
@@ -3419,6 +3436,29 @@ impl Interpreter {
                     .is_some_and(|thread| matches!(thread.program, ThreadProgram::InfiniteYield))
             {
                 break;
+            }
+            // A child asleep for SECONDS keeps the joiner waiting for that
+            // long; nap until its deadline or the next timer the child will
+            // run, whichever is first.
+            let sleeping_until = self
+                .find_thread_state(record_id)
+                .and_then(|thread| match thread.program {
+                    ThreadProgram::Sleep {
+                        blocked: true,
+                        until,
+                        ..
+                    } => until,
+                    _ => None,
+                });
+            if let Some(until) = sleeping_until {
+                let now = std::time::Instant::now();
+                let mut nap = until.saturating_duration_since(now);
+                if let Some(due) = self.next_timer_due() {
+                    nap = nap.min(due.saturating_duration_since(now));
+                }
+                if !nap.is_zero() {
+                    std::thread::sleep(nap.min(std::time::Duration::from_millis(10)));
+                }
             }
         }
         let thread = self
@@ -3503,7 +3543,21 @@ impl Interpreter {
                     self.step_thread(thread_id, env)?;
                 }
                 ThreadStatus::Blocked(ThreadBlocker::Sleep) if wake_sleepers => {
-                    self.finish_thread_success(thread_id, Value::Nil);
+                    // The child sits in wait_reading_process_output for its
+                    // SECONDS: until they elapse it runs the timers that come
+                    // due, on its own specpdl (thread.c swaps the bindings),
+                    // and only then returns.
+                    let until =
+                        self.find_thread_state(thread_id)
+                            .and_then(|thread| match thread.program {
+                                ThreadProgram::Sleep { until, .. } => until,
+                                _ => None,
+                            });
+                    if until.is_some_and(|until| std::time::Instant::now() < until) {
+                        self.run_pending_timer_events_as_thread(thread_id, env)?;
+                    } else {
+                        self.finish_thread_success(thread_id, Value::Nil);
+                    }
                 }
                 _ => {}
             }
@@ -3798,18 +3852,46 @@ impl Interpreter {
         data: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        let format = Value::String("Error %s: %S".into());
-        let event_tail = Value::list([condition, data]);
-        let _ = primitives::call(
-            self,
-            "message",
-            &[format, Value::Record(source_thread_id), event_tail],
-            env,
-        )?;
+        // keyboard.c: `(thread-event THREAD ERROR-SYMBOL DATA)', stored in
+        // the input queue; read_char runs `special-event-map's binding
+        // (thread-handle-event's message) when the main thread next reads.
+        let _ = env;
+        self.pending_thread_events.push(Value::list([
+            Value::symbol("thread-event"),
+            Value::Record(source_thread_id),
+            condition,
+            data,
+        ]));
         Ok(())
     }
 
+    /// Run the due timers as THREAD would inside its own wait: with the
+    /// driving thread's dynamic bindings and handlers swapped out
+    /// (thread.c:87-100) and THREAD as the current thread.
+    fn run_pending_timer_events_as_thread(
+        &mut self,
+        record_id: u64,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let previous_active = self.active_thread_id;
+        self.active_thread_id = record_id;
+        let swap_start = self.thread_swap_boundaries.last().copied().unwrap_or(0);
+        self.swap_special_bindings_for_thread_switch(swap_start, false);
+        self.thread_swap_boundaries
+            .push(self.active_special_restores.len());
+        let parent_handlers = std::mem::take(&mut self.active_handlers);
+        let mut thread_env = Vec::new();
+        let result = self.run_pending_timer_events(&mut thread_env);
+        self.active_handlers = parent_handlers;
+        self.thread_swap_boundaries.pop();
+        self.swap_special_bindings_for_thread_switch(swap_start, true);
+        self.active_thread_id = previous_active;
+        let _ = env;
+        result.map(|_| ())
+    }
+
     pub(super) fn step_thread(&mut self, record_id: u64, env: &mut Env) -> Result<(), LispError> {
+        let _ = &env;
         // An event wait can nest scheduler passes: A waits for process I/O,
         // the pump runs B, and B pumps again.  `active_thread_id' identifies
         // B at that point but A is still live on the Rust stack.  Re-entering
@@ -3894,26 +3976,23 @@ impl Interpreter {
                     }
                 }
             }
-            ThreadProgram::Sleep { blocked } => {
+            ThreadProgram::Sleep {
+                blocked, seconds, ..
+            } => {
                 if !blocked && let Some(thread) = self.find_thread_state_mut(record_id) {
-                    thread.program = ThreadProgram::Sleep { blocked: true };
+                    thread.program = ThreadProgram::Sleep {
+                        blocked: true,
+                        seconds,
+                        until: Some(
+                            std::time::Instant::now()
+                                + std::time::Duration::from_secs_f64(seconds.max(0.0)),
+                        ),
+                    };
                     thread.status = ThreadStatus::Blocked(ThreadBlocker::Sleep);
                 }
                 Ok(())
             }
             ThreadProgram::InfiniteYield => Ok(()),
-            ThreadProgram::SignalMainThread => {
-                let delivered = self.deliver_signal_to_main_thread(
-                    record_id,
-                    Value::Symbol("error".into()),
-                    Value::Nil,
-                    env,
-                );
-                if delivered.is_ok() {
-                    self.finish_thread_success(record_id, Value::Nil);
-                }
-                delivered
-            }
         };
         let current_thread_buffer_id = self.current_buffer_id();
         if let Some(thread) = self.find_thread_state_mut(record_id) {
@@ -3963,8 +4042,18 @@ impl Interpreter {
         if body.len() == 1
             && let Ok(items) = body[0].to_vec()
             && matches!(items.first(), Some(Value::Symbol(name)) if name == "sleep-for")
+            && items.len() == 2
+            && let Some(seconds) = match &items[1] {
+                Value::Integer(seconds) => Some(*seconds as f64),
+                Value::Float(seconds) => Some(*seconds),
+                _ => None,
+            }
         {
-            return Ok(ThreadProgram::Sleep { blocked: false });
+            return Ok(ThreadProgram::Sleep {
+                blocked: false,
+                seconds,
+                until: None,
+            });
         }
 
         if body.len() == 1
@@ -3984,13 +4073,6 @@ impl Interpreter {
             {
                 return Ok(ThreadProgram::InfiniteYield);
             }
-        }
-
-        if body.len() == 1
-            && let Ok(items) = body[0].to_vec()
-            && matches!(items.first(), Some(Value::Symbol(head)) if head == "thread-signal")
-        {
-            return Ok(ThreadProgram::SignalMainThread);
         }
 
         Err(LispError::Signal(

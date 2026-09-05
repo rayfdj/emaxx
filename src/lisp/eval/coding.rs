@@ -1,6 +1,92 @@
 use super::*;
 
+// coding.c `enum coding_category', in order.
+pub(crate) const CODING_CATEGORY_ISO_7: usize = 0;
+pub(crate) const CODING_CATEGORY_ISO_7_TIGHT: usize = 1;
+pub(crate) const CODING_CATEGORY_ISO_8_1: usize = 2;
+pub(crate) const CODING_CATEGORY_ISO_8_2: usize = 3;
+pub(crate) const CODING_CATEGORY_ISO_7_ELSE: usize = 4;
+pub(crate) const CODING_CATEGORY_ISO_8_ELSE: usize = 5;
+pub(crate) const CODING_CATEGORY_UTF_8_AUTO: usize = 6;
+pub(crate) const CODING_CATEGORY_UTF_8_NOSIG: usize = 7;
+pub(crate) const CODING_CATEGORY_UTF_8_SIG: usize = 8;
+pub(crate) const CODING_CATEGORY_UTF_16_AUTO: usize = 9;
+pub(crate) const CODING_CATEGORY_UTF_16_BE: usize = 10;
+pub(crate) const CODING_CATEGORY_UTF_16_LE: usize = 11;
+pub(crate) const CODING_CATEGORY_UTF_16_BE_NOSIG: usize = 12;
+pub(crate) const CODING_CATEGORY_UTF_16_LE_NOSIG: usize = 13;
+pub(crate) const CODING_CATEGORY_CHARSET: usize = 14;
+pub(crate) const CODING_CATEGORY_SJIS: usize = 15;
+pub(crate) const CODING_CATEGORY_BIG5: usize = 16;
+pub(crate) const CODING_CATEGORY_CCL: usize = 17;
+pub(crate) const CODING_CATEGORY_EMACS_MULE: usize = 18;
+pub(crate) const CODING_CATEGORY_RAW_TEXT: usize = 19;
+pub(crate) const CODING_CATEGORY_UNDECIDED: usize = 20;
+pub(crate) const CODING_CATEGORY_COUNT: usize = 21;
+
+/// The Lisp symbols of `coding-category-list', by category index.
+pub(crate) const CODING_CATEGORY_NAMES: [&str; CODING_CATEGORY_COUNT] = [
+    "coding-category-iso-7",
+    "coding-category-iso-7-tight",
+    "coding-category-iso-8-1",
+    "coding-category-iso-8-2",
+    "coding-category-iso-7-else",
+    "coding-category-iso-8-else",
+    "coding-category-utf-8-auto",
+    "coding-category-utf-8",
+    "coding-category-utf-8-sig",
+    "coding-category-utf-16-auto",
+    "coding-category-utf-16-be",
+    "coding-category-utf-16-le",
+    "coding-category-utf-16-be-nosig",
+    "coding-category-utf-16-le-nosig",
+    "coding-category-charset",
+    "coding-category-sjis",
+    "coding-category-big5",
+    "coding-category-ccl",
+    "coding-category-emacs-mule",
+    "coding-category-raw-text",
+    "coding-category-undecided",
+];
+
+// coding.h CODING_ISO_FLAG_*.
+pub(crate) const ISO_FLAG_LONG_FORM: u32 = 0x0001;
+pub(crate) const ISO_FLAG_RESET_AT_EOL: u32 = 0x0002;
+pub(crate) const ISO_FLAG_RESET_AT_CNTL: u32 = 0x0004;
+pub(crate) const ISO_FLAG_SEVEN_BITS: u32 = 0x0008;
+pub(crate) const ISO_FLAG_LOCKING_SHIFT: u32 = 0x0010;
+pub(crate) const ISO_FLAG_SINGLE_SHIFT: u32 = 0x0020;
+pub(crate) const ISO_FLAG_DESIGNATION: u32 = 0x0040;
+pub(crate) const ISO_FLAG_REVISION: u32 = 0x0080;
+pub(crate) const ISO_FLAG_DIRECTION: u32 = 0x0100;
+pub(crate) const ISO_FLAG_INIT_AT_BOL: u32 = 0x0200;
+pub(crate) const ISO_FLAG_DESIGNATE_AT_BOL: u32 = 0x0400;
+pub(crate) const ISO_FLAG_SAFE: u32 = 0x0800;
+pub(crate) const ISO_FLAG_LATIN_EXTRA: u32 = 0x1000;
+pub(crate) const ISO_FLAG_COMPOSITION: u32 = 0x2000;
+pub(crate) const ISO_FLAG_USE_ROMAN: u32 = 0x8000;
+pub(crate) const ISO_FLAG_USE_OLDJIS: u32 = 0x10000;
+pub(crate) const ISO_FLAG_LEVEL_4: u32 = 0x20000;
+pub(crate) const ISO_FLAG_FULL_SUPPORT: u32 = 0x100000;
+
 impl Interpreter {
+    /// The charset an ISO-2022 designation names: DIMENSION (1 or 2), the
+    /// 94/96 flavor and the final byte, through the table
+    /// `define-charset-internal' and `declare-equiv-charset' fill.
+    pub fn iso_charset_for(
+        &self,
+        dimension: i64,
+        chars_96: bool,
+        final_char: u8,
+    ) -> Option<String> {
+        let chars = if chars_96 { 96 } else { 94 };
+        self.iso_charsets
+            .iter()
+            .rev()
+            .find(|(d, c, f, _)| *d == dimension && *c == chars && *f == u32::from(final_char))
+            .map(|(_, _, _, charset)| charset.clone())
+    }
+
     pub fn charset_canonical_name(&self, name: &str) -> Option<String> {
         let mut current = name.to_string();
         for _ in 0..16 {
@@ -77,11 +163,71 @@ impl Interpreter {
             .rev()
             .find(|(registered, _)| registered == name)
         {
-            *existing = plist;
+            *existing = plist.clone();
         } else {
-            self.charset_plists.push((name.to_string(), plist));
+            self.charset_plists.push((name.to_string(), plist.clone()));
+        }
+        // charset.c Fdefine_charset_internal: a charset with an ISO final
+        // byte enters the ISO_CHARSET_TABLE slot for its dimension and
+        // 94/96 flavor (iso_chars_96 is a 96-wide first byte range), and a
+        // new one joins Viso_2022_charset_list at the end.
+        let items = plist.to_vec().unwrap_or_default();
+        let property = |key: &str| {
+            items.windows(2).find_map(|pair| {
+                matches!(&pair[0], Value::Symbol(name) if name == key).then(|| pair[1].clone())
+            })
+        };
+        if let Some(final_char) = property(":iso-final-char")
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| u32::try_from(value).ok())
+        {
+            let dimension = property(":dimension")
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(1);
+            let chars_96 = property(":code-space")
+                .and_then(|space| space.to_vec().ok())
+                .map(|values| {
+                    values
+                        .strip_prefix(&[Value::Symbol("vector-literal".into())])
+                        .map(<[Value]>::to_vec)
+                        .unwrap_or(values)
+                })
+                .and_then(|values| {
+                    Some((
+                        values.first()?.as_integer().ok()?,
+                        values.get(1)?.as_integer().ok()?,
+                    ))
+                })
+                .is_some_and(|(min, max)| max - min + 1 == 96);
+            self.declare_iso_charset(dimension, if chars_96 { 96 } else { 94 }, final_char, name);
+            if new_definition
+                && !self
+                    .iso_2022_charset_list
+                    .iter()
+                    .any(|existing| existing == name)
+            {
+                self.iso_2022_charset_list.push(name.to_string());
+            }
         }
         id
+    }
+
+    /// charset.c Viso_2022_charset_list: the ISO-2022 designatable
+    /// charsets, in priority order since the last `set-charset-priority'.
+    pub fn iso_2022_charset_list(&self) -> Vec<String> {
+        self.iso_2022_charset_list.clone()
+    }
+
+    /// The (dimension, chars, final byte) slot of ISO_CHARSET_TABLE that
+    /// names CHARSET, for charsets whose plist does not carry the final
+    /// byte (the C-defined `ascii').
+    pub fn iso_charset_entry_for(&self, charset: &str) -> Option<(i64, i64, u32)> {
+        let canonical = self.charset_canonical_name(charset)?;
+        self.iso_charsets
+            .iter()
+            .rev()
+            .find(|(_, _, _, name)| *name == canonical)
+            .map(|(dimension, chars, final_char, _)| (*dimension, *chars, *final_char))
     }
 
     pub fn charset_is_unified(&self, name: &str) -> bool {
@@ -178,6 +324,15 @@ impl Interpreter {
             .collect::<Vec<_>>();
         new_head.extend(tail);
         self.charset_priority = new_head;
+        // charset.c Fset_charset_priority rebuilds Viso_2022_charset_list
+        // in the new ordered-list order.
+        let iso_2022 = std::mem::take(&mut self.iso_2022_charset_list);
+        self.iso_2022_charset_list = self
+            .charset_priority
+            .iter()
+            .filter(|charset| iso_2022.contains(charset))
+            .cloned()
+            .collect();
     }
 
     pub fn charset_priority_rank(&self, name: &str) -> usize {
@@ -366,8 +521,150 @@ impl Interpreter {
         Some(aliases)
     }
 
+    /// coding.c Fcoding_system_priority_list: the representative of each
+    /// category that has one, in category priority order, as base names.
     pub fn coding_system_priority_list(&self) -> Vec<String> {
-        self.coding_priority.clone()
+        self.coding_category_priorities
+            .iter()
+            .filter_map(|category| self.coding_category_representatives[*category].clone())
+            .map(|name| self.coding_system_base_name(&name).unwrap_or(name))
+            .collect()
+    }
+
+    /// coding.c Fdefine_coding_system_internal's category selection for a
+    /// coding TYPE with its :charset-list and type-specific arguments.
+    pub fn coding_category_index(
+        &self,
+        coding_type: &str,
+        charset_list: &Value,
+        type_args: &[Value],
+    ) -> usize {
+        match coding_type {
+            "utf-8" => match type_args.first() {
+                None | Some(Value::Nil) => CODING_CATEGORY_UTF_8_NOSIG,
+                Some(Value::T) => CODING_CATEGORY_UTF_8_SIG,
+                Some(_) => CODING_CATEGORY_UTF_8_AUTO,
+            },
+            "utf-16" => {
+                let bom = type_args.first().cloned().unwrap_or(Value::Nil);
+                let big_endian =
+                    !matches!(type_args.get(1), Some(Value::Symbol(endian)) if endian == "little");
+                match bom {
+                    Value::Cons(_) => CODING_CATEGORY_UTF_16_AUTO,
+                    Value::Nil if big_endian => CODING_CATEGORY_UTF_16_BE_NOSIG,
+                    Value::Nil => CODING_CATEGORY_UTF_16_LE_NOSIG,
+                    _ if big_endian => CODING_CATEGORY_UTF_16_BE,
+                    _ => CODING_CATEGORY_UTF_16_LE,
+                }
+            }
+            "iso-2022" => {
+                let full_support =
+                    matches!(charset_list, Value::Symbol(name) if name == "iso-2022");
+                let flags = type_args
+                    .get(3)
+                    .and_then(|flags| flags.as_integer().ok())
+                    .unwrap_or(0) as u32
+                    | if full_support {
+                        ISO_FLAG_FULL_SUPPORT
+                    } else {
+                        0
+                    };
+                if flags & ISO_FLAG_SEVEN_BITS != 0 {
+                    if flags & (ISO_FLAG_LOCKING_SHIFT | ISO_FLAG_SINGLE_SHIFT) != 0 {
+                        CODING_CATEGORY_ISO_7_ELSE
+                    } else if full_support {
+                        CODING_CATEGORY_ISO_7
+                    } else {
+                        CODING_CATEGORY_ISO_7_TIGHT
+                    }
+                } else {
+                    let g1 = type_args
+                        .first()
+                        .and_then(|initial| initial.to_vec().ok())
+                        .map(|items| {
+                            items
+                                .strip_prefix(&[Value::Symbol("vector-literal".into())])
+                                .map(<[Value]>::to_vec)
+                                .unwrap_or(items)
+                        })
+                        .and_then(|items| items.get(1).cloned())
+                        .filter(|charset| !charset.is_nil());
+                    let g1_dimension = g1
+                        .and_then(|charset| charset.as_symbol().ok().map(str::to_string))
+                        .and_then(|charset| self.charset_plist_value(&charset))
+                        .and_then(|plist| plist.to_vec().ok())
+                        .and_then(|items| {
+                            items.windows(2).find_map(|pair| {
+                                matches!(&pair[0], Value::Symbol(key) if key == ":dimension")
+                                    .then(|| pair[1].as_integer().ok())
+                                    .flatten()
+                            })
+                        });
+                    match g1_dimension {
+                        _ if flags & ISO_FLAG_LOCKING_SHIFT != 0 || full_support => {
+                            CODING_CATEGORY_ISO_8_ELSE
+                        }
+                        None => CODING_CATEGORY_ISO_8_ELSE,
+                        Some(1) => CODING_CATEGORY_ISO_8_1,
+                        Some(_) => CODING_CATEGORY_ISO_8_2,
+                    }
+                }
+            }
+            "charset" => CODING_CATEGORY_CHARSET,
+            "ccl" => CODING_CATEGORY_CCL,
+            "emacs-mule" => CODING_CATEGORY_EMACS_MULE,
+            "shift-jis" => CODING_CATEGORY_SJIS,
+            "big5" => CODING_CATEGORY_BIG5,
+            "raw-text" => CODING_CATEGORY_RAW_TEXT,
+            _ => CODING_CATEGORY_UNDECIDED,
+        }
+    }
+
+    /// coding.c Fset_coding_system_priority: the given systems' categories
+    /// move to the front in the given order (later duplicates of a category
+    /// are ignored), each becoming its category's representative; the
+    /// remaining categories keep their previous relative order.  The Lisp
+    /// `coding-category-list' and the `coding-category-*' variables follow.
+    pub fn set_coding_system_categories_priority(
+        &mut self,
+        names: &[String],
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let mut changed = [false; CODING_CATEGORY_COUNT];
+        let mut priorities = Vec::with_capacity(CODING_CATEGORY_COUNT);
+        for name in names {
+            let canonical = self
+                .coding_system_canonical_name(name)
+                .ok_or_else(|| LispError::Void(name.clone()))?;
+            let category = self
+                .coding_system(&canonical)
+                .map(|coding| coding.category)
+                .unwrap_or(CODING_CATEGORY_UNDECIDED);
+            if changed[category] {
+                continue;
+            }
+            changed[category] = true;
+            priorities.push(category);
+            self.coding_category_representatives[category] = Some(canonical.clone());
+            self.set_variable(
+                CODING_CATEGORY_NAMES[category],
+                Value::Symbol(name.clone().into()),
+                env,
+            );
+        }
+        for category in self.coding_category_priorities.clone() {
+            if !changed[category] {
+                priorities.push(category);
+            }
+        }
+        self.coding_category_priorities = priorities;
+        let list = Value::list(
+            self.coding_category_priorities
+                .iter()
+                .map(|category| Value::Symbol(CODING_CATEGORY_NAMES[*category].into())),
+        );
+        self.set_variable("coding-category-list", list, env);
+        Ok(())
     }
 
     pub fn coding_system_list(&self, base_only: bool) -> Vec<String> {
@@ -394,6 +691,7 @@ impl Interpreter {
     }
 
     pub fn set_coding_system_priority(&mut self, names: &[String]) -> Result<(), LispError> {
+        self.set_coding_system_categories_priority(names, &mut Vec::new())?;
         let mut reordered = Vec::new();
         for name in names {
             let canonical = self
@@ -422,6 +720,7 @@ impl Interpreter {
             .unwrap_or(usize::MAX)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn define_coding_system(
         &mut self,
         name: &str,
@@ -429,6 +728,9 @@ impl Interpreter {
         kind: &str,
         plist: Value,
         eol_type: Option<i64>,
+        charset_list: Value,
+        default_char: Option<u32>,
+        type_args: Vec<Value>,
     ) -> Result<(), LispError> {
         if eol_type.is_none() {
             // An undecided eol-type creates the three eol subsidiaries via
@@ -513,13 +815,16 @@ impl Interpreter {
                 }
             }
         }
-        // coding.c:11285 (Fdefine_coding_system_internal): an iso-2022
-        // system is ascii-compatible when its INITIAL G0 designation is a
-        // single ascii-compatible charset -- euc-jp's [ascii ...] yields
-        // t though japanese.el passes :ascii-compatible-p nil, while
-        // iso-2022-7bit's [(ascii t) ...] (a designation list, no fixed
-        // initial) stays nil.  The C recompute overwrites the argument,
-        // and the lcsu naming rules read the result.
+        let category = self.coding_category_index(&kind_canonical, &charset_list, &type_args);
+        // coding.c Fdefine_coding_system_internal: an iso-2022 system's
+        // ascii compatibility is the :ascii-compatible-p argument, set to t
+        // when its INITIAL G0 designation is an ascii-compatible charset
+        // (coding.c:11285) -- and then reset to nil unless the category is
+        // iso-8-1 or iso-8-2 (coding.c:11341).  So euc-jp's [ascii ...]
+        // yields t though japanese.el passes nil, while iso-2022-jp's
+        // (ascii ...) G0 request and the 7-bit systems stay nil; the
+        // decoder's ASCII fast path and the lcsu naming rules read the
+        // result.
         if kind_canonical == "iso-2022" {
             let g0_ascii_compatible = items
                 .windows(2)
@@ -551,16 +856,25 @@ impl Interpreter {
                     }
                     _ => false,
                 });
-            if g0_ascii_compatible {
-                if let Some(index) = items.iter().position(
-                    |item| matches!(item, Value::Symbol(key) if key == ":ascii-compatible-p"),
-                ) {
-                    if index + 1 < items.len() {
-                        items[index + 1] = Value::T;
-                    }
-                } else {
+            let key_index = items.iter().position(
+                |item| matches!(item, Value::Symbol(key) if key == ":ascii-compatible-p"),
+            );
+            let supplied = key_index
+                .and_then(|index| items.get(index + 1))
+                .is_some_and(Value::is_truthy);
+            let eight_bit_category =
+                matches!(category, CODING_CATEGORY_ISO_8_1 | CODING_CATEGORY_ISO_8_2);
+            let ascii_compatible = eight_bit_category && (supplied || g0_ascii_compatible);
+            let value = if ascii_compatible {
+                Value::T
+            } else {
+                Value::Nil
+            };
+            match key_index {
+                Some(index) if index + 1 < items.len() => items[index + 1] = value,
+                _ => {
                     items.push(Value::Symbol(":ascii-compatible-p".into()));
-                    items.push(Value::T);
+                    items.push(value);
                 }
             }
         }
@@ -570,7 +884,20 @@ impl Interpreter {
             kind: resolved_kind,
             eol_type,
             plist: Value::list(items),
+            category,
+            charset_list: charset_list.clone(),
+            default_char: default_char.unwrap_or(b' ' as u32),
+            type_args: type_args.clone(),
         };
+        // coding.c Fdefine_coding_system_internal: the category's
+        // representative becomes this system when the category has none
+        // yet, or when this is a redefinition of the representative itself.
+        if self.coding_category_representatives[category]
+            .as_deref()
+            .is_none_or(|representative| representative == name)
+        {
+            self.coding_category_representatives[category] = Some(name.to_string());
+        }
         if let Some(existing) = self
             .coding_systems
             .iter_mut()
@@ -593,6 +920,10 @@ impl Interpreter {
                     kind: definition.kind.clone(),
                     eol_type: Some(variant_eol),
                     plist: definition.plist.clone(),
+                    category: definition.category,
+                    charset_list: definition.charset_list.clone(),
+                    default_char: definition.default_char,
+                    type_args: definition.type_args.clone(),
                 };
                 if let Some(existing) = self
                     .coding_systems

@@ -1216,6 +1216,16 @@ fn pump_external_process_output_for(
     let mut progressed = false;
     for process_id in ids {
         if only_process_id.is_some_and(|id| process_id != id) {
+            // JUST-THIS-ONE takes the other descriptors out of the wait
+            // set, not SIGCHLD: process.c status_notify still reads "any
+            // output that remains" from a process whose status changed and
+            // then runs its sentinel, whether or not it is wait_proc.  A
+            // process that stays alive keeps its output unread.
+            interp.refresh_process_id(process_id)?;
+            if interp.process_exit_awaits_notification(process_id) {
+                let (stdout, stderr) = interp.poll_process_output(process_id)?;
+                progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+            }
             continue;
         }
         if interp.process_output_paused(process_id) {
@@ -1227,7 +1237,9 @@ fn pump_external_process_output_for(
         let (stdout, stderr) = interp.poll_process_output(process_id)?;
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
-    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(only_process_id) {
+    // status_notify walks every process, so a JUST-THIS-ONE wait notifies
+    // the others' exits as well.
+    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
         run_process_sentinel(interp, process_id, &event, env)?;
         progressed = true;
     }
