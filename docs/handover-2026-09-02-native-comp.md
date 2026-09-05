@@ -67,11 +67,143 @@ precedence over older plans and handovers.
     is implemented and supported by ample exact-output proof.
 11. Commit as `Ray <26018378+rayfdj@users.noreply.github.com>`. No AI
     attribution or generated/co-authored trailers.
+12. **After every checkpoint commit and push, merge main before starting the
+    next checkpoint** (Ray, 2026-09-05). Fetch `origin`, merge the latest
+    `origin/main` into `native-comp`, and audit/verify the semantic
+    interactions as well as textual conflicts. Preserve unrelated work.
+    If main is already an ancestor, record that it is up to date; do not
+    manufacture an empty merge. Do not begin the next checkpoint on a stale
+    main base.
 
-## Darwin exact-artifact progress (2026-09-03)
+## Current continuation checkpoint (2026-09-05)
 
-This section is the current execution point and supersedes the older blocker
-descriptions below.  The ordinary, unchanged GNU `batch-native-compile` entry
+Main was merged and pushed as `38b2ee8` on `native-comp`. This checkpoint adds
+the V06 original-symbol error repair and the L09-L11 lexical-symbol ownership,
+closure-printing, and symbol-name corrections described below. Current gates:
+177/177 GNU native tests, all nine artifact fixtures, 69 Rust contracts/audits,
+and clean formatting/check/Clippy. Paired compilation CPU is unchanged versus
+`38b2ee8` and remains about 7.1x GNU. This does not complete native-comp
+performance work or prove full-runtime equivalence.
+
+The `data.c:Fsymbol_value` correction preserves the caller's original symbol
+(including alias, uninterned, and positioned identity) in `void-variable`.
+The checkpoint also repairs an outside-native-call GC test that previously
+did not collect anything. All proposed V02 symbol-storage
+drafts were rejected and removed; see `docs/native-comp-c-parity-ledger.md`
+for their performance regressions, synchronization, and ownership findings.
+Do not restore them or claim the existing epoch cache is GNU-equivalent.
+
+Before L09, the Rust runtime tests passed 48/48 (one separate benchmark ignored),
+all 16 anti-cheating gates passed, and formatting/check/Clippy were warning-free.
+The permanent identity ladder now includes unchanged GNU `comp.el`: all nine
+fixtures pass (eight entire `.eln` files identical and one correctly absent
+artifact).  The `comp.el` artifact is 881,800 bytes in that run.
+
+**Earlier execution failure, before L09-L11 (now repaired below).** Running GNU's existing
+`test/Makefile.in` command with its native-enabled normal selector selected
+177 tests.  GNU passed 177/177.  Emaxx compiled and loaded both real native
+helper files, passed 52 cases, then failed `comp-tests-fw-prop-1`.  Its failure
+reporter aborted before printing the condition, leaving 124 cases unrun.
+Logs: `/private/tmp/emaxx-v06-execution.tyIV38/emaxx.stderr` and `gnu.stderr`.
+A focused verbose replay using the untouched merge binary at
+`/private/tmp/emaxx-v02-baseline-target/release/emaxx` also failed the same
+test (0/1, exit 2). See `baseline-fw-prop.stderr` beside the full-run logs.
+Temporary Rust tracing exposed the original condition: `void-variable
+--cl-var--`. GNU `comp.el` prepends `comp-tests-fw-prop-1-f` when re-signaling
+it; that function name is not the missing variable. The reporter separately
+fails with `wrong-type-argument number-or-marker-p nil`. This failure predates today's V06 correction;
+do not carry the older 177/177 claim below forward to this merged tree.
+Publication and performance measurements were paused for diagnosis.
+
+The cause is now traced: native `assq` compared two different symbol objects
+for the same uninterned accumulator immediately before its binding was lost.
+Lexical frames and parsed function parameters had copied symbol names into
+Strings; closure projection recreated a different uninterned symbol. L09 in
+the ledger tracks the Rust correction: retain original `SymbolName` handles
+through these C-owned binding boundaries. Native EQ/assq and GNU `cconv.el`
+remain unchanged. The ordinary release editor now passes the formerly failing
+GNU test (1/1, `emaxx-fw-prop-fixed.stderr`, 47.77s wall / 42.85s user CPU).
+All 49 native runtime contracts pass (one separate timing benchmark ignored),
+including a negative control that rejects name-reconstructed symbols. Format,
+all-target check, and Clippy also passed. At that point, the GC-root companion,
+complete 177-test replay, artifact comparisons, and performance measurements
+were still pending; later results follow. All temporary
+Rust traces have been removed from both source and the release editor.
+
+The GC-root contract subsequently passed. A serial focused Rust run selected
+106 closure/lexical/uninterned/audit cases: 104 passed, 2 failed. Both reported
+merge callback regressions (file-lock lifecycle and custom-hash captured
+counter) passed. Both remaining failures also reproduce on untouched `38b2ee8`
+in an optimized build (`baseline-closure-regressions.log`, 0/2, 21.10s).
+
+- L10: the printer re-trimmed closure environments in Rust after GNU Elisp had
+  consumed `:closure-dont-trim-context`. This was an Elisp/C boundary violation.
+  GNU `print.c:PVEC_CLOSURE` prints all stored slots; the Rust trim and free-
+  variable scan have been deleted. GNU's unchanged `cconv-safe-for-space`
+  passes, and all four focused Rust print tests now pass. One existing test
+  now uses the full GNU image to obtain GNU cconv filtering; its Elisp and
+  expected output are unchanged.
+- L11: the dynamic-obarray callback actually worked, but `symbol-name`
+  returned `erc-lo2-mode` with an internal obarray suffix. Construction had
+  stored the lookup key as the Lisp name. The draft separates them, retains
+  Fintern's supplied string on a miss (with GNU shorthand/purecopy selection),
+  and keeps existing-symbol hits unchanged. The getter and native EQ are not
+  patched. Full obarray storage/lifetime parity is not claimed.
+
+The optimized expanded replay selected 119 tests: 117 passed, including both
+baseline failures above. Two newly added Rust assertions failed because the
+test forgot GNU's initial `purify-flag=t` and expected the wrong host error
+variant; both assertions were corrected without changing the implementation
+or GNU defaults. The final serial contract run passes 69 tests: all 49 native
+runtime contracts, all 16 anti-cheating gates, the lexical/name GC-root test,
+the weak-key reachability test, and both new intern contracts. One separate
+native hot-path timing probe remains ignored. This final run also covers
+GNU's explicitly multibyte shorthand-name construction and the traced
+SYMBOL_NAME child. `cargo check --all-targets`, all-feature/all-target Clippy
+with `-D warnings`, and formatting are clean. Logs: `focused-final.log` and
+`final-contracts.log` in the diagnostic directory above.
+
+The final release editor now passes all 177 native-enabled GNU tests, zero
+unexpected results, exit 0. Both helper `.eln` files were freshly compiled
+and loaded. Log: `/private/tmp/emaxx-native-final.3mbz17/emaxx.stderr`.
+The run took 1128.20s wall / 1034.87s user / 26.77s system CPU, with 1090.59s
+inside ERT. Its 80 return-type cases each call `native-compile`; unchanged GNU
+`comp.el:comp--final` launches an editor subprocess for each non-batch compile.
+Those cases took approximately 11-12s each. No spawning-policy override or
+image-cloning shortcut was used. This restores the 177/177 result on the
+merged tree; the earlier failure above is diagnostic history, not current
+execution status. The final artifact ladder also passes all nine unchanged
+GNU fixtures (229.33s): eight entire `.eln` files byte-identical, including
+881,800 bytes for `comp.el`, and one correctly absent artifact. Log:
+`/private/tmp/emaxx-native-final.3mbz17/identity.log`. The unchanged GNU
+`cconv-safe-for-space` test also passes through the ordinary editor (1/1;
+`cconv.stderr` beside those logs).
+
+Paired full `comp.el` compilation is performance-neutral versus pushed merge
+`38b2ee8`: baseline/current user CPU was 62.10/62.93s, then 63.00/62.15s with
+execution order reversed. Means are 62.55/62.54s. GNU used 8.44s and 9.07s
+(mean 8.76s): Emaxx remains about 7.1x slower on this workload, including
+startup. Do not claim a speedup or performance parity. Every measured baseline
+and current artifact is whole-file identical to the corresponding GNU output.
+Logs/artifacts: `/private/tmp/emaxx-v06-measure.zr27c1`; hashes and audit details
+are in the ledger. This is a correctness/C-boundary checkpoint, not acceptance
+of the existing V02 epoch cache or a claim of full-runtime equivalence.
+Diagnostic logs include
+`emaxx-fw-prop-{trace,environment,identity}.stderr` in the directory above.
+A Rust-unit reproduction was removed after it could not
+serve as the editor subprocess that unchanged `comp.el:comp--final` launches;
+no override to GNU's spawning policy or invocation variables was retained.
+
+Preserve the unrelated pre-existing edits in `compat/emacs_compat_runner.el`,
+`src/compat.rs`, and `docs/honesty-audit-2026-08-18.md`; they are excluded from
+this unit.  No new Elisp or GNU source changes were made.  The test command
+and selector were read directly from GNU's Makefile, not replaced with a
+new helper or compatibility runner.
+
+## Darwin exact-artifact progress (2026-09-03; historical pre-merge evidence)
+
+This section records the pre-merge execution point, not the current failing
+checkpoint above.  The ordinary, unchanged GNU `batch-native-compile` entry
 point now produces byte-identical complete `.eln` files for all eight rungs in
 the current smallest-to-largest ladder, through the 49,628-byte full
 native-compiler test file.  The ordered results and the semantics each rung

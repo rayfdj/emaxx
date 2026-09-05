@@ -218,13 +218,13 @@ fn lexical_alist_frame(
     interp: &Interpreter,
     value: &Value,
     env: &Env,
-) -> Result<Vec<(String, Value)>, LispError> {
+) -> Result<Vec<(crate::lisp::types::SymbolName, Value)>, LispError> {
     let mut frame = Vec::new();
     for entry in value.to_vec()? {
         let Some((key, val)) = entry.cons_values() else {
             continue;
         };
-        if let Ok(name) = checked_symbol_name(interp, &key, env) {
+        if let Ok(name) = checked_symbol_identity(interp, &key, env) {
             frame.push((name, val));
         }
     }

@@ -11,7 +11,7 @@ use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
     ConsCell, EmacsTermination, Env, EnvFrame, LambdaValue, LispError, ReaderClosureKind,
-    ReaderForm, SharedEnv, Value, WeakConsSlot, shared_env,
+    ReaderForm, SharedEnv, SymbolName, Value, WeakConsSlot, shared_env,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
@@ -1564,7 +1564,7 @@ struct BacktraceFrame {
     /// and every argument on each interpreted call.  Debugger-facing APIs
     /// materialize the two projections only when somebody inspects a frame.
     source_form: Option<Value>,
-    locals: Vec<(String, Value)>,
+    locals: Vec<(SymbolName, Value)>,
     /// Snapshot of the evaluator environment at this activation while a
     /// debugger is active.  Frames retain their identity stamps so
     /// `backtrace-eval' assignments can update the suspended lexical cells.
@@ -2875,7 +2875,10 @@ impl LispReachability {
     fn mark_env(&mut self, interp: &Interpreter, env: &Env) -> bool {
         let mut changed = false;
         for frame in env {
-            for (_, value) in frame {
+            for (symbol, value) in frame {
+                // alloc.c marks both halves of GNU's (SYMBOL . VALUE)
+                // lexical binding, even before a closure captures it.
+                changed |= self.mark(interp, &Value::Symbol(symbol.clone()));
                 changed |= self.mark(interp, value);
             }
             if let Some(environment) = frame.lisp_environment() {
@@ -2913,6 +2916,10 @@ impl LispReachability {
         }
 
         match value {
+            Value::Symbol(symbol) => {
+                // alloc.c:mark_objects traces SYMBOL_NAME and its intervals.
+                self.mark(interp, &symbol.lisp_name());
+            }
             Value::StringObject(value) => {
                 let children = value
                     .borrow()
@@ -2940,6 +2947,9 @@ impl LispReachability {
                 }
             }
             Value::Lambda(lambda) => {
+                for symbol in lambda.params.iter() {
+                    self.mark(interp, &Value::Symbol(symbol.clone()));
+                }
                 if let Some(value) = &lambda.public_parameters {
                     self.mark(interp, value);
                 }
@@ -3035,7 +3045,6 @@ impl LispReachability {
             | Value::BigInteger(_)
             | Value::Float(_)
             | Value::String(_)
-            | Value::Symbol(_)
             | Value::BuiltinFunc(_)
             | Value::Marker(_)
             | Value::Overlay(_)
@@ -3197,12 +3206,14 @@ impl Interpreter {
             if let Some(form) = &frame.source_form {
                 mark(form);
             }
-            for (_, value) in &frame.locals {
+            for (symbol, value) in &frame.locals {
+                mark(&Value::Symbol(symbol.clone()));
                 mark(value);
             }
             if let Some(context) = &frame.lexical_context {
                 for lexical_frame in context {
-                    for (_, value) in lexical_frame {
+                    for (symbol, value) in lexical_frame {
+                        mark(&Value::Symbol(symbol.clone()));
                         mark(value);
                     }
                     if let Some(environment) = lexical_frame.lisp_environment() {
@@ -6532,7 +6543,7 @@ impl Interpreter {
                                 position - 1,
                                 name,
                                 shared_updates
-                                    .and_then(|updates| updates.get(name))
+                                    .and_then(|updates| updates.get(name.as_str()))
                                     .cloned()
                                     .unwrap_or_else(|| value.clone()),
                             ),
@@ -6556,7 +6567,7 @@ impl Interpreter {
                     lambda
                         .params
                         .iter()
-                        .map(|param| Value::Symbol(param.clone().into())),
+                        .map(|param| Value::Symbol(param.clone())),
                 )
             }),
             Value::list(lambda.body.as_ref().clone()),
@@ -6569,29 +6580,6 @@ impl Interpreter {
         if let Some(interactive) = &lambda.interactive {
             slots.push(interactive.clone());
         }
-        slots
-    }
-
-    /// Project the closure through GNU's readable public slots without
-    /// changing Emaxx's conservative internal activation storage.  Generated
-    /// Lisp can use positional closed-variable access that requires the full
-    /// runtime frame, while print.c exposes only the source-visible prefix.
-    pub(crate) fn interpreted_closure_print_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
-        let mut slots = self.interpreted_closure_slots(lambda);
-        if definitions::body_closure_dont_trim_context(&lambda.body) {
-            return slots;
-        }
-        let mut capture_forms = lambda.body.as_ref().clone();
-        if let Some(interactive) = &lambda.interactive {
-            capture_forms.push(interactive.clone());
-        }
-        let trimmed = definitions::trim_lambda_closure_env(&lambda.env.borrow(), &capture_forms);
-        let trimmed = shared_env(trimmed);
-        let mut environment = self.materialize_public_interpreted_environment(&trimmed);
-        if environment.is_nil() && self.closure_env_is_lexical(&lambda.env) {
-            environment = Value::list([Value::T]);
-        }
-        slots[2] = environment;
         slots
     }
 
@@ -6631,7 +6619,7 @@ impl Interpreter {
                                 position - 1,
                                 name,
                                 shared_updates
-                                    .and_then(|updates| updates.get(name))
+                                    .and_then(|updates| updates.get(name.as_str()))
                                     .cloned()
                                     .unwrap_or_else(|| value.clone()),
                             ),
@@ -6745,7 +6733,7 @@ impl Interpreter {
                 continue;
             };
             for (name, value) in frame {
-                if let Some(updated) = updates.get(name) {
+                if let Some(updated) = updates.get(name.as_str()) {
                     *value = updated.clone();
                 }
             }

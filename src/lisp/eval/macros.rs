@@ -493,7 +493,7 @@ impl Interpreter {
         let public_environment = slots[2].clone();
         let lexical = !public_environment.is_nil();
         enum EnvironmentEntry {
-            Binding(String, Value),
+            Binding(SymbolName, Value),
             LocalSpecial(String),
         }
         let mut entries = Vec::new();
@@ -509,9 +509,11 @@ impl Interpreter {
                 Value::Cons(cons_cell) => {
                     let car = &cons_cell.car;
                     let cdr = &cons_cell.cdr;
-                    let name = match car.borrow().as_symbol() {
-                        Ok(name) => name.to_string(),
-                        Err(_) => continue,
+                    let name = match &*car.borrow() {
+                        Value::Symbol(name) => name.clone(),
+                        Value::Nil => "nil".into(),
+                        Value::T => "t".into(),
+                        _ => continue,
                     };
                     // GNU treats each entry as a true alist cell: `(x 1)'
                     // binds x to `(1)', whereas `(x . 1)' binds it to 1.

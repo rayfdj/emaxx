@@ -193,6 +193,19 @@ pub(crate) fn intern_in_obarray(
     obarray: &Value,
     symbol_name: &str,
 ) -> Result<Value, LispError> {
+    intern_in_obarray_with_name(interp, obarray, symbol_name, |_| {
+        Ok(Value::string(symbol_name))
+    })
+}
+
+/// lread.c:intern_driver is reached only after oblookup misses. In particular,
+/// Fintern must not allocate/purecopy a name string when a symbol already exists.
+pub(crate) fn intern_in_obarray_with_name(
+    interp: &mut Interpreter,
+    obarray: &Value,
+    symbol_name: &str,
+    make_name: impl FnOnce(&mut Interpreter) -> Result<Value, LispError>,
+) -> Result<Value, LispError> {
     let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument(
@@ -201,6 +214,13 @@ pub(crate) fn intern_in_obarray(
         ));
     };
     if interp.is_standard_obarray_id(*id) {
+        if !interp.standard_obarray_contains_symbol(symbol_name) {
+            let name = make_name(interp)?;
+            crate::lisp::types::SymbolName::intern_with_lisp_name(
+                symbol_name.to_owned(),
+                Some(name),
+            );
+        }
         interp.intern_symbol_name(symbol_name);
         return Ok(crate::lisp::types::interned_symbol_value(
             symbol_name.to_string(),
@@ -246,9 +266,13 @@ pub(crate) fn intern_in_obarray(
     {
         return Ok(existing);
     }
-    let symbol =
-        Value::Symbol(crate::lisp::types::make_obarray_symbol_name(symbol_name, *id).into());
+    let name = make_name(interp)?;
+    let symbol = Value::Symbol(crate::lisp::types::SymbolName::intern_with_lisp_name(
+        crate::lisp::types::make_obarray_symbol_name(symbol_name, *id),
+        Some(name),
+    ));
     symbols.push(symbol.clone());
+    let record = interp.find_record_mut(*id).expect("validated obarray");
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
     } else {

@@ -254,11 +254,7 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
     let macro_tag = positioned(&mut interp, "macro", 4, &mut env);
     let macro_function = Value::cons(
         macro_tag,
-        Value::lambda(
-            Vec::<String>::new().into(),
-            Vec::new().into(),
-            shared_env(Vec::new()),
-        ),
+        Value::lambda(Vec::new().into(), Vec::new().into(), shared_env(Vec::new())),
     );
     assert_eq!(
         call(&mut interp, "func-arity", &[macro_function], &mut env)
@@ -12287,6 +12283,142 @@ fn propertize_preserves_existing_string_properties() {
         Some(Value::String("help text".into()))
     );
     assert_eq!(string_property_at(&updated, 0, "button"), Some(Value::T));
+}
+
+#[test]
+fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    // alloc.c starts with purify-flag=t; exercise Fintern's ordinary
+    // post-loadup path explicitly, without changing that GNU default.
+    interp.define_special_variable("purify-flag", Value::Nil);
+    let first_table = make_obarray(&mut interp);
+    let second_table = make_obarray(&mut interp);
+    let name = make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
+    let second_name =
+        make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
+    let first = call(
+        &mut interp,
+        "intern",
+        &[name.clone(), first_table.clone()],
+        &mut env,
+    )
+    .expect("Fintern miss");
+    let again = call(
+        &mut interp,
+        "intern",
+        &[second_name.clone(), first_table],
+        &mut env,
+    )
+    .expect("Fintern hit");
+    let other = call(
+        &mut interp,
+        "intern",
+        &[second_name.clone(), second_table],
+        &mut env,
+    )
+    .expect("a different obarray owns a distinct symbol");
+    let (Value::Symbol(first_symbol), Value::Symbol(again_symbol), Value::Symbol(other_symbol)) =
+        (&first, &again, &other)
+    else {
+        panic!("intern returns symbols")
+    };
+    assert_eq!(first_symbol.identity_ptr(), again_symbol.identity_ptr());
+    assert_ne!(first_symbol.identity_ptr(), other_symbol.identity_ptr());
+    for (symbol, supplied) in [(first, name.clone()), (again, name), (other, second_name)] {
+        let returned = call(&mut interp, "symbol-name", &[symbol], &mut env)
+            .expect("SYMBOL_NAME is the stored string, not the internal lookup key");
+        assert_eq!(
+            string_text(&returned).expect("symbol name string"),
+            "local-name"
+        );
+        let Value::StringObject(returned) = returned else {
+            panic!("Fintern must retain the original string object")
+        };
+        let Value::StringObject(supplied) = supplied else {
+            unreachable!()
+        };
+        assert!(Rc::ptr_eq(&returned, &supplied));
+    }
+}
+
+#[test]
+fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let table = make_obarray(&mut interp);
+    let bad_name = Value::symbol("not-a-string");
+    let error = call(
+        &mut interp,
+        "intern",
+        &[bad_name.clone(), Value::Integer(1)],
+        &mut env,
+    )
+    .expect_err("CHECK_OBARRAY precedes CHECK_STRING");
+    let LispError::SignalValue(condition) = error else {
+        panic!("CHECK_OBARRAY must signal wrong-type-argument, got {error:?}")
+    };
+    assert_eq!(
+        condition,
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("obarrayp"),
+            Value::Integer(1),
+        ]),
+    );
+    assert!(matches!(
+        call(&mut interp, "intern", &[bad_name, table.clone()], &mut env),
+        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "stringp"
+    ));
+
+    interp.define_special_variable("purify-flag", Value::T);
+    let name = make_shared_string_value_with_multibyte("pure-name".into(), Vec::new(), false);
+    let symbol = call(
+        &mut interp,
+        "intern",
+        &[name.clone(), table.clone()],
+        &mut env,
+    )
+    .expect("Fintern purecopy miss");
+    let copied = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&symbol),
+        &mut env,
+    )
+    .expect("symbol-name returns the copied name");
+    assert!(
+        matches!(copied, Value::String(_)),
+        "Fpurecopy strips mutable string storage"
+    );
+    assert_eq!(string_text(&copied).expect("pure name string"), "pure-name");
+    let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", |_| {
+        panic!("an oblookup hit must not allocate or purecopy a name")
+    })
+    .expect("oblookup hit");
+    let (Value::Symbol(symbol), Value::Symbol(hit)) = (symbol, hit) else {
+        unreachable!()
+    };
+    assert_eq!(symbol.identity_ptr(), hit.identity_ptr());
+
+    interp.define_special_variable(
+        "read-symbol-shorthands",
+        Value::list([Value::cons(Value::string("short-"), Value::string("long-"))]),
+    );
+    let shorthand = make_shared_string_value_with_multibyte("short-name".into(), Vec::new(), false);
+    let expanded = call(&mut interp, "intern", &[shorthand, table], &mut env)
+        .expect("Fintern constructs the longhand name");
+    let expanded = call(&mut interp, "symbol-name", &[expanded], &mut env)
+        .expect("symbol-name returns the longhand name");
+    assert_eq!(
+        string_text(&expanded).expect("longhand string"),
+        "long-name"
+    );
+    assert!(
+        string_like(&expanded)
+            .expect("longhand string metadata")
+            .multibyte
+    );
 }
 
 #[test]

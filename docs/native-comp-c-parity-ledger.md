@@ -45,7 +45,7 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | P14 | `listp` | `data.c:Flistp` | registered |
 | P15 | `nlistp` | `data.c:Fnlistp` | registered |
 | P16 | `null` | `data.c:Fnull` | registered |
-| P17 | `symbol-value` | `data.c:Fsymbol_value` | open; direct tagged-object access is R01b, but the value/redirect cell still lives outside the symbol object |
+| P17 | `symbol-value` | `data.c:Fsymbol_value` | partial; see V01-V06 |
 | P18 | `symbolp` | `data.c:Fsymbolp` | registered |
 | P19 | `type-of` | `data.c:Ftype_of` | registered |
 | P20 | `assq` | `fns.c:Fassq` | registered |
@@ -64,7 +64,7 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | P33 | `apply` | `eval.c:Fapply` | registered |
 | P34 | `funcall` | `eval.c:Ffuncall` and `funcall_subr` | partial; see L04-L07 |
 
-## Cross-cutting hot-path contracts (8)
+## Cross-cutting hot-path contracts (11)
 
 | ID | GNU C contract | Status | Exact remaining work |
 |---|---|---|---|
@@ -76,6 +76,64 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | L06 | `eval.c:funcall_general` target resolution | partial | Builtin, native, and byte-code direct targets are covered; verify indirection, autoload, interpreted closure, and invalid-function fallback behavior. |
 | L07 | `eval.c:funcall_subr` arity and nil padding | partial | Fixed optional padding, wrong arity, and direct builtin errors are tested; audit every 0..8/MANY/UNEVALLED branch. |
 | L08 | `alloc.c` GC live-byte accounting | partial | Threshold/default behavior is implemented; prove the census includes exactly the same live Lisp object classes and bytes as GNU at equivalent state. |
+| L09 | `eval.c:Flet`, `FletX`, `funcall_lambda`, `Fmake_interpreted_closure`: retain original lexical symbols | verified | Original handles survive binding, parameter, environment, and debugger projections; symbol/name roots and native assq identity have explicit contracts. Full GNU execution, nine artifact fixtures, and paired no-regression measurements pass. Dynamic/global/local-special storage remains separate work. |
+| L10 | `print.c:print_object` `PVEC_CLOSURE`: print the stored slots | verified | Rust's extra free-variable scan/environment trimming is removed. GNU `cconv.el` remains the owner. Four Rust print tests and unchanged GNU `cconv-safe-for-space` pass, with full native execution/artifact/performance gates. |
+| L11 | `lread.c:Fintern`, `intern_driver`; `alloc.c:init_symbol`; `data.c:Fsymbol_name`: retain the Lisp name separately from private lookup identity | partial | Newly allocated symbols retain their Lisp name separately from the lookup key; ordinary-table Fintern name identity, existing hits, shorthand/purecopy, and type-check order pass focused contracts and full native gates. Full obarray storage/lifetime and early compact-abbreviation-table parity remain open. |
+
+The L11 audit also requires the symbol's stored name to be a traced child,
+as in `alloc.c:mark_objects` (including string intervals). The internal lookup
+key must not be counted as an additional Lisp string. The legacy standard-
+obarray membership/identity split and compact early-image abbreviation-table
+fallback remain outside this bounded name-field correction; they are not
+declared GNU-equivalent by this checkpoint.
+
+L10 was exposed by the focused closure regression run (104 passed, 2 failed).
+The closure-print failure reproduces on untouched pushed merge `38b2ee8`;
+GNU's unchanged `cconv-safe-for-space` test passes. GNU `print.c` prints slots
+0 through PVSIZE without recomputing capture policy. Rust instead re-trimmed
+the environment when printing, after GNU Elisp had already consumed the
+`:closure-dont-trim-context` marker. Removing that Rust Elisp-policy duplicate
+is mandatory, not a performance exception. An existing early-image print test
+that expects cconv filtering must load the existing full GNU image; keep its
+Elisp and expected result unchanged. The other baseline failure exposes a
+private-obarray suffix through `symbol-name`; it is tracked separately and is
+not evidence of failed callback mutation.
+
+L09 (2026-09-05) is a correctness dependency of the native-comp execution
+checkpoint, not a new test runner or a claim about total compatibility tests.
+The normal GNU `comp-tests-fw-prop-1` fails even on pushed merge `38b2ee8`.
+Rust-only tracing showed its hash-table callback retained `checker` but lost
+the generated accumulator `--cl-var--` (internal identity 1584 in that run).
+Native `assq` compared two different symbol pointers with that same internal
+name immediately before the unbound-variable error. Log:
+`/private/tmp/emaxx-v06-execution.tyIV38/emaxx-fw-prop-identity.stderr`.
+
+GNU `eval.c:Flet`/`FletX` put the original VAR into each lexical binding cons;
+`funcall_lambda` retains the original parameter symbol; `Fmake_interpreted_closure`
+stores ENV unchanged. Emaxx's string keys and parsed parameter strings broke
+that object ownership before unchanged `cconv.el` ran its filter. The draft
+stores `SymbolName` handles in lexical frames and parsed parameter vectors,
+clones those handles into public binding conses, and preserves them through
+closure reconstruction, handler bindings, eval-alist input, and debugger
+snapshots. It removes per-key String copies and avoids manufacturing Lisp
+symbol objects during projection. It does not change native EQ/assq, binding
+order, frame-cell sharing, dynamic/global storage, or GNU Elisp filtering.
+The retained symbols must also be traced as roots: GNU `alloc.c` marks both
+the car and cdr of each binding cons. The old value-only typed-frame walk
+omitted binding names; update frame, parameter, and debugger-root walks with
+the representation change and test reachability before any public projection.
+The new Rust contract also checks that two distinct uninterned symbols with
+the same visible name remain distinct and that sibling projections reuse the
+same binding conses without allocating more uninterned symbols. Acceptance
+and paired performance evidence are recorded below; do not claim this fixes all symbol
+storage (locally-special metadata and global tables remain separate work).
+
+Initial L09 evidence: all 49 native-runtime correctness tests pass, with one
+separate timing benchmark ignored. Format, all-target check, and all-feature
+Clippy pass without warnings. The ordinary release editor passes the formerly
+failing unchanged GNU test `comp-tests-fw-prop-1` (1/1, exit 0, 47.77s wall /
+42.85s user CPU; `emaxx-fw-prop-fixed.stderr` in the diagnostic directory).
+This is not yet the complete 177-test gate or a performance measurement.
 
 ## Vector storage contracts (4)
 
@@ -104,6 +162,135 @@ Lisp object model.
 | R02c | Native words remain native words across C-owned calls | open | Eliminate repeated encode-cache lookup by carrying the assigned native word in the object representation itself. A separate 64-entry Rust cache was rejected after two exact-output runs regressed to 88.87s and 94.87s user CPU. |
 | R03 | GNU's single object storage across generated code and primitives | partial | Conses expose their two ABI words directly and vectors share one slot array; remove the remaining mirror/reconciliation work only where both mutation directions and GC visibility are proven. |
 
+## Symbol-value contracts (6)
+
+These units follow `data.c:find_symbol_value` in source order.  Passing the
+combined `native_symbol_value_and_type_of_follow_data_c` test is supporting
+evidence only; each branch remains open until its storage, mutation, GC, error,
+and performance behavior is separately proven against GNU.
+
+| ID | GNU C contract | Status | Exact remaining work |
+|---|---|---|---|
+| V01 | `CHECK_SYMBOL`; `lisp.h:XSYMBOL` | verified | R01b proves that a live bare-symbol word directly addresses its complete stable Rust object without a reverse map or slot-vector lookup. Positioned-symbol handling remains on the general `CHECK_SYMBOL` path as in GNU. |
+| V02 | `SYMBOL_PLAINVAL`; `SYMBOL_VAL` | open | Replace the external `OrderedBindings` lookup plus process-wide epoch cache with a symbol-owned value cell that returns its native word directly, is updated by the exact GNU mutation transitions, and is traced as part of the symbol object. |
+| V03 | `SYMBOL_VARALIAS`; `SYMBOL_ALIAS`; `goto start` | open | Store the alias redirect in the symbol object and follow the target object directly, including cycle/error behavior established by GNU's alias-creation path. |
+| V04 | `SYMBOL_LOCALIZED`; `SYMBOL_BLV`; `swap_in_symval_forwarding` | open | Represent the buffer-local-value object and its selected/default cells directly; remove name-map probing from the native branch without changing dynamic/default/local precedence. |
+| V05 | `SYMBOL_FORWARDED`; `SYMBOL_FWD`; `do_symval_forwarding` | open | Represent each supported forwarding kind and read its C-owned Rust field directly, preserving normalization and buffer-local forwarding behavior. |
+| V06 | `Fsymbol_value`; `Qunbound`; `xsignal1 (Qvoid_variable, symbol)` | partial | Original-symbol error payload and CHECK_SYMBOL ordering pass focused contracts in ordinary, native-direct, and native-subr dispatch, 16 anti-cheating gates, and all nine unchanged-source artifact fixtures. A single stored Qunbound word remains dependent on V02. |
+
+Rejected V02 draft: replacing the process-wide epoch with an optional word in
+`NativeHandle` was still a shadow cache, not `struct Lisp_Symbol::val.value`.
+It left `OrderedBindings` authoritative, conflated an unpopulated cache with
+GNU's distinct plain-unbound, alias, and localized states, and routed writes
+through a second identity hash lookup.  Although an unmatched pair of
+eight-second samples showed fewer `invoke_native_symbol_value` leaf samples,
+five paired full compiles were performance-neutral under machine load and
+could not justify behavior that differs from GNU.  None of that draft is
+retained.  V02 requires one authoritative per-runtime symbol object and one
+plain value word, including the exact `Qunbound` word.
+
+Follow-up V02 drafts rejected (2026-09-05): boxing the global binding and
+linking a raw pointer from the native handle avoided the epoch, but encoding
+its Rust `Value` on every read regressed three paired full `comp.el` compiles.
+Baseline/draft process CPU seconds were 61.46/62.78, 61.49/65.41, and
+61.89/63.99.  Its nine-fixture artifact comparison passed; that did not make
+the performance regression acceptable.  Adding an optional encoded word to
+the boxed cell introduced a second synchronized value again, plus three
+runtime-selection paths that discarded encoding errors.  The strengthened
+test's GC assertion was invalid: `begin_garbage_collection` outside a native
+call returns without collection.  The cross-owner raw-pointer lifetime and
+native-heap ownership were also not proven.  That final variant had only a
+focused test/check, not the previous variant's artifact proof; its lone
+loaded-host timing is not evidence of a gain.  All eight Rust files changed
+by these drafts have been restored to the pushed merge checkpoint.  V02
+remains open; no new cache or storage implementation is accepted.
+
+V06 bounded error correction (2026-09-05): `data.c:Fsymbol_value` passes its original SYMBOL
+to `xsignal1` after `find_symbol_value` returns `Qunbound`.  Rust's
+`eval/bindings.rs:symbol_value_cell` constructed `Void` using the resolved
+alias target; the ordinary primitive also lost the original positioned-symbol
+object, and reconstructing an uninterned symbol from that string created a
+different symbol object.  The new Rust contract failed before the fix.  Both
+public `Fsymbol_value` boundaries now replace only that `Void` error with the
+original Lisp object.  Other errors propagate unchanged; CHECK_SYMBOL still
+runs first.  `LispError`'s host formatter preserves the diagnostic prefix for
+the object-carrying condition.  GNU's error text is from `data.c:syms_of_data`.
+
+The two new Rust tests cover an alias chain extended after its first link,
+plain and uninterned symbol pointer identity, positioned-record identity,
+and type-error ordering with positioning disabled.  Each runs through the
+ordinary primitive, direct native helper, and native subr-import dispatch.
+The existing symbol-value/GC test now establishes a live native-call boundary
+and proves an unreachable cons was swept; its previous outside-call collection
+was a no-op.  The native C audit gate requires the two new contracts to remain
+present.  Runtime tests: 48 passed, zero failed, one benchmark ignored;
+anti-cheating: 16 passed.  Formatting, all-target check, and all-feature Clippy
+passed without warnings.  The nine-fixture whole-artifact gate passed in
+368.21 seconds: eight complete `.eln` files identical, including 881,800 bytes
+for `comp.el`, and neither compiler emitted an artifact for the unchanged
+no-byte-compile fixture. Before L09-L11, the execution checkpoint failed: the ordinary
+GNU Makefile test command selected 177 cases; GNU passed all 177, but Emaxx
+passed 52, failed `comp-tests-fw-prop-1`, then aborted while printing the
+failure, leaving 124 cases unrun.  The two helper `.eln` files were genuinely
+compiled and loaded.  Logs are in
+`/private/tmp/emaxx-v06-execution.tyIV38/{emaxx,gnu}.stderr`.  An isolated
+verbose replay on the untouched `38b2ee8` binary also failed this test and
+aborted its reporter (0/1, exit 2, 79.04 seconds; `baseline-fw-prop.stderr`
+in the same directory).  Its reported condition argument is
+`comp-tests-fw-prop-1-f`. Temporary Rust tracing subsequently exposed the
+original `void-variable --cl-var--` (a generated lexical variable); GNU
+`comp.el` prepends the function name when re-signaling it. The reporter
+separately fails with `wrong-type-argument number-or-marker-p nil`.
+The failing test predates this V06 change. Publication and timing were paused
+for diagnosis. After the L09-L11 corrections, the ordinary release editor
+passes all 177 native-enabled GNU tests, zero unexpected results, exit 0:
+`/private/tmp/emaxx-native-final.3mbz17/emaxx.stderr`. Both helper libraries were
+freshly compiled/loaded. ERT took 1090.59s; total wall/user/system times were
+1128.20/1034.87/26.77 seconds. The 80 return-type tests each retain GNU's normal
+compiler subprocess, taking about 11-12 seconds apiece. Final Rust contracts
+pass 69/69 (including 49 native contracts and 16 anti-cheating gates), with one
+separate timing probe ignored. This is new post-merge evidence, not the older
+pre-merge 177/177 claim. The final nine-fixture artifact ladder also passes
+(229.33s), including all 881,800 bytes of `comp.el`; log `identity.log` beside
+the execution log. The ordinary editor also passes unchanged GNU
+`cconv-safe-for-space` (1/1, exit 0, `cconv.stderr` in the same directory).
+
+Final paired measurement, unchanged GNU `comp.el`, fresh processes and homes,
+ordinary `-Q --batch -f batch-native-compile`, same source path within each
+pair. Baseline is untouched pushed merge `38b2ee8`. Times include startup.
+
+| Pair / order | Baseline user CPU | Current user CPU | GNU user CPU |
+|---|---:|---:|---:|
+| 1: baseline, current, GNU | 62.10s | 62.93s | 8.44s |
+| 2: current, baseline, GNU | 63.00s | 62.15s | 9.07s |
+| Mean | 62.55s | 62.54s | 8.76s |
+
+No material regression or speedup is established by these samples. Emaxx is
+still approximately 7.1x GNU on this workload; performance parity is not
+achieved. In both pairs, baseline and current entire artifacts compare equal
+to GNU with `cmp`. Logs/artifacts: `/private/tmp/emaxx-v06-measure.zr27c1`.
+Pair-one SHA-256: `45a1720fb510102a768eba529da7edd923cac9f456fa7d5b0c46d555baf591f3`;
+pair two: `ca4858f93845598f532f68995f59660579ecf1d2806b2376b814f837638e00e0`.
+Source paths differ between pairs, so hashes are not universal golden files.
+
+Final adversarial review: no GNU source changes, authored Elisp, new runner,
+GNU runtime delegation, copied oracle output, weakened artifact comparison,
+test-name production branch, suppressed Rust warnings, or new cache is
+retained. The printer's Rust copy of Elisp capture policy was removed. The
+existing early-image print fixture now loads the GNU owner required by its
+unchanged expectation. The GC test genuinely collects during a native call;
+the assq negative control rejects reconstructed symbols with matching names.
+The unrelated dirty compatibility reporter/honesty files are excluded from
+this checkpoint. Unfixed representation items above remain open, not approved
+semantic exceptions.
+
+No successful plain-value fast path, value-cell storage, cache, or mutation
+transition was changed.  This is correctness work, not a claimed compiler
+speedup.  V02 storage, V03-V05 redirect representation, V06's single stored
+Qunbound word, and other primitives' error payloads remain open.  In
+particular, the existing epoch cache is still a documented V02 deviation; this
+checkpoint neither replaces it with a new cache nor calls it GNU-equivalent.
+
 ## Performance priority overlay
 
 This ordering comes from the latest `comp.el` sample.  Sample counts locate
@@ -117,7 +304,7 @@ C contracts and added to the inventory.
 | 2 | Remaining SipHash routing | 143 / 5s | Attribute callers and map Lisp hash behavior to GNU's exact `fns.c` functions before changing them. |
 | 3 | Rust `Value` clone/drop traffic | 111 drop, 94 clone / 5s | Attribute the traffic to exact object classes before adding a representation unit. |
 | 4 | Native-word decoding | 84 / 5s | R01a-R01b are verified; attribute the remaining cons-mirror branch to R03. |
-| 5 | Global symbol binding lookup | 72 / 5s | Audit P17's external value/redirect cell and epoch cache against `data.c:find_symbol_value`. |
+| 5 | Global symbol binding lookup | 72 / 5s | Complete V02 first, then V03-V06 in `find_symbol_value` source order. |
 
 The same profile recorded only 12 leaf samples in the general vector helper,
 so S01-S03 removed vector registration from the leading costs.  `funcall` is
@@ -139,5 +326,10 @@ L05-L07 remain the next call-boundary audit after the representation units.
 9. Run formatting and warning gates before a commit checkpoint.
 10. Update this ledger before starting the next item.
 
-The eight-rung native artifact identity test and the full native-comp gate are
+Checkpoint sequencing (Ray, 2026-09-05): after every commit and push, fetch
+and merge the latest `origin/main` into `native-comp` before beginning the
+next checkpoint. Audit semantic merge interactions, verify relevant gates,
+and preserve unrelated edits. An already-up-to-date main needs no empty merge.
+
+The nine-rung native artifact identity test and the full native-comp gate are
 checkpoint tests, not per-line iteration tests.

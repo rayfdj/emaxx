@@ -285,6 +285,35 @@ pub(crate) fn checked_symbol_name(
     ))
 }
 
+/// The same CHECK_SYMBOL/XSYMBOL boundary when the caller stores the symbol
+/// itself, rather than using its name to address legacy host-side tables.
+pub(crate) fn checked_symbol_identity(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<crate::lisp::types::SymbolName, LispError> {
+    match value {
+        Value::Symbol(symbol) => return Ok(symbol.clone()),
+        Value::Nil => return Ok("nil".into()),
+        Value::T => return Ok("t".into()),
+        _ => {}
+    }
+    if symbols_with_pos_enabled(interp, env)
+        && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
+    {
+        match symbol {
+            Value::Symbol(symbol) => return Ok(symbol),
+            Value::Nil => return Ok("nil".into()),
+            Value::T => return Ok("t".into()),
+            _ => {}
+        }
+    }
+    Err(LispError::WrongTypeArgument(
+        "symbolp".into(),
+        value.clone(),
+    ))
+}
+
 #[cfg(test)]
 pub(crate) fn reset_symbol_with_pos_flag_read_count() {
     SYMBOL_WITH_POS_FLAG_READ_COUNT.with(|count| count.set(0));

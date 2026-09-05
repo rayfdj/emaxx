@@ -170,7 +170,7 @@ impl Interpreter {
                         continue;
                     }
                     return self.eval_condition_case_handler(
-                        var.as_ref().map(|name| name.as_str()),
+                        var.as_ref(),
                         val.clone(),
                         &parts[1..],
                         env,
@@ -206,7 +206,7 @@ impl Interpreter {
                     }
                     self.clear_batch_error_backtrace();
                     return self.eval_condition_case_handler(
-                        var.as_ref().map(|name| name.as_str()),
+                        var.as_ref(),
                         error_condition_value(&e),
                         &parts[1..],
                         env,
@@ -223,7 +223,7 @@ impl Interpreter {
     /// and must unwind the value cell before a returned dynamic lambda runs.
     fn eval_condition_case_handler(
         &mut self,
-        variable: Option<&str>,
+        variable: Option<&SymbolName>,
         value: Value,
         body: &[Value],
         env: &mut Env,
@@ -232,7 +232,7 @@ impl Interpreter {
             return self.sf_progn(body, env);
         };
         if self.interpreter_environment_is_lexical(env) {
-            Self::push_marked_frame(env, vec![(variable.to_string(), value)]);
+            Self::push_marked_frame(env, vec![(variable.clone(), value)]);
             let result = self.sf_progn(body, env);
             env.pop();
             return result;

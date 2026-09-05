@@ -424,12 +424,7 @@ fn walk_print_graph(
                 }
             }
             Value::Lambda(lambda) => {
-                pending.extend(
-                    interp
-                        .interpreted_closure_print_slots(lambda)
-                        .into_iter()
-                        .rev(),
-                );
+                pending.extend(interp.interpreted_closure_slots(lambda).into_iter().rev());
             }
             _ => {}
         }
@@ -1125,7 +1120,9 @@ pub(crate) fn render_prin1_body(
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
-            let slots = interp.interpreted_closure_print_slots(lambda_value);
+            // GNU print.c prints every stored closure slot. Capture filtering
+            // belongs to cconv.el at construction, never to the printer.
+            let slots = interp.interpreted_closure_slots(lambda_value);
             let mut rendered_slots = Vec::new();
             for (index, slot) in slots.iter().enumerate() {
                 if context.options.length.is_some_and(|limit| index >= limit) {

@@ -1648,7 +1648,7 @@ impl Interpreter {
         &mut self,
         function: Value,
         args: Vec<Value>,
-        locals: Vec<(String, Value)>,
+        locals: Vec<(SymbolName, Value)>,
         evald: bool,
     ) {
         self.backtrace_frames.push(BacktraceFrame {
@@ -1689,7 +1689,7 @@ impl Interpreter {
         &mut self,
         function_name: Option<&str>,
         env: &Env,
-        activation_frame: Option<&[(String, Value)]>,
+        activation_frame: Option<&[(SymbolName, Value)]>,
     ) {
         if function_name != Some("backtrace-eval") && !self.edebug_entered_active(env) {
             return;
@@ -1793,7 +1793,10 @@ impl Interpreter {
         self.batch_error_backtrace = None;
     }
 
-    pub fn backtrace_frame_locals_snapshot(&self, index: usize) -> Option<Vec<(String, Value)>> {
+    pub fn backtrace_frame_locals_snapshot(
+        &self,
+        index: usize,
+    ) -> Option<Vec<(SymbolName, Value)>> {
         self.backtrace_frames
             .iter()
             .rev()
@@ -1805,7 +1808,7 @@ impl Interpreter {
         &self,
         index: usize,
         base: Option<&Value>,
-    ) -> Option<Vec<(String, Value)>> {
+    ) -> Option<Vec<(SymbolName, Value)>> {
         let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
         let start = base
             .and_then(|base| {
@@ -1840,7 +1843,7 @@ impl Interpreter {
         {
             return context;
         }
-        let mut merged: Vec<(String, Value)> = Vec::new();
+        let mut merged: Vec<(SymbolName, Value)> = Vec::new();
         for frame in frames.into_iter().skip(start + index) {
             for (name, value) in &frame.locals {
                 if !merged.iter().any(|(existing, _)| existing == name) {

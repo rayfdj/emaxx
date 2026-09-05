@@ -1314,6 +1314,38 @@ mod eval_value_buffer_tests {
     use super::*;
 
     #[test]
+    fn lexical_binding_symbols_are_gc_roots_before_closure_projection() {
+        let interpreter = Interpreter::new();
+        let lisp_name = Value::string("binding");
+        let name = SymbolName::make_uninterned(lisp_name.clone(), "binding", 1);
+        let key = Value::Symbol(name.clone());
+        let env = vec![EnvFrame::with_identity(
+            vec![(name.clone(), Value::Integer(7))],
+            Interpreter::fresh_frame_identity(),
+        )];
+        let mut marked = LispReachability::default();
+        marked.mark_env(&interpreter, &env);
+        assert!(
+            marked.contains(&key),
+            "alloc.c marks the symbol car of a lexical binding"
+        );
+        assert!(marked.contains(&lisp_name), "alloc.c marks SYMBOL_NAME");
+
+        let function = Value::lambda(
+            vec![name].into(),
+            vec![Value::Nil].into(),
+            shared_env(Vec::new()),
+        );
+        let mut marked = LispReachability::default();
+        marked.mark(&interpreter, &function);
+        assert!(
+            marked.contains(&key),
+            "closure parameters retain their symbol objects"
+        );
+        assert!(!LispReachability::default().contains(&key));
+    }
+
+    #[test]
     fn eval_depth_limit_follows_eval_c_post_increment_floor() {
         let mut interpreter = Interpreter::new();
         interpreter.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(50));

@@ -139,14 +139,14 @@ pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {
         .map(arity_value)
 }
 
-pub(crate) fn lambda_arity_value(params: &[String]) -> Value {
+pub(crate) fn lambda_arity_value(params: &[impl AsRef<str>]) -> Value {
     let mut required = 0i64;
     let mut optional = 0i64;
     let mut in_optional = false;
     let mut has_rest = false;
 
     for param in params {
-        match param.as_str() {
+        match param.as_ref() {
             "&optional" => in_optional = true,
             "&rest" | "&body" => {
                 has_rest = true;

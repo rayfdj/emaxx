@@ -1410,7 +1410,7 @@ define_dispatch!(
                     .backtrace_frame_locals_snapshot_with_base(index, base)
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|(name, value)| Value::cons(Value::Symbol(name.into()), value))
+                    .map(|(name, value)| Value::cons(Value::Symbol(name), value))
                     .collect::<Vec<_>>();
                 Ok(Value::list(locals))
             }

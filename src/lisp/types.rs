@@ -550,10 +550,17 @@ thread_local! {
 
 impl SymbolName {
     pub fn intern(text: String) -> Self {
+        Self::intern_with_lisp_name(text, None)
+    }
+
+    /// The runtime lookup key is not SYMBOL_NAME. GNU init_symbol retains
+    /// the supplied Lisp string; internal C-string callers create that name
+    /// only when the symbol is first allocated.
+    pub(crate) fn intern_with_lisp_name(text: String, lisp_name: Option<Value>) -> Self {
         if text.contains(UNINTERNED_SYMBOL_MARKER) {
             let visible = visible_symbol_name(&text).to_owned();
             return Self::new_uninterned(
-                Value::String(SharedText::from(visible)),
+                lisp_name.unwrap_or_else(|| Value::String(SharedText::from(visible))),
                 SharedText::new_untracked(text),
             );
         }
@@ -564,10 +571,22 @@ impl SymbolName {
             crate::lisp::native_comp::note_lisp_allocation(48);
             let ordered_binding_hash =
                 crate::lisp::primitives::FnvBuildHasher::default().hash_one(text.as_str());
-            let text = SharedText::from(text);
+            let private = text.contains(OBARRAY_SYMBOL_MARKER);
+            let text = if private || lisp_name.is_some() {
+                SharedText::new_untracked(text)
+            } else {
+                SharedText::from(text)
+            };
+            let lisp_name = lisp_name.unwrap_or_else(|| {
+                Value::String(if private {
+                    SharedText::from(visible_symbol_name(&text))
+                } else {
+                    text.clone()
+                })
+            });
             let name = Self(Rc::new(SymbolNameState {
-                internal: text.clone(),
-                lisp_name: Value::String(text),
+                internal: text,
+                lisp_name,
                 ordered_binding_hash,
             }));
             names.insert(name.clone());
@@ -876,7 +895,7 @@ impl fmt::Display for SharedFloat {
 pub type SharedCons = Rc<ConsCell>;
 pub type ConsCells = (ConsSlot, ConsSlot);
 pub type SharedEnv = Rc<RefCell<Env>>;
-pub type SharedLambdaParams = Rc<Vec<String>>;
+pub type SharedLambdaParams = Rc<Vec<SymbolName>>;
 pub type SharedLambdaBody = Rc<Vec<Value>>;
 
 #[derive(Debug)]
@@ -1688,7 +1707,10 @@ struct LexicalFrameState {
 
 #[derive(Clone, Debug)]
 struct EnvFrameData {
-    bindings: Vec<(String, Value)>,
+    // eval.c:Flet, FletX and funcall_lambda retain the original symbol
+    // object. Re-interning its printed/internal name would split the
+    // identity of an uninterned lexical variable at closure capture.
+    bindings: Vec<(SymbolName, Value)>,
     /// Stable identity used to align captured and live lexical frames.
     /// This is evaluator bookkeeping, never a Lisp binding.
     identity: Option<i64>,
@@ -1736,7 +1758,7 @@ impl EnvFrame {
         }))
     }
 
-    pub fn new(bindings: Vec<(String, Value)>) -> Self {
+    pub fn new(bindings: Vec<(SymbolName, Value)>) -> Self {
         Self(Rc::new(EnvFrameData {
             bindings,
             identity: None,
@@ -1747,7 +1769,7 @@ impl EnvFrame {
         }))
     }
 
-    pub fn with_identity(bindings: Vec<(String, Value)>, identity: i64) -> Self {
+    pub fn with_identity(bindings: Vec<(SymbolName, Value)>, identity: i64) -> Self {
         Self(Rc::new(EnvFrameData {
             bindings,
             identity: Some(identity),
@@ -1759,7 +1781,7 @@ impl EnvFrame {
     }
 
     pub fn with_lisp_environment_and_identity(
-        bindings: Vec<(String, Value)>,
+        bindings: Vec<(SymbolName, Value)>,
         lisp_environment: Value,
         identity: i64,
     ) -> Self {
@@ -1776,7 +1798,7 @@ impl EnvFrame {
         }))
     }
 
-    pub fn with_function_bindings(bindings: Vec<(String, Value)>, identity: i64) -> Self {
+    pub fn with_function_bindings(bindings: Vec<(SymbolName, Value)>, identity: i64) -> Self {
         Self(Rc::new(EnvFrameData {
             bindings,
             identity: Some(identity),
@@ -1803,7 +1825,7 @@ impl EnvFrame {
     }
 
     pub fn from_parts(
-        bindings: Vec<(String, Value)>,
+        bindings: Vec<(SymbolName, Value)>,
         identity: Option<i64>,
         function_bindings: bool,
         local_special_declarations: Vec<(usize, String)>,
@@ -1832,7 +1854,7 @@ impl EnvFrame {
     pub(crate) fn canonical_lisp_binding(
         &self,
         position: usize,
-        name: &str,
+        name: &SymbolName,
         value: Value,
     ) -> Value {
         let mut cells = self.0.state.binding_cells.borrow_mut();
@@ -1848,7 +1870,7 @@ impl EnvFrame {
         {
             return Value::Cons(cell);
         }
-        let Value::Cons(cell) = Value::cons(Value::Symbol(name.into()), value) else {
+        let Value::Cons(cell) = Value::cons(Value::Symbol(name.clone()), value) else {
             unreachable!("Value::cons constructs a cons")
         };
         cells[position] = Rc::downgrade(&cell);
@@ -1958,20 +1980,20 @@ impl Default for EnvFrame {
     }
 }
 
-impl From<Vec<(String, Value)>> for EnvFrame {
-    fn from(bindings: Vec<(String, Value)>) -> Self {
+impl From<Vec<(SymbolName, Value)>> for EnvFrame {
+    fn from(bindings: Vec<(SymbolName, Value)>) -> Self {
         Self::new(bindings)
     }
 }
 
-impl FromIterator<(String, Value)> for EnvFrame {
-    fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
+impl FromIterator<(SymbolName, Value)> for EnvFrame {
+    fn from_iter<T: IntoIterator<Item = (SymbolName, Value)>>(iter: T) -> Self {
         Self::new(iter.into_iter().collect())
     }
 }
 
 impl Deref for EnvFrame {
-    type Target = Vec<(String, Value)>;
+    type Target = Vec<(SymbolName, Value)>;
 
     fn deref(&self) -> &Self::Target {
         &self.0.bindings
@@ -1985,7 +2007,7 @@ impl DerefMut for EnvFrame {
 }
 
 impl IntoIterator for EnvFrame {
-    type Item = (String, Value);
+    type Item = (SymbolName, Value);
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -1997,8 +2019,8 @@ impl IntoIterator for EnvFrame {
 }
 
 impl<'a> IntoIterator for &'a EnvFrame {
-    type Item = &'a (String, Value);
-    type IntoIter = std::slice::Iter<'a, (String, Value)>;
+    type Item = &'a (SymbolName, Value);
+    type IntoIter = std::slice::Iter<'a, (SymbolName, Value)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.bindings.iter()
@@ -2006,8 +2028,8 @@ impl<'a> IntoIterator for &'a EnvFrame {
 }
 
 impl<'a> IntoIterator for &'a mut EnvFrame {
-    type Item = &'a mut (String, Value);
-    type IntoIter = std::slice::IterMut<'a, (String, Value)>;
+    type Item = &'a mut (SymbolName, Value);
+    type IntoIter = std::slice::IterMut<'a, (SymbolName, Value)>;
 
     fn into_iter(self) -> Self::IntoIter {
         Rc::make_mut(&mut self.0).bindings.iter_mut()
@@ -2788,6 +2810,14 @@ impl fmt::Display for LispError {
             }
             LispError::Signal(msg) => write!(f, "{}", msg),
             LispError::SignalValue(value) => match value.to_vec() {
+                Ok(items)
+                    if items.len() == 2
+                        && matches!(&items[0], Value::Symbol(kind) if kind == "void-variable") =>
+                {
+                    // Preserve the host diagnostic when Fsymbol_value
+                    // carries its original Lisp object instead of a name.
+                    write!(f, "Symbol's value as variable is void: {}", items[1])
+                }
                 Ok(items)
                     if items.len() >= 2
                         && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "search-failed") =>
