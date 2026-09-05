@@ -722,7 +722,7 @@ fn interpreted_closure_printing_and_arity_condition_use_readable_slots() {
 #[test]
 fn interpreted_closure_printing_omits_unused_internal_activation_bindings() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
                 (let ((lexical-binding t))
                   (let* ((maker (lambda (magic)

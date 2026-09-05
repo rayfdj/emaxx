@@ -202,7 +202,7 @@ impl Interpreter {
                     if self.binding_is_dynamic(name, env) {
                         special_bindings.push((name.to_string(), Value::Nil));
                     } else {
-                        frame.push((name.to_string(), Value::Nil));
+                        frame.push((name.clone(), Value::Nil));
                     }
                 }
                 Value::Record(_)
@@ -210,10 +210,11 @@ impl Interpreter {
                         && crate::lisp::primitives::symbol_with_pos_parts(self, binding)
                             .is_some() =>
                 {
-                    let name = crate::lisp::primitives::checked_symbol_name(self, binding, env)?;
+                    let name =
+                        crate::lisp::primitives::checked_symbol_identity(self, binding, env)?;
                     Self::check_let_binding_name(&name)?;
                     if self.binding_is_dynamic(&name, env) {
-                        special_bindings.push((name, Value::Nil));
+                        special_bindings.push((name.to_string(), Value::Nil));
                     } else {
                         frame.push((name, Value::Nil));
                     }
@@ -223,7 +224,8 @@ impl Interpreter {
                     let Some(name_value) = parts.first() else {
                         return Err(LispError::ReadError("bad let binding".into()));
                     };
-                    let name = crate::lisp::primitives::checked_symbol_name(self, name_value, env)?;
+                    let name =
+                        crate::lisp::primitives::checked_symbol_identity(self, name_value, env)?;
                     Self::check_let_binding_name(&name)?;
                     let val = if parts.len() > 1 {
                         self.eval(&parts[1], env)?
@@ -233,7 +235,7 @@ impl Interpreter {
                     if self.binding_is_dynamic(&name, env) {
                         special_bindings.push((name.to_string(), val));
                     } else {
-                        frame.push((name.to_string(), Self::stored_value(val)));
+                        frame.push((name.clone(), Self::stored_value(val)));
                     }
                 }
                 _ => return Err(wrong_type_argument("listp", binding.clone())),
@@ -282,7 +284,7 @@ impl Interpreter {
                 let (name, value) = match binding {
                     Value::Symbol(name) => {
                         Self::check_let_binding_name(name)?;
-                        (name.to_string(), Value::Nil)
+                        (name.clone(), Value::Nil)
                     }
                     Value::Record(_)
                         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
@@ -290,7 +292,7 @@ impl Interpreter {
                                 .is_some() =>
                     {
                         let name =
-                            crate::lisp::primitives::checked_symbol_name(self, binding, env)?;
+                            crate::lisp::primitives::checked_symbol_identity(self, binding, env)?;
                         Self::check_let_binding_name(&name)?;
                         (name, Value::Nil)
                     }
@@ -299,8 +301,9 @@ impl Interpreter {
                         let Some(name_value) = parts.first() else {
                             return Err(LispError::ReadError("bad let* binding".into()));
                         };
-                        let name =
-                            crate::lisp::primitives::checked_symbol_name(self, name_value, env)?;
+                        let name = crate::lisp::primitives::checked_symbol_identity(
+                            self, name_value, env,
+                        )?;
                         Self::check_let_binding_name(&name)?;
                         let value = if parts.len() > 1 {
                             self.eval(&parts[1], env)?
@@ -332,10 +335,7 @@ impl Interpreter {
                         }
                         lexical_binding_seen = true;
                     }
-                    Self::push_marked_frame(
-                        env,
-                        vec![(name.to_string(), Self::stored_value(value))],
-                    );
+                    Self::push_marked_frame(env, vec![(name, Self::stored_value(value))]);
                 }
             }
             Ok(())

@@ -197,7 +197,7 @@ pub(crate) fn resolve_direct_sort_key_fn(
 pub(crate) fn parse_direct_sort_operand(
     interp: &Interpreter,
     value: &Value,
-    params: &[String],
+    params: &[crate::lisp::types::SymbolName],
     env: &Env,
 ) -> Option<DirectSortOperand> {
     match value {

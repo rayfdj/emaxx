@@ -2414,6 +2414,19 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
         Some((symbol, _)) => unsafe { &*active.interpreter }.symbol_value_cell_symbol(symbol),
         None => unsafe { &*active.interpreter }.symbol_value_cell(name),
     };
+    let value = value.map_err(|error| match error {
+        // data.c:Fsymbol_value uses the original SYMBOL in xsignal1,
+        // not the name of the final cell reached through a variable alias.
+        LispError::Void(_) => LispError::SignalValue(Value::list([
+            Value::symbol("void-variable"),
+            match &symbol_state {
+                Some((symbol, _)) => Value::Symbol(symbol.clone()),
+                None if word == 0 => Value::Nil,
+                None => Value::T,
+            },
+        ])),
+        error => error,
+    });
     Some(
         match value.and_then(|value| {
             unsafe { &mut *active.runtime }
@@ -4745,6 +4758,14 @@ mod tests {
         direct_native_symbol_value(symbol)
     }
 
+    extern "C" fn call_symbol_value_by_subr(symbol: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "symbol-value")
+            .expect("symbol-value belongs to the native ABI");
+        invoke_subr(index, &[symbol])
+    }
+
     extern "C" fn call_type_of(value: NativeWord) -> NativeWord {
         direct_native_type_of(value)
     }
@@ -5528,6 +5549,78 @@ mod tests {
     }
 
     #[test]
+    fn native_assq_preserves_uninterned_lexical_binding_identity() {
+        // eval.c:Flet/FletX retain VAR itself in the lexical binding cons.
+        // The closure filter in unchanged cconv.el then uses fns.c:Fassq:
+        // neither boundary may recreate an uninterned symbol from its name.
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let first = SymbolName::make_uninterned(Value::string("temporary"), "temporary", 1);
+        let second = SymbolName::make_uninterned(Value::string("temporary"), "temporary", 2);
+        let captured =
+            crate::lisp::types::shared_env(vec![crate::lisp::types::EnvFrame::with_identity(
+                vec![
+                    (first.clone(), Value::Integer(7)),
+                    (second.clone(), Value::Integer(8)),
+                ],
+                Interpreter::fresh_frame_identity(),
+            )]);
+        let symbols_before = crate::lisp::types::census_live_uninterned_symbols();
+        let public = interpreter.materialize_public_interpreted_environment(&captured);
+        let sibling = interpreter.materialize_public_interpreted_environment(&captured);
+        assert_eq!(
+            crate::lisp::types::census_live_uninterned_symbols(),
+            symbols_before
+        );
+
+        for (symbol, expected, position) in [(first, 7, 1), (second, 8, 0)] {
+            let entry = public.to_vec().expect("lexical alist")[position].clone();
+            let Value::Symbol(key) = entry.car().expect("binding symbol") else {
+                panic!("lexical binding lost its symbol");
+            };
+            assert_eq!(key.identity_ptr(), symbol.identity_ptr());
+            for alist in [&public, &sibling] {
+                let result = runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_assq as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[Value::Symbol(symbol.clone()), alist.clone()],
+                    )
+                    .expect("native assq on captured binding");
+                let (Value::Cons(result), Value::Cons(expected_entry)) = (result, &entry) else {
+                    panic!("native assq lost the captured binding");
+                };
+                assert!(Rc::ptr_eq(&result, expected_entry));
+                assert_eq!(*result.cdr.borrow(), Value::Integer(expected));
+            }
+            // Adversarial control: recreate the old faulty name-to-symbol
+            // boundary. Native assq must NOT hide that bug by comparing
+            // internal name bytes instead of the original Lisp objects.
+            let reconstructed = SymbolName::from(symbol.as_str());
+            assert_ne!(symbol.identity_ptr(), reconstructed.identity_ptr());
+            let wrong_alist = Value::list([Value::cons(
+                Value::Symbol(reconstructed),
+                Value::Integer(expected),
+            )]);
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_assq as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[Value::Symbol(symbol), wrong_alist],
+                    )
+                    .expect("native assq rejects a different symbol object"),
+                Value::Nil,
+            );
+        }
+    }
+
+    #[test]
     fn native_assq_uses_the_fns_c_cons_walk() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
@@ -5793,6 +5886,136 @@ mod tests {
     }
 
     #[test]
+    fn native_symbol_value_errors_preserve_the_original_symbol() {
+        // data.c:Fsymbol_value passes the original SYMBOL to xsignal1,
+        // not the final alias target or a reconstructed bare symbol.
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        interpreter
+            .set_variable_alias("value-error-alias", "value-error-target")
+            .expect("alias to a void variable");
+        interpreter
+            .set_variable_alias("value-error-target", "value-error-final")
+            .expect("extend the alias chain after its first link was installed");
+        interpreter.set_global_binding("symbols-with-pos-enabled", Value::T);
+        let uninterned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-symbol",
+            &[Value::string("value-error-uninterned")],
+            &mut environment,
+        )
+        .expect("make an uninterned symbol");
+        let positioned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "position-symbol",
+            &[Value::symbol("value-error-alias"), Value::Integer(42)],
+            &mut environment,
+        )
+        .expect("position an alias to an unbound symbol");
+        for original in [
+            Value::symbol("value-error-plain"),
+            Value::symbol("value-error-alias"),
+            uninterned,
+            positioned,
+        ] {
+            for target in [
+                None,
+                Some(call_symbol_value as *const c_void),
+                Some(call_symbol_value_by_subr as *const c_void),
+            ] {
+                let error = if let Some(target) = target {
+                    runtime.invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        target,
+                        NativeCallingConvention::Fixed,
+                        std::slice::from_ref(&original),
+                    )
+                } else {
+                    crate::lisp::primitives::call(
+                        &mut interpreter,
+                        "symbol-value",
+                        std::slice::from_ref(&original),
+                        &mut environment,
+                    )
+                }
+                .expect_err("symbol-value of a void variable");
+                let condition = crate::lisp::eval::error_condition_value(&error)
+                    .to_vec()
+                    .expect("condition is a proper list");
+                assert_eq!(condition.len(), 2);
+                assert_eq!(condition[0], Value::symbol("void-variable"));
+                match (&condition[1], &original) {
+                    (Value::Symbol(actual), Value::Symbol(expected)) => assert_eq!(
+                        actual.identity_ptr(),
+                        expected.identity_ptr(),
+                        "target={target:?}: report the exact original symbol, not its alias target"
+                    ),
+                    (Value::Record(actual), Value::Record(expected)) => assert_eq!(
+                        actual, expected,
+                        "target={target:?}: retain the original positioned-symbol object"
+                    ),
+                    _ => panic!("condition lost the original symbol: {condition:?}"),
+                }
+                assert!(
+                    error
+                        .to_string()
+                        .starts_with("Symbol's value as variable is void: ")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_symbol_value_checks_symbol_before_reading_the_cell() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let positioned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "position-symbol",
+            &[Value::symbol("value-error-unbound"), Value::Integer(42)],
+            &mut environment,
+        )
+        .expect("position an unbound symbol");
+        interpreter.set_global_binding("symbols-with-pos-enabled", Value::Nil);
+        for invalid in [Value::Integer(7), positioned] {
+            for target in [
+                None,
+                Some(call_symbol_value as *const c_void),
+                Some(call_symbol_value_by_subr as *const c_void),
+            ] {
+                let error = if let Some(target) = target {
+                    runtime.invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        target,
+                        NativeCallingConvention::Fixed,
+                        std::slice::from_ref(&invalid),
+                    )
+                } else {
+                    crate::lisp::primitives::call(
+                        &mut interpreter,
+                        "symbol-value",
+                        std::slice::from_ref(&invalid),
+                        &mut environment,
+                    )
+                }
+                .expect_err("CHECK_SYMBOL runs before reading the void value cell");
+                assert_eq!(
+                    crate::lisp::eval::error_condition_value(&error),
+                    Value::list([
+                        Value::symbol("wrong-type-argument"),
+                        Value::symbol("symbolp"),
+                        invalid.clone(),
+                    ])
+                );
+            }
+        }
+    }
+
+    #[test]
     fn native_symbol_value_and_type_of_follow_data_c() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
@@ -5846,7 +6069,32 @@ mod tests {
             replacement,
             "changing the value cell invalidates its cached native word"
         );
-        let _native_roots = runtime.begin_garbage_collection();
+        // The collector is inactive between native calls.  Give it a real
+        // call/stack boundary and prove it swept an unreachable allocation;
+        // simply calling begin_garbage_collection here was a no-op.
+        runtime.heap.begin_call();
+        let stack_marker = 0;
+        runtime
+            .heap
+            .set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let unreachable = runtime.heap.cons(TAG_FIXNUM_LOW, 0);
+        let unreachable_pointer = unreachable.wrapping_sub(TAG_CONS) as *const NativeCons;
+        assert!(runtime.heap.native_conses.contains(unreachable_pointer));
+        runtime.heap.collect(std::ptr::from_ref(&stack_marker), &[]);
+        assert!(!runtime.heap.native_conses.contains(unreachable_pointer));
+        assert!(
+            runtime
+                .heap
+                .handles
+                .iter()
+                .flatten()
+                .all(|handle| { handle.plain_symbol_value_cache.is_none() }),
+            "collection must discard words whose bridge allocations it can reclaim"
+        );
+        runtime
+            .heap
+            .finish_call()
+            .expect("finish the collection boundary");
         assert_eq!(
             runtime
                 .invoke(

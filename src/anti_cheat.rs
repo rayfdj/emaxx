@@ -594,7 +594,41 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
         .collect::<BTreeSet<_>>();
 
     let gnu_root = repo_root().join("../emacs/src");
+    for test in [
+        "native_symbol_value_errors_preserve_the_original_symbol",
+        "native_assq_preserves_uninterned_lexical_binding_identity",
+        "native_symbol_value_checks_symbol_before_reading_the_cell",
+    ] {
+        assert!(
+            runtime.contains(&format!("fn {test}")),
+            "native runtime lost its required GNU C contract `{test}`"
+        );
+    }
     let mut declared = BTreeSet::new();
+    for (file, tests) in [
+        (
+            "src/lisp/primitives/tests.rs",
+            &[
+                "intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit",
+                "intern_uses_gnu_name_copy_and_type_check_boundaries",
+            ][..],
+        ),
+        (
+            "src/lisp/eval/tests/eval_03.rs",
+            &[
+                "eval_lambda_trims_unused_lexical_context_unless_marker_requests_it",
+                "interpreted_closure_print_circle_tracks_the_closure_identity",
+            ][..],
+        ),
+    ] {
+        let source = fs::read_to_string(repo_root().join(file)).expect("read C contract tests");
+        for test in tests {
+            assert!(
+                source.contains(&format!("fn {test}")),
+                "missing C contract {test}"
+            );
+        }
+    }
     for contract in EXACT_NATIVE_C_FAST_PATHS {
         assert!(
             declared.insert(contract.primitive),

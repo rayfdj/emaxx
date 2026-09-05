@@ -576,11 +576,6 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let symbol_name = match &args[0] {
-                    Value::Symbol(symbol) => symbol.to_string(),
-                    _ => string_text(&args[0])?,
-                };
-                let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
                 let obarray = args
                     .get(1)
                     .filter(|value| !value.is_nil())
@@ -589,10 +584,41 @@ define_dispatch!(
                         interp
                             .lookup_var("obarray", env)
                             .filter(|value| !value.is_nil())
-                    });
+                    })
+                    .map(|obarray| coerce_legacy_vector_obarray(interp, &obarray))
+                    .transpose()?;
+                if let Some(obarray) = &obarray
+                    && !is_obarray_like_value(interp, obarray)
+                {
+                    return Err(wrong_type_argument("obarrayp", obarray.clone()));
+                }
+                // lread.c:Fintern checks OBARRAY before STRING, then supplies
+                // the original string (or GNU's longhand/purecopy) on a miss.
+                let original_name = string_text(&args[0])?;
+                let symbol_name = apply_symbol_shorthands_in_env(interp, &original_name, env)?;
+                let mut make_name = |interp: &mut Interpreter| {
+                    if symbol_name != original_name {
+                        // Fintern's make_specified_string explicitly marks
+                        // longhand as multibyte, including ASCII longhand.
+                        Ok(make_shared_string_value_with_multibyte(
+                            symbol_name.clone(),
+                            Vec::new(),
+                            true,
+                        ))
+                    } else {
+                        purecopy_value(interp, &args[0], env)
+                    }
+                };
                 if let Some(obarray) = obarray {
-                    intern_in_obarray(interp, &obarray, &symbol_name)
+                    intern_in_obarray_with_name(interp, &obarray, &symbol_name, make_name)
                 } else {
+                    if !interp.standard_obarray_contains_symbol(&symbol_name) {
+                        let lisp_name = make_name(interp)?;
+                        crate::lisp::types::SymbolName::intern_with_lisp_name(
+                            symbol_name.clone(),
+                            Some(lisp_name),
+                        );
+                    }
                     interp.intern_symbol_name(&symbol_name);
                     Ok(crate::lisp::types::interned_symbol_value(symbol_name))
                 }
@@ -843,7 +869,16 @@ define_dispatch!(
                 // GNU 30.2 data.c:Fsymbol_value reaches
                 // find_symbol_value's CHECK_SYMBOL.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                interp.symbol_value_cell(&symbol)
+                match interp.symbol_value_cell(&symbol) {
+                    // Fsymbol_value signals with its original argument,
+                    // even after find_symbol_value follows an alias or
+                    // XSYMBOL unwraps a symbol-with-position.
+                    Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
+                        Value::symbol("void-variable"),
+                        args[0].clone(),
+                    ]))),
+                    result => result,
+                }
             }
             "default-value" => {
                 need_args(name, args, 1)?;

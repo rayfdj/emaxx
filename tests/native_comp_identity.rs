@@ -52,6 +52,11 @@ const FIXTURES: &[Fixture] = &[
         coverage: "the full upstream native-compiler ERT suite definitions, resource orchestration, compiler options, diagnostics, asynchronous compilation, loading, and runtime assertions",
         expected_artifact: true,
     },
+    Fixture {
+        relative_path: "lisp/emacs-lisp/comp.el",
+        coverage: "the unchanged GNU native-compiler frontend itself: SSA construction and propagation, call optimization, relocation emission, and backend orchestration",
+        expected_artifact: true,
+    },
 ];
 
 fn run_compiler(binary: &Path, source: &Path, home: &Path) -> Output {
@@ -198,6 +203,10 @@ fn unchanged_gnu_sources_produce_identical_native_artifacts() {
                 subject_artifacts.is_empty(),
                 "Emaxx ignored the fixture's no-byte-compile policy: {subject_artifacts:?}"
             );
+            println!(
+                "native-comp identity PASS: {} (no artifact in either editor)",
+                fixture.relative_path
+            );
             continue;
         }
 
@@ -230,6 +239,11 @@ fn unchanged_gnu_sources_produce_identical_native_artifacts() {
                 work.display(),
             );
         }
+        println!(
+            "native-comp identity PASS: {} ({} identical artifact bytes)",
+            fixture.relative_path,
+            actual.len(),
+        );
 
         std::fs::remove_file(&subject_artifact).expect("remove test-owned Emaxx artifact");
         std::fs::remove_file(&reference).expect("remove saved GNU artifact");
