@@ -382,6 +382,7 @@ define_dispatch!(
                             &text,
                             &checked_coding_symbol(interp, coding)?,
                             inhibit_eol_conversion,
+                            true,
                         )?
                     }
                     // fns.c extract_data_from_object: without CODING a
@@ -1039,7 +1040,16 @@ define_dispatch!(
                         None,
                         env,
                     )?;
+                    // data.c set_internal: storing void into a symbol
+                    // forwarded to a C slot detaches it for good -- the
+                    // built-in fallback stops answering, a later store makes
+                    // a plain (uncoerced) variable, and the C slot keeps the
+                    // value it holds now for its native readers.
+                    let slot_value = interp.lookup_var(&symbol, env).unwrap_or(Value::Nil);
                     interp.remove_global_binding(&symbol);
+                    interp
+                        .detached_forwarded_variables
+                        .insert(symbol.clone(), slot_value);
                 }
                 Ok(args[0].clone())
             }

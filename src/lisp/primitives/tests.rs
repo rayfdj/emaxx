@@ -7842,7 +7842,11 @@ fn native_xfaces_lisp_face_registry_family_matches_gnu() {
         )
     };
     let _ = expected;
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // The color primitives resolve names through term/tty-colors.el's
+    // `tty-color-desc' over the colors startup.el registers with
+    // `tty-register-default-colors' (xfaces.c tty_lookup_color), so the
+    // Emaxx side runs on the same batch image the oracle answered from.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(&host_program)
         .read()
@@ -9746,6 +9750,453 @@ fn exec_failure_follows_emacs_spawn() {
          (file-missing \"Doing vfork\" \"No such file or directory\") (permission-denied \
          \"Doing vfork\" \"Permission denied\"))",
         "exec failure",
+    );
+}
+
+#[test]
+fn sleep_for_zero_returns_without_waiting_or_running_timers() {
+    // dispnew.c Fsleep_for enters wait_reading_process_output only for a
+    // positive duration; a zero one returns nil at once and leaves a due
+    // timer unrun.  In batch `sit-for' is that same call.
+    let program = r#"
+        (list
+         (let (x) (run-at-time 0 nil (lambda () (setq x t))) (list (sleep-for 0) x))
+         (let (x) (run-at-time 0 nil (lambda () (setq x t))) (list (sleep-for 0.01) x))
+         (let (x) (run-at-time 0 nil (lambda () (setq x t))) (list (sit-for 0) x)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((nil nil) (nil t) (t nil))",
+        "sleep-for 0",
+    );
+}
+
+#[test]
+fn minibuffer_reads_under_a_keyboard_macro_follow_read_minibuf() {
+    // minibuf.c read_minibuf takes the stdin reader only while
+    // `noninteractive' and no keyboard macro executes; with
+    // `executing-kbd-macro' bound the recursive command loop reads, whose
+    // read_char drains `unread-command-events' first and then the macro
+    // (advancing `executing-kbd-macro-index'), ends the read at the end of
+    // the macro with the minibuffer's contents, and afterwards adds the
+    // value, or DEFAULT for an empty one, to HIST.
+    let program = r#"
+        (progn
+          (defvar emaxx-test-h1 nil) (defvar emaxx-test-h2 nil)
+          (defvar emaxx-test-h3 nil) (defvar emaxx-test-h4 nil)
+          (list
+           (let ((executing-kbd-macro []) (executing-kbd-macro-index 0))
+             (list (read-from-minibuffer "p: " nil nil nil 'emaxx-test-h1 "dflt")
+                   emaxx-test-h1))
+           (let ((executing-kbd-macro "abc\r") (executing-kbd-macro-index 0))
+             (list (read-from-minibuffer "p: " nil nil nil 'emaxx-test-h2 "d5")
+                   emaxx-test-h2 executing-kbd-macro-index))
+           (let ((executing-kbd-macro "\r") (executing-kbd-macro-index 0))
+             (list (read-string "p: " nil 'emaxx-test-h3 "d6")
+                   emaxx-test-h3 executing-kbd-macro-index))
+           (let ((executing-kbd-macro "\r") (executing-kbd-macro-index 0))
+             (list (read-string "p: " "init" 'emaxx-test-h3 "d6") (copy-sequence emaxx-test-h3)))
+           (let ((executing-kbd-macro "q\r") (executing-kbd-macro-index 0)
+                 (unread-command-events (listify-key-sequence "z")))
+             (list (read-string "p: " nil 'emaxx-test-h3) (copy-sequence emaxx-test-h3)))
+           (let ((executing-kbd-macro t)
+                 (unread-command-events (listify-key-sequence "ab\r")))
+             (list (read-string "p: " nil 'emaxx-test-h4) emaxx-test-h4))
+           (let ((executing-kbd-macro t)
+                 (unread-command-events (listify-key-sequence "ab")))
+             (read-string "p: " nil 'emaxx-test-h4))
+           (let ((executing-kbd-macro t))
+             (read-string "p: " nil 'emaxx-test-h4))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((\"\" (\"dflt\")) (\"abc\" (\"abc\") 4) (\"d6\" (\"d6\") 1) (\"init\" (\"init\" \"d6\")) \
+         (\"zq\" (\"zq\" \"init\" \"d6\")) (\"ab\" (\"ab\")) \"ab\" \"\")",
+        "minibuffer under macro",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn just_this_one_wait_still_notifies_an_exited_distractor() {
+    // process.c status_notify runs for every process whose status changed,
+    // wait_proc or not: it reads any output that remains and runs the
+    // sentinel.  So a JUST-THIS-ONE wait on TARGET still delivers a
+    // distractor's leftover output once the distractor exits, while a
+    // distractor that stays alive keeps its output unread (the companion
+    // contract).  Whether the exit lands inside the 0.15 s window is host
+    // scheduling; the Linux oracle answers deterministically.
+    let _permit = crate::test_support::acquire_exclusive_host_test_permit();
+    let program = r#"
+        (let* ((target-buffer (generate-new-buffer " *apo-target*"))
+               (distractor-buffer (generate-new-buffer " *apo-distractor*"))
+               (target (make-process
+                        :name "apo-target" :buffer target-buffer
+                        :command (list shell-file-name shell-command-switch
+                                       "sleep 0.15; printf target")
+                        :noquery t :sentinel #'ignore))
+               (distractor (make-process
+                            :name "apo-distractor" :buffer distractor-buffer
+                            :command (list shell-file-name shell-command-switch
+                                           "printf distractor")
+                            :noquery t :sentinel #'ignore)))
+          (unwind-protect
+              (list (accept-process-output target nil nil t)
+                    (with-current-buffer distractor-buffer (buffer-string))
+                    (with-current-buffer target-buffer (buffer-string))
+                    (accept-process-output distractor 2)
+                    (with-current-buffer distractor-buffer (buffer-string))
+                    (process-status distractor))
+            (ignore-errors (delete-process target))
+            (ignore-errors (delete-process distractor))
+            (kill-buffer target-buffer)
+            (kill-buffer distractor-buffer)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t \"distractor\" \"target\" nil \"distractor\" exit)",
+        "JUST-THIS-ONE status_notify drain",
+    );
+}
+
+#[test]
+fn lisp_eval_depth_counts_ffuncall_entries_like_eval_c() {
+    // eval.c increments `lisp_eval_depth' in eval_sub and again in
+    // Ffuncall: a direct call costs one unit per level, while `funcall'
+    // (of a quoted symbol or of a `function' form -- the interpreter
+    // never rewrites the latter into a direct call), `apply' and `mapc'
+    // (call1) cost two.  Pinned as the difference between two limits,
+    // which is independent of the base depth at which the probe starts.
+    let program = r#"
+        (progn
+          (defvar emaxx-depth-reached 0)
+          (defun emaxx-depth-ff (n) (setq emaxx-depth-reached n) (funcall #'emaxx-depth-ff (1+ n)))
+          (defun emaxx-depth-gg (n) (setq emaxx-depth-reached n) (emaxx-depth-gg (1+ n)))
+          (defun emaxx-depth-hh (n) (setq emaxx-depth-reached n) (apply #'emaxx-depth-hh (list (1+ n))))
+          (defun emaxx-depth-kk (n) (setq emaxx-depth-reached n) (funcall 'emaxx-depth-kk (1+ n)))
+          (defun emaxx-depth-mm (n) (setq emaxx-depth-reached n) (mapc #'emaxx-depth-mm (list (1+ n))))
+          (defun emaxx-depth-probe (f lim)
+            (let ((max-lisp-eval-depth lim))
+              (setq emaxx-depth-reached 0)
+              (condition-case nil (funcall f 0) (error emaxx-depth-reached))))
+          (mapcar (lambda (f) (- (emaxx-depth-probe f 400) (emaxx-depth-probe f 200)))
+                  '(emaxx-depth-ff emaxx-depth-gg emaxx-depth-hh emaxx-depth-kk emaxx-depth-mm)))"#;
+    assert_oracle_contract_matches_interpreter(program, "(100 200 100 100 100)", "eval depth");
+}
+
+#[test]
+fn timers_run_inside_a_child_threads_sleep_with_its_bindings() {
+    // thread.c: a child blocked in `sleep-for' sits in
+    // wait_reading_process_output, so the timers that come due during its
+    // sleep run there, on the child's own specpdl -- the joiner's dynamic
+    // `let' is swapped out (the child sees the global) and the child's own
+    // `let' is visible.  `thread-join' itself runs nothing.
+    let program = r#"
+        (progn
+          (defvar emaxx-tv 'global)
+          (defvar emaxx-seen nil)
+          (list
+           (let ((emaxx-tv 'main))
+             (setq emaxx-seen nil)
+             (thread-join (make-thread (lambda () (setq emaxx-seen emaxx-tv))))
+             emaxx-seen)
+           (let ((emaxx-tv 'main))
+             (setq emaxx-seen nil)
+             (run-at-time 0 nil (lambda () (setq emaxx-seen (list 'timer emaxx-tv))))
+             (thread-join (make-thread (lambda () (sleep-for 0.2))))
+             emaxx-seen)
+           (let ((emaxx-tv 'main))
+             (setq emaxx-seen nil)
+             (run-at-time 0.05 nil (lambda () (setq emaxx-seen (list 'timer emaxx-tv))))
+             (thread-join (make-thread (lambda () (sleep-for 0.2))))
+             emaxx-seen)
+           (let ((emaxx-tv 'main))
+             (setq emaxx-seen nil)
+             (let ((th (make-thread (lambda () (sleep-for 0.2)))))
+               (run-at-time 0 nil (lambda () (setq emaxx-seen (list 'timer emaxx-tv))))
+               (thread-join th)
+               emaxx-seen))
+           (let ((emaxx-tv 'main))
+             (setq emaxx-seen nil)
+             (run-at-time 0 nil (lambda () (setq emaxx-seen (list 'timer emaxx-tv))))
+             (thread-join (make-thread (lambda () (let ((emaxx-tv 'kid)) (sleep-for 0.2)))))
+             emaxx-seen)
+           (let ((x 1))
+             (setq emaxx-seen nil)
+             (run-at-time 0 nil (lambda () (setq emaxx-seen t)))
+             (thread-join (make-thread
+                           (lambda ()
+                             (let ((end (+ (float-time) 0.2)))
+                               (while (< (float-time) end))))))
+             (list emaxx-seen (progn (sleep-for 0.05) emaxx-seen)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(global (timer global) (timer global) (timer global) (timer kid) (nil t))",
+        "timers in threads",
+    );
+}
+
+#[test]
+fn thread_signal_queues_a_thread_event_for_the_main_thread() {
+    // thread.c Fthread_signal: the current thread signals itself at once;
+    // aimed at the main thread from a child it stores a THREAD_EVENT
+    // `(thread-event THREAD ERROR-SYMBOL DATA)' in the input queue, which
+    // read_char later hands to `special-event-map's thread-handle-event
+    // (its "Error ..." message, with the data intact), and the read itself
+    // returns nothing.
+    let program = r#"
+        (list
+         (let ((th (make-thread (lambda () (thread-signal main-thread 'error '("hi"))))))
+           (thread-join th)
+           (sleep-for 0.1)
+           (condition-case e (read-event nil nil 0.1) (error (list 'caught e))))
+         (with-current-buffer "*Messages*"
+           (string-match-p "Error #<thread [^>]*>: (error (\"hi\"))" (buffer-string)))
+         (condition-case e (thread-signal main-thread 'error '("self")) (error (list 'self e)))
+         (condition-case e (thread-signal (current-thread) 'error '("cur")) (error (list 'cur e))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(nil 0 (self (error \"self\")) (cur (error \"cur\")))",
+        "thread-signal",
+    );
+}
+
+#[test]
+fn eval_region_delegates_to_load_read_function_without_reinterning() {
+    // lread.c readevalloop: a nil READ-FUNCTION means `load-read-function',
+    // and a Lisp reader interns nothing beyond what it interned itself, so
+    // an `unintern'-ed symbol it returns stays dead.  Feval_buffer returns
+    // nil whatever the last form produced.
+    let program = r#"
+        (list
+         (progn
+           (intern "emaxx-gone-zz")
+           (let ((s (intern-soft "emaxx-gone-zz")) (calls 0))
+             (unintern s obarray)
+             (with-temp-buffer
+               (insert "x")
+               (let ((load-read-function
+                      (lambda (&optional _stream)
+                        (setq calls (1+ calls))
+                        (goto-char (point-max))
+                        (list 'quote s))))
+                 (eval-region (point-min) (point-max))))
+             (list calls (intern-soft "emaxx-gone-zz"))))
+         (progn
+           (intern "emaxx-gone-yy")
+           (let ((s (intern-soft "emaxx-gone-yy")) (calls 0))
+             (unintern s obarray)
+             (with-temp-buffer
+               (insert "x")
+               (let ((load-read-function
+                      (lambda (&optional _stream)
+                        (setq calls (1+ calls))
+                        (goto-char (point-max))
+                        (list 'quote s))))
+                 (list (eval-buffer) calls (intern-soft "emaxx-gone-yy")))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 nil) (nil 1 nil))",
+        "eval-region reader",
+    );
+}
+
+#[test]
+fn gnu_c_bool_variables_match_fresh_grep() {
+    // The DEFVAR_BOOL table is every `DEFVAR_BOOL ("name"' in the pinned
+    // oracle's src/*.c, sorted by byte order and deduplicated; the
+    // coercion in prepare_variable_assignment keys on it, so it must not
+    // drift from the sources.
+    let source_root = upstream_emacs_repo().join("src");
+    let pattern = regex::Regex::new(r#"DEFVAR_BOOL \("([^"]+)""#).expect("valid pattern");
+    let mut names = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&source_root).expect("read oracle src directory") {
+        let path = entry.expect("directory entry").path();
+        if path.extension().is_some_and(|extension| extension == "c") {
+            // A few C sources carry non-UTF-8 bytes in comments.
+            let bytes = std::fs::read(&path).expect("read C source");
+            let text = String::from_utf8_lossy(&bytes);
+            for capture in pattern.captures_iter(&text) {
+                names.insert(capture[1].to_string());
+            }
+        }
+    }
+    let fresh = names.into_iter().collect::<Vec<_>>();
+    assert_eq!(
+        crate::lisp::primitives::generated_gnu_c_bool_variables::GNU_C_BOOL_VARIABLES,
+        fresh.as_slice(),
+        "regenerate src/lisp/primitives/generated_gnu_c_bool_variables.rs from the oracle sources"
+    );
+}
+
+#[test]
+fn defvar_bool_stores_coerce_and_makunbound_detaches() {
+    // data.c store_symval_forwarding stores `!NILP (newval)' into a
+    // DEFVAR_BOOL slot through every store path; DEFVAR_LISP slots keep
+    // the object.  set_internal turns `makunbound' of a forwarded symbol
+    // into a detached void symbol: `boundp' nil, a void-variable read, and
+    // later stores plain (a bool slot no longer coerces).  doc.c keeps
+    // reading its own C variable, so `text-quoting-style' the function
+    // still answers grave under LANG=C.
+    let program = r#"
+        (list
+         (progn (setq internal--text-quoting-flag 42) internal--text-quoting-flag)
+         (let ((internal--text-quoting-flag 'foo)) internal--text-quoting-flag)
+         (progn (setq internal--text-quoting-flag nil) internal--text-quoting-flag)
+         (let ((inhibit-read-only 7)) inhibit-read-only)
+         (progn (setq-default print-escape-newlines 'q) print-escape-newlines)
+         (progn (set 'print-escape-newlines 0) print-escape-newlines)
+         (progn (set-default 'print-escape-newlines 0) print-escape-newlines)
+         (progn (setq print-escape-newlines nil) print-escape-newlines)
+         (progn (makunbound 'delete-exited-processes)
+                (list (boundp 'delete-exited-processes)
+                      (condition-case e delete-exited-processes (error e))
+                      (progn (setq delete-exited-processes 5) delete-exited-processes)))
+         (progn (makunbound 'gc-cons-threshold)
+                (list (boundp 'gc-cons-threshold)
+                      (progn (setq gc-cons-threshold 800000) gc-cons-threshold)))
+         (progn (makunbound 'text-quoting-style)
+                (list (boundp 'text-quoting-style)
+                      (condition-case e text-quoting-style (error e))
+                      (text-quoting-style))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t nil 7 t t t nil (nil (void-variable delete-exited-processes) 5) (nil 800000) \
+         (nil (void-variable text-quoting-style) grave))",
+        "DEFVAR_BOOL",
+    );
+}
+
+#[test]
+fn commandp_follows_fcommandp_order_and_property_error() {
+    // eval.c Fcommandp: a void symbol is nil; keyboard macros answer t; a
+    // list `lambda' answers from its body and never reaches the property
+    // walk; an interpreted closure, a primitive or an alias chain without
+    // an interactive spec walks the symbols and an `interactive-form'
+    // property there is (error "Found an 'interactive-form' property!").
+    let program = r#"
+        (list
+         (progn (fset 'emaxx-foo-list '(lambda () 1))
+                (put 'emaxx-foo-list 'interactive-form '(interactive))
+                (condition-case e (commandp 'emaxx-foo-list) (error e)))
+         (progn (fset 'emaxx-foo-cmd (lambda () 1))
+                (put 'emaxx-foo-cmd 'interactive-form '(interactive))
+                (defalias 'emaxx-foo-alias 'emaxx-foo-cmd)
+                (condition-case e (commandp 'emaxx-foo-alias) (error e)))
+         (progn (put 'car 'interactive-form '(interactive))
+                (condition-case e (commandp 'car) (error e)))
+         (progn (put 'ignore 'interactive-form '(interactive))
+                (condition-case e (commandp 'ignore) (error e)))
+         (progn (fset 'emaxx-foo-int (lambda () (interactive) 1))
+                (put 'emaxx-foo-int 'interactive-form '(interactive))
+                (condition-case e (commandp 'emaxx-foo-int) (error e)))
+         (progn (put 'emaxx-foo-void 'interactive-form '(interactive))
+                (condition-case e (commandp 'emaxx-foo-void) (error e)))
+         (progn (fset 'emaxx-foo-str "abc")
+                (put 'emaxx-foo-str 'interactive-form '(interactive))
+                (list (commandp 'emaxx-foo-str) (commandp 'emaxx-foo-str t))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(nil (error \"Found an 'interactive-form' property!\") (error \"Found an \
+         'interactive-form' property!\") t t nil (t nil))",
+        "commandp",
+    );
+}
+
+#[test]
+fn tty_color_primitives_follow_xfaces_c() {
+    // xfaces.c on a tty frame: color-gray-p and color-supported-p go
+    // through tty_defined_color (Lisp `tty-color-desc'), color-distance
+    // takes (R G B) lists or names, calls METRIC with the lists, and uses
+    // Riemersma's metric otherwise; color-values-from-color-spec parses the
+    // numeric X forms only and never names.
+    let program = r##"
+        (list
+         (color-gray-p "gray50") (color-gray-p "snow") (color-gray-p "#818080")
+         (color-gray-p "#123456") (color-gray-p "nosuchcolor")
+         (color-supported-p "dark slate gray") (color-supported-p "nosuchcolor")
+         (color-supported-p "#123456") (color-supported-p "red" nil t)
+         (color-distance "red" "blue") (color-distance "#ff0000" "#0000ff")
+         (color-distance "red" "red") (color-distance "white" "black")
+         (color-distance "gray50" "snow")
+         (color-distance '(1000 2000 3000) '(4000 5000 60000))
+         (color-distance "red" "blue" nil (lambda (a b) (list a b)))
+         (condition-case e (color-distance "nosuch" "red") (error e))
+         (condition-case e (color-distance "red" 5) (error e))
+         (color-values-from-color-spec "red")
+         (color-values-from-color-spec "#ff0000")
+         (color-values-from-color-spec "rgb:ff/00/00")
+         (color-values-from-color-spec "rgbi:1.0/0.5/0")
+         (color-values-from-color-spec "#f00")
+         (color-values-from-color-spec "#ffff00000000")
+         (color-values-from-color-spec "RED")
+         (color-values-from-color-spec "#12345"))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t t nil nil t nil t t 327669 327669 0 589805 589805 147664 ((65535 0 0) (0 0 65535)) \
+         (error \"Invalid color\" \"nosuch\") (error \"Invalid color\" 5) nil (65535 0 0) \
+         (65535 0 0) (65535 32768 0) (65535 0 0) (65535 0 0) nil nil)",
+        "tty colors",
+    );
+}
+
+#[test]
+fn punct_class_beyond_ascii_follows_buffer_syntax() {
+    // regex-emacs.c ISPUNCT: printable non-alphanumeric ASCII, and for
+    // every other character `BUFFER_SYNTAX (c) != Sword'.  Both the regexp
+    // engine and skip-chars share it.
+    let program = r#"
+        (list
+         (mapcar (lambda (c) (string-match-p "[[:punct:]]" (string c)))
+                 '(#xa0 #x3000 #x200b #x202f ?a ?, #x2020 #xb7 #xe9 #x3042))
+         (with-temp-buffer
+           (insert (string #xa0 #x2020 #xe9 ?a))
+           (goto-char (point-min))
+           (list (skip-chars-forward "[:punct:]") (point)))
+         (with-temp-buffer
+           (insert (string #xe9 ?a))
+           (modify-syntax-entry #xe9 "." (syntax-table))
+           (string-match-p "[[:punct:]]" (string #xe9))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((0 0 0 0 nil 0 0 0 nil nil) (2 3) 0)",
+        "[:punct:]",
+    );
+}
+
+#[test]
+fn quoting_style_reaches_message_error_text_and_display_table() {
+    // editfns.c Fmessage formats through Fformat_message; print.c passes
+    // the error-message property through `substitute-command-keys'; doc.c
+    // default_to_grave_quoting_style also reads `standard-display-table'
+    // (U+2018 shown as [?`] means grave) once the locale flag is set; and
+    // fns.c Frequire names the file `load-history' records.
+    let program = r#"
+        (list
+         (let ((text-quoting-style 'curve))
+           (list (with-temp-buffer (message "`m'"))
+                 (condition-case e (emaxx-undefined-fn-zz) (error (error-message-string e)))
+                 (condition-case e (symbol-value 'emaxx-undefined-var-zz)
+                   (error (error-message-string e)))))
+         (let ((text-quoting-style 'straight)) (message "`m'"))
+         (let ((text-quoting-style 'grave)) (message "`m'"))
+         (let ((internal--text-quoting-flag t)) (text-quoting-style))
+         (let ((internal--text-quoting-flag t)
+               (standard-display-table (make-display-table)))
+           (aset standard-display-table ?\N{LEFT SINGLE QUOTATION MARK} [?`])
+           (text-quoting-style))
+         (let ((internal--text-quoting-flag t)
+               (standard-display-table (make-display-table)))
+           (aset standard-display-table ?\N{LEFT SINGLE QUOTATION MARK} [?` ?`])
+           (text-quoting-style))
+         (let ((d (make-temp-file "qlp" t)))
+           (with-temp-file (expand-file-name "qnp.el" d) (insert "(provide 'other)\n"))
+           (let ((load-path (cons d load-path)))
+             (condition-case e (require 'qnp)
+               (error (list (car e) (string-match-p "\\`Loading file .*/qnp\\.el failed to provide feature `qnp'\\'" (cadr e))))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((\"\u{2018}m\u{2019}\" \"Symbol\u{2019}s function definition is void: emaxx-undefined-fn-zz\" \
+         \"Symbol\u{2019}s value as variable is void: emaxx-undefined-var-zz\") \"'m'\" \"`m'\" \
+         curve grave curve (error 0))",
+        "quoting style",
     );
 }
 
@@ -19371,5 +19822,104 @@ fn eager_load_expansion_invokes_the_lisp_owner_for_both_phases() {
     assert_eq!(
         interp.lookup_var("eager-owner-calls", &env),
         Some(Value::list([Value::T, Value::Nil]))
+    );
+}
+
+#[test]
+fn coding_detection_follows_detect_coding_system() {
+    // coding.c detect_coding_system: the head scan (ISO-2022 at the first
+    // ESC/SO/SI, null and 8-bit bytes), the per-category detectors over
+    // the representatives in `coding_priorities' order, the eol
+    // subsidiaries chosen per candidate, and Fset_coding_system_priority
+    // moving categories to the front while re-pointing the
+    // `coding-category-XXX' variables and `coding-category-list'.
+    let program = r#"
+(let ((iso (unibyte-string #x1b #x24 #x42 #x24 #x33 #x1b #x28 #x42)))
+  (list (detect-coding-string "caf\351")
+        (detect-coding-string "caf\351" t)
+        (detect-coding-string "abc")
+        (detect-coding-string "\303\251\n")
+        (detect-coding-string (unibyte-string #xa4 #xa2 #xa4 #xa4))
+        (detect-coding-string (unibyte-string #x82 #xa0))
+        (detect-coding-string (concat iso "\n"))
+        (detect-coding-string iso t)
+        (detect-coding-string (unibyte-string #xff #xfe #x61 0))
+        (detect-coding-string "a\0b\r\n")
+        (with-temp-buffer (insert "x\r\ny\r\n") (detect-coding-region (point-min) (point-max)))
+        (coding-system-priority-list)
+        (mapcar (lambda (c) (cons c (symbol-value c))) coding-category-list)
+        (unwind-protect
+            (progn (set-coding-system-priority 'japanese-shift-jis 'utf-8)
+                   (list (detect-coding-string (unibyte-string #x82 #xa0) t)
+                         (coding-system-priority-list t)
+                         coding-category-sjis
+                         (car coding-category-list)))
+          (set-coding-system-priority 'utf-8 'iso-2022-7bit 'iso-latin-1))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((iso-latin-1 emacs-mule in-is13194-devanagari chinese-iso-8bit iso-2022-8bit-ss2) iso-latin-1 (undecided) (utf-8-unix iso-latin-1-unix emacs-mule-unix in-is13194-devanagari-unix chinese-iso-8bit-unix utf-8-auto-unix japanese-shift-jis-unix chinese-big5-unix iso-2022-8bit-ss2-unix) (iso-latin-1 in-is13194-devanagari chinese-iso-8bit japanese-shift-jis chinese-big5 iso-2022-8bit-ss2) (emacs-mule japanese-shift-jis raw-text) (iso-2022-7bit-unix iso-2022-7bit-lock-unix iso-2022-8bit-ss2-unix iso-2022-jp-unix) iso-2022-7bit (no-conversion) (no-conversion) (undecided-dos) (utf-8 iso-2022-7bit iso-latin-1 iso-2022-7bit-lock iso-2022-8bit-ss2 emacs-mule raw-text iso-2022-jp in-is13194-devanagari chinese-iso-8bit utf-8-auto utf-8-with-signature utf-16 utf-16be-with-signature utf-16le-with-signature utf-16be utf-16le japanese-shift-jis chinese-big5 undecided) ((coding-category-utf-8 . utf-8) (coding-category-iso-7 . iso-2022-7bit) (coding-category-charset . iso-latin-1) (coding-category-iso-7-else . iso-2022-7bit-lock) (coding-category-iso-8-else . iso-2022-8bit-ss2) (coding-category-emacs-mule . emacs-mule) (coding-category-raw-text . raw-text) (coding-category-iso-7-tight . no-conversion) (coding-category-iso-8-1 . no-conversion) (coding-category-iso-8-2 . no-conversion) (coding-category-utf-8-auto . no-conversion) (coding-category-utf-8-sig . no-conversion) (coding-category-utf-16-auto . no-conversion) (coding-category-utf-16-be . no-conversion) (coding-category-utf-16-le . no-conversion) (coding-category-utf-16-be-nosig . no-conversion) (coding-category-utf-16-le-nosig . no-conversion) (coding-category-sjis . no-conversion) (coding-category-big5 . no-conversion) (coding-category-ccl . no-conversion) (coding-category-undecided . no-conversion)) (japanese-shift-jis japanese-shift-jis japanese-shift-jis coding-category-sjis))"#,
+        "detection",
+    );
+}
+
+#[test]
+fn iso_2022_and_raw_text_encoders_follow_coding_c() {
+    // coding.c encode_coding_iso_2022 over the attributes mule.el derives
+    // from :designation/:flags (designation escapes, single shifts,
+    // reset at eol/cntl, the default char for the unencodable, and a
+    // `charset' text property as the preferred charset), and
+    // encode_coding_raw_text writing a multibyte source in its internal
+    // spelling (undecided encodes the same way).
+    let program = r#"
+(let ((text (concat "a" (string #xe9 #x20ac #x3042) "z")))
+  (list (mapcar (lambda (cs) (condition-case e (append (encode-coding-string text cs) nil) (error e)))
+                '(iso-2022-jp iso-2022-7bit euc-kr iso-2022-kr undecided raw-text iso-2022-7bit-dos iso-latin-1 euc-jp))
+        last-coding-system-used
+        (append (encode-coding-string (string-to-unibyte "a\351") 'raw-text) nil)
+        (append (encode-coding-string (string #xe9) 'undecided) nil)
+        (multibyte-string-p (encode-coding-string (string #xe9) 'undecided))
+        (append (encode-coding-string (propertize (string #x3042) 'charset 'japanese-jisx0208) 'iso-2022-7bit) nil)
+        (append (encode-coding-string (concat (string #x3042) "\n" (string #x3042)) 'iso-2022-jp) nil)
+        (unencodable-char-position 0 5 'raw-text nil text)
+        (unencodable-char-position 0 5 'iso-2022-jp 5 text)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(((97 32 32 27 36 66 36 34 27 40 66 122) (97 27 44 65 105 27 44 70 36 27 36 65 36 34 27 40 66 122) (97 32 162 230 170 162 122) (97 32 27 36 40 67 34 102 42 34 27 40 66 122) (97 195 169 226 130 172 227 129 130 122) (97 195 169 226 130 172 227 129 130 122) (97 27 44 65 105 27 44 70 36 27 36 65 36 34 27 40 66 122) (97 233 32 32 122) (97 143 171 177 32 164 162 122)) euc-jp (97 233) (195 169) nil (27 36 66 36 34 27 40 66) (27 36 66 36 34 27 40 66 10 27 36 66 36 34 27 40 66) nil (1 2))"#,
+        "iso-2022 encoding",
+    );
+}
+
+#[test]
+fn iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files() {
+    // coding.c decode_coding_iso_2022 with produce_charset's `charset'
+    // text properties; code_convert_string's ASCII fast path leaves a
+    // 7-bit ISO-2022 string undecoded under `undecided' while a region
+    // or a file goes through detect_coding and decodes.
+    let program = r#"
+(let* ((s (unibyte-string #x1b #x24 #x42 #x24 #x33 #x24 #x73 #x1b #x28 #x42 ?a))
+       (d (decode-coding-string s 'iso-2022-7bit))
+       (f (make-temp-file "emaxx-iso2022")))
+  (unwind-protect
+      (list (append d nil) (text-properties-at 0 d) (next-single-property-change 0 'charset d)
+            last-coding-system-used
+            (decode-coding-string s 'undecided)
+            last-coding-system-used
+            (with-temp-buffer (set-buffer-multibyte nil) (insert s)
+                              (decode-coding-region (point-min) (point-max) 'undecided)
+                              (list (append (buffer-string) nil) (text-properties-at 1) last-coding-system-used))
+            (progn (with-temp-file f (set-buffer-multibyte nil) (insert s "\n"))
+                   (with-temp-buffer (insert-file-contents f)
+                                     (list (append (buffer-string) nil) (text-properties-at 1)
+                                           buffer-file-coding-system last-coding-system-used)))
+            (let ((x (decode-coding-string "\033$B$\"\r\n\033(B" 'iso-2022-jp)))
+              (list (append x nil) (text-properties-at 0 x) last-coding-system-used))
+            (append (decode-coding-string "\033$)C\016!!\017a" 'iso-2022-kr) nil)
+            (append (decode-coding-string "\033$B$\"\033(B\016\033(J\\" 'iso-2022-jp) nil)
+            (append (decode-coding-string "\216\261\217\260\241\244\242" 'euc-jp) nil))
+    (delete-file f)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((12371 12435 97) (charset japanese-jisx0208) nil iso-2022-7bit "こんa" undecided ((227 129 147 227 130 147 97) (charset japanese-jisx0208) iso-2022-7bit) ((12371 12435 97 10) (charset japanese-jisx0208) iso-2022-7bit-unix iso-2022-7bit-unix) ((12354 10) (charset japanese-jisx0208) iso-2022-jp-dos) (12288 97) (12354 14 165) (65393 19970 12354))"#,
+        "iso-2022 decoding",
     );
 }

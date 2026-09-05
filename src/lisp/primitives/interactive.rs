@@ -69,13 +69,30 @@ pub(crate) fn run_pending_user_signal_events(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     let mut handled = false;
-    while let Some(name) = take_pending_user_signal() {
+    loop {
+        // User signals first (one occurrence at a time), then the THREAD_EVENTs
+        // `thread-signal' stored for the main thread, in arrival order.
+        let event = match take_pending_user_signal() {
+            Some(name) => Value::Symbol(name.into()),
+            None if !interp.pending_thread_events.is_empty() => {
+                interp.pending_thread_events.remove(0)
+            }
+            None => break,
+        };
         handled = true;
-        let event = Value::Symbol(name.into());
+        let name = match &event {
+            Value::Symbol(name) => name.to_string(),
+            other => other
+                .car()
+                .ok()
+                .and_then(|head| head.as_symbol().ok().map(str::to_string))
+                .unwrap_or_default(),
+        };
         let keymap = interp
             .lookup_var("special-event-map", env)
             .unwrap_or(Value::Nil);
-        let binding = keymap_lookup_binding_exact_parts(interp, &keymap, &[name.into()])?;
+        let binding =
+            keymap_lookup_binding_exact_parts(interp, &keymap, std::slice::from_ref(&name))?;
         interp.set_variable("last-input-event", event.clone(), env);
         if binding.is_nil() {
             let mut unread = unread_command_events(interp, env)?;

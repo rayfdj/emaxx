@@ -1209,7 +1209,19 @@ impl Interpreter {
                 other => Err(wrong_type_argument("symbolp", other)),
             },
             "overwrite-mode" => Ok(value),
-            _ => Ok(value),
+            _ => {
+                // data.c store_symval_forwarding: a DEFVAR_BOOL slot stores
+                // `!NILP (newval)', so every store path (setq, set,
+                // set-default, let) reads back t or nil -- unless
+                // `makunbound' has detached the symbol from its slot.
+                if crate::lisp::primitives::generated_gnu_c_bool_variables::is_gnu_c_bool_variable(
+                    name,
+                ) && !self.detached_forwarded_variables.contains_key(name)
+                {
+                    return Ok(if value.is_nil() { Value::Nil } else { Value::T });
+                }
+                Ok(value)
+            }
         }
     }
 

@@ -1,16 +1,71 @@
 use super::{CharTableEntry, CodingSystemState};
 use crate::lisp::types::Value;
 
-fn coding_plist(mnemonic: char, extras: impl IntoIterator<Item = (String, Value)>) -> Value {
-    let mut items = vec![
-        Value::Symbol(":mnemonic".into()),
-        Value::Integer(mnemonic as i64),
-    ];
-    for (key, value) in extras {
-        items.push(Value::Symbol(key.into()));
-        items.push(value);
-    }
-    Value::list(items)
+fn symbol(name: &str) -> Value {
+    Value::Symbol(name.into())
+}
+
+/// The plist coding.c's syms_of_coding hands `define-coding-system-internal'
+/// for its two C-defined systems, with the `:ascii-compatible-p' and
+/// `:category' entries Fdefine_coding_system_internal prepends.
+fn c_defined_coding_plist(name: &str) -> Value {
+    let (category, mnemonic, coding_type, tail): (&str, i64, &str, Vec<Value>) = match name {
+        "no-conversion" => (
+            "coding-category-raw-text",
+            i64::from(b'='),
+            "raw-text",
+            vec![
+                symbol(":default-char"),
+                Value::Integer(0),
+                symbol(":for-unibyte"),
+                Value::T,
+                symbol(":docstring"),
+                Value::String(
+                    "Do no conversion.\n\nWhen you visit a file with this coding, the file is \
+                     read into a\nunibyte buffer as is, thus each byte of a file is treated as \
+                     a\ncharacter."
+                        .into(),
+                ),
+                symbol(":eol-type"),
+                symbol("unix"),
+            ],
+        ),
+        _ => (
+            "coding-category-undecided",
+            i64::from(b'-'),
+            "undecided",
+            vec![
+                symbol(":charset-list"),
+                Value::list([symbol("ascii")]),
+                symbol(":for-unibyte"),
+                Value::Nil,
+                symbol(":docstring"),
+                Value::String(
+                    "No conversion on encoding, automatic conversion on decoding.".into(),
+                ),
+                symbol(":eol-type"),
+                Value::Nil,
+            ],
+        ),
+    };
+    Value::list(
+        [
+            symbol(":ascii-compatible-p"),
+            Value::T,
+            symbol(":category"),
+            symbol(category),
+            symbol(":name"),
+            symbol(name),
+            symbol(":mnemonic"),
+            Value::Integer(mnemonic),
+            symbol(":coding-type"),
+            symbol(coding_type),
+            symbol(":ascii-compatible-p"),
+            Value::T,
+        ]
+        .into_iter()
+        .chain(tail),
+    )
 }
 
 pub(super) fn syntax_spec_value(spec: &str) -> Value {
@@ -213,17 +268,25 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             base: "undecided".into(),
             kind: "undecided".into(),
             eol_type: None,
-            // coding.c:12281: undecided's mnemonic is `-'.
-            plist: coding_plist('-', std::iter::empty()),
+            plist: c_defined_coding_plist("undecided"),
+            category: super::coding::CODING_CATEGORY_UNDECIDED,
+            charset_list: Value::list([Value::Symbol("ascii".into())]),
+            default_char: b' ' as u32,
+            // coding.c:12292: the inhibit attributes are 0, so the
+            // `inhibit-null-byte-detection' and
+            // `inhibit-iso-escape-detection' variables decide.
+            type_args: vec![Value::Integer(0), Value::Integer(0), Value::Nil],
         },
         CodingSystemState {
             name: "no-conversion".into(),
             base: "no-conversion".into(),
             kind: "raw-text".into(),
             eol_type: None,
-            // coding.c's C bootstrap and mule-conf.el both mark the raw
-            // families `:for-unibyte t'.
-            plist: coding_plist('=', std::iter::once((":for-unibyte".to_string(), Value::T))),
+            plist: c_defined_coding_plist("no-conversion"),
+            category: super::coding::CODING_CATEGORY_RAW_TEXT,
+            charset_list: Value::list([Value::Symbol("ascii".into())]),
+            default_char: 0,
+            type_args: Vec::new(),
         },
     ];
 
@@ -251,76 +314,12 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
                 kind: base.kind.clone(),
                 eol_type: Some(eol_type),
                 plist: base.plist.clone(),
+                category: base.category,
+                charset_list: base.charset_list.clone(),
+                default_char: base.default_char,
+                type_args: base.type_args.clone(),
             });
         }
-    }
-    // GNU's dumped mule.el implements public queries such as
-    // `coding-system-type' in Lisp over the plist returned by the C coding
-    // registry.  Bootstrap entries therefore need the same public metadata;
-    // the Rust `kind' field is an internal codec discriminator and is not
-    // always the public coding type (for example euc-jp is iso-2022).
-    for coding in &mut systems {
-        let public_type = if matches!(coding.name.as_str(), "unix" | "dos" | "mac") {
-            "undecided"
-        } else {
-            match coding.kind.as_str() {
-                "utf-8" | "utf-8-with-signature" | "utf-8-auto" => "utf-8",
-                "utf-16" | "utf-16be" | "utf-16le" => "utf-16",
-                "undecided" | "prefer-utf-8" => "undecided",
-                "raw-text" | "no-conversion" => "raw-text",
-                "euc-jp" | "iso-2022-7bit" => "iso-2022",
-                "sjis" => "shift-jis",
-                "big5" => "big5",
-                "us-ascii" | "iso-latin-1" | "cyrillic-koi8" | "windows-1252" | "mac-roman"
-                | "chinese-gb18030" | "charset" => "charset",
-                other => other,
-            }
-        };
-        let mut plist = coding.plist.to_vec().unwrap_or_default();
-        match coding.kind.as_str() {
-            "utf-8-with-signature" => plist.extend([Value::Symbol(":bom".into()), Value::T]),
-            "utf-8-auto" => plist.extend([
-                Value::Symbol(":bom".into()),
-                Value::cons(
-                    Value::Symbol("utf-8-with-signature".into()),
-                    Value::Symbol("utf-8".into()),
-                ),
-            ]),
-            _ => {}
-        }
-        let charset_list = match coding.kind.as_str() {
-            "utf-8" | "utf-8-with-signature" | "utf-8-auto" => {
-                Some(Value::list([Value::Symbol("unicode".into())]))
-            }
-            "us-ascii" | "undecided" | "prefer-utf-8" => {
-                Some(Value::list([Value::Symbol("ascii".into())]))
-            }
-            "iso-latin-1" => Some(Value::list([Value::Symbol("iso-8859-1".into())])),
-            _ => None,
-        };
-        if matches!(
-            coding.kind.as_str(),
-            "utf-8"
-                | "utf-8-with-signature"
-                | "utf-8-auto"
-                | "us-ascii"
-                | "undecided"
-                | "prefer-utf-8"
-                | "iso-latin-1"
-                | "raw-text"
-        ) {
-            plist.extend([Value::Symbol(":ascii-compatible-p".into()), Value::T]);
-        }
-        if let Some(charset_list) = charset_list {
-            plist.extend([Value::Symbol(":charset-list".into()), charset_list]);
-        }
-        plist.extend([
-            Value::Symbol(":name".into()),
-            Value::Symbol(coding.name.clone().into()),
-            Value::Symbol(":coding-type".into()),
-            Value::Symbol(public_type.into()),
-        ]);
-        coding.plist = Value::list(plist);
     }
     systems
 }

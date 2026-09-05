@@ -124,7 +124,21 @@ pub(crate) fn call_interactively_impl(
         interp.load_target_with_env(&file, env)?;
         func = interp.lookup_function(symbol, env)?;
     }
-    let interactive_args = collect_interactive_args(interp, &func, env)?;
+    // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
+    // `k'...) read instead of the current command's keys -- how
+    // `command-execute' hands a special event to its `special-event-map'
+    // binding.
+    let keys_binding = match args.get(2).filter(|keys| !keys.is_nil()) {
+        Some(keys) => {
+            Some(interp.bind_special_variable("this-command-keys-vector", keys.clone(), env)?)
+        }
+        None => None,
+    };
+    let interactive_args = collect_interactive_args(interp, &func, env);
+    if let Some(restore) = keys_binding {
+        interp.restore_special_binding(restore, env)?;
+    }
+    let interactive_args = interactive_args?;
     interp.push_interactive_call();
     // The interactive dispatch frame is what `called-interactively-p's
     // backtrace walk stops at (GNU stops at funcall-interactively); the
@@ -264,7 +278,8 @@ pub(crate) fn eval_buffer_impl(
         );
         previous
     });
-    let result = eval_buffer_forms(interp, buffer_id, env);
+    // Feval_buffer returns nil whatever the last form evaluated to.
+    let result = eval_buffer_forms(interp, buffer_id, env).map(|_| Value::Nil);
     if let Some(previous) = previous_load_list {
         let current = interp
             .lookup_var("current-load-list", env)
@@ -300,7 +315,17 @@ pub(crate) fn eval_region_impl(
         ])));
     }
     let print_flag = args.get(2).cloned().unwrap_or(Value::Nil);
-    let read_function = args.get(3).filter(|value| !value.is_nil()).cloned();
+    // lread.c readevalloop: a nil READ-FUNCTION means `load-read-function',
+    // and only the built-in `read' takes the native reading path.
+    let read_function = args
+        .get(3)
+        .filter(|value| !value.is_nil())
+        .cloned()
+        .or_else(|| {
+            interp
+                .lookup_var("load-read-function", env)
+                .filter(|value| !matches!(value, Value::Symbol(symbol) if symbol == "read"))
+        });
     let buffer_id = interp.current_buffer_id();
     let buffer_name = interp.buffer.name.clone();
     let source_file = interp.buffer.file.clone();
@@ -411,17 +436,17 @@ fn eval_region_via_read_function(
         if interp.buffer.point() >= end {
             break;
         }
-        let form = match interp.call_function_value(
+        // readevalloop calls the Lisp reader without a handler: its
+        // `end-of-file' propagates; the loop itself stops at END.
+        let form = interp.call_function_value(
             read_function.clone(),
             None,
             std::slice::from_ref(&stream),
             env,
-        ) {
-            Ok(form) => form,
-            Err(error) if error.condition_type() == "end-of-file" => break,
-            Err(error) => return Err(error),
-        };
-        interp.intern_symbols_in_value(&form);
+        )?;
+        // No `intern_symbols_in_value' here: when reading is delegated to a
+        // Lisp reader GNU interns nothing beyond what that reader interned,
+        // so a deliberately `unintern'-ed symbol it returns stays dead.
         result = eager_expand_eval(interp, &form, env)?;
         if !print_flag.is_nil() {
             let _ = crate::lisp::primitives::call(

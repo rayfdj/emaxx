@@ -209,7 +209,22 @@ impl Interpreter {
             .ok_or(LispError::Void(resolved))
     }
 
+    /// The value a C reader of a forwarded variable sees: the slot's value
+    /// at detach time once `makunbound' detached the symbol, otherwise the
+    /// ordinary dynamic value.
+    pub(crate) fn forwarded_c_value(&self, name: &str, env: &Env) -> Option<Value> {
+        if let Some(detached) = self.detached_forwarded_variables.get(name) {
+            return Some(detached.clone());
+        }
+        self.lookup_var(name, env)
+    }
+
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
+        // A symbol `makunbound' detached from its C slot stays void until
+        // something stores into it again (data.c set_internal).
+        if self.detached_forwarded_variables.contains_key(name) {
+            return None;
+        }
         if let Some(variable) = DUMPED_AUTO_BUFFER_LOCALS
             .iter()
             .find(|variable| variable.name == name)

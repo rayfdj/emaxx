@@ -302,14 +302,6 @@ fn bitmap_spec_p(value: &Value) -> bool {
     (*height as usize) <= data.text.len() / bytes_per_row
 }
 
-fn color_gray_p(value: [u16; 3]) -> bool {
-    let [red, green, blue] = value.map(i64::from);
-    (red < 5_000 && green < 5_000 && blue < 5_000)
-        || ((red - green).abs() < red.max(green) / 20
-            && (green - blue).abs() < green.max(blue) / 20
-            && (blue - red).abs() < blue.max(red) / 20)
-}
-
 fn transform_font_alist(value: &Value, registry: bool) -> Result<Value, LispError> {
     let entries = value.to_vec()?;
     let mut result = Vec::with_capacity(entries.len());
@@ -432,17 +424,26 @@ define_dispatch!(
             }
             "color-gray-p" => {
                 need_arg_range(name, args, 1, 2)?;
+                // xfaces.c face_color_gray_p on a tty frame: the terminal's
+                // defined_color_hook, then GNU's near-black or
+                // channels-within-a-twentieth test.
                 let color = string_text(&args[0])?;
-                Ok(if parse_color_spec(&color).is_some_and(color_gray_p) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                let gray = tty_defined_color(interp, env, &color)?.is_some_and(|[r, g, b]| {
+                    let (r, g, b) = (i64::from(r), i64::from(g), i64::from(b));
+                    (r < 5000 && g < 5000 && b < 5000)
+                        || ((r - g).abs() < r.max(g) / 20
+                            && (g - b).abs() < g.max(b) / 20
+                            && (b - r).abs() < b.max(r) / 20)
+                });
+                Ok(if gray { Value::T } else { Value::Nil })
             }
             "color-supported-p" => {
                 need_arg_range(name, args, 1, 3)?;
+                // xfaces.c face_color_supported_p on a tty frame is
+                // tty_defined_color's verdict; BACKGROUND-P only matters on
+                // window-system frames.
                 let color = string_text(&args[0])?;
-                Ok(if parse_color_spec(&color).is_some() {
+                Ok(if tty_defined_color(interp, env, &color)?.is_some() {
                     Value::T
                 } else {
                     Value::Nil
@@ -736,3 +737,57 @@ define_dispatch!(
         }
     }
 );
+
+/// term.c tty_defined_color, the tty frame's defined_color_hook: an empty
+/// name is the default color (black, status true); otherwise xfaces.c
+/// tty_lookup_color asks Lisp `tty-color-desc' and takes the (NAME INDEX R G
+/// B) it returns, treats a nil `tty-defined-color-alist' as "not set up yet"
+/// (true, black), and rejects anything else -- except that
+/// "unspecified-fg"/"unspecified-bg" still resolve to the default pixels.
+/// Some(rgb) is a successful lookup, None the failure the callers report as
+/// "Invalid color".
+pub(crate) fn tty_defined_color(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    color: &str,
+) -> Result<Option<[u16; 3]>, LispError> {
+    if color.is_empty() {
+        return Ok(Some([0, 0, 0]));
+    }
+    let looked_up = if interp.lookup_function("tty-color-desc", env).is_ok() {
+        let desc = interp.call_function_value(
+            Value::Symbol("tty-color-desc".into()),
+            Some("tty-color-desc"),
+            &[Value::String(color.into()), Value::Nil],
+            env,
+        )?;
+        let items = desc.to_vec().unwrap_or_default();
+        if items.len() >= 2 {
+            match items.as_slice() {
+                [
+                    _,
+                    Value::Integer(_),
+                    Value::Integer(r),
+                    Value::Integer(g),
+                    Value::Integer(b),
+                    ..,
+                ] => Some(Some([*r as u16, *g as u16, *b as u16])),
+                _ => Some(None),
+            }
+        } else if interp
+            .lookup_var("tty-defined-color-alist", env)
+            .is_none_or(|alist| alist.is_nil())
+        {
+            Some(Some([0, 0, 0]))
+        } else {
+            Some(None)
+        }
+    } else {
+        None
+    };
+    Ok(match looked_up {
+        Some(Some(rgb)) => Some(rgb),
+        _ if matches!(color, "unspecified-fg" | "unspecified-bg") => Some([0, 0, 0]),
+        _ => None,
+    })
+}

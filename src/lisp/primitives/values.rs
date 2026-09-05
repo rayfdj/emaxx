@@ -4597,7 +4597,9 @@ pub(crate) fn locale_uses_utf8() -> bool {
 /// alone, so it says curve where GNU would say grave once that display table
 /// is installed.
 pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &'static str {
-    match interp.lookup_var("text-quoting-style", env) {
+    // doc.c reads the C variable Vtext_quoting_style itself, which a
+    // `makunbound' of the symbol leaves untouched.
+    match interp.forwarded_c_value("text-quoting-style", env) {
         Some(Value::Symbol(style)) if style == "grave" => "grave",
         Some(Value::Symbol(style)) if style == "straight" => "straight",
         Some(Value::Symbol(style)) if style == "curve" => "curve",
@@ -4609,7 +4611,24 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
             let utf8 = interp
                 .lookup_var("internal--text-quoting-flag", env)
                 .map_or_else(locale_uses_utf8, |flag| flag.is_truthy());
-            if utf8 { "curve" } else { "grave" }
+            if !utf8 {
+                return "grave";
+            }
+            // doc.c:658 default_to_grave_quoting_style's second test: a
+            // `standard-display-table' that displays U+2018 as the
+            // one-element vector [?`] means grave even in a UTF-8 locale.
+            // It is a plain variable read, observable in batch.
+            if let Some(Value::CharTable(id)) = interp.lookup_var("standard-display-table", env)
+                && let Some(table) = interp.find_char_table(id)
+                && table.subtype.as_deref() == Some("display-table")
+                && let Some(entry) = interp.char_table_get(id, 0x2018)
+                && crate::lisp::primitives::interactive::is_vector_value(&entry)
+                && crate::lisp::primitives::buffers::vector_items(&entry)
+                    .is_ok_and(|items| items.len() == 1 && items[0] == Value::Integer(96))
+            {
+                return "grave";
+            }
+            "curve"
         }
         _ => "curve",
     }
