@@ -1583,8 +1583,21 @@ define_dispatch!(
             }
             "set-default-file-modes" => {
                 need_args(name, args, 1)?;
+                // fileio.c Fset_default_file_modes: the process's file mode
+                // creation mask becomes ~MODE & 0777 (inherited by
+                // subprocesses, honoured by every mkdir/open the runtime
+                // makes), and `realmask' remembers it for
+                // `default-file-modes'.
                 let mode = args[0].as_integer()?;
                 interp.default_file_modes = mode & 0o777;
+                #[cfg(unix)]
+                {
+                    // SAFETY: umask only replaces the process's creation
+                    // mask and cannot fail.
+                    unsafe {
+                        libc::umask((!mode & 0o777) as libc::mode_t);
+                    }
+                }
                 Ok(Value::Nil)
             }
             "set-file-modes" => {

@@ -3034,10 +3034,11 @@ pub struct Interpreter {
     /// primitive.  GNU keeps this in C state; it must not leak through a
     /// project-private Lisp variable.
     pub(crate) external_debugging_output_target: Option<String>,
-    /// Process-local creation permissions owned by GNU's C runtime.  Keep
-    /// this as typed interpreter state so isolated Rust interpreters neither
-    /// communicate through a private Lisp variable nor mutate the host
-    /// process umask behind concurrently running tests.
+    /// fileio.c `realmask': the complement of `default-file-modes', read
+    /// from the process umask at startup (init_fileio) and kept in step
+    /// with it by `set-default-file-modes', which sets the process umask
+    /// as GNU does so that every file and directory the runtime creates
+    /// (and every subprocess) sees it.
     pub(crate) default_file_modes: i64,
     /// GNU's process-local time-zone rule.  Keep it interpreter-local here:
     /// Rust tests run interpreters concurrently in one host process, so
@@ -3828,7 +3829,7 @@ impl Interpreter {
             minibuffer_runtime: MinibufferRuntimeState::default(),
             minibuffer_activation_count: 0,
             external_debugging_output_target: None,
-            default_file_modes: 0o755,
+            default_file_modes: initial_default_file_modes(),
             local_time_zone_rule,
             special_variables: vec![
                 "case-fold-search".into(),
@@ -6468,3 +6469,24 @@ fn build_signal_value(condition: Value, data: Value) -> Value {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests;
+
+/// fileio.c init_fileio: `realmask = umask (0); umask (realmask);' -- the
+/// process's creation mask at startup, reported through
+/// `default-file-modes' as its complement.
+fn initial_default_file_modes() -> i64 {
+    #[cfg(unix)]
+    {
+        // SAFETY: umask only exchanges the process's creation mask; the
+        // original value is restored at once.
+        let mask = unsafe {
+            let mask = libc::umask(0);
+            libc::umask(mask);
+            mask
+        };
+        i64::from(!mask & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        0o755
+    }
+}
