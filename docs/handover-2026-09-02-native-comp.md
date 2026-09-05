@@ -77,6 +77,96 @@ precedence over older plans and handovers.
 
 ## Current continuation checkpoint (2026-09-05)
 
+### Verified main integration checkpoint
+
+`9097866` (the verified checkpoint below) is committed and pushed. As Ray
+requested, the next action was fetching and merging main, not starting another
+performance experiment. `origin/main` advanced to `84f342a`: Eshell bytecode
+string ownership, Darwin exec-failure behavior, and the runtime/Editfns audit
+changes. This checkpoint integrates those changes; fresh merge verification
+passes 177 native tests, all nine artifact fixtures and 112 final Rust tests,
+with clean warning/audit checks and no measured material timing regression.
+
+Text conflicts are resolved. Semantic resolutions preserve one GNU Ffuncall
+depth entry, prevent `makunbound` from reconnecting detached direct C fields,
+and retain the actual C-side object roots through GC and image copying. The
+obsolete vector cache and dumped-local fallback stay removed. GNU C owners
+and exact scope are recorded in the parity ledger's post-push integration
+section. No GNU source or Elisp has been changed.
+
+Initial optimized contracts: 78 passed, zero failed, one separate native
+timing probe ignored. This includes all 49 native-runtime correctness tests,
+17 anti-cheating gates, four new direct Rust merge contracts, and the incoming
+bytecode string-ownership contract. Formatting, all-target check and
+all-feature/all-target Clippy with `-D warnings` pass. Logs are under
+`/private/tmp/emaxx-main-84f342a.3jARTW`.
+
+The existing incoming-regression replay selected 26 runnable tests (one
+additional requested case is Linux-only). 24 passed, including both earlier
+closure/callback regressions and Ffuncall depth. Two failed in the **GNU oracle
+assertion before Emaxx ran**, because the ambient UTF-8 locale changes quote
+characters: `commandp_follows_fcommandp_order_and_property_error` and
+`quoting_style_reaches_message_error_text_and_display_table`. Their unchanged
+replay with the normal suite's `LANG=C LC_ALL=C` passes all 26 tests (271.65s;
+`main-regressions-c-locale.log`). This is not a
+reason to modify GNU, alter the test programs, or normalize compared output.
+The artifact replay passed four fixtures, then found a real mismatch on
+unchanged `test/lisp/emacs-lisp/comp-tests.el`: both files are 86,384 bytes,
+first difference at byte 768. The serialized constants show a lost shared
+`" *temp file*"` string, shifting data and code addresses. The saved `9097866`
+editor still produces a byte-identical artifact on exactly the same retained
+source under the same C locale. Logs: `identity.log`, `identity-before.stderr`.
+Artifacts are retained in
+`/var/folders/js/swz7g_zx0qj34jhbbc1hr_6w0000gn/T/native-comp-identity-76040-1788583729315424000`
+and `target/native-lisp/30.2-adba4e3f/comp-tests-a153e8cb-d5ff1e9e.eln`.
+
+L12 now tracks the correction: GNU `bytecode.c:exec_byte_code` pushes the
+original argument word; main `17da04f` instead allocated a new string via
+`stored_value` on every bytecode argument pass. Remove that copying and fix
+the actual C producer, `print.c:Ferror_message_string`: its general result
+is an already-mutable multibyte buffer string, and `(error STRING)` returns
+the original string unchanged. The Rust bytecode contract now also checks
+identity, caller-visible properties, and the error-string fast return; the
+existing GNU Eshell fixture and its expectations remain unchanged. This
+correction passes 112 selected optimized Rust tests, zero failures, including
+the unchanged Eshell regression, every bytecode test, all native-runtime
+correctness tests, all anti-cheating checks and error-message rendering tests
+(`string-ownership-contracts.log`, 44.29s). One separate native timing probe
+is ignored. Format, all-target check and strict Clippy are clean. The corrected
+ordinary editor now passes all nine artifact fixtures: eight entire `.eln`
+files byte-identical, including 881,800 bytes for GNU `comp.el`, and one
+correctly absent artifact (`identity-string-fixed.log`, 216.48s). No promotion
+cache, new Elisp or GNU change was used. Final editor SHA-256:
+`d01db433db5c3eb35a60380a7fe2f74bc7c3d4abfca3aeb813d29fd469273b8c`.
+The complete merged-tree native execution gate passes all 177 tests, zero
+unexpected results, exit 0, through the ordinary CLI and GNU's existing
+Makefile selector (`emaxx-native.stderr`). Both helper libraries were freshly
+compiled and loaded. ERT took 1076.91s; total wall/user/system times were
+1114.12/1024.41/26.13s. GNU's normal per-compile subprocess policy was retained,
+and no image cloning was enabled. This is fresh merged-tree evidence, not the
+checkpoint's older execution result below.
+
+Paired full `comp.el` user CPU was before/merged 62.81/63.02s, then
+69.94/66.42s with order reversed. GNU used 8.43s and 9.47s. All before/merged
+artifacts are byte-identical to GNU. The samples show no material merge
+regression, but their variation does not establish a speedup. Means are
+66.38/64.72/8.95s: Emaxx remains about 7.2x GNU, including startup. See the
+ledger for full evidence; logs are in the `performance` subdirectory above.
+Final format/check/strict Clippy are clean, and the pre-commit adversarial
+audit passes 17/17 (`pre-commit-audit.log`). Repeat it before pushing. No
+unverified V02 cache draft, new Elisp, GNU change, output normalization or
+native-state cloning shortcut is retained. Broader runtime/GC/forwarding
+representation gaps remain open; this is not a universal correctness claim.
+
+Unrelated user work is preserved in scoped stash
+`bdfd8f6bcdc91da2bd80f99a50430afe960c57bc` (compat reporter, `src/compat.rs`,
+and the honesty-audit note), excluded from the merge commit. The post-merge
+step restores it while retaining the backup; check the worktree before
+reapplying it on a later continuation. Do not include it in a native checkpoint
+or restore older rejected V02 drafts.
+
+### Verified checkpoint `9097866`
+
 Main was merged and pushed as `38b2ee8` on `native-comp`. This checkpoint adds
 the V06 original-symbol error repair and the L09-L11 lexical-symbol ownership,
 closure-printing, and symbol-name corrections described below. Current gates:

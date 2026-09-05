@@ -421,6 +421,9 @@ fn run_with_stack(
                 ));
             }
             let pushed = args.len().min(nonrest);
+            // bytecode.c:exec_byte_code pushes the existing Lisp_Object.
+            // Argument passing must not allocate a replacement string and
+            // break sharing with constants or the caller's other references.
             stack.extend(args[..pushed].iter().cloned());
             if args.len() > nonrest {
                 stack.push(Value::list(args[nonrest..].iter().cloned()));
@@ -1884,6 +1887,122 @@ mod native_surface_tests {
             .call_function_value(object, None, &[Value::Integer(41)], &mut env)
             .unwrap();
         assert_eq!(value, Value::Integer(42));
+    }
+
+    #[test]
+    fn byte_code_direct_string_arguments_are_mutable_lisp_objects() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        // argspec 257: one mandatory arg; code: return that argument.
+        let object = prim(
+            &mut interp,
+            "make-byte-code",
+            &[
+                Value::Integer(257),
+                Value::String("\u{87}".into()),
+                Value::list([Value::symbol("vector-literal")]),
+                Value::Integer(1),
+            ],
+            &mut env,
+        )
+        .unwrap();
+        // Even compact strings retain their original identity across calls.
+        // A per-call promotion passed the mutation-only assertion below but
+        // silently duplicated shared compiler constants.
+        let compact = Value::String("native diagnostic".into());
+        for _ in 0..2 {
+            let returned = interp
+                .call_function_value(
+                    object.clone(),
+                    None,
+                    std::slice::from_ref(&compact),
+                    &mut env,
+                )
+                .expect("bytecode returns the original argument");
+            assert_eq!(
+                prim(&mut interp, "eq", &[compact.clone(), returned], &mut env)
+                    .expect("string identity"),
+                Value::T,
+            );
+        }
+        // print.c:Ferror_message_string's general path returns Fbuffer_string:
+        // the diagnostic is already a mutable Lisp string before the VM sees it.
+        let argument = prim(
+            &mut interp,
+            "error-message-string",
+            &[Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("listp"),
+                Value::T,
+            ])],
+            &mut env,
+        )
+        .expect("C-owned diagnostic producer");
+        let value = interp
+            .call_function_value(object, None, std::slice::from_ref(&argument), &mut env)
+            .unwrap();
+        assert_eq!(
+            prim(
+                &mut interp,
+                "eq",
+                &[argument.clone(), value.clone()],
+                &mut env
+            )
+            .expect("same diagnostic object"),
+            Value::T,
+        );
+        assert_eq!(
+            prim(
+                &mut interp,
+                "multibyte-string-p",
+                std::slice::from_ref(&argument),
+                &mut env
+            )
+            .expect("print buffer is multibyte"),
+            Value::T,
+        );
+
+        prim(
+            &mut interp,
+            "put-text-property",
+            &[
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Symbol("field".into()),
+                Value::Symbol("command-output".into()),
+                value.clone(),
+            ],
+            &mut env,
+        )
+        .unwrap();
+        assert_eq!(
+            prim(
+                &mut interp,
+                "get-text-property",
+                &[
+                    Value::Integer(0),
+                    Value::Symbol("field".into()),
+                    argument.clone(),
+                ],
+                &mut env,
+            )
+            .unwrap(),
+            Value::Symbol("command-output".into())
+        );
+        // Ferror_message_string's allocation-free (error STRING) branch
+        // returns that exact string, including its properties.
+        let plain_error = Value::list([Value::symbol("error"), argument.clone()]);
+        let returned = prim(
+            &mut interp,
+            "error-message-string",
+            &[plain_error],
+            &mut env,
+        )
+        .expect("original error string");
+        assert_eq!(
+            prim(&mut interp, "eq", &[argument, returned], &mut env).expect("fast-return identity"),
+            Value::T,
+        );
     }
 
     /// GNU's `byte-code' executes a bare program against a constants

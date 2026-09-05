@@ -384,28 +384,6 @@ pub(crate) fn gnu_default_makefile_mode() -> &'static str {
     gnu_default_makefile_mode_for_system_type(gnu_system_type())
 }
 
-pub(crate) fn default_system_configuration() -> String {
-    let machine =
-        uname_field(UnameField::Machine).unwrap_or_else(|| std::env::consts::ARCH.to_string());
-    // config.guess spells Darwin's arm64 as aarch64; GNU's triple comes
-    // from autoconf, so use the same convention for the same hardware.
-    let machine = if machine == "arm64" {
-        "aarch64".to_string()
-    } else {
-        machine
-    };
-    match std::env::consts::OS {
-        "macos" => {
-            let release = uname_field(UnameField::Release).unwrap_or_else(|| "0".into());
-            format!("{machine}-apple-darwin{release}")
-        }
-        "linux" => format!("{machine}-unknown-linux-gnu"),
-        "freebsd" => format!("{machine}-unknown-freebsd"),
-        "windows" => format!("{machine}-pc-windows-msvc"),
-        os => format!("{machine}-{os}"),
-    }
-}
-
 /// GNU `fileio.c:2648 file_name_case_insensitive_err'.  Negative means the
 /// filesystem is case-INsensitive, 0 means case-sensitive, and a positive
 /// value means the question could not be answered for this path (the caller
@@ -467,16 +445,14 @@ pub(crate) fn uname_field(field: UnameField) -> Option<String> {
             Some((read(&uts.release), read(&uts.machine)))
         }
     });
-    cached.as_ref().map(|(release, machine)| match field {
+    cached.as_ref().map(|(release, _machine)| match field {
         UnameField::Release => release.clone(),
-        UnameField::Machine => machine.clone(),
     })
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum UnameField {
     Release,
-    Machine,
 }
 
 /// The pinned sibling GNU checkout as a canonical directory string, or None
@@ -1436,11 +1412,12 @@ pub(crate) fn emacs_version_value() -> String {
 }
 
 pub(crate) fn system_configuration() -> String {
-    // No env override: a runtime's reported identity is not configurable
+    // emacs.c: EMACS_CONFIGURATION, the host triple recorded when the
+    // build was configured -- computed by build.rs at build time, never at
+    // run time, so it keeps its kernel release after the host updates.  No
+    // env override: a runtime's reported identity is not configurable
     // (finding 65 removed the version knob; this one went with it).
-    SYSTEM_CONFIGURATION
-        .get_or_init(default_system_configuration)
-        .clone()
+    env!("EMAXX_SYSTEM_CONFIGURATION").to_string()
 }
 
 pub(crate) fn user_exists(name: &str) -> bool {

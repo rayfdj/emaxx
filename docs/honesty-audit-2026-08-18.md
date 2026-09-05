@@ -54,35 +54,35 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 83 | Interpreted (+ FLOAT) seeded its accumulator with 0.0, losing the zero sign | FIXED (accumulate from the first argument, data.c arith_driver) |
 | 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (deadlock signals instead of spinning; scheduler no longer re-steps the active thread) |
 | 85 | Batch reconstruction skipped startup.el's tty-color registration | FIXED (runs GNU's own tty-register-default-colors) |
-| 86 | color-gray-p/color-supported-p/color-distance/color-values-from-color-spec bypass GNU's Lisp color path | OPEN (5-name Rust table; color-distance metric, list args and METRIC argument all diverge) |
+| 86 | color-gray-p/color-supported-p/color-distance/color-values-from-color-spec bypass GNU's Lisp color path | FIXED 2026-09-04 (xfaces.c port: tty-defined-color, Riemersma distance with METRIC, parse_color_spec) |
 | 87 | `\u{2620}` hardcoded into the word class to satisfy one upstream test | FIXED (removed; word/space now resolve through the syntax table everywhere) |
 | 88 | `[[:space:]]` was a fixed Unicode property, not the whitespace syntax class | FIXED (regex-emacs.c:151) |
-| 89 | `[:punct:]` still syntax-blind for non-ASCII | OPEN (disclosed) |
+| 89 | `[:punct:]` still syntax-blind for non-ASCII | FIXED 2026-09-04 (regex-emacs.c ISPUNCT: non-word syntax beyond ASCII) |
 | 90 | text-quoting-style ignored the locale, so every quoted message diverged under the harness's LANG=C | FIXED |
 | 91 | interactive-form/commandp missed compiled OClosures (advised functions) | FIXED |
-| 92 | message, void-function/void-variable messages ignore text-quoting-style | OPEN (disclosed) |
-| 93 | require's load-path branch names the feature where GNU names the resolved file | OPEN (disclosed) |
+| 92 | message, void-function/void-variable messages ignore text-quoting-style | FIXED 2026-09-04 (format-message and substitute-command-keys on error messages) |
+| 93 | require's load-path branch names the feature where GNU names the resolved file | FIXED 2026-09-04 (names `(car (car load-history))`) |
 | 94 | harness let LC_ALL/LC_CTYPE override its own LANG=C, retiring the grave path from measurement | FIXED |
-| 95 | default_to_grave_quoting_style's standard-display-table branch unimplemented | OPEN (disclosed) |
-| 96 | no DEFVAR_BOOL coercion: bool-typed variables read back the raw value | OPEN (disclosed) |
-| 97 | commandp returns t where GNU signals on an interactive-form property | OPEN (disclosed) |
+| 95 | default_to_grave_quoting_style's standard-display-table branch unimplemented | FIXED 2026-09-04 (display-table branch ported) |
+| 96 | no DEFVAR_BOOL coercion: bool-typed variables read back the raw value | FIXED 2026-09-04 (177 DEFVAR_BOOL names coerced; makunbound detaches the slot) |
+| 97 | commandp returns t where GNU signals on an interactive-form property | FIXED 2026-09-04 (Fcommandp order; signals on the property) |
 | 98 | the 7595 denominator excluded 3 files dropped by a 20s inventory cap 9x tighter than the run's own 180s default | FIXED 2026-08-26 - regenerated to 7883 |
 | 99 | make-thread: the classifier claim was stale; the real defects were join/bindings/handlers | FIXED 2026-08-27 - three semantics fixes; interleaving stays open as 84 |
-| 124 | timers fire inside thread-join and see the joiner's let bindings; GNU runs none there | OPEN |
-| 125 | thread-signal to the main thread prints eagerly and drops the data; GNU queues an event | OPEN |
-| 126 | detect-coding-string still answers raw-text where the read path now answers iso-latin-1 | OPEN |
+| 124 | timers fire inside thread-join and see the joiner's let bindings; GNU runs none there | FIXED 2026-09-04 (child sleep-for runs due timers on its own specpdl) |
+| 125 | thread-signal to the main thread prints eagerly and drops the data; GNU queues an event | FIXED 2026-09-04 (thread-event queued and dispatched through special-event-map) |
+| 126 | detect-coding-string still answers raw-text where the read path now answers iso-latin-1 | FIXED 2026-09-04 (coding.c detect_coding_system ported: categories, representatives, all detectors, eol) |
 | 127 | supra-Unicode characters (private charset codepoints) cannot live in strings/buffers | OPEN (structural) |
-| 128 | encode substitution rules for the generic/charset arms never swept against the oracle | OPEN |
-| 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | OPEN |
-| 130 | a failed oracle load-path probe silently falls back to the manual tree walk, changing what the harness boots without a trace | OPEN (recorded 2026-08-29) |
+| 128 | encode substitution rules for the generic/charset arms never swept against the oracle | FIXED 2026-09-04 (ISO-2022 encoder ported; raw-text/undecided write internal bytes; unencodable-char-position real) |
+| 129 | iso-2022-7bit detected by name but decoded as raw bytes; string-vs-file detection differs from GNU | FIXED 2026-09-04 (ISO-2022 decoder with charset properties; string fast path vs region/file detection as coding.c) |
+| 130 | a failed oracle load-path probe silently falls back to the manual tree walk, changing what the harness boots without a trace | FIXED 2026-08-29 in code (`9c89a7c` refuses the silent fallback); row closed 2026-09-04 |
 | 146 | rendering a non-selected mode line overwrote that window's independent point slot | FIXED 2026-09-02 |
 | 147 | graphical fringe display strings leaked their source text onto TTY frames | FIXED 2026-09-02 |
 | 148 | motion between edits left undo's point-before-command record stale when a boundary already existed | FIXED 2026-09-02 |
 | 149 | the TTY differential reused the host temporary namespace across killed editor sessions until Org's 1000 `babel-stable-N` names were exhausted (harness defect, recorded in the 2026-09-03 tty-frontend merge section) | FIXED 2026-09-03 |
 | 150 | the `supersession-accept-revisit` TTY scenario sent an extra `y` after a successful save and manufactured a divergence (harness defect, same section) | FIXED 2026-09-03 |
-| 151 | status_notify's drain of an exited process's remaining output is not modeled: during a JUST-THIS-ONE wait GNU still delivers a distractor's leftover output once it exits, Emaxx never does | OPEN (recorded 2026-09-03, Linux oracle; numbered 149 in its section until 2026-09-04) |
-| 152 | `(sleep-for 0)` runs due Lisp timers; Fsleep_for returns without entering the wait for a non-positive duration | OPEN (recorded 2026-09-04) |
-| 153 | batch `read-from-minibuffer` reads stdin even while `executing-kbd-macro` is non-nil, where read_minibuf takes the full path; the accepted-default history push is gated on TTY-reader presence rather than that condition | OPEN (recorded 2026-09-04) |
+| 151 | status_notify's drain of an exited process's remaining output is not modeled: during a JUST-THIS-ONE wait GNU still delivers a distractor's leftover output once it exits, Emaxx never does | FIXED 2026-09-04 (status_notify drain during JUST-THIS-ONE waits) |
+| 152 | `(sleep-for 0)` runs due Lisp timers; Fsleep_for returns without entering the wait for a non-positive duration | FIXED 2026-09-04 (Fsleep_for returns for a non-positive duration without the wait) |
+| 153 | batch `read-from-minibuffer` reads stdin even while `executing-kbd-macro` is non-nil, where read_minibuf takes the full path; the accepted-default history push is gated on TTY-reader presence rather than that condition | FIXED 2026-09-04 (read_minibuf full path under a macro; history push follows it) |
 | 154 | `expand_file_name_runtime` resolved a nil DEFAULT-DIRECTORY against the process cwd; exposed as a copy-family regression by the 2026-09-04 Linux frozen run | FIXED 2026-09-04 |
 | 155 | Linux `process-attributes` returns 15 of GNU's 31 keys (no pcpu, pmem, utime/stime/cutime/cstime/ctime, page-fault counts, tpgid, ttname, nice, pri, thcount), so Proced's %CPU refinement fails with `(wrong-type-argument integerp nil)`; the Darwin skip hid it | FIXED 2026-09-04 (sysdep.c /proc port; proced-tests 6/6 on Linux) |
 | 156 | `make-process` and `call-process` never searched `exec-path`/`exec-suffixes` (openp with X_OK): an empty `exec-path` still ran the program, misses surfaced as the spawn failure instead of "Searching for program" with openp's errno, a directory named as the program was a `(error "Permission denied (os error 13)")`, argv[0] was the bare name rather than the resolved path, EACCES rendered as `file-error` instead of `permission-denied` in every `report_file_errno` path, `file-executable-p` was nil for directories, an unexecutable absolute program was a synchronous host-error string instead of GNU's pty-path child exiting 127/126 (with the perror line) or the pipe-path "Doing vfork" signal, and glibc's `execvp` ran ENOEXEC files through `sh` where GNU's `execve` fails | FIXED 2026-09-04 |
@@ -93,7 +93,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 103 | set-network-process-option fabricated success and never read the option | FIXED 2026-08-26 - real setsockopt, 20 cases oracle-matched |
 | 104 | get-unused-iso-final-char returned a constant and swallowed validation | FIXED 2026-08-26 - scans the charset registry, 10 cases oracle-matched |
 | 105 | max-lisp-eval-depth ignored: let-bindings invisible, excessive-lisp-nesting never raised | FIXED 2026-08-27 - mirrors eval.c:2504; funcall site tracked as 122 |
-| 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | OPEN (measured) |
+| 122 | the depth counter has no counterpart to GNU's second increment site in Ffuncall | FIXED 2026-09-04 (Ffuncall increment counted; contract expectation corrected to the oracle) |
 | 123 | EMACS_TEST_DIRECTORY shadowed 11 core libraries (5 of them in the 397-name sweep), putting at least 324 measured outcomes (4.1%) at risk | FIXED 2026-08-27 - standard library ordered first, sweep 5 -> 0 |
 | 106 | decode-coding-string falls back to identity for every unimplemented system | FIXED (euc-jp real; file reads consult the alist; one disclosed limit) |
 | 107 | decode-sjis-char/encode-sjis-char implement exactly one probe value | FIXED 2026-08-28 (big5 twins included; two GNU crash/UB paths disclosed) |
@@ -103,14 +103,14 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 111 | network-interface-info was a bare nil beside a real network-interface-list | FIXED (macOS) 2026-08-26 - real ioctls; still nil on other platforms |
 | 112 | intern-soft invents keywords nobody has interned; tightening it regresses 288 of GNU's 429 | FIXED 2026-08-29 - the mentioned-names hole is filled computed-not-copied; missing keywords 288 -> 7 (process.c socket-option table); see the obarray close-out |
 | 119 | --eval did not intern the symbols it read, unlike file loading | FIXED |
-| 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | OPEN |
+| 120 | eval-region with a custom load-read-function re-interns symbols GNU leaves unintern'd | FIXED 2026-09-04 (readevalloop: load-read-function, no re-interning) |
 | 121 | the obarray is ~4400 symbols short of GNU's; intern-soft's inference is what hides it | FIXED 2026-08-29 - missing names 3,908 -> 124 vs the Linux oracle; four computed mechanisms; residual classes named in the close-out |
 | 113 | the unit gate never ran under LANG=C, hiding a class of locale/coding divergence from the environment actually measured | FIXED 2026-08-29 - LANG=C is the gate standard; runtime defects and locale-dependent test inputs were fixed, not baselined |
 | 114 | a runner killed after writing its report still contributed every matching outcome to the headline numerator | FIXED |
 | 115 | the frozen manifest has no fresh-regeneration gate, unlike the C and arities manifests | FIXED 2026-08-29 - manifest sha pin (item 21) + frozen superset check: run ⊆ manifest enforced per file, both runners |
-| 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | OPEN (disclosed) |
-| 117 | the gate contains an intermittent test that fails up to 75% of runs under load, so "green" has always been partly luck | OPEN (rate revised UP) |
-| 118 | network-interface-list omits most interfaces: 3 where GNU reports 11 on the same host | OPEN |
+| 116 | system-configuration drifts from the oracle's build-time triple as the host OS updates | FIXED 2026-09-04 (build-time config.guess triple embedded by build.rs) |
+| 117 | the gate contains an intermittent test that fails up to 75% of runs under load, so "green" has always been partly luck | NOT REPRODUCIBLE on the Linux gate host 2026-09-04: 0 failures in 78 runs (40 of them at load 2.0-4.8, both on main `b50bdd2` before this delivery and on the finished tree); the 2026-08-27 rate stays on record as the earlier host's; reopen on recurrence |
+| 118 | network-interface-list omits most interfaces: 3 where GNU reports 11 on the same host | FIXED 2026-09-04 (link-local rows, newest-first order) |
 
 # Honesty audit — 2026-08-18
 
@@ -5480,3 +5480,461 @@ eval_02 284, eval_03 322, eval_04 248, eval_05 350, primitives 368,
 compat_runtime 82, tty 56 (the two reviewed opt-in end-to-end wrappers
 ignored), batch 43 and lightweight 207 library tests passed with zero
 failures, bins and integration passed, GROUPED GATE PASSED.
+
+## 2026-09-05 Eshell prompt fields through direct bytecode argument storage
+
+The Eshell work began on main f5577e8 and was refreshed before final
+verification to b50bdd2.  The five incoming commits covered
+expand-file-name, the Linux process/oracle work and their ledger entries;
+none overlapped the bytecode argument boundary or the Eshell regression.
+The branch was fast-forwarded to that main before the final focused replays.
+
+Baseline exact replay of
+em-prompt-test/next-previous-prompt-{1,2} was 0/2
+(target/compat/run-1788534663677528000-6196).  After a failed command,
+GNU's field at point contained the command input while Emaxx left the error
+diagnostic joined to it.  Instrumenting the actual Lisp call chain showed
+that interpreted lambda binding preserved the diagnostic string's identity,
+but the packed direct-argument path of a genuine byte-code function left a
+compact host Value::String on the VM stack.  put-text-property promoted and
+mutated a separate Lisp string object, so the caller never observed the new
+field property.  A tentative concatenation-level change did not alter
+either failure (target/compat/run-1788535753680690000-7311) and was removed
+in full.
+
+The production repair is at the general representation boundary:
+run_with_stack applies Interpreter::stored_value to supplied positional
+arguments, exactly as interpreted lambda binding already does.  There is no
+Eshell package name, test name, selector or expected output in production.
+A VM regression constructs a real packed byte-code object, passes it a
+compact native string, mutates the returned argument and requires the text
+property to remain visible.  A separate initialized-runtime regression
+executes the upstream Eshell prompt navigation test through its real Lisp
+owner.
+
+On the refreshed base the exact upstream pair passed 2/2
+(target/compat/run-1788538681872351000-11973) and the complete upstream file
+passed 9/9 (target/compat/run-1788538758913123000-12347).  The bytecode
+module passed 32/32; the two focused Rust regressions each ran and passed
+1/1.  The anti-cheat gates passed 15/15 with zero ignored, strict
+all-target/all-feature Clippy passed with -D warnings, and rustfmt plus
+git diff --check were clean.  The upstream
+test/lisp/eshell/em-prompt-tests.el, compatibility harness, selectors,
+manifests, fixtures, timeouts, normalizations and accepted-failure paths
+were unchanged.  The only two ignored Rust tests remain the reviewed,
+opt-in real-TTY wrappers.
+
+The optimized serial library gate was run once in the restricted runner:
+2,296 passed, the two reviewed TTY wrappers were ignored, and 13
+subprocess/socket/TLS/local-HTTP cases were denied by the sandbox.  Per the
+instruction not to repeat the full gate, only those exact 13 cases were
+replayed outside it: 12 passed and the remaining case exposed a fixed
+Linux-only expectation newly added by dc8ea49 against the Darwin oracle,
+not an Eshell failure.  That refreshed-main integration defect is repaired
+and audited separately below.  The targets the stopped library command had
+not reached were run serially: compat-harness 38/38, perf-harness 1/1,
+CLI 13/13, ERT runner 3/3, package lifecycle 5/5, and zero-test main/doc
+targets clean.
+
+## 2026-09-05 Darwin exec-failure contract after the main refresh
+
+Main b50bdd2 introduced dc8ea49 from a Linux-oracle investigation.  Its new
+exec_failure_follows_emacs_spawn test was enabled for every Unix host but
+hard-coded the Linux PTY diagnostic.  On this host the pinned GNU Emacs
+30.2 oracle consistently returned
+((127 exit nil) (126 exit nil) ...), while the new expectation required the
+diagnostic strings.  Emaxx itself returned the Linux form, so this was both
+a failing test on untouched refreshed-main code and a real Darwin
+compatibility difference; it was not classified as a sandbox failure.
+
+The correction keeps fixed, reviewable contracts on both sides of the
+platform boundary.  Linux and other Unix builds retain the child diagnostic
+and exit codes added by dc8ea49.  On macOS the child preserves exit 127 for
+ENOENT and 126 for other exec failures without writing that diagnostic into
+the PTY, matching the pinned Darwin oracle.  The Rust contract contains an
+explicit Darwin expected value and retains the existing explicit non-Darwin
+value.  It does not ignore the test, copy a live oracle answer into the
+expected result, branch on a test name, or weaken either assertion.
+
+The corrected exact contract ran outside the sandbox and passed 1/1 against
+both the GNU oracle and the in-process Emaxx interpreter.  The unchanged
+program-search neighbor had already passed in the optimized serial library
+gate.  Strict all-target/all-feature Clippy passed with -D warnings, rustfmt
+and git diff --check were clean, and the anti-cheat gates passed 15/15 with
+zero ignored.  No upstream file, compatibility harness, selector, manifest,
+fixture, timeout, normalization or accepted-failure path changed.  Per the
+instruction not to repeat the complete gate, the final evidence is the
+single earlier optimized serial run plus exact outside-sandbox replays of
+its 13 denied/failing cases, the corrected Darwin contract, and the
+separately completed bin, integration and doc targets recorded above.
+
+## 2026-09-04 closing the open ledger: findings 86-97, 116-130, 151-153
+
+Base: main `b50bdd2`, with main `cb4ceb5` (the Eshell output-field and
+Darwin exec-failure commits) merged before the final gate.  Every item
+below was probed on the Linux oracle
+first and again on the finished Emaxx binary; each mechanism named is the
+GNU one, and each fix has an in-process oracle contract
+(`assert_oracle_contract_matches_interpreter`, which sends the program to
+the live oracle and requires the interpreter to print the same).
+
+**86 (FIXED).**  xfaces.c: `color-distance` accepts color names, RGB lists
+and the METRIC function, and computes Riemersma's weighted distance in
+64-bit arithmetic over `tty-defined-color` (the Lisp `tty-color-desc' path,
+with the empty name and `unspecified-fg`/`unspecified-bg' answering
+black); `color-values-from-color-spec` is `parse_color_spec` (numeric `#',
+`rgb:' and `rgbi:' forms only, `round_ties_even' for `rgbi:');
+`color-gray-p` and `color-supported-p` go through the same tty color table.
+The five-name Rust table is gone.  Contract:
+`tty_color_primitives_follow_xfaces_c`.
+
+**89 (FIXED).**  regex-emacs.c ISPUNCT: beyond ASCII, `[:punct:]` is "not
+word syntax" in the current syntax table, so it now depends on the table
+like `[:space:]` does (regexp, `skip-chars-forward` and the syntax
+snapshot all include it).  Contract:
+`punct_class_beyond_ascii_follows_buffer_syntax`.
+
+**92, 95, 96 (FIXED).**  editfns.c `message' formats through
+`format-message'; print.c print_error_message applies
+`substitute-command-keys' to the `error-message' property (batch's
+unhandled-error line renders through `error-message-string' too);
+doc.c default_to_grave_quoting_style consults the standard display table
+(a display-table char-table whose U+2018 entry is `[96]` means grave); the
+effective style reads the C-forwarded `text-quoting-style' slot.  data.c
+DEFVAR_BOOL coercion: the 177 `DEFVAR_BOOL' variables (a generated table,
+`gnu_c_bool_variable_manifest_matches_fresh_regeneration` regenerates it from
+the pinned GNU src/*.c as a mandatory anti-cheat gate) store `t'/`nil', and
+`makunbound' detaches the forwarded slot so a
+later binding is an ordinary Lisp value, as in GNU.  Contracts:
+`quoting_style_reaches_message_error_text_and_display_table`,
+`defvar_bool_stores_coerce_and_makunbound_detaches`.
+
+**93 (FIXED).**  fns.c Frequire names `(car (car load-history))` when the
+file loaded without providing the feature, and "Required feature `%s' was
+not provided" otherwise.
+
+**97 (FIXED).**  eval.c Fcommandp order: void -> nil; string and vector
+macros; the builtin command table; autoload and lambda lists; interpreted
+and compiled closures by their interactive form; a symbol chain walked one
+`logical_function_binding' step at a time, signalling "Found an
+`interactive-form' property!" where GNU does; OClosures last.  Contract:
+`commandp_follows_fcommandp_order_and_property_error`.
+
+**116 (FIXED).**  `system-configuration` is the configure-time triple:
+build.rs derives config.guess's answer for the target (x86_64-pc-linux-gnu
+here, `<arch>-apple-darwin<release>' on macOS) and embeds it as a
+`cargo:rustc-env`, so the value no longer drifts with the running host.
+`UnameField::Machine` and the dead static went with it.
+
+**118 (FIXED).**  process.c network_interface_list: `if-addrs' with the
+`link-local' feature reports the fe80 rows, and the list is consed
+newest-first as GNU's getifaddrs walk produces it.
+
+**120 (FIXED).**  lread.c readevalloop: `eval-region' with a nil
+READ-FUNCTION uses `load-read-function' (only a literal `read' takes the
+C reader), a custom reader's end-of-file propagates instead of being
+swallowed, nothing is re-interned behind the reader's back, and
+`eval-buffer' returns nil.  Contract:
+`eval_region_delegates_to_load_read_function_without_reinterning`.
+
+**122 (FIXED, and the earlier contract corrected).**  eval.c increments
+`lisp_eval_depth' in eval_sub and again in Ffuncall.  A direct call now
+costs one unit per level and `funcall'/`apply'/`mapc' two; the flag
+`direct_form_call' marks the eval_sub entry so `call_function_value_named'
+adds the Ffuncall unit only for calls that did not come from a form.  The
+contract's first expectation had been transcribed as 200 for
+`(funcall #'f ...)' on the belief that the loader rewrites it into a direct
+call; the oracle answers 100 (the closure body keeps the `funcall'), so the
+expectation is now the oracle's answer, which Emaxx matches:
+`lisp_eval_depth_counts_ffuncall_entries_like_eval_c` (100 200 100 100
+100).
+
+**124 (FIXED).**  thread.c: a child blocked in `sleep-for' runs the timers
+that come due with its own specpdl (the joiner's `let' swapped out, the
+child's visible), and `thread-join' itself runs nothing.  Contract:
+`timers_run_inside_a_child_threads_sleep_with_its_bindings`.
+
+**125 (FIXED).**  thread.c Fthread_signal: signalling the current thread
+signals at once; signalling the main thread queues a THREAD_EVENT
+`(thread-event THREAD ERROR-SYMBOL DATA)' that keyboard.c's
+special-event-map dispatches to `thread-handle-event' (the initial
+special-event-map bindings are now installed at startup; callint.c's KEYS
+argument makes `(interactive "e")' see the event).  Contract:
+`thread_signal_queues_a_thread_event_for_the_main_thread`.
+
+**126, 128, 129 (FIXED): coding.c detection and the ISO-2022 codec.**
+Detection is a port of coding.c: the 21 coding categories in enum order,
+each category's representative coding system (taken by the first
+definition of the category or a redefinition of the representative, and
+by `set-coding-system-priority', which also re-points the
+`coding-category-XXX' variables and `coding-category-list'; the variables
+start out as `no-conversion' and the list in enum order, as syms_of_coding
+leaves them, and mule-conf.el's own priority calls produce GNU's batch
+order), `detect_coding_system' (the head scan that tries ISO-2022 at the
+first ESC/SO/SI, notes null and 8-bit bytes, then runs the
+detect_coding_utf_8/_utf_16/_iso_2022/_charset/_sjis/_big5/_ccl/_emacs_mule
+ports over the representatives in priority order, the eol subsidiary
+chosen per candidate by detect_eol, and Fset_coding_system_priority's
+re-prioritisation) and `detect_coding' (the decode-time driver, with
+`prefer-utf-8', the null-byte and ISO-escape inhibit attributes and
+variables, and utf-8-auto/utf-16-auto BOM decisions).  The charset
+detector reads the representative's `charset_valids' table and
+`latin-extra-code-table'; the ISO detector reads the six ISO
+representatives' safe-charset tables.  `define-charset-internal' now fills
+the ISO_CHARSET_TABLE slot from `:iso-final-char' (dimension and the
+94/96 flavor from the code space) and maintains Viso_2022_charset_list,
+which `set-charset-priority' reorders.
+
+The ISO-2022 codec (decode_coding_iso_2022 / encode_coding_iso_2022) runs
+over the attributes mule.el hands `define-coding-system-internal':
+initial designations, register usage, the request alist and the flag
+bits.  Decoding handles designations (short and long form, revision
+prefixes), locking and single shifts, CSI, direction sequences, CTEXT
+extended segments and embedded UTF-8, `use-roman'/`use-oldjis', the
+invalid-code recovery (the byte comes through and G0 resets to ASCII),
+and reports the `charset' runs that produce_charset turns into text
+properties (a run opens at the first non-ASCII charset character and
+closes only at a different non-ASCII charset, so "こんa" carries one
+japanese-jisx0208 span; regions and `insert-file-contents' get the
+properties too, a unibyte destination keeping the character offsets as
+GNU's produced_char count does).  Encoding designates and invokes on
+demand, resets at eol/control characters, designates at bol, takes the
+default character for the unencodable (`?' under the `safe' flag), and
+prefers the `charset' text property's charset as CODING_ANNOTATE_CHARSET
+does.  One GNU quirk is reproduced deliberately: Fdefine_coding_system_internal
+seeds `safe_charsets' with register 0 for every charset of an explicit
+`:charset-list' before setup_iso_safe_charsets runs, and that function
+returns at once when the string exists, so `:request' registers and
+`:reg-usage' only ever apply to `iso-2022' (full-support) systems -- the
+oracle encodes iso-2022-kr's KSC5601 with `ESC $ ( C` in G0 and no locking
+shift, and so does Emaxx now.  `encode_coding_raw_text' writes a multibyte
+source in its internal spelling (`undecided' and `raw-text' both), the
+charset encoder's offset method rejects characters outside the code space
+(latin-iso8859-1 was claiming U+20AC), `unencodable-char-position' is a
+real primitive (STRING and COUNT), and code_convert_string's ASCII fast
+path applies to strings only: a region goes through decode_coding_object,
+so `(decode-coding-region ... 'undecided)' on 7-bit ISO-2022 bytes decodes
+where `decode-coding-string' returns them unchanged, exactly as the oracle
+does.
+
+Compositions inside ISO-2022 text (ESC 0..4 ... ESC 1) are parsed and
+their characters produced, but the `composition' text property GNU's
+produce_composition adds is not (disclosed residual; no test exercises
+it).  The sjis, big5, euc-jp, emacs-mule and charset-type decoders still
+produce no `charset' properties (a pre-existing gap now stated
+explicitly).  Contracts: `coding_detection_follows_detect_coding_system`,
+`iso_2022_and_raw_text_encoders_follow_coding_c`,
+`iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files`.
+
+**130 (FIXED, ledger row lagging the code).**  compat.rs has refused to
+fall back silently since `9c89a7c`: a failed oracle load-path probe is
+reported loudly.  The row is closed to match.
+
+**151 (FIXED).**  process.c status_notify: during a JUST-THIS-ONE wait the
+other processes are still refreshed, and one that has exited has its
+remaining output drained and delivered before its sentinel runs.
+Contract: `just_this_one_wait_still_notifies_an_exited_distractor`.
+
+**152 (FIXED).**  dispnew.c Fsleep_for returns without entering the wait
+(no timers) for a non-positive duration.  Contract:
+`sleep_for_zero_returns_without_waiting_or_running_timers`.
+
+**153 (FIXED).**  minibuf.c read_minibuf: batch stdin is read only when
+`noninteractive' and `executing-kbd-macro' is nil; otherwise unread
+events, then the macro, feed the reader; the history push of the value or
+the accepted default follows the full path, not TTY-reader presence.
+Contract: `minibuffer_reads_under_a_keyboard_macro_follow_read_minibuf`.
+
+**117 (measured again, not reproducible here).**  The intermittent gate
+test is `upstream_eshell_script_regressions_stay_green`.  On this Linux
+host, against the rebuilt Linux oracle, it was run 20 times back to back
+on the finished tree while the frozen run loaded the machine (load average
+1.0 to 4.8): 20 passes.  Earlier in the session: 12/12 and 6/6 on the
+same tree.  To decide whether this delivery is what changed, the same 20
+loaded runs were made on main `b50bdd2` (before any of this work) built in
+the scratch worktree: also 20 passes (load 2.0 to 4.7).  So 78 runs, 40 of
+them under load, 0 failures, on both sides of the change -- the 50-75%
+rate the ledger recorded on 2026-08-27 does not reproduce on this host at
+all, and this delivery cannot claim to have fixed it.  The row is closed
+as "not reproducible on the Linux gate host", with the earlier figure
+kept on record; if it recurs, the diagnosis in the 2026-08-27 entries (a
+process leaving `eshell-process-list' before its output is delivered) is
+where to resume, and retrying until green remains off the table.
+
+**Verification.**  Every probe program above was run on the oracle and
+on the finished binary and compared byte for byte (the coding programs
+in both the `--eval' and the `-l' forms).  The gate-profile subset of 130
+coding, charset, process, thread, minibuffer, color, syntax and
+evaluation tests passed once the one transcribed expectation it exposed
+(`encode_coding_region_binary_returns_unibyte_string` expected 137 65 for
+a multibyte U+0089 under `binary'; the oracle answers 194 137 65, which
+is now the expectation) was corrected; strict Clippy across all targets
+and features, `cargo fmt --check` and `git diff --check` are clean.  The
+first grouped gate then failed two eval_04 tests
+(`loaded_timer_queue_fires_during_waits`,
+`nonlocal_exit_from_timer_preserves_later_due_timers`) that had pinned
+the pre-152 behaviour of `(sleep-for 0)' running due timers; the oracle
+answers nil for both as written and t with a positive wait, so both now
+wait 0.01 s.  The second gate then failed eval_05's
+`read_buffer_simulation_enforces_its_predicate_and_accepts_default`,
+which fed `read-buffer' through `unread-command-events' in batch: the
+oracle reads stdin there ("Error reading from stdin", finding 153) exactly
+as Emaxx now does, and answers ("#chan" "#fake") when the input is an
+executing keyboard macro, which the test now uses.  Three transcribed
+expectations found by fixing the mechanisms they had baked in.
+
+The Linux frozen run of the finished tree (worktree at the delivery head
+with the local pin commit, `--timeout-seconds 3600`,
+frozen-1788550274747799926-17495): TESTS 7757/7883 matching, 126
+mismatching, across 461 files -- the same 7757 the previous run had
+derived, with no file failing that did not fail in that run and eight
+files (arc-mode, bytecomp, nadvice, kmacro, proced, wdired, lcms, print)
+no longer failing.  The 126 remaining are the disclosed classes: native
+compilation (99), server (7), semantic (6), mml-sec (4), threads (4),
+em-prompt (2), erc (2), editfns (1) and the boot-bound simple-tests
+async-shell-command row (1).
+
+The grouped gate ran on the merged tree as the unprivileged user with no
+other build or harness running
+(target/grouped-gate/run-1788564883648369393-15312): eval_01 351,
+eval_02 284, eval_03 322, eval_04 248, eval_05 351, primitives 384,
+compat_runtime 82, tty 56 (the two reviewed opt-in end-to-end wrappers
+ignored), batch 43 and lightweight 208 library tests passed with zero
+failures, bins and integration passed, GROUPED GATE PASSED.  Three earlier
+gate runs on the way there each failed exactly one group on one test
+that had pinned pre-fix Emaxx behaviour (the two timer tests, the
+read-buffer test and the xfaces family test, all described above); each
+was corrected to the oracle's answer before the next run, none was
+retried as-is.
+
+**127, 157 (OPEN, structural).**  Unchanged: supra-Unicode characters
+cannot live in Rust strings and buffers (127), and the Lisp thread is not
+the process's main thread (157).  Neither has a GNU-faithful route short
+of a representation or thread-model change, so both stay disclosed.
+
+## 2026-09-05 Editfns coding-region and replace-match change hooks
+
+Base: main `cb4ceb5`.  The sole Editfns mismatch was not an outcome-status
+disagreement: both GNU Emacs 30.2 and Emaxx reached the test's declared
+`:expected-result :failed`, but GNU reported the Bug#65451 checker errors
+`buffer-size 22 == 29` and `buffer-size 22 == 15`, while Emaxx instead
+reported a later `ENCODE-CODING-REGION` imbalance (`buffer-size 28 == 25`).
+The exact baseline is run-1788563669652448000-35909.
+
+The first repair follows coding.c's same-buffer conversion path:
+`encode-coding-region` and `decode-coding-region` now issue one ordinary
+before/after change pair around their in-place replacement, with the old
+character length in the after call.  That removed the spurious coding-region
+failure and exposed the upstream Bug#65451 behavior rather than manufacturing
+an ERT failure.
+
+The remaining sequence was checked against `src/search.c:Freplace_match`, not
+inferred from the test.  GNU inserts the raw replacement with `replace_range`,
+then invokes `Fupcase_region` or `Fupcase_initials_region`, then emits the outer
+`signal_after_change`.  Consequently a case-adapting replacement produces an
+outer before call, a nested ordinary casing before/after pair, and finally the
+outer after call.  GNU's casefiddle.c additionally narrows the casing after
+call to the first and last characters that actually changed, while a no-op
+case conversion has a before call and no after call.  Emaxx now follows those
+general primitive sequences.  Direct Rust regressions pin the coding-region
+pair, the generic nested `replace-match` trace, and the changed-subspan/no-op
+case-region contract; production contains no Editfns/Dabbrev test name,
+Bug#65451 branch, expected result, or diagnostic string.
+
+The exact Bug#65451 replay matches 1/1
+(run-1788564463350037000-37081), and the complete unmodified upstream
+`test/src/editfns-tests.el` file matches 23/23 with zero mismatches
+(run-1788564730662734000-37585).  Before the final changed-subspan refinement,
+the broad `eval_04` owner module passed 250/250 with zero ignored, including
+adjacent buffer, coding, Unicode casing, overlay, marker, property and undo
+behavior; all three focused hook regressions then passed on the refined tree.
+GitHub issue #51 records the post-7,883 investigation into repairing the
+upstream nested-hook protocol; the pinned GNU Emacs 30.2 mode must retain the
+exact behavior established here.
+
+On the refined tree, the exact Bug#65451 replay again matched 1/1
+(run-1788566751925079000-41387).  All 15 anti-cheat gates passed with zero
+ignored; rustfmt was clean; strict all-target/all-feature Clippy passed with
+`-D warnings`; `git diff --check` was clean; and neither the upstream test nor
+the harness, selectors, manifests, fixtures, timeouts, normalization or
+accepted-failure paths changed.  The optimized full serial gate ran once
+outside the restricted sandbox so its subprocess, socket, TLS and local-HTTP
+contracts executed normally: 2,312 library tests passed with zero failures
+and only the two reviewed opt-in real-TTY wrappers ignored; compat-harness
+38/38, perf-harness 1/1, CLI 13/13, ERT integration 3/3 and package lifecycle
+5/5 passed, with doc tests clean.  The final `eval_04` owner module, including
+all three new hook regressions, is part of that successful full gate.
+
+## 2026-09-05 close-findings bundle and Editfns integration audit
+
+The incoming close-findings bundle at `d03e9d6` was squash-integrated with the
+pending Editfns hook work on main `cb4ceb5`, preserving both the bundle's
+decoded `charset` properties and the ordinary before/after change protocol.
+The combined diff changes no pinned GNU test, compatibility harness, selector,
+regression manifest, fixture, timeout, normalizer, or accepted-failure data.
+Production additions contain no oracle execution, test-name branch, expected
+result, or compatibility-result special case.  The only ignored tests remain
+the two reviewed opt-in real-TTY wrappers.
+
+The generated 177-name GNU `DEFVAR_BOOL` inventory originally had only an
+ordinary unit freshness test even though production store behavior depends on
+it.  This integration promotes regeneration from the pinned GNU 30.2 C sources
+to the mandatory compatibility anti-cheat preflight.  All 16 anti-cheat gates
+passed with zero ignored.  `cargo fmt --all -- --check`, `git diff --check`,
+and strict gate-profile Clippy across all targets and features with
+`-D warnings` were clean.
+
+The complete unmodified upstream `test/src/editfns-tests.el` replay matched
+23/23 with zero mismatches
+(`target/compat/run-1788571897231705000-51568`).  The optimized full serial gate
+then ran once outside the restricted sandbox: 2,328 library tests passed with
+zero failures and only the two reviewed TTY wrappers ignored; compat-harness
+passed 38/38, perf-harness 1/1, CLI 13/13, ERT integration 3/3, package
+lifecycle 5/5, and doc tests were clean.  No 7,883-test corpus run was made as
+part of this integration.
+
+## 2026-09-05 native merge: correction to the bytecode argument repair
+
+During the `native-comp` merge of main `84f342a`, the ordinary native artifact
+ladder caught a semantic problem in `17da04f` despite its passing Eshell and
+runtime tests. The fifth unchanged GNU fixture,
+`test/lisp/emacs-lisp/comp-tests.el`, produced two 86,384-byte files that differ
+from byte 768. The serialized constants lost the shared `" *temp file*"`
+string references, shifting data layout and machine-code addresses. The saved
+pre-merge `9097866` editor still emits the exact GNU artifact for that same
+source under the same locale. Nothing was normalized in the comparison.
+
+GNU `bytecode.c:exec_byte_code` pushes `*args`: it does not copy string
+objects when binding bytecode arguments. The incoming `stored_value` call
+instead creates a fresh mutable string for each compact-string argument.
+That per-call allocation is removed. The actual diagnostic producer is
+corrected at `print.c:Ferror_message_string`'s boundary: a general diagnostic
+is already a mutable multibyte Lisp string when returned from the print
+buffer; `(error STRING)` returns the original STRING, preserving identity and
+properties without allocation. No promotion cache or package-specific branch
+is introduced. GNU Elisp remains unchanged.
+
+The Rust bytecode contract is strengthened to require the caller's original
+string identity across repeated calls and caller-visible property mutation,
+using an actual C-owned diagnostic producer. Its former mutation-only check
+could pass while losing identity. The existing Eshell fixture and its
+expectations are unchanged. The corrected tree passes 112 optimized Rust
+tests, including every bytecode test, all native-runtime correctness tests,
+17 anti-cheating checks, Eshell and error-message rendering; one separate
+native timing probe is ignored. Format/check/strict Clippy pass. The full
+artifact replay subsequently passes all nine fixtures: eight complete `.eln`
+files identical, including GNU `comp.el`, and one correctly absent artifact
+(`identity-string-fixed.log`, 216.48s). The complete native execution replay
+also passes 177/177, zero unexpected results, exit 0, with both helper `.eln`
+files freshly compiled and loaded (`emaxx-native.stderr`, 1114.12s wall /
+1024.41s user CPU). No compiler-spawning or image-cloning shortcut was used.
+Evidence: `/private/tmp/emaxx-main-84f342a.3jARTW` and the L12 entry in
+`docs/native-comp-c-parity-ledger.md`. This is not a claim that all string
+representation or forwarding gaps elsewhere in the runtime are closed.
+
+The final pre-commit audit passes all 17 gates; formatting, all-target check
+and strict all-feature/all-target Clippy are clean. Two serial full-compiler
+timing pairs used 62.81/63.02s and 69.94/66.42s before/merged user CPU; GNU
+used 8.43s and 9.47s. All measured artifacts are byte-identical. This shows no
+material merge regression, not a defensible speedup; Emaxx remains about 7.2x
+GNU including startup. Detailed timings/hashes are in the parity ledger.

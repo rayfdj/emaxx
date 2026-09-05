@@ -360,7 +360,14 @@ impl Interpreter {
             return false;
         }
         if self.max_lisp_eval_depth_value() < 100 {
-            self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(100));
+            if self
+                .detached_forwarded_variables
+                .contains_key("max-lisp-eval-depth")
+            {
+                self.max_lisp_eval_depth = 100;
+            } else {
+                self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(100));
+            }
         }
         depth > self.max_lisp_eval_depth_value()
     }
@@ -686,7 +693,13 @@ impl Interpreter {
             return Ok(());
         }
 
-        self.set_symbol_value_cell("quit-flag", Value::Nil);
+        // process_quit_flag writes Vquit_flag, not a possibly detached plain
+        // Lisp binding with the same name.
+        if self.detached_forwarded_variables.contains_key("quit-flag") {
+            self.quit_flag = Value::Nil;
+        } else {
+            self.set_symbol_value_cell("quit-flag", Value::Nil);
+        }
         if matches!(&flag, Value::Symbol(name) if name == "kill-emacs") {
             return primitives::call(self, "kill-emacs", &[Value::Nil, Value::Nil], env).map(drop);
         }
@@ -1065,6 +1078,7 @@ impl Interpreter {
                     };
                     (inner, byte_code_function_uses_dynamic_binding(record))
                 };
+                // Unwrapping the record is still the same Ffuncall entry.
                 if uses_dynamic_binding {
                     self.push_lambda_capture_override(false);
                     let result = self.call_function_value_named(inner, original_name, args, env);
@@ -1447,6 +1461,274 @@ mod eval_value_buffer_tests {
         assert!(interpreter.debug_on_next_call());
         interpreter.remove_buffer_local_value(original_buffer, "debug-on-next-call");
         assert!(!interpreter.debug_on_next_call());
+    }
+
+    #[test]
+    fn makunbound_disconnects_all_direct_eval_fields() {
+        for (name, initial, c_value) in [
+            ("quit-flag", Value::Integer(17), Value::Integer(17)),
+            ("inhibit-quit", Value::Integer(17), Value::Integer(17)),
+            ("throw-on-input", Value::Integer(17), Value::Integer(17)),
+            (
+                "overriding-plist-environment",
+                Value::Integer(17),
+                Value::Integer(17),
+            ),
+            (
+                "max-lisp-eval-depth",
+                Value::Integer(50),
+                Value::Integer(50),
+            ),
+            ("debug-on-next-call", Value::Integer(17), Value::T),
+        ] {
+            let mut interpreter = Interpreter::new();
+            let mut env = Env::new();
+            let symbol = Value::symbol(name);
+            interpreter.set_symbol_value_cell(name, initial);
+            for _ in 0..2 {
+                primitives::call(
+                    &mut interpreter,
+                    "makunbound",
+                    std::slice::from_ref(&symbol),
+                    &mut env,
+                )
+                .expect("data.c detaches the symbol without changing its C slot");
+                assert!(interpreter.symbol_value_cell(name).is_err(), "{name}");
+                assert_eq!(
+                    interpreter.forwarded_c_value(name, &env),
+                    Some(c_value.clone())
+                );
+                let plain = Value::string("uncoerced plain value");
+                primitives::call(
+                    &mut interpreter,
+                    "set",
+                    &[symbol.clone(), plain.clone()],
+                    &mut env,
+                )
+                .expect("a detached plain symbol has no forwarded type restriction");
+                interpreter.refresh_forwarded_eval_cells();
+                assert_eq!(
+                    interpreter.symbol_value_cell(name).expect("plain binding"),
+                    plain
+                );
+                assert_eq!(
+                    interpreter.forwarded_c_value(name, &env),
+                    Some(c_value.clone())
+                );
+                assert_eq!(
+                    interpreter.detached_forwarded_variables.get(name),
+                    Some(&Value::Nil)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn c_eval_writes_do_not_overwrite_detached_lisp_bindings() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        for (name, value) in [
+            ("quit-flag", Value::T),
+            ("max-lisp-eval-depth", Value::Integer(50)),
+        ] {
+            interpreter.set_symbol_value_cell(name, value);
+            primitives::call(
+                &mut interpreter,
+                "makunbound",
+                &[Value::symbol(name)],
+                &mut env,
+            )
+            .expect("detach forwarded symbol");
+            primitives::call(
+                &mut interpreter,
+                "set",
+                &[Value::symbol(name), Value::string("plain")],
+                &mut env,
+            )
+            .expect("store plain value");
+        }
+        match interpreter.maybe_quit(&mut env) {
+            Err(LispError::SignalValue(value)) => {
+                assert_eq!(value, Value::list([Value::symbol("quit")]));
+            }
+            other => panic!("process_quit_flag must consume the C flag: {other:?}"),
+        }
+        interpreter.maybe_quit(&mut env).expect("C flag is now nil");
+        assert_eq!(
+            interpreter.forwarded_c_value("quit-flag", &env),
+            Some(Value::Nil)
+        );
+        interpreter.lisp_eval_depth = 51;
+        assert!(!interpreter.lisp_eval_depth_exceeded());
+        assert_eq!(interpreter.max_lisp_eval_depth_value(), 100);
+        for name in ["quit-flag", "max-lisp-eval-depth"] {
+            assert_eq!(
+                interpreter.symbol_value_cell(name).expect("plain value"),
+                Value::string("plain")
+            );
+        }
+    }
+
+    #[test]
+    fn c_slot_and_incoming_main_objects_are_gc_roots() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        let table = primitives::call(
+            &mut interpreter,
+            "make-hash-table",
+            &[
+                Value::symbol(":test"),
+                Value::symbol("eq"),
+                Value::symbol(":weakness"),
+                Value::symbol("key"),
+            ],
+            &mut env,
+        )
+        .expect("weak-key table");
+        let Value::Record(table_id) = table else {
+            panic!("hash table record")
+        };
+        interpreter.set_global_binding("weak-table-root", Value::Record(table_id));
+        let keys: Vec<Value> = (0..9)
+            .map(|n| Value::cons(Value::Integer(n), Value::Nil))
+            .collect();
+        for (index, key) in keys.iter().enumerate() {
+            primitives::call(
+                &mut interpreter,
+                "puthash",
+                &[
+                    key.clone(),
+                    Value::Integer(index as i64),
+                    Value::Record(table_id),
+                ],
+                &mut env,
+            )
+            .expect("weak entry");
+        }
+        for (name, key) in [
+            "quit-flag",
+            "inhibit-quit",
+            "throw-on-input",
+            "overriding-plist-environment",
+        ]
+        .into_iter()
+        .zip(&keys)
+        {
+            interpreter.set_symbol_value_cell(name, key.clone());
+            primitives::call(
+                &mut interpreter,
+                "makunbound",
+                &[Value::symbol(name)],
+                &mut env,
+            )
+            .expect("C slot remains independently rooted");
+        }
+        interpreter
+            .detached_forwarded_variables
+            .insert("text-quoting-style".into(), keys[4].clone());
+        interpreter.pending_thread_events.push(keys[5].clone());
+        interpreter.coding_systems[0].charset_list = keys[6].clone();
+        interpreter.coding_systems[0].type_args = vec![keys[7].clone()];
+        let marked = interpreter.weak_hash_reachability(&env, &[]);
+        let (_, entries, keep) = marked
+            .tables
+            .iter()
+            .find(|(id, _, _)| *id == table_id)
+            .expect("marked weak table");
+        assert_eq!(entries.len(), 9);
+        for ((_, index), retained) in entries.iter().zip(keep) {
+            assert_eq!(
+                *retained,
+                index != &Value::Integer(8),
+                "unrooted negative control must be rejected"
+            );
+        }
+
+        // Once C clears the quit slot, no detachment snapshot may keep its
+        // former object alive. The other seven independently rooted keys stay.
+        interpreter.quit_flag = Value::Nil;
+        let marked = interpreter.weak_hash_reachability(&env, &[]);
+        let (_, entries, keep) = marked
+            .tables
+            .iter()
+            .find(|(id, _, _)| *id == table_id)
+            .expect("marked weak table");
+        for ((_, index), retained) in entries.iter().zip(keep) {
+            assert_eq!(
+                *retained,
+                index != &Value::Integer(0) && index != &Value::Integer(8)
+            );
+        }
+    }
+
+    #[test]
+    fn image_copy_preserves_detached_c_slots_and_new_main_children() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        let c_value = Value::cons(Value::Integer(1), Value::Nil);
+        let plain = Value::cons(Value::Integer(2), Value::Nil);
+        interpreter.set_symbol_value_cell("quit-flag", c_value.clone());
+        primitives::call(
+            &mut interpreter,
+            "makunbound",
+            &[Value::symbol("quit-flag")],
+            &mut env,
+        )
+        .expect("detach C field");
+        interpreter.set_symbol_value_cell("quit-flag", plain.clone());
+        interpreter.set_symbol_value_cell("inhibit-quit", c_value.clone());
+        interpreter
+            .detached_forwarded_variables
+            .insert("text-quoting-style".into(), c_value.clone());
+        interpreter.pending_thread_events.push(c_value.clone());
+        interpreter.coding_systems[0].charset_list = c_value.clone();
+        interpreter.coding_systems[0].type_args = vec![c_value.clone()];
+        let mut copied = interpreter.deep_clone_image();
+        let copied_c = copied.quit_flag_value();
+        assert!(!primitives::values_eq_in_env(
+            &copied, &copied_c, &c_value, &env
+        ));
+        assert_eq!(copied_c, c_value);
+        for child in [
+            copied.inhibit_quit.clone(),
+            copied
+                .symbol_value_cell("inhibit-quit")
+                .expect("still forwarded"),
+            copied.detached_forwarded_variables["text-quoting-style"].clone(),
+            copied.pending_thread_events[0].clone(),
+            copied.coding_systems[0].charset_list.clone(),
+            copied.coding_systems[0].type_args[0].clone(),
+        ] {
+            assert!(
+                primitives::values_eq_in_env(&copied, &copied_c, &child, &env),
+                "copied graph must preserve aliasing"
+            );
+        }
+        let copied_plain = copied
+            .symbol_value_cell("quit-flag")
+            .expect("independent Lisp binding");
+        assert_eq!(copied_plain, plain);
+        assert!(!primitives::values_eq_in_env(
+            &copied,
+            &copied_plain,
+            &plain,
+            &env
+        ));
+        assert!(!primitives::values_eq_in_env(
+            &copied,
+            &copied_plain,
+            &copied_c,
+            &env
+        ));
+        primitives::call(
+            &mut copied,
+            "setcar",
+            &[copied_c, Value::Integer(9)],
+            &mut env,
+        )
+        .expect("mutate copied C graph");
+        assert_eq!(c_value, Value::cons(Value::Integer(1), Value::Nil));
+        assert_eq!(copied_plain, plain);
     }
 
     #[test]

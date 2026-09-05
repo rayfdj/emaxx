@@ -64,7 +64,7 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | P33 | `apply` | `eval.c:Fapply` | registered |
 | P34 | `funcall` | `eval.c:Ffuncall` and `funcall_subr` | partial; see L04-L07 |
 
-## Cross-cutting hot-path contracts (11)
+## Cross-cutting hot-path contracts (12)
 
 | ID | GNU C contract | Status | Exact remaining work |
 |---|---|---|---|
@@ -79,6 +79,7 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | L09 | `eval.c:Flet`, `FletX`, `funcall_lambda`, `Fmake_interpreted_closure`: retain original lexical symbols | verified | Original handles survive binding, parameter, environment, and debugger projections; symbol/name roots and native assq identity have explicit contracts. Full GNU execution, nine artifact fixtures, and paired no-regression measurements pass. Dynamic/global/local-special storage remains separate work. |
 | L10 | `print.c:print_object` `PVEC_CLOSURE`: print the stored slots | verified | Rust's extra free-variable scan/environment trimming is removed. GNU `cconv.el` remains the owner. Four Rust print tests and unchanged GNU `cconv-safe-for-space` pass, with full native execution/artifact/performance gates. |
 | L11 | `lread.c:Fintern`, `intern_driver`; `alloc.c:init_symbol`; `data.c:Fsymbol_name`: retain the Lisp name separately from private lookup identity | partial | Newly allocated symbols retain their Lisp name separately from the lookup key; ordinary-table Fintern name identity, existing hits, shorthand/purecopy, and type-check order pass focused contracts and full native gates. Full obarray storage/lifetime and early compact-abbreviation-table parity remain open. |
+| L12 | `bytecode.c:exec_byte_code` argument words; `print.c:Ferror_message_string` result ownership | verified | Bytecode preserves original argument objects; diagnostics are mutable at their C-owned producer, with the original-string fast return preserved. Caller identity/mutation, unchanged Eshell, 177 native cases, nine artifact fixtures and paired timing checks pass. Other string-representation and error-rendering gaps are not closed by this bounded ownership correction. |
 
 The L11 audit also requires the symbol's stored name to be a traced child,
 as in `alloc.c:mark_objects` (including string intervals). The internal lookup
@@ -290,6 +291,113 @@ speedup.  V02 storage, V03-V05 redirect representation, V06's single stored
 Qunbound word, and other primitives' error payloads remain open.  In
 particular, the existing epoch cache is still a documented V02 deviation; this
 checkpoint neither replaces it with a new cache nor calls it GNU-equivalent.
+
+## Post-push main integration checkpoint (2026-09-05)
+
+After pushing `9097866`, this checkpoint merges `origin/main` at `84f342a`
+(three commits after the previous main base), before starting another
+performance unit. Fresh merged-tree verification is recorded below; the
+earlier checkpoint's results were not reused as proof of the merge.
+
+Concrete overlaps identified before accepting the merge:
+
+- L04: both branches implement `eval.c:Ffuncall` depth entry. Keep the native
+  branch's shared entry/exit boundary; do not add main's second counter around
+  the private dispatch helper or its `direct_form_call` marker. GNU direct
+  form application does not enter Ffuncall a second time.
+- V05: main's `makunbound` detachment must also disconnect the native branch's
+  six direct evaluator fields. `data.c:set_internal` changes the symbol's
+  redirect to plain/unbound without modifying the C slot. Later Lisp stores
+  are uncoerced and cannot reconnect it. `eval.c:process_quit_flag` and the
+  depth-limit floor still write the C slot, not the detached Lisp binding.
+  Preserve this distinction through buffer changes and image copying.
+- L08: `lread.c:defvar_lisp` static-protects the C slot independently of its
+  symbol. Mark those direct fields, main's detached slot values, queued thread
+  events, and the new coding-system Lisp children. Copy their actual object
+  graph when copying an otherwise cloneable image, never reconstruct a
+  detached C field from the now-independent Lisp binding. This does not make
+  images with live native state cloneable.
+- S01-S03 and the C/Elisp boundary: do not resurrect the removed vector-slot
+  cache or the dumped auto-buffer-local value fallback during text resolution.
+
+Initial contracts pass 78 tests, including all 49 native-runtime correctness
+tests, 17 anti-cheating checks and four new direct Rust merge contracts. One
+separate timing benchmark is ignored. The existing incoming-regression replay
+passes 26/26 with `LANG=C LC_ALL=C`, including main's Ffuncall test and both
+earlier closure/callback regressions. An initial ambient UTF-8 replay passed
+24 and failed two GNU-oracle quote expectations before Emaxx was called; no
+test source or expectation was changed. One additional selected test is
+Linux-only and is not counted as a pass on macOS. Format, all-target check and
+all-feature/all-target Clippy with `-D warnings` pass. Logs are under
+`/private/tmp/emaxx-main-84f342a.3jARTW`.
+
+Subsequent native execution, whole-artifact comparisons and timing evidence
+follow. No new Elisp, cache, runtime GNU delegation, or performance exception
+is authorized by this merge.
+
+The first artifact replay exposed L12: four fixtures passed, then unchanged
+`test/lisp/emacs-lisp/comp-tests.el` differed at byte 768 (both 86,384 bytes).
+The serialized constants lose GNU's shared `" *temp file*"` string references,
+which shifts the data layout and machine-code addresses. The saved `9097866`
+editor, compiling exactly that retained source under the same C locale,
+still emits a whole-file-identical artifact. Main `17da04f` added
+`Interpreter::stored_value` to every supplied bytecode argument; that helper
+allocates a fresh mutable string for each compact string argument. GNU
+`bytecode.c:exec_byte_code` instead executes `PUSH (*args)` unchanged. Its
+allocation behavior is not an approved performance exception. Correct the
+diagnostic producer without copying arguments or adding a promotion cache.
+`print.c:Ferror_message_string` returns the original string for `(error STRING)`;
+otherwise its `Fbuffer_string` result is an ordinary mutable Lisp string.
+The existing Eshell fixture uses a wrong-type diagnostic and exercises that
+producer through unchanged Elisp. Publication was paused for this correction.
+
+The L12 correction passes 112 optimized Rust tests, zero failures, including
+all bytecode tests, all native-runtime correctness tests, all 17 anti-cheating
+checks, the unchanged Eshell fixture and error-message rendering. One separate
+timing probe is ignored. The enhanced direct-bytecode contract requires the
+original compact-string identity across repeated calls, an already-mutable
+multibyte diagnostic from its C producer, mutation visible through the
+caller's reference, and Ferror_message_string's no-copy fast return with
+properties preserved. Format/check/strict Clippy are clean. The corrected
+ordinary editor passes all nine artifact fixtures (`identity-string-fixed.log`,
+216.48s): eight entire `.eln` files byte-identical, including 881,800 bytes for
+GNU `comp.el`, plus the correct no-artifact result. The merged-tree native
+execution run passes 177/177, zero unexpected results, exit 0, with freshly
+compiled and loaded helpers (`emaxx-native.stderr`). ERT took 1076.91s;
+total wall/user/system times were 1114.12/1024.41/26.13s, with GNU's normal
+compiler subprocesses and no image cloning. Editor SHA-256:
+`d01db433db5c3eb35a60380a7fe2f74bc7c3d4abfca3aeb813d29fd469273b8c`.
+
+Paired regression measurements use unchanged GNU `comp.el`, the same source
+path within each pair, fresh homes/processes, the ordinary
+`-Q --batch -f batch-native-compile` entry and no profiler/image template.
+Times include startup. Before is the saved, hash-verified `9097866` editor.
+
+| Pair / order | Before user CPU | Merged user CPU | GNU user CPU |
+|---|---:|---:|---:|
+| 1: before, merged, GNU | 62.81s | 63.02s | 8.43s |
+| 2: merged, before, GNU | 69.94s | 66.42s | 9.47s |
+| Mean | 66.38s | 64.72s | 8.95s |
+
+These samples show no material merge regression, but their variation does
+not establish a speedup. Emaxx remains about 7.2x GNU including startup;
+performance parity is not achieved. All four before/merged artifacts compare
+byte-for-byte equal to their corresponding GNU artifacts. Logs and retained
+artifacts: `/private/tmp/emaxx-main-84f342a.3jARTW/performance`.
+Pair-one SHA-256: `19feaaabd00d11a0ddc75471f82b0924dadc7e1ae75edb272c43334bd93dd302`;
+pair two: `3a68ec39956a95d2741666b4875261ef112abd2b681187788c8165a7f6d04835`.
+Different source paths make these per-pair evidence, not universal golden hashes.
+
+Final pre-commit review: all 17 adversarial gates pass, zero ignored; format,
+all-target check and all-feature/all-target Clippy with `-D warnings` are
+clean. No GNU source, Elisp, test selector, artifact comparison, native
+backend cache or runtime delegation was added/changed by the resolutions.
+The incoming argument-copy workaround is removed, not exempted. The existing
+Eshell fixture remains unchanged and its Rust contract now checks identity as
+well as mutation. V02-V05 representation, the complete L08 census and broader
+string ownership remain open; no global runtime-equivalence claim is made.
+Unrelated user compatibility-reporter edits are excluded. Repeat the audit
+before pushing, then fetch/merge main before another checkpoint.
 
 ## Performance priority overlay
 

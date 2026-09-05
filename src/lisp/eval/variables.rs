@@ -129,7 +129,7 @@ impl Interpreter {
         if self.buffer_local_capable_variables.insert(name.to_string()) {
             self.bump_symbol_value_cell_epoch();
         }
-        let value = Self::stored_value(Self::normalize_forwarded_eval_cell(name, value));
+        let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
         if buffer_id == self.current_buffer_id() {
             self.update_forwarded_eval_cell(name, &value);
         }
@@ -968,11 +968,11 @@ impl Interpreter {
         self.symbol_value_cell_epoch = self.symbol_value_cell_epoch.wrapping_add(1);
     }
 
-    fn normalize_forwarded_eval_cell(name: &str, value: Value) -> Value {
+    fn normalize_forwarded_eval_cell(&self, name: &str, value: Value) -> Value {
         match name {
             // lread.c:defvar_bool exposes only t or nil from the forwarded
             // C bool even when Lisp stores an arbitrary non-nil object.
-            "debug-on-next-call" => {
+            "debug-on-next-call" if !self.detached_forwarded_variables.contains_key(name) => {
                 if value.is_nil() {
                     Value::Nil
                 } else {
@@ -981,7 +981,7 @@ impl Interpreter {
             }
             // data.c:store_symval_forwarding stores an intmax_t and
             // do_symval_forwarding recreates the corresponding Lisp integer.
-            "max-lisp-eval-depth" => value
+            "max-lisp-eval-depth" if !self.detached_forwarded_variables.contains_key(name) => value
                 .as_integer()
                 .map(crate::lisp::primitives::normalize_integer_value)
                 .unwrap_or(value),
@@ -990,6 +990,11 @@ impl Interpreter {
     }
 
     fn update_forwarded_eval_cell(&mut self, name: &str, value: &Value) {
+        // data.c:set_internal turns a voided forwarded symbol into a plain
+        // symbol. Later stores cannot reconnect it to the C variable.
+        if self.detached_forwarded_variables.contains_key(name) {
+            return;
+        }
         match name {
             "quit-flag" => self.quit_flag = value.clone(),
             "inhibit-quit" => self.inhibit_quit = value.clone(),
@@ -1002,6 +1007,24 @@ impl Interpreter {
             }
             "debug-on-next-call" => self.debug_on_next_call = value.is_truthy(),
             _ => {}
+        }
+    }
+
+    pub(crate) fn forwarded_eval_cell_value(&self, name: &str) -> Option<Value> {
+        match name {
+            "quit-flag" => Some(self.quit_flag.clone()),
+            "inhibit-quit" => Some(self.inhibit_quit.clone()),
+            "throw-on-input" => Some(self.throw_on_input.clone()),
+            "overriding-plist-environment" => Some(self.overriding_plist_environment.clone()),
+            "max-lisp-eval-depth" => Some(crate::lisp::primitives::normalize_integer_value(
+                self.max_lisp_eval_depth,
+            )),
+            "debug-on-next-call" => Some(if self.debug_on_next_call {
+                Value::T
+            } else {
+                Value::Nil
+            }),
+            _ => None,
         }
     }
 
@@ -1066,7 +1089,7 @@ impl Interpreter {
         let name = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        let value = Self::stored_value(Self::normalize_forwarded_eval_cell(&name, value));
+        let value = Self::stored_value(self.normalize_forwarded_eval_cell(&name, value));
         if name == "features" {
             self.provided_features = value
                 .to_vec()
@@ -1322,6 +1345,11 @@ impl Interpreter {
                 ])))
             };
         }
+        // CHECK_SYMBOL/constant checks still apply, but the symbol no longer
+        // forwards through a typed C slot after data.c:set_internal voids it.
+        if self.detached_forwarded_variables.contains_key(name) {
+            return Ok(value);
+        }
         match name {
             "max-lisp-eval-depth" => match value.as_integer() {
                 Ok(_) => Ok(value),
@@ -1352,7 +1380,18 @@ impl Interpreter {
                 other => Err(wrong_type_argument("symbolp", other)),
             },
             "overwrite-mode" => Ok(value),
-            _ => Ok(value),
+            _ => {
+                // data.c store_symval_forwarding: a DEFVAR_BOOL slot stores
+                // `!NILP (newval)', so every store path (setq, set,
+                // set-default, let) reads back t or nil -- unless
+                // `makunbound' has detached the symbol from its slot.
+                if crate::lisp::primitives::generated_gnu_c_bool_variables::is_gnu_c_bool_variable(
+                    name,
+                ) {
+                    return Ok(if value.is_nil() { Value::Nil } else { Value::T });
+                }
+                Ok(value)
+            }
         }
     }
 

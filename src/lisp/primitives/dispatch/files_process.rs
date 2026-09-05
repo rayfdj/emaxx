@@ -498,8 +498,13 @@ fn network_interface_list(args: &[Value]) -> Result<Value, LispError> {
     let Ok(interfaces) = if_addrs::get_if_addrs() else {
         return Ok(Value::Nil);
     };
-    Ok(Value::list(interfaces.into_iter().filter_map(
-        |interface| {
+    // process.c network_interface_list conses each AF_INET/AF_INET6 row
+    // onto the front of the result, so the list runs newest-first; the
+    // fe80:: link-local rows are part of GNU's list (the crate's
+    // `link-local' feature keeps them).
+    let mut rows = interfaces
+        .into_iter()
+        .filter_map(|interface| {
             let (ip, mask) = match interface.addr {
                 if_addrs::IfAddr::V4(address) => (
                     std::net::IpAddr::V4(address.ip),
@@ -526,8 +531,10 @@ fn network_interface_list(args: &[Value]) -> Result<Value, LispError> {
                     Value::cons(Value::string(&interface.name), ip_value)
                 }
             })
-        },
-    )))
+        })
+        .collect::<Vec<_>>();
+    rows.reverse();
+    Ok(Value::list(rows))
 }
 
 define_dispatch!(

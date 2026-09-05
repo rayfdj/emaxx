@@ -64,7 +64,7 @@ tree-sitter = "=0.26.11"
 libloading = "=0.8.9"
 # Enumerate platform interfaces through the maintained cross-platform wrapper
 # instead of duplicating unsafe getifaddrs / Windows adapter bindings.
-if-addrs = "=0.15.0"
+if-addrs = { version = "=0.15.0", features = ["link-local"] }
 # Delegate platform recycle-bin semantics (Finder Trash, Windows Recycle Bin,
 # and the freedesktop.org Trash specification) to the established backend.
 trash = "=5.2.6"
