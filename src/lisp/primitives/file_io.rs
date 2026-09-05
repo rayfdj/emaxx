@@ -16,6 +16,9 @@ pub(crate) fn format_source_props(
             }
         }
     }
+    // The format string's own intervals reach the result through
+    // add_text_properties_from_list too: reversed pairs.
+    props.reverse();
     if props.is_empty() { None } else { Some(props) }
 }
 

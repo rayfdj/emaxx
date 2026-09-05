@@ -234,47 +234,6 @@ impl IsoState {
     }
 }
 
-/// The `charset' runs decode_coding_iso_2022 annotates: a run opens at
-/// the first non-ASCII charset character and closes when a character of
-/// a different non-ASCII charset appears (ASCII never closes one).
-struct CharsetRuns {
-    last: Option<String>,
-    last_offset: usize,
-    spans: Vec<(usize, usize, String)>,
-}
-
-impl CharsetRuns {
-    fn new() -> Self {
-        CharsetRuns {
-            last: None,
-            last_offset: 0,
-            spans: Vec::new(),
-        }
-    }
-
-    fn note(&mut self, charset: &str, offset: usize) {
-        if charset == "ascii" || self.last.as_deref() == Some(charset) {
-            return;
-        }
-        self.close(offset);
-        self.last = Some(charset.to_string());
-        self.last_offset = offset;
-    }
-
-    fn close(&mut self, offset: usize) {
-        if let Some(previous) = self.last.take()
-            && offset > self.last_offset
-        {
-            self.spans.push((self.last_offset, offset, previous));
-        }
-    }
-
-    fn finish(mut self, offset: usize) -> Vec<(usize, usize, String)> {
-        self.close(offset);
-        self.spans
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ComposingState {
     No,
@@ -948,18 +907,6 @@ pub(crate) fn decode(interp: &Interpreter, bytes: &[u8], coding: &str) -> Decode
         text: out.text,
         charsets,
     }
-}
-
-/// char_charset over an explicit charset list: the first charset that
-/// encodes C.
-pub(crate) fn char_charset_in(
-    interp: &Interpreter,
-    charset_list: &[String],
-    ch: u32,
-) -> Option<(String, u32)> {
-    charset_list.iter().find_map(|charset| {
-        encode_charset_char(interp, charset, ch).map(|code| (charset.clone(), code))
-    })
 }
 
 struct Encoder<'a> {

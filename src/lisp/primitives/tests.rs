@@ -3970,8 +3970,8 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
     assert_eq!(interp.charset_id("unicode"), Some(2));
     assert_eq!(interp.charset_id("emacs"), Some(3));
     assert_eq!(interp.charset_id("eight-bit"), Some(4));
-    assert_eq!(charset_for_char('A' as u32), "ascii");
-    assert_eq!(charset_for_char('あ' as u32), "unicode");
+    assert_eq!(char_charset(&interp, 'A' as u32).0, "ascii");
+    assert_eq!(char_charset(&interp, 'あ' as u32).0, "unicode");
 
     interp
         .define_charset_alias("latin", "ascii")
@@ -19921,5 +19921,212 @@ fn iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files()
         program,
         r#"((12371 12435 97) (charset japanese-jisx0208) nil iso-2022-7bit "$B$3$s(Ba" undecided ((227 129 147 227 130 147 97) (charset japanese-jisx0208) iso-2022-7bit) ((12371 12435 97 10) (charset japanese-jisx0208) iso-2022-7bit-unix iso-2022-7bit-unix) ((12354 10) (charset japanese-jisx0208) iso-2022-jp-dos) (12288 97) (12354 14 165) (65393 19970 12354))"#,
         "iso-2022 decoding",
+    );
+}
+
+#[test]
+fn charset_decoders_annotate_like_produce_charset_and_emacs_mule_encodes_like_coding_c() {
+    // coding.c decode_coding_sjis/_big5/_euc_jp/_emacs_mule/_charset all
+    // ADD_CHARSET_DATA, so produce_charset gives every decoded string,
+    // region (a multibyte source, its raw bytes as the decoder's input) and
+    // file its `charset' text properties, the single-byte charset codings
+    // (koi8-r, cp1252) included.  encode_coding_emacs_mule writes
+    // EMACS_MULE_LEADING_CODES of the first Vemacs_mule_charset_list
+    // charset that encodes the character, never steered by a `charset'
+    // property (no CODING_ANNOTATE_CHARSET_MASK outside ISO-2022), and
+    // the default char (a space) for the unencodable.
+    let program = r##"
+(let ((f (make-temp-file "emaxx-charset"))
+	    (dec (lambda (bytes cs)
+		   (let ((s (decode-coding-string bytes cs)) (r nil) (i 0))
+		     (while (< i (length s))
+		       (push (get-text-property i 'charset s) r)
+		       (setq i (1+ i)))
+		     (list (append s nil) (nreverse r))))))
+	(unwind-protect
+	    (list (funcall dec (unibyte-string ?a #x82 #xa0 ?b #xb1 ?c) 'sjis)
+		  (funcall dec (unibyte-string #x82) 'sjis)
+		  (funcall dec (unibyte-string ?x #xa4 #xa4 ?y) 'big5)
+		  (funcall dec (unibyte-string ?a #xa4 #xa2 #x8e #xb1 #x8f #xb0 #xa1) 'euc-jp)
+		  (funcall dec (unibyte-string #xc4 #xe3) 'chinese-iso-8bit)
+		  (funcall dec (unibyte-string ?a #x81 #xa9 ?b #x81 #xaa) 'emacs-mule)
+		  (funcall dec (unibyte-string #x92 #xa4 #xa2) 'emacs-mule)
+		  (funcall dec (unibyte-string ?a #xe9) 'iso-latin-1)
+		  (funcall dec (unibyte-string ?a #xe9) 'iso-latin-2)
+		  (funcall dec (unibyte-string ?a #xc1 #xff #x80) 'koi8-r)
+		  (funcall dec (unibyte-string ?a #x81 #x8d #x9d) 'cp1252)
+		  (funcall dec (unibyte-string #xe9) 'undecided)
+		  (with-temp-buffer
+		    (insert (unibyte-string ?a #x82 #xa0 ?b))
+		    (decode-coding-region (point-min) (point-max) 'sjis)
+		    (list (append (buffer-string) nil)
+			  (mapcar (lambda (i) (get-text-property i 'charset)) '(1 2 3))))
+		  (with-temp-buffer
+		    (insert (unibyte-string ?a #xe9))
+		    (decode-coding-region (point-min) (point-max) 'iso-latin-2)
+		    (list (append (buffer-string) nil)
+			  (mapcar (lambda (i) (get-text-property i 'charset)) '(1 2))))
+		  (progn (with-temp-file f (set-buffer-multibyte nil)
+					 (insert (unibyte-string ?a #x82 #xa0 ?b #xa4 #xa4)))
+			 (mapcar (lambda (cs)
+				   (with-temp-buffer
+				     (let ((coding-system-for-read cs)) (insert-file-contents f))
+				     (list (append (buffer-string) nil)
+					   (mapcar (lambda (i) (get-text-property i 'charset)) '(1 2 3 4 5 6)))))
+				 '(sjis big5 euc-jp iso-latin-1)))
+		  (append (encode-coding-string (string ?a #xe9 #x3042 #x20ac #xac00 #xff61 #x1f600) 'emacs-mule) nil)
+		  (append (encode-coding-string (decode-coding-string (unibyte-string #x81 #xa9 #x92 #xa4 #xa2) 'emacs-mule) 'emacs-mule) nil)
+		  (append (encode-coding-string (string #x3fffe9) 'emacs-mule) nil)
+		  (append (encode-coding-string (decode-coding-string (unibyte-string #x82 #xa0) 'sjis) 'emacs-mule) nil)
+		  (append (decode-coding-string (encode-coding-string (string ?a #xe9 #x3042 #x20ac #xac00 #xff61) 'emacs-mule) 'emacs-mule) nil)
+		  (append (encode-coding-string (decode-coding-string (unibyte-string #x8e #xb1) 'euc-jp) 'iso-2022-jp) nil))
+	  (delete-file f)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"(((97 12354 98 65393 99) (nil japanese-jisx0208 japanese-jisx0208 katakana-jisx0201 katakana-jisx0201)) ((4194178) (nil)) ((120 20013 121) (nil big5 big5)) ((97 12354 65393 19970) (nil japanese-jisx0208 katakana-jisx0201 japanese-jisx0212)) ((20320) (chinese-gb2312)) ((97 169 98 170) (nil latin-iso8859-1 nil latin-iso8859-1)) ((12354) (japanese-jisx0208)) ((97 233) (iso-8859-1 iso-8859-1)) ((97 233) (iso-8859-2 iso-8859-2)) ((97 1072 1066 9472) (koi8-r koi8-r koi8-r koi8-r)) ((97 4194177 4194189 4194205) (windows-1252 windows-1252 windows-1252 windows-1252)) ((233) (iso-8859-1)) ((97 12354 98) (nil japanese-jisx0208 japanese-jisx0208)) ((97 233) (iso-8859-2 iso-8859-2)) (((97 12354 98 65380 65380) (nil japanese-jisx0208 japanese-jisx0208 katakana-jisx0201 katakana-jisx0201 nil)) ((97 4194178 4194208 98 20013) (nil nil nil nil big5 nil)) ((97 4194178 4194208 98 12356) (nil nil nil nil japanese-jisx0208 nil)) ((97 130 160 98 164 164) (iso-8859-1 iso-8859-1 iso-8859-1 iso-8859-1 iso-8859-1 iso-8859-1))) (97 129 233 145 164 162 134 164 147 176 161 137 161 32) (129 169 145 164 162) (233) (145 164 162) (97 233 12354 8364 44032 65377) (32))"##,
+        "charset decoders and emacs-mule encoder",
+    );
+}
+
+#[test]
+fn print_prunes_charset_properties_like_print_prune_string_charset() {
+    // print.c print_prune_string_charset: `print-charset-text-property'
+    // t prints the `charset' properties as they are, nil never, and
+    // `default' only when some charset span holds a non-ASCII character
+    // whose CHAR_CHARSET is not the span's charset (a unibyte string's
+    // bytes count as Latin-1 characters there, per
+    // fetch_string_char_advance); the decision is per string, and the
+    // other properties survive the pruning.
+    let program = r##"
+(let ((sj (decode-coding-string (unibyte-string #x82 #xa0) 'sjis))
+	    (l1 (decode-coding-string (unibyte-string ?a #xe9) 'iso-latin-1))
+	    (l2 (decode-coding-string (unibyte-string ?a #xe9) 'iso-latin-2))
+	    (ascii (propertize "abc" 'charset 'japanese-jisx0208 'face 'bold))
+	    (two (concat (propertize (string #xe9) 'charset 'iso-8859-2) "x"
+			 (propertize (string #xe9) 'charset 'iso-8859-1 'face 'bold)))
+	    (ub (propertize (unibyte-string 233) 'charset 'eight-bit))
+	    (mb (propertize (string #x3fffe9) 'charset 'eight-bit))
+	    (mb2 (propertize (string #x3fffe9) 'charset 'iso-8859-1)))
+	(mapcar (lambda (v)
+		  (let ((print-charset-text-property v))
+		    (mapcar (lambda (s) (append (prin1-to-string s) nil))
+			    (list sj l1 l2 ascii two ub mb mb2 (list sj) (format "%S" sj)))))
+		'(t nil default)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"(((35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 41) (35 40 34 97 98 99 34 32 48 32 51 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 32 102 97 99 101 32 98 111 108 100 41 41) (35 40 34 233 120 233 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 32 50 32 51 32 40 102 97 99 101 32 98 111 108 100 32 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 101 105 103 104 116 45 98 105 116 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 101 105 103 104 116 45 98 105 116 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (40 35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 41) (34 35 40 92 34 12354 92 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 34)) ((34 12354 34) (34 97 233 34) (34 97 233 34) (35 40 34 97 98 99 34 32 48 32 51 32 40 102 97 99 101 32 98 111 108 100 41 41) (35 40 34 233 120 233 34 32 50 32 51 32 40 102 97 99 101 32 98 111 108 100 41 41) (34 92 51 53 49 34) (34 92 51 53 49 34) (34 92 51 53 49 34) (40 34 12354 34 41) (34 92 34 12354 92 34 34)) ((35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 41) (35 40 34 97 98 99 34 32 48 32 51 32 40 102 97 99 101 32 98 111 108 100 41 41) (35 40 34 233 120 233 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 32 50 32 51 32 40 102 97 99 101 32 98 111 108 100 32 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 101 105 103 104 116 45 98 105 116 41 41) (34 92 51 53 49 34) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (40 35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 41) (34 35 40 92 34 12354 92 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 34)))"##,
+        "charset property printing",
+    );
+}
+
+#[test]
+fn char_charset_family_follows_charset_c() {
+    // charset.c: char_charset walks the priority order and answers
+    // `unicode' once Vcharset_non_preferred_head (the part of the order
+    // `set-charset-priority' did not move) is reached for a Unicode
+    // character, `eight-bit' for a raw byte; a coding-system RESTRICTION
+    // reads coding_system_charset_list (Vemacs_mule_charset_list for
+    // emacs-mule); `split-char' is the code's bytes per dimension;
+    // `charset-after' and `find-charset-string'/`-region' report raw bytes
+    // as `eight-bit'.  ENCODE_CHAR/DECODE_CHAR honour a charset's
+    // `:min-code'/`:max-code' and the code-space index of an offset
+    // charset, a map file's `FROM-TO C' lines advance by index, the
+    // `unicode' and `emacs' code spaces end at MAX_UNICODE_CHAR and
+    // MAX_5_BYTE_CHAR, and CHECK_CHARSET_GET_CHARSET signals for an
+    // unknown charset.
+    let program = r##"
+(list (mapcar #'char-charset (list ?a #xe9 #x3042 #x20ac #x110000 #x3fffe9 #x3fff7f #x200000 #x1f600))
+	    (char-charset #x3042 '(japanese-jisx0208 ascii))
+	    (char-charset #xe9 '(japanese-jisx0208 ascii))
+	    (char-charset ?a '(japanese-jisx0208))
+	    (char-charset #x3042 'iso-2022-jp) (char-charset #xe9 'iso-2022-jp)
+	    (char-charset #x3042 'utf-8) (char-charset #xe9 'iso-latin-2)
+	    (mapcar #'split-char (list ?a #xe9 #x3042 #x110000 #x3fffe9 #x3fff7f #xac00))
+	    (with-temp-buffer (insert (string #x3fffe9 #x3042 ?\s ?a))
+			      (mapcar #'charset-after '(1 2 3 4 10)))
+	    (find-charset-string (string ?a #x3fffe9 #x20ac #x3042))
+	    (find-charset-string (unibyte-string ?a 233))
+	    (find-charset-string "")
+	    (find-charset-string (string ?a #xe9 #x3042) '(japanese-jisx0208 ascii iso-8859-1))
+	    (with-temp-buffer (insert (string ?a #x3fffe9 #x3042)) (find-charset-region (point-min) (point-max)))
+	    (with-temp-buffer (set-buffer-multibyte nil) (insert (unibyte-string ?a 233)) (find-charset-region (point-min) (point-max)))
+	    (progn (set-charset-priority 'japanese-jisx0208)
+		   (list (seq-take (charset-priority-list) 3)
+			 (mapcar #'char-charset (list ?a #xe9 #x3042 #x20ac #x110000 #x3fffe9))
+			 (mapcar #'split-char (list #xe9 #x3042 #x20ac))
+			 (find-charset-string (string ?a #x3fffe9 #x20ac #x3042))))
+	    (progn (set-charset-priority 'ascii)
+		   (list (seq-take (charset-priority-list) 3) (char-charset #xe9) (char-charset #x3042)))
+	    (progn (set-charset-priority 'ascii 'iso-8859-1)
+		   (list (char-charset #xe9) (char-charset #x3042)))
+	    (progn (set-charset-priority 'iso-8859-2)
+		   (list (seq-take (charset-priority-list) 3) (char-charset #xe9) (char-charset #x3042) (char-charset #x20ac)))
+	    (progn (set-charset-priority 'unicode)
+		   (list (char-charset #xe9) (char-charset #x3042) (char-charset #x110000) (split-char #x3042)))
+	    (list (decode-char 'unicode #x3fff7f) (decode-char 'emacs #x3fff7f) (decode-char 'emacs #x3fff80)
+		  (decode-char 'eight-bit #xe9) (decode-char 'eight-bit #x7f)
+		  (encode-char #x3fffe9 'unicode) (encode-char #x3fffe9 'emacs) (encode-char #x3fff7f 'emacs)
+		  (encode-char #x3fff7f 'unicode) (encode-char #x3fffe9 'eight-bit) (encode-char #x3fffe9 'iso-8859-1)
+		  (encode-char #x3fffe9 'japanese-jisx0208) (encode-char #x3fffe9 'latin-iso8859-1))
+	    (list (encode-char #x3fff7f 'gb18030) (encode-char #x10ffff 'gb18030) (encode-char #x110000 'gb18030)
+		  (encode-char #x80 'gb18030-4-byte-bmp)
+		  (decode-char 'gb18030-4-byte-bmp #x81308130) (decode-char 'gb18030-4-byte-bmp #x81308435)
+		  (decode-char 'gb18030-4-byte-bmp #x81308436)
+		  (decode-char 'gb18030-4-byte-smp #x90308130) (decode-char 'gb18030-4-byte-smp #xE3329A35)
+		  (decode-char 'gb18030-4-byte-smp #xE3329A36)
+		  (decode-char 'gb18030-4-byte-ext-1 #x8431A530) (encode-char #x200000 'gb18030-4-byte-ext-1)
+		  (decode-char 'gb18030 #x8431A530) (encode-char #x200000 'gb18030)
+		  (decode-char 'gb18030-2-byte #x8140) (encode-char #x4E02 'gb18030-2-byte)
+		  (decode-char 'japanese-jisx0208 #x3021) (encode-char #x4E9C 'japanese-jisx0208)
+		  (decode-char 'big5 #xA440) (encode-char #x4E00 'big5)
+		  (decode-char 'chinese-gb2312 #x3021) (decode-char 'korean-ksc5601 #x3021)
+		  (decode-char 'cp932-2-byte #x8140) (decode-char 'japanese-jisx0213-1 #x2121)
+		  (condition-case e (decode-char 'jisx0213-1 #x2121) (error e))
+		  (condition-case e (encode-char ?a 'jisx0213-1) (error e))))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"((ascii unicode unicode unicode chinese-gb2312 eight-bit emacs gb18030 unicode) japanese-jisx0208 nil nil japanese-jisx0208 nil unicode iso-8859-2 ((ascii 97) (unicode 0 0 233) (unicode 0 48 66) (chinese-gb2312 33 33) (eight-bit 233) (emacs 63 255 127) (unicode 0 172 0)) (eight-bit unicode ascii ascii nil) (ascii unicode eight-bit) (ascii eight-bit) nil (ascii unicode) (ascii unicode eight-bit) (ascii eight-bit) ((japanese-jisx0208 ascii iso-8859-1) (ascii unicode japanese-jisx0208 unicode chinese-gb2312 eight-bit) ((unicode 0 0 233) (japanese-jisx0208 36 34) (unicode 0 32 172)) (ascii unicode eight-bit japanese-jisx0208)) ((ascii japanese-jisx0208 iso-8859-1) unicode unicode) (iso-8859-1 unicode) ((iso-8859-2 ascii iso-8859-1) iso-8859-2 unicode unicode) (unicode unicode chinese-gb2312 (unicode 0 48 66)) (nil 4194175 nil 4194281 nil nil nil 4194175 nil 233 nil nil nil) (nil 3811744309 nil 2167439664 128 163 165 65536 1114111 nil 2097152 2217846064 65530 2217846064 19970 33088 20124 12321 19968 42048 21834 44032 12288 12288 (wrong-type-argument charsetp jisx0213-1) (wrong-type-argument charsetp jisx0213-1)))"##,
+        "char-charset family",
+    );
+}
+
+#[test]
+fn text_property_copies_follow_add_text_properties_order() {
+    // textprop.c add_properties conses each new property onto the head
+    // of the interval's plist, so every copy that goes through
+    // add_text_properties (Fsubstring's copy_text_properties, `concat' and
+    // `mapconcat' via concat_to_string, styled_format's argument and
+    // format-string intervals) reverses a span's pairs, where
+    // copy_intervals (`copy-sequence', buffer insertion) keeps them;
+    // editfns.c styled_format returns a string argument itself for a
+    // property-less "%s" format.  The printed forms swap their quotes
+    // for apostrophes so the contract's own rendering stays unambiguous.
+    let program = r##"
+(let ((s (propertize "x" 'a 1 'b 2))
+	    (p (lambda (x) (string-replace "\"" "'" (prin1-to-string x)))))
+	(list (funcall p (concat s))
+	      (funcall p (substring (propertize "xy" 'a 1 'b 2) 1))
+	      (funcall p (mapconcat #'identity (list s (propertize "y" 'c 3 'd 4)) (propertize "-" 'e 5 'f 6)))
+	      (funcall p (copy-sequence (propertize "xy" 'a 1 'b 2)))
+	      (funcall p (string-trim (propertize " x " 'a 1 'b 2)))
+	      (funcall p (concat (propertize "x" 'a 1) (propertize "y" 'a 1 'b 2)))
+	      (funcall p (substring (concat (propertize "xy" 'a 1 'b 2 'c 3)) 1))
+	      (with-temp-buffer (insert s) (funcall p (buffer-string)))
+	      (let ((c (copy-sequence "x"))) (put-text-property 0 1 'a 1 c) (put-text-property 0 1 'b 2 c) (funcall p c))
+	      (let ((c (copy-sequence "x"))) (add-text-properties 0 1 '(a 1 b 2) c) (funcall p c))
+	      (let ((c (copy-sequence "x"))) (set-text-properties 0 1 '(a 1 b 2) c) (funcall p c))
+	      (eq s (format "%s" s)) (eq s (format "%s" s 2))
+	      (funcall p (format "%s" s))
+	      (funcall p (format "%s " s))
+	      (funcall p (format "%5s" s))
+	      (funcall p (format "%d%s" 1 s))
+	      (funcall p (format (propertize "%s" 'q 9 'r 8) "x"))
+	      (funcall p (format (propertize "%s" 'q 9) s))
+	      (funcall p (format "%s-%s" s (propertize "y" 'c 3 'd 4)))
+	      (funcall p (format "%s" (concat s (propertize "y" 'c 3))))))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"("#('x' 0 1 (b 2 a 1))" "#('y' 0 1 (b 2 a 1))" "#('x-y' 0 1 (b 2 a 1) 1 2 (f 6 e 5) 2 3 (d 4 c 3))" "#('xy' 0 2 (a 1 b 2))" "#('x' 0 1 (a 1 b 2))" "#('xy' 0 1 (a 1) 1 2 (b 2 a 1))" "#('y' 0 1 (a 1 b 2 c 3))" "#('x' 0 1 (a 1 b 2))" "#('x' 0 1 (b 2 a 1))" "#('x' 0 1 (b 2 a 1))" "#('x' 0 1 (a 1 b 2))" t t "#('x' 0 1 (a 1 b 2))" "#('x ' 0 1 (b 2 a 1))" "#('    x' 4 5 (b 2 a 1))" "#('1x' 1 2 (b 2 a 1))" "#('x' 0 1 (r 8 q 9))" "#('x' 0 1 (b 2 a 1 q 9))" "#('x-y' 0 1 (b 2 a 1) 2 3 (d 4 c 3))" "#('xy' 0 1 (b 2 a 1) 1 2 (c 3))")"##,
+        "text property copy order",
     );
 }

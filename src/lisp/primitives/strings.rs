@@ -806,6 +806,27 @@ pub(crate) fn shift_string_props(
         .collect()
 }
 
+/// textprop.c copy_text_properties (Fsubstring) and fns.c
+/// concat_to_string (`concat', `mapconcat') hand each source interval's
+/// plist to `add_text_properties' on the fresh result, and add_properties
+/// conses every property it did not find onto the head of the plist: a
+/// copied span comes out with its pairs reversed, so
+/// `(substring (propertize "x" 'a 1 'b 2) 0)' prints as (b 2 a 1) where
+/// `copy-sequence' (copy_intervals) keeps (a 1 b 2).
+pub(crate) fn copied_string_props(
+    props: &[TextPropertySpan],
+    offset: usize,
+) -> Vec<TextPropertySpan> {
+    props
+        .iter()
+        .map(|span| TextPropertySpan {
+            start: span.start + offset,
+            end: span.end + offset,
+            props: span.props.iter().rev().cloned().collect(),
+        })
+        .collect()
+}
+
 pub(crate) fn slice_string_props(
     props: &[TextPropertySpan],
     from: usize,

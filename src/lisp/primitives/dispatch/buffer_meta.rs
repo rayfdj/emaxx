@@ -970,7 +970,14 @@ define_dispatch!(
             }
             "decode-char" => {
                 need_args(name, args, 2)?;
+                // CHECK_CHARSET_GET_CHARSET: an unknown charset signals.
                 let charset = args[0].as_symbol()?;
+                if !interp.has_charset(charset) {
+                    return Err(LispError::WrongTypeArgument(
+                        "charsetp".into(),
+                        args[0].clone(),
+                    ));
+                }
                 let code = u32::try_from(args[1].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
                 Ok(decode_charset_code(interp, charset, code)
@@ -991,12 +998,15 @@ define_dispatch!(
                 let character = u32::try_from(args[0].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid character".into()))?;
                 let charset = args[1].as_symbol()?;
-                let internal = if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
-                    RAW_BYTE_REGEX_BASE + character - RAW_BYTE8_BASE
-                } else {
-                    character
-                };
-                Ok(encode_charset_char(interp, charset, internal)
+                if !interp.has_charset(charset) {
+                    return Err(LispError::WrongTypeArgument(
+                        "charsetp".into(),
+                        args[1].clone(),
+                    ));
+                }
+                // ENCODE_CHAR takes GNU's character number as given (a raw
+                // byte at #x3fff80..#x3fffff belongs to `eight-bit' only).
+                Ok(encode_charset_char(interp, charset, character)
                     .map(|code| Value::Integer(code.into()))
                     .unwrap_or(Value::Nil))
             }
@@ -1014,16 +1024,13 @@ define_dispatch!(
                         args[0].clone(),
                     ));
                 };
-                // ENCODE_CHAR speaks the regex-internal raw-byte range, as
-                // in the `encode-char' arm above.
-                let internal = if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
-                    RAW_BYTE_REGEX_BASE + character - RAW_BYTE8_BASE
-                } else {
-                    character
-                };
+                // ENCODE_CHAR takes GNU's character number as given, as in
+                // the `encode-char' arm above.
+                let internal = character;
                 let restriction = args.get(1).filter(|value| !value.is_nil());
                 let Some(restriction) = restriction else {
-                    return Ok(Value::Symbol(charset_for_char(character).into()));
+                    // CHAR_CHARSET: the charset priority walk.
+                    return Ok(Value::Symbol(char_charset(interp, internal).0.into()));
                 };
                 if restriction.cons_values().is_some() {
                     // A list RESTRICTION: the first charset that encodes
@@ -1068,10 +1075,26 @@ define_dispatch!(
                     ])));
                 };
                 // char_charset substitutes the full charset priority order
-                // for a nil charset list (raw-text codings carry none).
+                // for a nil charset list (raw-text codings carry none);
+                // coding_system_charset_list reads a full-support
+                // iso-2022 system's `iso-2022' as Viso_2022_charset_list
+                // and emacs-mule's `emacs-mule' as Vemacs_mule_charset_list.
                 let mut charsets = coding_system_charset_names(interp, &coding);
                 if charsets.is_empty() {
-                    charsets = interp.charset_priority_list();
+                    let symbolic =
+                        interp
+                            .coding_system(&coding)
+                            .and_then(|state| match &state.charset_list {
+                                Value::Symbol(name) => Some(name.to_string()),
+                                _ => None,
+                            });
+                    charsets = match symbolic.as_deref() {
+                        Some("iso-2022") => interp.iso_2022_charset_list(),
+                        Some("emacs-mule") => {
+                            crate::lisp::primitives::coding::emacs_mule_charset_list(interp)
+                        }
+                        _ => interp.charset_priority_list(),
+                    };
                 }
                 for charset in charsets {
                     if encode_charset_char(interp, &charset, internal).is_some() {
@@ -1136,7 +1159,12 @@ define_dispatch!(
                     .transpose()?
                     .unwrap_or(interp.buffer.point() as i64);
                 Ok(match interp.buffer.char_at(pos as usize) {
-                    Some(ch) => Value::Symbol(charset_for_char(ch as u32).into()),
+                    Some(ch) => {
+                        let code = raw_byte_from_regex_char(ch)
+                            .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
+                            .unwrap_or(ch as u32);
+                        Value::Symbol(char_charset(interp, code).0.into())
+                    }
                     None => Value::Nil,
                 })
             }
@@ -1333,12 +1361,28 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "split-char" => {
+                // charset.c Fsplit_char: CHAR_CHARSET's charset and the
+                // bytes of ENCODE_CHAR's code, one per dimension.
                 need_args(name, args, 1)?;
-                let code = args[0].as_integer()?;
-                Ok(Value::list([
-                    Value::Symbol(charset_for_char(code as u32).into()),
-                    Value::Integer(code),
-                ]))
+                let Some(character) = args[0]
+                    .as_integer()
+                    .ok()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value <= 0x3f_ffff)
+                else {
+                    return Err(LispError::WrongTypeArgument(
+                        "characterp".into(),
+                        args[0].clone(),
+                    ));
+                };
+                let (charset, code) = char_charset(interp, character);
+                let dimension =
+                    crate::lisp::primitives::coding::charset_dimension(interp, &charset);
+                let mut items = vec![Value::Symbol(charset.into())];
+                for shift in (0..dimension).rev() {
+                    items.push(Value::Integer(i64::from((code >> (8 * shift)) & 0xFF)));
+                }
+                Ok(Value::list(items))
             }
             "clear-charset-maps" => Ok(Value::Nil),
             "set-charset-priority" => {

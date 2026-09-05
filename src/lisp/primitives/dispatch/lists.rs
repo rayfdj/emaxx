@@ -1705,12 +1705,12 @@ define_dispatch!(
                     if index > 0 {
                         let offset = result.chars().count();
                         result.push_str(&sep.text);
-                        props.extend(shift_string_props(&sep.props, offset));
+                        props.extend(copied_string_props(&sep.props, offset));
                     }
                     if let Some(string) = string_like(item) {
                         let offset = result.chars().count();
                         result.push_str(&string.text);
-                        props.extend(shift_string_props(&string.props, offset));
+                        props.extend(copied_string_props(&string.props, offset));
                     } else if item.is_nil() {
                     } else {
                         return Err(LispError::SignalValue(Value::list([

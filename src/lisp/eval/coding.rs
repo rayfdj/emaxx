@@ -322,6 +322,8 @@ impl Interpreter {
             .filter(|existing| !new_head.iter().any(|head| &head == existing))
             .cloned()
             .collect::<Vec<_>>();
+        // Vcharset_non_preferred_head = old_list: the rest of the order.
+        self.charset_non_preferred_head = tail.first().cloned();
         new_head.extend(tail);
         self.charset_priority = new_head;
         // charset.c Fset_charset_priority rebuilds Viso_2022_charset_list
@@ -333,6 +335,21 @@ impl Interpreter {
             .filter(|charset| iso_2022.contains(charset))
             .cloned()
             .collect();
+    }
+
+    pub fn charset_non_preferred_head(&self) -> Option<String> {
+        self.charset_non_preferred_head.clone()
+    }
+
+    /// The dump boundary for charset.c's Vcharset_non_preferred_head: the
+    /// variable is not staticpro'd, so the pdumper does not carry the
+    /// value loadup's `set-language-environment' left in temacs, and a
+    /// freshly started GNU Emacs has it nil (all-zero bits) until the
+    /// first `set-charset-priority' of the session.  Under a LANG-less
+    /// environment nothing calls it, and `char-charset' then walks the
+    /// whole ordered list without the unicode short cut.
+    pub fn forget_charset_non_preferred_head(&mut self) {
+        self.charset_non_preferred_head = None;
     }
 
     pub fn charset_priority_rank(&self, name: &str) -> usize {

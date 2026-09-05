@@ -486,6 +486,14 @@ pub(crate) fn initialize_batch_interpreter_with_load_preference(
     interpreter.set_variable("inhibit-message", Value::T, &mut Vec::new());
     let reconstruction = (|interpreter: &mut Interpreter| -> Result<(), String> {
         preload_batch_compat_libraries(interpreter)?;
+        // The dump boundary.  charset.c's Vcharset_non_preferred_head is
+        // not staticpro'd, so the value loadup left (english.el's
+        // `set-language-info-alist' re-runs `set-language-environment'
+        // for the default "English") does not survive into the dumped
+        // image: a fresh GNU session starts with it nil, and only a
+        // `set-charset-priority' of the session (a locale that selects a
+        // language environment) sets it again.
+        interpreter.forget_charset_non_preferred_head();
         initialize_batch_initial_frame_faces(interpreter)?;
         // startup.el's `command-line' computes `user-emacs-directory' (line
         // 597) well before it re-evaluates the custom settings that depend on
