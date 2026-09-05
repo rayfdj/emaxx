@@ -20130,3 +20130,38 @@ fn text_property_copies_follow_add_text_properties_order() {
         "text property copy order",
     );
 }
+
+#[test]
+fn default_file_modes_is_the_process_umask_and_temp_files_are_private() {
+    // fileio.c: `set-default-file-modes' sets the process's creation mask
+    // (~MODE & 0777), so `make-directory' (mkdir 0777), `write-region'
+    // (0666) and every subprocess see it, and `default-file-modes' is
+    // its complement; gen_tempname makes `make-temp-file' entries 0600
+    // and directories 0700 regardless of the mask's generosity.  A
+    // temporary directory that came out 0755 made server.el's
+    // server-ensure-safe-dir refuse it ("accessible by others").
+    let program = r##"
+(let* ((d (make-temp-file "emaxx-modes" t))
+       (f (make-temp-file "emaxx-modes"))
+       (sub (expand-file-name "sub" d))
+       (f2 (expand-file-name "f2" d))
+       (u (expand-file-name "u" d))
+       (orig (default-file-modes)))
+  (unwind-protect
+      (list (format "%o" (file-modes d)) (format "%o" (file-modes f))
+            (progn (with-file-modes #o700 (make-directory sub)) (format "%o" (file-modes sub)))
+            (progn (with-file-modes #o640 (write-region "" nil f2)) (format "%o" (file-modes f2)))
+            (progn (with-file-modes #o600 (call-process "sh" nil nil nil "-c" (concat "umask > " u)))
+                   (with-temp-buffer (insert-file-contents u) (string-trim (buffer-string))))
+            (progn (with-file-modes #o777 (make-directory (expand-file-name "sub2" d)))
+                   (format "%o" (file-modes (expand-file-name "sub2" d))))
+            (format "%o" (default-file-modes))
+            (progn (set-default-file-modes #o600) (prog1 (format "%o" (default-file-modes)) (set-default-file-modes orig)))
+            (format "%o" (default-file-modes)))
+    (delete-directory d t) (delete-file f)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"("700" "600" "700" "640" "0177" "777" "755" "600" "755")"##,
+        "default file modes",
+    );
+}

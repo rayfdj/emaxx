@@ -87,6 +87,8 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 155 | Linux `process-attributes` returns 15 of GNU's 31 keys (no pcpu, pmem, utime/stime/cutime/cstime/ctime, page-fault counts, tpgid, ttname, nice, pri, thcount), so Proced's %CPU refinement fails with `(wrong-type-argument integerp nil)`; the Darwin skip hid it | FIXED 2026-09-04 (sysdep.c /proc port; proced-tests 6/6 on Linux) |
 | 156 | `make-process` and `call-process` never searched `exec-path`/`exec-suffixes` (openp with X_OK): an empty `exec-path` still ran the program, misses surfaced as the spawn failure instead of "Searching for program" with openp's errno, a directory named as the program was a `(error "Permission denied (os error 13)")`, argv[0] was the bare name rather than the resolved path, EACCES rendered as `file-error` instead of `permission-denied` in every `report_file_errno` path, `file-executable-p` was nil for directories, an unexecutable absolute program was a synchronous host-error string instead of GNU's pty-path child exiting 127/126 (with the perror line) or the pipe-path "Doing vfork" signal, and glibc's `execvp` ran ENOEXEC files through `sh` where GNU's `execve` fails | FIXED 2026-09-04 |
 | 157 | `process-attributes` of the Emaxx process itself reports `state` "S" and `thcount` 2 where GNU reads "R" and 1: Lisp runs on a spawned thread while /proc/PID/stat describes the blocked main thread | OPEN (architectural, recorded 2026-09-04) |
+| 158 | `set-default-file-modes' only recorded a number: the process umask never changed, so `make-directory', `write-region' and subprocesses ignored `with-file-modes', and `make-temp-file' made 0644 files and 0755 directories where gen_tempname makes 0600/0700; server.el's server-ensure-safe-dir refused the 0755 temporary directory ("accessible by others"), failing all seven server-tests | FIXED 2026-09-05 (umask port; server-tests 4/7 matching, the rest are 159) |
+| 159 | `make-terminal-frame' is a stub that signals "Unknown terminal type": Emaxx has one terminal and one frame (a single window tree), so `emacsclient -c' cannot get the tty frame GNU's init_tty opens on the client's pty; server-tests/emacsclient/create-frame, server-force-stop/keeps-frames and server-start/stop-prompt-with-client fail (the client gets `-error Unknown terminal type' and exits) | OPEN (structural: multi-terminal tty frames, recorded 2026-09-05) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -6005,3 +6007,61 @@ failed after the two test corrections described above), strict gate
 Clippy and `cargo fmt --check' clean.  The full grouped gate for this
 change runs together with the next items of the same series and is
 recorded there.
+
+## 2026-09-05 server-tests and mml-sec-tests: the umask port, and what is left
+
+**server-tests (7 mismatches -> 3; finding 158 FIXED, 159 OPEN).**  All
+seven tests failed in Emaxx with "`.../server-testsXXXXXX' is not a safe
+directory because it is accessible by others (755)": server.el's
+server-ensure-safe-dir checks `(logand ?\077 (file-modes dir))', and the
+directory `make-temp-file' had made was 0755.  fileio.c's
+`set-default-file-modes' sets the process's file mode creation mask
+(`umask (~mode & 0777)'), `default-file-modes' answers `~realmask & 0777'
+(read from the process at startup, init_fileio), and gen_tempname creates
+temporary files with S_IRUSR|S_IWUSR and directories with 0700.  Emaxx
+kept `default-file-modes' as a number nothing consulted, so
+`with-file-modes' had no effect on `make-directory', `write-region' or a
+subprocess, and temporary entries came out with the umask defaults.  All
+three are ported (the mask is a real umask, inherited by subprocesses as
+GNU's docstring promises).  Contract:
+`default_file_modes_is_the_process_umask_and_temp_files_are_private`
+(a `sh -c umask' child reports 0177 under `(with-file-modes #o600 ...)').
+The harness replay (`run-1788578203177624094-5926`) now matches 4/7:
+server-start/sets-minor-mode, server-start/no-stop-prompt-without-client,
+emacsclient/server-edit and emacsclient/eval pass in both.
+
+The remaining three (emacsclient/create-frame,
+server-force-stop/keeps-frames, server-start/stop-prompt-with-client) run
+`emacsclient -c'.  The client's stdout is the pty `make-process' gave it,
+so emacsclient sends `-tty /dev/pts/N linux' and server.el calls
+`(make-frame '((window-system . nil) (tty . "/dev/pts/N") (tty-type .
+"linux") ...))': GNU's Fmake_terminal_frame runs init_tty on that
+device (opens it, tgetent's the type, registers a second terminal) and
+builds a second frame with its own window tree; the oracle's log shows
+`#<frame F2> created' and the client's pty receives the clear-screen
+sequences.  Emaxx's `make-terminal-frame' is a stub that signals
+"Unknown terminal type" (the client receives `-error Unknown&_terminal&_type'
+and exits), because Emaxx has exactly one terminal object and one frame
+sharing one window tree.  Making these tests pass honestly means
+multi-terminal tty frames: terminal objects, init_tty over a device and
+its terminfo, per-frame root and selected windows, `delete-frame' of a
+non-sole frame and `delete-terminal'.  That is a frame-model change, not
+a patch, and a frame that merely reported itself live while sharing the
+initial frame's windows would be a lie about `frame-root-window'; so
+this stays open as finding 159.
+
+**mml-sec-tests (4 mismatches; no Emaxx divergence).**  The four
+`mml-secure-en-decrypt-N' tests fail on both sides here: with gpg 2.4.4
+and no agent in the sandbox, decryption does not happen and `decrypted'
+is the armored message itself, on the oracle and on Emaxx alike (the
+other ten failing/skipped tests of the file match exactly:
+find-usable-keys, key-checks, select-preferred-keys-4, sign-verify-1,
+the passphrase skips).  The comparison flags them only because the
+failure message embeds the ciphertext, and OpenPGP encryption draws a
+fresh session key and padding per run, so no two runs -- not even two
+oracle runs -- produce the same text.  The harness normalizer is
+deliberately restricted to environmental variance (its own doc comment,
+compat.rs), and erasing ciphertext from messages would be a
+semantic-content normalizer, so none was added: these four remain
+reported as message mismatches, which is what they are.  Replay:
+`run-1788578235968186948-6017`, 12/16 matching.

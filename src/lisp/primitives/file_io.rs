@@ -395,11 +395,16 @@ pub(crate) fn make_temp_file_internal(
             return Ok(last);
         }
         if dir_flag.is_nil() {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
+            // gen_tempname opens with S_IRUSR | S_IWUSR (the umask still
+            // applies), and makes a directory with 0700.
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&candidate) {
                 Ok(mut file) => {
                     if let Some(text) = text.and_then(string_like) {
                         file.write_all(text.text.as_bytes())
@@ -411,7 +416,13 @@ pub(crate) fn make_temp_file_internal(
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
         }
-        match fs::create_dir(&candidate) {
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&candidate) {
             Ok(()) => return Ok(last),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(LispError::Signal(error.to_string())),
