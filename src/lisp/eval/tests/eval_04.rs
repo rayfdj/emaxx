@@ -524,14 +524,13 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
         md5::compute(canonical_source.display().to_string().as_bytes())
     );
     let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
-    // comp.el places eln files under `comp-native-version-dir'
-    // (VERSION-ABIHASH) when that variable is bound.  This build models a
-    // GNU without HAVE_NATIVE_COMP: the variable is void (the oracle's own
-    // "30.2-adba4e3f" is that binary's per-build identity, not portable
-    // state -- audit finding 77), so the eln name has no version
-    // subdirectory.  The hash components still match the oracle's.
+    // comp.c places eln files under `comp-native-version-dir'
+    // (VERSION-ABIHASH, this build's own ABI identity -- audit finding
+    // 77) inside BASE-DIR; the hash components match the oracle's.
+    let version_dir = crate::lisp::primitives::string_text(&eval_str("comp-native-version-dir"))
+        .expect("comp-native-version-dir is a string");
     let eln_name = format!(
-        "source-{}-{}.eln",
+        "{version_dir}/source-{}-{}.eln",
         &source_path_hash[..8],
         &source_content_hash[..8]
     );
@@ -5601,23 +5600,23 @@ fn inhibited_interaction_is_dynamic_across_separately_defined_prompt_helpers() {
 
 #[test]
 fn native_comp_capability_probes_are_honest() {
-    assert_eq!(eval_str_with_upstream_batch("(featurep 'emacs)"), Value::T);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    assert_eq!(eval_str_with(&mut interp, "(featurep 'emacs)"), Value::T);
     assert_eq!(
-        eval_str_with_upstream_batch("(native-comp-available-p)"),
-        Value::Nil
+        eval_str_with(&mut interp, "(native-comp-available-p)"),
+        Value::T
     );
-    // Emaxx models a build without native compilation, so comp.c registers
-    // nothing: `native-comp-available-p' and `(featurep 'native-compile)' are
-    // both nil and must agree.  Claiming the feature while denying the
-    // capability was the inconsistency phase 6 removed.  The pinned oracle is
-    // a native-comp build and answers t to both — a documented build
-    // divergence, not a target to imitate.
+    // The Rust comp.c boundary is available and registers GNU's native-compile
+    // feature, so the public capability probe and feature must agree.
     assert_eq!(
-        eval_str_with_upstream_batch("(featurep 'native-compile)"),
-        Value::Nil
+        eval_str_with(&mut interp, "(featurep 'native-compile)"),
+        Value::T
     );
     assert_eq!(
-        eval_str_with_upstream_batch("(native-comp-function-p (symbol-function 'car))"),
+        eval_str_with(
+            &mut interp,
+            "(native-comp-function-p (symbol-function 'car))",
+        ),
         Value::Nil
     );
 }
@@ -5817,11 +5816,10 @@ fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
                 Value::String("Demo".into()),
                 Value::Symbol("ignore".into()),
                 Value::T,
-                // The sibling GNU build native-compiles `last' into a subr;
-                // Emaxx models a no-native-comp GNU (native-comp-available-p
-                // is nil), whose dumped Lisp owners are byte-code functions
-                // loaded from their compiled `.elc' representation.
-                Value::Symbol("byte-code-function".into()),
+                // Both ordinary native-enabled runtimes load `last' as a
+                // native subr. The separate pinned GNU terminal oracle
+                // confirms this existing expression's complete result.
+                Value::Symbol("subr".into()),
                 Value::BuiltinFunc("re-search-forward".into()),
                 Value::String("subr.elc".into()),
                 Value::String("subr.elc".into()),

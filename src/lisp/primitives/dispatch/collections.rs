@@ -129,9 +129,10 @@ fn category_character_range(value: &Value) -> Result<(u32, u32), LispError> {
 
 /// Boundaries at which the effective value of a char table can change.
 ///
-/// Char-table writes are stored as ordered, possibly overlapping intervals.
-/// Splitting a category update at every boundary preserves earlier per-range
-/// values without walking every Unicode scalar in a large GNU category range.
+/// Splitting a category update at every current boundary preserves earlier
+/// per-range values without walking every Unicode scalar in a large GNU
+/// category range.  Each table's lazily maintained range index has already
+/// discarded boundaries hidden by newer writes.
 fn char_table_change_boundaries(
     interp: &Interpreter,
     table_id: u64,
@@ -144,15 +145,7 @@ fn char_table_change_boundaries(
         let Some(table) = interp.find_char_table(id) else {
             break;
         };
-        for entry in &table.entries {
-            if entry.end < start || entry.start > end {
-                continue;
-            }
-            boundaries.push(entry.start.max(start));
-            if entry.end < end {
-                boundaries.push(entry.end + 1);
-            }
-        }
+        table.append_change_boundaries(start, end, &mut boundaries);
         next_table = table.parent;
     }
     boundaries.sort_unstable();
@@ -666,7 +659,7 @@ define_dispatch!(
                 let average = sysinfo::System::load_average();
                 let values = [average.one, average.five, average.fifteen];
                 if args.first().is_some_and(Value::is_truthy) {
-                    Ok(Value::list(values.map(Value::Float)))
+                    Ok(Value::list(values.map(Value::float)))
                 } else {
                     // GNU multiplies the host values by 100 and truncates the
                     // resulting positive doubles to integers.

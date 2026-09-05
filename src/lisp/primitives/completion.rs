@@ -98,11 +98,10 @@ pub(crate) fn obarray_symbols(
     // already carrying an obarray in slot 0 reads through it, and an
     // untouched one (slot 0 still the fixnum 0) reads as empty.
     if is_vector_value(obarray) {
-        let slots = vector_slot_refs(obarray)?;
-        if let Some(first) = slots.first() {
-            let current = first.borrow().clone();
-            if is_obarray_like_value(interp, &current) {
-                return obarray_symbols(interp, &current);
+        let slots = vector_items(obarray)?;
+        if let Some(current) = slots.first() {
+            if is_obarray_like_value(interp, current) {
+                return obarray_symbols(interp, current);
             }
             if matches!(current, Value::Integer(0)) {
                 return Ok(Vec::new());
@@ -168,20 +167,19 @@ pub(crate) fn coerce_legacy_vector_obarray(
     if !is_vector_value(obarray) {
         return Ok(obarray.clone());
     }
-    let slots = vector_slot_refs(obarray)?;
-    let Some(first) = slots.first() else {
+    let slots = vector_items(obarray)?;
+    let Some(current) = slots.first().cloned() else {
         return Err(LispError::WrongTypeArgument(
             "obarrayp".into(),
             obarray.clone(),
         ));
     };
-    let current = first.borrow().clone();
     if is_obarray_like_value(interp, &current) {
         return Ok(current);
     }
     if matches!(current, Value::Integer(0)) {
         let fresh = make_obarray(interp);
-        *first.borrow_mut() = fresh.clone();
+        aset_vector_value(obarray, 0, fresh.clone())?;
         return Ok(fresh);
     }
     Err(LispError::WrongTypeArgument(
@@ -195,6 +193,19 @@ pub(crate) fn intern_in_obarray(
     obarray: &Value,
     symbol_name: &str,
 ) -> Result<Value, LispError> {
+    intern_in_obarray_with_name(interp, obarray, symbol_name, |_| {
+        Ok(Value::string(symbol_name))
+    })
+}
+
+/// lread.c:intern_driver is reached only after oblookup misses. In particular,
+/// Fintern must not allocate/purecopy a name string when a symbol already exists.
+pub(crate) fn intern_in_obarray_with_name(
+    interp: &mut Interpreter,
+    obarray: &Value,
+    symbol_name: &str,
+    make_name: impl FnOnce(&mut Interpreter) -> Result<Value, LispError>,
+) -> Result<Value, LispError> {
     let obarray = &coerce_legacy_vector_obarray(interp, obarray)?;
     let Value::Record(id) = obarray else {
         return Err(LispError::WrongTypeArgument(
@@ -203,6 +214,13 @@ pub(crate) fn intern_in_obarray(
         ));
     };
     if interp.is_standard_obarray_id(*id) {
+        if !interp.standard_obarray_contains_symbol(symbol_name) {
+            let name = make_name(interp)?;
+            crate::lisp::types::SymbolName::intern_with_lisp_name(
+                symbol_name.to_owned(),
+                Some(name),
+            );
+        }
         interp.intern_symbol_name(symbol_name);
         return Ok(crate::lisp::types::interned_symbol_value(
             symbol_name.to_string(),
@@ -248,9 +266,13 @@ pub(crate) fn intern_in_obarray(
     {
         return Ok(existing);
     }
-    let symbol =
-        Value::Symbol(crate::lisp::types::make_obarray_symbol_name(symbol_name, *id).into());
+    let name = make_name(interp)?;
+    let symbol = Value::Symbol(crate::lisp::types::SymbolName::intern_with_lisp_name(
+        crate::lisp::types::make_obarray_symbol_name(symbol_name, *id),
+        Some(name),
+    ));
     symbols.push(symbol.clone());
+    let record = interp.find_record_mut(*id).expect("validated obarray");
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
     } else {
@@ -365,6 +387,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
         (Value::Cons(left), Value::Cons(right)) => Rc::ptr_eq(left, right),
+        (Value::Vector(left), Value::Vector(right)) => Rc::ptr_eq(left, right),
         (Value::Lambda(left), Value::Lambda(right)) => Rc::ptr_eq(left, right),
         (Value::Buffer(left), Value::Buffer(right)) => left.id == right.id,
         (Value::Marker(left_id), Value::Marker(right_id))
@@ -379,6 +402,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
 pub(crate) fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
     match value {
         Value::Cons(cell) => Some((0, crate::lisp::types::ConsCell::identity(cell))),
+        Value::Vector(vector) => Some((4, crate::lisp::types::VectorValue::identity(vector))),
         Value::StringObject(state) => Some((1, Rc::as_ptr(state) as usize)),
         Value::Record(id) => Some((2, *id as usize)),
         Value::CharTable(id) => Some((3, *id as usize)),
@@ -405,6 +429,16 @@ pub(crate) fn substitute_object_recurse(
     }
 
     match subtree {
+        Value::Vector(vector) => {
+            let slot_count = vector.slots().len();
+            for index in 0..slot_count {
+                let current = vector.slots()[index].clone();
+                let updated =
+                    substitute_object_recurse(interp, object, placeholder, &current, seen)?;
+                vector.slots_mut()[index] = updated;
+            }
+            Ok(subtree.clone())
+        }
         Value::Cons(_) => {
             let Some((car, cdr)) = subtree.cons_values() else {
                 return Ok(subtree.clone());
@@ -1375,8 +1409,6 @@ pub(crate) fn activate_minibuffer(
     }
     interp.buffer.goto_char(interp.buffer.point_max());
 
-    interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
-
     // Select the minibuffer window for the read, GNU's read_minibuf: the
     // minibuffer buffer shows there, never in the entry window.
     if let Value::Record(minibuffer_window_id) = interp.minibuffer_window_value() {
@@ -1387,7 +1419,7 @@ pub(crate) fn activate_minibuffer(
     let previous_runtime =
         interp.begin_minibuffer_runtime(buffer_id, interp.selected_window_id(), prompt_string.text);
 
-    Ok(ActiveMinibuffer {
+    let active = ActiveMinibuffer {
         buffer_id,
         saved_windows,
         saved_buffer_id,
@@ -1395,7 +1427,38 @@ pub(crate) fn activate_minibuffer(
         saved_selected_window_buffer_id,
         previous_minibuffer_selected_window_id,
         previous_runtime,
-    })
+    };
+    // GNU minibuf.c:read_minibuf has already selected/activated the
+    // minibuffer when clear_message runs, but has not installed its map.
+    if let Err(error) = super::dispatch::clear_message(interp, env, true, true) {
+        // read_minibuf's unwind records also cover a nonlocal exit from
+        // clear-message-function. Run the exit hook before restoring state,
+        // and restore even if that hook itself exits nonlocally.
+        let saved_windows = active.saved_windows.clone();
+        let exit_result = (|| {
+            // run_exit_minibuf_hook changes buffers only if it is still live.
+            if interp.has_buffer_id(buffer_id) {
+                interp.set_current_buffer_id(buffer_id)?;
+            }
+            super::safe_run_named_hooks(
+                interp,
+                "minibuffer-exit-hook",
+                env,
+                Some(interp.current_buffer_id()),
+            )
+        })();
+        restore_active_minibuffer(interp, active);
+        if interp
+            .lookup_var("read-minibuffer-restore-windows", env)
+            .is_none_or(|restore| restore.is_truthy())
+        {
+            interp.restore_window_configuration(saved_windows)?;
+        }
+        exit_result?;
+        return Err(error);
+    }
+    interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
+    Ok(active)
 }
 
 pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveMinibuffer) {
@@ -1535,10 +1598,27 @@ pub(crate) fn callable_interactive_form_items(
 ) -> Option<Vec<Value>> {
     if let Value::Record(id) = func
         && let Some(record) = interp.find_record(*id)
-        && record.kind == crate::lisp::eval::RecordKind::Closure
-        && let Ok(Some(object)) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
-        && let Some(spec) = object.interactive
     {
+        if record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction {
+            return record
+                .slots
+                .get(6)
+                .filter(|spec| !spec.is_nil())
+                .cloned()
+                .and_then(|form| form.to_vec().ok());
+        }
+        if record.kind != crate::lisp::eval::RecordKind::Closure {
+            return interactive_form_items(func);
+        }
+        let Some(object) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
+            .ok()
+            .flatten()
+        else {
+            return interactive_form_items(func);
+        };
+        let Some(spec) = object.interactive else {
+            return interactive_form_items(func);
+        };
         // GNU keys interactivity on the slot's presence (PVSIZE >
         // COMPILED_INTERACTIVE): a bare `(interactive)' stores nil there
         // and the function is still a command.  callint.c

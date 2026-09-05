@@ -840,28 +840,17 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 get_load_suffixes_value(interp, env)
             }
-            "load" => {
-                if args.is_empty() || args.len() > 5 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let target = string_text(&args[0])?;
-                let noerror = args.get(1).is_some_and(Value::is_truthy);
-                let Some(path) = resolve_load_target_in_env(interp, &target, env) else {
-                    if noerror {
-                        return Ok(Value::Nil);
-                    }
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("file-missing".into()),
-                        Value::String("Cannot open load file".into()),
-                        Value::String("No such file or directory".into()),
-                        Value::String(target.into()),
-                    ])));
-                };
-                interp.load_resolved_path(&path, env, args.get(2).is_some_and(Value::is_truthy))
-            }
+            "load" => load_file(interp, args, env).map(|(result, _)| result),
             "locate-file-internal" => {
-                need_args(name, args, 4)?;
-                locate_file_internal(interp, &args[0], &args[1], &args[2], &args[3], env)
+                need_arg_range(name, args, 2, 4)?;
+                locate_file_internal(
+                    interp,
+                    &args[0],
+                    &args[1],
+                    args.get(2).unwrap_or(&Value::Nil),
+                    args.get(3).unwrap_or(&Value::Nil),
+                    env,
+                )
             }
             "directory-files" => {
                 need_arg_range(name, args, 1, 5)?;
@@ -922,17 +911,12 @@ define_dispatch!(
                 let requested = string_text(&args[0])?;
                 let path = resolve_file_name_in_env(interp, env, &requested);
                 validate_file_name(&path)?;
-                Ok(
-                    if fs::metadata(&path)
-                        .map(|metadata| metadata.is_dir())
-                        .unwrap_or(false)
-                        && (name == "file-directory-p" || file_readable_p(&path))
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                let directory = if name == "file-directory-p" {
+                    fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+                } else {
+                    accessible_directory(&encode_internal_multibyte_bytes(&path)?).is_ok()
+                };
+                Ok(if directory { Value::T } else { Value::Nil })
             }
             "file-readable-p" => {
                 need_args(name, args, 1)?;

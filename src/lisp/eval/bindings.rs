@@ -1,6 +1,7 @@
 use super::*;
+use crate::lisp::types::SymbolName;
 
-fn dynamic_library_suffix_values() -> Vec<Value> {
+pub(crate) fn dynamic_library_suffix_values() -> Vec<Value> {
     #[cfg(target_os = "macos")]
     let suffixes = [".dylib", ".so"].as_slice();
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -131,7 +132,7 @@ impl Interpreter {
                 .unwrap_or_else(|_| name.to_string())
                 .into()
         };
-        self.lookup_var_with_resolved_name(name, resolved.as_ref(), env)
+        self.lookup_var_with_resolved_name(name, resolved.as_ref(), env, None)
             .ok()
             .flatten()
     }
@@ -141,6 +142,7 @@ impl Interpreter {
         name: &str,
         resolved: &str,
         env: &Env,
+        resolved_symbol: Option<&SymbolName>,
     ) -> Result<Option<Value>, LispError> {
         if resolved == "buffer-undo-list" {
             return Ok(Some(crate::lisp::primitives::buffer_undo_list_value(
@@ -175,16 +177,34 @@ impl Interpreter {
             }
             let shared_updates = Self::frame_identity(frame)
                 .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
-            for (k, v) in frame.iter().rev() {
+            for (position, (k, v)) in frame.iter().enumerate().rev() {
                 if k == name {
                     return Ok(Some(
-                        shared_updates
-                            .and_then(|updates| updates.get(name))
-                            .cloned()
+                        frame
+                            .canonical_lisp_binding_value(position, name)
+                            .or_else(|| {
+                                shared_updates
+                                    .and_then(|updates| updates.get(name))
+                                    .cloned()
+                            })
                             .unwrap_or_else(|| v.clone()),
                     ));
                 }
             }
+        }
+        // data.c:find_symbol_value dispatches on the symbol's redirect tag.
+        // A SYMBOL_PLAINVAL cell returns immediately; it never probes the
+        // current buffer or the dynamic-binding stack.  Names enter this set
+        // at the same transition where Emaxx creates localized symbol state,
+        // and remain there just as GNU's SYMBOL_LOCALIZED redirect does.
+        if !self.buffer_local_capable_variables.contains(resolved) {
+            let global = if let Some(symbol) = resolved_symbol {
+                debug_assert_eq!(symbol.as_str(), resolved);
+                self.global_binding_value_symbol(symbol)
+            } else {
+                self.global_value(resolved)
+            };
+            return Ok(global.or_else(|| self.builtin_var_value(resolved)));
         }
         // A buffer-local cell always wins over a dynamically bound default.
         // This also covers a plain special that becomes buffer-local while
@@ -197,22 +217,75 @@ impl Interpreter {
         if let Some(value) = self.active_global_special_value(resolved) {
             return Ok(value.or_else(|| self.builtin_var_value(resolved)));
         }
-        if let Some(value) = self.global_value(resolved) {
+        let global = if let Some(symbol) = resolved_symbol {
+            debug_assert_eq!(symbol.as_str(), resolved);
+            self.global_binding_value_symbol(symbol)
+        } else {
+            self.global_value(resolved)
+        };
+        if let Some(value) = global {
             return Ok(Some(value));
         }
         Ok(self.builtin_var_value(resolved))
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
-        let resolved = self.resolve_variable_name(name)?;
-        self.lookup_var_with_resolved_name(&resolved, &resolved, &Env::new())?
-            .ok_or(LispError::Void(resolved))
+        // data.c:find_symbol_value follows a variable alias only when the
+        // symbol is actually redirected.  Keep the overwhelmingly common
+        // plain-value path borrowed; allocating a fresh String for every
+        // native `symbol-value' made compiler propagation spend most of its
+        // time copying already-interned names.
+        let resolved: std::borrow::Cow<'_, str> = if self.direct_variable_alias(name).is_none() {
+            name.into()
+        } else {
+            self.resolve_variable_name(name)?.into()
+        };
+        if resolved != "buffer-undo-list"
+            && !self
+                .buffer_local_capable_variables
+                .contains(resolved.as_ref())
+        {
+            return self
+                .global_value(resolved.as_ref())
+                .or_else(|| self.builtin_var_value(resolved.as_ref()))
+                .ok_or_else(|| LispError::Void(resolved.into_owned()));
+        }
+        self.lookup_var_with_resolved_name(resolved.as_ref(), resolved.as_ref(), &Env::new(), None)?
+            .ok_or_else(|| LispError::Void(resolved.into_owned()))
     }
 
-    /// The value a C reader of a forwarded variable sees: the slot's value
-    /// at detach time once `makunbound' detached the symbol, otherwise the
-    /// ordinary dynamic value.
+    /// The SYMBOL_PLAINVAL case of data.c:find_symbol_value.  Native symbol
+    /// handles may retain its already-encoded word until the value-cell epoch
+    /// changes.  Redirected, localized, synthesized, and void cells stay on
+    /// the complete lookup path above.
+    pub(crate) fn plain_global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
+        if self.direct_variable_alias(name.as_str()).is_some()
+            || self.buffer_local_capable_variables.contains(name.as_str())
+        {
+            return None;
+        }
+        self.global_binding_value_symbol(name)
+    }
+
+    pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
+        if self.direct_variable_alias(name.as_str()).is_some()
+            || name.as_str() == "buffer-undo-list"
+            || self.buffer_local_capable_variables.contains(name.as_str())
+        {
+            return self.symbol_value_cell(name.as_str());
+        }
+        self.global_binding_value_symbol(name)
+            .or_else(|| self.builtin_var_value(name.as_str()))
+            .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
+    }
+
+    /// C readers keep using the C slot even after `makunbound' disconnects
+    /// the Lisp symbol. Direct evaluator fields may subsequently change
+    /// independently of that symbol (for example process_quit_flag).
     pub(crate) fn forwarded_c_value(&self, name: &str, env: &Env) -> Option<Value> {
+        if let Some(value) = self.forwarded_eval_cell_value(name) {
+            return Some(value);
+        }
         if let Some(detached) = self.detached_forwarded_variables.get(name) {
             return Some(detached.clone());
         }
@@ -224,12 +297,6 @@ impl Interpreter {
         // something stores into it again (data.c set_internal).
         if self.detached_forwarded_variables.contains_key(name) {
             return None;
-        }
-        if let Some(variable) = DUMPED_AUTO_BUFFER_LOCALS
-            .iter()
-            .find(|variable| variable.name == name)
-        {
-            return Some(variable.default.value());
         }
         match name {
             "nil" => Some(Value::Nil),
@@ -288,8 +355,9 @@ impl Interpreter {
                 std::iter::once(Value::symbol("vector-literal"))
                     .chain(std::iter::repeat_n(Value::Nil, 16)),
             )),
-            "gc-elapsed" => Some(Value::Float(0.0)),
+            "gc-elapsed" => Some(Value::float(0.0)),
             "gcs-done" => Some(Value::Integer(0)),
+            "syntax-propertize--done" => Some(Value::Integer(-1)),
             "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
             "most-negative-fixnum" => Some(Value::Integer(-2_305_843_009_213_693_952)),
             "enable-multibyte-characters" => Some(if self.buffer.is_multibyte() {
@@ -353,7 +421,7 @@ impl Interpreter {
             "inhibit-null-byte-detection" => Some(Value::Nil),
             "inhibit-iso-escape-detection" => Some(Value::Nil),
             "create-lockfiles" => Some(Value::T),
-            "display-hourglass" => Some(Value::Nil),
+            "display-hourglass" => Some(Value::T),
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
             // GNU fileio.c defvar; simple.el reads it before files.el policy
             // is necessarily loaded.
@@ -398,10 +466,14 @@ impl Interpreter {
             // GNU's dumped image leaves automatic mini-window resizing at
             // its user-facing default and exposes textprop.c's point-motion
             // guard before any Lisp library is loaded.
-            "resize-mini-windows" => Some(Value::Symbol("grow-only".into())),
-            "max-mini-window-height" => Some(Value::Float(0.25)),
+            // xdisp.c deliberately starts this nil; unchanged loadup.el sets
+            // the advertised grow-only value after loading window.el.
+            "resize-mini-windows" => Some(Value::Nil),
+            "max-mini-window-height" => Some(Value::float(0.25)),
             "inhibit-point-motion-hooks" => Some(Value::T),
-            "inhibit-x-resources" => Some(Value::T),
+            // emacs.c starts this false.  startup.el sets it for -Q or
+            // --no-x-resources when it processes the actual command line.
+            "inhibit-x-resources" => Some(Value::Nil),
 
             // GNU keyboard.c keymaps; simple.el define-keys them at load
             // time (event-apply-*-modifier bindings).
@@ -410,6 +482,9 @@ impl Interpreter {
             | "input-decode-map"
             | "local-function-key-map" => Some(Value::list([Value::Symbol("keymap".into())])),
             "values" => Some(Value::Nil),
+            // xdisp.c:syms_of_xdisp initializes the C callback slot to nil;
+            // unchanged minibuffer.el installs its Lisp function later.
+            "clear-message-function" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
             "load-suffixes" => Some(Value::list(
                 dynamic_library_suffix_values()
@@ -418,12 +493,9 @@ impl Interpreter {
             )),
             "module-file-suffix" => Some(module_file_suffix_value()),
             "dynamic-library-suffixes" => Some(Value::list(dynamic_library_suffix_values())),
-            // GNU's dumped image has jka-compr's representation suffix
-            // installed; the native loader likewise understands gzip.
-            "load-file-rep-suffixes" => Some(Value::list([
-                Value::String(String::new().into()),
-                Value::String(".gz".into()),
-            ])),
+            // lread.c initializes this to just the empty representation.
+            // Unchanged jka-compr Elisp owns installing compression suffixes.
+            "load-file-rep-suffixes" => Some(Value::list([Value::String(String::new().into())])),
             "after-load-alist" => Some(Value::Nil),
             "load-true-file-name" => Some(
                 self.current_load_file
@@ -431,7 +503,9 @@ impl Interpreter {
                     .map(|value| Value::String(value.into()))
                     .unwrap_or(Value::Nil),
             ),
-            "load-source-file-function" => Some(Value::Symbol("load-with-code-conversion".into())),
+            // lread.c initializes nil; unchanged loadup.el installs
+            // load-with-code-conversion after the coding owners are loaded.
+            "load-source-file-function" => Some(Value::Nil),
             "load-force-doc-strings" | "load-convert-to-unibyte" => Some(Value::Nil),
             "preloaded-file-list" | "byte-boolean-vars" => Some(Value::Nil),
             "load-dangerous-libraries" | "force-load-messages" => Some(Value::Nil),
@@ -451,9 +525,16 @@ impl Interpreter {
             "signal-hook-function" => Some(Value::Nil),
             "minor-mode-overriding-map-alist" => Some(Value::Nil),
             "standard-input" => Some(Value::T),
-            "temporary-file-directory" => Some(Value::String(temp_directory_name().into())),
-            "purify-flag" => Some(Value::Nil),
-            "exec-suffixes" => Some(Value::list([Value::String(String::new().into())])),
+            // filelock.c initializes nil.  cus-start.el records and startup.el
+            // applies the environment-dependent standard value later.
+            "temporary-file-directory" => Some(Value::Nil),
+            // alloc.c:init_alloc_once and lread.c:syms_of_lread initialize
+            // this true.  Unchanged loadup.el owns the later hash table and
+            // final nil transitions.
+            "purify-flag" => Some(Value::T),
+            // callproc.c initializes nil.  Unchanged bindings.el installs the
+            // platform-specific executable suffix list during Lisp loadup.
+            "exec-suffixes" => Some(Value::Nil),
             "debug-on-error" => Some(Value::Nil),
             "debugger-stack-frame-as-list" => Some(Value::Nil),
             "print-quoted" => Some(Value::T),
@@ -491,14 +572,21 @@ impl Interpreter {
 
             // insdel.c: change hooks run unless a primitive binds this.
             "inhibit-modification-hooks" => Some(Value::Nil),
-            // doc.c: name of the DOC file inside `doc-directory'.
-            "internal-doc-file-name" => Some(Value::String("DOC".into())),
+            // doc.c starts nil.  Snarf-documentation records the actual DOC
+            // filename later while unchanged loadup.el builds the image.
+            "internal-doc-file-name" => Some(Value::Nil),
 
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
-            "frame-internal-parameters" => Some(Value::Nil),
+            // frame.c includes outer-window-id only in an X11 build.  Emaxx
+            // has no X11 frame backend, so it follows GNU's non-X branch.
+            "frame-internal-parameters" => Some(Value::list([
+                Value::symbol("name"),
+                Value::symbol("parent-id"),
+                Value::symbol("window-id"),
+            ])),
             // GNU's `Vsource_directory' is fixed when the binary is built
             // (epaths.h PATH_DUMPLOADSEARCH), so it names the checkout whose
             // Lisp this image reconstructs.  It must never be derived from a
@@ -544,24 +632,11 @@ impl Interpreter {
             "menu-updating-frame" => Some(Value::Nil),
             // xdisp.c's DEFVAR_BOOL, default off; xt-mouse consults it.
             "x-stretch-cursor" => Some(Value::Nil),
-            // startup.el's dumped defcustom default; the File menu's
-            // session-recovery :enable reads it.
-            "auto-save-list-file-prefix" => {
-                Some(Value::String("~/.emacs.d/auto-save-list/.saves-".into()))
-            }
             "line-spacing" => Some(Value::Nil),
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "overwrite-mode" => Some(Value::Nil),
-            // GNU's `load-path' entries are plain directory names with no
-            // trailing separator ("/…/lisp", not "/…/lisp/"), so string
-            // comparisons against them behave the same way.
-            "load-path" => Some(Value::list(
-                self.load_path
-                    .iter()
-                    .map(|path| Value::String(path.display().to_string().into()))
-                    .collect::<Vec<_>>(),
-            )),
+            "load-path" => Some(self.load_path.clone()),
             "installation-directory" => Some(
                 primitives::compat_installation_directory()
                     .map(|value| Value::String(value.into()))
@@ -670,8 +745,25 @@ impl Interpreter {
     /// Look up a variable in the given local env, then globals.
     pub(crate) fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
-        self.lookup_var_with_resolved_name(name, &resolved, env)?
+        self.lookup_var_with_resolved_name(name, &resolved, env, None)?
             .ok_or(LispError::Void(resolved))
+    }
+
+    /// Evaluate an already-interned symbol without rebuilding and rehashing
+    /// its name.  In GNU the Lisp_Object points straight at a Lisp_Symbol,
+    /// whose plain value cell is read directly; SymbolName is the equivalent
+    /// stable identity in Emaxx.  Redirected symbols still take the complete
+    /// alias path above.
+    pub(crate) fn lookup_symbol(&self, name: &SymbolName, env: &Env) -> Result<Value, LispError> {
+        let resolved: std::borrow::Cow<'_, str> =
+            if self.direct_variable_alias(name.as_str()).is_none() {
+                name.as_str().into()
+            } else {
+                self.resolve_variable_name(name.as_str())?.into()
+            };
+        let resolved_symbol = matches!(resolved, std::borrow::Cow::Borrowed(_)).then_some(name);
+        self.lookup_var_with_resolved_name(name.as_str(), resolved.as_ref(), env, resolved_symbol)?
+            .ok_or_else(|| LispError::Void(resolved.into_owned()))
     }
 
     /// Whether NAME has a user-level function definition (defun/fset).
@@ -1001,6 +1093,7 @@ impl Interpreter {
                 let stored = Self::stored_value(value);
                 frame[binding_index].1 = stored.clone();
                 if let Some(frame_id) = frame_id {
+                    frame.update_canonical_lisp_binding(name, stored.clone());
                     self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
                 }
                 return Ok(true);
@@ -1215,6 +1308,52 @@ impl Interpreter {
         }
     }
 
+    /// data.c:Ffset's native-comp hook followed by the actual function-cell
+    /// write.  The hook is C-owned orchestration: GNU invokes the existing
+    /// Lisp `comp-subr-trampoline-install' before replacing an ordinary
+    /// primitive, so the Rust runtime must do the same while leaving all
+    /// trampoline policy and synthesis in comp-run.el/comp.el.
+    pub(crate) fn fset_function(
+        &mut self,
+        name: &str,
+        definition: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.validate_function_binding(name, &definition)?;
+        let installs_trampolines = self
+            .lookup_var("native-comp-enable-subr-trampolines", env)
+            .is_some_and(|value| value.is_truthy());
+        let replaces_primitive = matches!(
+            self.logical_function_binding(name, &Env::new()),
+            Some(Value::BuiltinFunc(_))
+        );
+        if installs_trampolines
+            && replaces_primitive
+            // Emaxx reconstructs GNU's pre-dump loadup before loaddefs has
+            // installed this dumped autoload.  GNU keeps the enable flag nil
+            // during that phase; the live image has both the true flag and
+            // the installer.  Requiring both reproduces those two phases
+            // without moving comp-run.el policy into Rust.
+            && let Ok(installer) = self.lookup_function("comp-subr-trampoline-install", env)
+        {
+            self.call_function_value(
+                installer,
+                Some("comp-subr-trampoline-install"),
+                &[Value::symbol(name)],
+                env,
+            )?;
+        }
+        self.set_function_binding(
+            name,
+            if definition.is_nil() {
+                None
+            } else {
+                Some(definition.clone())
+            },
+        );
+        Ok(definition)
+    }
+
     pub(crate) fn begin_timer_callback(&mut self) {
         self.timer_callback_depth += 1;
     }
@@ -1286,25 +1425,17 @@ impl Interpreter {
     }
 }
 
-fn temp_directory_name() -> String {
-    let mut directory = std::env::temp_dir().display().to_string();
-    if !directory.ends_with('/') {
-        directory.push('/');
-    }
-    directory
-}
-
 /// Every statically-valued name in `builtin_var_value' that GNU's C
 /// sources create with a DEFVAR_* (verified against the pinned checkout,
 /// 2026-08-22).  These are installed as *real* special-variable bindings at
 /// interpreter construction: a value that only lives in a lookup fallback
 /// is invisible to `defvar', which let preloaded Lisp overwrite C defaults
 /// (finding 37) and made the fallback table itself a fabrication surface
-/// (finding 9).  Sixteen further C-owned names stay computed lookups
+/// (finding 9).  Further C-owned names stay computed lookups
 /// because they mirror *live* C state (buffer-locals, the charset and
-/// coding registries, load-in-progress bookkeeping, process-environment);
-/// freezing load-path at construction, for one, breaks the image
-/// reconstruction that assigns the real value moments later.  The
+/// coding registries, load-in-progress bookkeeping, process-environment).
+/// `load-path' has an actual forwarded slot, updated at initialization
+/// and by Lisp stores, so its initial nil binding need not be synthesized. The
 /// Lisp-owned names that once shared the table are gone entirely.
 pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "abbrev-mode",
@@ -1319,6 +1450,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "case-fold-search",
     "case-symbols-as-words",
     "char-code-property-alist",
+    "clear-message-function",
     "coding-system-for-read",
     "coding-system-for-write",
     "command-error-function",
@@ -1374,6 +1506,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "load-dangerous-libraries",
     "load-file-rep-suffixes",
     "load-force-doc-strings",
+    "load-path",
     "load-prefer-newer",
     "load-read-function",
     "load-source-file-function",
@@ -1422,6 +1555,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "system-configuration-options",
     "system-name",
     "system-type",
+    "syntax-propertize--done",
     "tab-bar-border",
     "tab-bar-button-margin",
     "tab-bar-mode",

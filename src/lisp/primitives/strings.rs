@@ -37,17 +37,59 @@ impl StringLike {
     }
 
     pub(crate) fn byte_len(&self) -> Result<usize, LispError> {
-        if !self.multibyte {
-            return Ok(encode_raw_text_bytes(&self.text)?.len());
-        }
-        self.character_codes()
-            .into_iter()
-            .try_fold(0usize, |len, code| {
-                let code = u32::try_from(code)
-                    .map_err(|_| LispError::Signal("Invalid character".into()))?;
-                Ok(len + emacs_multibyte_char_len(code)?)
-            })
+        lisp_string_byte_len(&self.text, self.multibyte, &self.extended_chars)
     }
+}
+
+pub(crate) fn lisp_string_byte_len(
+    text: &str,
+    multibyte: bool,
+    extended_chars: &[(usize, u32)],
+) -> Result<usize, LispError> {
+    if !multibyte {
+        return Ok(encode_raw_text_bytes(text)?.len());
+    }
+    text.chars()
+        .enumerate()
+        .try_fold(0usize, |len, (index, ch)| {
+            let code = extended_chars
+                .binary_search_by_key(&index, |(position, _)| *position)
+                .ok()
+                .map(|position| extended_chars[position].1)
+                .unwrap_or_else(|| string_character_code(true, ch) as u32);
+            Ok(len + emacs_multibyte_char_len(code)?)
+        })
+}
+
+/// Infallible storage census counterpart of SBYTES.  Emaxx can temporarily
+/// represent an unibyte character above 255 as one Rust scalar while editing;
+/// it still occupies one logical Emacs byte and must not make GC fallible.
+pub(crate) fn lisp_string_storage_byte_len(
+    text: &str,
+    multibyte: bool,
+    extended_chars: &[(usize, u32)],
+) -> usize {
+    if !multibyte {
+        return text.chars().count();
+    }
+    text.chars()
+        .enumerate()
+        .map(|(index, ch)| {
+            let code = extended_chars
+                .binary_search_by_key(&index, |(position, _)| *position)
+                .ok()
+                .map(|position| extended_chars[position].1)
+                .unwrap_or_else(|| string_character_code(true, ch) as u32);
+            emacs_multibyte_char_len(code).unwrap_or(1)
+        })
+        .sum()
+}
+
+pub(crate) fn immutable_lisp_string_storage_byte_len(text: &str) -> usize {
+    let multibyte = text
+        .chars()
+        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
+    lisp_string_storage_byte_len(text, multibyte, &[])
 }
 
 pub(crate) fn emacs_multibyte_char_len(code: u32) -> Result<usize, LispError> {
@@ -136,39 +178,9 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 extended_chars: state.extended_chars.clone(),
             })
         }
-        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") =>
-        {
-            let items = vector_items(value).ok()?;
-            if items.len() < 4 {
-                return None;
-            }
-            let Value::String(text) = items.first()?.clone() else {
-                return None;
-            };
-            let mut props = Vec::new();
-            let mut i = 1;
-            while i + 2 < items.len() {
-                let start = items[i].as_integer().ok()? as usize;
-                let end = items[i + 1].as_integer().ok()? as usize;
-                let plist = plist_pairs(&items[i + 2]).ok()?;
-                props.push(TextPropertySpan {
-                    start,
-                    end,
-                    props: plist,
-                });
-                i += 3;
-            }
-            let multibyte = text
-                .chars()
-                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
-            Some(StringLike {
-                text: text.to_string(),
-                props,
-                multibyte,
-                extended_chars: Vec::new(),
-            })
-        }
-        Value::Cons(_) => None,
+        // lisp.h:CHECK_STRING rejects every other object class. The reader
+        // already constructs StringObjects for strings with properties;
+        // ordinary vectors must never be reinterpreted from their contents.
         _ => None,
     }
 }
@@ -644,7 +656,7 @@ pub(crate) fn reverse_sequence_value(
         return Ok(make_bool_vector_value(interp, bits));
     }
     match value {
-        Value::Cons(_) if is_vector_value(value) => {
+        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             let mut items = value.to_vec()?;
             items[1..].reverse();
             Ok(Value::list(items))
@@ -678,7 +690,7 @@ pub(crate) fn nreverse_sequence_value(
         return Ok(value.clone());
     }
     match value {
-        Value::Cons(_) if is_vector_value(value) => {
+        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             let mut items = vector_items(value)?;
             items.reverse();
             for (index, item) in items.into_iter().enumerate() {

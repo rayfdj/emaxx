@@ -11,13 +11,14 @@ use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
     ConsCell, EmacsTermination, Env, EnvFrame, LambdaValue, LispError, ReaderClosureKind,
-    ReaderForm, SharedEnv, Value, WeakConsSlot, shared_env,
+    ReaderForm, SharedEnv, SymbolName, Value, WeakConsSlot, shared_env,
 };
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use hashlink::LinkedHashMap;
 use regex::Regex;
 
 mod bindings;
+pub(crate) use bindings::dynamic_library_suffix_values;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
@@ -108,7 +109,7 @@ fn gnu_image_special_variables() -> [(&'static str, Value); 6] {
                 Value::symbol("tiff"),
             ]),
         ),
-        ("max-image-size", Value::Float(10.0)),
+        ("max-image-size", Value::float(10.0)),
         ("cross-disabled-images", Value::Nil),
         (
             "x-bitmap-file-path",
@@ -203,8 +204,11 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
     StartupFeature::new("lcms2"),
     StartupFeature::new("make-network-process").with_subfeatures(make_network_process_subfeatures),
     StartupFeature::new("md5"),
-    // No "native-compile": Emaxx models a no-native-comp GNU build, where
-    // comp.c registers nothing and `native-comp-available-p' is nil.
+    // GNU provides this when its comp.c backend is built, independently of
+    // whether libgccjit can be opened at runtime.  This build contains the
+    // corresponding Rust backend; `native-comp-available-p' performs the
+    // separate dynamic-library availability check.
+    StartupFeature::new("native-compile"),
     StartupFeature::new("overlay").with_subfeatures(overlay_subfeatures),
     StartupFeature::new("sha1"),
     StartupFeature::new("text-properties").with_subfeatures(text_properties_subfeatures),
@@ -213,7 +217,6 @@ const STARTUP_FEATURES: &[StartupFeature] = &[
 
 #[derive(Clone, Copy)]
 enum StaticStartupValue {
-    Nil,
     T,
     Integer(i64),
 }
@@ -221,7 +224,6 @@ enum StaticStartupValue {
 impl StaticStartupValue {
     fn value(self) -> Value {
         match self {
-            Self::Nil => Value::Nil,
             Self::T => Value::T,
             Self::Integer(value) => Value::Integer(value),
         }
@@ -261,25 +263,6 @@ const GNU_XDISP_GLOBAL_VARIABLES: &[NativeGlobalVariable] = &[
     NativeGlobalVariable {
         name: "message-log-max",
         default: StaticStartupValue::Integer(1000),
-    },
-];
-
-#[derive(Clone, Copy)]
-struct DumpedAutoBufferLocal {
-    name: &'static str,
-    default: StaticStartupValue,
-}
-
-// Dumped Lisp `defvar-local' contracts whose defaults are available before
-// their owning libraries load.  Locality and value come from the same entry.
-const DUMPED_AUTO_BUFFER_LOCALS: &[DumpedAutoBufferLocal] = &[
-    DumpedAutoBufferLocal {
-        name: "font-lock-defaults",
-        default: StaticStartupValue::Nil,
-    },
-    DumpedAutoBufferLocal {
-        name: "syntax-propertize--done",
-        default: StaticStartupValue::Integer(-1),
     },
 ];
 
@@ -406,6 +389,8 @@ const GNU_NATIVE_PER_BUFFER_VARIABLES: &[NativePerBufferVariable] = &[
     NativePerBufferVariable::new("scroll-up-aggressively"),
     NativePerBufferVariable::new("selective-display"),
     NativePerBufferVariable::new("selective-display-ellipses"),
+    // syntax.c defines this native value cell and then makes it buffer-local.
+    NativePerBufferVariable::new("syntax-propertize--done"),
     NativePerBufferVariable::new("tab-line-format"),
     NativePerBufferVariable::new("tab-width"),
     NativePerBufferVariable::new("text-conversion-style"),
@@ -866,15 +851,58 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["json-utf8-decode-error", "json-error", "error"],
             "invalid utf-8 encoding",
         ),
-        // comp.c and treesit.c register these the same way (DEFSYM plus
-        // `error-conditions'/`error-message' puts); values probed from the
-        // pinned oracle.  Emaxx signals all three, so leaving them
-        // unregistered made them catchable only by `t'.
+        // comp.c registers the native compiler and loader condition tree in
+        // C, independently of comp.el.  Keep that ownership here: these are
+        // the exact `error-conditions' and `error-message' values installed
+        // by syms_of_comp.
+        (
+            "native-compiler-error",
+            &["native-compiler-error", "error"],
+            "Native compiler error",
+        ),
+        (
+            "native-ice",
+            &["native-ice", "native-compiler-error", "error"],
+            "Internal native compiler error",
+        ),
         (
             "native-lisp-load-failed",
             &["native-lisp-load-failed", "error"],
             "Native elisp load failed",
         ),
+        (
+            "native-lisp-wrong-reloc",
+            &[
+                "native-lisp-wrong-reloc",
+                "native-lisp-load-failed",
+                "error",
+            ],
+            "Primitive redefined or wrong relocation",
+        ),
+        (
+            "wrong-register-subr-call",
+            &[
+                "wrong-register-subr-call",
+                "native-lisp-load-failed",
+                "error",
+            ],
+            "comp--register-subr can only be called during native lisp load phase.",
+        ),
+        (
+            "native-lisp-file-inconsistent",
+            &[
+                "native-lisp-file-inconsistent",
+                "native-lisp-load-failed",
+                "error",
+            ],
+            "eln file inconsistent with current runtime configuration, please recompile",
+        ),
+        (
+            "comp-sanitizer-error",
+            &["comp-sanitizer-error", "error"],
+            "Native code sanitizer runtime error",
+        ),
+        // treesit.c likewise owns these condition registrations.
         (
             "treesit-buffer-too-large",
             &["treesit-buffer-too-large", "treesit-error", "error"],
@@ -1274,6 +1302,28 @@ impl CharTableState {
                 .collect()
         })
     }
+
+    /// Append points in `[start, end]` at which this table's effective
+    /// explicit range can change.  `resolved_ranges` already folds the
+    /// append-only write log into the current, non-overlapping view, so
+    /// callers do not need to rescan every historical write.
+    pub(crate) fn append_change_boundaries(&self, start: u32, end: u32, boundaries: &mut Vec<u32>) {
+        self.with_resolved_ranges(|map| {
+            if let Some((_, &(range_end, _))) = map.range(..start).next_back()
+                && range_end >= start
+                && range_end < end
+            {
+                boundaries.push(range_end + 1);
+            }
+
+            for (&range_start, &(range_end, _)) in map.range(start..=end) {
+                boundaries.push(range_start);
+                if range_end < end {
+                    boundaries.push(range_end + 1);
+                }
+            }
+        });
+    }
 }
 
 /// GNU vectorlike representation carried by Emaxx's shared record arena.
@@ -1298,6 +1348,7 @@ pub(crate) enum RecordKind {
     Mutex,
     ConditionVariable,
     NativeCompUnit,
+    NativeCompiledFunction,
     TreeSitterParser,
     TreeSitterNode,
     TreeSitterCompiledQuery,
@@ -1305,6 +1356,91 @@ pub(crate) enum RecordKind {
     /// Identity-bearing host facade whose public Elisp representation is a
     /// list.  GNU itself therefore never exposes this as a pseudovector.
     Keymap,
+}
+
+impl RecordKind {
+    fn gnu_vector_slots(self, logical_slots: usize) -> usize {
+        match self {
+            // alloc.c:allocate_record stores the type as the first payload
+            // word; vector accounting also includes the one-word header.
+            Self::Record => logical_slots.saturating_add(2),
+            // Both interpreted and byte-code closures are ordinary vectors
+            // retagged PVEC_CLOSURE.
+            Self::Closure => logical_slots.saturating_add(1),
+            // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
+            Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
+            Self::SymbolWithPos => 3,
+            // Verified from the configured GNU headers: 72 and 24 bytes.
+            Self::HashTable => 9,
+            Self::Obarray => 3,
+            // Both configured structs are 88 bytes on the supported GNU
+            // 64-bit ABI (comp.h and lisp.h:Lisp_Subr).
+            Self::NativeCompUnit | Self::NativeCompiledFunction => 11,
+            // Keymaps are Lisp cons structures in GNU, not pseudovectors.
+            Self::Keymap => 0,
+            // These fixed-layout host objects are added as their C allocation
+            // sites are mapped; never substitute the Rust struct size.
+            Self::Font
+            | Self::Process
+            | Self::Window
+            | Self::WindowConfiguration
+            | Self::Thread
+            | Self::Mutex
+            | Self::ConditionVariable
+            | Self::TreeSitterParser
+            | Self::TreeSitterNode
+            | Self::TreeSitterCompiledQuery
+            | Self::Sqlite => 0,
+        }
+    }
+}
+
+pub(crate) fn gnu_hash_grown_capacity(mut capacity: usize, high_water: usize) -> usize {
+    while capacity < high_water {
+        if capacity == 0 {
+            capacity = 6;
+            continue;
+        }
+        let base = capacity.max(6);
+        capacity = if base <= 64 {
+            base.saturating_mul(4)
+        } else {
+            base.saturating_mul(2)
+        };
+        if capacity == usize::MAX {
+            break;
+        }
+    }
+    capacity
+}
+
+pub(crate) fn gnu_hash_table_storage_bytes(capacity: usize) -> usize {
+    if capacity == 0 {
+        return 0;
+    }
+    let rounded = capacity.checked_next_power_of_two().unwrap_or(usize::MAX);
+    let index_slots = if rounded == capacity {
+        rounded.saturating_mul(2)
+    } else {
+        rounded
+    };
+    // fns.c: two Lisp_Object array words per entry, one u32 hash, one i32
+    // next link, and a power-of-two i32 bucket index.
+    capacity
+        .saturating_mul(24)
+        .saturating_add(index_slots.saturating_mul(4))
+}
+
+pub(crate) fn gnu_hash_table_index_slots(capacity: usize) -> usize {
+    if capacity == 0 {
+        return 1;
+    }
+    let rounded = capacity.checked_next_power_of_two().unwrap_or(usize::MAX);
+    if rounded == capacity {
+        rounded.saturating_mul(2)
+    } else {
+        rounded
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1432,12 +1568,16 @@ pub(crate) struct SpecialBindingRestore {
 struct BacktraceFrame {
     function: Value,
     args: Vec<Value>,
+    /// eval.c:record_in_backtrace retains the caller's Lisp_Object argument
+    /// vector.  Native Ffuncall already has that exact word vector, so keep
+    /// it lazy and materialize Values only if Lisp inspects the frame.
+    native_args: Option<smallvec::SmallVec<[usize; 8]>>,
     /// Original list form for an unevaluated frame.  GNU backtraces retain
     /// the live Lisp form; keeping it here avoids cloning its function symbol
     /// and every argument on each interpreted call.  Debugger-facing APIs
     /// materialize the two projections only when somebody inspects a frame.
     source_form: Option<Value>,
-    locals: Vec<(String, Value)>,
+    locals: Vec<(SymbolName, Value)>,
     /// Snapshot of the evaluator environment at this activation while a
     /// debugger is active.  Frames retain their identity stamps so
     /// `backtrace-eval' assignments can update the suspended lexical cells.
@@ -1562,6 +1702,33 @@ pub(crate) struct LabeledRestriction {
     end_marker_id: u64,
 }
 
+/// Rust representation of the state saved by GNU C's
+/// `record_unwind_protect_excursion`/`save_excursion_save` pair.
+pub(crate) struct SavedExcursion {
+    buffer_id: u64,
+    point: usize,
+    marker_id: u64,
+}
+
+/// Rust representation of the state saved by GNU C's
+/// `save_restriction_save`.  Marker-backed bounds retain their position
+/// across edits exactly like the interpreter's `save-restriction` path.
+pub(crate) struct SavedRestriction {
+    buffer_id: u64,
+    bounds: SavedRestrictionBounds,
+    labeled: Vec<LabeledRestriction>,
+}
+
+enum SavedRestrictionBounds {
+    Wide,
+    Narrow {
+        beginning: usize,
+        end: usize,
+        beginning_marker_id: u64,
+        end_marker_id: u64,
+    },
+}
+
 /// A memoized funcall resolution for a symbol callee (see
 /// `function_resolution_cache`).
 #[derive(Clone)]
@@ -1587,8 +1754,56 @@ pub(crate) enum RuntimeHashTest {
 #[derive(Clone, Debug, Default)]
 struct EqualHashTableState {
     test: RuntimeHashTest,
+    /// fns.c:Lisp_Hash_Table.table_size.  This is allocated capacity, not
+    /// entry count; removals and `clrhash' deliberately retain it.
+    capacity: usize,
     entries: Vec<(Value, Value)>,
+    // fns.c stores entries in stable key/value slots.  Removing an entry
+    // links its slot onto a LIFO free list; reinsertion reuses that slot,
+    // and DOHASH/maphash walk slots in numeric order.  Keep the compact Rust
+    // entry vector sorted by these slot numbers so public iteration has the
+    // same order without giving up contiguous storage.
+    slot_indices: Vec<usize>,
+    free_slots: Vec<usize>,
+    next_slot: usize,
     key_index: HashMap<Option<i64>, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
+}
+
+/// Indexed storage for hash tables with an Elisp-defined test.  GNU fns.c
+/// calls the Elisp hash function once for a probe, follows only that bucket,
+/// and calls the Elisp comparator for collisions.  Keep the returned hashes
+/// beside the entries so existing keys are not re-hashed on every lookup.
+#[derive(Clone)]
+struct CustomHashTableState {
+    /// fns.c:Lisp_Hash_Table.table_size.
+    capacity: usize,
+    entries: Vec<(Value, Value)>,
+    hashes: Vec<i64>,
+    slot_indices: Vec<usize>,
+    free_slots: Vec<usize>,
+    next_slot: usize,
+    key_index: HashMap<i64, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
+}
+
+impl CustomHashTableState {
+    fn empty(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: Vec::new(),
+            hashes: Vec::new(),
+            slot_indices: Vec::new(),
+            free_slots: Vec::new(),
+            next_slot: 0,
+            key_index: HashMap::default(),
+        }
+    }
+
+    fn rebuild_index(&mut self) {
+        self.key_index.clear();
+        for (index, hash) in self.hashes.iter().copied().enumerate() {
+            self.key_index.entry(hash).or_default().push(index);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2327,6 +2542,7 @@ pub(crate) struct MinibufferRuntimeState {
 /// representations (interned strings, big integers, symbols) shared.
 struct ImageGraphCopier {
     cons: std::collections::HashMap<usize, Value>,
+    vectors: std::collections::HashMap<usize, Value>,
     strings: std::collections::HashMap<usize, Value>,
     lambdas: std::collections::HashMap<usize, Value>,
     reader_forms: std::collections::HashMap<usize, Value>,
@@ -2342,6 +2558,7 @@ impl ImageGraphCopier {
     fn new() -> Self {
         Self {
             cons: Default::default(),
+            vectors: Default::default(),
             strings: Default::default(),
             lambdas: Default::default(),
             reader_forms: Default::default(),
@@ -2354,6 +2571,25 @@ impl ImageGraphCopier {
     fn copy(&mut self, value: &Value) -> Value {
         match value {
             Value::Cons(_) => self.copy_cons_chain(value),
+            Value::Vector(vector) => {
+                if vector.slots().is_empty() {
+                    return value.clone();
+                }
+                let key = crate::lisp::types::VectorValue::identity(vector);
+                if let Some(copied) = self.vectors.get(&key) {
+                    return copied.clone();
+                }
+                let source_slots = vector.slots().clone();
+                let copied = Value::vector(std::iter::repeat_n(Value::Nil, source_slots.len()));
+                self.vectors.insert(key, copied.clone());
+                let Value::Vector(copied_vector) = &copied else {
+                    unreachable!("nonempty vector copy has vector storage")
+                };
+                for (index, slot) in source_slots.iter().enumerate() {
+                    copied_vector.slots_mut()[index] = self.copy(slot);
+                }
+                copied
+            }
             Value::StringObject(state) => {
                 let key = std::rc::Rc::as_ptr(state) as usize;
                 if let Some(copied) = self.strings.get(&key) {
@@ -2394,8 +2630,12 @@ impl ImageGraphCopier {
                 if let Some(copied) = self.lambdas.get(&key) {
                     return copied.clone();
                 }
-                let copied = Value::Lambda(std::rc::Rc::new(crate::lisp::types::LambdaValue {
+                let copied = Value::allocated_lambda(crate::lisp::types::LambdaValue {
                     params: lambda.params.clone(),
+                    public_parameters: lambda
+                        .public_parameters
+                        .as_ref()
+                        .map(|parameters| self.copy(parameters)),
                     body: std::rc::Rc::new(
                         lambda.body.iter().map(|form| self.copy(form)).collect(),
                     ),
@@ -2412,7 +2652,7 @@ impl ImageGraphCopier {
                         .public_environment
                         .as_ref()
                         .map(|environment| self.copy(environment)),
-                }));
+                });
                 self.lambdas.insert(key, copied.clone());
                 self.fill_env(&lambda.env);
                 copied
@@ -2586,9 +2826,629 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) floats: usize,
     pub(crate) intervals: usize,
     pub(crate) buffers: usize,
+    pub(crate) hash_table_bytes: usize,
+}
+
+#[derive(Default)]
+struct LispReachability<'mark, 'heap> {
+    native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
+    big_integers: HashSet<usize>,
+    floats: HashSet<usize>,
+    strings: HashSet<usize>,
+    string_objects: HashSet<usize>,
+    symbols: HashSet<String>,
+    conses: HashSet<usize>,
+    vectors: HashSet<usize>,
+    lambdas: HashSet<usize>,
+    buffers: HashSet<usize>,
+    markers: HashSet<u64>,
+    overlays: HashSet<u64>,
+    char_tables: HashSet<u64>,
+    frames: HashSet<u64>,
+    terminals: HashSet<u64>,
+    records: HashSet<u64>,
+    finalizers: HashSet<u64>,
+    reader_forms: HashSet<usize>,
+}
+
+pub(crate) struct WeakHashReachability {
+    pub(crate) tables: Vec<WeakHashTableReachability>,
+    pub(crate) live_records: HashSet<u64>,
+}
+
+pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
+
+impl LispReachability<'_, '_> {
+    fn contains(&self, value: &Value) -> bool {
+        match value {
+            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
+                true
+            }
+            Value::BigInteger(value) => self.big_integers.contains(&value.identity_ptr()),
+            Value::Float(value) => self.floats.contains(&value.identity_ptr()),
+            Value::String(value) => self.strings.contains(&value.identity_ptr()),
+            Value::StringObject(value) => {
+                self.string_objects.contains(&(Rc::as_ptr(value) as usize))
+            }
+            Value::Symbol(symbol) => {
+                crate::lisp::types::visible_symbol_name(symbol) == symbol.as_str()
+                    || self.symbols.contains(symbol.as_str())
+            }
+            Value::Cons(value) => self.conses.contains(&ConsCell::identity(value)),
+            Value::Vector(value) => self.vectors.contains(&(Rc::as_ptr(value) as usize)),
+            Value::Lambda(value) => self.lambdas.contains(&(Rc::as_ptr(value) as usize)),
+            Value::Buffer(value) => self.buffers.contains(&(Rc::as_ptr(value) as usize)),
+            Value::Marker(id) => self.markers.contains(id),
+            Value::Overlay(id) => self.overlays.contains(id),
+            Value::CharTable(id) => self.char_tables.contains(id),
+            Value::Frame(id) => self.frames.contains(id),
+            Value::Terminal(id) => self.terminals.contains(id),
+            Value::Record(id) => self.records.contains(id),
+            Value::Finalizer(id) => self.finalizers.contains(id),
+            Value::ReaderForm(value) => self.reader_forms.contains(&(Rc::as_ptr(value) as usize)),
+        }
+    }
+
+    fn mark_env(&mut self, interp: &Interpreter, env: &Env) -> bool {
+        let mut changed = false;
+        for frame in env {
+            for (symbol, value) in frame {
+                // alloc.c marks both halves of GNU's (SYMBOL . VALUE)
+                // lexical binding, even before a closure captures it.
+                changed |= self.mark(interp, &Value::Symbol(symbol.clone()));
+                changed |= self.mark(interp, value);
+            }
+            if let Some(environment) = frame.lisp_environment() {
+                changed |= self.mark(interp, environment);
+            }
+        }
+        changed
+    }
+
+    fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
+        let newly_marked = match value {
+            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
+                false
+            }
+            Value::BigInteger(value) => self.big_integers.insert(value.identity_ptr()),
+            Value::Float(value) => self.floats.insert(value.identity_ptr()),
+            Value::String(value) => self.strings.insert(value.identity_ptr()),
+            Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
+            Value::Symbol(symbol) => self.symbols.insert(symbol.as_str().to_owned()),
+            Value::Cons(value) => self.conses.insert(ConsCell::identity(value)),
+            Value::Vector(value) => self.vectors.insert(Rc::as_ptr(value) as usize),
+            Value::Lambda(value) => self.lambdas.insert(Rc::as_ptr(value) as usize),
+            Value::Buffer(value) => self.buffers.insert(Rc::as_ptr(value) as usize),
+            Value::Marker(id) => self.markers.insert(*id),
+            Value::Overlay(id) => self.overlays.insert(*id),
+            Value::CharTable(id) => self.char_tables.insert(*id),
+            Value::Frame(id) => self.frames.insert(*id),
+            Value::Terminal(id) => self.terminals.insert(*id),
+            Value::Record(id) => self.records.insert(*id),
+            Value::Finalizer(id) => self.finalizers.insert(*id),
+            Value::ReaderForm(value) => self.reader_forms.insert(Rc::as_ptr(value) as usize),
+        };
+        if !newly_marked {
+            return false;
+        }
+
+        // alloc.c completes one graph traversal before sweeping either
+        // vectors or conses. Follow native words here, including edges
+        // discovered by the weak-table fixed point, rather than sweeping
+        // that storage before this pass can discover it.
+        if let Some(native) = self.native.as_deref_mut() {
+            let (native_cons, children) = native.trace_lisp_value(value);
+            for child in &children {
+                self.mark(interp, child);
+            }
+            if native_cons {
+                // Generated code's current car/cdr words are authoritative;
+                // tracing a stale typed mirror would retain replaced edges.
+                return true;
+            }
+        }
+
+        match value {
+            Value::Symbol(symbol) => {
+                // alloc.c:mark_objects traces SYMBOL_NAME and its intervals.
+                self.mark(interp, &symbol.lisp_name());
+            }
+            Value::StringObject(value) => {
+                let children = value
+                    .borrow()
+                    .props
+                    .iter()
+                    .flat_map(|span| span.props.iter().map(|(_, value)| value.clone()))
+                    .collect::<Vec<_>>();
+                for child in &children {
+                    self.mark(interp, child);
+                }
+            }
+            Value::Cons(cell) => {
+                let children = [
+                    Value::Cons(cell.clone()).car(),
+                    Value::Cons(cell.clone()).cdr(),
+                ];
+                for child in children.into_iter().flatten() {
+                    self.mark(interp, &child);
+                }
+            }
+            Value::Vector(vector) => {
+                let children = vector.slots().clone();
+                for child in &children {
+                    self.mark(interp, child);
+                }
+            }
+            Value::Lambda(lambda) => {
+                for symbol in lambda.params.iter() {
+                    self.mark(interp, &Value::Symbol(symbol.clone()));
+                }
+                if let Some(value) = &lambda.public_parameters {
+                    self.mark(interp, value);
+                }
+                for value in lambda.body.iter() {
+                    self.mark(interp, value);
+                }
+                self.mark_env(interp, &lambda.env.borrow());
+                for value in [
+                    lambda.documentation.as_ref(),
+                    lambda.interactive.as_ref(),
+                    lambda.public_environment.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    self.mark(interp, value);
+                }
+            }
+            Value::Buffer(buffer) => {
+                self.strings.insert(buffer.name.identity_ptr());
+            }
+            Value::CharTable(id) => {
+                if let Some(table) = interp.find_char_table(*id) {
+                    let children = std::iter::once(table.default.clone())
+                        .chain(table.extra_slots.iter().cloned())
+                        .chain(table.entries.iter().map(|entry| entry.value.clone()))
+                        .collect::<Vec<_>>();
+                    for child in &children {
+                        self.mark(interp, child);
+                    }
+                }
+            }
+            Value::Frame(id) => {
+                if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == *id) {
+                    let children = std::iter::once(frame.name.clone())
+                        .chain(
+                            frame
+                                .parameter_overrides
+                                .iter()
+                                .map(|(_, value)| value.clone()),
+                        )
+                        .collect::<Vec<_>>();
+                    for child in &children {
+                        self.mark(interp, child);
+                    }
+                }
+            }
+            Value::Record(id) => {
+                let Some(record) = interp.find_record(*id) else {
+                    return true;
+                };
+                let weak_hash = record.kind == RecordKind::HashTable
+                    && record.slots.get(5).is_some_and(Value::is_truthy);
+                let mut children = Vec::with_capacity(record.slots.len() + 1);
+                children.push(record.type_tag.clone());
+                children.extend(
+                    record
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| record.kind != RecordKind::HashTable || *index != 1)
+                        .map(|(_, value)| value.clone()),
+                );
+                if record.kind == RecordKind::HashTable
+                    && !weak_hash
+                    && let Some((_, entries)) = crate::lisp::json::hash_table_entries(interp, value)
+                {
+                    children.extend(entries.into_iter().flat_map(|(key, value)| [key, value]));
+                }
+                for child in &children {
+                    self.mark(interp, child);
+                }
+            }
+            Value::ReaderForm(form) => {
+                let children: &[Value] = match form.as_ref() {
+                    ReaderForm::CircularLabel { payload, .. } => std::slice::from_ref(payload),
+                    ReaderForm::HashTable { fields }
+                    | ReaderForm::CharTable { fields }
+                    | ReaderForm::SubCharTable { fields }
+                    | ReaderForm::Record { slots: fields }
+                    | ReaderForm::Closure { slots: fields, .. } => fields,
+                    ReaderForm::CircularReference(_)
+                    | ReaderForm::BoolVector { .. }
+                    | ReaderForm::PositionedSymbol { .. } => &[],
+                };
+                for child in children {
+                    self.mark(interp, child);
+                }
+            }
+            Value::Nil
+            | Value::T
+            | Value::Integer(_)
+            | Value::BigInteger(_)
+            | Value::Float(_)
+            | Value::String(_)
+            | Value::BuiltinFunc(_)
+            | Value::Marker(_)
+            | Value::Overlay(_)
+            | Value::Terminal(_)
+            | Value::Finalizer(_)
+            | Value::Unbound => {}
+        }
+        true
+    }
+}
+
+impl LiveObjectCensus {
+    /// alloc.c:total_bytes_of_live_objects.  These are the GNU C layouts for
+    /// the supported 64-bit ABI: Lisp_Cons=16, Lisp_Symbol=48,
+    /// Lisp_String=32, Lisp_Float=8, interval=56, and one vector word=8.
+    pub(crate) fn total_bytes_of_live_objects(&self) -> usize {
+        self.conses
+            .saturating_mul(16)
+            .saturating_add(self.symbols.saturating_mul(48))
+            .saturating_add(self.string_bytes)
+            .saturating_add(self.vector_slots.saturating_mul(8))
+            .saturating_add(self.floats.saturating_mul(8))
+            .saturating_add(self.intervals.saturating_mul(56))
+            .saturating_add(self.strings.saturating_mul(32))
+            .saturating_add(self.hash_table_bytes)
+    }
 }
 
 impl Interpreter {
+    /// Mark Lisp objects from the interpreter's actual roots, then apply
+    /// GNU's iterative weak-hash rule.  Hash entries are deliberately not
+    /// roots of a weak table; an entry that survives one table can mark an
+    /// object which in turn makes an entry in another table survive, so the
+    /// pass repeats to a fixed point exactly like alloc.c.
+    pub(crate) fn weak_hash_reachability(
+        &self,
+        env: &Env,
+        native_roots: &[Value],
+    ) -> WeakHashReachability {
+        self.weak_hash_reachability_with_native(env, native_roots, None)
+    }
+
+    pub(crate) fn weak_hash_reachability_with_native(
+        &self,
+        env: &Env,
+        native_roots: &[Value],
+        native: Option<&mut crate::lisp::native_comp::NativeMark<'_>>,
+    ) -> WeakHashReachability {
+        let mut marked = LispReachability {
+            native,
+            ..LispReachability::default()
+        };
+        marked.mark_env(self, env);
+        for value in native_roots {
+            marked.mark(self, value);
+        }
+
+        let mut mark = |value: &Value| {
+            marked.mark(self, value);
+        };
+        for (_, value) in self.globals.iter() {
+            mark(value);
+        }
+        // lread.c:defvar_lisp static-protects the C slot, independently of
+        // the symbol's current redirect or plain value after makunbound.
+        mark(&self.quit_flag);
+        mark(&self.inhibit_quit);
+        mark(&self.throw_on_input);
+        mark(&self.overriding_plist_environment);
+        mark(&self.load_path);
+        mark(&self.loads_in_progress);
+        for value in self.detached_forwarded_variables.values() {
+            mark(value);
+        }
+        for event in &self.pending_thread_events {
+            mark(event);
+        }
+        for bindings in self.buffer_locals.values() {
+            for (_, value) in bindings {
+                mark(value);
+            }
+        }
+        for hooks in self.buffer_local_hooks.values() {
+            for (_, functions) in hooks {
+                for function in functions {
+                    mark(function);
+                }
+            }
+        }
+        for value in &self.kbd_macro_definition {
+            mark(value);
+        }
+        mark(&self.local_time_zone_rule);
+        for (_, value) in &self.symbol_properties {
+            mark(value);
+        }
+        for (_, watchers) in &self.variable_watchers {
+            for watcher in watchers {
+                mark(watcher);
+            }
+        }
+        if let Some(value) = &self.current_global_map {
+            mark(value);
+        }
+        mark(&self.frame_and_buffer_state);
+        for (key, value) in &self.terminal_parameters {
+            mark(key);
+            mark(value);
+        }
+        for table in &self.char_tables {
+            mark(&Value::CharTable(table.id));
+        }
+        for (_, value) in &self.charset_plists {
+            mark(value);
+        }
+        for (_, value) in self.ccl_programs.iter().flatten() {
+            mark(value);
+        }
+        for execution in &self.kbd_macro_executions {
+            for event in &execution.events {
+                mark(event);
+            }
+        }
+        for event in self
+            .keyboard_input
+            .command_keys
+            .iter()
+            .chain(&self.keyboard_input.raw_keys)
+            .chain(&self.keyboard_input.recent_keys)
+        {
+            mark(event);
+        }
+        if let Some(value) = &self.keyboard_input.internal_last_event_frame {
+            mark(value);
+        }
+        for frame in &self.frame_states {
+            if frame.live {
+                mark(&Value::Frame(frame.id));
+            }
+        }
+        for coding in &self.coding_systems {
+            mark(&coding.plist);
+            mark(&coding.charset_list);
+            for argument in &coding.type_args {
+                mark(argument);
+            }
+        }
+        for (_, function) in &self.functions {
+            mark(function);
+        }
+        for updates in self.lexical_cell_updates.values() {
+            for value in updates.values() {
+                mark(value);
+            }
+        }
+        if let Some(value) = &self.selected_frame_face_hash_table {
+            mark(value);
+        }
+        mark(&self.alternative_font_family_alist);
+        mark(&self.alternative_font_registry_alist);
+        for (_, value) in &self.deferred_defsubst_unbindings {
+            mark(value);
+        }
+        if let Some(value) = &self.last_thread_error {
+            mark(value);
+        }
+        for value in &self.active_catch_tags {
+            mark(value);
+        }
+        for timer in &self.pending_timers {
+            mark(&timer.function);
+            for argument in &timer.args {
+                mark(argument);
+            }
+        }
+        for notification in &self.pending_file_notifications {
+            for (_, callback) in &notification.callbacks {
+                mark(callback);
+            }
+        }
+        for watch in self.file_notify_watches.values() {
+            mark(&watch.callback);
+        }
+        for frame in &self.backtrace_frames {
+            mark(&frame.function);
+            for argument in &frame.args {
+                mark(argument);
+            }
+            if let Some(form) = &frame.source_form {
+                mark(form);
+            }
+            for (symbol, value) in &frame.locals {
+                mark(&Value::Symbol(symbol.clone()));
+                mark(value);
+            }
+            if let Some(context) = &frame.lexical_context {
+                for lexical_frame in context {
+                    for (symbol, value) in lexical_frame {
+                        mark(&Value::Symbol(symbol.clone()));
+                        mark(value);
+                    }
+                    if let Some(environment) = lexical_frame.lisp_environment() {
+                        mark(environment);
+                    }
+                }
+            }
+        }
+        if let Some(backtrace) = &self.batch_error_backtrace {
+            for (_, function, arguments, _) in &backtrace.frames {
+                mark(function);
+                for argument in arguments {
+                    mark(argument);
+                }
+            }
+        }
+        for handler in &self.active_handlers {
+            match handler {
+                ActiveHandler::Bind(_, function) => mark(function),
+                ActiveHandler::Case(heads) => {
+                    for head in heads {
+                        mark(head);
+                    }
+                }
+            }
+        }
+        for face in &self.lisp_face_states {
+            for value in [face.global.as_ref(), face.selected_frame.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                mark(value);
+            }
+        }
+        for bitmap in &self.fringe_bitmap_states {
+            if let Some(value) = &bitmap.definition {
+                mark(value);
+            }
+            mark(&bitmap.face);
+        }
+        for composition in &self.composition_states {
+            mark(&composition.components);
+        }
+        for test in &self.ert_tests {
+            mark(&test.body);
+        }
+        for restore in &self.active_special_restores {
+            if let Some(value) = &restore.previous {
+                mark(value);
+            }
+        }
+        for restriction in &self.labeled_restrictions {
+            if let Some(value) = &restriction.label {
+                mark(value);
+            }
+        }
+        for process in &self.process_states {
+            mark(&Value::Record(process.record_id));
+            for value in [
+                process.filter.as_ref(),
+                process.sentinel.as_ref(),
+                process.log.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                mark(value);
+            }
+            for value in [
+                &process.decoding,
+                &process.encoding,
+                &process.plist,
+                &process.contact,
+            ] {
+                mark(value);
+            }
+        }
+        for thread in &self.thread_states {
+            mark(&Value::Record(thread.record_id));
+            if let ThreadProgram::Call(function) = &thread.program {
+                mark(function);
+            }
+            match &thread.outcome {
+                Some(ThreadOutcome::Returned(value))
+                | Some(ThreadOutcome::Signaled { value, .. }) => mark(value),
+                None => {}
+            }
+        }
+        for value in self.plain_quote_templates.values() {
+            mark(&value.value);
+        }
+        let mut visit_buffer = |value: &Value| {
+            mark(value);
+        };
+        self.buffer.visit_lisp_values(&mut visit_buffer);
+        for (_, buffer) in &self.inactive_buffers {
+            buffer.visit_lisp_values(&mut visit_buffer);
+        }
+        for id in [
+            self.standard_obarray_id,
+            self.selected_window_id,
+            self.root_window_id,
+            self.minibuffer_window_id,
+        ] {
+            mark(&Value::Record(id));
+        }
+
+        let weak_tables = self
+            .records
+            .iter()
+            .filter(|record| record.kind == RecordKind::HashTable)
+            .filter_map(|record| {
+                let weakness = record.slots.get(5)?.as_symbol().ok()?.to_owned();
+                let entries =
+                    crate::lisp::json::hash_table_entries(self, &Value::Record(record.id))?.1;
+                Some((record.id, weakness, entries))
+            })
+            .collect::<Vec<_>>();
+
+        loop {
+            let mut changed = false;
+            for (id, weakness, entries) in &weak_tables {
+                if !marked.records.contains(id) {
+                    continue;
+                }
+                for (key, value) in entries {
+                    let strong_key = marked.contains(key);
+                    let strong_value = marked.contains(value);
+                    let keep = match weakness.as_str() {
+                        "key" => strong_key,
+                        "value" => strong_value,
+                        "key-and-value" => strong_key && strong_value,
+                        "key-or-value" => strong_key || strong_value,
+                        _ => true,
+                    };
+                    if keep {
+                        changed |= marked.mark(self, key);
+                        changed |= marked.mark(self, value);
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        let tables = weak_tables
+            .into_iter()
+            .map(|(id, _, entries)| {
+                let keep = if marked.records.contains(&id) {
+                    entries
+                        .iter()
+                        .map(|(key, value)| marked.contains(key) && marked.contains(value))
+                        .collect()
+                } else {
+                    vec![false; entries.len()]
+                };
+                (id, entries, keep)
+            })
+            .collect();
+        WeakHashReachability {
+            tables,
+            live_records: marked.records,
+        }
+    }
+
+    pub(crate) fn install_gc_record_census(&mut self, live_records: HashSet<u64>) {
+        self.gc_live_record_ids = live_records;
+        self.gc_record_high_water = self.next_record_id;
+        self.gc_has_record_census = true;
+    }
+
     /// Assemble the live-object census from the allocation books (see
     /// `LiveObjectCensus' and types.rs's live-object accounting).  This is
     /// O(live strings), never a graph walk: loadup.el runs
@@ -2596,22 +3456,74 @@ impl Interpreter {
     /// the boot path.
     pub(crate) fn live_object_census(&self) -> LiveObjectCensus {
         let strings = crate::lisp::types::census_live_strings();
+        let vectors = crate::lisp::types::census_live_vectors();
+        let symbols = self
+            .known_symbol_count()
+            .saturating_add(crate::lisp::types::census_live_uninterned_symbols());
+        let mut vector_count = vectors.count;
+        let mut vector_slots = vectors.slots;
+        for record in self.records.iter().filter(|record| {
+            !self.gc_has_record_census
+                || record.id >= self.gc_record_high_water
+                || self.gc_live_record_ids.contains(&record.id)
+        }) {
+            let slots = record.kind.gnu_vector_slots(record.slots.len());
+            if slots != 0 {
+                vector_count += 1;
+                vector_slots = vector_slots.saturating_add(slots);
+            }
+        }
         let mut census = LiveObjectCensus {
-            conses: crate::lisp::types::census_live_conses(),
-            symbols: self.known_symbol_count(),
+            conses: crate::lisp::types::census_live_conses()
+                .saturating_sub(vectors.representation_conses),
+            symbols,
             strings: strings.count,
             string_bytes: strings.bytes,
-            vectors: 0,
-            vector_slots: 0,
-            floats: 0,
+            vectors: vector_count,
+            vector_slots,
+            floats: crate::lisp::types::census_live_floats(),
             intervals: strings.property_spans,
             buffers: 1 + self.inactive_buffers.len(),
+            hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
         };
         census.intervals += self.buffer.text_property_span_count();
         for (_, buffer) in &self.inactive_buffers {
             census.intervals += buffer.text_property_span_count();
         }
         census
+    }
+
+    fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
+        let mut bytes = 0_usize;
+        for record in self.records.iter().filter(|record| {
+            !self.gc_has_record_census
+                || record.id >= self.gc_record_high_water
+                || self.gc_live_record_ids.contains(&record.id)
+        }) {
+            match record.kind {
+                RecordKind::HashTable => {
+                    let capacity = self.gnu_hash_table_capacity(record.id).unwrap_or(0);
+                    bytes = bytes.saturating_add(gnu_hash_table_storage_bytes(capacity));
+                }
+                RecordKind::Obarray => {
+                    let capacity = if record.id == self.standard_obarray_id {
+                        let mut capacity = 1_usize << 15;
+                        while symbol_count > capacity {
+                            capacity = capacity.saturating_mul(2);
+                        }
+                        capacity
+                    } else {
+                        // lread.c:obarray_default_bits is 3.  Nonstandard
+                        // obarray growth is accounted when its symbol arena is
+                        // moved out of the encoded namespace representation.
+                        1_usize << 3
+                    };
+                    bytes = bytes.saturating_add(capacity.saturating_mul(8));
+                }
+                _ => {}
+            }
+        }
+        bytes
     }
 
     /// Issue #11: clone this interpreter for use as an independent image.
@@ -2629,6 +3541,21 @@ impl Interpreter {
             let c = &mut copier;
             for (_, value) in clone.globals.iter_mut() {
                 *value = c.copy(value);
+            }
+            // Copy the actual C-side fields. The graph copier preserves
+            // aliasing with Lisp cells while forwarded, but makunbound may
+            // already have made the two independent.
+            clone.quit_flag = c.copy(&self.quit_flag);
+            clone.inhibit_quit = c.copy(&self.inhibit_quit);
+            clone.throw_on_input = c.copy(&self.throw_on_input);
+            clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
+            clone.load_path = c.copy(&self.load_path);
+            clone.loads_in_progress = c.copy(&self.loads_in_progress);
+            for value in clone.detached_forwarded_variables.values_mut() {
+                *value = c.copy(value);
+            }
+            for event in &mut clone.pending_thread_events {
+                *event = c.copy(event);
             }
             for bindings in clone.buffer_locals.values_mut() {
                 for (_, value) in bindings.iter_mut() {
@@ -2714,6 +3641,10 @@ impl Interpreter {
             }
             for coding in &mut clone.coding_systems {
                 coding.plist = c.copy(&coding.plist.clone());
+                coding.charset_list = c.copy(&coding.charset_list);
+                for argument in &mut coding.type_args {
+                    *argument = c.copy(argument);
+                }
             }
             for (_, function) in &mut clone.functions {
                 *function = c.copy(function);
@@ -2974,17 +3905,28 @@ pub struct Interpreter {
     /// deterministic symbol enumeration while value-cell access and removal
     /// are hash operations, so keep both properties in one canonical store.
     globals: OrderedBindings,
+    /// Version of the C-owned symbol value-cell state.  Native symbol handles
+    /// use it to retain GNU's direct value-word reads without keeping stale
+    /// words across a set, alias, or localization transition.
+    symbol_value_cell_epoch: u64,
+    /// Directly forwarded Lisp_Object cells read by the C implementation.
+    /// GNU reads these globals without doing symbol-table work; keep the same
+    /// direct state while ordinary Lisp access remains visible through the
+    /// canonical global value cells below.
+    quit_flag: Value,
+    inhibit_quit: Value,
+    throw_on_input: Value,
+    overriding_plist_environment: Value,
+    max_lisp_eval_depth: i64,
+    debug_on_next_call: bool,
     /// data.c set_internal: storing void into a variable forwarded to a C
     /// slot (DEFVAR_LISP/BOOL/INT) detaches the symbol from that slot and
     /// leaves it void, so `boundp' reads nil and the built-in fallback no
     /// longer answers for it.  A later store makes a plain, uncoerced
-    /// variable while the C slot keeps the value it had at detach time,
-    /// which is what native readers keep seeing (`forwarded_c_value').
+    /// variable while native readers still use the C slot. The direct
+    /// evaluator fields above own their values and use nil markers here;
+    /// other forwarded slots retain their detached values in this map.
     pub(crate) detached_forwarded_variables: HashMap<String, Value>,
-    /// Set by eval_call right before it applies a form's function, so the
-    /// call entry knows it is eval_sub's own application rather than an
-    /// Ffuncall entry (see `call_function_value_named').
-    pub(crate) direct_form_call: bool,
     /// THREAD_EVENTs `thread-signal' queued for the main thread
     /// (keyboard.c kbd_buffer_store_event), delivered by the input reader
     /// through `special-event-map'.
@@ -3013,6 +3955,9 @@ pub struct Interpreter {
     /// same-named lexical argument (bug#47552 semantics).
     pub(crate) special_scan_floor: usize,
     pub(crate) lisp_eval_depth: usize,
+    /// alloc.c's nesting counter.  Hash-table user tests enter this section
+    /// so arbitrary callback Lisp cannot collect the table being probed.
+    garbage_collection_inhibited: usize,
     /// Consecutive `thread-yield's from a stepped (non-main) thread during
     /// which drive_threads ran nothing else.  The parent that could change
     /// this thread's loop condition is suspended up-stack until the step
@@ -3034,6 +3979,10 @@ pub struct Interpreter {
     /// primitive.  GNU keeps this in C state; it must not leak through a
     /// project-private Lisp variable.
     pub(crate) external_debugging_output_target: Option<String>,
+    /// The live libgccjit arena and runtime ABI state owned by GNU's `comp.c`
+    /// in the reference implementation.  All compiler policy and LIMPLE
+    /// remain in the unchanged `comp.el` frontend.
+    pub(crate) native_compiler: crate::lisp::native_comp::NativeCompilerState,
     /// fileio.c `realmask': the complement of `default-file-modes', read
     /// from the process umask at startup (init_fileio) and kept in step
     /// with it by `set-default-file-modes', which sets the process umask
@@ -3166,6 +4115,13 @@ pub struct Interpreter {
     /// showed up at 6% of a `puthash'/`gethash' kernel just locating the
     /// table per operation.
     equal_hash_tables: HashMap<u64, EqualHashTableState, crate::lisp::types::IdentityBuildHasher>,
+    custom_hash_tables: HashMap<u64, CustomHashTableState, crate::lisp::types::IdentityBuildHasher>,
+    /// Hash tables whose user-defined hash or comparison function is on the
+    /// stack.  GNU fns.c flips the table's `mutable` bit for exactly this
+    /// critical section; mutation primitives reject the table instead of
+    /// copying and comparing all of its entries around every callback.
+    hash_tables_under_test: HashSet<u64, crate::lisp::types::IdentityBuildHasher>,
+    immutable_hash_tables: HashSet<u64, crate::lisp::types::IdentityBuildHasher>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
@@ -3241,6 +4197,13 @@ pub struct Interpreter {
     /// needs one runtime class (notably windows during buffer teardown).
     /// `create_record` and `retag_record` are the only mutation points.
     record_ids_by_type_index: HashMap<String, BTreeSet<u64>>,
+    /// Record mark bits from the most recent real reachability pass.  Dense
+    /// host storage keeps IDs stable, but dead records must not contribute to
+    /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
+    /// were allocated after that collection and remain live until the next.
+    gc_live_record_ids: HashSet<u64>,
+    gc_record_high_water: u64,
+    gc_has_record_census: bool,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
     /// dense and never freed, so the slot vector doubles as the cache map
     /// (see bytecode::vm).
@@ -3284,6 +4247,10 @@ pub struct Interpreter {
     buffer_syntax_tables: Vec<(u64, u64)>,
     /// Variables that automatically become buffer-local when set.
     auto_buffer_locals: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
+    /// Symbols whose value cells can forward through a buffer-local binding.
+    /// GNU records this on the symbol itself, so ordinary value-cell reads
+    /// skip the current buffer's local table entirely for every other name.
+    buffer_local_capable_variables: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Native DEFVAR_PER_BUFFER variables, kept as host metadata rather than
     /// exposed through private Lisp symbol properties.
     per_buffer_specials: HashSet<String>,
@@ -3436,16 +4403,16 @@ pub struct Interpreter {
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
-    load_path: Vec<PathBuf>,
-    /// Prefer GNU bytecode artifacts after the source-based bootstrap has
-    /// established the dumped Lisp runtime expected by compiled libraries.
-    prefer_compiled_loads: bool,
+    // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
+    // directory vector from which reads reconstruct new Lisp objects.
+    load_path: Value,
+    /// lread.c's static-protected Vloads_in_progress, not a Lisp variable.
+    pub(crate) loads_in_progress: Value,
     /// Features whose `require' loads are active, innermost last.  This is
     /// GNU's `require_nesting_list', not an alternate source of provided
     /// features: bounded recursive requires are part of the loader contract.
     require_nesting: Vec<String>,
     lambda_capture_overrides: Vec<bool>,
-    lambda_trim_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
     /// Cooperative thread bodies currently suspended on Rust call stacks,
     /// outermost first.  `active_thread_id' identifies only the deepest one;
@@ -3565,7 +4532,6 @@ struct SourceFormCacheEntry {
 struct SourceFormAnalysis {
     items: Rc<Vec<Value>>,
     native_form: Option<core::NativeForm>,
-    literal_kind: core::SourceLiteralKind,
     /// The generation-stamped non-macro verdict shares the source-analysis
     /// lifetime.  Actual macro expansions are deliberately never cached:
     /// GNU's interpreted evaluator invokes the macro expander on every
@@ -3651,7 +4617,6 @@ impl Interpreter {
         let mut interp = Interpreter {
             image_template_token: None,
             detached_forwarded_variables: HashMap::new(),
-            direct_form_call: false,
             pending_thread_events: Vec::new(),
             globals: ordered_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
@@ -3813,6 +4778,13 @@ impl Interpreter {
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
             ]),
+            symbol_value_cell_epoch: 0,
+            quit_flag: Value::Nil,
+            inhibit_quit: Value::Nil,
+            throw_on_input: Value::Nil,
+            overriding_plist_environment: Value::Nil,
+            max_lisp_eval_depth: 1600,
+            debug_on_next_call: false,
             variable_aliases: Vec::new(),
             variable_aliases_index: HashMap::new(),
             special_variables_index: HashSet::default(),
@@ -3820,6 +4792,7 @@ impl Interpreter {
             dlet_active_names: HashMap::new(),
             special_scan_floor: 0,
             lisp_eval_depth: 0,
+            garbage_collection_inhibited: 0,
             fruitless_stepped_yields: 0,
             kbd_macro_executions: Vec::new(),
             kbd_macro_definition: Vec::new(),
@@ -3829,6 +4802,7 @@ impl Interpreter {
             minibuffer_runtime: MinibufferRuntimeState::default(),
             minibuffer_activation_count: 0,
             external_debugging_output_target: None,
+            native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: initial_default_file_modes(),
             local_time_zone_rule,
             special_variables: vec![
@@ -4039,6 +5013,9 @@ impl Interpreter {
             regexp_syntax_class_cache: RefCell::new(None),
             syntax_segment_cache: RefCell::new(None),
             equal_hash_tables: HashMap::default(),
+            custom_hash_tables: HashMap::default(),
+            hash_tables_under_test: HashSet::default(),
+            immutable_hash_tables: HashSet::default(),
             charset_aliases: Vec::new(),
             charset_ids: vec![
                 ("ascii".into(), 0),
@@ -4165,6 +5142,9 @@ impl Interpreter {
                 ("thread".into(), BTreeSet::from([main_thread_id])),
                 ("obarray".into(), BTreeSet::from([standard_obarray_id])),
             ]),
+            gc_live_record_ids: HashSet::new(),
+            gc_record_high_water: 0,
+            gc_has_record_census: false,
             sqlite_handles: Vec::new(),
             bytecode_program_cache: Vec::new(),
             keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
@@ -4179,10 +5159,8 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
-            auto_buffer_locals: DUMPED_AUTO_BUFFER_LOCALS
-                .iter()
-                .map(|variable| variable.name.to_string())
-                .collect(),
+            auto_buffer_locals: HashSet::default(),
+            buffer_local_capable_variables: HashSet::default(),
             per_buffer_specials: HashSet::new(),
             always_buffer_local_specials: HashSet::new(),
             active_special_restores: Vec::new(),
@@ -4257,11 +5235,10 @@ impl Interpreter {
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
-            load_path: Vec::new(),
-            prefer_compiled_loads: false,
+            load_path: Value::Nil,
+            loads_in_progress: Value::Nil,
             require_nesting: Vec::new(),
             lambda_capture_overrides: Vec::new(),
-            lambda_trim_overrides: Vec::new(),
             thread_states: vec![ThreadState {
                 record_id: main_thread_id,
                 name: None,
@@ -4380,14 +5357,19 @@ impl Interpreter {
         // then see these bound, exactly as they see GNU's C state.
 
         // Second DEFVAR completeness tranche (finding 69): the remaining
-        // oracle-bound C DEFVARs with scalar values, seeded from the pinned
-        // dump's own post-load state (`emacs -Q -batch' probes, 2026-08-22).
-        // Post-load rather than C-initializer values because the dump
-        // carries loadup-time mutations (gc-cons-percentage above is the
-        // canonical case); the replay's own assignments are idempotent
-        // setqs, and the 229-name mass comparison verifies end-state
-        // parity.  Sixteen list-valued names remain unseeded and void,
-        // enumerated in the audit log.
+        // oracle-bound C DEFVARs.  These construction values belong to the
+        // corresponding syms_of_* initializers.  Later C init_* phases and
+        // unchanged GNU Lisp loadup own their subsequent mutations; folding
+        // an observed dumped value into this layer skips behavior.
+        let frame_title_format = Value::list([
+            Value::symbol("multiple-frames"),
+            Value::string("%b"),
+            Value::list([
+                Value::string(""),
+                Value::string("%b - GNU Emacs at "),
+                Value::symbol("system-name"),
+            ]),
+        ]);
         for (name, value) in [
             ("alternate-fontname-alist", Value::Nil),
             ("attempt-orderly-shutdown-on-fatal-signal", Value::T),
@@ -4409,12 +5391,10 @@ impl Interpreter {
             ("command-history", Value::Nil),
             ("comment-end-can-be-escaped", Value::Nil),
             ("comment-use-syntax-ppss", Value::T),
-            // comp.c is compiled only under HAVE_NATIVE_COMP; this build
-            // reports `native-comp-available-p' nil, so `comp-abi-hash' and
-            // `comp-native-version-dir' are void exactly as in a GNU build
-            // without the native compiler.  The previous seeds copied the
-            // oracle binary's OWN build hash -- per-build identity values,
-            // not portable state (2026-08-23 audit finding 77).
+            // The live Rust comp.c replacement initializes its ABI hash,
+            // native version directory, and runtime tables after the base
+            // startup values below.  Never seed another executable's own
+            // build identity here (2026-08-23 audit finding 77).
             ("comp-ctxt", Value::Nil),
             ("comp-file-preloaded-p", Value::Nil),
             ("comp-sanitizer-active", Value::Nil),
@@ -4442,7 +5422,7 @@ impl Interpreter {
             ("disable-point-adjustment", Value::Nil),
             ("display-line-numbers-offset", Value::Integer(0)),
             ("display-monitors-changed-functions", Value::Nil),
-            ("display-pixels-per-inch", Value::Float(72.0)),
+            ("display-pixels-per-inch", Value::float(72.0)),
             ("dynamic-library-alist", Value::Nil),
             ("echo-area-clear-hook", Value::Nil),
             (
@@ -4456,15 +5436,17 @@ impl Interpreter {
             // Zeroed like its *-consed siblings: live allocation telemetry
             // (the frozen oracle snapshot here survived the first sweep).
             ("floats-consed", Value::Integer(0)),
-            ("font-log", Value::T),
+            // font.c:5965; init_font later applies EMACS_FONT_LOG policy.
+            ("font-log", Value::Nil),
             ("fontification-functions", Value::Nil),
             ("frame-alpha-lower-limit", Value::Integer(20)),
             ("frame-size-history", Value::Nil),
-            ("frame-title-format", Value::String("%b".into())),
+            ("frame-title-format", frame_title_format.clone()),
             ("global-disable-point-adjustment", Value::Nil),
             ("global-mode-string", Value::Nil),
             ("glyph-table", Value::Nil),
-            ("icon-title-format", Value::String("%b".into())),
+            // xdisp.c assigns the very same Lisp object to both variables.
+            ("icon-title-format", frame_title_format),
             ("iconify-child-frame", Value::symbol("iconify-top-level")),
             ("inhibit--record-char", Value::Nil),
             ("inhibit-bidi-mirroring", Value::Nil),
@@ -4481,10 +5463,10 @@ impl Interpreter {
                 "internal--top-level-message",
                 Value::String("Back to top level".into()),
             ),
-            (
-                "internal-make-interpreted-closure-function",
-                Value::symbol("cconv-make-interpreted-closure"),
-            ),
+            // eval.c initializes this to nil.  Unchanged GNU loadup.el sets
+            // it to `cconv-make-interpreted-closure' only after loading the
+            // compiled cconv and macroexp libraries.
+            ("internal-make-interpreted-closure-function", Value::Nil),
             ("internal-when-entered-debugger", Value::Integer(-1)),
             ("intervals-consed", Value::Integer(0)),
             ("large-hscroll-threshold", Value::Integer(10000)),
@@ -4512,7 +5494,9 @@ impl Interpreter {
             ("move-frame-functions", Value::Nil),
             ("multiple-frames", Value::Nil),
             ("mwheel-coalesce-scroll-events", Value::T),
-            ("native-comp-enable-subr-trampolines", Value::T),
+            // comp.c leaves the zero-initialized Lisp_Object nil.  GNU's
+            // unchanged loadup.el enables this immediately before pdump.
+            ("native-comp-enable-subr-trampolines", Value::Nil),
             ("native-comp-jit-compilation", Value::T),
             ("nobreak-char-ascii-display", Value::Nil),
             ("nobreak-char-display", Value::T),
@@ -4587,11 +5571,9 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
 
-        // Portable list-valued DEFVARs from the same completeness sweep;
-        // the native-comp comp-*-h tables, comp-subr-list, terminal-frame
-        // and the redisplay cause tables stay void -- they carry the NS
-        // build's own filesystem paths and live object state, a disclosed
-        // build divergence, not seedable data.
+        // Portable list-valued DEFVARs from the same completeness sweep.
+        // The live native-comp backend initializes its comp-*-h tables and
+        // comp-subr-list separately.
         for (name, value) in [
             (
                 // coding.c syms_of_coding: the categories in enum order;
@@ -4640,6 +5622,19 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
+        // frame.c exposes the initial stdout frame itself, not a copied
+        // description or a nil placeholder.
+        interp.define_special_variable("terminal-frame", Value::Frame(interp.selected_frame_id));
+        // xdisp.c creates both diagnostic counters as ordinary default-test
+        // hash tables.  They are live Lisp objects and therefore participate
+        // in the same GC graph as every other C-owned table.
+        for name in [
+            "redisplay--all-windows-cause",
+            "redisplay--mode-lines-cause",
+        ] {
+            let table = crate::lisp::json::make_hash_table(&mut interp, "eql", Vec::new());
+            interp.define_special_variable(name, table);
+        }
         // coding.c syms_of_coding: every `coding-category-XXX' symbol starts
         // out set to `no-conversion'; `set-coding-system-priority' is what
         // assigns the prioritized coding systems.
@@ -4659,11 +5654,12 @@ impl Interpreter {
         for variable in GNU_XDISP_GLOBAL_VARIABLES {
             interp.define_special_variable(variable.name, variable.default.value());
         }
-        // coding.c's end-of-line mnemonics, read by the dumped mode-line
-        // spec (mode-line-eol-desc).
+        // coding.c's end-of-line mnemonics.  startup.el later replaces the
+        // non-native platform labels; keep that Lisp-owned transition out of
+        // the C construction layer.
         interp.define_special_variable("eol-mnemonic-unix", Value::String(":".into()));
-        interp.define_special_variable("eol-mnemonic-dos", Value::String("(DOS)".into()));
-        interp.define_special_variable("eol-mnemonic-mac", Value::String("(Mac)".into()));
+        interp.define_special_variable("eol-mnemonic-dos", Value::String("\\".into()));
+        interp.define_special_variable("eol-mnemonic-mac", Value::String("/".into()));
         interp.define_special_variable("eol-mnemonic-undecided", Value::String(":".into()));
         interp.define_special_variable("fringe-bitmaps", fringe_bitmaps);
         for (index, name) in primitives::STANDARD_FRINGE_BITMAPS.iter().enumerate() {
@@ -4944,9 +5940,9 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
-        // subr.el's prompt policy is let-bound by callers and consumed by
-        // separately defined save commands.
-        interp.define_special_variable("use-dialog-box", Value::Nil);
+        // fns.c initializes this true.  subr.el consumes the C-owned policy
+        // but does not replace its value during loadup.
+        interp.define_special_variable("use-dialog-box", Value::T);
         interp.define_special_variable("use-short-answers", Value::Nil);
         // fileio.c exposes this as a dynamically scoped DEFVAR_LISP.  Temp
         // helpers are defined separately and must observe callers' let-bindings.
@@ -5166,7 +6162,7 @@ impl Interpreter {
             ("auto-save-timeout", Value::Integer(30)),
             ("echo-keystrokes", Value::Integer(1)),
             ("echo-keystrokes-help", Value::T),
-            ("polling-period", Value::Float(2.0)),
+            ("polling-period", Value::float(2.0)),
             ("double-click-time", Value::Integer(500)),
             ("double-click-fuzz", Value::Integer(3)),
             ("num-input-keys", Value::Integer(0)),
@@ -5184,10 +6180,11 @@ impl Interpreter {
         // Their special declarations are part of the evaluator boundary:
         // ERT, Edebug, and command-loop code let-bind `debugger' or its
         // policy in one lexical function and expect separately defined error
-        // handlers to observe the active binding.  These are the dumped
-        // batch defaults, after debug.el has replaced `debug-early'.
+        // handlers to observe the active binding.  Keep eval.c's initial
+        // `debug-early' value here; unchanged loaddefs.el replaces it with
+        // `debug' while building the Lisp image.
         for (name, value) in [
-            ("debugger", Value::Symbol("debug".into())),
+            ("debugger", Value::Symbol("debug-early".into())),
             ("debug-on-error", Value::Nil),
             ("debug-on-quit", Value::Nil),
             ("debug-on-signal", Value::Nil),
@@ -5247,7 +6244,7 @@ impl Interpreter {
             Value::Symbol("truncate-sym-name-if-fit".into()),
         );
         interp.set_global_binding("tab-bar-new-tab-choice", Value::T);
-        interp.set_global_binding("max-lisp-eval-depth", Value::Integer(1600));
+        interp.define_special_variable("max-lisp-eval-depth", Value::Integer(1600));
         interp.put_symbol_property(
             "tab-bar-new-tab-choice",
             "custom-type",
@@ -5326,12 +6323,10 @@ impl Interpreter {
             ),
             ("frame-resize-pixelwise", Value::Nil),
             ("garbage-collection-messages", Value::Nil),
-            // The pinned dump carries 1.0, not alloc.c's 0.1 C initializer: the
-            // pdumper snapshot froze loadup-time GC state, and no Lisp file on
-            // disk re-sets it (probed: default-toplevel-value is 1.0 in
-            // emacs -Q -batch).  Mirror the artifact GNU executes; the
-            // mechanism is recorded as an open question in the audit log.
-            ("gc-cons-percentage", Value::Float(1.0)),
+            // alloc.c:8191.  emacs.c changes this later at executable startup:
+            // an initialized batch process gets 1.0, while temacs/loadup and
+            // interactive processes keep this C default.
+            ("gc-cons-percentage", Value::float(0.1)),
             ("highlight-nonselected-windows", Value::Nil),
             ("hourglass-delay", Value::Integer(1)),
             (
@@ -5344,7 +6339,7 @@ impl Interpreter {
             ("make-cursor-line-fully-visible", Value::T),
             ("make-pointer-invisible", Value::T),
             ("mark-even-if-inactive", Value::T),
-            ("maximum-scroll-margin", Value::Float(0.25)),
+            ("maximum-scroll-margin", Value::float(0.25)),
             ("menu-bar-mode", Value::T),
             ("menu-prompting", Value::T),
             ("minibuffer-follows-selected-frame", Value::T),
@@ -5374,10 +6369,9 @@ impl Interpreter {
             ("translate-upper-case-key-bindings", Value::T),
             ("underline-minimum-offset", Value::Integer(1)),
             ("undo-limit", Value::Integer(160000)),
-            // undo.c initializes 24000000, but the pinned dump observably
-            // carries nil (default-toplevel-value nil, standard-value still
-            // (24000000)); same dump-frozen class as gc-cons-percentage.
-            ("undo-outer-limit", Value::Nil),
+            // undo.c:474.  emacs.c changes this to nil when it processes the
+            // batch switch; keep the C initializer at the construction layer.
+            ("undo-outer-limit", Value::Integer(24_000_000)),
             ("undo-strong-limit", Value::Integer(240000)),
             ("unibyte-display-via-language-environment", Value::Nil),
             ("use-system-tooltips", Value::T),
@@ -5406,8 +6400,8 @@ impl Interpreter {
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
             ("eol-mnemonic-unix", Value::String(":".into())),
-            ("eol-mnemonic-dos", Value::String("(DOS)".into())),
-            ("eol-mnemonic-mac", Value::String("(Mac)".into())),
+            ("eol-mnemonic-dos", Value::String("\\".into())),
+            ("eol-mnemonic-mac", Value::String("/".into())),
             ("eol-mnemonic-undecided", Value::String(":".into())),
             ("recenter-redisplay", Value::Symbol("tty".into())),
             (
@@ -5420,13 +6414,6 @@ impl Interpreter {
             ),
         ] {
             interp.define_special_variable(name, value);
-        }
-        if let Some(temp_dir) = interp.lookup_var("temporary-file-directory", &Vec::new()) {
-            interp.put_symbol_property(
-                "temporary-file-directory",
-                "standard-value",
-                Value::list([quoted_literal(&temp_dir)]),
-            );
         }
         let selected_window = interp.create_pseudovector(
             RecordKind::Window,
@@ -5537,6 +6524,7 @@ impl Interpreter {
                 }
             }
         }
+        crate::lisp::native_comp::initialize_runtime(&mut interp);
         interp
     }
 
@@ -5552,38 +6540,48 @@ impl Interpreter {
     }
 
     pub fn set_load_path(&mut self, load_path: Vec<PathBuf>) {
-        self.load_path = load_path;
+        let value = Value::list(
+            load_path
+                .into_iter()
+                .map(|path| Self::stored_value(Value::String(path.display().to_string().into()))),
+        );
+        self.set_load_path_value(value);
     }
 
-    pub(crate) fn set_prefer_compiled_loads(&mut self, prefer: bool) {
-        self.prefer_compiled_loads = prefer;
+    pub(crate) fn set_load_path_value(&mut self, value: Value) {
+        self.load_path = value.clone();
+        // init_lread writes the C slot. After makunbound that slot is
+        // independent of the now-plain Lisp symbol (data.c:set_internal).
+        if !self.detached_forwarded_variables.contains_key("load-path") {
+            self.set_symbol_value_cell("load-path", value);
+        }
     }
 
-    pub(crate) fn prefers_compiled_loads(&self) -> bool {
-        self.prefer_compiled_loads
-    }
-
-    pub(crate) fn configured_load_path(&self) -> &[PathBuf] {
-        &self.load_path
+    pub(crate) fn configured_load_path(&self) -> Vec<PathBuf> {
+        // Host path consumers project the current Lisp object on demand;
+        // this vector is never stored or used as a second source of truth.
+        self.load_path
+            .to_vec()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|entry| primitives::string_text(entry).ok().map(PathBuf::from))
+            .collect()
     }
 
     pub(crate) fn push_lambda_capture_override(&mut self, capture: bool) {
         self.lambda_capture_overrides.push(capture);
-        self.lambda_trim_overrides.push(false);
     }
 
-    pub(crate) fn push_lambda_eval_context(&mut self, capture: bool, trim_context: bool) {
+    pub(crate) fn push_lambda_eval_context(&mut self, capture: bool) {
         self.lambda_capture_overrides.push(capture);
-        self.lambda_trim_overrides.push(trim_context);
     }
 
     pub(crate) fn with_lambda_eval_context<T>(
         &mut self,
         capture: bool,
-        trim_context: bool,
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        self.push_lambda_eval_context(capture, trim_context);
+        self.push_lambda_eval_context(capture);
         let result = operation(self);
         self.pop_lambda_capture_override();
         result
@@ -5591,15 +6589,10 @@ impl Interpreter {
 
     pub(crate) fn pop_lambda_capture_override(&mut self) {
         self.lambda_capture_overrides.pop();
-        self.lambda_trim_overrides.pop();
     }
 
     pub(crate) fn lambda_capture_override(&self) -> Option<bool> {
         self.lambda_capture_overrides.last().copied()
-    }
-
-    pub(crate) fn lambda_trim_override(&self) -> bool {
-        self.lambda_trim_overrides.last().copied().unwrap_or(false)
     }
 
     pub(crate) fn mark_closure_eval_context(&mut self, env: &SharedEnv, lexical: bool) {
@@ -5669,13 +6662,16 @@ impl Interpreter {
                     }
                     if position > 0 {
                         let (name, value) = &frame[position - 1];
-                        environment.push(Value::cons(
-                            Value::Symbol(name.clone().into()),
-                            shared_updates
-                                .and_then(|updates| updates.get(name))
-                                .cloned()
-                                .unwrap_or_else(|| value.clone()),
-                        ));
+                        environment.push(
+                            frame.canonical_lisp_binding(
+                                position - 1,
+                                name,
+                                shared_updates
+                                    .and_then(|updates| updates.get(name.as_str()))
+                                    .cloned()
+                                    .unwrap_or_else(|| value.clone()),
+                            ),
+                        );
                     }
                 }
             }
@@ -5690,12 +6686,14 @@ impl Interpreter {
         };
 
         let mut slots = vec![
-            Value::list(
-                lambda
-                    .params
-                    .iter()
-                    .map(|param| Value::Symbol(param.clone().into())),
-            ),
+            lambda.public_parameters.clone().unwrap_or_else(|| {
+                Value::list(
+                    lambda
+                        .params
+                        .iter()
+                        .map(|param| Value::Symbol(param.clone())),
+                )
+            }),
             Value::list(lambda.body.as_ref().clone()),
             environment,
         ];
@@ -5706,29 +6704,6 @@ impl Interpreter {
         if let Some(interactive) = &lambda.interactive {
             slots.push(interactive.clone());
         }
-        slots
-    }
-
-    /// Project the closure through GNU's readable public slots without
-    /// changing Emaxx's conservative internal activation storage.  Generated
-    /// Lisp can use positional closed-variable access that requires the full
-    /// runtime frame, while print.c exposes only the source-visible prefix.
-    pub(crate) fn interpreted_closure_print_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
-        let mut slots = self.interpreted_closure_slots(lambda);
-        if definitions::body_closure_dont_trim_context(&lambda.body) {
-            return slots;
-        }
-        let mut capture_forms = lambda.body.as_ref().clone();
-        if let Some(interactive) = &lambda.interactive {
-            capture_forms.push(interactive.clone());
-        }
-        let trimmed = definitions::trim_lambda_closure_env(&lambda.env.borrow(), &capture_forms);
-        let trimmed = shared_env(trimmed);
-        let mut environment = self.materialize_public_interpreted_environment(&trimmed);
-        if environment.is_nil() && self.closure_env_is_lexical(&lambda.env) {
-            environment = Value::list([Value::T]);
-        }
-        slots[2] = environment;
         slots
     }
 
@@ -5763,13 +6738,16 @@ impl Interpreter {
                     }
                     if position > 0 {
                         let (name, value) = &bindings[position - 1];
-                        entries.push(Value::cons(
-                            Value::Symbol(name.clone().into()),
-                            shared_updates
-                                .and_then(|updates| updates.get(name))
-                                .cloned()
-                                .unwrap_or_else(|| value.clone()),
-                        ));
+                        entries.push(
+                            frames[index].canonical_lisp_binding(
+                                position - 1,
+                                name,
+                                shared_updates
+                                    .and_then(|updates| updates.get(name.as_str()))
+                                    .cloned()
+                                    .unwrap_or_else(|| value.clone()),
+                            ),
+                        );
                     }
                 }
                 entries
@@ -5879,7 +6857,7 @@ impl Interpreter {
                 continue;
             };
             for (name, value) in frame {
-                if let Some(updated) = updates.get(name) {
+                if let Some(updated) = updates.get(name.as_str()) {
                     *value = updated.clone();
                 }
             }
@@ -6392,15 +7370,6 @@ fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
         Value::Symbol("wrong-type-argument".into()),
         Value::Symbol(predicate.into()),
         value,
-    ]))
-}
-
-fn load_file_missing_error(target: &str) -> LispError {
-    LispError::SignalValue(Value::list([
-        Value::Symbol("file-missing".into()),
-        Value::String("Cannot open load file".into()),
-        Value::String("No such file or directory".into()),
-        Value::String(target.into()),
     ]))
 }
 

@@ -14,6 +14,7 @@ pub mod compat;
 pub mod lisp;
 pub mod overlay;
 pub mod perf;
+mod startup;
 pub mod tty;
 
 pub mod anti_cheat;

@@ -818,7 +818,7 @@ fn generated_numeric_property_table_uncompresses_and_decodes_values() {
         Value::list([
             Value::Integer(5),
             Value::Integer(5),
-            Value::Float(0.25),
+            Value::float(0.25),
             Value::Integer(12),
             Value::symbol("Nd"),
         ])
@@ -2073,7 +2073,7 @@ fn backtrace_backward_frame_should_error_keeps_point() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"backward\")
                  (let ((results (concat backtrace-tests--header
                                         (backtrace-tests--result nil))))
@@ -2095,7 +2095,7 @@ fn backtrace_print_includes_unevaluated_setq_frame() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"backward\")
                  (backtrace-tests--make-backtrace nil)
                  (setq backtrace-insert-header-function
@@ -2115,7 +2115,7 @@ fn backtrace_locals_show_lambda_arguments_for_requested_frame() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"locals\")
                  (backtrace-tests--make-backtrace 'value)
                  (backtrace-print)
@@ -2177,7 +2177,7 @@ fn backtrace_expand_ellipses_reprints_current_frame_without_limit() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"expand\")
                  (let* ((print-level nil)
                         (print-length nil)
@@ -5681,10 +5681,10 @@ fn cached_source_dispatch_analysis_observes_head_mutation() {
         .read()
         .expect("literal should parse")
         .expect("literal should exist");
-    assert_eq!(
-        literal.cons_id(),
-        interp.eval(&literal, &mut env).unwrap().cons_id()
-    );
+    assert!(matches!(
+        interp.eval(&literal, &mut env),
+        Err(LispError::VoidFunction(name)) if name == "vector-literal"
+    ));
     literal
         .set_car(Value::symbol("quote"))
         .expect("literal head should be mutable");

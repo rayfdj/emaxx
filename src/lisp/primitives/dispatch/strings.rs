@@ -855,7 +855,12 @@ define_dispatch!(
             "make-char" => {
                 need_arg_range(name, args, 1, 2)?;
                 let _charset = args[0].as_symbol()?;
-                let code = args.get(1).map(Value::as_integer).transpose()?.unwrap_or(0);
+                let code = args
+                    .get(1)
+                    .filter(|code| code.is_truthy())
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .unwrap_or(0);
                 Ok(Value::Integer(code))
             }
             "string-to-char" => {
@@ -1058,7 +1063,7 @@ fn registered_unicode_property(
     property: &str,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
-    let Some(mut registered) = find_registered_unicode_property(interp, property, env) else {
+    let Some(mut registered) = find_registered_unicode_property(interp, property) else {
         return Ok(None);
     };
     let filename = match &registered {
@@ -1066,23 +1071,24 @@ fn registered_unicode_property(
         _ => return Ok(Some(registered)),
     };
     let target = format!("international/{filename}");
-    let Some(path) = resolve_load_target_in_env(interp, &target, env)
-        .or_else(|| resolve_load_target_in_env(interp, &filename, env))
-    else {
+    let path = match resolve_load_target_in_env(interp, &target, env)? {
+        Some(path) => Some(path),
+        None => resolve_load_target_in_env(interp, &filename, env)?,
+    };
+    let Some(path) = path else {
         return Ok(Some(registered));
     };
     crate::lisp::load_file_strict(interp, &path)?;
-    registered = find_registered_unicode_property(interp, property, env)
+    registered = find_registered_unicode_property(interp, property)
         .unwrap_or(Value::String(filename.into()));
     Ok(Some(registered))
 }
 
-fn find_registered_unicode_property(
-    interp: &Interpreter,
-    property: &str,
-    env: &Env,
-) -> Option<Value> {
-    let mut alist = interp.lookup_var("char-code-property-alist", env)?;
+fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Option<Value> {
+    // chartab.c:uniprop_table reads Vchar_code_property_alist, the C-owned
+    // symbol value cell.  A caller's same-named lexical binding is not part
+    // of this primitive's state.
+    let mut alist = interp.symbol_value_cell("char-code-property-alist").ok()?;
     loop {
         let (entry, rest) = alist.cons_values()?;
         if let Some((key, value)) = entry.cons_values()

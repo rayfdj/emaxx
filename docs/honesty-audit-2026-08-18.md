@@ -6116,3 +6116,49 @@ What still stands, by cause:
 
 Outside native compilation, the thread model and the frame model, the
 open work is 9 outcomes: semantic (6), erc (2), simple (1).
+
+## 2026-09-05 native merge: correction to the bytecode argument repair
+
+During the `native-comp` merge of main `84f342a`, the ordinary native artifact
+ladder caught a semantic problem in `17da04f` despite its passing Eshell and
+runtime tests. The fifth unchanged GNU fixture,
+`test/lisp/emacs-lisp/comp-tests.el`, produced two 86,384-byte files that differ
+from byte 768. The serialized constants lost the shared `" *temp file*"`
+string references, shifting data layout and machine-code addresses. The saved
+pre-merge `9097866` editor still emits the exact GNU artifact for that same
+source under the same locale. Nothing was normalized in the comparison.
+
+GNU `bytecode.c:exec_byte_code` pushes `*args`: it does not copy string
+objects when binding bytecode arguments. The incoming `stored_value` call
+instead creates a fresh mutable string for each compact-string argument.
+That per-call allocation is removed. The actual diagnostic producer is
+corrected at `print.c:Ferror_message_string`'s boundary: a general diagnostic
+is already a mutable multibyte Lisp string when returned from the print
+buffer; `(error STRING)` returns the original STRING, preserving identity and
+properties without allocation. No promotion cache or package-specific branch
+is introduced. GNU Elisp remains unchanged.
+
+The Rust bytecode contract is strengthened to require the caller's original
+string identity across repeated calls and caller-visible property mutation,
+using an actual C-owned diagnostic producer. Its former mutation-only check
+could pass while losing identity. The existing Eshell fixture and its
+expectations are unchanged. The corrected tree passes 112 optimized Rust
+tests, including every bytecode test, all native-runtime correctness tests,
+17 anti-cheating checks, Eshell and error-message rendering; one separate
+native timing probe is ignored. Format/check/strict Clippy pass. The full
+artifact replay subsequently passes all nine fixtures: eight complete `.eln`
+files identical, including GNU `comp.el`, and one correctly absent artifact
+(`identity-string-fixed.log`, 216.48s). The complete native execution replay
+also passes 177/177, zero unexpected results, exit 0, with both helper `.eln`
+files freshly compiled and loaded (`emaxx-native.stderr`, 1114.12s wall /
+1024.41s user CPU). No compiler-spawning or image-cloning shortcut was used.
+Evidence: `/private/tmp/emaxx-main-84f342a.3jARTW` and the L12 entry in
+`docs/native-comp-c-parity-ledger.md`. This is not a claim that all string
+representation or forwarding gaps elsewhere in the runtime are closed.
+
+The final pre-commit audit passes all 17 gates; formatting, all-target check
+and strict all-feature/all-target Clippy are clean. Two serial full-compiler
+timing pairs used 62.81/63.02s and 69.94/66.42s before/merged user CPU; GNU
+used 8.43s and 9.47s. All measured artifacts are byte-identical. This shows no
+material merge regression, not a defensible speedup; Emaxx remains about 7.2x
+GNU including startup. Detailed timings/hashes are in the parity ledger.

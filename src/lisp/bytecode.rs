@@ -9,7 +9,8 @@
 
 pub mod vm;
 
-use super::types::Value;
+use super::types::{Value, VectorValue};
+use std::rc::Rc;
 
 /// Why a byte-code object or its opcode stream was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -610,7 +611,8 @@ impl ArgSpec {
 pub struct ByteCodeObject {
     pub argspec: ArgSpec,
     pub code: Vec<u8>,
-    pub constants: Vec<Value>,
+    /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
+    pub constants: Rc<VectorValue>,
     pub stack_depth: usize,
     pub doc: Option<Value>,
     pub interactive: Option<Value>,
@@ -653,17 +655,16 @@ fn string_text(value: &Value) -> Option<String> {
 pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
     slots.len() >= 4
         && matches!(slots[0], Value::Integer(_) | Value::Nil | Value::Cons(_))
-        && string_text(&slots[1]).is_some()
-        && vector_items(&slots[2]).is_some()
+        && slots[1].is_string()
+        && matches!(slots[2], Value::Vector(_))
         && matches!(slots[3], Value::Integer(_))
 }
 
-fn vector_items(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(marker), rest)) if marker == "vector-literal" => Some(rest.to_vec()),
-        _ => None,
-    }
+fn constant_vector(value: &Value) -> Option<Rc<VectorValue>> {
+    let Value::Vector(vector) = value else {
+        return None;
+    };
+    Some(Rc::clone(vector))
 }
 
 impl ByteCodeObject {
@@ -679,7 +680,7 @@ impl ByteCodeObject {
         let code_text = string_text(&slots[1])
             .ok_or_else(|| ByteCodeError::MalformedObject("code slot is not a string".into()))?;
         let code = unibyte_bytes(&code_text)?;
-        let constants = vector_items(&slots[2]).ok_or_else(|| {
+        let constants = constant_vector(&slots[2]).ok_or_else(|| {
             ByteCodeError::MalformedObject("constants slot is not a vector".into())
         })?;
         let Value::Integer(depth) = slots[3] else {
@@ -692,7 +693,7 @@ impl ByteCodeObject {
                 "negative stack depth {depth}"
             )));
         }
-        decode_program(&code, constants.len())?;
+        decode_program(&code, constants.slots().len())?;
         Ok(Some(ByteCodeObject {
             argspec,
             code,
@@ -1004,7 +1005,7 @@ pub(crate) mod tests {
                 .expect("oracle objects are genuine bytecode");
             assert!(matches!(object.argspec, ArgSpec::Packed { .. }));
             assert!(object.stack_depth > 0);
-            let instrs = decode_program(&object.code, object.constants.len()).unwrap();
+            let instrs = decode_program(&object.code, object.constants.slots().len()).unwrap();
             assert!(matches!(
                 instrs.last().map(|instr| instr.op),
                 Some(Op::Return)
@@ -1058,6 +1059,32 @@ pub(crate) mod tests {
         );
         assert_eq!(object.code, vec![0o211, 0o207]);
         assert_eq!(object.stack_depth, 3);
+    }
+
+    #[test]
+    fn bytecode_shape_checks_do_not_read_or_copy_payloads() {
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{87}".repeat(4096),
+            Vec::new(),
+            false,
+        );
+        let constants = Value::vector(std::iter::repeat_n(Value::Integer(1), 4096));
+        let Value::StringObject(string) = &code else {
+            panic!("mutable code string")
+        };
+        let Value::Vector(vector) = &constants else {
+            panic!("constant vector")
+        };
+        // STRINGP and VECTORP inspect tags, not payloads. Exclusive payload
+        // borrows expose even an otherwise invisible clone/read in the check.
+        let _code_payload = string.borrow_mut();
+        let _constant_payload = vector.slots_mut();
+        assert!(slots_are_genuine_bytecode(&[
+            Value::Integer(0),
+            code.clone(),
+            constants.clone(),
+            Value::Integer(1),
+        ]));
     }
 
     #[test]

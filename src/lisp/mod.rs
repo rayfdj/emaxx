@@ -196,6 +196,7 @@ macro_rules! define_dispatch {
 pub mod bytecode;
 pub mod eval;
 pub mod json;
+pub(crate) mod native_comp;
 pub mod primitives;
 pub mod reader;
 pub mod sqlite;
@@ -841,7 +842,68 @@ pub fn load_file_strict(
     interp: &mut eval::Interpreter,
     path: &Path,
 ) -> Result<(), types::LispError> {
+    load_file_strict_until(interp, path, |_| false).map(|_| ())
+}
+
+/// Load PATH through the ordinary GNU `readevalloop' boundary, but stop
+/// before the first top-level form accepted by STOP_BEFORE.  The image
+/// builder uses this for loadup.el: GNU's dumped state includes loadup's
+/// initialization forms but not its final transfer into `top-level'.
+pub(crate) fn load_file_strict_until(
+    interp: &mut eval::Interpreter,
+    path: &Path,
+    stop_before: impl FnMut(&types::Value) -> bool,
+) -> Result<bool, types::LispError> {
+    load_file_strict_until_or_error(interp, path, stop_before, |_| false)
+}
+
+/// The loadup image builder needs to stop at GNU's C portable-dumper call,
+/// after the surrounding unchanged Lisp has performed its pre-dump state
+/// transitions.  STOP_AFTER_ERROR recognizes that unavailable C boundary;
+/// all ordinary loads pass a predicate that is always false.
+pub(crate) fn load_file_strict_until_or_error(
+    interp: &mut eval::Interpreter,
+    path: &Path,
+    stop_before: impl FnMut(&types::Value) -> bool,
+    stop_after_error: impl FnMut(&types::LispError) -> bool,
+) -> Result<bool, types::LispError> {
     let requested_source = read_source_bytes(path)?;
+    read_lisp_file_bytes(
+        interp,
+        path,
+        requested_source,
+        None,
+        stop_before,
+        stop_after_error,
+    )
+}
+
+/// Fload's direct-reader branch consumes the descriptor openp selected. It
+/// remains alive until reading/evaluation and dynamic unwinding are complete.
+pub(crate) fn load_file_strict_opened(
+    interp: &mut eval::Interpreter,
+    path: &Path,
+    mut file: std::fs::File,
+    history: &str,
+) -> Result<(), types::LispError> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        primitives::file_operation_error("Reading file", &error, &path.display().to_string())
+    })?;
+    let result = read_lisp_file_bytes(interp, path, bytes, Some(history), |_| false, |_| false);
+    drop(file);
+    result.map(|_| ())
+}
+
+fn read_lisp_file_bytes(
+    interp: &mut eval::Interpreter,
+    path: &Path,
+    requested_source: Vec<u8>,
+    outer_load_history: Option<&str>,
+    mut stop_before: impl FnMut(&types::Value) -> bool,
+    mut stop_after_error: impl FnMut(&types::LispError) -> bool,
+) -> Result<bool, types::LispError> {
     // Resolution has already selected the file.  GNU executes that exact
     // path: an explicit or resolver-selected `.elc' must never silently run a
     // sibling `.el'.  Versioned `.elc' files can contain ordinary readable
@@ -868,11 +930,13 @@ pub fn load_file_strict(
     } else {
         source
     };
-    let load_file = interp
-        .load_source_provenance_path(path)
-        .display()
-        .to_string();
-    interp.with_lambda_eval_context(settings.lexical_binding, false, |interp| {
+    let load_file = outer_load_history.map(str::to_owned).unwrap_or_else(|| {
+        interp
+            .load_source_provenance_path(path)
+            .display()
+            .to_string()
+    });
+    interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {
             vec![types::EnvFrame::with_lisp_environment_and_identity(
@@ -898,7 +962,7 @@ pub fn load_file_strict(
             ),
             (
                 "load-true-file-name",
-                types::Value::String(load_file.clone().into()),
+                types::Value::string(&path.display().to_string()),
             ),
             ("inhibit-file-name-operation", types::Value::Nil),
             ("load-in-progress", types::Value::T),
@@ -921,6 +985,17 @@ pub fn load_file_strict(
             ),
             ("lread--unescaped-character-literals", types::Value::Nil),
         ] {
+            if outer_load_history.is_some()
+                && matches!(
+                    name,
+                    "lexical-binding" | "lread--unescaped-character-literals"
+                )
+            {
+                if name == "lexical-binding" && settings.lexical_binding {
+                    interp.set_variable(name, types::Value::T, &mut env);
+                }
+                continue;
+            }
             match interp.bind_special_dynamic(name, value, &mut env) {
                 Ok(restore) => dynamic_restores.push(restore),
                 Err(error) => {
@@ -955,25 +1030,29 @@ pub fn load_file_strict(
             unescaped_character_literal_value(&source_reader),
             &mut env,
         );
-        let warning_message =
-            match unescaped_character_literal_warning(interp, &mut env).and_then(|warning| {
-                warning
-                    .map(|warning| format_loading_warning(interp, &mut env, path, warning))
-                    .transpose()
-            }) {
-                Ok(message) => message,
-                Err(error) => {
-                    let _ =
-                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                    interp.set_current_load_file(previous);
-                    return Err(error);
-                }
-            };
+        let warning_message = match (if outer_load_history.is_some() {
+            Ok(None)
+        } else {
+            unescaped_character_literal_warning(interp, &mut env)
+        })
+        .and_then(|warning| {
+            warning
+                .map(|warning| format_loading_warning(interp, &mut env, path, warning))
+                .transpose()
+        }) {
+            Ok(message) => message,
+            Err(error) => {
+                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        };
         // GNU's readevalloop reads, constructs, and evaluates one top-level object
         // before reading the next.  Emaxx's parser produces all syntax trees up
         // front, but the observable Interpreter-dependent reader work must remain
         // in that same per-form order: a later compiled object can depend on a
         // definition installed by an earlier top-level form.
+        let mut stopped = false;
         for (form_index, form) in forms.into_iter().enumerate() {
             // GNU's reader interns ordinary symbols and returns fully constructed
             // identity-bearing objects before invoking the Lisp-owned eager
@@ -989,7 +1068,7 @@ pub fn load_file_strict(
                     return Err(error);
                 }
             };
-            let form = match interp.materialize_read_object_literals(form) {
+            let form = match interp.materialize_read_object_literals(form, &mut env) {
                 Ok(form) => form,
                 Err(error) => {
                     if trace_load_errors_enabled() {
@@ -1005,12 +1084,24 @@ pub fn load_file_strict(
                     return Err(error);
                 }
             };
+            if stop_before(&form) {
+                stopped = true;
+                break;
+            }
             let result = if eager_macroexpand {
                 primitives::eager_expand_eval(interp, &form, &mut env)
             } else {
                 interp.eval(&form, &mut env)
             };
             if let Err(error) = result {
+                if stop_after_error(&error) {
+                    // The recognized C handoff is successful control flow
+                    // for image reconstruction, not a batch error retained
+                    // in the restored process.
+                    interp.clear_batch_error_backtrace();
+                    stopped = true;
+                    break;
+                }
                 if trace_load_errors_enabled() {
                     let head = form
                         .car()
@@ -1040,7 +1131,7 @@ pub fn load_file_strict(
             .unwrap_or_else(|| {
                 types::Value::list([types::Value::String(load_file.clone().into())])
             });
-        interp.commit_entire_load_history(&load_file, current_load_list);
+        interp.commit_entire_load_history(&types::Value::string(&load_file), current_load_list);
         if let Some(message) = warning_message {
             append_message(interp, &message);
         }
@@ -1051,7 +1142,9 @@ pub fn load_file_strict(
         // `do-after-load-evaluation' only after all load bindings unwind.
         // Invoke that actual GNU Elisp owner when it is present; early
         // bootstrap loads deliberately have no such function yet.
-        if let Ok(after_load) = interp.lookup_function("do-after-load-evaluation", &env) {
+        if outer_load_history.is_none()
+            && let Ok(after_load) = interp.lookup_function("do-after-load-evaluation", &env)
+        {
             interp.call_function_value(
                 after_load,
                 Some("do-after-load-evaluation"),
@@ -1059,19 +1152,8 @@ pub fn load_file_strict(
                 &mut env,
             )?;
         }
-        Ok(())
+        Ok(stopped)
     })
-}
-
-/// Whether `load'/`require' prefer a compiled `.elc' over its `.el' source.
-///
-/// GNU's `load-suffixes' is (".so" ".dylib" ".elc" ".el") with
-/// `load-prefer-newer' nil, so a `.elc' wins whenever one exists; that is the
-/// faithful default here too.  `EMAXX_BYTECODE_VM=0' forces source loads for
-/// debugging.  This selects resolution only -- the bytecode VM itself is
-/// always available.
-pub(crate) fn bytecode_vm_enabled() -> bool {
-    std::env::var_os("EMAXX_BYTECODE_VM").is_none_or(|flag| flag != "0")
 }
 
 fn restore_special_dynamic_bindings(
@@ -1481,8 +1563,9 @@ mod tests {
                 ],
             }));
         let mut interp = super::eval::Interpreter::new();
+        let mut env = super::types::Env::new();
         let materialized = interp
-            .materialize_read_object_literals(literal)
+            .materialize_read_object_literals(literal, &mut env)
             .expect("reader construction must treat every closure slot as data");
         let super::types::Value::Record(record_id) = materialized else {
             panic!("byte-code reader form must become a closure pseudovector");
