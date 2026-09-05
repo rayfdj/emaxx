@@ -5,7 +5,93 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed a94d410 (2026-09-05)
+## Resume here — type-query checkpoint (2026-09-05)
+
+Branch `native-comp`, checkpoint built on pushed `9844664` (handover) and
+`a94d410` (GC). This is the type-query correction described in the
+[P19 ledger](native-comp-c-parity-ledger.md). Use Git HEAD/origin to identify
+the published commit; the older GC resume section below is history, not a
+claim that this correction is pending. Main `84f342a` is included. After
+each checkpoint push, fetch/integrate main before beginning another unit.
+
+The full active goal and seven milestone states below remain unchanged:
+GNU-faithful runtime foundations, a real portable startup image as soon as
+its actual correctness prerequisites permit, then remaining native-comp
+correctness/performance. No dumper exists and no whole milestone is complete.
+Read the full objective attachment when resuming; keep every boundary and
+de-cheating requirement, not just this checkpoint's focused tests.
+
+What changed:
+
+- GNU `data.c:Ftype_of` does not implement old-struct compatibility. Removed
+  Rust's partial policy and its per-query mode-variable lookup. GNU's
+  unchanged `cl-lib.el` advice remains the owner and works without it.
+- GNU `Fcl_type_of` inspects object tags, not public fixnum-limit variables.
+  Removed those two lookups from every query, reused the existing tagged
+  integer limits, and preserved the allocated bignum subtype.
+- Removed the two now-unused helpers. Added two Rust-only ordinary/native
+  subr controls and made the adversarial inventory require them. No Elisp,
+  GNU source, ABI, cache, GC threshold or ownership model changed.
+
+Verified evidence, `/private/tmp/emaxx-native-type-tags.E73e1Z`:
+
+- Both new controls fail on the previous code (`red-controls.log`). The
+  earlier short exact selector matched zero tests, not a pass.
+- Final focused selection: **95 passed, zero failed, one preexisting manual
+  timing probe ignored**, including all 18 adversarial checks and unchanged
+  old-struct advice integration. Formatting/check/strict Clippy are clean.
+- Ordinary loading of unchanged GNU `cl-lib-tests.el` matches GNU: **45
+  passes, the same one expected failure, zero unexpected failures/skips**.
+  Emaxx ran with GNU executable launches forbidden; the negative control
+  rejects GNU with exit 71. No authored Elisp or alternate runner was used.
+- All nine artifact fixtures pass: **eight entire byte-identical `.eln`
+  files through `comp.el`, one correctly absent artifact**. The 177-case
+  native execution suite was not rerun for this bounded correction.
+- Two post-startup rounds: corrected CPU **48.97 / 49.78s**, pushed baseline
+  **52.06 / 52.26s**, GNU **8.37 / 8.33s**, including compiler children.
+  Paired reductions are **5.94% / 4.75%**; baseline variation is 0.39%.
+  The evidence supports roughly 5–6% less CPU for this input, not a precise
+  universal speedup. Rust is still about **5.9x GNU by CPU** (5.8x elapsed).
+  Preload reconstruction is outside every timing window. All six measured
+  artifacts are whole-byte identical, 881,800 bytes, SHA-256
+  `f2752387ccbf72e1f21def74a0e438e8890d06e86b36ab30229c39ec79821c83`.
+- Corrected editor SHA-256:
+  `d8f0d55a78719caa23ca07dd667641a440c8a212798f12afbca506f2d2517a3c`.
+  Saved baseline `before-emaxx` in the same directory has SHA-256
+  `15d1486fa62578847331fde3ea934726089f51d8266368d6ae0a51c7095adc10`.
+
+Next work: **native object conversion/synchronization, R02c/R03**, starting
+from the corrected editor's completed post-startup profile, not a fresh
+guess or another cache. `after.sample`, `profile.log`, and
+`after-attribution.txt` are in the type-tags directory. The worker is
+`Thread_24937884`, 40,691 samples; the main thread is blocked in join.
+All compiler/sampler jobs are terminal (profile session `10717`, PID `76435`;
+timing session `7914`; identity session `97404`). Do not restart them.
+
+The after-profile confirms that old-struct probing disappears and sampled
+`cl_type_value` work drops from 1,893 to 66 samples. Remaining nearest-owner
+regions are native object bridge **8,436**, bindings/variables **5,066**,
+other GC **1,246**, other work **25,943**; these regions do not overlap.
+Specific paths do overlap: `reconcile_mirror` 3,074, `native_eq` 2,459,
+`decode_program` 1,891. Read their actual callers before selecting the next
+bounded unit. `NativeHeap::decode_inner` is now the leading active leaf.
+
+The external analyzer at
+`/private/tmp/emaxx-native-poststartup.mXNHW4/attribute_sample.py` accepts a
+capture path and worker-thread name. It accounts for every worker sample
+and validates the leaf totals against the sampler's own summary (491
+collapsed leaves checked for the after-profile). The after-profile spans
+the 58.55-second instrumented operation; it is not another unprofiled timing
+sample. Its artifact also compares whole-byte identical with GNU.
+
+Read GNU `lisp.h` object access and the relevant `data.c`/`alloc.c` owners
+before changing the Rust representation or equality routes. Keep shared
+mutation, identity and roots correct; do not bypass mirrors until their
+authoritative replacement is proven. These remain obligations of the
+finite dump prerequisite list, not permission to postpone dumping for every
+optimization. No further runtime optimization is implemented at this point.
+
+## Previous GC checkpoint — pushed a94d410 (2026-09-05)
 
 Repository: `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
 Last pushed implementation commit:

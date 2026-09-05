@@ -3,8 +3,9 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Latest pushed implementation: `a94d410`, the bounded shared GC marking and
-weak-entry/sweep correction. Current main `84f342a` is included. See
+Current checkpoint: the P19 type-query correction below, based on pushed
+`9844664`/`a94d410` (handover/shared GC marking). Current main `84f342a`
+is included. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the next requested task: profile
 post-startup native compilation and fix its largest evidenced GNU C
@@ -133,6 +134,115 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | P33 | `apply` | `eval.c:Fapply` | registered |
 | P34 | `funcall` | `eval.c:Ffuncall` and `funcall_subr` | partial; see L04-L07 |
 | P35 | `stringp` | `data.c:Fstringp`; `lisp.h:STRINGP` | verified; direct tagged-word test, see L14 |
+
+### P19 follow-up: type classification and Lisp-owned advice
+
+The completed a94d410 post-startup `comp.el` capture now has caller
+attribution, not just a leaf ranking. A streaming tree analysis accounts for
+all 43,902 compiler-worker samples, excludes the blocked main thread, and
+checks its collapsed leaf counts against the sampler's own summary. Nearest
+owner regions are non-overlapping: bindings/variables 9,194 samples, native
+object bridge 8,353, other GC 1,336, other work 25,019. This is a sampled
+wall-time attribution, not a precise CPU breakdown or speedup prediction.
+Evidence: `/private/tmp/emaxx-native-poststartup.mXNHW4/attribute_sample.py`
+and `attribution.txt`; the underlying capture is unchanged.
+
+The callers expose a bounded correction before a symbol-storage rewrite:
+`legacy_struct_vector_type` owns 2,051 samples and `cl_type_value` 1,893
+(distinct paths, about 9% combined). Not all of the latter's work is extra.
+GNU `data.c:Ftype_of` (185-198) checks SYMBOLP, INTEGERP and SUBRP, otherwise
+calls `Fcl_type_of` (200-306), which dispatches on the object tag/subtype.
+Neither consults `cl-old-struct-compat-mode` or the public fixnum-limit
+variables. The fixnum range is a C representation constant in `lisp.h`;
+`data.c:syms_of_data` merely publishes read-only Lisp values for it.
+
+Rust `dispatch/misc_keymaps.rs:type-of` instead consults the mode variable
+on every slow type query and implements a partial old-struct policy itself.
+GNU's unchanged `cl-lib.el:cl--old-struct-type-of` and
+`cl-old-struct-compat-mode` own this policy through ordinary advice. Remove
+the Rust policy; do not port the remaining advice into Rust. Separately,
+`buffers.rs:cl_type_value` reads both limit variable cells before inspecting
+even a non-numeric object. Replace that dependency with the existing tagged
+integer representation constants, preserving actual bignum object tags.
+
+This is a C/Lisp boundary and type-classification correction, not completion
+of all P19 pseudovector branches, V02 storage, or R03 ownership. It creates
+no new dump prerequisite. Both new Rust controls fail on the old code:
+the original type-of subr returns a structure name without installed advice;
+cl-type-of signals integerp on nil solely because an internal control
+poisoned a limit variable cell. The latter is deliberately a C-side negative
+control, not a claim that GNU lets Lisp assign those read-only constants.
+Evidence: `/private/tmp/emaxx-native-type-tags.E73e1Z/red-controls.log`
+(two selected, two failed, zero ignored). The initial build command's short
+exact selector matched zero tests; `red-build.log` is not correctness proof.
+
+The candidate removes the Rust old-struct policy and both now-unused helpers,
+uses the existing fixnum representation constants, and returns bignum for
+an actual allocated BigInteger. New Rust controls cover ordinary and native
+subr entry points, boundary integers, a record, a vector, and scalar tags.
+The first focused run passes 95 tests, zero failures; one preexisting manual
+timing probe is ignored (`focused.log`, 61.62s). Both old-struct advice
+integration checks pass unchanged, as do the two new ordinary/native controls
+and all 18 adversarial checks. That build exposed the two unused helpers;
+after removing them, the final warning-free rebuild repeats 95 passes,
+zero failures and one ignored timing probe (`focused-final.log`, 61.51s).
+Formatting, all-target check (11.05s) and strict all-target/all-feature
+Clippy (15.62s) pass with zero warnings.
+
+The final release editor builds without warnings (2m55s), SHA-256
+`d8f0d55a78719caa23ca07dd667641a440c8a212798f12afbca506f2d2517a3c`.
+Ordinary `-Q --batch` loading the unchanged GNU `cl-lib-tests.el`, followed
+by its normal ERT batch entry point, completes all 46 cases in both editors:
+45 pass, the same `cl-lib-nth-value-test-multiple-values` expected failure,
+zero unexpected failures/skips. Both old-struct tests pass. Both emit the
+same GNU cl-typep optimization notices; those are not Rust compiler warnings.
+Emaxx ran with GNU executable launches forbidden; the fresh GNU negative
+control exits 71. Logs: `cl-subject.log`, `cl-gnu.log`,
+`gnu-exec-negative.log` in the type-tags evidence directory. This is ordinary
+unchanged-source execution, not the canonical 177 native cases. The complete
+unchanged-source artifact ladder also passes (`identity.log`, 215.66s):
+eight entire byte-identical `.eln` files through `comp.el` (881,800 bytes),
+plus the correctly absent no-byte-compile artifact; one explicitly selected
+integration test passes, zero failures/ignored. Its whole-gate duration is
+not a post-startup performance measurement.
+
+Two fresh serial post-startup rounds use the unchanged validated external
+`native_phase.py` observer (SHA-256
+`bbec55ac08176ac28075362dcfc61c4b0991b81b832abf57f9010c7bf37966aa`).
+Both editors enter unchanged `batch-native-compile` before the clock starts;
+the actual return ends it. Preload reconstruction is outside the window.
+Order is current/before/GNU, then before/current/GNU; every process gets a
+fresh home/temp directory and the same unchanged source path/environment.
+
+| Editor | Post-startup wall seconds | CPU seconds, including waited-for children |
+|---|---|---|
+| Corrected type queries | 49.2066 / 50.0012 | 48.9661 / 49.7822 |
+| Saved pushed a94d410 code | 52.2847 / 52.4752 | 52.0579 / 52.2624 |
+| GNU | 8.5534 / 8.5028 | 8.3658 / 8.3347 |
+
+Paired CPU changes are -5.94% and -4.75%; baseline variation is about 0.39%
+and current variation 1.67%. This supports a roughly 5–6% reduction for this
+input, not a universal or exact speedup. Current mean CPU is still 5.91x
+GNU (elapsed about 5.82x). All six whole 881,800-byte artifacts are identical,
+SHA-256 `f2752387ccbf72e1f21def74a0e438e8890d06e86b36ab30229c39ec79821c83`.
+Emaxx timing runs use the same GNU-execution-denied fence as the execution
+control. Evidence: six `{current,before,gnu}{1,2}.log` files and
+`timing-results.txt` in the type-tags directory. No thresholds, cache mixers,
+ABI, GC ownership or Elisp changed. This accepts the bounded C/Lisp boundary
+and type-query correction, not all P19 branches or general performance parity.
+
+The after-profile completes successfully (`profile.log`, `after.sample`),
+with another whole-identical artifact. The worker has 40,691 samples;
+`legacy_struct_vector_type` is absent and `cl_type_value` owns only 66
+samples, versus 2,051/1,893 respectively before. Nearest-owner regions:
+native object bridge 8,436, bindings/variables 5,066, other GC 1,246,
+other work 25,943. The tree parser accounts for the complete worker count
+and validates all 491 reported collapsed leaf totals against the sampler's
+own summary (`after-attribution.txt`). Sampling perturbs elapsed time;
+58.55s instrumented wall / 49.02s CPU is not a third unprofiled timing.
+The bridge is now the largest identified owner region. R02c/R03 caller
+attribution and GNU C comparison come next, without a new cache or an
+unbounded dump prerequisite.
 
 ## Cross-cutting hot-path contracts (15)
 

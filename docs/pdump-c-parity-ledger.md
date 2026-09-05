@@ -18,11 +18,16 @@ work and must not be restored as part of this goal.
 
 Evidence directory: `/private/tmp/emaxx-pdump-contracts.Yyf1mY`.
 
-Latest published checkpoint: `a94d410` (shared GC marking/weak-entry/sweep
-ordering), following startup/loading checkpoint `a92e620`. After the latest
-push, freshly fetched `origin/main` at `84f342a` was already included.
-See the handover's dated "Resume here" section for the active goal and next
-post-startup profiling task. No image implementation is being claimed.
+Current checkpoint: the P19 type-query correction, based on published
+`9844664`/`a94d410` (handover/shared GC marking), following startup/loading
+checkpoint `a92e620`. Main `84f342a` is included. The correction removes
+Rust's Lisp-owned old-struct policy and per-query fixnum variable lookups;
+95 focused checks, ordinary unchanged CL tests and the complete artifact
+ladder pass. Fresh post-startup CPU is roughly 5–6% lower for `comp.el`,
+still about 5.9x GNU. See the native ledger's P19 evidence and the handover's
+first "Resume here" section for exact results and next work (R02c/R03
+object bridge callers). No image implementation is being claimed, and the
+finite dump prerequisite inventory below is unchanged.
 
 - Original `b432d86` baseline editor SHA-256:
   `e3547c198c6b65bb551101bdf8e511963c5f1c485f23205c260547a2d1419db4`.

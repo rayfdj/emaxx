@@ -1769,9 +1769,9 @@ define_dispatch!(
             }
             "type-of" => {
                 need_args(name, args, 1)?;
-                if let Some(type_name) = legacy_struct_vector_type(interp, &args[0], env) {
-                    return Ok(Value::Symbol(type_name.into()));
-                }
+                // data.c:Ftype_of inspects object tags. Old vector-struct
+                // policy belongs to cl-lib.el's advice around this subr,
+                // not to the original primitive reached by that advice.
                 let name = match &args[0] {
                     Value::Nil => "symbol",
                     Value::T => "symbol",
@@ -1989,26 +1989,5 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
             }
             _ => return Err(plist_type_error(&plist)),
         }
-    }
-}
-
-fn legacy_struct_vector_type(interp: &Interpreter, value: &Value, env: &Env) -> Option<String> {
-    if !interp
-        .lookup_var("cl-old-struct-compat-mode", env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return None;
-    }
-    let items = vector_items(value).ok()?;
-    let Some(Value::Symbol(tag)) = items.first() else {
-        return None;
-    };
-    let type_name = tag.strip_prefix("cl-struct-")?;
-    interp.class_value(type_name)?;
-    let witness = interp.raw_function_binding(tag, env)?;
-    if witness == Value::Symbol(":quick-object-witness-check".into()) {
-        Some(type_name.to_string())
-    } else {
-        None
     }
 }

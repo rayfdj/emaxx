@@ -5213,6 +5213,14 @@ mod tests {
         direct_native_type_of(value)
     }
 
+    extern "C" fn call_cl_type_of_by_subr(value: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "cl-type-of")
+            .expect("cl-type-of belongs to the native ABI");
+        invoke_subr(index, &[value])
+    }
+
     extern "C" fn cons_then_funcall_car(function: NativeWord, value: NativeWord) -> NativeWord {
         let list = invoke_cons(value, 0);
         let funcall = super::super::abi::native_subrs()
@@ -6630,6 +6638,94 @@ mod tests {
                         &[value],
                     )
                     .expect("native type-of"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn native_type_of_leaves_old_struct_policy_to_elisp_advice() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let tag = "cl-struct-type-boundary-probe";
+        interpreter.set_global_binding("cl-old-struct-compat-mode", Value::T);
+        interpreter.put_symbol_property("type-boundary-probe", "cl--class", Value::T);
+        interpreter.set_function_binding(tag, Some(Value::symbol(":quick-object-witness-check")));
+        let vector = Value::vector(vec![Value::symbol(tag)]);
+        // Setting a mode variable does not install its Lisp advice. Even
+        // when advised, the original C subr still answers from the type tag.
+        assert_eq!(
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "type-of",
+                std::slice::from_ref(&vector),
+                &mut environment,
+            )
+            .expect("ordinary original type-of subr"),
+            Value::symbol("vector")
+        );
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_type_of as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[vector],
+                )
+                .expect("native original type-of subr"),
+            Value::symbol("vector")
+        );
+    }
+
+    #[test]
+    fn native_cl_type_of_uses_object_tags_not_fixnum_variable_cells() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let record = interpreter.create_record("type-boundary-probe", vec![Value::Nil]);
+        // Internal negative control, not a claim that Lisp may set these
+        // constants. Fcl_type_of must not read their Lisp value cells at all.
+        interpreter.set_global_binding("most-positive-fixnum", Value::Nil);
+        interpreter.set_global_binding("most-negative-fixnum", Value::Nil);
+        for (value, expected) in [
+            (Value::Nil, "null"),
+            (Value::T, "boolean"),
+            (Value::symbol("type-boundary-probe"), "symbol"),
+            (Value::vector(vec![Value::Integer(1)]), "vector"),
+            (record, "type-boundary-probe"),
+            (Value::Integer(MOST_NEGATIVE_FIXNUM), "fixnum"),
+            (Value::Integer(MOST_POSITIVE_FIXNUM), "fixnum"),
+            (Value::Integer(MOST_NEGATIVE_FIXNUM - 1), "bignum"),
+            (Value::Integer(MOST_POSITIVE_FIXNUM + 1), "bignum"),
+            // An allocated bignum's subtype is not determined by its value.
+            (
+                Value::BigInteger(num_bigint::BigInt::from(1).into()),
+                "bignum",
+            ),
+        ] {
+            let expected = Value::symbol(expected);
+            assert_eq!(
+                crate::lisp::primitives::call(
+                    &mut interpreter,
+                    "cl-type-of",
+                    std::slice::from_ref(&value),
+                    &mut environment,
+                )
+                .expect("ordinary cl-type-of subr"),
+                expected
+            );
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_cl_type_of_by_subr as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[value],
+                    )
+                    .expect("native cl-type-of subr"),
                 expected
             );
         }
