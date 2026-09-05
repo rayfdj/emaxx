@@ -653,8 +653,8 @@ fn string_text(value: &Value) -> Option<String> {
 pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
     slots.len() >= 4
         && matches!(slots[0], Value::Integer(_) | Value::Nil | Value::Cons(_))
-        && string_text(&slots[1]).is_some()
-        && vector_items(&slots[2]).is_some()
+        && slots[1].is_string()
+        && matches!(slots[2], Value::Vector(_))
         && matches!(slots[3], Value::Integer(_))
 }
 
@@ -1057,6 +1057,32 @@ pub(crate) mod tests {
         );
         assert_eq!(object.code, vec![0o211, 0o207]);
         assert_eq!(object.stack_depth, 3);
+    }
+
+    #[test]
+    fn bytecode_shape_checks_do_not_read_or_copy_payloads() {
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{87}".repeat(4096),
+            Vec::new(),
+            false,
+        );
+        let constants = Value::vector(std::iter::repeat_n(Value::Integer(1), 4096));
+        let Value::StringObject(string) = &code else {
+            panic!("mutable code string")
+        };
+        let Value::Vector(vector) = &constants else {
+            panic!("constant vector")
+        };
+        // STRINGP and VECTORP inspect tags, not payloads. Exclusive payload
+        // borrows expose even an otherwise invisible clone/read in the check.
+        let _code_payload = string.borrow_mut();
+        let _constant_payload = vector.slots_mut();
+        assert!(slots_are_genuine_bytecode(&[
+            Value::Integer(0),
+            code.clone(),
+            constants.clone(),
+            Value::Integer(1),
+        ]));
     }
 
     #[test]

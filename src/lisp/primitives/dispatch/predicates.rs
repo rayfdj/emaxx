@@ -49,8 +49,10 @@ define_dispatch!(
             "char-or-string-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Integer(code) if (0..=0x10_FFFF).contains(&code))
-                        || string_like(&args[0]).is_some()
+                    // data.c:Fchar_or_string_p uses character.h:MAX_CHAR,
+                    // not Unicode's scalar limit, and STRINGP reads a tag.
+                    if matches!(args[0], Value::Integer(code) if (0..=0x3F_FFFF).contains(&code))
+                        || args[0].is_string()
                     {
                         Value::T
                     } else {
@@ -61,11 +63,7 @@ define_dispatch!(
             "arrayp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if string_like(&args[0]).is_some()
-                        || is_vector_value(&args[0])
-                        || is_bool_vector_value(interp, &args[0])
-                        || matches!(args[0], Value::CharTable(_))
-                    {
+                    if args[0].is_string() || is_vector_like_value(interp, &args[0]) {
                         Value::T
                     } else {
                         Value::Nil
@@ -76,9 +74,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(args[0], Value::Nil | Value::Cons(_))
-                        || string_like(&args[0]).is_some()
-                        || is_vector_value(&args[0])
-                        || is_bool_vector_value(interp, &args[0])
+                        || args[0].is_string()
+                        || is_vector_like_value(interp, &args[0])
                     {
                         Value::T
                     } else {
@@ -154,7 +151,7 @@ define_dispatch!(
             }
             "stringp" => {
                 need_args(name, args, 1)?;
-                Ok(if string_like(&args[0]).is_some() {
+                Ok(if args[0].is_string() {
                     Value::T
                 } else {
                     Value::Nil
@@ -163,9 +160,9 @@ define_dispatch!(
             "documentation-stringp" => {
                 need_args(name, args, 1)?;
                 let valid = matches!(&args[0], Value::Integer(_))
-                    || string_like(&args[0]).is_some()
+                    || args[0].is_string()
                     || args[0].cons_values().is_some_and(|(file, position)| {
-                        string_like(&file).is_some() && matches!(position, Value::Integer(_))
+                        file.is_string() && matches!(position, Value::Integer(_))
                     });
                 Ok(if valid { Value::T } else { Value::Nil })
             }
@@ -210,13 +207,10 @@ define_dispatch!(
             }
             "byte-code-function-p" => {
                 need_args(name, args, 1)?;
+                // data.c:Fbyte_code_function_p checks CLOSUREP and the
+                // code slot's STRINGP tag, never names or parameter lists.
                 Ok(
-                    if record_type_name(interp, &args[0]) == Some("byte-code-function")
-                        || matches!(
-                            &args[0],
-                            Value::Lambda(lambda)
-                                if lambda.params.as_slice() == ["vals", "start", "end"]
-                        )
+                    if matches!(args[0], Value::Record(id) if interp.is_genuine_bytecode_function(id))
                     {
                         Value::T
                     } else {

@@ -375,6 +375,11 @@ struct NativeCFastPathContract {
 
 const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
     NativeCFastPathContract {
+        primitive: "stringp",
+        owner: "data.c:Fstringp",
+        contract_test: "native_stringp_is_a_tag_test_without_an_active_runtime",
+    },
+    NativeCFastPathContract {
         primitive: "<",
         owner: "data.c:Flss",
         contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
@@ -562,6 +567,40 @@ const APPROVED_NATIVE_C_DEVIATIONS: &[ApprovedNativeCDeviation] = &[];
 pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     use std::collections::BTreeSet;
 
+    // Executable negative controls: a source inventory alone did not catch
+    // the old parameter-name and vector-shape false positives.
+    use crate::lisp::types::{Env, Value};
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let mut environment = Env::new();
+    let lambda = Value::lambda(
+        std::rc::Rc::new(["vals", "start", "end"].map(Into::into).to_vec()),
+        std::rc::Rc::new(Vec::new()),
+        std::rc::Rc::new(std::cell::RefCell::new(Env::new())),
+    );
+    let vector = Value::vector([
+        Value::string("x"),
+        Value::Integer(0),
+        Value::Integer(1),
+        Value::Nil,
+    ]);
+    assert!(
+        crate::lisp::primitives::string_like(&vector).is_none(),
+        "CHECK_STRING must not reinterpret an ordinary vector as a string",
+    );
+    for (name, value, expected) in [
+        ("byte-code-function-p", lambda, Value::Nil),
+        ("stringp", vector.clone(), Value::Nil),
+        ("documentation-stringp", vector, Value::Nil),
+        ("char-or-string-p", Value::Integer(0x11_0000), Value::T),
+    ] {
+        assert_eq!(
+            crate::lisp::primitives::call(&mut interpreter, name, &[value], &mut environment,)
+                .expect("GNU C type predicate"),
+            expected,
+            "{name} must inspect GNU object tags, not names or payload shapes",
+        );
+    }
+
     let runtime_path = repo_root().join("src/lisp/native_comp/runtime.rs");
     let runtime = fs::read_to_string(&runtime_path).expect("read native runtime source");
     let comments =
@@ -598,6 +637,10 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
         "native_symbol_value_errors_preserve_the_original_symbol",
         "native_assq_preserves_uninterned_lexical_binding_identity",
         "native_symbol_value_checks_symbol_before_reading_the_cell",
+        "native_byte_code_function_p_checks_closure_and_code_tags",
+        "native_string_type_predicates_do_not_read_payloads",
+        "native_string_type_predicates_reject_vector_spoofing",
+        "native_string_type_predicates_follow_gnu_array_and_character_classes",
     ] {
         assert!(
             runtime.contains(&format!("fn {test}")),

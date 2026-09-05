@@ -1276,6 +1276,7 @@ fn invoke_context_free_subr(index: usize, arguments: &[NativeWord]) -> Option<Na
         ("consp", [value]) => Some(native_boolean(native_consp(*value))),
         ("atom", [value]) => Some(native_boolean(!native_consp(*value))),
         ("bare-symbol-p", [value]) => Some(native_boolean(*value & TAG_MASK == TAG_SYMBOL)),
+        ("stringp", [value]) => Some(direct_native_stringp(*value)),
         ("car", [value]) if *value == 0 || native_consp(*value) => Some(if native_consp(*value) {
             unsafe { native_car(*value) }
         } else {
@@ -1633,6 +1634,11 @@ extern "C" fn direct_native_identity(value: NativeWord) -> NativeWord {
     value
 }
 
+extern "C" fn direct_native_stringp(value: NativeWord) -> NativeWord {
+    // data.c:Fstringp / lisp.h:STRINGP never reads the pointed-to payload.
+    native_boolean(value & TAG_MASK == TAG_STRING)
+}
+
 extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
@@ -1772,6 +1778,7 @@ fn native_subr_address(index: usize) -> *mut c_void {
         "listp" => direct_native_listp as *mut c_void,
         "nlistp" => direct_native_nlistp as *mut c_void,
         "identity" => direct_native_identity as *mut c_void,
+        "stringp" => direct_native_stringp as *mut c_void,
         "eq" => direct_native_eq as *mut c_void,
         "eql" => direct_native_eql as *mut c_void,
         "type-of" => direct_native_type_of as *mut c_void,
@@ -4700,6 +4707,333 @@ mod tests {
             .position(|subroutine| subroutine.name == "assq")
             .expect("assq belongs to the native ABI");
         invoke_subr(index, &[key, alist])
+    }
+
+    extern "C" fn call_byte_code_function_p(value: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "byte-code-function-p")
+            .expect("byte-code-function-p belongs to the native ABI");
+        invoke_subr(index, &[value])
+    }
+
+    extern "C" fn call_unary_subr_by_index(index: NativeWord, value: NativeWord) -> NativeWord {
+        let index = decode_fixnum(index).expect("test subr index") as usize;
+        // Exercise the installed link-table target, including direct C-word
+        // entries, not just the general Rust primitive router.
+        unsafe {
+            call_word_target(
+                native_subr_address(index).cast_const(),
+                NativeCallingConvention::Fixed,
+                &[value],
+            )
+        }
+    }
+
+    #[test]
+    fn native_stringp_is_a_tag_test_without_an_active_runtime() {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "stringp")
+            .expect("stringp belongs to the native ABI");
+        // GNU STRINGP only inspects the tag: these words need no pointed-to
+        // storage, interpreter, GC registration, or payload decoding.
+        for tag in 0..=TAG_MASK {
+            let word = 0x1000 | tag;
+            let expected = native_boolean(tag == TAG_STRING);
+            assert_eq!(invoke_context_free_subr(index, &[word]), Some(expected));
+            assert_eq!(direct_native_stringp(word), expected);
+            assert_eq!(
+                unsafe {
+                    call_word_target(
+                        native_subr_address(index).cast_const(),
+                        NativeCallingConvention::Fixed,
+                        &[word],
+                    )
+                },
+                expected,
+            );
+        }
+    }
+
+    fn assert_string_type_predicates(
+        interpreter: &mut Interpreter,
+        runtime: &mut NativeRuntime,
+        environment: &mut Env,
+        value: &Value,
+        expected: [bool; 5],
+    ) {
+        for (name, expected) in [
+            "stringp",
+            "arrayp",
+            "sequencep",
+            "char-or-string-p",
+            "documentation-stringp",
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            let expected = if expected { Value::T } else { Value::Nil };
+            assert_eq!(
+                crate::lisp::primitives::call(
+                    interpreter,
+                    name,
+                    std::slice::from_ref(value),
+                    environment,
+                )
+                .expect("ordinary type predicate"),
+                expected,
+                "ordinary {name}",
+            );
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == name)
+                .expect("type predicate belongs to the native ABI");
+            assert_eq!(
+                runtime
+                    .invoke(
+                        interpreter,
+                        environment,
+                        call_unary_subr_by_index as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[Value::Integer(index as i64), value.clone()],
+                    )
+                    .expect("native type predicate"),
+                expected,
+                "native {name}",
+            );
+        }
+    }
+
+    #[test]
+    fn native_string_type_predicates_do_not_read_payloads() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "x".repeat(1 << 18),
+            Vec::new(),
+            true,
+        );
+        let Value::StringObject(state) = &string else {
+            panic!("mutable string")
+        };
+        let _payload = state.borrow_mut();
+        assert_string_type_predicates(
+            &mut interpreter,
+            &mut runtime,
+            &mut environment,
+            &string,
+            [true; 5],
+        );
+
+        let vector = Value::vector(std::iter::repeat_n(Value::T, 4096));
+        let Value::Vector(state) = &vector else {
+            panic!("ordinary vector")
+        };
+        let _payload = state.slots_mut();
+        assert!(crate::lisp::primitives::string_like(&vector).is_none());
+        assert_string_type_predicates(
+            &mut interpreter,
+            &mut runtime,
+            &mut environment,
+            &vector,
+            [false, true, true, false, false],
+        );
+    }
+
+    #[test]
+    fn native_string_type_predicates_reject_vector_spoofing() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        // An ordinary vector does not become a string because its elements
+        // resemble the reader syntax for a string with text properties.
+        let vector = Value::vector([
+            Value::string("x"),
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::Nil,
+        ]);
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "string-bytes")
+            .expect("string-bytes belongs to the native ABI");
+        for native in [false, true] {
+            let error = if native {
+                runtime.invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_unary_subr_by_index as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::Integer(index as i64), vector.clone()],
+                )
+            } else {
+                crate::lisp::primitives::call(
+                    &mut interpreter,
+                    "string-bytes",
+                    std::slice::from_ref(&vector),
+                    &mut environment,
+                )
+            }
+            .expect_err("fns.c:Fstring_bytes requires a string, not a shaped vector");
+            let LispError::WrongTypeArgument(predicate, original) = error else {
+                panic!("CHECK_STRING must preserve its original argument: {error:?}")
+            };
+            assert_eq!(predicate, "stringp");
+            assert!(crate::lisp::primitives::values_eq_in_env(
+                &interpreter,
+                &original,
+                &vector,
+                &environment,
+            ));
+        }
+        for (value, expected) in [
+            (vector.clone(), [false, true, true, false, false]),
+            (
+                Value::cons(vector, Value::Integer(1)),
+                [false, false, true, false, false],
+            ),
+            (
+                Value::cons(Value::string("file.elc"), Value::Integer(1)),
+                [false, false, true, false, true],
+            ),
+        ] {
+            assert_string_type_predicates(
+                &mut interpreter,
+                &mut runtime,
+                &mut environment,
+                &value,
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn native_string_type_predicates_follow_gnu_array_and_character_classes() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for code in [-1, 0, 0x10_FFFF, 0x11_0000, 0x3F_FFFF, 0x40_0000] {
+            assert_string_type_predicates(
+                &mut interpreter,
+                &mut runtime,
+                &mut environment,
+                &Value::Integer(code),
+                [false, false, false, (0..=0x3F_FFFF).contains(&code), true],
+            );
+        }
+        for (constructor, args) in [
+            ("make-char-table", [Value::Nil, Value::Nil]),
+            ("make-bool-vector", [Value::Integer(2), Value::Nil]),
+        ] {
+            let value = crate::lisp::primitives::call(
+                &mut interpreter,
+                constructor,
+                &args,
+                &mut environment,
+            )
+            .expect("real GNU array class");
+            assert_string_type_predicates(
+                &mut interpreter,
+                &mut runtime,
+                &mut environment,
+                &value,
+                [false, true, true, false, false],
+            );
+        }
+    }
+
+    #[test]
+    fn native_byte_code_function_p_checks_closure_and_code_tags() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let classify = |interpreter: &mut Interpreter,
+                        runtime: &mut NativeRuntime,
+                        environment: &mut Env,
+                        value: Value,
+                        expected: Value| {
+            assert_eq!(
+                crate::lisp::primitives::call(
+                    interpreter,
+                    "byte-code-function-p",
+                    std::slice::from_ref(&value),
+                    environment,
+                )
+                .expect("ordinary C predicate"),
+                expected,
+            );
+            assert_eq!(
+                runtime
+                    .invoke(
+                        interpreter,
+                        environment,
+                        call_byte_code_function_p as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[value],
+                    )
+                    .expect("native C predicate"),
+                expected,
+            );
+        };
+        // data.c never recognizes an interpreted lambda by parameter names.
+        for names in [vec!["vals", "start", "end"], vec!["value"], vec![]] {
+            let lambda = Value::lambda(
+                Rc::new(names.into_iter().map(SymbolName::from).collect()),
+                Rc::new(Vec::new()),
+                Rc::new(std::cell::RefCell::new(Env::new())),
+            );
+            classify(
+                &mut interpreter,
+                &mut runtime,
+                &mut environment,
+                lambda,
+                Value::Nil,
+            );
+        }
+        // The public predicate checks CLOSUREP and STRINGP only, not the
+        // argspec, constants, stack depth, instruction validity, or type name.
+        let slots = vec![
+            Value::T,
+            Value::string("not executable"),
+            Value::Nil,
+            Value::Nil,
+        ];
+        let ordinary = interpreter.create_record("byte-code-function", slots.clone());
+        let closure = interpreter.create_pseudovector(
+            crate::lisp::eval::RecordKind::Closure,
+            "closure",
+            slots,
+        );
+        classify(
+            &mut interpreter,
+            &mut runtime,
+            &mut environment,
+            ordinary,
+            Value::Nil,
+        );
+        classify(
+            &mut interpreter,
+            &mut runtime,
+            &mut environment,
+            closure.clone(),
+            Value::T,
+        );
+        let Value::Record(id) = closure else {
+            panic!("closure is a pseudovector")
+        };
+        assert!(interpreter.is_genuine_bytecode_function(id));
+        interpreter.find_record_mut(id).expect("closure").slots[1] =
+            Value::list([Value::Integer(42)]);
+        assert!(!interpreter.is_genuine_bytecode_function(id));
+        classify(
+            &mut interpreter,
+            &mut runtime,
+            &mut environment,
+            Value::Record(id),
+            Value::Nil,
+        );
     }
 
     extern "C" fn call_memq(element: NativeWord, list: NativeWord) -> NativeWord {

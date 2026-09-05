@@ -178,38 +178,9 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 extended_chars: state.extended_chars.clone(),
             })
         }
-        value if is_vector_value(value) => {
-            let items = vector_items(value).ok()?;
-            if items.len() < 4 {
-                return None;
-            }
-            let Value::String(text) = items.first()?.clone() else {
-                return None;
-            };
-            let mut props = Vec::new();
-            let mut i = 1;
-            while i + 2 < items.len() {
-                let start = items[i].as_integer().ok()? as usize;
-                let end = items[i + 1].as_integer().ok()? as usize;
-                let plist = plist_pairs(&items[i + 2]).ok()?;
-                props.push(TextPropertySpan {
-                    start,
-                    end,
-                    props: plist,
-                });
-                i += 3;
-            }
-            let multibyte = text
-                .chars()
-                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
-            Some(StringLike {
-                text: text.to_string(),
-                props,
-                multibyte,
-                extended_chars: Vec::new(),
-            })
-        }
-        Value::Cons(_) => None,
+        // lisp.h:CHECK_STRING rejects every other object class. The reader
+        // already constructs StringObjects for strings with properties;
+        // ordinary vectors must never be reinterpreted from their contents.
         _ => None,
     }
 }
