@@ -77,6 +77,92 @@ precedence over older plans and handovers.
 
 ## Current continuation checkpoint (2026-09-05)
 
+### Verified original constants-vector ownership (base `c236c21`)
+
+The type-test checkpoint below was committed and pushed as `c236c21`.
+Both pre-commit and pre-push adversarial audits passed 17/17. The immediate
+post-push fetch confirmed `origin/main` is still `84f342a`, already an ancestor;
+no empty merge was made. The three unrelated user edits remain unstaged.
+
+Work continues with L15, a C-owned bytecode constants-vector ownership check
+on the native-comp frontend path. GNU `alloc.c:Fmake_byte_code` stores the
+original constants vector; `bytecode.c:exec_byte_code` reads it through
+`vectorp`. Rust copied its slots into `ByteCodeObject` and again into
+`CachedProgram`. Both direct Rust controls failed on the unchanged implementation:
+the VM returns stale `11` instead of `29` after mutation between calls, and
+stale `11` instead of `77` after mutation during a frame (`red.log`; 0 passed,
+2 failed; optimized build 4m07s). Evidence directory:
+`/private/tmp/emaxx-bytecode-constants.aiZp6U`. Saved baseline editor:
+`emaxx-c236c21`, SHA-256
+`1b60e41944ab675911592e45d69ea127fddbc83704e9799a92cd31d73f1bb345`.
+
+The correction shares the original `Rc<VectorValue>` through both
+structures and reads a slot at each instruction, ending the borrow before
+Lisp can run. The outer closure fields are also read directly instead of
+copying their slot array. It removes the VM's duplicate reader-graph traversal/materializer;
+GNU `lread.c:bytecode_from_rev_list` constructs those objects before execution.
+The existing Rust reader boundary remains unchanged. Existing decoder-fixture
+unit tests now call that existing reader boundary before execution; their
+Elisp/bytecode fixtures and expected results are unchanged. No custom CLI,
+Elisp or cache is added. A third Rust contract checks original vector identity
+and absence of a retained old constant after replacement. The adversarial
+gate executes a mutation negative control through ordinary C-owned entry
+points and requires all three regression tests. Initial focused optimized verification passed
+109 tests, zero failures, with one separate timing probe ignored
+(`contracts.log`, 30.47s; optimized build 3m14s). This includes every bytecode
+test, native-runtime contract and anti-cheating gate, plus the existing
+byte-compiler and named-let regressions. The initial all-target check caught an audit import
+of a test-only module; the audit now runs its own ordinary-API control so it
+works in standalone and unit-test builds. This changes no VM behavior and
+adds no warning suppression. Final focused verification covers that audit
+wiring and the direct outer-slot read: 109 passed, zero failed, one separate
+timing probe ignored (`final-contracts.log`, 44.72s). Formatting, all-target
+check and strict all-target/all-feature Clippy finish without warnings
+(`warnings-final.log`). The rebuilt ordinary editor has SHA-256
+`e3547c198c6b65bb551101bdf8e511963c5f1c485f23205c260547a2d1419db4`.
+All nine ordinary-editor artifact fixtures pass: eight whole `.eln` files
+are byte-identical and the no-byte-compile file correctly produces none
+(`identity.log`, 629.37s). A three-second sample during the slow final
+`comp.el` rung shows active GCC code generation; this sampled correctness
+run is not a performance measurement. The ordinary editor also passes all
+177 unchanged GNU native tests, zero unexpected, with both native helper
+artifacts freshly compiled and loaded (`emaxx-native.stderr`; ERT
+2394.882872s, real/user/system 2489.00/2236.56/90.85s). This uses GNU's
+native-enabled default Makefile selector. Its slow function-compilation
+cases use unchanged `comp.el`'s normal child-editor route, not a separate
+runner.
+
+Paired full unchanged `comp.el` timings (seconds; fresh homes, no profiler,
+one identical source path within each pair, GNU runs last):
+
+| Pair/order | Before wall/user/system | After wall/user/system | GNU wall/user/system |
+|---|---|---|---|
+| 1: before, after, GNU | 125.25 / 115.53 / 6.62 | 122.45 / 112.95 / 6.75 | 19.27 / 18.26 / 0.49 |
+| 2: after, before, GNU | 157.43 / 143.26 / 8.87 | 141.64 / 129.79 / 7.87 | 18.81 / 18.10 / 0.44 |
+
+All three complete 881,800-byte artifacts match within each pair. SHA-256:
+`341e99373c8cab5ad30e33aa366c917bde6ba6c6d7f7cb6c129623b8acb02b4c`
+(pair 1) and
+`89e4886cbdb286396ef4ca202fdc92965e8de8520e51f115cadfd5f50dc5833d`
+(pair 2). User CPU falls 2.23% and 9.40% respectively. Both pairs support
+retaining this GNU behavior correction without an observed regression;
+the loaded-host spread does not establish a precise stable speedup. Mean
+user CPU is 129.395s before, 121.37s after, and 18.18s GNU, so current Emaxx
+is still about 6.68x GNU on this workload including startup. Native-comp
+performance parity is not finished.
+
+The source audit is recorded in the evidence directory as `source-audit.md`.
+Every production change maps to the C-owned vector/read/execution contract;
+there is no authored Elisp, GNU edit, oracle delegation, new cache, or
+semantic exception. Final pre-commit format/check/strict-Clippy checks are
+clean and all 17 adversarial tests pass (`warnings-pre-commit.log`,
+`pre-commit-audit.log`; audit 3.85s). Repeat the audit before pushing.
+L15 does not close broader opcode-cache, make-byte-code
+validation, or GC/lifetime gaps. The read-only follow-up observations in
+`next-source-audit.md` are not implemented changes or additional verified
+contracts. R02c remains the leading performance priority. After this
+checkpoint is committed and pushed, fetch/integrate main before starting it.
+
 ### Verified GNU type-test corrections (base `36dd465`)
 
 The main integration below was committed and pushed as `36dd465`. The

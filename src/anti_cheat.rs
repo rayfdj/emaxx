@@ -601,6 +601,48 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
         );
     }
 
+    // This audit also runs outside cfg(test). Exercise the ordinary C-owned
+    // entry points here: an existing decoded program must observe an aset
+    // store into its original constants vector, not retain an old snapshot.
+    let constants = Value::vector([Value::Integer(11)]);
+    let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+        "\u{c0}\u{87}".to_owned(),
+        Vec::new(),
+        false,
+    );
+    let function = crate::lisp::primitives::call(
+        &mut interpreter,
+        "make-byte-code",
+        &[
+            Value::Integer(0),
+            code,
+            constants.clone(),
+            Value::Integer(1),
+        ],
+        &mut environment,
+    )
+    .expect("alloc.c:Fmake_byte_code");
+    assert_eq!(
+        interpreter
+            .call_function_value(function.clone(), None, &[], &mut environment)
+            .expect("first bytecode execution"),
+        Value::Integer(11),
+    );
+    crate::lisp::primitives::call(
+        &mut interpreter,
+        "aset",
+        &[constants, Value::Integer(0), Value::Integer(29)],
+        &mut environment,
+    )
+    .expect("data.c:Faset");
+    assert_eq!(
+        interpreter
+            .call_function_value(function, None, &[], &mut environment)
+            .expect("bytecode execution after constants-vector mutation"),
+        Value::Integer(29),
+        "bytecode.c:exec_byte_code must read the original constant vector",
+    );
+
     let runtime_path = repo_root().join("src/lisp/native_comp/runtime.rs");
     let runtime = fs::read_to_string(&runtime_path).expect("read native runtime source");
     let comments =
@@ -649,6 +691,14 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     }
     let mut declared = BTreeSet::new();
     for (file, tests) in [
+        (
+            "src/lisp/bytecode/vm.rs",
+            &[
+                "bytecode_reads_original_constants_after_vector_mutation",
+                "bytecode_reads_original_constants_during_vector_mutation",
+                "bytecode_constant_storage_does_not_retain_removed_values",
+            ][..],
+        ),
         (
             "src/lisp/primitives/tests.rs",
             &[

@@ -9,7 +9,8 @@
 
 pub mod vm;
 
-use super::types::Value;
+use super::types::{Value, VectorValue};
+use std::rc::Rc;
 
 /// Why a byte-code object or its opcode stream was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -610,7 +611,8 @@ impl ArgSpec {
 pub struct ByteCodeObject {
     pub argspec: ArgSpec,
     pub code: Vec<u8>,
-    pub constants: Vec<Value>,
+    /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
+    pub constants: Rc<VectorValue>,
     pub stack_depth: usize,
     pub doc: Option<Value>,
     pub interactive: Option<Value>,
@@ -658,11 +660,11 @@ pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
         && matches!(slots[3], Value::Integer(_))
 }
 
-fn vector_items(value: &Value) -> Option<Vec<Value>> {
+fn constant_vector(value: &Value) -> Option<Rc<VectorValue>> {
     let Value::Vector(vector) = value else {
         return None;
     };
-    Some(vector.slots().clone())
+    Some(Rc::clone(vector))
 }
 
 impl ByteCodeObject {
@@ -678,7 +680,7 @@ impl ByteCodeObject {
         let code_text = string_text(&slots[1])
             .ok_or_else(|| ByteCodeError::MalformedObject("code slot is not a string".into()))?;
         let code = unibyte_bytes(&code_text)?;
-        let constants = vector_items(&slots[2]).ok_or_else(|| {
+        let constants = constant_vector(&slots[2]).ok_or_else(|| {
             ByteCodeError::MalformedObject("constants slot is not a vector".into())
         })?;
         let Value::Integer(depth) = slots[3] else {
@@ -691,7 +693,7 @@ impl ByteCodeObject {
                 "negative stack depth {depth}"
             )));
         }
-        decode_program(&code, constants.len())?;
+        decode_program(&code, constants.slots().len())?;
         Ok(Some(ByteCodeObject {
             argspec,
             code,
@@ -1003,7 +1005,7 @@ pub(crate) mod tests {
                 .expect("oracle objects are genuine bytecode");
             assert!(matches!(object.argspec, ArgSpec::Packed { .. }));
             assert!(object.stack_depth > 0);
-            let instrs = decode_program(&object.code, object.constants.len()).unwrap();
+            let instrs = decode_program(&object.code, object.constants.slots().len()).unwrap();
             assert!(matches!(
                 instrs.last().map(|instr| instr.op),
                 Some(Op::Return)
