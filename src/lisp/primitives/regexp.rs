@@ -842,6 +842,11 @@ pub(super) fn pattern_depends_on_syntax_table(pattern: &str) -> bool {
     if pattern.contains("[:space:]") {
         return true;
     }
+    // ISPUNCT reads `BUFFER_SYNTAX (c) != Sword' for every non-ASCII
+    // character, so `[[:punct:]]' depends on the table as well.
+    if pattern.contains("[:punct:]") {
+        return true;
+    }
     let mut chars = pattern.chars();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
@@ -1223,6 +1228,7 @@ fn translate_bracket_expression(
     let mut emitted_atom = false;
     let mut emitted_delegate_atom = false;
     let mut table_syntax_class_atoms: Vec<super::syntax::SyntaxClass> = Vec::new();
+    let mut table_punct_atom = false;
     let mut negated = false;
     let mut sentinel_original_members = encoding
         .map(|encoding| vec![false; encoding.sentinels.len()])
@@ -1243,7 +1249,7 @@ fn translate_bracket_expression(
                     "(?!)".into()
                 };
             }
-            let translated = if !table_syntax_class_atoms.is_empty() {
+            let translated = if !table_syntax_class_atoms.is_empty() || table_punct_atom {
                 let ordinary = if emitted_delegate_atom {
                     if negated {
                         translated.remove(1);
@@ -1264,11 +1270,19 @@ fn translate_bracket_expression(
                         |rendered| table_syntax_class_fragment(rendered, class, false),
                     )
                 };
-                let classes = table_syntax_class_atoms
+                let mut classes = table_syntax_class_atoms
                     .iter()
                     .map(|class| class_fragment(*class))
-                    .collect::<Vec<_>>()
-                    .join("|");
+                    .collect::<Vec<_>>();
+                if table_punct_atom {
+                    // ISPUNCT: printable non-alphanumeric ASCII, or any
+                    // non-ASCII character whose syntax is not word.
+                    let word = class_fragment(super::syntax::SyntaxClass::Word);
+                    classes.push(format!(
+                        "(?:[\\x21-\\x2F\\x3A-\\x40\\x5B-\\x60\\x7B-\\x7E]|(?:(?![\\x00-\\x7F])(?!{word})[\\s\\S]))"
+                    ));
+                }
+                let classes = classes.join("|");
                 let positive = ordinary.map_or_else(
                     || format!("(?:{classes})"),
                     |ordinary| format!("(?:{ordinary}|{classes})"),
@@ -1361,6 +1375,9 @@ fn translate_bracket_expression(
         // Both are rendered OUTSIDE the bracket as an alternation, because a
         // syntax class can be empty (an empty `[]' is not a valid pattern)
         // and because sentinel-guarded fragments cannot nest in a bracket.
+        // PUNCT depends on the table as well: ISPUNCT is the printable
+        // non-alphanumeric ASCII set, and for every other character
+        // `BUFFER_SYNTAX (c) != Sword'.
         if let RegexClassAtom::Posix(name) = &atom
             && let Some(class) = match name.as_str() {
                 "word" => Some(super::syntax::SyntaxClass::Word),
@@ -1372,6 +1389,19 @@ fn translate_bracket_expression(
             if !table_syntax_class_atoms.contains(&class) {
                 table_syntax_class_atoms.push(class);
             }
+            record_sentinel_atom_members(
+                &atom,
+                encoding,
+                case_fold,
+                interp,
+                &mut sentinel_original_members,
+            );
+            emitted_atom = true;
+        } else if let RegexClassAtom::Posix(name) = &atom
+            && name == "punct"
+            && interp.is_some()
+        {
+            table_punct_atom = true;
             record_sentinel_atom_members(
                 &atom,
                 encoding,
@@ -1438,6 +1468,9 @@ fn record_sentinel_atom_members(
                 let posix_matches = |ch: char| match (class.as_str(), table_class(ch)) {
                     ("word", Some(resolved)) => resolved == super::syntax::SyntaxClass::Word,
                     ("space", Some(resolved)) => resolved == super::syntax::SyntaxClass::Whitespace,
+                    ("punct", Some(resolved)) if !ch.is_ascii() => {
+                        resolved != super::syntax::SyntaxClass::Word
+                    }
                     _ => skip_char_matches_class(ch, class),
                 };
                 posix_matches(entry.original)
@@ -2761,7 +2794,7 @@ impl SkipSyntaxSnapshot {
         if !spec
             .classes
             .iter()
-            .any(|class| class == "space" || class == "word")
+            .any(|class| class == "space" || class == "word" || class == "punct")
         {
             return None;
         }
@@ -2906,6 +2939,8 @@ fn skip_char_matches_class_with_syntax(
         // every neighbouring codepoint answered wrongly.
         ("space", Some(resolved)) => resolved == super::syntax::SyntaxClass::Whitespace,
         ("word", Some(resolved)) => resolved == super::syntax::SyntaxClass::Word,
+        // ISPUNCT beyond ASCII is `BUFFER_SYNTAX (c) != Sword'.
+        ("punct", Some(resolved)) if !ch.is_ascii() => resolved != super::syntax::SyntaxClass::Word,
         _ => skip_char_matches_class(ch, class),
     }
 }

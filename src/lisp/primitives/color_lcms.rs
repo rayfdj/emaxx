@@ -1,85 +1,73 @@
 use super::*;
 
+/// xfaces.c parse_color_spec: the numeric X color forms only -- "#RGB" with
+/// hex components of equal length (1-4 digits), "rgb:R/G/B" with 1-4 hex
+/// digits each, and "rgbi:R/G/B" with decimal floats in [0,1].  Names are
+/// not parsed here; xfaces.c leaves them to the terminal's color lookup.
 pub(crate) fn parse_color_spec(spec: &str) -> Option<[u16; 3]> {
-    if let Some(values) = named_color_spec(spec) {
-        return Some(values);
-    }
-
     if let Some(rest) = spec.strip_prefix('#') {
-        if rest.is_empty() || rest.len() % 3 != 0 {
+        if rest.len() % 3 != 0 {
             return None;
         }
         let digits = rest.len() / 3;
-        if !(1..=4).contains(&digits) {
-            return None;
-        }
-        let mut values = [0u16; 3];
-        for (index, chunk) in rest.as_bytes().chunks(digits).enumerate() {
-            let text = std::str::from_utf8(chunk).ok()?;
-            if !text.chars().all(|ch| ch.is_ascii_hexdigit()) {
-                return None;
-            }
-            values[index] = expand_hex_component(text)?;
-        }
-        return Some(values);
+        let bytes = rest.as_bytes();
+        return Some([
+            parse_hex_color_comp(&bytes[..digits])?,
+            parse_hex_color_comp(&bytes[digits..2 * digits])?,
+            parse_hex_color_comp(&bytes[2 * digits..])?,
+        ]);
     }
 
     if let Some(rest) = spec.strip_prefix("rgb:") {
-        let parts: Vec<&str> = rest.split('/').collect();
-        if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
-            return None;
-        }
-        let mut values = [0u16; 3];
-        for (index, part) in parts.iter().enumerate() {
-            if !part.chars().all(|ch| ch.is_ascii_hexdigit()) || part.len() > 4 {
-                return None;
-            }
-            values[index] = expand_hex_component(part)?;
-        }
-        return Some(values);
+        let (red, rest) = rest.split_once('/')?;
+        let (green, blue) = rest.split_once('/')?;
+        return Some([
+            parse_hex_color_comp(red.as_bytes())?,
+            parse_hex_color_comp(green.as_bytes())?,
+            parse_hex_color_comp(blue.as_bytes())?,
+        ]);
     }
 
     if let Some(rest) = spec.strip_prefix("rgbi:") {
-        let parts: Vec<&str> = rest.split('/').collect();
-        if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
-            return None;
-        }
-        let mut values = [0u16; 3];
-        for (index, part) in parts.iter().enumerate() {
-            if part.chars().any(char::is_whitespace) {
-                return None;
-            }
-            let value = part.parse::<f64>().ok()?;
-            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                return None;
-            }
-            values[index] = (value * 65535.0).round() as u16;
-        }
-        return Some(values);
+        let (red, rest) = rest.split_once('/')?;
+        let (green, blue) = rest.split_once('/')?;
+        let component = |text: &str| {
+            let red = parse_float_color_comp(text)?;
+            Some((red * 65535.0).round_ties_even() as u16)
+        };
+        return Some([component(red)?, component(green)?, component(blue)?]);
     }
 
     None
 }
 
-fn named_color_spec(spec: &str) -> Option<[u16; 3]> {
-    match spec.to_ascii_lowercase().as_str() {
-        "black" => Some([0, 0, 0]),
-        "white" => Some([0xffff, 0xffff, 0xffff]),
-        "red" => Some([0xffff, 0, 0]),
-        "green" => Some([0, 0xffff, 0]),
-        "blue" => Some([0, 0, 0xffff]),
-        _ => None,
-    }
-}
-
-pub(crate) fn expand_hex_component(component: &str) -> Option<u16> {
-    if component.is_empty() || component.len() > 4 {
+/// parse_hex_color_comp: 1-4 hex digits scaled to 0..65535 by integer
+/// division against the digit count's maximum.
+fn parse_hex_color_comp(text: &[u8]) -> Option<u16> {
+    if text.is_empty() || text.len() > 4 {
         return None;
     }
-    let value = u32::from_str_radix(component, 16).ok()?;
-    let bits = 4 * component.len();
-    let max_value = (1u32 << bits) - 1;
-    Some(((value * 0xFFFF) / max_value) as u16)
+    let mut value = 0u32;
+    for byte in text {
+        let digit = (*byte as char).to_digit(16)?;
+        value = (value << 4) | digit;
+    }
+    let max_value = (1u32 << (text.len() * 4)) - 1;
+    Some((value * 65535 / max_value) as u16)
+}
+
+/// parse_float_color_comp: a decimal literal made only of digits, `.',
+/// `+', `-', `e' and `E', fully consumed by `strtod', in [0,1].
+fn parse_float_color_comp(text: &str) -> Option<f64> {
+    if text.is_empty()
+        || !text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'+' | b'-' | b'e' | b'E'))
+    {
+        return None;
+    }
+    let value = text.parse::<f64>().ok()?;
+    (0.0..=1.0).contains(&value).then_some(value)
 }
 
 #[derive(Clone, Copy, Debug)]

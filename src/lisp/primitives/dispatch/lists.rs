@@ -296,9 +296,16 @@ fn read_minibuffer_text_from_kbd_macro(
     initial_value: &Value,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
-    if interp.kbd_macro_executions.is_empty() {
+    // keyboard.c read_char reads from `executing-kbd-macro' whenever it is
+    // non-nil, however it came to be bound: a Lisp `let' of the variable
+    // (ert-simulate-keys binds it to t) drives the recursive minibuffer
+    // loop just like `execute-kbd-macro'.  A value that is neither a string
+    // nor a vector carries no events, so the loop ends at once and the
+    // read returns the minibuffer's contents, as GNU's command loop does
+    // at the end of a macro.
+    let Some(synthesized) = ensure_kbd_macro_execution_from_variable(interp, env)? else {
         return Ok(None);
-    }
+    };
     let saved_buffer_id = prepare_kbd_macro_minibuffer_entry(interp, env)?;
     let result = (|| {
         let minibuffer =
@@ -310,7 +317,59 @@ fn read_minibuffer_text_from_kbd_macro(
     if interp.has_buffer_id(saved_buffer_id) {
         let _ = interp.set_current_buffer_id(saved_buffer_id);
     }
+    if synthesized {
+        finish_synthesized_kbd_macro_execution(interp, env);
+    }
     result
+}
+
+/// None when no keyboard macro is executing; otherwise whether an execution
+/// state had to be synthesized from a bare `executing-kbd-macro' binding
+/// (the caller then hands it to `finish_synthesized_kbd_macro_execution').
+fn ensure_kbd_macro_execution_from_variable(
+    interp: &mut Interpreter,
+    env: &Env,
+) -> Result<Option<bool>, LispError> {
+    if !interp.kbd_macro_executions.is_empty() {
+        return Ok(Some(false));
+    }
+    let macro_value = interp
+        .lookup_var("executing-kbd-macro", env)
+        .unwrap_or(Value::Nil);
+    if macro_value.is_nil() {
+        return Ok(None);
+    }
+    let events = if let Some(string) = string_like(&macro_value) {
+        string
+            .text
+            .chars()
+            .map(|character| Value::Integer(character as i64))
+            .collect()
+    } else if is_vector_value(&macro_value) {
+        vector_items(&macro_value)?
+    } else {
+        Vec::new()
+    };
+    let index = interp
+        .lookup_var("executing-kbd-macro-index", env)
+        .and_then(|value| value.as_integer().ok())
+        .and_then(|index| usize::try_from(index).ok())
+        .unwrap_or(0);
+    interp
+        .kbd_macro_executions
+        .push(crate::lisp::eval::KbdMacroExecutionState { events, index });
+    Ok(Some(true))
+}
+
+/// read_char advanced executing_kbd_macro_index as it consumed events.
+fn finish_synthesized_kbd_macro_execution(interp: &mut Interpreter, env: &mut Env) {
+    if let Some(state) = interp.kbd_macro_executions.pop() {
+        interp.set_variable(
+            "executing-kbd-macro-index",
+            Value::Integer(i64::try_from(state.index).unwrap_or(i64::MAX)),
+            env,
+        );
+    }
 }
 
 pub(crate) fn prepare_kbd_macro_minibuffer_entry(
@@ -447,6 +506,7 @@ fn read_minibuffer_text_from_batch_stdin(prompt: &Value) -> Result<String, LispE
     Ok(line)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_minibuffer_text_without_queued_events(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -455,13 +515,11 @@ fn read_minibuffer_text_without_queued_events(
     initial_value: &Value,
     local_map: &Value,
     history: Value,
+    batch_stdin: bool,
 ) -> Result<String, LispError> {
     let minibuffer = activate_minibuffer(interp, prompt, initial_value, local_map.clone(), env)?;
     run_active_minibuffer(interp, env, minibuffer, |interp, env| {
-        if interp
-            .lookup_var("noninteractive", env)
-            .is_some_and(|value| value.is_truthy())
-        {
+        if batch_stdin {
             read_minibuffer_text_from_batch_stdin(prompt)
         } else if crate::lisp::primitives::has_tty_event_reader() {
             // A live terminal reads through the recursive minibuffer
@@ -658,6 +716,15 @@ fn read_minibuffer_text_from_unread_events_inner(
     }
 
     interp.set_variable("unread-command-events", Value::list(events), env);
+    // With the unread events gone, read_char turns to `executing-kbd-macro'
+    // and the recursive loop continues in this same minibuffer.
+    if let Some(synthesized) = ensure_kbd_macro_execution_from_variable(interp, env)? {
+        let result = read_minibuffer_text_from_kbd_macro_inner(interp, env, _initial);
+        if synthesized {
+            finish_synthesized_kbd_macro_execution(interp, env);
+        }
+        return result;
+    }
     active_minibuffer_text(interp, env).map(Some)
 }
 
@@ -2191,16 +2258,34 @@ define_dispatch!(
                     .flatten()
                     .or_else(|| interp.lookup_var("minibuffer-local-map", env))
                     .unwrap_or(Value::Nil);
-                let mut contents = read_minibuffer_text_from_unread_events(
-                    interp,
-                    env,
-                    &prompt,
-                    &initial,
-                    &initial_value,
-                    &local_map,
-                )?;
-                if contents.is_none() {
-                    contents = read_minibuffer_text_from_kbd_macro(
+                // HIST and DEFAULT sit at different positions per reader:
+                // read-from-minibuffer's KEYMAP and READ shift them to
+                // args 4 and 5, read-string keeps GNU's 2 and 3.
+                let (history, default) = match name {
+                    "read-from-minibuffer" => (
+                        args.get(4).cloned().unwrap_or(Value::Nil),
+                        args.get(5).cloned().unwrap_or(Value::Nil),
+                    ),
+                    _ => (
+                        args.get(2).cloned().unwrap_or(Value::Nil),
+                        args.get(3).cloned().unwrap_or(Value::Nil),
+                    ),
+                };
+                // minibuf.c read_minibuf takes read_minibuf_noninteractive
+                // (stdin, no history) only while `noninteractive' and no
+                // keyboard macro executes; it does not look at
+                // `unread-command-events'.  Every other read goes through
+                // the recursive command loop, whose read_char consumes
+                // unread events first and then the macro.
+                let batch_stdin = interp
+                    .lookup_var("noninteractive", env)
+                    .is_some_and(|value| value.is_truthy())
+                    && interp
+                        .lookup_var("executing-kbd-macro", env)
+                        .is_none_or(|value| value.is_nil());
+                let mut contents = None;
+                if !batch_stdin {
+                    contents = read_minibuffer_text_from_unread_events(
                         interp,
                         env,
                         &prompt,
@@ -2208,16 +2293,18 @@ define_dispatch!(
                         &initial_value,
                         &local_map,
                     )?;
+                    if contents.is_none() {
+                        contents = read_minibuffer_text_from_kbd_macro(
+                            interp,
+                            env,
+                            &prompt,
+                            &initial,
+                            &initial_value,
+                            &local_map,
+                        )?;
+                    }
                 }
                 if contents.is_none() {
-                    // HIST sits at a different position per reader:
-                    // read-from-minibuffer's KEYMAP shifts it to arg 4,
-                    // read-string keeps GNU's arg 2.
-                    let history = match name {
-                        "read-from-minibuffer" => args.get(4).cloned().unwrap_or(Value::Nil),
-                        "read-string" => args.get(2).cloned().unwrap_or(Value::Nil),
-                        _ => Value::T,
-                    };
                     contents = Some(read_minibuffer_text_without_queued_events(
                         interp,
                         env,
@@ -2225,10 +2312,33 @@ define_dispatch!(
                         &initial,
                         &initial_value,
                         &local_map,
-                        history,
+                        history.clone(),
+                        batch_stdin,
                     )?);
                 }
                 if let Some(contents) = contents {
+                    if !batch_stdin {
+                        // read_minibuf adds the value to HIST after the
+                        // recursive edit, or DEFAULT (its first element
+                        // when a list) for an empty value; the noninteractive
+                        // reader returns before that point.
+                        let histstring = if contents.is_empty() {
+                            match default.cons_values() {
+                                Some((head, _)) => head,
+                                None => default.clone(),
+                            }
+                        } else {
+                            Value::String(contents.clone().into())
+                        };
+                        if let Some(text) = string_like(&histstring).map(|text| text.text)
+                            && let Some(variable) =
+                                crate::lisp::primitives::completion::history_variable_name(&history)
+                        {
+                            crate::lisp::primitives::completion::push_minibuffer_history(
+                                interp, env, &variable, &text,
+                            );
+                        }
+                    }
                     if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
                         let parsed = super::call(
                             interp,
@@ -2251,26 +2361,6 @@ define_dispatch!(
                                 Some((head, _)) => head,
                                 None => default.clone(),
                             };
-                            // In a live interactive read GNU records the
-                            // accepted default, not the empty text that RET
-                            // submitted.  Batch/macro-only reads retain the
-                            // noninteractive contract and leave history
-                            // unchanged.
-                            let history = args.get(2).cloned().unwrap_or(Value::Nil);
-                            if crate::lisp::primitives::has_tty_event_reader()
-                                && interp
-                                    .lookup_var("noninteractive", env)
-                                    .is_some_and(|value| value.is_nil())
-                                && let Some(text) = string_like(&default).map(|text| text.text)
-                                && let Some(variable) =
-                                    crate::lisp::primitives::completion::history_variable_name(
-                                        &history,
-                                    )
-                            {
-                                crate::lisp::primitives::completion::push_minibuffer_history(
-                                    interp, env, &variable, &text,
-                                );
-                            }
                             return Ok(default);
                         }
                     }

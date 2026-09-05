@@ -26,26 +26,6 @@ fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) 
     })
 }
 
-fn coding_category_name(kind: &str, args: &[Value]) -> &'static str {
-    match kind {
-        "utf-8" => match args.get(13) {
-            Some(Value::Nil) | None => "coding-category-utf-8",
-            Some(Value::T) => "coding-category-utf-8-sig",
-            Some(_) => "coding-category-utf-8-auto",
-        },
-        "utf-16" => "coding-category-utf-16-auto",
-        "charset" => "coding-category-charset",
-        "iso-2022" => "coding-category-iso-7",
-        "emacs-mule" => "coding-category-emacs-mule",
-        "shift-jis" => "coding-category-sjis",
-        "big5" => "coding-category-big5",
-        "ccl" => "coding-category-ccl",
-        "raw-text" => "coding-category-raw-text",
-        "undecided" => "coding-category-undecided",
-        _ => "coding-category-undecided",
-    }
-}
-
 fn comparison_substring(
     interp: &Interpreter,
     buffer: &Value,
@@ -84,13 +64,61 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             "unencodable-char-position" => {
-                need_arg_range(name, args, 2, 4)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                if start > end || end > interp.buffer.point_max() {
-                    return Err(LispError::Signal("Args out of range".into()));
-                }
-                Ok(Value::Nil)
+                // coding.c Funencodable_char_position: the first position
+                // (or, with COUNT, up to COUNT positions) in the region or
+                // STRING that CODING-SYSTEM cannot encode.
+                need_arg_range(name, args, 3, 5)?;
+                let coding = checked_coding_symbol(interp, &args[2])?;
+                let count = match args.get(3) {
+                    None | Some(Value::Nil) => None,
+                    Some(Value::Integer(count)) if *count >= 0 => Some(*count as usize),
+                    Some(other) => {
+                        return Err(crate::lisp::primitives::wrong_type_argument(
+                            "wholenump",
+                            other.clone(),
+                        ));
+                    }
+                };
+                let (text, base) = match args.get(4) {
+                    Some(string) if !string.is_nil() => {
+                        let text = string_text(string)?;
+                        let length = text.chars().count();
+                        let start = usize::try_from(args[0].as_integer()?).unwrap_or(usize::MAX);
+                        let end = usize::try_from(args[1].as_integer()?).unwrap_or(usize::MAX);
+                        if start > end || end > length {
+                            return Err(LispError::Signal("Args out of range".into()));
+                        }
+                        (
+                            text.chars()
+                                .skip(start)
+                                .take(end - start)
+                                .collect::<String>(),
+                            start,
+                        )
+                    }
+                    _ => {
+                        let start = position_from_value(interp, &args[0])?;
+                        let end = position_from_value(interp, &args[1])?;
+                        if start > end || end > interp.buffer.point_max() {
+                            return Err(LispError::Signal("Args out of range".into()));
+                        }
+                        (
+                            interp
+                                .buffer
+                                .buffer_substring(start, end)
+                                .map_err(|error| LispError::Signal(error.to_string()))?,
+                            start,
+                        )
+                    }
+                };
+                let positions = string_unencodable_positions(&text, &coding, interp)?;
+                let positions = positions
+                    .into_iter()
+                    .map(|index| Value::Integer(index + base as i64));
+                Ok(match count {
+                    None => positions.take(1).next().unwrap_or(Value::Nil),
+                    Some(count) => Value::list(positions.take(count).collect::<Vec<_>>()),
+                })
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
@@ -1794,7 +1822,17 @@ define_dispatch!(
                             Value::Nil
                         },
                         Value::Symbol(":category".into()),
-                        Value::Symbol(coding_category_name(kind, args).into()),
+                        Value::Symbol(
+                            crate::lisp::eval::coding::CODING_CATEGORY_NAMES[interp
+                                .coding_category_index(
+                                    &interp
+                                        .coding_system_canonical_name(kind)
+                                        .unwrap_or_else(|| kind.to_string()),
+                                    &args[3],
+                                    args.get(13..).unwrap_or(&[]),
+                                )]
+                            .into(),
+                        ),
                     ]
                     .into_iter()
                     .chain(supplied_plist),
@@ -1805,7 +1843,20 @@ define_dispatch!(
                     "mac" => Some(2),
                     _ => None,
                 };
-                interp.define_coding_system(coding, mnemonic, kind, plist, eol_type)?;
+                let default_char = match &args[9] {
+                    Value::Integer(character) => u32::try_from(*character).ok(),
+                    _ => None,
+                };
+                interp.define_coding_system(
+                    coding,
+                    mnemonic,
+                    kind,
+                    plist,
+                    eol_type,
+                    args[3].clone(),
+                    default_char,
+                    args.get(13..).unwrap_or(&[]).to_vec(),
+                )?;
                 Ok(Value::Symbol(coding.to_string().into()))
             }
             "define-coding-system-alias" => {

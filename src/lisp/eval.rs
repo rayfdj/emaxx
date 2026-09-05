@@ -20,7 +20,7 @@ use regex::Regex;
 mod bindings;
 mod bootstrap;
 mod buffers;
-mod coding;
+pub(crate) mod coding;
 mod control_forms;
 mod core;
 mod definitions;
@@ -1528,6 +1528,18 @@ pub struct CodingSystemState {
     pub kind: String,
     pub eol_type: Option<i64>,
     pub plist: Value,
+    /// coding.c's `enum coding_category' index (CODING_ATTR_CATEGORY).
+    pub category: usize,
+    /// The :charset-list argument as given (the symbol `iso-2022' stands
+    /// for every ISO-2022 charset).
+    pub charset_list: Value,
+    /// CODING_ATTR_DEFAULT_CHAR: the substitute for an unencodable
+    /// character, space unless :default-char says otherwise.
+    pub default_char: u32,
+    /// The type-specific trailing arguments of
+    /// `define-coding-system-internal' (for iso-2022: initial designations,
+    /// register usage, requests and the flag bits).
+    pub type_args: Vec<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1613,9 +1625,12 @@ enum ThreadProgram {
     /// recognised by shape only — never by function or variable name.
     Sleep {
         blocked: bool,
+        /// The literal SECONDS of the `(sleep-for SECONDS)' body.
+        seconds: f64,
+        /// When the sleep ends, once it has started.
+        until: Option<std::time::Instant>,
     },
     InfiniteYield,
-    SignalMainThread,
 }
 
 #[derive(Clone, Debug)]
@@ -3096,6 +3111,18 @@ impl Interpreter {
         for (_, value) in self.globals.iter() {
             mark(value);
         }
+        // lread.c:defvar_lisp static-protects the C slot, independently of
+        // the symbol's current redirect or plain value after makunbound.
+        mark(&self.quit_flag);
+        mark(&self.inhibit_quit);
+        mark(&self.throw_on_input);
+        mark(&self.overriding_plist_environment);
+        for value in self.detached_forwarded_variables.values() {
+            mark(value);
+        }
+        for event in &self.pending_thread_events {
+            mark(event);
+        }
         for bindings in self.buffer_locals.values() {
             for (_, value) in bindings {
                 mark(value);
@@ -3161,6 +3188,10 @@ impl Interpreter {
         }
         for coding in &self.coding_systems {
             mark(&coding.plist);
+            mark(&coding.charset_list);
+            for argument in &coding.type_args {
+                mark(argument);
+            }
         }
         for (_, function) in &self.functions {
             mark(function);
@@ -3479,29 +3510,19 @@ impl Interpreter {
             for (_, value) in clone.globals.iter_mut() {
                 *value = c.copy(value);
             }
-            // The forwarded eval.c cells alias their Lisp-visible value
-            // cells.  Re-point the direct C-side view at the copied graph,
-            // never at Rc storage retained by the image template.
-            clone.quit_flag = clone
-                .globals
-                .get("quit-flag")
-                .cloned()
-                .unwrap_or(Value::Nil);
-            clone.inhibit_quit = clone
-                .globals
-                .get("inhibit-quit")
-                .cloned()
-                .unwrap_or(Value::Nil);
-            clone.throw_on_input = clone
-                .globals
-                .get("throw-on-input")
-                .cloned()
-                .unwrap_or(Value::Nil);
-            clone.overriding_plist_environment = clone
-                .globals
-                .get("overriding-plist-environment")
-                .cloned()
-                .unwrap_or(Value::Nil);
+            // Copy the actual C-side fields. The graph copier preserves
+            // aliasing with Lisp cells while forwarded, but makunbound may
+            // already have made the two independent.
+            clone.quit_flag = c.copy(&self.quit_flag);
+            clone.inhibit_quit = c.copy(&self.inhibit_quit);
+            clone.throw_on_input = c.copy(&self.throw_on_input);
+            clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
+            for value in clone.detached_forwarded_variables.values_mut() {
+                *value = c.copy(value);
+            }
+            for event in &mut clone.pending_thread_events {
+                *event = c.copy(event);
+            }
             for bindings in clone.buffer_locals.values_mut() {
                 for (_, value) in bindings.iter_mut() {
                     *value = c.copy(value);
@@ -3586,6 +3607,10 @@ impl Interpreter {
             }
             for coding in &mut clone.coding_systems {
                 coding.plist = c.copy(&coding.plist.clone());
+                coding.charset_list = c.copy(&coding.charset_list);
+                for argument in &mut coding.type_args {
+                    *argument = c.copy(argument);
+                }
             }
             for (_, function) in &mut clone.functions {
                 *function = c.copy(function);
@@ -3860,6 +3885,18 @@ pub struct Interpreter {
     overriding_plist_environment: Value,
     max_lisp_eval_depth: i64,
     debug_on_next_call: bool,
+    /// data.c set_internal: storing void into a variable forwarded to a C
+    /// slot (DEFVAR_LISP/BOOL/INT) detaches the symbol from that slot and
+    /// leaves it void, so `boundp' reads nil and the built-in fallback no
+    /// longer answers for it.  A later store makes a plain, uncoerced
+    /// variable while native readers still use the C slot. The direct
+    /// evaluator fields above own their values and use nil markers here;
+    /// other forwarded slots retain their detached values in this map.
+    pub(crate) detached_forwarded_variables: HashMap<String, Value>,
+    /// THREAD_EVENTs `thread-signal' queued for the main thread
+    /// (keyboard.c kbd_buffer_store_event), delivered by the input reader
+    /// through `special-event-map'.
+    pub(crate) pending_thread_events: Vec<Value>,
     /// Variable aliases keyed by alias name.
     variable_aliases: Vec<(String, String)>,
     /// Alias → target index mirroring `variable_aliases` (at most one entry
@@ -4080,6 +4117,10 @@ pub struct Interpreter {
     charset_unified: HashSet<String>,
     /// ISO charset associations keyed by (dimension, chars, final).
     iso_charsets: Vec<(i64, i64, u32, String)>,
+    /// charset.c Viso_2022_charset_list: the charsets with an ISO final
+    /// byte, in definition order until `set-charset-priority' reorders
+    /// them by priority.
+    iso_2022_charset_list: Vec<String>,
     /// Coding systems keyed by canonical name.
     coding_systems: Vec<CodingSystemState>,
     /// GNU ccl.c's private registration table.  Lisp symbols refer to these
@@ -4089,6 +4130,11 @@ pub struct Interpreter {
     coding_aliases: Vec<(String, String)>,
     /// Current coding-system priority order.
     coding_priority: Vec<String>,
+    /// coding.c's `coding_categories[].id': the coding system standing for
+    /// each category in detection, by `enum coding_category' index.
+    pub(crate) coding_category_representatives: Vec<Option<String>>,
+    /// coding.c's `coding_priorities': the categories in detection order.
+    pub(crate) coding_category_priorities: Vec<usize>,
     /// Current terminal coding system.
     terminal_coding: Option<String>,
     /// Current keyboard coding system.
@@ -4530,6 +4576,8 @@ impl Interpreter {
             .collect();
         let mut interp = Interpreter {
             image_template_token: None,
+            detached_forwarded_variables: HashMap::new(),
+            pending_thread_events: Vec::new(),
             globals: ordered_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("obarray".into(), Value::Record(standard_obarray_id)),
@@ -5012,10 +5060,18 @@ impl Interpreter {
             sjis_coding_system: "sjis".into(),
             big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
+            iso_2022_charset_list: vec!["ascii".into()],
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],
             coding_aliases: builtin_coding_aliases(),
             coding_priority: builtin_coding_priority(),
+            coding_category_representatives: {
+                let mut representatives = vec![None; coding::CODING_CATEGORY_COUNT];
+                representatives[coding::CODING_CATEGORY_RAW_TEXT] = Some("no-conversion".into());
+                representatives[coding::CODING_CATEGORY_UNDECIDED] = Some("undecided".into());
+                representatives
+            },
+            coding_category_priorities: (0..coding::CODING_CATEGORY_COUNT).collect(),
             terminal_coding: None,
             // keyboard.c initializes keyboard decoding to no-conversion; a
             // batch GNU answers `no-conversion' for (keyboard-coding-system)
@@ -5479,30 +5535,14 @@ impl Interpreter {
         // comp-subr-list separately.
         for (name, value) in [
             (
+                // coding.c syms_of_coding: the categories in enum order;
+                // `set-coding-system-priority' reorders the list.
                 "coding-category-list",
-                Value::list([
-                    Value::symbol("coding-category-utf-8"),
-                    Value::symbol("coding-category-iso-7"),
-                    Value::symbol("coding-category-charset"),
-                    Value::symbol("coding-category-iso-7-else"),
-                    Value::symbol("coding-category-iso-8-else"),
-                    Value::symbol("coding-category-emacs-mule"),
-                    Value::symbol("coding-category-raw-text"),
-                    Value::symbol("coding-category-iso-7-tight"),
-                    Value::symbol("coding-category-iso-8-1"),
-                    Value::symbol("coding-category-iso-8-2"),
-                    Value::symbol("coding-category-utf-8-auto"),
-                    Value::symbol("coding-category-utf-8-sig"),
-                    Value::symbol("coding-category-utf-16-auto"),
-                    Value::symbol("coding-category-utf-16-be"),
-                    Value::symbol("coding-category-utf-16-le"),
-                    Value::symbol("coding-category-utf-16-be-nosig"),
-                    Value::symbol("coding-category-utf-16-le-nosig"),
-                    Value::symbol("coding-category-sjis"),
-                    Value::symbol("coding-category-big5"),
-                    Value::symbol("coding-category-ccl"),
-                    Value::symbol("coding-category-undecided"),
-                ]),
+                Value::list(
+                    coding::CODING_CATEGORY_NAMES
+                        .iter()
+                        .map(|name| Value::symbol(name)),
+                ),
             ),
             (
                 "frame-inhibit-implied-resize",
@@ -5553,6 +5593,12 @@ impl Interpreter {
         ] {
             let table = crate::lisp::json::make_hash_table(&mut interp, "eql", Vec::new());
             interp.define_special_variable(name, table);
+        }
+        // coding.c syms_of_coding: every `coding-category-XXX' symbol starts
+        // out set to `no-conversion'; `set-coding-system-priority' is what
+        // assigns the prioritized coding systems.
+        for name in coding::CODING_CATEGORY_NAMES {
+            interp.set_variable(name, Value::symbol("no-conversion"), &mut Vec::new());
         }
 
         for name in crate::lisp::eval::bindings::C_OWNED_DEFVAR_NAMES {
@@ -5635,6 +5681,30 @@ impl Interpreter {
         ] {
             let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
             interp.define_special_variable(name, keymap);
+        }
+        // keyboard.c syms_of_keyboard's initial_define_lispy_key entries for
+        // the events the input reader executes itself (the oracle has no
+        // D-Bus or NS, so their keys are absent there too).
+        if let Some(special_event_map) = interp.lookup_var("special-event-map", &Vec::new()) {
+            for (event, command) in [
+                ("delete-frame", "handle-delete-frame"),
+                ("iconify-frame", "ignore"),
+                ("make-frame-visible", "ignore"),
+                ("select-window", "handle-select-window"),
+                ("save-session", "handle-save-session"),
+                ("thread-event", "thread-handle-event"),
+                ("config-changed-event", "ignore"),
+            ] {
+                let part = format!("<{event}>");
+                let _ = primitives::keymap_define_binding_with_placement(
+                    &mut interp,
+                    &special_event_map,
+                    &part,
+                    Some(vec![part.clone()]),
+                    Value::Symbol(command.into()),
+                    true,
+                );
+            }
         }
         // `visual-line-mode' deliberately stays native in Emaxx, so its
         // native bootstrap owns the same complete mode contract that GNU's

@@ -302,7 +302,20 @@ fn emit_unhandled_batch_error(
     error: &LispError,
     bottom_frames: &[(String, Vec<Value>)],
 ) {
-    eprintln!("{error}");
+    // print_error_message: the same rendering `error-message-string'
+    // performs (error-message property through `substitute-command-keys',
+    // condition-specific data quoting), falling back to the native text
+    // if that primitive cannot run this early.
+    let message = lisp::primitives::call(
+        interpreter,
+        "error-message-string",
+        &[lisp::eval::error_condition_value(error)],
+        &mut Vec::new(),
+    )
+    .ok()
+    .and_then(|value| lisp::primitives::string_like(&value).map(|text| text.text))
+    .unwrap_or_else(|| error.to_string());
+    eprintln!("{message}");
     let Some(backtrace) = interpreter.take_batch_error_backtrace() else {
         return;
     };

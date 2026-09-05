@@ -273,15 +273,17 @@ fn read_buffer_simulation_enforces_its_predicate_and_accepts_default() {
                ;; minibuf.c completes over (NAME . BUFFER) conses, so the
                ;; PREDICATE receives the pair (oracle probe rbuf2.el; a
                ;; name-string predicate makes GNU refuse every candidate).
+               ;; In batch, read_minibuf reads stdin unless a keyboard
+               ;; macro is executing (unread events alone leave the oracle
+               ;; at \"Error reading from stdin\"), so the input is a macro.
                (let ((predicate (lambda (entry) (string= (car entry) \"#chan\"))))
                  (list
-                  (let ((unread-command-events
-                         (append (kbd \"#chan C-m\")
-                                 '(?\\C-g ?\\C-g ?\\C-g))))
+                  (let ((executing-kbd-macro (vconcat (kbd \"#chan C-m\")))
+                        (executing-kbd-macro-index 0))
                     (read-buffer \"Buffer: \" \"#chan\" t predicate))
-                  (let ((unread-command-events
-                         (append (kbd \"#fake C-m C-a C-k C-m\")
-                                 '(?\\C-g ?\\C-g ?\\C-g))))
+                  (let ((executing-kbd-macro
+                         (vconcat (kbd \"#fake C-m C-a C-k C-m\")))
+                        (executing-kbd-macro-index 0))
                     (read-buffer \"Buffer: \" \"#fake\" t predicate)))))"
         ),
         Value::list([Value::String("#chan".into()), Value::String("#fake".into()),]),
@@ -7920,6 +7922,22 @@ fn eshell_matching_input_navigation_crosses_nonsticky_prompts() {
                 &mut interp,
                 "(progn
                    (em-prompt-test/forward-backward-matching-input-1)
+                   t)"
+            ),
+            Value::T
+        );
+    });
+}
+
+#[test]
+fn eshell_prompt_navigation_keeps_failed_command_output_in_a_separate_field() {
+    run_exclusive_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-prompt-tests.el");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (em-prompt-test/next-previous-prompt-1)
                    t)"
             ),
             Value::T

@@ -581,7 +581,13 @@ pub(crate) fn write_region_value_with_logical_path(
     let bytes = if no_conversion && source_multibyte {
         encode_internal_multibyte_bytes(&text)?
     } else {
-        encode_text_bytes(interp, &text, &coding, inhibit_eol_conversion)?
+        encode_text_bytes(
+            interp,
+            &text,
+            &coding,
+            inhibit_eol_conversion,
+            source_multibyte,
+        )?
     };
     if let Some(mustbenew) = args.get(6).filter(|value| value.is_truthy())
         && fs::symlink_metadata(&path).is_ok()
@@ -1093,12 +1099,16 @@ fn auto_coding_for_file(
     checked_coding_name(interp, &coding)
 }
 
+/// Decode a file's BYTES for insertion: the text, the coding system used
+/// and, in CHARSET_PROPS, the `charset' text properties the decoder
+/// annotated (produce_charset puts them on the inserted text).
 pub(crate) fn decode_file_contents(
     interp: &mut Interpreter,
     env: &Env,
     bytes: &[u8],
     literal: bool,
     filename: Option<&str>,
+    charset_props: &mut Vec<TextPropertySpan>,
 ) -> Result<(String, String), LispError> {
     if literal {
         return Ok((
@@ -1176,27 +1186,18 @@ pub(crate) fn decode_file_contents(
         if requested == "no-conversion" {
             return Ok((decode_raw_text_bytes(bytes), requested));
         }
-        if requested == "undecided" {
-            let (detected, normalized) = auto_detect_coding(interp, bytes);
-            return Ok((decode_text_bytes(interp, &normalized, &detected)?, detected));
-        }
         // `prefer-utf-8' is GNU's undecided-type system from mule-conf.el
         // (file-coding-system-alist maps "\.el\'" to it): detection runs
-        // as for `undecided', except that a file which decides nothing
-        // (pure ASCII) is recorded as prefer-utf-8 rather than undecided.
-        // Valid non-ASCII UTF-8 already detects as utf-8 whatever the
-        // priorities say, which is the other half of :prefer-utf-8 t.
-        if interp.coding_system_base_name(&requested).as_deref() == Some("prefer-utf-8") {
-            let (detected, normalized) = auto_detect_coding(interp, bytes);
-            let text = decode_text_bytes(interp, &normalized, &detected)?;
-            let detected =
-                if interp.coding_system_base_name(&detected).as_deref() == Some("undecided") {
-                    let eol = interp.coding_system_eol_type_value(&detected);
-                    coding_variant_name(interp, "prefer-utf-8", eol)
-                } else {
-                    detected
-                };
-            return Ok((text, detected));
+        // as for `undecided' with its :prefer-utf-8 attribute, and a file
+        // which decides nothing (pure ASCII) keeps the requested name.
+        if requested == "undecided"
+            || interp.coding_system_base_name(&requested).as_deref() == Some("prefer-utf-8")
+        {
+            let (detected, normalized) =
+                auto_detect_coding_for(interp, bytes, None, &requested, env);
+            let decoded = decode_text_bytes_annotated(interp, &normalized, &detected)?;
+            *charset_props = charset_runs_to_props(decoded.charsets);
+            return Ok((decoded.text, detected));
         }
         if coding_system_auto_detects_bom(interp, &requested) {
             let actual_eol = detect_eol_type(bytes);
@@ -1268,13 +1269,25 @@ pub(crate) fn decode_file_contents(
             let (_, bomless) = strip_utf8_bom(&normalized);
             return Ok((decode_utf8_bytes(bomless), detected));
         }
-        return Ok((
-            decode_text_bytes(interp, &normalized, &requested)?,
-            detected,
-        ));
+        let decoded = decode_text_bytes_annotated(interp, &normalized, &requested)?;
+        *charset_props = charset_runs_to_props(decoded.charsets);
+        return Ok((decoded.text, detected));
     }
-    let (detected, normalized) = auto_detect_coding(interp, bytes);
-    Ok((decode_text_bytes(interp, &normalized, &detected)?, detected))
+    let (detected, normalized) = auto_detect_coding_for(interp, bytes, None, "undecided", env);
+    let decoded = decode_text_bytes_annotated(interp, &normalized, &detected)?;
+    *charset_props = charset_runs_to_props(decoded.charsets);
+    Ok((decoded.text, detected))
+}
+
+fn charset_runs_to_props(charsets: Vec<(usize, usize, String)>) -> Vec<TextPropertySpan> {
+    charsets
+        .into_iter()
+        .map(|(start, end, charset)| TextPropertySpan {
+            start,
+            end,
+            props: vec![("charset".to_string(), Value::Symbol(charset.into()))],
+        })
+        .collect()
 }
 
 pub(crate) fn insert_file_contents(
@@ -1326,7 +1339,15 @@ pub(crate) fn insert_file_contents(
             return Err(error);
         }
     };
-    let (text, detected) = decode_file_contents(interp, env, &bytes, literal, Some(&path))?;
+    let mut charset_props = Vec::new();
+    let (text, detected) = decode_file_contents(
+        interp,
+        env,
+        &bytes,
+        literal,
+        Some(&path),
+        &mut charset_props,
+    )?;
     // A REPLACE is one file-read transaction, not an ordinary user edit.
     // GNU dynamically hides `buffer-file-name' across its delete+insert so
     // the generic stale-file edit guard cannot interrupt the operation in
@@ -1416,10 +1437,13 @@ pub(crate) fn insert_file_contents(
             ])));
         }
         let insert_at = interp.buffer.point();
+        // produce_charset's `charset' properties come in with the text
+        // (the REPLACE path above inserts only the differing middle and
+        // keeps none, a disclosed simplification).
         crate::lisp::primitives::insert_text_with_hooks(
             interp,
             &text,
-            &[],
+            &charset_props,
             &[],
             false,
             false,

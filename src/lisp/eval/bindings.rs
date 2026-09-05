@@ -279,7 +279,25 @@ impl Interpreter {
             .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
     }
 
+    /// C readers keep using the C slot even after `makunbound' disconnects
+    /// the Lisp symbol. Direct evaluator fields may subsequently change
+    /// independently of that symbol (for example process_quit_flag).
+    pub(crate) fn forwarded_c_value(&self, name: &str, env: &Env) -> Option<Value> {
+        if let Some(value) = self.forwarded_eval_cell_value(name) {
+            return Some(value);
+        }
+        if let Some(detached) = self.detached_forwarded_variables.get(name) {
+            return Some(detached.clone());
+        }
+        self.lookup_var(name, env)
+    }
+
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
+        // A symbol `makunbound' detached from its C slot stays void until
+        // something stores into it again (data.c set_internal).
+        if self.detached_forwarded_variables.contains_key(name) {
+            return None;
+        }
         match name {
             "nil" => Some(Value::Nil),
             "t" => Some(Value::T),

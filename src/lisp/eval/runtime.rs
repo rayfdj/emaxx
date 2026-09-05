@@ -397,18 +397,22 @@ impl Interpreter {
         // processed with `format-message' semantics: the quotes follow the
         // effective `text-quoting-style', which is grave in a non-UTF-8
         // locale (the compatibility harness runs LANG=C).
-        if !self.has_feature(feature) && target.is_some() {
-            return Err(LispError::Signal(format!(
-                "Loading file {load_target} failed to provide feature {open}{feature}{close}"
-            )));
-        }
         if !self.has_feature(feature) {
             // GNU fns.c:Frequire signals unconditionally when the loaded
-            // file did not provide FEATURE; self-providing here fabricated
-            // success and a bogus load-history provide entry.
-            return Err(LispError::Signal(format!(
-                "Loading file {load_target} failed to provide feature {open}{feature}{close}"
-            )));
+            // file did not provide FEATURE, naming the file `load-history'
+            // records last (the resolved path, not the feature), or
+            // "Required feature ... was not provided" when there is none.
+            let loaded_file = self
+                .lookup_var("load-history", env)
+                .and_then(|history| history.car().ok())
+                .and_then(|entry| entry.car().ok())
+                .and_then(|file| crate::lisp::primitives::string_like(&file).map(|s| s.text));
+            return Err(LispError::Signal(match loaded_file {
+                Some(file) => {
+                    format!("Loading file {file} failed to provide feature {open}{feature}{close}")
+                }
+                None => format!("Required feature {open}{feature}{close} was not provided"),
+            }));
         }
         Ok(Value::Symbol(feature.to_string().into()))
     }

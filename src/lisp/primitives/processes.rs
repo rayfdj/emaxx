@@ -105,6 +105,7 @@ struct ExecImage {
     envp: Vec<*const libc::c_char>,
     _strings: Vec<std::ffi::CString>,
     /// "<emacs argv[0]>: <program>: " for the vfork-path diagnostic.
+    #[cfg(not(target_os = "macos"))]
     prefix: Vec<u8>,
 }
 
@@ -124,7 +125,9 @@ unsafe impl Sync for ExecImage {}
 /// errno goes back to the parent, which signals "Doing vfork".  Rust's
 /// `Command' would `execvp' after this hook, so the hook execs first and,
 /// on failure, either exits like GNU's child or hands Rust the errno to
-/// report.
+/// report.  The pinned Darwin oracle preserves the exit status but does not
+/// deliver the child-side diagnostic through the process PTY, so the macOS
+/// path mirrors that observable contract.
 #[cfg(unix)]
 fn exec_like_gnu(command: &mut Command, program: &str, argv: &[String], pty: bool) {
     use std::ffi::CString;
@@ -162,19 +165,23 @@ fn exec_like_gnu(command: &mut Command, program: &str, argv: &[String], pty: boo
             .chain(std::iter::once(std::ptr::null()))
             .collect::<Vec<_>>()
     };
-    let emacs = std::env::args_os()
-        .next()
-        .map(|argv0| argv0.as_bytes().to_vec())
-        .filter(|argv0| !argv0.is_empty())
-        .unwrap_or_else(|| b"emacs".to_vec());
-    let mut prefix = emacs;
-    prefix.extend_from_slice(b": ");
-    prefix.extend_from_slice(program.as_bytes());
-    prefix.extend_from_slice(b": ");
+    #[cfg(not(target_os = "macos"))]
+    let prefix = {
+        let mut prefix = std::env::args_os()
+            .next()
+            .map(|argv0| argv0.as_bytes().to_vec())
+            .filter(|argv0| !argv0.is_empty())
+            .unwrap_or_else(|| b"emacs".to_vec());
+        prefix.extend_from_slice(b": ");
+        prefix.extend_from_slice(program.as_bytes());
+        prefix.extend_from_slice(b": ");
+        prefix
+    };
     let image = ExecImage {
         argv: pointers(0..argv_end),
         envp: pointers(argv_end..strings.len()),
         _strings: strings,
+        #[cfg(not(target_os = "macos"))]
         prefix,
     };
 
@@ -203,15 +210,19 @@ impl ExecImage {
                 return Err(error);
             }
             let errno = error.raw_os_error().unwrap_or(0);
-            let text = libc::strerror(errno);
-            libc::write(
-                libc::STDERR_FILENO,
-                self.prefix.as_ptr().cast(),
-                self.prefix.len(),
-            );
-            libc::write(libc::STDERR_FILENO, text.cast(), libc::strlen(text));
-            libc::write(libc::STDERR_FILENO, b"\n".as_ptr().cast(), 1);
-            libc::_exit(if errno == libc::ENOENT { 127 } else { 126 })
+            let status = if errno == libc::ENOENT { 127 } else { 126 };
+            #[cfg(not(target_os = "macos"))]
+            {
+                let text = libc::strerror(errno);
+                libc::write(
+                    libc::STDERR_FILENO,
+                    self.prefix.as_ptr().cast(),
+                    self.prefix.len(),
+                );
+                libc::write(libc::STDERR_FILENO, text.cast(), libc::strlen(text));
+                libc::write(libc::STDERR_FILENO, b"\n".as_ptr().cast(), 1);
+            }
+            libc::_exit(status)
         }
     }
 }
@@ -1205,6 +1216,16 @@ fn pump_external_process_output_for(
     let mut progressed = false;
     for process_id in ids {
         if only_process_id.is_some_and(|id| process_id != id) {
+            // JUST-THIS-ONE takes the other descriptors out of the wait
+            // set, not SIGCHLD: process.c status_notify still reads "any
+            // output that remains" from a process whose status changed and
+            // then runs its sentinel, whether or not it is wait_proc.  A
+            // process that stays alive keeps its output unread.
+            interp.refresh_process_id(process_id)?;
+            if interp.process_exit_awaits_notification(process_id) {
+                let (stdout, stderr) = interp.poll_process_output(process_id)?;
+                progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
+            }
             continue;
         }
         if interp.process_output_paused(process_id) {
@@ -1216,7 +1237,9 @@ fn pump_external_process_output_for(
         let (stdout, stderr) = interp.poll_process_output(process_id)?;
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
-    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(only_process_id) {
+    // status_notify walks every process, so a JUST-THIS-ONE wait notifies
+    // the others' exits as well.
+    for (process_id, event) in interp.take_pending_subprocess_exit_events_for(None) {
         run_process_sentinel(interp, process_id, &event, env)?;
         progressed = true;
     }

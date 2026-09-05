@@ -990,6 +990,38 @@ pub(crate) fn gnu_c_defsym_manifest_matches_fresh_regeneration() {
     let _ = fs::remove_file(&fresh_path);
 }
 
+pub(crate) fn gnu_c_bool_variable_manifest_matches_fresh_regeneration() {
+    // This inventory controls data.c-style coercion in every variable store
+    // path.  A hand edit could silently make an ordinary Lisp variable act
+    // C-forwarded (or stop a real DEFVAR_BOOL from doing so), so compatibility
+    // measurements must regenerate it from the pinned GNU sources first.
+    let source_root = repo_root().join("../emacs/src");
+    assert!(
+        source_root.is_dir(),
+        "pinned GNU sibling checkout required for the DEFVAR_BOOL manifest regeneration gate"
+    );
+    let pattern = regex::Regex::new(r#"DEFVAR_BOOL \("([^"]+)""#)
+        .expect("compile DEFVAR_BOOL source pattern");
+    let mut names = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&source_root).expect("read pinned GNU src directory") {
+        let path = entry.expect("read pinned GNU src entry").path();
+        if path.extension().is_some_and(|extension| extension == "c") {
+            // A few GNU C sources contain non-UTF-8 bytes in comments.
+            let bytes = fs::read(&path).expect("read pinned GNU C source");
+            let text = String::from_utf8_lossy(&bytes);
+            for capture in pattern.captures_iter(&text) {
+                names.insert(capture[1].to_string());
+            }
+        }
+    }
+    let fresh = names.into_iter().collect::<Vec<_>>();
+    assert_eq!(
+        crate::lisp::primitives::generated_gnu_c_bool_variables::GNU_C_BOOL_VARIABLES,
+        fresh.as_slice(),
+        "committed GNU C DEFVAR_BOOL manifest does not match fresh regeneration from the pinned checkout"
+    );
+}
+
 pub(crate) fn builtin_arities_match_fresh_regeneration() {
     // The arities manifest feeds native dispatch arity checks and
     // interactive forms.  A hand edit could widen an arity or forge an
@@ -1116,6 +1148,10 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             gnu_c_defsym_manifest_matches_fresh_regeneration as fn(),
         ),
         (
+            "gnu_c_bool_variable_manifest_matches_fresh_regeneration",
+            gnu_c_bool_variable_manifest_matches_fresh_regeneration as fn(),
+        ),
+        (
             "builtin_arities_match_fresh_regeneration",
             builtin_arities_match_fresh_regeneration as fn(),
         ),
@@ -1200,6 +1236,11 @@ mod gate_tests {
     #[test]
     fn gnu_c_defsym_manifest_matches_fresh_regeneration() {
         super::gnu_c_defsym_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn gnu_c_bool_variable_manifest_matches_fresh_regeneration() {
+        super::gnu_c_bool_variable_manifest_matches_fresh_regeneration();
     }
 
     #[test]
