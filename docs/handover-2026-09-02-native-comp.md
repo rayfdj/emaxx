@@ -77,6 +77,88 @@ precedence over older plans and handovers.
 
 ## Current continuation checkpoint (2026-09-05)
 
+### Verified GNU type-test corrections (base `36dd465`)
+
+The main integration below was committed and pushed as `36dd465`. The
+post-push fetch confirmed `origin/main` (`84f342a`) was already included.
+The three unrelated user edits were restored, unstaged; the scoped stash
+backup remains available. Do not reapply it or stage those files wholesale.
+
+Ray asked work to continue, not to stop at the checkpoint handoff. The next
+native-comp audit started with R02c's repeated native-handle encoding and a
+fresh five-second sample of the unchanged editor compiling unchanged GNU
+`comp.el`. Evidence directory: `/private/tmp/emaxx-r02c.YelOLe`. Saved baseline:
+`emaxx-36dd465`, SHA-256
+`d01db433db5c3eb35a60380a7fe2f74bc7c3d4abfca3aeb813d29fd469273b8c`.
+The sample again finds encoding/decoding and Value ownership traffic, but
+also bytecode classification/setup and string copying. This different-phase,
+loaded-host sample is not a before/after performance claim. No R02c cache or
+object-storage draft has been implemented.
+
+Two bounded C-owned deviations are now tracked as L13/L14 in the ledger:
+
+- L13: `byte-code-function-p` falsely accepted an interpreted lambda by the
+  exact names of its parameters, or a record by its type-name spelling. GNU
+  `data.c:Fbyte_code_function_p` checks the closure kind and string code-slot
+  tag instead. The native call classification and internal bytecode shape
+  inspection also copied string/vector payloads unnecessarily. Both new Rust
+  contracts failed on the old code (`l13-red.log`). The correction passes
+  102 focused Rust tests, zero failures, one separate timing probe ignored
+  (`l13-green.log`, 83.50s), including existing byte-compiler regressions.
+- L14: string type predicates copied payloads through `string_like` and could
+  accept an ordinary vector shaped like a propertized-string literal. The
+  character predicate used Unicode's limit instead of GNU's `MAX_CHAR`, and
+  sequence classification omitted char-tables. Three new contracts failed
+  before the correction (`l14-red.log`). The shared `string_like` vector
+  fallback is removed too: GNU `lisp.h:CHECK_STRING` rejects ordinary vectors,
+  and the existing reader already constructs real StringObjects for valid
+  propertized-string literals. Ordinary/native `string-bytes` error tests
+  preserve the original offending vector's identity.
+  P35 adds GNU's direct tagged-word `stringp` to the native ABI table, with a
+  no-active-runtime contract. The existing adversarial gate now executes
+  negative controls for the historical false positives, not only an inventory
+  of source/test names. No new Elisp, GNU changes or native ABI layout changes.
+
+The final frozen implementation passes 116 focused optimized Rust tests,
+zero failures, with one separate timing probe ignored (`final-contracts.log`,
+64.63s). This includes all bytecode and native-runtime contracts, all 17
+anti-cheating gates, existing compiler regressions, and existing string,
+reader, documentation, and sequence regressions. Formatting, all-target check,
+and all-feature/all-target Clippy with `-D warnings` pass without warnings.
+The final ordinary editor SHA-256 is
+`1b60e41944ab675911592e45d69ea127fddbc83704e9799a92cd31d73f1bb345`.
+All nine unchanged-source artifact fixtures pass (`identity.log`, 281.74s):
+eight entire `.eln` files are byte-identical to GNU, including the 881,800-byte
+`comp.el` artifact, and the no-byte-compile fixture emits nothing in either
+editor. The ordinary CLI also passes all 177 GNU native execution tests,
+zero unexpected results, exit 0, using the existing GNU Makefile's
+native-enabled default selector (`emaxx-native.stderr`). Both helper
+libraries were freshly compiled and loaded; no image cloning was enabled.
+ERT took 1563.00s; total wall/user/system times were 1622.78/1504.66/40.48s.
+The host load varied substantially during the serial run; this unpaired
+duration is not performance evidence against an older checkpoint.
+Two serial full-compilation pairs use the unchanged GNU `comp.el`, identical
+source paths within each pair, fresh homes, ordinary CLI entry points, no
+profiler, and reversed before/after order. User CPU before/after was
+106.74/110.82s, then 120.18/113.79s; GNU used 15.00s and 17.34s. All four
+Emaxx artifacts are byte-identical to their GNU reference (881,800 bytes).
+Logs and retained artifacts are under `performance/pair-{1,2}` in the evidence
+directory. Means are 113.46/112.305/16.17s: current Emaxx remains about 6.95x
+GNU. The opposite-signed differences (+3.8%, -5.3%) and host variation establish
+neither a repeatable regression nor a speedup. Retain these as corrections to
+GNU-defined type behavior, not a claim that native-comp performance is solved.
+Do not declare general string representation, all closure dispatch, or R02c
+fixed by these bounded type-test corrections.
+
+Final pre-commit checks repeat cleanly: 17/17 adversarial gates
+(`pre-commit-audit.log`, 3.39s), formatting, all-target check and strict
+all-feature/all-target Clippy. The manual diff audit found no new Elisp,
+GNU runtime delegation, oracle-output reuse, test-selected production
+behavior, error swallowing, comparison normalization or added warning
+suppression. The three unrelated user files remain unchanged and unstaged.
+Repeat the audit before pushing, then fetch and integrate main before the
+next checkpoint; do not stop simply because this checkpoint was pushed.
+
 ### Verified main integration checkpoint
 
 `9097866` (the verified checkpoint below) is committed and pushed. As Ray

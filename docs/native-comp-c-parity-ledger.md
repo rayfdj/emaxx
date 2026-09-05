@@ -25,7 +25,7 @@ No item authorizes new Elisp, changes to GNU Elisp, a compatibility runner, or
 calling GNU C from Emaxx.  GNU C is the behavior oracle; C-owned behavior is
 implemented in Rust and GNU Elisp remains GNU Elisp.
 
-## Direct primitive boundaries (34)
+## Direct primitive boundaries (35)
 
 | ID | Lisp primitive | GNU C owner | Status |
 |---|---|---|---|
@@ -63,8 +63,9 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | P32 | `make-closure` | `alloc.c:Fmake_closure` | verified |
 | P33 | `apply` | `eval.c:Fapply` | registered |
 | P34 | `funcall` | `eval.c:Ffuncall` and `funcall_subr` | partial; see L04-L07 |
+| P35 | `stringp` | `data.c:Fstringp`; `lisp.h:STRINGP` | verified; direct tagged-word test, see L14 |
 
-## Cross-cutting hot-path contracts (12)
+## Cross-cutting hot-path contracts (14)
 
 | ID | GNU C contract | Status | Exact remaining work |
 |---|---|---|---|
@@ -80,6 +81,8 @@ implemented in Rust and GNU Elisp remains GNU Elisp.
 | L10 | `print.c:print_object` `PVEC_CLOSURE`: print the stored slots | verified | Rust's extra free-variable scan/environment trimming is removed. GNU `cconv.el` remains the owner. Four Rust print tests and unchanged GNU `cconv-safe-for-space` pass, with full native execution/artifact/performance gates. |
 | L11 | `lread.c:Fintern`, `intern_driver`; `alloc.c:init_symbol`; `data.c:Fsymbol_name`: retain the Lisp name separately from private lookup identity | partial | Newly allocated symbols retain their Lisp name separately from the lookup key; ordinary-table Fintern name identity, existing hits, shorthand/purecopy, and type-check order pass focused contracts and full native gates. Full obarray storage/lifetime and early compact-abbreviation-table parity remain open. |
 | L12 | `bytecode.c:exec_byte_code` argument words; `print.c:Ferror_message_string` result ownership | verified | Bytecode preserves original argument objects; diagnostics are mutable at their C-owned producer, with the original-string fast return preserved. Caller identity/mutation, unchanged Eshell, 177 native cases, nine artifact fixtures and paired timing checks pass. Other string-representation and error-rendering gaps are not closed by this bounded ownership correction. |
+| L13 | `data.c:Fbyte_code_function_p`; allocation-free bytecode slot-type inspection | verified | Removed the parameter-name-based interpreted-lambda false positive and type-name spoofing; classify closures by their code-slot tag. Internal shape checks no longer copy string/vector payloads just to inspect their types. Both contracts failed before the repair; final 116 Rust tests, 177 GNU native tests and nine artifact fixtures pass, with paired measurements recorded below. This does not close all VM storage or closure-dispatch gaps. |
+| L14 | `data.c:Fstringp`, `Farrayp`, `Fsequencep`, `Fchar_or_string_p`; `doc.c:Fdocumentation_stringp`; `lisp.h:CHECK_STRING` | verified | Replaced copying predicate calls with GNU tag checks, included char-tables in sequence classification and corrected `character.h:MAX_CHAR`. Native stringp keeps its argument as a tagged word. Three contracts failed on old code. The shared vector-as-string fallback is removed too, with ordinary/native `Fstring_bytes` argument-identity checks. Final Rust/native/artifact gates pass; timing differences reverse sign, with no demonstrated speedup. Remaining integer/record/string representations are separate audits; no new cache is introduced. |
 
 The L11 audit also requires the symbol's stored name to be a traced child,
 as in `alloc.c:mark_objects` (including string intervals). The internal lookup
@@ -87,6 +90,37 @@ key must not be counted as an additional Lisp string. The legacy standard-
 obarray membership/identity split and compact early-image abbreviation-table
 fallback remain outside this bounded name-field correction; they are not
 declared GNU-equivalent by this checkpoint.
+
+L13/L14/P35 evidence (2026-09-05, baseline `36dd465`):
+`/private/tmp/emaxx-r02c.YelOLe`. The final optimized Rust selection passes
+116 tests, zero failures, with one separate timing probe ignored (64.63s).
+The existing anti-cheating gate now executes negative controls for interpreted
+lambda parameter-name spoofing, vector-as-string spoofing and GNU's character
+range; it is not merely a source-name inventory. All 17 audit tests pass.
+Formatting, all-target check and strict all-feature/all-target Clippy are clean.
+The ordinary editor passes 177/177 unchanged GNU native tests and all nine
+identity fixtures (eight complete `.eln` files equal, one correctly absent).
+The suite uses GNU's native-enabled default Makefile selector, not its
+native-disabled selection. No GNU source, Elisp, ABI layout or generated
+manifest changes are part of this correction.
+
+Full unchanged `comp.el` timing pairs (seconds; all jobs serial, no profiler):
+
+| Pair/order | Before wall/user/system | After wall/user/system | GNU wall/user/system |
+|---|---|---|---|
+| 1: before, after, GNU | 114.93 / 106.74 / 5.45 | 120.08 / 110.82 / 6.44 | 15.63 / 15.00 / 0.33 |
+| 2: after, before, GNU | 130.84 / 120.18 / 7.16 | 123.45 / 113.79 / 6.72 | 18.37 / 17.34 / 0.43 |
+
+Each pair uses one identical source path and fresh per-editor homes. GNU runs
+last, so neither Emaxx run can consume that pair's oracle artifact. All three
+881,800-byte artifacts match within each pair: SHA-256
+`c76ea387beac23f13d4aa11e72f31ebfb31459bfa397f5719f2672683f902cc7` (pair 1),
+`4f305d60e4104eb41cc77f332669dda53d21e18bf4a4e0f1b92e9b54d363b1f6` (pair 2).
+User CPU means are 113.46 / 112.305 / 16.17s (before / after / GNU).
+The +3.8% and -5.3% paired differences do not establish a speedup or a
+repeatable regression on this loaded host; current Emaxx is still about
+6.95x GNU. These are GNU behavior corrections with bounded evidence, not
+completion of R02c or universal runtime/GC parity.
 
 L10 was exposed by the focused closure regression run (104 passed, 2 failed).
 The closure-print failure reproduces on untouched pushed merge `38b2ee8`;

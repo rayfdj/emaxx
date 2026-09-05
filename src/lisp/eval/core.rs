@@ -885,14 +885,11 @@ impl Interpreter {
     }
 
     pub(crate) fn is_genuine_bytecode_function(&self, record_id: u64) -> bool {
-        (record_id as usize)
-            .checked_sub(1)
-            .and_then(|index| self.bytecode_program_cache.get(index))
-            .is_some_and(|slot| slot.is_some())
-            || self.find_record(record_id).is_some_and(|record| {
-                record.kind == RecordKind::Closure
-                    && crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots)
-            })
+        // data.c:Fbyte_code_function_p: classification neither executes nor
+        // validates the bytecode and does not inspect payload contents.
+        self.find_record(record_id).is_some_and(|record| {
+            record.kind == RecordKind::Closure && record.slots.get(1).is_some_and(Value::is_string)
+        })
     }
 
     fn call_function_value_inner(
@@ -1057,17 +1054,9 @@ impl Interpreter {
                     let Some(record) = self.find_record(id) else {
                         unreachable!("checked record presence");
                     };
-                    // Genuine GNU bytecode (argspec/code/constants/depth
-                    // slots) executes on the VM; Emaxx byte-compile facade
-                    // objects carry an executable lambda in slot 0 instead.
-                    // A cached program implies the slots already passed the
-                    // genuineness check, so skip re-walking them.
-                    if (id as usize)
-                        .checked_sub(1)
-                        .and_then(|index| self.bytecode_program_cache.get(index))
-                        .is_some_and(|slot| slot.is_some())
-                        || crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots)
-                    {
+                    // A byte-code closure has a string code slot. Leave
+                    // instruction validation to the VM, not this type check.
+                    if record.slots.get(1).is_some_and(Value::is_string) {
                         return self.execute_bytecode_record_named(id, original_name, args, env);
                     }
                     let Some(inner) = record.slots.first().cloned() else {
