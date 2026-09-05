@@ -6065,3 +6065,19 @@ compat.rs), and erasing ciphertext from messages would be a
 semantic-content normalizer, so none was added: these four remain
 reported as message mismatches, which is what they are.  Replay:
 `run-1788578235968186948-6017`, 12/16 matching.
+
+**Gate for this series.**  The full grouped gate on `6103c51` passed
+(`target/grouped-gate/run-1788583375956679065-18708`: eval_01..05,
+primitives 389/389, compat_runtime, tty (the two reviewed TTY wrappers
+ignored), batch, lightweight, bins, integration).  Two earlier runs of
+the same gate each failed one test, both test defects fixed before the
+passing run and recorded here rather than retried away: the new
+file-modes contract had a literal 755 for the startup
+`default-file-modes', which is the inherited umask's complement and is
+775 under the gate user's 002 umask (the contract now compares with
+`sh -c umask'); and the 2026-09-04 process-attributes contract spawned
+`sleep 5 "a b" "c\d"', an invalid sleep that exits immediately, so its
+/proc read raced the child's death (its child is now `sh -c "sleep 5"'
+with the same escaped arguments).  Strict gate Clippy and
+`cargo fmt --check' are clean; `compat/oracle.lock.linux.json' stays
+uncommitted as before.
