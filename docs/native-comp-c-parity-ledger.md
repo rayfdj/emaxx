@@ -3,6 +3,13 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
+Latest pushed implementation: `a94d410`, the bounded shared GC marking and
+weak-entry/sweep correction. Current main `84f342a` is included. See
+[the handover's resume section](handover-2026-09-02-native-comp.md) for exact
+current evidence, full-goal progress, and the next requested task: profile
+post-startup native compilation and fix its largest evidenced GNU C
+deviation. The chronology below is historical, not a claim that all its
+"worktree" changes remain uncommitted.
 The startup/loading checkpoint based on b432d86 now has 91 distinct targeted
 tests passing, including all 18 adversarial checks, and all nine
 ordinary-editor artifact fixtures passing (eight entire .eln files identical

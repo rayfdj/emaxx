@@ -5,10 +5,171 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-The active branch is `native-comp`. It started from `main`/`origin/main` at
-`5a20e24`. The checkpoint commit containing this document is intentionally an
-incomplete but working native-runtime milestone, not a claim that native
-compilation is finished.
+## Resume here — pushed a94d410 (2026-09-05)
+
+Repository: `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
+Last pushed implementation commit:
+**`a94d4105842eb8cb1d5292f0fb975653a8546f64` — Finish shared Lisp graph
+marking before native GC sweep**. It is on `origin/native-comp`. After
+pushing, `origin` was fetched; current main
+`84f342a132eb041286d98cf7afd6551996db1529` was already an ancestor, so no
+empty merge was made. The worktree was clean before this requested handover
+update. No implementation change is pending after that checkpoint.
+
+GNU reference: clean 30.2 source at
+`/Users/nbmhqa186/projects/emacs` (sibling `../emacs`), revision
+`636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`. Do not modify it.
+
+### Active goal, not yet complete
+
+The goal is **GNU-faithful runtime foundations, real portable dumping,
+then completion of native-comp correctness and performance**. The user's
+full objective is
+`/Users/nbmhqa186/.codex/attachments/cc60fc9a-8d38-462a-8cb1-10ea579d9827/pasted-text-1.txt`;
+read it when resuming. Preserve its scope, not just the currently passing
+tests. The goal remains active; no major milestone has been declared done.
+
+| Milestone | Actual state at this checkpoint |
+|---|---|
+| 1. GNU dump contracts and baseline | Finite D01-D15 inventory mapped; independent ordinary startup corrected; post-startup timing now measured directly. Contract verification remains partial. |
+| 2. Shared object and symbol foundations | Partial. Shared vector/cons work and the GC graph correction are retained. Native/typed ownership and symbol value/alias/local/forwarded storage remain open. |
+| 3. Function restoration and GC readiness | Partial. Mark/weak-entry/sweep ordering is corrected, not complete root, finalizer, pure-object, accounting or callable-restoration parity. |
+| 4. Portable writer and loader | Not implemented. No persistent image exists. |
+| 5. Native restoration and ordinary dumped startup | Not implemented. Ordinary startup still reconstructs preload state through unchanged GNU loadup. |
+| 6. Validate restored startup and accelerate tests | Not reached. In-process template cloning is not a dumped image or a substitute for isolation proof. |
+| 7. Remaining native correctness/performance | Open. Native artifacts pass the ladder, but identified runtime contracts and substantial post-startup performance work remain. |
+
+The immediate major goal remains a fresh ordinary process restoring a real
+image, including native functions, without replaying preload. Only concrete
+ownership/root/relocation/startup correctness prerequisites may block that
+milestone; not every optimization in the native ledger belongs before it.
+
+### What the pushed GC correction proves
+
+GNU `alloc.c:process_mark_stack` traverses cons/vector references before
+`garbage_collect` finishes weak-table marking, removes dead weak entries,
+and sweeps storage. Rust previously swept native cons storage before its
+separate typed walk discovered a rooted vector's cons element. The old-code
+control fails; the retained correction keeps those walks connected before
+sweeping, uses current cons fields in car-first order, and removes dead
+weak entries before native storage is freed.
+
+- **89 focused tests pass**, zero failures; one preexisting manual timing
+  probe is ignored. These include seven new Rust GC controls and all 18
+  adversarial checks. A separate fresh pre-push adversarial run passes 18/18.
+- Formatting, all-target compiler check and strict all-target/all-feature
+  Clippy pass with zero warnings and no new suppressions.
+- **All nine unchanged-source artifact fixtures pass**: eight complete
+  byte-identical `.eln` files through `comp.el`, and one artifact correctly
+  absent because of GNU's no-byte-compile policy. The current `comp.el`
+  artifact is 881,800 bytes. The canonical 177-case execution suite was
+  **not rerun for this bounded GC checkpoint**; do not present older suite
+  results as fresh evidence for it.
+- The ordinary GC subr is exercised through the native ABI by Rust controls.
+  Artifact compilation executes the unchanged GNU frontend. These checks
+  do not prove full GC, arbitrary-input native correctness or dump safety.
+- No Elisp, GNU source, fixture selection or whole-file comparison changed.
+  Emaxx measurement runs succeeded with GNU executable launches forbidden;
+  the fence's GNU negative control fails with the expected exit 71.
+
+Open GC work includes reference-count-derived external handle roots,
+native collection skipped without an active native stack boundary,
+remaining duplicate representations, full root/type census, pure objects,
+finalizers and exact public accounting. Do not call GC or dumping finished.
+
+### Correct performance baseline
+
+The earlier approximately 8x comparison included preload reconstruction and
+is **not** a compiler-speed result. The accepted observation starts at
+unchanged `batch-native-compile` entry and stops at its actual return, after
+startup/library loading and around the full frontend/backend operation.
+
+| Editor | Two post-startup elapsed times | Two CPU times, including waited-for children |
+|---|---|---|
+| Pushed GC implementation | 54.18s / 52.44s | 53.64s / 52.22s |
+| Saved a92e620 baseline | 55.92s / 52.32s | 55.15s / 52.11s |
+| GNU | 8.59s / 8.72s | 8.43s / 8.46s |
+
+Paired CPU changes are -2.73% and +0.20%; the baseline itself varies 5.82%.
+There is no consistent measured GC regression or precise speedup. The
+remaining post-startup gap for this input is about **6.2x by elapsed time**
+(6.3x by CPU), under the same external observer. All six artifacts are
+whole-byte identical. No startup subtraction or helper Elisp was used.
+
+Evidence:
+
+- `/private/tmp/emaxx-native-gc-graph.tkKNPk`: failing old-code control,
+  focused implementation checks, current all-nine artifact run, and saved
+  `before-emaxx` from a92e620.
+- `/private/tmp/emaxx-native-poststartup.mXNHW4`: validated external
+  `native_phase.py`, clock control, six final timing logs/artifacts,
+  `checkpoint-{check,clippy,focused}.log`, `prepush-adversarial.log`, and
+  the fresh fenced GNU negative control.
+- Editor SHA-256:
+  `15d1486fa62578847331fde3ea934726089f51d8266368d6ae0a51c7095adc10`.
+  More hashes, rejected preliminary measurements and limitations are in
+  [the dump ledger](pdump-c-parity-ledger.md).
+
+### Next work, explicitly requested by Ray
+
+**Find and fix the biggest contributor to post-startup Rust native-comp
+slowness, starting from deviations from GNU C behavior.** Do not assume it
+is GC, native-object conversion or symbol lookup from older profiles.
+
+1. Inspect the completed fresh post-startup profile below, from ordinary
+   unchanged `comp.el` compilation on a94d410. Rank actual costs; distinguish
+   total inclusive stacks from exclusive leaf work. Obtain a matching GNU profile
+   where needed to explain the discrepancy.
+2. Locate/read the dominant path's GNU C owner and Rust counterpart. Record
+   the exact extra work or wrong ownership/dispatch behavior. No speculative
+   cache, mixer, threshold or Rust-only replacement algorithm is authorized.
+3. Add a focused Rust failing control where applicable; implement GNU's
+   behavior idiomatically in Rust. C-faithfulness review precedes heavy
+   verification/timing. Follow with focused correctness, adversarial audit,
+   relevant entire artifacts/execution and repeated post-startup comparisons.
+4. Preserve the finite dump prerequisite list and full goal. Checkpoint/push
+   naturally, then fetch/integrate main before starting another checkpoint.
+
+A first external profile **completed successfully**: the ordinary editor
+and sampler both exited 0. Exec session `63869` and editor PID `74200`
+are terminal; do not poll or restart them. No background job remains.
+Log:
+`/private/tmp/emaxx-native-poststartup.mXNHW4/profile-current.log`, with
+sample file `profile-current.sample` beside it (189,081,316 bytes).
+The sampler started only after the validated compiler-entry boundary and
+sampled 60 seconds of the 63.85-second instrumented operation, not its final
+few seconds. The compiler worker (`Thread_24894036`) has 43,902 samples;
+the main thread waits in `pthread_join`. The profiled
+artifact still compares whole-byte identical with GNU. This run is for
+attribution, not an additional unprofiled timing sample.
+
+The exclusive leaf summary begins at line 327557 of the sample file.
+Initial observed leaf counts include SipHasher write 2,283, native
+`decode_inner` 1,996, `Value` destruction 1,713, `global_binding_value` 1,305,
+`Value::clone` 1,192, and `reconcile_mirror` 818. These are leads, not proof
+that any one subsystem is the biggest contributor: inspect their callers
+and avoid double-counting inclusive stacks. The 43,902 `__ulock_wait`
+samples belong to a blocked thread and must not be ranked as active CPU
+work. A shared/merged hash symbol's `regex_automata` suffix is not proof
+that regexp matching owns that cost. No next optimization is implemented
+or accepted yet; attribution and the GNU C comparison come first.
+
+The external `native_profile.py`
+and `native_phase.py` are diagnostics, not editor interfaces or a new compat
+runner. No profiler hook or helper Elisp has been added to production.
+
+Keep the boundaries below. In particular: C-to-Rust only, GNU Elisp unchanged,
+no authored Elisp even for probes, no GNU runtime delegation, no approved
+semantic exceptions, whole `.eln` identity, adversarial audits and zero
+warnings. Run expensive work serially on this loaded machine; do not reject
+faithful code from a single noisy timing. All checkpoint pushes for this
+goal are authorized. The retired harness stash `7cc4cb2` and backup at
+`/private/tmp/emaxx-retired-harness-edits.ay9bJI/retired-harness-edits.patch`
+are archived work, not pending edits to restore.
+
+The remaining sections retain detailed rules and historical checkpoint
+evidence. Where an older section says "current", "worktree" or "pending",
+use this dated resume section and the actual Git/process state first.
 
 ## Non-negotiable boundaries and completion standard
 
