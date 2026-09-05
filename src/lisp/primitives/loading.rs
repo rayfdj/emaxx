@@ -1,6 +1,13 @@
 use super::*;
 use crate::lisp::types::EnvFrame;
 
+mod file;
+mod search;
+pub(crate) use file::load_file;
+
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     let items = value.to_vec().ok()?;
     if !matches!(items.first(), Some(Value::Symbol(name)) if name == "autoload") {
@@ -261,34 +268,45 @@ pub(crate) fn eval_buffer_impl(
     } else {
         interp.current_buffer_id()
     };
-    // Like `readevalloop', evaluating a file-visiting buffer records its
-    // definitions in `load-history' under the buffer's file name.
-    let source_file = interp
-        .get_buffer_by_id(buffer_id)
-        .and_then(|buffer| buffer.file.clone());
-    let previous_load_list = source_file.as_ref().map(|file| {
-        let previous = interp
-            .lookup_var("current-load-list", env)
-            .unwrap_or(Value::Nil);
-        interp.set_global_binding(
-            "current-load-list",
-            Value::list([Value::String(file.clone().into())]),
-        );
-        previous
-    });
+    // Feval_buffer uses FILENAME unless nil; the source buffer need not
+    // visit that file. readevalloop accepts nil, otherwise CHECK_STRING.
+    let source_file = args
+        .get(2)
+        .filter(|filename| !filename.is_nil())
+        .cloned()
+        .unwrap_or_else(|| {
+            interp
+                .get_buffer_by_id(buffer_id)
+                .and_then(|buffer| buffer.file.as_ref())
+                .map_or(Value::Nil, |file| Value::string(file))
+        });
+    if !source_file.is_nil() {
+        string_text(&source_file)?;
+    }
+    // GNU freezes this decision at readevalloop entry. A later definition
+    // of the owner does not retroactively enable eager expansion.
+    let eager_macroexpand = super::call(
+        interp,
+        "fboundp",
+        &[Value::symbol("internal-macroexpand-for-load")],
+        env,
+    )?
+    .is_truthy()
+        && !string_like(&source_file).is_some_and(|file| file.text.ends_with(".elc"));
+    let previous_load_list = interp.bind_special_variable(
+        "current-load-list",
+        Value::list([source_file.clone()]),
+        env,
+    )?;
     // Feval_buffer returns nil whatever the last form evaluated to.
-    let result = eval_buffer_forms(interp, buffer_id, env).map(|_| Value::Nil);
-    if let Some(previous) = previous_load_list {
+    let result = eval_buffer_forms(interp, buffer_id, eager_macroexpand, env).map(|_| Value::Nil);
+    if result.is_ok() {
         let current = interp
             .lookup_var("current-load-list", env)
             .unwrap_or(Value::Nil);
-        if result.is_ok()
-            && let Some(source_file) = source_file
-        {
-            interp.commit_entire_load_history(&source_file, current);
-        }
-        interp.set_global_binding("current-load-list", previous);
+        interp.commit_entire_load_history(&source_file, current);
     }
+    interp.restore_special_binding(previous_load_list, env)?;
     result
 }
 
@@ -461,6 +479,7 @@ fn eval_region_via_read_function(
 fn eval_buffer_forms(
     interp: &mut Interpreter,
     buffer_id: u64,
+    eager_macroexpand: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let load_read = interp
@@ -483,7 +502,13 @@ fn eval_buffer_forms(
         // A customized reader (like `edebug--read') reads from the buffer
         // itself, form by form, moving point like `readevalloop' does.
         return with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
-            eval_buffer_via_load_read_function(interp, buffer_id, &load_read, eval_env)
+            eval_buffer_via_load_read_function(
+                interp,
+                buffer_id,
+                &load_read,
+                eager_macroexpand,
+                eval_env,
+            )
         });
     }
     let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
@@ -493,7 +518,11 @@ fn eval_buffer_forms(
             // lread.c reads through the dynamically active `obarray', so a
             // let-bound private obarray owns the parsed symbols.
             let form = interp.intern_read_symbols_in_value(form, eval_env)?;
-            result = eager_expand_eval(interp, &form, eval_env)?;
+            result = if eager_macroexpand {
+                eager_expand_eval(interp, &form, eval_env)?
+            } else {
+                interp.eval(&form, eval_env)?
+            };
         }
         Ok(result)
     })
@@ -595,6 +624,7 @@ fn eval_buffer_via_load_read_function(
     interp: &mut Interpreter,
     buffer_id: u64,
     load_read: &Value,
+    eager_macroexpand: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let previous_buffer = interp.current_buffer_id();
@@ -637,7 +667,11 @@ fn eval_buffer_via_load_read_function(
         // still answered nil.  An earlier revision added the walk here for
         // "symmetry" with `eval-region' below, which achieved symmetry by
         // copying that path's defect (finding 120) rather than fixing it.
-        match eager_expand_eval(interp, &form, env) {
+        match if eager_macroexpand {
+            eager_expand_eval(interp, &form, env)
+        } else {
+            interp.eval(&form, env)
+        } {
             Ok(value) => result = Ok(value),
             Err(error) => {
                 result = Err(error);
@@ -652,55 +686,89 @@ fn eval_buffer_via_load_read_function(
 }
 
 pub(crate) fn resolve_load_target_in_env(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     target: &str,
     env: &Env,
-) -> Option<PathBuf> {
-    let direct = PathBuf::from(target);
-    if direct.is_file() {
-        return Some(direct);
+) -> Result<Option<PathBuf>, LispError> {
+    Ok(resolve_load_file_in_env(interp, target, env, false, false)?.0)
+}
+
+/// lread.c:Fload's suffix policy. The shared openp search never invents
+/// filename aliases, process-cwd probes, or a private source/bytecode order.
+pub(crate) fn resolve_load_file_in_env(
+    interp: &mut Interpreter,
+    target: &str,
+    env: &Env,
+    nosuffix: bool,
+    must_suffix: bool,
+) -> Result<(Option<PathBuf>, i32), LispError> {
+    let (found, errno) = find_load_file(interp, target, env, nosuffix, must_suffix)?;
+    let path = found
+        .map(|found| string_text(&found.into_name()).map(PathBuf::from))
+        .transpose()?;
+    Ok((path, errno))
+}
+
+fn find_load_file(
+    interp: &mut Interpreter,
+    target: &str,
+    env: &Env,
+    nosuffix: bool,
+    mut must_suffix: bool,
+) -> Result<(Option<search::SearchMatch>, i32), LispError> {
+    if target.is_empty() {
+        return Ok((None, libc::ENOENT));
     }
-    let bare_target = !target.ends_with(".el") && !target.ends_with(".elc");
-    let with_el = bare_target.then(|| format!("{target}.el"));
-    let with_elc = bare_target.then(|| format!("{target}.elc"));
-    let Some(load_path) = interp.lookup_var("load-path", env) else {
-        return interp.resolve_load_target(target);
-    };
-    let Ok(entries) = load_path.to_vec() else {
-        return interp.resolve_load_target(target);
-    };
-    for entry in entries {
-        let Some(root) = string_like(&entry).map(|string| PathBuf::from(string.text)) else {
-            continue;
-        };
-        let candidate = root.join(target);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        if let Some(with_el) = &with_el {
-            let candidate = root.join(with_el);
-            if candidate.is_file() {
-                if interp.load_source_prefers_elc(&candidate)
-                    && let Some(with_elc) = &with_elc
-                {
-                    let elc = root.join(with_elc);
-                    if elc.is_file() {
-                        return Some(elc);
-                    }
-                }
-                return Some(candidate);
-            }
-        }
-        // GNU load-suffixes include .elc; the .el may be gone (gzipped
-        // sources with compiled artifacts left in place).
-        if let Some(with_elc) = &with_elc {
-            let candidate = root.join(with_elc);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    let mut load_env = env.clone();
+    if must_suffix {
+        let has_suffix = [".el", ".elc", ".eln"]
+            .iter()
+            .any(|suffix| target.ends_with(suffix))
+            || crate::lisp::eval::dynamic_library_suffix_values()
+                .iter()
+                .any(|suffix| {
+                    string_like(suffix).is_some_and(|suffix| target.ends_with(&suffix.text))
+                });
+        if has_suffix
+            || super::call(
+                interp,
+                "file-name-directory",
+                &[Value::string(target)],
+                &mut load_env,
+            )?
+            .is_truthy()
+        {
+            must_suffix = false;
         }
     }
-    interp.resolve_load_target(target)
+    let suffixes = if nosuffix {
+        Value::Nil
+    } else {
+        let suffixes = get_load_suffixes_value(interp, &mut load_env)?;
+        if must_suffix {
+            suffixes
+        } else {
+            let reps = interp
+                .forwarded_c_value("load-file-rep-suffixes", env)
+                .unwrap_or(Value::Nil);
+            super::call(interp, "append", &[suffixes, reps], &mut load_env)?
+        }
+    };
+    let path = interp
+        .forwarded_c_value("load-path", env)
+        .unwrap_or(Value::Nil);
+    let newer = interp
+        .forwarded_c_value("load-prefer-newer", env)
+        .is_some_and(|value| value.is_truthy());
+    search::openp_search(
+        interp,
+        &Value::string(target),
+        &path,
+        &suffixes,
+        &Value::Nil,
+        newer,
+        &mut load_env,
+    )
 }
 
 /// GNU lread.c:maybe_swap_for_eln.  A bare `load' first resolves its normal
@@ -869,23 +937,29 @@ pub(crate) fn apply_symbol_shorthands_in_env(
     Ok(symbol_name.to_string())
 }
 
-pub(crate) fn get_load_suffixes_value(interp: &Interpreter, env: &Env) -> Result<Value, LispError> {
-    let suffixes = interp
-        .lookup_var("load-suffixes", env)
-        .unwrap_or(Value::list([Value::String(".el".into())]))
-        .to_vec()?;
-    let rep_suffixes = interp
-        .lookup_var("load-file-rep-suffixes", env)
-        .unwrap_or(Value::list([Value::String(String::new().into())]))
-        .to_vec()?;
+pub(crate) fn get_load_suffixes_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    // Fget_load_suffixes reads the C slots, including after makunbound
+    // detaches their public symbols. concat2 accepts sequences, not just strings.
+    let mut suffixes = search::SearchTail::new(
+        interp
+            .forwarded_c_value("load-suffixes", env)
+            .unwrap_or(Value::Nil),
+    );
     let mut values = Vec::new();
-    for suffix in suffixes {
-        let suffix = string_text(&suffix)?;
-        for rep in &rep_suffixes {
-            values.push(Value::String(
-                format!("{suffix}{}", string_text(rep)?).into(),
-            ));
+    while let Some((suffix, _)) = suffixes.current.cons_values() {
+        let mut reps = search::SearchTail::new(
+            interp
+                .forwarded_c_value("load-file-rep-suffixes", env)
+                .unwrap_or(Value::Nil),
+        );
+        while let Some((rep, _)) = reps.current.cons_values() {
+            values.push(super::call(interp, "concat", &[suffix.clone(), rep], env)?);
+            reps.advance(interp, env, false)?;
         }
+        suffixes.advance(interp, env, false)?;
     }
     Ok(Value::list(values))
 }
@@ -901,11 +975,8 @@ pub(crate) fn locate_file_internal(
     Ok(locate_file_search(interp, file, path, suffixes, predicate, env)?.0)
 }
 
-/// lread.c openp: search PATH for FILE with SUFFIXES, returning the found
-/// name (or nil) together with the errno openp leaves for its caller's
-/// `report_file_error'.  Only an access-mask predicate tracks errno: the
-/// value starts at ENOENT, an accessible directory records EISDIR, and any
-/// failure other than ENOENT/ENOTDIR replaces it.
+/// lread.c:Flocate_file_internal and process.c callers share openp's search.
+/// Return the actual found name, never a rewritten source-provenance path.
 pub(crate) fn locate_file_search(
     interp: &mut Interpreter,
     file: &Value,
@@ -914,126 +985,13 @@ pub(crate) fn locate_file_search(
     predicate: &Value,
     env: &mut Env,
 ) -> Result<(Value, i32), LispError> {
-    let file = string_text(file)?;
-    let mut last_errno = libc::ENOENT;
-    let mut path_entries = path.to_vec()?;
-    // openp treats an empty search path as one empty element, and an empty
-    // element means the dynamically current `default-directory'.
-    if path_entries.is_empty() {
-        path_entries.push(Value::Nil);
-    }
-    let suffixes = match suffixes {
-        Value::Nil => vec![String::new()],
-        Value::String(_) | Value::StringObject(_) => vec![string_text(suffixes)?],
-        _ => suffixes
-            .to_vec()?
-            .into_iter()
-            .map(|value| string_text(&value))
-            .collect::<Result<Vec<_>, _>>()?,
-    };
-    let default_directory = interp
-        .lookup_var("default-directory", env)
-        .and_then(|value| string_like(&value).map(|string| string.text))
-        .unwrap_or_else(default_directory);
-    let default_directory =
-        unquote_local_file_name(&default_directory).unwrap_or(default_directory);
-
-    for directory in path_entries {
-        let directory = if directory.is_nil() {
-            default_directory.clone()
-        } else {
-            let directory = string_text(&directory)?;
-            let directory = unquote_local_file_name(&directory).unwrap_or(directory);
-            expand_file_name_in_env(interp, env, &directory, Some(&default_directory))
-        };
-        for suffix in &suffixes {
-            let candidate =
-                expand_file_name_in_env(interp, env, &format!("{file}{suffix}"), Some(&directory));
-            let candidate = unquote_local_file_name(&candidate).unwrap_or(candidate);
-            let predicate = (!predicate.is_nil()).then_some(predicate);
-            let found = match predicate.and_then(locate_file_access_mask) {
-                Some(mask) => match locate_file_access_probe(mask, &candidate) {
-                    Ok(()) => true,
-                    Err(errno) => {
-                        if errno != libc::ENOENT && errno != libc::ENOTDIR {
-                            last_errno = errno;
-                        }
-                        false
-                    }
-                },
-                None => locate_file_candidate_matches(interp, predicate, &candidate, env)?,
-            };
-            if found {
-                // Search the isolated physical tree, but report the same
-                // standard-Lisp source provenance exposed by GNU's build-tree
-                // load path.  Test-owned paths are outside the configured
-                // prefix and remain untouched.
-                let provenance = interp.load_source_provenance_path(Path::new(&candidate));
-                return Ok((
-                    Value::String(provenance.display().to_string().into()),
-                    last_errno,
-                ));
-            }
-        }
-    }
-
-    Ok((Value::Nil, last_errno))
-}
-
-pub(crate) fn locate_file_candidate_matches(
-    interp: &mut Interpreter,
-    predicate: Option<&Value>,
-    candidate: &str,
-    env: &mut Env,
-) -> Result<bool, LispError> {
-    let Some(predicate) = predicate else {
-        return Ok(fs::metadata(candidate)
-            .map(|metadata| metadata.is_file() && file_readable_p(candidate))
-            .unwrap_or(false));
-    };
-    if let Some(mask) = locate_file_access_mask(predicate) {
-        return Ok(locate_file_access_matches(mask, candidate));
-    }
-    Ok(interp
-        .call_function_value(
-            resolve_callable(interp, predicate, env)?,
-            predicate.as_symbol().ok(),
-            &[Value::String(candidate.to_string().into())],
-            env,
-        )?
-        .is_truthy())
-}
-
-pub(crate) fn locate_file_access_mask(value: &Value) -> Option<i64> {
-    if let Ok(mask) = value.as_integer() {
-        return Some(mask);
-    }
-    if let Ok(symbol) = value.as_symbol() {
-        return locate_file_access_symbol_mask(symbol);
-    }
-    let items = value.to_vec().ok()?;
-    if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "lambda") {
-        return None;
-    }
-    let mut mask = 0;
-    for item in items {
-        mask |= locate_file_access_symbol_mask(item.as_symbol().ok()?)?;
-    }
-    Some(mask)
-}
-
-pub(crate) fn locate_file_access_symbol_mask(symbol: &str) -> Option<i64> {
-    match symbol {
-        "executable" => Some(1),
-        "writable" => Some(2),
-        "readable" => Some(4),
-        "exists" => Some(0),
-        _ => None,
-    }
-}
-
-pub(crate) fn locate_file_access_matches(mask: i64, candidate: &str) -> bool {
-    locate_file_access_probe(mask, candidate).is_ok()
+    let (found, errno) = search::openp_search(interp, file, path, suffixes, predicate, false, env)?;
+    Ok((
+        found
+            .map(search::SearchMatch::into_name)
+            .unwrap_or(Value::Nil),
+        errno,
+    ))
 }
 
 /// openp's access check for a fixnum predicate: `faccessat' with the mask
@@ -1054,8 +1012,26 @@ pub(crate) fn locate_file_access_probe(mask: i64, candidate: &str) -> Result<(),
             .raw_os_error()
             .unwrap_or(libc::ENOENT));
     }
-    if fs::metadata(candidate).is_ok_and(|metadata| metadata.is_dir()) {
-        return Err(libc::EISDIR);
+    // fileio.c:file_directory_p's generic POSIX branch. A failed directory
+    // probe is a match only for ENOENT/ENOTDIR, not every metadata error.
+    let directory_error = match accessible_directory(candidate.as_bytes()) {
+        Ok(()) => return Err(libc::EISDIR),
+        Err(error) => error.raw_os_error().unwrap_or(libc::EIO),
+    };
+    let directory_error = if directory_error == libc::EACCES {
+        match fs::metadata(candidate) {
+            Ok(metadata) if metadata.is_dir() => return Err(libc::EISDIR),
+            Ok(_) => libc::ENOTDIR,
+            Err(error) if error.raw_os_error() == Some(libc::EOVERFLOW) => {
+                return Err(libc::EISDIR);
+            }
+            Err(error) => error.raw_os_error().unwrap_or(libc::EIO),
+        }
+    } else {
+        directory_error
+    };
+    if directory_error != libc::ENOENT && directory_error != libc::ENOTDIR {
+        return Err(directory_error);
     }
     Ok(())
 }

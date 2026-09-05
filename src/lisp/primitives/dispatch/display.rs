@@ -103,6 +103,146 @@ pub(crate) fn expire_echo_area_message() {
     ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = None);
 }
 
+/// GNU xdisp.c:clear_message. Clearing is not a new message emission and
+/// need not repaint immediately. The two echo buffers have independent
+/// clearing flags, even when the Lisp callback preserves the current one.
+pub(crate) fn clear_message(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    current: bool,
+    last_displayed: bool,
+) -> Result<(), LispError> {
+    if current {
+        let function = interp
+            .forwarded_c_value("clear-message-function", &Env::new())
+            .unwrap_or(Value::Nil);
+        let preserve = if function_value_p(interp, &function, env)
+            && !interp.garbage_collection_is_inhibited()
+        {
+            let restore = interp.bind_special_dynamic("inhibit-quit", Value::T, env)?;
+            // A specbind watcher may have changed Vclear_message_function.
+            let function = interp
+                .forwarded_c_value("clear-message-function", &Env::new())
+                .unwrap_or(Value::Nil);
+            let result = redisplay_safe_call(interp, function, &[], env);
+            interp.restore_special_dynamic(restore, env)?;
+            result?
+        } else {
+            Value::Nil
+        };
+        if !values_eq_in_env(interp, &preserve, &Value::symbol("dont-clear-message"), env) {
+            ECHO_AREA_MESSAGE.with_borrow_mut(|slot| *slot = None);
+            ECHO_AREA_MESSAGE_VALUE.with_borrow_mut(|slot| *slot = None);
+        }
+    }
+    if last_displayed {
+        ECHO_AREA_LAST_DISPLAYED.with_borrow_mut(|slot| *slot = None);
+    }
+    ECHO_FROM_PRINT.with(|flag| flag.set(false));
+    Ok(())
+}
+
+/// xdisp.c:dsafe__call / dsafe_calln with inhibit_quit=false. The caller
+/// supplies any outer quit binding. Signals are logged without another
+/// echo message; nonlocal control flow propagates to its enclosing target.
+fn redisplay_safe_call(
+    interp: &mut Interpreter,
+    function: Value,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let with_backtrace = interp
+        .forwarded_c_value("backtrace-on-redisplay-error", &Env::new())
+        .is_some_and(|value| value.is_truthy());
+    if interp
+        .forwarded_c_value("inhibit-eval-during-redisplay", &Env::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(Value::Nil);
+    }
+    let restore = interp.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
+    let handler_start = interp.push_condition_case_handler(vec![Value::T]);
+    if with_backtrace {
+        interp
+            .push_handler_bindings(&[(vec!["error".into()], Value::symbol("debug-early--muted"))]);
+    }
+    let depth = env.len();
+    let result = interp.call_function_value(function.clone(), None, args, env);
+    interp.pop_handler_bindings(handler_start);
+    env.truncate(depth);
+    let result = match result {
+        Err(
+            error @ (LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)),
+        ) => Err(error),
+        Err(error) => {
+            // dsafe_eval_handler -> add_to_log -> Fformat_message and
+            // message_dolog. Calling Fmessage here would run message hooks
+            // and overwrite the echo area while handling its callback.
+            interp.clear_batch_error_backtrace();
+            super::call(
+                interp,
+                "format-message",
+                &[
+                    Value::String("Error during redisplay: %S signaled %S".into()),
+                    Value::list(std::iter::once(function).chain(args.iter().cloned())),
+                    crate::lisp::eval::error_condition_value(&error),
+                ],
+                env,
+            )
+            .and_then(|message| {
+                let text = string_text(&message)?;
+                log_message_text(interp, &text, env);
+                Ok(Value::Nil)
+            })
+        }
+        result => result,
+    };
+    interp.restore_special_dynamic(restore, env)?;
+    result
+}
+
+// Shared existing message-log sink. This is deliberately separate from
+// message's echo/capture/stderr path, as xdisp.c:add_to_log requires.
+// Full message_dolog duplicate coalescing and marker restoration remain
+// separate contracts; factoring this sink does not claim to implement them.
+fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
+    let buffer_name = interp
+        .lookup_var("messages-buffer-name", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .unwrap_or_else(|| "*Messages*".into());
+    let log_max = interp
+        .lookup_var("message-log-max", env)
+        .unwrap_or(Value::T);
+    if !text.is_empty() && !log_max.is_nil() {
+        let buffer_id = interp
+            .find_buffer(&buffer_name)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
+        if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+            let end = buffer.point_max();
+            buffer.goto_char(end);
+            buffer.insert(&format!("{text}\n"));
+            if let Ok(max_lines) = log_max.as_integer()
+                && max_lines >= 0
+            {
+                let contents = buffer.full_buffer_string();
+                let lines = contents.matches('\n').count();
+                if lines > max_lines as usize {
+                    let drop = lines - max_lines as usize;
+                    let mut offset = 0usize;
+                    for _ in 0..drop {
+                        if let Some(next) = contents[offset..].find('\n') {
+                            offset += next + 1;
+                        }
+                    }
+                    let char_end = contents[..offset].chars().count();
+                    let _ = buffer.delete_region(1, char_end + 1);
+                }
+            }
+        }
+    }
+}
+
 /// Printing to the `t' stream in an interactive session displays in the
 /// echo area (GNU's print_string to Qt); consecutive prints of one
 /// sequence — eval-expression's value then its print format — append.
@@ -2222,43 +2362,7 @@ define_dispatch!(
                         let formatted = super::call(interp, "format-message", args, env)?;
                         (string_text(&formatted)?, Some(formatted))
                     };
-                let buffer_name = interp
-                    .lookup_var("messages-buffer-name", env)
-                    .and_then(|value| string_like(&value).map(|string| string.text))
-                    .unwrap_or_else(|| "*Messages*".into());
-                // GNU message_dolog: nothing is logged for an empty message or
-                // with `message-log-max' nil; a fixnum keeps that many lines.
-                let log_max = interp
-                    .lookup_var("message-log-max", env)
-                    .unwrap_or(Value::T);
-                if !text.is_empty() && !log_max.is_nil() {
-                    let buffer_id = interp
-                        .find_buffer(&buffer_name)
-                        .map(|(id, _)| id)
-                        .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
-                    if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-                        let end = buffer.point_max();
-                        buffer.goto_char(end);
-                        buffer.insert(&(text.clone() + "\n"));
-                        if let Ok(max_lines) = log_max.as_integer()
-                            && max_lines >= 0
-                        {
-                            let contents = buffer.full_buffer_string();
-                            let lines = contents.matches('\n').count();
-                            if lines > max_lines as usize {
-                                let drop = lines - max_lines as usize;
-                                let mut offset = 0usize;
-                                for _ in 0..drop {
-                                    if let Some(next) = contents[offset..].find('\n') {
-                                        offset += next + 1;
-                                    }
-                                }
-                                let char_end = contents[..offset].chars().count();
-                                let _ = buffer.delete_region(1, char_end + 1);
-                            }
-                        }
-                    }
-                }
+                log_message_text(interp, &text, env);
                 // The upstream capture advice ignores `(message nil)' and
                 // `(message "")', which edebug uses to clear the echo area.
                 let capturable = !args.is_empty()
@@ -2970,11 +3074,12 @@ define_dispatch!(
             "internal-char-font" => {
                 need_arg_range(name, args, 1, 2)?;
                 if args[0].is_nil() {
-                    let Some(character) = args.get(1) else {
-                        return Err(LispError::TypeError("characterp".into(), "nil".into()));
-                    };
+                    let character = args.get(1).unwrap_or(&Value::Nil);
+                    // font.c:Finternal_char_font uses CHECK_CHARACTER, not
+                    // Rust's Unicode scalar range (GNU also accepts surrogates
+                    // and characters up to character.h:MAX_CHAR).
                     let valid = matches!(character, Value::Integer(codepoint)
-                    if u32::try_from(*codepoint).ok().and_then(char::from_u32).is_some());
+                        if (0..=0x3f_ffff).contains(codepoint));
                     if !valid {
                         return Err(LispError::WrongTypeArgument(
                             "characterp".into(),
@@ -2995,19 +3100,22 @@ define_dispatch!(
                     if let Some(character) = args.get(1)
                         && !character.is_nil()
                     {
+                        // With POSITION, GNU uses CHECK_FIXNAT instead.
+                        // Values outside CHAR_VALID_P subsequently return nil.
                         let valid = matches!(character, Value::Integer(codepoint)
-                        if u32::try_from(*codepoint).ok().and_then(char::from_u32).is_some());
+                            if *codepoint >= 0);
                         if !valid {
                             return Err(LispError::WrongTypeArgument(
-                                "characterp".into(),
+                                "wholenump".into(),
                                 character.clone(),
                             ));
                         }
                     }
                 }
-                // Emaxx currently models a headless batch terminal and has no
-                // redisplay font object or terminal glyph-code service.  GNU's
-                // corresponding batch frame reports nil for both cases.
+                // terminal.c:terminal_glyph_code returns nil for terminals
+                // without glyph-code reporting (including the initial terminal
+                // and the pinned Darwin build). Linux console glyph tables and
+                // graphical font selection remain separate, unfinished paths.
                 Ok(Value::Nil)
             }
             "current-input-mode" => {
@@ -5659,4 +5767,309 @@ fn human_readable_size(size: usize) -> String {
         }
     }
     format!("{}T", (quotient / 1000.0).round() as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bytecode_callback(interp: &mut Interpreter, code: &[u8], constants: Vec<Value>) -> Value {
+        super::super::call(
+            interp,
+            "make-byte-code",
+            &[
+                Value::Integer(0),
+                crate::lisp::primitives::coding::bytes_to_unibyte_value(code),
+                Value::vector(constants),
+                Value::Integer(5),
+            ],
+            &mut Env::new(),
+        )
+        .expect("construct callback from GNU bytecode instructions")
+    }
+
+    #[test]
+    fn clear_message_keeps_current_and_last_displayed_flags_independent() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        for (current, last) in [(false, false), (true, false), (false, true), (true, true)] {
+            set_echo_area_message(Some("previous".into()));
+            ECHO_FROM_PRINT.with(|flag| flag.set(true));
+            let tick = echo_area_message_tick();
+            clear_message(&mut interp, &mut env, current, last).expect("clear requested buffers");
+            assert_eq!(echo_area_message().is_none(), current);
+            assert_eq!(ECHO_AREA_LAST_DISPLAYED.with_borrow(Option::is_none), last);
+            assert!(!ECHO_FROM_PRINT.with(std::cell::Cell::get));
+            assert_eq!(echo_area_message_tick(), tick, "clearing is not emission");
+        }
+    }
+
+    #[test]
+    fn clear_message_callback_preserves_only_current_and_sees_dynamic_guards() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let observed = Value::vector([Value::Nil]);
+        // bytecode.c: Bconstant0/1, Bvarref2/3, Blist2, Baset,
+        // Bdiscard, Bconstant4, Breturn. No Elisp source or form evaluation.
+        let callback = bytecode_callback(
+            &mut interp,
+            &[192, 193, 10, 11, 68, 73, 136, 196, 135],
+            vec![
+                observed.clone(),
+                Value::Integer(0),
+                Value::symbol("inhibit-quit"),
+                Value::symbol("inhibit-redisplay"),
+                Value::symbol("dont-clear-message"),
+            ],
+        );
+        interp.set_variable("clear-message-function", callback, &mut env);
+        interp.set_variable("inhibit-quit", Value::Nil, &mut env);
+        interp.set_variable("inhibit-redisplay", Value::Nil, &mut env);
+        set_echo_area_message(Some("preserved".into()));
+        let tick = echo_area_message_tick();
+        clear_message(&mut interp, &mut env, true, true).expect("run preserving callback");
+        let guards = super::super::call(
+            &mut interp,
+            "aref",
+            &[observed, Value::Integer(0)],
+            &mut env,
+        )
+        .expect("inspect callback's recorded guards");
+        assert_eq!(guards, Value::list([Value::T, Value::T]));
+        assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
+        assert_eq!(
+            interp.lookup_var("inhibit-redisplay", &env),
+            Some(Value::Nil)
+        );
+        assert_eq!(echo_area_message().as_deref(), Some("preserved"));
+        assert!(ECHO_AREA_LAST_DISPLAYED.with_borrow(Option::is_none));
+        assert_eq!(echo_area_message_tick(), tick);
+        set_echo_area_message(None);
+    }
+
+    #[test]
+    fn clear_message_skips_callbacks_when_gc_or_redisplay_evaluation_is_inhibited() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let callback = bytecode_callback(
+            &mut interp,
+            &[192, 135],
+            vec![Value::symbol("dont-clear-message")],
+        );
+        interp.set_variable("clear-message-function", callback, &mut env);
+        for gc_inhibited in [true, false] {
+            set_echo_area_message(Some("must clear".into()));
+            if gc_inhibited {
+                interp.inhibit_garbage_collection();
+            } else {
+                interp.set_variable("inhibit-eval-during-redisplay", Value::T, &mut env);
+            }
+            let result = clear_message(&mut interp, &mut env, true, true);
+            if gc_inhibited {
+                interp.allow_garbage_collection();
+            }
+            result.expect("inhibited callbacks do not preserve the message");
+            assert!(echo_area_message().is_none());
+        }
+        interp.set_variable("inhibit-eval-during-redisplay", Value::Nil, &mut env);
+        interp.set_variable("clear-message-function", Value::Integer(42), &mut env);
+        set_echo_area_message(Some("nonfunction".into()));
+        clear_message(&mut interp, &mut env, true, true).expect("FUNCTIONP rejects nonfunctions");
+        assert!(echo_area_message().is_none());
+    }
+
+    #[test]
+    fn clear_message_logs_callback_signals_without_emitting_another_message() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let callback = bytecode_callback(
+            &mut interp,
+            &[192, 193, 194, 34, 135],
+            vec![
+                Value::symbol("signal"),
+                Value::symbol("error"),
+                Value::list([Value::String("callback failed".into())]),
+            ],
+        );
+        super::super::call(
+            &mut interp,
+            "fset",
+            &[Value::symbol("ignore"), callback],
+            &mut env,
+        )
+        .expect("install a test-owned bytecode callback");
+        interp.set_variable("clear-message-function", Value::symbol("ignore"), &mut env);
+        interp.set_variable("inhibit-quit", Value::Nil, &mut env);
+        interp.set_variable("inhibit-redisplay", Value::Nil, &mut env);
+        set_echo_area_message(Some("old message".into()));
+        let tick = echo_area_message_tick();
+        clear_message(&mut interp, &mut env, true, true).expect("callback signal is caught");
+        assert!(echo_area_message().is_none());
+        assert_eq!(echo_area_message_tick(), tick);
+        assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
+        assert_eq!(
+            interp.lookup_var("inhibit-redisplay", &env),
+            Some(Value::Nil)
+        );
+        let (id, _) = interp.find_buffer("*Messages*").expect("error was logged");
+        let log = interp
+            .get_buffer_by_id(id)
+            .expect("live log buffer")
+            .full_buffer_string();
+        assert_eq!(
+            log,
+            "Error during redisplay: (ignore) signaled (error \"callback failed\")\n"
+        );
+    }
+
+    #[test]
+    fn clear_message_unwinds_guards_and_propagates_nonlocal_exits() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let tag = Value::symbol("exit");
+        // GNU Bconstant0/1/2, Bcall2, Breturn invokes the ordinary throw subr.
+        let callback = bytecode_callback(
+            &mut interp,
+            &[192, 193, 194, 34, 135],
+            vec![Value::symbol("throw"), tag.clone(), Value::Integer(7)],
+        );
+        interp.set_variable("clear-message-function", callback, &mut env);
+        interp.set_variable("inhibit-quit", Value::Nil, &mut env);
+        interp.set_variable("inhibit-redisplay", Value::Nil, &mut env);
+        set_echo_area_message(Some("not reached".into()));
+        interp.push_active_catch_tag(tag.clone());
+        let result = clear_message(&mut interp, &mut env, true, true);
+        interp.pop_active_catch_tag();
+        assert!(matches!(
+            result,
+            Err(LispError::Throw(actual, Value::Integer(7))) if values_eql(&actual, &tag)
+        ));
+        assert_eq!(interp.lookup_var("inhibit-quit", &env), Some(Value::Nil));
+        assert_eq!(
+            interp.lookup_var("inhibit-redisplay", &env),
+            Some(Value::Nil)
+        );
+        assert_eq!(echo_area_message().as_deref(), Some("not reached"));
+        set_echo_area_message(None);
+    }
+
+    #[test]
+    fn clear_message_during_minibuffer_entry_observes_activation_before_keymap() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let observed = Value::vector([Value::Nil]);
+        // Record active window, selected window and the not-yet-installed map.
+        let callback = bytecode_callback(
+            &mut interp,
+            &[192, 193, 194, 32, 195, 32, 196, 32, 69, 73, 135],
+            vec![
+                observed.clone(),
+                Value::Integer(0),
+                Value::symbol("active-minibuffer-window"),
+                Value::symbol("selected-window"),
+                Value::symbol("current-local-map"),
+            ],
+        );
+        interp.set_variable("clear-message-function", callback, &mut env);
+        let map = super::super::call(&mut interp, "make-sparse-keymap", &[], &mut env)
+            .expect("allocate the minibuffer keymap");
+        let active = crate::lisp::primitives::activate_minibuffer(
+            &mut interp,
+            &Value::String("Prompt: ".into()),
+            &Value::String("input".into()),
+            map,
+            &mut env,
+        )
+        .expect("activate the minibuffer before calling its clearing hook");
+        let recorded = super::super::call(
+            &mut interp,
+            "aref",
+            &[observed, Value::Integer(0)],
+            &mut env,
+        )
+        .expect("read callback observations");
+        assert_eq!(
+            recorded,
+            Value::list([
+                interp.minibuffer_window_value(),
+                interp.minibuffer_window_value(),
+                Value::Nil,
+            ])
+        );
+        crate::lisp::primitives::restore_active_minibuffer(&mut interp, active);
+    }
+
+    #[test]
+    fn clear_message_nonlocal_exit_restores_minibuffer_entry_state() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let saved_buffer = interp.current_buffer_id();
+        let saved_window = interp.selected_window_id();
+        let tag = Value::symbol("exit");
+        let callback = bytecode_callback(
+            &mut interp,
+            &[192, 193, 194, 34, 135],
+            vec![Value::symbol("throw"), tag.clone(), Value::Integer(7)],
+        );
+        interp.set_variable("clear-message-function", callback, &mut env);
+        interp.push_active_catch_tag(tag.clone());
+        let result = crate::lisp::primitives::activate_minibuffer(
+            &mut interp,
+            &Value::String("Prompt: ".into()),
+            &Value::String("input".into()),
+            Value::Nil,
+            &mut env,
+        );
+        interp.pop_active_catch_tag();
+        assert!(matches!(
+            result,
+            Err(LispError::Throw(actual, Value::Integer(7))) if values_eql(&actual, &tag)
+        ));
+        assert_eq!(interp.current_buffer_id(), saved_buffer);
+        assert_eq!(interp.selected_window_id(), saved_window);
+        assert_eq!(interp.minibuffer_depth(), 0);
+        assert!(interp.active_minibuffer_buffer_id().is_none());
+    }
+
+    #[test]
+    fn clear_message_reads_the_c_slot_after_lexical_shadowing_and_detachment() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        assert_eq!(
+            interp
+                .symbol_value_cell("clear-message-function")
+                .expect("C DEFVAR exists"),
+            Value::Nil
+        );
+        let callback = bytecode_callback(
+            &mut interp,
+            &[192, 135],
+            vec![Value::symbol("dont-clear-message")],
+        );
+        interp.set_variable("clear-message-function", callback, &mut env);
+        env.push(crate::lisp::types::EnvFrame::new(vec![
+            ("clear-message-function".into(), Value::Nil),
+            ("inhibit-eval-during-redisplay".into(), Value::T),
+        ]));
+        for detached in [false, true] {
+            if detached {
+                super::super::call(
+                    &mut interp,
+                    "makunbound",
+                    &[Value::symbol("clear-message-function")],
+                    &mut Env::new(),
+                )
+                .expect("detach the Lisp symbol without destroying the C slot");
+                interp.set_symbol_value_cell("clear-message-function", Value::Nil);
+            }
+            set_echo_area_message(Some("C-owned callback".into()));
+            clear_message(&mut interp, &mut env, true, true).expect("call the original C slot");
+            assert_eq!(
+                echo_area_message().as_deref(),
+                Some("C-owned callback"),
+                "detached={detached}"
+            );
+        }
+        set_echo_area_message(None);
+    }
 }

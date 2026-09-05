@@ -1,5 +1,59 @@
 # Native-comp GNU C parity ledger
 
+The active goal now prioritizes a faithful persistent startup image before
+finishing performance-only items. See the linked
+[portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
+The startup/loading checkpoint based on b432d86 now has 91 distinct targeted
+tests passing, including all 18 adversarial checks, and all nine
+ordinary-editor artifact fixtures passing (eight entire .eln files identical
+through comp.el, one correctly absent). The GNU-execution-denied small
+before/current/oracle comparison also passes. Evidence:
+`/private/tmp/emaxx-pdump-contracts.Yyf1mY/d02-checkpoint-*`.
+This is an intermediate correction, not a dumper or full loader completion;
+the 177-case execution suite has not been rerun for it. The chronology below
+retains the earlier unit results rather than presenting them as newer proof.
+
+Its D01 negative control exposed an ordinary-startup GNU-executable
+dependency that the old batch-source audit missed. The worktree removes it:
+ordinary startup and a whole-identical small native artifact now succeed
+with GNU execution forbidden. That is not proof of full startup parity;
+the linked ledger records remaining loader and lifecycle gaps. This ledger's
+unfinished contracts remain obligations, not automatic dumping prerequisites.
+
+The D03 object audit also found parent primitives rejecting the public cons
+objects returned by the runtime's own keymap constructors. The bounded
+`keymap.c:Fkeymap_parent` / `Fset_keymap_parent` routing correction uses the
+existing owner identity and restores inherited command lookup. Its two new
+Rust controls and original Enter/minibuffer regression pass with all 18
+adversarial checks (31 focused checks total). The linked dump ledger records
+the broader 43/44 integration result, the separately verified stale
+no-native-comp expectation, and open public-tail/error/autoload contracts.
+This is not a declaration of complete GNU keymap representation parity.
+
+The subsequent D01/D02 load-search correction removes the private bytecode
+preference, source-size rule, missing-filename alias, duplicate batch resolver,
+and locate-file provenance rewrite. Interpreter loads, locate-file-internal
+and executable lookup share the C-owned openp search. Six old-code controls
+fail; the new focused run passes 45/45 including all 18 adversarial checks,
+zero ignored. Unchanged GNU loadup and minibuffer integration pass. Full
+Fload/source-handler/descriptor contracts remain open. A fresh complete
+34,536-byte artifact matches baseline and GNU, with both Emaxx runs under
+the GNU-execution fence; see the linked dump ledger for hashes, timing
+limitations and gates not rerun. No portable dump exists yet.
+
+The next uncommitted Fload unit now calls GNU's unchanged Elisp source owner
+and preserves the selected descriptor on the direct-reader branch. Three
+callback controls are red on the previous code and green now; the expanded
+integration selection passes 48/48, zero ignored, including 18 adversarial
+gates. The final combined run passes 53/53, zero ignored, including descriptor,
+detached C-field, recursion and preexisting provenance controls. This is
+partial: bytecode-header/ASCII-regexp contracts, Feval_buffer history/reader
+contracts and other loader lifecycle branches remain explicitly open in
+the dump ledger. A fresh whole 34,536-byte artifact matches baseline and GNU
+with both Emaxx runs under the execution fence (`d02-handoff-artifact.n0tlSg/`;
+hashes and cold-run timing limitations are in the dump ledger). Do not infer
+full native or restored-image correctness.
+
 This is the finite working list for the current native-comp C-behavior audit.
 It covers every direct C-owned primitive fast path currently exposed by the
 native runtime, plus the cross-cutting evaluator/runtime contracts encountered
@@ -246,6 +300,15 @@ and performance behavior is separately proven against GNU.
 | V04 | `SYMBOL_LOCALIZED`; `SYMBOL_BLV`; `swap_in_symval_forwarding` | open | Represent the buffer-local-value object and its selected/default cells directly; remove name-map probing from the native branch without changing dynamic/default/local precedence. |
 | V05 | `SYMBOL_FORWARDED`; `SYMBOL_FWD`; `do_symval_forwarding` | open | Represent each supported forwarding kind and read its C-owned Rust field directly, preserving normalization and buffer-local forwarding behavior. |
 | V06 | `Fsymbol_value`; `Qunbound`; `xsignal1 (Qvoid_variable, symbol)` | partial | Original-symbol error payload and CHECK_SYMBOL ordering pass focused contracts in ordinary, native-direct, and native-subr dispatch, 16 anti-cheating gates, and all nine unchanged-source artifact fixtures. A single stored Qunbound word remains dependent on V02. |
+
+V05/D01 worktree correction (2026-09-05): `load-path` now retains the actual
+rooted Lisp object, including C-side lifetime after `makunbound`, instead of
+reconstructing a list from a stored host path vector. Seven focused checks
+and an unchanged small whole-ELN comparison pass; see the
+[portable-dump ledger](pdump-c-parity-ledger.md) for red controls and limits.
+The full source audit still exposes the separate startup GNU-executable
+dependency. This is not a verified V05 checkpoint and does not close the
+remaining symbol-owned forwarding representation or general loader contracts.
 
 Rejected V02 draft: replacing the process-wide epoch with an optional word in
 `NativeHandle` was still a shadow cache, not `struct Lisp_Symbol::val.value`.

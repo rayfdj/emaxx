@@ -864,10 +864,46 @@ pub(crate) fn load_file_strict_until(
 pub(crate) fn load_file_strict_until_or_error(
     interp: &mut eval::Interpreter,
     path: &Path,
+    stop_before: impl FnMut(&types::Value) -> bool,
+    stop_after_error: impl FnMut(&types::LispError) -> bool,
+) -> Result<bool, types::LispError> {
+    let requested_source = read_source_bytes(path)?;
+    read_lisp_file_bytes(
+        interp,
+        path,
+        requested_source,
+        None,
+        stop_before,
+        stop_after_error,
+    )
+}
+
+/// Fload's direct-reader branch consumes the descriptor openp selected. It
+/// remains alive until reading/evaluation and dynamic unwinding are complete.
+pub(crate) fn load_file_strict_opened(
+    interp: &mut eval::Interpreter,
+    path: &Path,
+    mut file: std::fs::File,
+    history: &str,
+) -> Result<(), types::LispError> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        primitives::file_operation_error("Reading file", &error, &path.display().to_string())
+    })?;
+    let result = read_lisp_file_bytes(interp, path, bytes, Some(history), |_| false, |_| false);
+    drop(file);
+    result.map(|_| ())
+}
+
+fn read_lisp_file_bytes(
+    interp: &mut eval::Interpreter,
+    path: &Path,
+    requested_source: Vec<u8>,
+    outer_load_history: Option<&str>,
     mut stop_before: impl FnMut(&types::Value) -> bool,
     mut stop_after_error: impl FnMut(&types::LispError) -> bool,
 ) -> Result<bool, types::LispError> {
-    let requested_source = read_source_bytes(path)?;
     // Resolution has already selected the file.  GNU executes that exact
     // path: an explicit or resolver-selected `.elc' must never silently run a
     // sibling `.el'.  Versioned `.elc' files can contain ordinary readable
@@ -894,10 +930,12 @@ pub(crate) fn load_file_strict_until_or_error(
     } else {
         source
     };
-    let load_file = interp
-        .load_source_provenance_path(path)
-        .display()
-        .to_string();
+    let load_file = outer_load_history.map(str::to_owned).unwrap_or_else(|| {
+        interp
+            .load_source_provenance_path(path)
+            .display()
+            .to_string()
+    });
     interp.with_lambda_eval_context(settings.lexical_binding, |interp| {
         let previous = interp.set_current_load_file(Some(load_file.clone()));
         let mut env = if settings.lexical_binding {
@@ -924,7 +962,7 @@ pub(crate) fn load_file_strict_until_or_error(
             ),
             (
                 "load-true-file-name",
-                types::Value::String(load_file.clone().into()),
+                types::Value::string(&path.display().to_string()),
             ),
             ("inhibit-file-name-operation", types::Value::Nil),
             ("load-in-progress", types::Value::T),
@@ -947,6 +985,17 @@ pub(crate) fn load_file_strict_until_or_error(
             ),
             ("lread--unescaped-character-literals", types::Value::Nil),
         ] {
+            if outer_load_history.is_some()
+                && matches!(
+                    name,
+                    "lexical-binding" | "lread--unescaped-character-literals"
+                )
+            {
+                if name == "lexical-binding" && settings.lexical_binding {
+                    interp.set_variable(name, types::Value::T, &mut env);
+                }
+                continue;
+            }
             match interp.bind_special_dynamic(name, value, &mut env) {
                 Ok(restore) => dynamic_restores.push(restore),
                 Err(error) => {
@@ -981,20 +1030,23 @@ pub(crate) fn load_file_strict_until_or_error(
             unescaped_character_literal_value(&source_reader),
             &mut env,
         );
-        let warning_message =
-            match unescaped_character_literal_warning(interp, &mut env).and_then(|warning| {
-                warning
-                    .map(|warning| format_loading_warning(interp, &mut env, path, warning))
-                    .transpose()
-            }) {
-                Ok(message) => message,
-                Err(error) => {
-                    let _ =
-                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                    interp.set_current_load_file(previous);
-                    return Err(error);
-                }
-            };
+        let warning_message = match (if outer_load_history.is_some() {
+            Ok(None)
+        } else {
+            unescaped_character_literal_warning(interp, &mut env)
+        })
+        .and_then(|warning| {
+            warning
+                .map(|warning| format_loading_warning(interp, &mut env, path, warning))
+                .transpose()
+        }) {
+            Ok(message) => message,
+            Err(error) => {
+                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        };
         // GNU's readevalloop reads, constructs, and evaluates one top-level object
         // before reading the next.  Emaxx's parser produces all syntax trees up
         // front, but the observable Interpreter-dependent reader work must remain
@@ -1079,7 +1131,7 @@ pub(crate) fn load_file_strict_until_or_error(
             .unwrap_or_else(|| {
                 types::Value::list([types::Value::String(load_file.clone().into())])
             });
-        interp.commit_entire_load_history(&load_file, current_load_list);
+        interp.commit_entire_load_history(&types::Value::string(&load_file), current_load_list);
         if let Some(message) = warning_message {
             append_message(interp, &message);
         }
@@ -1090,7 +1142,9 @@ pub(crate) fn load_file_strict_until_or_error(
         // `do-after-load-evaluation' only after all load bindings unwind.
         // Invoke that actual GNU Elisp owner when it is present; early
         // bootstrap loads deliberately have no such function yet.
-        if let Ok(after_load) = interp.lookup_function("do-after-load-evaluation", &env) {
+        if outer_load_history.is_none()
+            && let Ok(after_load) = interp.lookup_function("do-after-load-evaluation", &env)
+        {
             interp.call_function_value(
                 after_load,
                 Some("do-after-load-evaluation"),
@@ -1100,17 +1154,6 @@ pub(crate) fn load_file_strict_until_or_error(
         }
         Ok(stopped)
     })
-}
-
-/// Whether `load'/`require' prefer a compiled `.elc' over its `.el' source.
-///
-/// GNU's `load-suffixes' is (".so" ".dylib" ".elc" ".el") with
-/// `load-prefer-newer' nil, so a `.elc' wins whenever one exists; that is the
-/// faithful default here too.  `EMAXX_BYTECODE_VM=0' forces source loads for
-/// debugging.  This selects resolution only -- the bytecode VM itself is
-/// always available.
-pub(crate) fn bytecode_vm_enabled() -> bool {
-    std::env::var_os("EMAXX_BYTECODE_VM").is_none_or(|flag| flag != "0")
 }
 
 fn restore_special_dynamic_bindings(

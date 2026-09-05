@@ -1409,8 +1409,6 @@ pub(crate) fn activate_minibuffer(
     }
     interp.buffer.goto_char(interp.buffer.point_max());
 
-    interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
-
     // Select the minibuffer window for the read, GNU's read_minibuf: the
     // minibuffer buffer shows there, never in the entry window.
     if let Value::Record(minibuffer_window_id) = interp.minibuffer_window_value() {
@@ -1421,7 +1419,7 @@ pub(crate) fn activate_minibuffer(
     let previous_runtime =
         interp.begin_minibuffer_runtime(buffer_id, interp.selected_window_id(), prompt_string.text);
 
-    Ok(ActiveMinibuffer {
+    let active = ActiveMinibuffer {
         buffer_id,
         saved_windows,
         saved_buffer_id,
@@ -1429,7 +1427,38 @@ pub(crate) fn activate_minibuffer(
         saved_selected_window_buffer_id,
         previous_minibuffer_selected_window_id,
         previous_runtime,
-    })
+    };
+    // GNU minibuf.c:read_minibuf has already selected/activated the
+    // minibuffer when clear_message runs, but has not installed its map.
+    if let Err(error) = super::dispatch::clear_message(interp, env, true, true) {
+        // read_minibuf's unwind records also cover a nonlocal exit from
+        // clear-message-function. Run the exit hook before restoring state,
+        // and restore even if that hook itself exits nonlocally.
+        let saved_windows = active.saved_windows.clone();
+        let exit_result = (|| {
+            // run_exit_minibuf_hook changes buffers only if it is still live.
+            if interp.has_buffer_id(buffer_id) {
+                interp.set_current_buffer_id(buffer_id)?;
+            }
+            super::safe_run_named_hooks(
+                interp,
+                "minibuffer-exit-hook",
+                env,
+                Some(interp.current_buffer_id()),
+            )
+        })();
+        restore_active_minibuffer(interp, active);
+        if interp
+            .lookup_var("read-minibuffer-restore-windows", env)
+            .is_none_or(|restore| restore.is_truthy())
+        {
+            interp.restore_window_configuration(saved_windows)?;
+        }
+        exit_result?;
+        return Err(error);
+    }
+    interp.set_buffer_local_value(buffer_id, "current-local-map", local_map);
+    Ok(active)
 }
 
 pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveMinibuffer) {

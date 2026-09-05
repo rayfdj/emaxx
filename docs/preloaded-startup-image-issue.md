@@ -2,6 +2,13 @@
 
 Published as [GitHub issue #11](https://github.com/rayfdj/emaxx/issues/11).
 
+This issue records historical measurements and design candidates, not the
+current implementation plan. The active native-comp goal now follows the
+[GNU portable-dump contract ledger](pdump-c-parity-ledger.md). Current
+reconstruction executes unchanged GNU `loadup.el`; new preload manifests,
+authored Elisp, or Rust copies of Lisp startup policy are not authorized.
+Use the new ledger's fresh measurements rather than the older timings below.
+
 ## Problem
 
 GNU Emacs starts from a dumped executable whose core Lisp runtime state is

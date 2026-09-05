@@ -1059,9 +1059,11 @@ fn registered_unicode_property(
         _ => return Ok(Some(registered)),
     };
     let target = format!("international/{filename}");
-    let Some(path) = resolve_load_target_in_env(interp, &target, env)
-        .or_else(|| resolve_load_target_in_env(interp, &filename, env))
-    else {
+    let path = match resolve_load_target_in_env(interp, &target, env)? {
+        Some(path) => Some(path),
+        None => resolve_load_target_in_env(interp, &filename, env)?,
+    };
+    let Some(path) = path else {
         return Ok(Some(registered));
     };
     crate::lisp::load_file_strict(interp, &path)?;

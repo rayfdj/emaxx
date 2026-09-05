@@ -372,31 +372,26 @@ define_dispatch!(
             }
             "keymap-parent" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::Keymap
-                        }) =>
-                    {
-                        Ok(interp
-                            .find_record(*id)
-                            .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
-                            .unwrap_or(Value::Nil))
-                    }
-                    _ => Ok(Value::Nil),
-                }
+                // GNU's constructor returns the same Lisp keymap object
+                // accepted here. Resolve its public cons root to the existing
+                // owner; restricting this route to private records loses it.
+                Ok(keymap_record_id(interp, &args[0])
+                    .and_then(|id| interp.find_record(id))
+                    .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
+                    .unwrap_or(Value::Nil))
             }
             "set-keymap-parent" => {
                 need_args(name, args, 2)?;
-                if let Value::Record(id) = &args[0]
-                    && let Some(record) = interp.find_record_mut(*id)
-                    && record.kind == crate::lisp::eval::RecordKind::Keymap
+                if let Some(id) = keymap_record_id(interp, &args[0])
+                    && let Some(record) = interp.find_record_mut(id)
                 {
                     if record.slots.len() <= KEYMAP_PARENT_SLOT {
                         record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
                     }
                     record.slots[KEYMAP_PARENT_SLOT] = args[1].clone();
-                    refresh_runtime_keymap_public_view(interp, *id)?;
+                    refresh_runtime_keymap_public_view(interp, id)?;
+                    // keymap.c:Fset_keymap_parent returns the installed parent.
+                    return Ok(args[1].clone());
                 }
                 Ok(Value::Nil)
             }

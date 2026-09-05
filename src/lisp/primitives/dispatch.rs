@@ -31,8 +31,9 @@ pub(crate) use display::{
     window_hscroll_state, window_line_number_layout, window_render_layout,
 };
 pub(crate) use display::{
-    echo_area_message, echo_area_message_tick, echo_area_print, echo_display_message,
-    expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,
+    clear_message, echo_area_message, echo_area_message_tick, echo_area_print,
+    echo_display_message, expire_echo_area_message, set_echo_area_message,
+    set_echo_area_message_with_spans,
 };
 pub(crate) use lists::{
     prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,

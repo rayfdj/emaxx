@@ -1,7 +1,7 @@
 use super::*;
 use crate::lisp::types::SymbolName;
 
-fn dynamic_library_suffix_values() -> Vec<Value> {
+pub(crate) fn dynamic_library_suffix_values() -> Vec<Value> {
     #[cfg(target_os = "macos")]
     let suffixes = [".dylib", ".so"].as_slice();
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -482,6 +482,9 @@ impl Interpreter {
             | "input-decode-map"
             | "local-function-key-map" => Some(Value::list([Value::Symbol("keymap".into())])),
             "values" => Some(Value::Nil),
+            // xdisp.c:syms_of_xdisp initializes the C callback slot to nil;
+            // unchanged minibuffer.el installs its Lisp function later.
+            "clear-message-function" => Some(Value::Nil),
             "read-circle" => Some(Value::T),
             "load-suffixes" => Some(Value::list(
                 dynamic_library_suffix_values()
@@ -633,15 +636,7 @@ impl Interpreter {
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "overwrite-mode" => Some(Value::Nil),
-            // GNU's `load-path' entries are plain directory names with no
-            // trailing separator ("/…/lisp", not "/…/lisp/"), so string
-            // comparisons against them behave the same way.
-            "load-path" => Some(Value::list(
-                self.load_path
-                    .iter()
-                    .map(|path| Value::String(path.display().to_string().into()))
-                    .collect::<Vec<_>>(),
-            )),
+            "load-path" => Some(self.load_path.clone()),
             "installation-directory" => Some(
                 primitives::compat_installation_directory()
                     .map(|value| Value::String(value.into()))
@@ -1436,11 +1431,11 @@ impl Interpreter {
 /// interpreter construction: a value that only lives in a lookup fallback
 /// is invisible to `defvar', which let preloaded Lisp overwrite C defaults
 /// (finding 37) and made the fallback table itself a fabrication surface
-/// (finding 9).  Sixteen further C-owned names stay computed lookups
+/// (finding 9).  Further C-owned names stay computed lookups
 /// because they mirror *live* C state (buffer-locals, the charset and
-/// coding registries, load-in-progress bookkeeping, process-environment);
-/// freezing load-path at construction, for one, breaks the image
-/// reconstruction that assigns the real value moments later.  The
+/// coding registries, load-in-progress bookkeeping, process-environment).
+/// `load-path' has an actual forwarded slot, updated at initialization
+/// and by Lisp stores, so its initial nil binding need not be synthesized. The
 /// Lisp-owned names that once shared the table are gone entirely.
 pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "abbrev-mode",
@@ -1455,6 +1450,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "case-fold-search",
     "case-symbols-as-words",
     "char-code-property-alist",
+    "clear-message-function",
     "coding-system-for-read",
     "coding-system-for-write",
     "command-error-function",
@@ -1510,6 +1506,7 @@ pub(crate) const C_OWNED_DEFVAR_NAMES: &[&str] = &[
     "load-dangerous-libraries",
     "load-file-rep-suffixes",
     "load-force-doc-strings",
+    "load-path",
     "load-prefer-newer",
     "load-read-function",
     "load-source-file-function",

@@ -75,7 +75,210 @@ precedence over older plans and handovers.
     manufacture an empty merge. Do not begin the next checkpoint on a stale
     main base.
 
-## Current continuation checkpoint (2026-09-05)
+## Startup/loading checkpoint based on b432d86 (2026-09-05)
+
+This intermediate checkpoint removes the production GNU-executable path
+query, handwritten startup Elisp/policy, private source/bytecode preference,
+filename alias and duplicate load search. It retains one rooted load-path
+list, runs GNU's installed top-level form in both CLI modes, shares GNU's
+C-owned openp search and hands source loading to unchanged GNU Elisp.
+Related C-boundary corrections cover startup defaults, directory access,
+minibuffer message clearing, keymap parent identity, character validation,
+eval-buffer history/eager-owner selection and unibyte header matching.
+
+Verification covers **91 distinct targeted tests**: 87/87 in
+`d02-checkpoint-focused.log`, then 24/24 in
+`d02-checkpoint-adjacent-green.log` (20 repeated audit/header checks plus
+four adjacent regressions). Zero failed or ignored. An initial adjacent
+failure exposed two live native interpreter fixtures sharing one dlopen
+handle; releasing the compiler before constructing the fresh loader fixes
+that test without changing its Lisp, compiled result assertion, native
+capability or production relocation handling. This does not establish safe
+coexisting native interpreters or template cloning.
+
+All **nine ordinary-editor artifact fixtures pass** in
+`d02-checkpoint-identity.log` (238.29s): eight entire .eln files are
+byte-identical to GNU, including unchanged comp.el (881,800 bytes), and one
+correctly emits none. The separate small before/current/GNU comparison also
+passes with GNU execution forbidden during both Emaxx runs. Editor SHA-256:
+`b5b16b0898407cf1ef2429d7555405e20aa3e3b1b037cd03a649089a3a17c10c`.
+Exact evidence and limitations are in the [dump ledger](pdump-c-parity-ledger.md).
+Final formatting, all-target check and strict all-target/all-feature Clippy
+pass with zero warnings (`d02-checkpoint-*-final.log`).
+
+The 177-case native execution suite and full runtime gate were **not rerun**
+for this intermediate checkpoint. No persistent dumper exists. Remaining
+loader entry/unwind/reader behavior, explicit .elc validation, replacement
+regexp canonical tables, preload bookkeeping and native-unit publication/
+finalization remain open. No semantic exception is approved. Do not claim
+full loader parity, restored startup or measured hot-path performance parity.
+
+### Historical implementation trail before this checkpoint
+
+Latest uncommitted unit: the loader now uses a shared GNU openp search instead
+of private source/bytecode preference, source-size and filename-alias rules.
+All six old-code controls fail before the correction; the final focused run
+passes 45/45, including 18 adversarial checks, zero ignored. The rebuilt
+ordinary editor and retained baseline both compile unchanged comp-test-45603.el
+with GNU execution forbidden; their complete 34,536-byte artifacts match the
+separate GNU oracle. Formatting, all-target check and strict Clippy are clean.
+Evidence is under `/private/tmp/emaxx-pdump-contracts.Yyf1mY`, with exact
+hashes and limitations in the portable-dump ledger. No commit or push has
+been made for this startup/search worktree; the full native/identity/runtime
+gates have not been rerun for it.
+
+The following uncommitted Fload handoff is now implemented and under
+verification: direct reading retains the chosen descriptor; source/native/
+module branches close it at their respective GNU boundaries; ordinary source
+calls unchanged Vload_source_file_function. Three old-code callback controls
+fail and now pass; the expanded surrounding run passes 48/48 with zero
+ignored, including the 18 adversarial gates. Descriptor-lifetime, detached
+C-field and recursion controls subsequently pass in the combined 53/53 run,
+zero ignored, 64.62s (`d02-handoff-green3.log`). This also covers the corrected
+preexisting locate-file/provenance expectation; its history assertions and
+Elisp fixture remain unchanged. Strict Clippy and all-target check are clean.
+The ordinary editor is rebuilt (SHA-256
+`00fa75ad352e8e6cc8d94a6b8badbb885b3a037d39e8a405e8ffbc95907cf2a3`).
+Both pre-handoff and updated Emaxx produce a whole-identical 34,536-byte
+artifact against GNU on unchanged comp-test-45603.el, under the GNU-launch
+fence and isolated homes. See `d02-handoff-artifact.n0tlSg/` and the dump
+ledger for complete hashes and timing limitations. This unit is uncommitted.
+
+The subsequent Feval_buffer correction honors the supplied history filename,
+checks its type, accepts nil history independently of an outer load, and
+freezes GNU's eager-macroexpansion decision at entry. Four old-code controls
+fail; five focused checks and the wider 60-check integration pass, zero
+ignored (`d02-eval-buffer-integration1.log`, 83.20s, including 18 audits).
+
+The precommit review also corrected the new header probe's omitted unibyte
+pattern conversion and wrong Latin-1 input decoding. Two Rust controls fail
+before and pass after the repair, including all 65,536 byte pairs against
+GNU's initial ASCII canonical-table rule. No Elisp was authored. GNU can
+replace its standard canonical table, so this is not proof of arbitrary
+case-table parity; that shared regexp-engine gap remains open.
+
+Do not call this full loader parity: explicit bytecode-header validation,
+several Feval_buffer/readevalloop state/reader contracts, preload bookkeeping
+and native candidate publication remain open. Fix those C owners rather
+than copying mule.el or authoring helper Elisp. The expanded checkpoint
+integration/artifact run is pending, and no commit has yet been made for
+this goal. The dump ledger records exact evidence and limitations;
+no portable dump exists.
+
+### Active portable-dump goal, starting from pushed `b432d86`
+
+The new goal prioritizes actual GNU dump prerequisites, then a usable
+restored image, then the remaining native hot-path work. Current source
+mapping, fresh startup timings, and the next bounded implementation are in
+[the portable-dump ledger](pdump-c-parity-ledger.md). Main was fetched again:
+`84f342a` is already included. No empty merge is needed.
+
+The three former compatibility-harness edits have been archived and removed
+at Ray's request. The working tree was clean at the start of this goal.
+Stash `7cc4cb2` is an archive, not pending work; older instructions below to
+preserve/restore those edits are historical and must not be acted on.
+
+The first audit found a real startup boundary violation: ordinary Emaxx calls
+`compat::emaxx_upstream_load_path`, which executes GNU to obtain its path.
+The unchanged editor fails with exit 2 when a read-only diagnostic sandbox
+forbids only GNU executable launches. The previous batch-source audit stopped
+at an inline `#[cfg(test)]` attribute and never inspected this code. The
+pending audit fix scans through to the actual test module; do not whitelist
+the oracle call or replace it with a copied Lisp directory manifest. GNU
+`lread.c:init_lread` owns initial paths; unchanged `startup.el` owns
+subdirectory expansion and the session lifecycle. The first implementation
+unit must preserve that boundary. No portable dump has been implemented yet.
+
+The worktree now corrects the initial dump-build path and `Vload_path`
+ownership: one rooted Lisp list instead of a host vector reconstructed on
+reads. Both original-list and splice controls failed before the repair.
+Seven focused checks now pass, including a direct call to unchanged GNU
+`normal-top-level-add-to-load-path`, dynamic/buffer-local restoration,
+detachment, root replacement, and real source lookup. The existing copier
+check concerns test-fixture isolation only, not portable dumping. The
+surrounding evaluator-field suite passed 15/15 and unchanged loadup/seq 1/1.
+Strict Clippy and formatting are clean. The rebuilt ordinary editor produces
+the same complete 34,536-byte `comp-test-45603.el` artifact as baseline and
+GNU; detailed commands, hashes and timing limitations are in the dump ledger.
+
+The next worktree unit now removes the remaining production oracle query
+and routes both batch and interactive CLI startup through `Vtop_level`, as
+`keyboard.c:top_level_2` does. GNU startup owns subdirectory expansion and
+argument processing; the former handwritten startup helpers are removed,
+including the TTY startup forms. See the dump ledger's pending-integration
+section for the changed phase boundaries and source references.
+
+Do not push this as a completed startup repair. The integrated selection
+first passed 20/21 with a TTY missing-`subr-x` failure; after using GNU startup
+it passed 23/24 with a real `internal-char-font` character-range failure.
+The worktree corrects that GNU C contract, the undo/GC build-versus-session
+defaults, and the POSIX directory-search check; verification is in progress.
+The old 17/18 audit result and small-artifact comparison above predate this
+integration. Current evidence now includes 18/18 adversarial passes and a
+rebuilt ordinary editor that starts and native-compiles with GNU launches
+forbidden. The fresh complete small artifact is byte-identical (34,536 bytes,
+SHA-256 c1b134b0c6af1b8e216a556721bf6b5ad0e63827a9a4efdcfddffd5b86f71eb6).
+Detailed hashes, commands, timings and limitations are in the dump ledger.
+
+The earlier 25/26 startup selection reaches the normal abbrev file, but
+Rust's loader fails to expand its ~/ path. With an isolated HOME the revised
+startup test now passes, including the exact message confirmed in a separate
+GNU terminal session. Scrolling/recentring also pass their unchanged GNU
+expectations after explicitly emptying the test sample buffer: the fixture
+now finishes startup, including initial-scratch-message insertion.
+
+The remaining prompt-display regression was a missing C call, not a Lisp
+policy issue: read_minibuf calls clear_message(true, true) before installing
+the keymap. Rust now implements its callback/GC guards, C-slot reads,
+independent echo-buffer flags, dynamic bindings, safe signal handling and
+activation unwind. The raw clear-message-function slot starts at nil, as
+in syms_of_xdisp; unchanged minibuffer.el installs the function later.
+Eight new C-contract tests, the original TTY regression and all 18
+adversarial audits pass (27/27, zero ignored, 12.06s). Check and strict
+Clippy are warning-free. See `d02-clear-slot-*` in the evidence directory.
+The nearby integration selection first passed 8/9 (zero ignored): Enter
+inserted a newline instead of exiting in the initial-post-command-hook test.
+Passive Rust diagnostics found that the completion map's parent was never
+installed: constructors return public cons roots, but the parent getter and
+setter only accepted private records. Both sides of that mismatch also exist
+in HEAD b432d86. The bounded worktree fix resolves the original root through
+its existing owner and returns the installed parent, as GNU does. Both new
+Rust parent-identity tests, the original minibuffer regression and walker
+test, the clearing/TTY checks and all 18 audits now pass: 31/31, zero ignored,
+33.12s (`d03-keymap-focused.log`). No diagnostic callbacks remain. Check and
+strict Clippy are clean. The broader selection passes 43/44: its only
+failure is a stale assertion that last is bytecode. A separate GNU terminal
+session evaluates the existing expression and confirms the actual subr
+result and all other fields. Only the Rust expectation/comment is corrected.
+The final focused run passes 32/32, zero ignored, including that check and
+all 18 audits (41.12s). Public parent-tail sharing and the remaining
+getter/setter branches are explicitly open in D03, not declared complete
+by this fix.
+
+Before the parent fix, the refreshed ordinary editor passed the whole-file
+34,536-byte comparison with GNU execution forbidden
+for Emaxx (`d02-clear-artifact/`, SHA-256
+cc82282cdfca745de0ea28a7d5765006509b13fda63f562e084fb263553961b7).
+After the parent correction, the fresh before/after/GNU comparison also
+passes: all three complete files are 34,536 bytes, SHA-256
+56e12f1da5e840980c0be88db84346b04a5dda7606e62c72d26c2303bcf1458e
+(`d03-keymap-artifact/`). Both Emaxx runs forbid GNU execution; GNU runs
+last with isolated outputs. Current editor SHA-256 is
+01763c9d5b50530233fc249f165ad63755c34a5903ff9ab7129aa50bee7d0083.
+Single cold-process timings are not a hot-path performance claim; the full
+identity ladder and 177 native execution cases have not been rerun here.
+This is not a completed or pushed startup checkpoint.
+
+Do not fix the ~/ failure by suppressing GNU abbrev loading. The source
+review also found a non-GNU repeated-directory filename rewrite and private
+VM/source-size suffix selection in the old loader. The next bounded task is
+to consolidate the actual openp search and remove those deviations, using
+unchanged GNU fixtures and isolated HOME, not personal files. Detailed C
+owners and remaining scope are in the dump ledger. CLI sorting, error recovery,
+and real dump-build entry remain open too. The artifact ladder was updated
+to follow the now-correct user cache location with isolated editor outputs,
+but its full rerun is pending. No GNU source, new Elisp, warning suppression,
+or replacement compatibility runner was added.
 
 ### Verified original constants-vector ownership (base `c236c21`)
 

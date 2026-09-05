@@ -2206,9 +2206,8 @@ fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
             .expect("upstream load path"),
         ..Default::default()
     };
-    let mut compiler =
-        crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
-            .expect("initialize compiled-owner compiler interpreter");
+    let mut compiler = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize compiled-owner compiler interpreter");
     eval_str_with(
         &mut compiler,
         &format!(
@@ -2216,9 +2215,13 @@ fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
             source_path.display().to_string()
         ),
     );
-    let mut loader =
-        crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
-            .expect("initialize fresh compiled-owner loader interpreter");
+    // comp.c:load_comp_unit preserves a loaded library's saved unit word
+    // and relocations. Two live interpreter universes cannot independently
+    // own that same dlopen handle. End the compiler fixture before creating
+    // the fresh loader; do not reset another live runtime's native pointers.
+    drop(compiler);
+    let mut loader = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize fresh compiled-owner loader interpreter");
     crate::lisp::load_file_strict(&mut loader, &dest_path)
         .expect("compiled GV file should load in a fresh interpreter");
     let actual = eval_str_with(&mut loader, "sample-bytecomp-gv-pair");
@@ -6643,6 +6646,11 @@ fn selected_gnu_elc_never_falls_back_to_its_sibling_source() {
 
         let mut source_interp = Interpreter::new();
         source_interp.set_load_path(vec![root.clone()]);
+        source_interp.set_variable(
+            "load-suffixes",
+            Value::list([Value::string(".el")]),
+            &mut Env::new(),
+        );
         assert_eq!(source_interp.load_target("sample").unwrap(), source);
         assert_eq!(
             eval_str_with(&mut source_interp, "(sample-function)"),
@@ -6650,7 +6658,6 @@ fn selected_gnu_elc_never_falls_back_to_its_sibling_source() {
         );
 
         let mut preferred_interp = Interpreter::new();
-        preferred_interp.set_prefer_compiled_loads(true);
         preferred_interp.set_load_path(vec![root.clone()]);
         assert_eq!(preferred_interp.load_target("sample").unwrap(), compiled);
         assert_eq!(

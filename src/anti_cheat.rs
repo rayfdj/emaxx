@@ -32,6 +32,7 @@ fn facade_gate_files() -> Vec<std::path::PathBuf> {
     for extra in [
         "src/tty.rs",
         "src/batch.rs",
+        "src/startup.rs",
         "src/buffer.rs",
         "src/overlay.rs",
         "src/compat.rs",
@@ -71,19 +72,26 @@ pub(crate) fn repo_does_not_define_batch_report_delegation() {
     }
 }
 
+fn batch_production_source(text: &str) -> &str {
+    // An inline cfg(test) on a local binding is not the end of production
+    // code. Stop only at the trailing test module: the earlier spelling
+    // skipped the startup/load-path code after the bootstrap permit.
+    text.split_once("\n#[cfg(test)]\nmod tests {")
+        .expect("batch driver must have an explicit trailing test-module boundary")
+        .0
+}
+
 pub(crate) fn production_batch_driver_can_only_call_audited_compat_helpers() {
     let text =
         fs::read_to_string(repo_root().join("src/batch.rs")).expect("read production batch driver");
-    let production = text
-        .split("#[cfg(test)]")
-        .next()
-        .expect("batch module has a production section");
+    let production = batch_production_source(&text);
     let allowed = [
         "BATCH_RESULT_FILE_ENV",
         "DUMP_SOURCE_DIRECTORY_ENV",
+        "boot_environment_read_guard",
         "canonicalize_path",
+        "project_root",
         "relative_test_path",
-        "repo_local_elisp_load_path",
     ];
     let reference =
         regex::Regex::new(r"compat::([A-Za-z0-9_]+)").expect("compile compat-reference pattern");
@@ -113,6 +121,7 @@ pub(crate) fn runtime_code_does_not_shell_out_to_oracle_emacs() {
         "src/lisp/primitives.rs",
         "src/buffer.rs",
         "src/main.rs",
+        "src/startup.rs",
         "src/lib.rs",
     ];
     let banned_tokens = [
@@ -692,6 +701,87 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let mut declared = BTreeSet::new();
     for (file, tests) in [
         (
+            "src/lisp/primitives/regexp.rs",
+            &[
+                "c_string_match_folds_only_ascii_and_preserves_match_data",
+                "c_string_match_converts_the_pattern_to_unibyte_before_compilation",
+            ][..],
+        ),
+        (
+            "src/lisp/primitives/loading/tests.rs",
+            &[
+                "eval_buffer_uses_the_supplied_history_filename_without_visiting_it",
+                "eval_buffer_checks_a_non_nil_history_filename_even_for_an_empty_buffer",
+                "eval_buffer_loads_unchanged_gnu_source_before_the_macroexpander_is_defined",
+                "eval_buffer_uses_the_history_suffix_to_disable_eager_macroexpansion",
+                "eval_buffer_nil_filename_records_an_independent_nil_history_entry",
+                "load_source_callback_receives_gnu_arguments_and_owns_the_return_value",
+                "load_source_callback_observes_and_restores_the_outer_c_bindings",
+                "load_source_callback_nonlocal_exit_unwinds_even_with_noerror",
+                "load_source_callback_reads_the_detached_c_slot",
+                "load_recursion_limit_counts_only_the_same_file_and_restores_the_stack",
+                "load_search_does_not_rewrite_a_missing_repeated_directory_filename",
+                "load_search_obeys_the_gnu_suffix_list_instead_of_a_private_vm_preference",
+                "load_search_expands_home_from_the_lisp_process_environment",
+                "load_search_nil_path_uses_the_current_buffers_default_directory",
+                "openp_t_predicate_opens_the_file_instead_of_calling_t_as_a_function",
+                "openp_function_predicate_skips_a_directory_without_dir_ok",
+                "openp_directory_predicate_must_return_the_dir_ok_symbol",
+                "openp_validates_all_suffix_cars_but_does_not_require_a_proper_list",
+                "load_suffix_product_reads_c_slots_and_obeys_gnu_tail_iteration",
+                "load_search_newer_stays_in_first_directory_and_preserves_suffix_ties",
+            ][..],
+        ),
+        (
+            "src/lisp/primitives/loading/file.rs",
+            &[
+                "source_handoff_closes_the_selected_descriptor_before_calling_elisp",
+                "direct_load_keeps_the_selected_inode_when_its_filename_is_replaced",
+            ][..],
+        ),
+        (
+            "src/lisp/eval/core.rs",
+            &[
+                "load_path_forwarding_preserves_the_original_list",
+                "load_path_forwarding_exposes_spliced_directories",
+                "load_path_forwarding_tracks_binding_restore_and_buffer_selection",
+                "load_path_forwarding_keeps_detached_c_roots_without_stale_snapshots",
+                "load_path_forwarding_loader_uses_the_c_slot_after_makunbound",
+            ][..],
+        ),
+        (
+            "src/batch.rs",
+            &[
+                "load_path_forwarding_supports_unchanged_gnu_startup_splicing",
+                "batch_top_level_uses_the_form_installed_by_gnu_startup",
+                "startup_process_modes_preserve_gnu_initialization_phases",
+                "session_path_does_not_discover_the_gnu_test_tree",
+            ][..],
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            &[
+                "clear_message_keeps_current_and_last_displayed_flags_independent",
+                "clear_message_callback_preserves_only_current_and_sees_dynamic_guards",
+                "clear_message_skips_callbacks_when_gc_or_redisplay_evaluation_is_inhibited",
+                "clear_message_logs_callback_signals_without_emitting_another_message",
+                "clear_message_unwinds_guards_and_propagates_nonlocal_exits",
+                "clear_message_during_minibuffer_entry_observes_activation_before_keymap",
+                "clear_message_nonlocal_exit_restores_minibuffer_entry_state",
+                "clear_message_reads_the_c_slot_after_lexical_shadowing_and_detachment",
+            ][..],
+        ),
+        (
+            "src/startup.rs",
+            &[
+                "decode_env_path_retains_the_unibyte_environment_bytes",
+                "decode_env_path_quotes_only_unsafe_file_handlers",
+                "initialize_load_path_uses_gnu_empty_entry_and_dump_phase_rules",
+                "default_load_path_follows_uninstalled_and_out_of_tree_rules",
+                "startup_directory_check_uses_search_permission_and_preserves_errno",
+            ][..],
+        ),
+        (
             "src/lisp/bytecode/vm.rs",
             &[
                 "bytecode_reads_original_constants_after_vector_mutation",
@@ -704,6 +794,9 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
             &[
                 "intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit",
                 "intern_uses_gnu_name_copy_and_type_check_boundaries",
+                "internal_char_font_accepts_gnu_characters_and_checks_position_first",
+                "keymap_parent_primitives_keep_constructor_object_identity",
+                "keymap_parent_replacement_keeps_lookup_and_mutation_shared",
             ][..],
         ),
         (
@@ -1269,6 +1362,29 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
 
 #[cfg(test)]
 mod gate_tests {
+    #[test]
+    fn batch_source_audit_keeps_code_after_inline_test_attributes() {
+        let source = concat!(
+            "fn initialize() {\n",
+            "    #[cfg(test)]\n",
+            "    let permit = acquire_permit();\n",
+            "    compat::unaudited_startup_probe();\n",
+            "}\n",
+            "\n#[cfg(test)]\nmod tests {\n",
+            "    fn fixture_only() {}\n",
+            "}\n",
+        );
+        let production = super::batch_production_source(source);
+        assert!(production.contains("compat::unaudited_startup_probe()"));
+        assert!(!production.contains("fn fixture_only()"));
+        let actual = std::fs::read_to_string(super::repo_root().join("src/batch.rs"))
+            .expect("read actual production driver");
+        assert!(
+            super::batch_production_source(&actual).contains("fn installation_lisp_load_path("),
+            "the actual startup path must be inside the audited source"
+        );
+    }
+
     #[test]
     fn repo_does_not_define_batch_report_delegation() {
         super::repo_does_not_define_batch_report_delegation();

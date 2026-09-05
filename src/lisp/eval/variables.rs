@@ -1000,6 +1000,7 @@ impl Interpreter {
             "inhibit-quit" => self.inhibit_quit = value.clone(),
             "throw-on-input" => self.throw_on_input = value.clone(),
             "overriding-plist-environment" => self.overriding_plist_environment = value.clone(),
+            "load-path" => self.load_path = value.clone(),
             "max-lisp-eval-depth" => {
                 if let Ok(depth) = value.as_integer() {
                     self.max_lisp_eval_depth = depth;
@@ -1016,6 +1017,7 @@ impl Interpreter {
             "inhibit-quit" => Some(self.inhibit_quit.clone()),
             "throw-on-input" => Some(self.throw_on_input.clone()),
             "overriding-plist-environment" => Some(self.overriding_plist_environment.clone()),
+            "load-path" => Some(self.load_path.clone()),
             "max-lisp-eval-depth" => Some(crate::lisp::primitives::normalize_integer_value(
                 self.max_lisp_eval_depth,
             )),
@@ -1034,6 +1036,7 @@ impl Interpreter {
             "inhibit-quit",
             "throw-on-input",
             "overriding-plist-environment",
+            "load-path",
             "max-lisp-eval-depth",
             "debug-on-next-call",
         ] {
