@@ -1074,11 +1074,6 @@ impl Interpreter {
         Ok(())
     }
 
-    pub(crate) fn class_value(&self, name: &str) -> Option<Value> {
-        // GNU cl-macs.el defines `cl--find-class' as this public property.
-        self.get_symbol_property(name, "cl--class")
-    }
-
     pub fn terminal_parameter(&self, parameter: &Value) -> Option<Value> {
         self.terminal_parameters
             .iter()

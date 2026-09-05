@@ -654,24 +654,20 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
 }
 
 pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
-    let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
+    // data.c:Fcl_type_of uses XTYPE/PSEUDOVECTOR_TYPE, not Lisp variable
+    // values. Wide Integer values cross the native ABI as bignums; an
+    // explicitly allocated BigInteger already has that object subtype.
     let name = match value {
         Value::Nil => "null",
         Value::T => "boolean",
         Value::Integer(number) => {
-            if *number >= min_fixnum && *number <= max_fixnum {
+            if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(number) {
                 "fixnum"
             } else {
                 "bignum"
             }
         }
-        Value::BigInteger(number) => {
-            if **number >= BigInt::from(min_fixnum) && **number <= BigInt::from(max_fixnum) {
-                "fixnum"
-            } else {
-                "bignum"
-            }
-        }
+        Value::BigInteger(_) => "bignum",
         Value::Float(_) => "float",
         Value::String(_) | Value::StringObject(_) => "string",
         Value::Symbol(_) => "symbol",

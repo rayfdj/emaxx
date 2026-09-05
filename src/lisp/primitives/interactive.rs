@@ -240,18 +240,6 @@ pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
     matches!(value, Value::Cons(_)) || keymap_record_id(interp, value).is_some()
 }
 
-pub(crate) fn fixnum_bounds(interp: &Interpreter) -> Result<(i64, i64), LispError> {
-    let max_fixnum = interp
-        .default_value("most-positive-fixnum")
-        .ok_or_else(|| LispError::Void("most-positive-fixnum".into()))?
-        .as_integer()?;
-    let min_fixnum = interp
-        .default_value("most-negative-fixnum")
-        .ok_or_else(|| LispError::Void("most-negative-fixnum".into()))?
-        .as_integer()?;
-    Ok((min_fixnum, max_fixnum))
-}
-
 pub(crate) fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
     let Value::Record(id) = value else {
         return None;
