@@ -41,8 +41,13 @@ impl NativeCompilerState {
         gccjit::available()
     }
 
-    pub(crate) fn begin_garbage_collection(&mut self) -> Vec<crate::lisp::types::Value> {
-        self.runtime.begin_garbage_collection()
+    pub(crate) fn begin_garbage_collection(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &Env,
+    ) {
+        self.runtime
+            .begin_garbage_collection(interpreter, environment)
     }
 
     pub(crate) fn garbage_collection_finished(
