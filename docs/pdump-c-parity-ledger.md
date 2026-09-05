@@ -18,8 +18,11 @@ work and must not be restored as part of this goal.
 
 Evidence directory: `/private/tmp/emaxx-pdump-contracts.Yyf1mY`.
 
-Latest published checkpoint: `a92e620` (startup/loading); after its push,
-freshly fetched `origin/main` at `84f342a` was already included.
+Latest published checkpoint: `a94d410` (shared GC marking/weak-entry/sweep
+ordering), following startup/loading checkpoint `a92e620`. After the latest
+push, freshly fetched `origin/main` at `84f342a` was already included.
+See the handover's dated "Resume here" section for the active goal and next
+post-startup profiling task. No image implementation is being claimed.
 
 - Original `b432d86` baseline editor SHA-256:
   `e3547c198c6b65bb551101bdf8e511963c5f1c485f23205c260547a2d1419db4`.
