@@ -20139,7 +20139,9 @@ fn default_file_modes_is_the_process_umask_and_temp_files_are_private() {
     // its complement; gen_tempname makes `make-temp-file' entries 0600
     // and directories 0700 regardless of the mask's generosity.  A
     // temporary directory that came out 0755 made server.el's
-    // server-ensure-safe-dir refuse it ("accessible by others").
+    // server-ensure-safe-dir refuse it ("accessible by others").  The
+    // startup value is the inherited umask's complement, so it is
+    // checked against `sh -c umask' rather than a literal.
     let program = r##"
 (let* ((d (make-temp-file "emaxx-modes" t))
        (f (make-temp-file "emaxx-modes"))
@@ -20155,13 +20157,16 @@ fn default_file_modes_is_the_process_umask_and_temp_files_are_private() {
                    (with-temp-buffer (insert-file-contents u) (string-trim (buffer-string))))
             (progn (with-file-modes #o777 (make-directory (expand-file-name "sub2" d)))
                    (format "%o" (file-modes (expand-file-name "sub2" d))))
-            (format "%o" (default-file-modes))
+            (progn (call-process "sh" nil nil nil "-c" (concat "umask > " u))
+                   (with-temp-buffer (insert-file-contents u)
+                                     (= (default-file-modes)
+                                        (logand (lognot (string-to-number (string-trim (buffer-string)) 8)) #o777))))
             (progn (set-default-file-modes #o600) (prog1 (format "%o" (default-file-modes)) (set-default-file-modes orig)))
-            (format "%o" (default-file-modes)))
+            (= (default-file-modes) orig))
     (delete-directory d t) (delete-file f)))"##;
     assert_oracle_contract_matches_interpreter(
         program,
-        r##"("700" "600" "700" "640" "0177" "777" "755" "600" "755")"##,
+        r##"("700" "600" "700" "640" "0177" "777" t "600" t)"##,
         "default file modes",
     );
 }
