@@ -9615,11 +9615,14 @@ fn process_attributes_follows_sysdep_procfs() {
     // sysdep.c system_process_attributes (GNU_LINUX) conses 31 attributes
     // from /proc/PID: owner ids and names, the `stat' fields, jiffies as
     // old-style times, /proc/uptime-derived start/etime/pcpu, and the
-    // escaped command line.  The child is a fresh `sleep', so the parent
+    // escaped command line.  The child is a fresh `sh -c "sleep 5"' that
+    // ignores its extra arguments and stays alive (a `sleep' handed those
+    // arguments exits at once, and reading /proc then raced its death:
+    // an empty cmdline and a zombie state), so the parent
     // linkage, the child-accounting fields and the argument escaping are
     // exact; the live counters are pinned by type.
     let program = r#"
-        (let* ((p (start-process "s" nil "sleep" "5" "a b" "c\\d"))
+        (let* ((p (start-process "s" nil "sh" "-c" "sleep 5" "a b" "c\\d"))
                (a (process-attributes (process-id p)))
                (keys '(euid user egid group comm state ppid pgrp sess ttname tpgid
                        minflt majflt cminflt cmajflt utime stime time cutime cstime
@@ -9638,7 +9641,7 @@ fn process_attributes_follows_sysdep_procfs() {
                     (cdr (assq 'thcount a))
                     (let ((args (cdr (assq 'args a))))
                       (list (file-name-absolute-p args)
-                            (string-suffix-p "/sleep 5 a\\ b c\\\\d" args)))
+                            (string-suffix-p "/sh -c sleep\\ 5 a\\ b c\\\\d" args)))
                     (process-attributes 0))
             (delete-process p)))"#;
     assert_oracle_contract_matches_interpreter(
@@ -9647,7 +9650,7 @@ fn process_attributes_follows_sysdep_procfs() {
          utime cmajflt cminflt majflt minflt tpgid ttname sess pgrp ppid state comm group egid \
          user euid) (integer string integer string string string integer integer integer string \
          integer integer integer integer integer cons cons cons cons cons cons cons cons float \
-         integer integer integer integer integer float string) \"sleep\" t t t t 0 0 (0 0 0 0) \
+         integer integer integer integer integer float string) \"sh\" t t t t 0 0 (0 0 0 0) \
          (0 0 0 0) (0 0 0 0) 4 4 1 (t t) nil)",
         "process-attributes",
     );
