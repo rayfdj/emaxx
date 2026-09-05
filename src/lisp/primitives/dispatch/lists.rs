@@ -2,7 +2,7 @@ use super::*;
 use crate::lisp::primitives::processes::wait_pumping_processes;
 
 fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
-    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events))
+    Value::vector(events)
 }
 
 fn event_array(events: &[Value], force_vector: bool) -> Value {
@@ -416,7 +416,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
         if code < 0 {
             break;
         }
-        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let key = Value::vector([event.clone()]);
         let mut event_key = key_sequence_binding_text(&key)?;
         if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
             event_key = format!("<{event_key}>");
@@ -429,7 +429,7 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = Value::Integer(code);
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            let translated = Value::vector([event.clone()]);
             event_key = key_sequence_binding_text(&translated)?;
         }
         advance_kbd_macro_index(interp, 1, env);
@@ -590,7 +590,7 @@ fn read_minibuffer_text_from_unread_events_inner(
             Value::list(events.iter().cloned()),
             env,
         );
-        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let key = Value::vector([event.clone()]);
         let mut event_key = key_sequence_binding_text(&key)?;
         if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
             event_key = format!("<{event_key}>");
@@ -602,7 +602,7 @@ fn read_minibuffer_text_from_unread_events_inner(
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = Value::Integer(translated);
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            let translated = Value::vector([event.clone()]);
             event_key = key_sequence_binding_text(&translated)?;
         }
         let code = event.as_integer().ok();
@@ -793,7 +793,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             set_command_key_state(interp, Vec::new(), Vec::new(), env);
             return Ok(());
         };
-        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let key = Value::vector([event.clone()]);
         let mut event_key = key_sequence_binding_text(&key)?;
         // GNU describes function-key symbol events in angle brackets
         // ("<escape>"), which is also what the string-parsing lookup path
@@ -820,7 +820,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = translated_event;
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            let translated = Value::vector([event.clone()]);
             event_key = key_sequence_binding_text(&translated)?;
             if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
                 event_key = format!("<{event_key}>");
@@ -1326,14 +1326,7 @@ define_dispatch!(
             }
             "elt" => {
                 need_args(name, args, 2)?;
-                if matches!(args[0], Value::Cons(_))
-                    && matches!(
-                        args[0].to_vec().ok().and_then(|items| items.first().cloned()),
-                        Some(Value::Symbol(symbol)) if symbol == "vector-literal"
-                    )
-                {
-                    super::call(interp, "aref", args, env)
-                } else if matches!(args[0], Value::Nil | Value::Cons(_)) {
+                if matches!(args[0], Value::Nil | Value::Cons(_)) {
                     nth_list_element(&args[0], &args[1])
                 } else {
                     super::call(interp, "aref", args, env)
@@ -1499,10 +1492,7 @@ define_dispatch!(
                                     // symbol-with-position objects while the
                                     // dynamic mode is enabled.  Keep ordinary
                                     // scalar keys on the fast path above.
-                                    (a @ Value::Record(_), b) | (a, b @ Value::Record(_)) => {
-                                        values_eq_in_env(interp, a, b, env)
-                                    }
-                                    (a, b) => *a == *b,
+                                    (a, b) => values_eq_in_env(interp, a, b, env),
                                 }
                             }
                             _ => false,
@@ -1783,50 +1773,49 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs("apply".into(), args.len()));
                 }
                 if args.len() == 1 {
-                    let expanded_args = args[0].to_vec()?;
-                    if expanded_args.len() < 2 {
-                        return Err(LispError::WrongNumberOfArgs(
-                            "apply".into(),
-                            expanded_args.len(),
+                    // eval.c:Fapply treats the sole argument as the complete
+                    // funcall vector: its first list element is the function
+                    // and the rest are arguments.  A one-element list is a
+                    // valid zero-argument call; an empty list therefore tries
+                    // to funcall nil and reports void-function.
+                    if is_vector_value(&args[0]) {
+                        return Err(LispError::WrongTypeArgument(
+                            "listp".into(),
+                            args[0].clone(),
                         ));
                     }
-                    let resolved = resolve_callable(interp, &expanded_args[0], env)?;
-                    let original_name = expanded_args[0].as_symbol().ok();
-                    return interp.call_function_value(
-                        resolved,
-                        original_name,
-                        &expanded_args[1..],
-                        env,
-                    );
+                    let expanded_args = args[0].to_vec()?;
+                    let Some((function, call_args)) = expanded_args.split_first() else {
+                        return interp.call_function_value(Value::Nil, None, &[], env);
+                    };
+                    return interp.call_function_value(function.clone(), None, call_args, env);
                 }
                 let func = &args[0];
                 let last = &args[args.len() - 1];
                 let mut all_args: Vec<Value> = args[1..args.len() - 1].to_vec();
-                all_args.extend(sequence_values(interp, last)?);
-                let resolved = resolve_callable(interp, func, env)?;
-                let original_name = func.as_symbol().ok();
-                interp.call_function_value(resolved, original_name, &all_args, env)
+                // Fapply calls list_length and then walks XCAR/XCDR.  Its
+                // spread argument is a proper list, not an arbitrary Emacs
+                // sequence.
+                if is_vector_value(last) {
+                    return Err(LispError::WrongTypeArgument("listp".into(), last.clone()));
+                }
+                all_args.extend(last.to_vec()?);
+                interp.call_function_value(func.clone(), None, &all_args, env)
             }
             "funcall" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs("funcall".into(), 0));
                 }
-                let resolved = resolve_callable(interp, &args[0], env)?;
-                let original_name = args[0].as_symbol().ok();
-                interp.call_function_value(resolved, original_name, &args[1..], env)
+                // Let the common funcall_general translation resolve the
+                // original function object so resolution failures retain the
+                // attempted call in the backtrace, as GNU does.
+                interp.call_function_value(args[0].clone(), None, &args[1..], env)
             }
             "fset" => {
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Ffset uses CHECK_SYMBOL/XSYMBOL.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                if args[1].is_nil() {
-                    interp.set_function_binding(&symbol, None);
-                    Ok(Value::Nil)
-                } else {
-                    interp.validate_function_binding(&symbol, &args[1])?;
-                    interp.set_function_binding(&symbol, Some(args[1].clone()));
-                    Ok(args[1].clone())
-                }
+                interp.fset_function(&symbol, args[1].clone(), env)
             }
             "fmakunbound" => {
                 need_args(name, args, 1)?;
@@ -1904,13 +1893,9 @@ define_dispatch!(
                     .transpose()?
                     .unwrap_or(1);
                 interp.set_variable("defining-kbd-macro", Value::Nil, env);
-                interp
-                    .kbd_macro_definition
-                    .truncate(interp.kbd_macro_committed_len);
-                let last_macro = Value::list(
-                    std::iter::once(Value::symbol("vector-literal"))
-                        .chain(interp.kbd_macro_definition.iter().cloned()),
-                );
+                let committed_len = interp.kbd_macro_committed_len;
+                interp.kbd_macro_definition.truncate(committed_len);
+                let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
                 interp.set_variable("last-kbd-macro", last_macro.clone(), env);
                 super::call(
                     interp,
@@ -1969,9 +1954,8 @@ define_dispatch!(
             "execute-kbd-macro" => execute_kbd_macro(interp, args, env),
             "cancel-kbd-macro-events" => {
                 need_args(name, args, 0)?;
-                interp
-                    .kbd_macro_definition
-                    .truncate(interp.kbd_macro_committed_len);
+                let committed_len = interp.kbd_macro_committed_len;
+                interp.kbd_macro_definition.truncate(committed_len);
                 Ok(Value::Nil)
             }
             "store-kbd-macro-event" => {

@@ -393,7 +393,7 @@ define_dispatch!(
             "frame-scale-factor" => {
                 need_arg_range(name, args, 0, 1)?;
                 decode_live_frame(interp, args.first(), true)?;
-                Ok(Value::Float(1.0))
+                Ok(Value::float(1.0))
             }
             "frame-windows-min-size" => {
                 need_arg_range(name, args, 0, 4)?;

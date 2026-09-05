@@ -206,9 +206,12 @@ fn overriding_plist_property(
     symbol: &str,
     property: &str,
 ) -> Option<Value> {
-    let mut entries = interp
-        .lookup_var("overriding-plist-environment", env)
-        .filter(|value| !value.is_nil())?;
+    // fns.c:Fget reads Voverriding_plist_environment directly.  Its
+    // DEFVAR_LISP cell already reflects any active dynamic binding.
+    let mut entries = interp.overriding_plist_environment_value();
+    if entries.is_nil() {
+        return None;
+    }
     let mut entry_guard = crate::lisp::types::CycleGuard::new();
     while let Value::Cons(ref entries_cell) = entries {
         if entry_guard.step(crate::lisp::types::ConsCell::identity(entries_cell)) {
@@ -359,7 +362,7 @@ define_dispatch!(
                         // references included.  Interning runs on the
                         // materialized value so symbols inside expanded
                         // literals (byte-code constant vectors) are covered.
-                        let materialized = interp.materialize_read_object_literals(val)?;
+                        let materialized = interp.materialize_read_object_literals(val, env)?;
                         interp.intern_symbols_in_value(&materialized);
                         Ok(Value::cons(
                             materialized,
@@ -574,11 +577,6 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let symbol_name = match &args[0] {
-                    Value::Symbol(symbol) => symbol.to_string(),
-                    _ => string_text(&args[0])?,
-                };
-                let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
                 let obarray = args
                     .get(1)
                     .filter(|value| !value.is_nil())
@@ -587,10 +585,41 @@ define_dispatch!(
                         interp
                             .lookup_var("obarray", env)
                             .filter(|value| !value.is_nil())
-                    });
+                    })
+                    .map(|obarray| coerce_legacy_vector_obarray(interp, &obarray))
+                    .transpose()?;
+                if let Some(obarray) = &obarray
+                    && !is_obarray_like_value(interp, obarray)
+                {
+                    return Err(wrong_type_argument("obarrayp", obarray.clone()));
+                }
+                // lread.c:Fintern checks OBARRAY before STRING, then supplies
+                // the original string (or GNU's longhand/purecopy) on a miss.
+                let original_name = string_text(&args[0])?;
+                let symbol_name = apply_symbol_shorthands_in_env(interp, &original_name, env)?;
+                let mut make_name = |interp: &mut Interpreter| {
+                    if symbol_name != original_name {
+                        // Fintern's make_specified_string explicitly marks
+                        // longhand as multibyte, including ASCII longhand.
+                        Ok(make_shared_string_value_with_multibyte(
+                            symbol_name.clone(),
+                            Vec::new(),
+                            true,
+                        ))
+                    } else {
+                        purecopy_value(interp, &args[0], env)
+                    }
+                };
                 if let Some(obarray) = obarray {
-                    intern_in_obarray(interp, &obarray, &symbol_name)
+                    intern_in_obarray_with_name(interp, &obarray, &symbol_name, make_name)
                 } else {
+                    if !interp.standard_obarray_contains_symbol(&symbol_name) {
+                        let lisp_name = make_name(interp)?;
+                        crate::lisp::types::SymbolName::intern_with_lisp_name(
+                            symbol_name.clone(),
+                            Some(lisp_name),
+                        );
+                    }
                     interp.intern_symbol_name(&symbol_name);
                     Ok(crate::lisp::types::interned_symbol_value(symbol_name))
                 }
@@ -740,7 +769,7 @@ define_dispatch!(
                 let base = string_text(&args[0])?;
                 let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                 Ok(Value::Symbol(
-                    crate::lisp::types::make_uninterned_symbol_name(&base, id).into(),
+                    crate::lisp::types::SymbolName::make_uninterned(args[0].clone(), &base, id),
                 ))
             }
             "autoload" => {
@@ -841,7 +870,16 @@ define_dispatch!(
                 // GNU 30.2 data.c:Fsymbol_value reaches
                 // find_symbol_value's CHECK_SYMBOL.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
-                interp.symbol_value_cell(&symbol)
+                match interp.symbol_value_cell(&symbol) {
+                    // Fsymbol_value signals with its original argument,
+                    // even after find_symbol_value follows an alias or
+                    // XSYMBOL unwraps a symbol-with-position.
+                    Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
+                        Value::symbol("void-variable"),
+                        args[0].clone(),
+                    ]))),
+                    result => result,
+                }
             }
             "default-value" => {
                 need_args(name, args, 1)?;
@@ -977,7 +1015,7 @@ define_dispatch!(
                 internal_subr_documentation(interp, &args[0], env)
             }
             "get" => {
-                need_arg_range(name, args, 2, 3)?;
+                need_args(name, args, 2)?;
                 // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
                 // XSYMBOL to the same underlying bare symbol.
                 let symbol = checked_symbol_name(interp, &args[0], env)?;
@@ -1045,11 +1083,28 @@ define_dispatch!(
                     // built-in fallback stops answering, a later store makes
                     // a plain (uncoerced) variable, and the C slot keeps the
                     // value it holds now for its native readers.
-                    let slot_value = interp.lookup_var(&symbol, env).unwrap_or(Value::Nil);
+                    if interp
+                        .initialized_forwarded_variables
+                        .contains_key(symbol.as_str())
+                        && !interp.detached_forwarded_variables.contains_key(&symbol)
+                    {
+                        // Fmakunbound changes the symbol value cell, not a
+                        // same-named lexical binding. Repeated makunbound
+                        // cannot replace an already detached C slot with the
+                        // symbol's newer, unrelated plain Lisp value.
+                        // Direct evaluator fields already own the C value;
+                        // a saved copy would spuriously root an old object.
+                        let slot_value = if interp.forwarded_eval_cell_value(&symbol).is_some() {
+                            Value::Nil
+                        } else {
+                            interp.symbol_value_cell(&symbol)?
+                        };
+                        interp
+                            .detached_forwarded_variables
+                            .insert(symbol.clone(), slot_value);
+                    }
                     interp.remove_global_binding(&symbol);
-                    interp
-                        .detached_forwarded_variables
-                        .insert(symbol.clone(), slot_value);
+                    interp.void_builtin_variable_fallback(&symbol);
                 }
                 Ok(args[0].clone())
             }
@@ -1107,36 +1162,42 @@ define_dispatch!(
                 let symbol = args[0].as_symbol()?;
                 interp.mark_special_variable(symbol);
                 if let Some(doc) = args.get(1).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+                    let doc = purecopy_value(interp, doc, env)?;
+                    interp.put_symbol_property(symbol, "variable-documentation", doc);
                 }
-                Ok(Value::Symbol(symbol.to_string().into()))
+                Ok(Value::Nil)
             }
             "defvar-1" => {
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let symbol = args[0].as_symbol()?;
+                let symbol_name = symbol.to_string();
                 interp.mark_special_variable(symbol);
-                if interp.lookup_var(symbol, env).is_none() {
-                    interp.set_variable(symbol, args[1].clone(), &mut Vec::new());
-                }
                 if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+                    let doc = purecopy_value(interp, doc, env)?;
+                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
-                Ok(Value::Symbol(symbol.to_string().into()))
+                if interp.lookup_var(&symbol_name, env).is_none() {
+                    interp.set_variable(&symbol_name, args[1].clone(), &mut Vec::new());
+                }
+                Ok(Value::Symbol(symbol_name.into()))
             }
             "defconst-1" => {
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let symbol = args[0].as_symbol()?;
+                let symbol_name = symbol.to_string();
                 interp.mark_special_variable(symbol);
-                interp.set_variable(symbol, args[1].clone(), &mut Vec::new());
                 if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+                    let doc = purecopy_value(interp, doc, env)?;
+                    interp.put_symbol_property(&symbol_name, "variable-documentation", doc);
                 }
-                interp.put_symbol_property(symbol, "risky-local-variable", Value::T);
-                Ok(Value::Symbol(symbol.to_string().into()))
+                let value = purecopy_value(interp, &args[1], env)?;
+                interp.set_variable(&symbol_name, value, &mut Vec::new());
+                interp.put_symbol_property(&symbol_name, "risky-local-variable", Value::T);
+                Ok(Value::Symbol(symbol_name.into()))
             }
             "internal-make-var-non-special" => {
                 need_args(name, args, 1)?;
@@ -1197,11 +1258,9 @@ define_dispatch!(
                 )
             }
 
-            // Load-time compatibility shims for upstream Lisp helpers whose exact
-            // side effects are not needed by the currently exercised batch paths.
             "purecopy" => {
                 need_args(name, args, 1)?;
-                Ok(args[0].clone())
+                purecopy_value(interp, &args[0], env)
             }
 
             "macroexpand" => macroexpand_dispatch(interp, name, args, env),
@@ -1229,12 +1288,17 @@ define_dispatch!(
             }
             "subr-type" => {
                 need_args(name, args, 1)?;
-                if !matches!(args[0], Value::BuiltinFunc(_)) {
-                    return Err(wrong_type_argument("subrp", args[0].clone()));
+                match &args[0] {
+                    Value::BuiltinFunc(_) => Ok(Value::Nil),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        Ok(interp.find_record(*id).expect("record checked above").slots[4].clone())
+                    }
+                    other => Err(wrong_type_argument("subrp", other.clone())),
                 }
-                // Emaxx currently has no native-compiled Lisp subrs.  GNU C
-                // primitives report nil here even in native-comp-enabled builds.
-                Ok(Value::Nil)
             }
             "function-equal" => {
                 need_args(name, args, 2)?;
@@ -1796,14 +1860,21 @@ fn ensure_builtin_doc_offset(
 fn internal_subr_documentation(
     interp: &mut Interpreter,
     function: &Value,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    let Value::BuiltinFunc(name) = function else {
-        return Ok(Value::T);
-    };
-    Ok(Value::Integer(ensure_builtin_doc_offset(
-        interp, name, env,
-    )?))
+    match function {
+        Value::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
+            interp, name, env,
+        )?)),
+        Value::Record(id)
+            if interp.find_record(*id).is_some_and(|record| {
+                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+            }) =>
+        {
+            crate::lisp::native_comp::function_documentation(interp, env, *id)
+        }
+        _ => Ok(Value::T),
+    }
 }
 
 fn documentation_property(

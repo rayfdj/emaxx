@@ -55,9 +55,9 @@ define_dispatch!(
                     for a in &args[1..] {
                         sum += numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(sum))
+                    Ok(Value::float(sum))
                 } else if let Some(sum) = checked_integer_fold(interp, args, 0, i64::checked_add)? {
-                    Ok(Value::Integer(sum))
+                    Ok(normalize_integer_value(sum))
                 } else {
                     let mut sum = BigInt::zero();
                     for a in args {
@@ -72,19 +72,19 @@ define_dispatch!(
                 }
                 if has_float(args) {
                     if args.len() == 1 {
-                        return Ok(Value::Float(-numeric_to_f64(interp, &args[0])?));
+                        return Ok(Value::float(-numeric_to_f64(interp, &args[0])?));
                     }
                     let mut result = numeric_to_f64(interp, &args[0])?;
                     for a in &args[1..] {
                         result -= numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(result))
+                    Ok(Value::float(result))
                 } else {
                     if args.len() == 1 {
                         if !matches!(args[0], Value::BigInteger(_)) {
                             let value = integer_like_i64(interp, &args[0])?;
                             if let Some(result) = value.checked_neg() {
-                                return Ok(Value::Integer(result));
+                                return Ok(normalize_integer_value(result));
                             }
                         }
                         return Ok(normalize_bigint_value(-integer_like_bigint(
@@ -96,7 +96,7 @@ define_dispatch!(
                         if let Some(result) =
                             checked_integer_fold(interp, &args[1..], first, i64::checked_sub)?
                         {
-                            return Ok(Value::Integer(result));
+                            return Ok(normalize_integer_value(result));
                         }
                     }
                     let mut result = integer_like_bigint(interp, &args[0])?;
@@ -112,11 +112,11 @@ define_dispatch!(
                     for a in args {
                         product *= numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(product))
+                    Ok(Value::float(product))
                 } else if let Some(product) =
                     checked_integer_fold(interp, args, 1, i64::checked_mul)?
                 {
-                    Ok(Value::Integer(product))
+                    Ok(normalize_integer_value(product))
                 } else {
                     let mut product = BigInt::from(1u8);
                     for a in args {
@@ -138,7 +138,7 @@ define_dispatch!(
                     for a in &args[1..] {
                         result /= numeric_to_f64(interp, a)?;
                     }
-                    Ok(Value::Float(result))
+                    Ok(Value::float(result))
                 } else if has_big_integer(args) {
                     let mut result = if args.len() == 1 {
                         let divisor = integer_like_bigint(interp, &args[0])?;
@@ -174,7 +174,7 @@ define_dispatch!(
                         }
                         result /= divisor;
                     }
-                    Ok(Value::Integer(result))
+                    Ok(normalize_integer_value(result))
                 }
             }
             "%" | "mod" => {
@@ -190,7 +190,7 @@ define_dispatch!(
                     {
                         remainder += b;
                     }
-                    return Ok(Value::Float(remainder));
+                    return Ok(Value::float(remainder));
                 }
                 if has_big_integer(args) {
                     let a = integer_like_bigint(interp, &args[0])?;
@@ -209,7 +209,7 @@ define_dispatch!(
                 if b == 0 {
                     return Err(arith_error());
                 }
-                Ok(Value::Integer(if name == "mod" {
+                Ok(normalize_integer_value(if name == "mod" {
                     let mut remainder = a % b;
                     if remainder != 0 && (remainder.is_negative() != b.is_negative()) {
                         remainder += b;
@@ -222,11 +222,11 @@ define_dispatch!(
             "1+" => {
                 need_args(name, args, 1)?;
                 if matches!(args[0], Value::Float(_)) {
-                    Ok(Value::Float(numeric_to_f64(interp, &args[0])? + 1.0))
+                    Ok(Value::float(numeric_to_f64(interp, &args[0])? + 1.0))
                 } else if !matches!(args[0], Value::BigInteger(_))
                     && let Some(value) = integer_like_i64(interp, &args[0])?.checked_add(1)
                 {
-                    Ok(Value::Integer(value))
+                    Ok(normalize_integer_value(value))
                 } else {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])? + 1,
@@ -236,11 +236,11 @@ define_dispatch!(
             "1-" => {
                 need_args(name, args, 1)?;
                 if matches!(args[0], Value::Float(_)) {
-                    Ok(Value::Float(numeric_to_f64(interp, &args[0])? - 1.0))
+                    Ok(Value::float(numeric_to_f64(interp, &args[0])? - 1.0))
                 } else if !matches!(args[0], Value::BigInteger(_))
                     && let Some(value) = integer_like_i64(interp, &args[0])?.checked_sub(1)
                 {
-                    Ok(Value::Integer(value))
+                    Ok(normalize_integer_value(value))
                 } else {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])? - 1,
@@ -261,8 +261,8 @@ define_dispatch!(
             }
             "abs" => {
                 need_args(name, args, 1)?;
-                if let Value::Float(value) = args[0] {
-                    Ok(Value::Float(value.abs()))
+                if let Value::Float(value) = &args[0] {
+                    Ok(Value::float(value.abs()))
                 } else if matches!(args[0], Value::BigInteger(_)) {
                     Ok(normalize_bigint_value(
                         integer_like_bigint(interp, &args[0])?.abs(),
@@ -270,37 +270,37 @@ define_dispatch!(
                 } else {
                     let value = integer_like_i64(interp, &args[0])?;
                     match value.checked_abs() {
-                        Some(abs) => Ok(Value::Integer(abs)),
+                        Some(abs) => Ok(normalize_integer_value(abs)),
                         None => Ok(normalize_bigint_value(BigInt::from(value).abs())),
                     }
                 }
             }
             "sin" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.sin()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.sin()))
             }
             "cos" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.cos()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.cos()))
             }
             "tan" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.tan()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.tan()))
             }
             "asin" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.asin()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.asin()))
             }
             "acos" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.acos()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.acos()))
             }
             "atan" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let y = numeric_to_f64(interp, &args[0])?;
-                Ok(Value::Float(if let Some(x) = args.get(1) {
+                Ok(Value::float(if let Some(x) = args.get(1) {
                     y.atan2(numeric_to_f64(interp, x)?)
                 } else {
                     y.atan()
@@ -308,14 +308,14 @@ define_dispatch!(
             }
             "copysign" => {
                 need_args(name, args, 2)?;
-                Ok(Value::Float(
+                Ok(Value::float(
                     numeric_to_f64(interp, &args[0])?.copysign(numeric_to_f64(interp, &args[1])?),
                 ))
             }
             "isnan" => {
                 need_args(name, args, 1)?;
                 let value = match &args[0] {
-                    Value::Float(value) => *value,
+                    Value::Float(value) => value.get(),
                     Value::Integer(_) | Value::BigInteger(_) => {
                         return Ok(Value::Nil);
                     }
@@ -330,7 +330,7 @@ define_dispatch!(
             }
             "exp" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.exp()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.exp()))
             }
             "expt" => {
                 need_args(name, args, 2)?;
@@ -340,9 +340,20 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let value = numeric_to_f64(interp, &args[0])?;
-                let result = if let Some(base) = args.get(1) {
-                    let base = numeric_to_f64(interp, base)?;
+                // floatfns.c:Flog uses extract_float (numbers, not markers)
+                // and treats a fixed-ABI padded Qnil just like omitted BASE.
+                let number = |argument: &Value| {
+                    if !matches!(
+                        argument,
+                        Value::Integer(_) | Value::BigInteger(_) | Value::Float(_)
+                    ) {
+                        return Err(wrong_type_argument("numberp", argument.clone()));
+                    }
+                    numeric_to_f64(interp, argument)
+                };
+                let value = number(&args[0])?;
+                let result = if let Some(base) = args.get(1).filter(|base| !base.is_nil()) {
+                    let base = number(base)?;
                     if base == 10.0 {
                         value.log10()
                     } else if base == 2.0 {
@@ -353,27 +364,27 @@ define_dispatch!(
                 } else {
                     value.ln()
                 };
-                Ok(Value::Float(result))
+                Ok(Value::float(result))
             }
             "sqrt" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?.sqrt()))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?.sqrt()))
             }
             "float" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Float(numeric_to_f64(interp, &args[0])?))
+                Ok(Value::float(numeric_to_f64(interp, &args[0])?))
             }
 
             "frexp" => {
                 need_args(name, args, 1)?;
                 let (sig, exp) = frexp_parts(numeric_to_f64(interp, &args[0])?);
-                Ok(Value::cons(Value::Float(sig), Value::Integer(exp)))
+                Ok(Value::cons(Value::float(sig), Value::Integer(exp)))
             }
             "ldexp" => {
                 need_args(name, args, 2)?;
                 let significand = numeric_to_f64(interp, &args[0])?;
                 let exponent = integer_like_i64(interp, &args[1])?;
-                Ok(Value::Float(ldexp_value(significand, exponent)))
+                Ok(Value::float(ldexp_value(significand, exponent)))
             }
             "logb" => {
                 need_args(name, args, 1)?;
@@ -567,7 +578,7 @@ define_dispatch!(
             }
             "eql" => {
                 need_args(name, args, 2)?;
-                Ok(if values_eql(&args[0], &args[1]) {
+                Ok(if values_eql_in_env(interp, &args[0], &args[1], env) {
                     Value::T
                 } else {
                     Value::Nil
@@ -585,38 +596,48 @@ define_dispatch!(
             }
             "equal-including-properties" => {
                 need_args(name, args, 2)?;
-                Ok(if values_equal_including_properties(&args[0], &args[1]) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                Ok(
+                    if values_equal_including_properties(interp, &args[0], &args[1], env) {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "sxhash-equal" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(
+                Ok(Value::Integer(sxhash_value_in_env(
                     interp,
                     &args[0],
                     HashMode::Equal,
+                    env,
                 )))
             }
             "sxhash-eq" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(interp, &args[0], HashMode::Eq)))
+                Ok(Value::Integer(sxhash_value_in_env(
+                    interp,
+                    &args[0],
+                    HashMode::Eq,
+                    env,
+                )))
             }
             "sxhash-eql" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(
+                Ok(Value::Integer(sxhash_value_in_env(
                     interp,
                     &args[0],
                     HashMode::Eql,
+                    env,
                 )))
             }
             "sxhash-equal-including-properties" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Integer(sxhash_value(
+                Ok(Value::Integer(sxhash_value_in_env(
                     interp,
                     &args[0],
                     HashMode::EqualIncludingProperties,
+                    env,
                 )))
             }
             "string-equal" => {
@@ -738,14 +759,20 @@ define_dispatch!(
                 let needle = string_text(&args[0])?;
                 let haystack = string_text(&args[1])?;
                 let hay_chars: Vec<char> = haystack.chars().collect();
-                let start = if args.len() == 3 {
-                    let start = args[2].as_integer()?;
-                    if start < 0 || start as usize > hay_chars.len() {
-                        return Err(LispError::Signal("Args out of range".into()));
+                // fns.c: a nil START-POS, explicit or omitted, means 0.
+                let start = match args.get(2) {
+                    Some(start_pos) if start_pos.is_truthy() => {
+                        let start = start_pos.as_fixnum()?;
+                        if start < 0 || start as usize > hay_chars.len() {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::symbol("args-out-of-range"),
+                                args[1].clone(),
+                                start_pos.clone(),
+                            ])));
+                        }
+                        start as usize
                     }
-                    start as usize
-                } else {
-                    0
+                    _ => 0,
                 };
                 if needle.is_empty() {
                     return Ok(Value::Integer(start as i64));

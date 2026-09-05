@@ -185,13 +185,7 @@ impl Interpreter {
                 .and_then(|value| value.as_integer().ok())
                 .unwrap_or(1);
             let chars_96 = property(":code-space")
-                .and_then(|space| space.to_vec().ok())
-                .map(|values| {
-                    values
-                        .strip_prefix(&[Value::Symbol("vector-literal".into())])
-                        .map(<[Value]>::to_vec)
-                        .unwrap_or(values)
-                })
+                .and_then(|space| primitives::vector_items(&space).ok())
                 .and_then(|values| {
                     Some((
                         values.first()?.as_integer().ok()?,
@@ -580,13 +574,7 @@ impl Interpreter {
                 } else {
                     let g1 = type_args
                         .first()
-                        .and_then(|initial| initial.to_vec().ok())
-                        .map(|items| {
-                            items
-                                .strip_prefix(&[Value::Symbol("vector-literal".into())])
-                                .map(<[Value]>::to_vec)
-                                .unwrap_or(items)
-                        })
+                        .and_then(|initial| primitives::vector_items(initial).ok())
                         .and_then(|items| items.get(1).cloned())
                         .filter(|charset| !charset.is_nil());
                     let g1_dimension = g1
@@ -832,14 +820,8 @@ impl Interpreter {
                     matches!(&pair[0], Value::Symbol(key) if key == ":designation")
                         .then(|| pair[1].clone())
                 })
-                .and_then(|designation| designation.to_vec().ok())
-                .and_then(|values| {
-                    values
-                        .strip_prefix(&[Value::Symbol("vector-literal".into())])
-                        .unwrap_or(&values)
-                        .first()
-                        .cloned()
-                })
+                .and_then(|designation| primitives::vector_items(&designation).ok())
+                .and_then(|values| values.first().cloned())
                 .is_some_and(|initial| match initial {
                     Value::Symbol(charset) => {
                         charset == "ascii"
@@ -1223,14 +1205,15 @@ impl Interpreter {
                 position
             }
         });
-        let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
+        let state = &mut **self;
+        let Some(marker_ids) = state.markers_by_buffer.get(&buffer_id) else {
             return;
         };
         for marker_id in marker_ids {
             let Some(index) = Self::marker_index(*marker_id) else {
                 continue;
             };
-            let Some(marker) = self.markers.get_mut(index) else {
+            let Some(marker) = state.markers.get_mut(index) else {
                 continue;
             };
             let Some(position) = marker.position else {
@@ -1258,14 +1241,15 @@ impl Interpreter {
                 position
             }
         });
-        let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
+        let state = &mut **self;
+        let Some(marker_ids) = state.markers_by_buffer.get(&buffer_id) else {
             return;
         };
         for marker_id in marker_ids {
             let Some(index) = Self::marker_index(*marker_id) else {
                 continue;
             };
-            let Some(marker) = self.markers.get_mut(index) else {
+            let Some(marker) = state.markers.get_mut(index) else {
                 continue;
             };
             let Some(position) = marker.position else {

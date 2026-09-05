@@ -366,6 +366,382 @@ pub(crate) fn runtime_native_dispatch_calls_only_configured_gnu_c_primitives() {
     }
 }
 
+#[derive(Clone, Copy)]
+struct NativeCFastPathContract {
+    primitive: &'static str,
+    owner: &'static str,
+    contract_test: &'static str,
+}
+
+const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
+    NativeCFastPathContract {
+        primitive: "stringp",
+        owner: "data.c:Fstringp",
+        contract_test: "native_stringp_is_a_tag_test_without_an_active_runtime",
+    },
+    NativeCFastPathContract {
+        primitive: "<",
+        owner: "data.c:Flss",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: "<=",
+        owner: "data.c:Fleq",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: "=",
+        owner: "data.c:Feqlsign",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: ">",
+        owner: "data.c:Fgtr",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: ">=",
+        owner: "data.c:Fgeq",
+        contract_test: "native_numeric_comparisons_follow_data_c_fixnum_path",
+    },
+    NativeCFastPathContract {
+        primitive: "apply",
+        owner: "eval.c:Fapply",
+        contract_test: "native_apply_spreads_the_final_list_into_funcall_words",
+    },
+    NativeCFastPathContract {
+        primitive: "assq",
+        owner: "fns.c:Fassq",
+        contract_test: "native_assq_uses_the_fns_c_cons_walk",
+    },
+    NativeCFastPathContract {
+        primitive: "atom",
+        owner: "data.c:Fatom",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "bare-symbol-p",
+        owner: "data.c:Fbare_symbol_p",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "car",
+        owner: "data.c:Fcar",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "car-safe",
+        owner: "data.c:Fcar_safe",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "cdr",
+        owner: "data.c:Fcdr",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "cdr-safe",
+        owner: "data.c:Fcdr_safe",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "cons",
+        owner: "alloc.c:Fcons",
+        contract_test: "native_cons_uses_one_two_word_body",
+    },
+    NativeCFastPathContract {
+        primitive: "consp",
+        owner: "data.c:Fconsp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "eq",
+        owner: "data.c:Feq",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "eql",
+        owner: "fns.c:Feql",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "funcall",
+        owner: "eval.c:Ffuncall",
+        contract_test: "native_funcall_dispatches_builtin_on_the_word_abi",
+    },
+    NativeCFastPathContract {
+        primitive: "get",
+        owner: "fns.c:Fget",
+        contract_test: "native_get_follows_fns_c_word_path",
+    },
+    NativeCFastPathContract {
+        primitive: "identity",
+        owner: "fns.c:Fidentity",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "length",
+        owner: "fns.c:Flength",
+        contract_test: "native_length_uses_fns_c_list_traversal",
+    },
+    NativeCFastPathContract {
+        primitive: "list",
+        owner: "alloc.c:Flist",
+        contract_test: "native_list_is_the_alloc_c_reverse_cons_loop",
+    },
+    NativeCFastPathContract {
+        primitive: "listp",
+        owner: "data.c:Flistp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "make-closure",
+        owner: "alloc.c:Fmake_closure",
+        contract_test: "native_make_closure_follows_alloc_c_copy_contract",
+    },
+    NativeCFastPathContract {
+        primitive: "mapcar",
+        owner: "fns.c:Fmapcar",
+        contract_test: "native_mapcar_follows_fns_c_list_branch",
+    },
+    NativeCFastPathContract {
+        primitive: "maphash",
+        owner: "fns.c:Fmaphash",
+        contract_test: "native_maphash_calls_each_live_slot_through_funcall",
+    },
+    NativeCFastPathContract {
+        primitive: "memq",
+        owner: "fns.c:Fmemq",
+        contract_test: "native_memq_uses_the_fns_c_cons_walk",
+    },
+    NativeCFastPathContract {
+        primitive: "nlistp",
+        owner: "data.c:Fnlistp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "nreverse",
+        owner: "fns.c:Fnreverse",
+        contract_test: "native_nreverse_follows_fns_c_list_branch",
+    },
+    NativeCFastPathContract {
+        primitive: "null",
+        owner: "data.c:Fnull",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "plist-member",
+        owner: "fns.c:Fplist_member",
+        contract_test: "native_plist_member_follows_fns_c_pair_traversal",
+    },
+    NativeCFastPathContract {
+        primitive: "symbol-value",
+        owner: "data.c:Fsymbol_value",
+        contract_test: "native_symbol_value_and_type_of_follow_data_c",
+    },
+    NativeCFastPathContract {
+        primitive: "symbolp",
+        owner: "data.c:Fsymbolp",
+        contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "type-of",
+        owner: "data.c:Ftype_of",
+        contract_test: "native_symbol_value_and_type_of_follow_data_c",
+    },
+];
+
+/// Deliberate semantic differences from GNU C require Ray's explicit approval
+/// plus a regression test and a defensible written reason.  This list is empty
+/// by default; adding an entry makes the exception visible to code review and
+/// to the executable gate instead of hiding it inside a fast path.
+struct ApprovedNativeCDeviation {
+    primitive: &'static str,
+    approval: &'static str,
+    justification: &'static str,
+    contract_test: &'static str,
+}
+
+const APPROVED_NATIVE_C_DEVIATIONS: &[ApprovedNativeCDeviation] = &[];
+
+pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
+    use std::collections::BTreeSet;
+
+    // Executable negative controls: a source inventory alone did not catch
+    // the old parameter-name and vector-shape false positives.
+    use crate::lisp::types::{Env, Value};
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let mut environment = Env::new();
+    let lambda = Value::lambda(
+        std::rc::Rc::new(["vals", "start", "end"].map(Into::into).to_vec()),
+        std::rc::Rc::new(Vec::new()),
+        std::rc::Rc::new(std::cell::RefCell::new(Env::new())),
+    );
+    let vector = Value::vector([
+        Value::string("x"),
+        Value::Integer(0),
+        Value::Integer(1),
+        Value::Nil,
+    ]);
+    assert!(
+        crate::lisp::primitives::string_like(&vector).is_none(),
+        "CHECK_STRING must not reinterpret an ordinary vector as a string",
+    );
+    for (name, value, expected) in [
+        ("byte-code-function-p", lambda, Value::Nil),
+        ("stringp", vector.clone(), Value::Nil),
+        ("documentation-stringp", vector, Value::Nil),
+        ("char-or-string-p", Value::Integer(0x11_0000), Value::T),
+    ] {
+        assert_eq!(
+            crate::lisp::primitives::call(&mut interpreter, name, &[value], &mut environment,)
+                .expect("GNU C type predicate"),
+            expected,
+            "{name} must inspect GNU object tags, not names or payload shapes",
+        );
+    }
+
+    let runtime_path = repo_root().join("src/lisp/native_comp/runtime.rs");
+    let runtime = fs::read_to_string(&runtime_path).expect("read native runtime source");
+    let comments =
+        regex::Regex::new(r"(?s:/\*.*?\*/)|(?m://.*$)").expect("compile Rust-comment pattern");
+    let production = comments.replace_all(&runtime, "");
+    let string_literal =
+        regex::Regex::new(r#""([^"\\]+)""#).expect("compile native fast-path literal pattern");
+
+    let mut audited_source = String::new();
+    for (start, end) in [
+        ("fn invoke_context_free_subr", "pub(crate) fn invoke_subr"),
+        ("pub(crate) fn invoke_subr", "fn slow_unary_subr"),
+        ("fn native_subr_address", "enum DirectFuncallTarget"),
+    ] {
+        let body = production
+            .split_once(start)
+            .unwrap_or_else(|| panic!("native runtime lost audited boundary `{start}`"))
+            .1
+            .split_once(end)
+            .unwrap_or_else(|| panic!("native runtime lost audited boundary `{end}`"))
+            .0;
+        audited_source.push_str(body);
+    }
+    let actual = string_literal
+        .captures_iter(&audited_source)
+        .map(|capture| capture[1].to_owned())
+        .filter(|name| {
+            crate::lisp::primitives::generated_gnu_c_primitive_available(name) == Some(true)
+        })
+        .collect::<BTreeSet<_>>();
+
+    let gnu_root = repo_root().join("../emacs/src");
+    for test in [
+        "native_symbol_value_errors_preserve_the_original_symbol",
+        "native_assq_preserves_uninterned_lexical_binding_identity",
+        "native_symbol_value_checks_symbol_before_reading_the_cell",
+        "native_byte_code_function_p_checks_closure_and_code_tags",
+        "native_string_type_predicates_do_not_read_payloads",
+        "native_string_type_predicates_reject_vector_spoofing",
+        "native_string_type_predicates_follow_gnu_array_and_character_classes",
+    ] {
+        assert!(
+            runtime.contains(&format!("fn {test}")),
+            "native runtime lost its required GNU C contract `{test}`"
+        );
+    }
+    let mut declared = BTreeSet::new();
+    for (file, tests) in [
+        (
+            "src/lisp/primitives/tests.rs",
+            &[
+                "intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit",
+                "intern_uses_gnu_name_copy_and_type_check_boundaries",
+            ][..],
+        ),
+        (
+            "src/lisp/eval/tests/eval_03.rs",
+            &[
+                "eval_lambda_trims_unused_lexical_context_unless_marker_requests_it",
+                "interpreted_closure_print_circle_tracks_the_closure_identity",
+            ][..],
+        ),
+    ] {
+        let source = fs::read_to_string(repo_root().join(file)).expect("read C contract tests");
+        for test in tests {
+            assert!(
+                source.contains(&format!("fn {test}")),
+                "missing C contract {test}"
+            );
+        }
+    }
+    for contract in EXACT_NATIVE_C_FAST_PATHS {
+        assert!(
+            declared.insert(contract.primitive),
+            "native C fast-path contract is duplicated for `{}`",
+            contract.primitive
+        );
+        assert_eq!(
+            crate::lisp::primitives::generated_gnu_c_primitive_available(contract.primitive),
+            Some(true),
+            "native fast path `{}` is not an available GNU C primitive",
+            contract.primitive
+        );
+        let (file, function) = contract.owner.split_once(':').unwrap_or_else(|| {
+            panic!(
+                "native fast path `{}` has malformed GNU owner `{}`",
+                contract.primitive, contract.owner
+            )
+        });
+        let owner = fs::read_to_string(gnu_root.join(file)).unwrap_or_else(|error| {
+            panic!(
+                "read GNU owner {} for `{}`: {error}",
+                contract.owner, contract.primitive
+            )
+        });
+        assert!(
+            owner.contains(function),
+            "GNU owner {} for native fast path `{}` no longer exists",
+            contract.owner,
+            contract.primitive
+        );
+        assert!(
+            runtime.contains(&format!("fn {}", contract.contract_test)),
+            "native fast path `{}` lacks declared contract test `{}`",
+            contract.primitive,
+            contract.contract_test
+        );
+    }
+    for exception in APPROVED_NATIVE_C_DEVIATIONS {
+        assert!(
+            declared.insert(exception.primitive),
+            "approved native C deviation duplicates `{}`",
+            exception.primitive
+        );
+        assert!(
+            exception.approval.starts_with("Ray approved "),
+            "native C deviation `{}` lacks Ray's explicit dated approval",
+            exception.primitive
+        );
+        assert!(
+            !exception.justification.trim().is_empty(),
+            "native C deviation `{}` lacks a written justification",
+            exception.primitive
+        );
+        assert!(
+            runtime.contains(&format!("fn {}", exception.contract_test)),
+            "native C deviation `{}` lacks regression test `{}`",
+            exception.primitive,
+            exception.contract_test
+        );
+    }
+    let expected = declared
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual, expected,
+        "native C fast paths changed without updating the exact-contract or explicitly-approved-deviation inventory"
+    );
+}
+
 pub(crate) fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
     use crate::lisp::eval::Interpreter;
     use crate::lisp::types::{Env, Value};
@@ -617,6 +993,95 @@ pub(crate) fn gnu_c_manifest_matches_fresh_regeneration() {
     let _ = fs::remove_file(&fresh_path);
 }
 
+pub(crate) fn native_subr_abi_matches_fresh_configured_c_regeneration() {
+    // Native code calls primitives by their byte offset in this table.
+    // Checking its length or a few sentinel names cannot prove either the
+    // complete order or the fixed/MANY/UNEVALLED calling conventions.
+    let root = repo_root();
+    let oracle_source = root.join("../emacs/src");
+    let oracle = oracle_source.join("emacs");
+    assert!(
+        oracle.is_file(),
+        "native ABI audit requires the pinned GNU build"
+    );
+    let committed = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "src/lisp/native_comp/generated_native_subrs_aarch64_apple_darwin.rs"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs"
+    } else {
+        panic!("no configured GNU native ABI contract for this target");
+    };
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock follows Unix epoch")
+        .as_nanos();
+    let work =
+        std::env::temp_dir().join(format!("emaxx-native-abi-{}-{nonce}", std::process::id()));
+    fs::create_dir(&work).expect("create unique native ABI audit directory");
+    let generator = work.join("generate-native-subrs");
+    let fresh_path = work.join("native-subrs.rs");
+    let run = |command: &mut std::process::Command| {
+        let output = command.output().unwrap_or_else(|error| {
+            panic!("run {command:?}: {error}; evidence: {}", work.display())
+        });
+        assert!(
+            output.status.success(),
+            "{command:?} failed; evidence: {}\nstdout:\n{}\nstderr:\n{}",
+            work.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    run(std::process::Command::new("rustc")
+        .args(["--edition", "2024", "-O", "-D", "warnings"])
+        .arg(root.join("tools/generate_native_subrs.rs"))
+        .arg("-o")
+        .arg(&generator));
+    let generated = run(std::process::Command::new(&generator)
+        .arg(&oracle_source)
+        .arg(&oracle)
+        .arg(&fresh_path));
+    assert!(
+        generated.stderr.is_empty(),
+        "native ABI regeneration emitted diagnostics; evidence: {}\n{}",
+        work.display(),
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    run(std::process::Command::new("rustfmt")
+        .args(["--edition", "2024"])
+        .arg(&fresh_path));
+    let fresh = fs::read(&fresh_path).expect("read freshly generated native ABI");
+    let expected = fs::read(root.join(committed)).expect("read committed native ABI");
+    assert!(
+        fresh == expected,
+        "{committed} differs from fresh configured GNU C regeneration; evidence: {}",
+        work.display()
+    );
+    // A Rust struct checked against its own constants cannot establish the
+    // GNU ABI. Measure the configured headers independently, without linking
+    // to GNU runtime code or evaluating diagnostic Elisp.
+    let layout = run(std::process::Command::new(&generator)
+        .arg("--layout")
+        .arg(&oracle_source)
+        .arg(root.join("tools/native_abi_layout.c"))
+        .arg(work.join("native-layout")));
+    let mut expected_layout = crate::lisp::native_comp::native_layout_contract()
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value}\n"))
+        .collect::<String>();
+    for (name, value) in crate::lisp::primitives::native_loadsearch_paths() {
+        expected_layout.push_str(&format!("{name}={value}\n"));
+    }
+    assert_eq!(
+        layout.stdout,
+        expected_layout.as_bytes(),
+        "native layout or loadsearch paths differ from configured GNU headers; evidence: {}",
+        work.display()
+    );
+    fs::remove_dir_all(&work).expect("remove successful native ABI audit artifacts");
+}
+
 pub(crate) fn gnu_c_defsym_manifest_matches_fresh_regeneration() {
     // DEFSYM names are interned into the production obarray during image
     // construction.  A hand edit could therefore fabricate a GNU-owned
@@ -657,36 +1122,67 @@ pub(crate) fn gnu_c_defsym_manifest_matches_fresh_regeneration() {
     let _ = fs::remove_file(&fresh_path);
 }
 
-pub(crate) fn gnu_c_bool_variable_manifest_matches_fresh_regeneration() {
-    // This inventory controls data.c-style coercion in every variable store
-    // path.  A hand edit could silently make an ordinary Lisp variable act
-    // C-forwarded (or stop a real DEFVAR_BOOL from doing so), so compatibility
-    // measurements must regenerate it from the pinned GNU sources first.
-    let source_root = repo_root().join("../emacs/src");
+pub(crate) fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
+    // This inventory controls C-slot ownership, coercion and independent GC
+    // roots. Regenerate every name AND kind from C/Objective-C, then compare
+    // the complete file. The parser's adversarial tests are part of this
+    // mandatory gate too, not orphaned standalone tooling.
+    let root = repo_root();
+    let source_root = root.join("../emacs/src");
     assert!(
         source_root.is_dir(),
-        "pinned GNU sibling checkout required for the DEFVAR_BOOL manifest regeneration gate"
+        "pinned GNU sibling checkout required for forwarded-variable regeneration"
     );
-    let pattern = regex::Regex::new(r#"DEFVAR_BOOL \("([^"]+)""#)
-        .expect("compile DEFVAR_BOOL source pattern");
-    let mut names = std::collections::BTreeSet::new();
-    for entry in fs::read_dir(&source_root).expect("read pinned GNU src directory") {
-        let path = entry.expect("read pinned GNU src entry").path();
-        if path.extension().is_some_and(|extension| extension == "c") {
-            // A few GNU C sources contain non-UTF-8 bytes in comments.
-            let bytes = fs::read(&path).expect("read pinned GNU C source");
-            let text = String::from_utf8_lossy(&bytes);
-            for capture in pattern.captures_iter(&text) {
-                names.insert(capture[1].to_string());
-            }
-        }
-    }
-    let fresh = names.into_iter().collect::<Vec<_>>();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock follows Unix epoch")
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!(
+        "emaxx-forwarded-audit-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&work).expect("create unique forwarded-variable audit directory");
+    let generator_source = root.join("tools/generate_forwarded_variables.rs");
+    let generator = work.join("generate-forwarded-variables");
+    let parser_tests = work.join("parser-tests");
+    let fresh_path = work.join("forwarded-variables.rs");
+    let run = |command: &mut std::process::Command| {
+        let output = command.output().unwrap_or_else(|error| {
+            panic!("run {command:?}: {error}; evidence: {}", work.display())
+        });
+        assert!(
+            output.status.success(),
+            "{command:?} failed; evidence: {}\nstdout:\n{}\nstderr:\n{}",
+            work.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(std::process::Command::new("rustc")
+        .args(["--edition", "2024", "-D", "warnings", "--test"])
+        .arg(&generator_source)
+        .arg("-o")
+        .arg(&parser_tests));
+    run(std::process::Command::new(&parser_tests).arg("--test-threads=1"));
+    run(std::process::Command::new("rustc")
+        .args(["--edition", "2024", "-D", "warnings"])
+        .arg(&generator_source)
+        .arg("-o")
+        .arg(&generator));
+    run(std::process::Command::new(&generator)
+        .arg(&source_root)
+        .arg(&fresh_path));
+    run(std::process::Command::new("rustfmt")
+        .args(["--edition", "2024"])
+        .arg(&fresh_path));
     assert_eq!(
-        crate::lisp::primitives::generated_gnu_c_bool_variables::GNU_C_BOOL_VARIABLES,
-        fresh.as_slice(),
-        "committed GNU C DEFVAR_BOOL manifest does not match fresh regeneration from the pinned checkout"
+        fs::read(&fresh_path).expect("read regenerated forwarded-variable inventory"),
+        fs::read(root.join("src/lisp/primitives/generated_gnu_c_forwarded_variables.rs"))
+            .expect("read committed forwarded-variable inventory"),
+        "forwarded-variable inventory differs from fresh GNU C/Objective-C regeneration; evidence: {}",
+        work.display()
     );
+    fs::remove_dir_all(&work).expect("remove successful forwarded-variable audit artifacts");
 }
 
 pub(crate) fn builtin_arities_match_fresh_regeneration() {
@@ -791,6 +1287,10 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             runtime_native_dispatch_calls_only_configured_gnu_c_primitives as fn(),
         ),
         (
+            "native_comp_fast_paths_are_audited_against_gnu_c",
+            native_comp_fast_paths_are_audited_against_gnu_c as fn(),
+        ),
+        (
             "bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values",
             bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values as fn(),
         ),
@@ -807,12 +1307,16 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             gnu_c_manifest_matches_fresh_regeneration as fn(),
         ),
         (
+            "native_subr_abi_matches_fresh_configured_c_regeneration",
+            native_subr_abi_matches_fresh_configured_c_regeneration as fn(),
+        ),
+        (
             "gnu_c_defsym_manifest_matches_fresh_regeneration",
             gnu_c_defsym_manifest_matches_fresh_regeneration as fn(),
         ),
         (
-            "gnu_c_bool_variable_manifest_matches_fresh_regeneration",
-            gnu_c_bool_variable_manifest_matches_fresh_regeneration as fn(),
+            "gnu_c_forwarded_variable_manifest_matches_fresh_regeneration",
+            gnu_c_forwarded_variable_manifest_matches_fresh_regeneration as fn(),
         ),
         (
             "builtin_arities_match_fresh_regeneration",
@@ -876,6 +1380,10 @@ mod gate_tests {
         super::runtime_native_dispatch_calls_only_configured_gnu_c_primitives();
     }
     #[test]
+    fn native_comp_fast_paths_are_audited_against_gnu_c() {
+        super::native_comp_fast_paths_are_audited_against_gnu_c();
+    }
+    #[test]
     fn bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values() {
         super::bare_runtime_does_not_fabricate_gnu_elisp_owned_variable_values();
     }
@@ -893,13 +1401,18 @@ mod gate_tests {
     }
 
     #[test]
+    fn native_subr_abi_matches_fresh_configured_c_regeneration() {
+        super::native_subr_abi_matches_fresh_configured_c_regeneration();
+    }
+
+    #[test]
     fn gnu_c_defsym_manifest_matches_fresh_regeneration() {
         super::gnu_c_defsym_manifest_matches_fresh_regeneration();
     }
 
     #[test]
-    fn gnu_c_bool_variable_manifest_matches_fresh_regeneration() {
-        super::gnu_c_bool_variable_manifest_matches_fresh_regeneration();
+    fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
+        super::gnu_c_forwarded_variable_manifest_matches_fresh_regeneration();
     }
 
     #[test]

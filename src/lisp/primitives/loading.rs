@@ -39,7 +39,7 @@ pub(crate) fn resolve_callable_aliases(
     let mut current = func.clone();
     let mut seen = HashSet::new();
     while let Value::Symbol(name) = current.clone() {
-        if !seen.insert(name.clone()) {
+        if !seen.insert(name.as_str().to_owned()) {
             return Err(LispError::SignalValue(Value::list([
                 Value::Symbol("cyclic-function-indirection".into()),
                 Value::Symbol(name),
@@ -180,11 +180,10 @@ pub(crate) fn eval_impl(
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
     }
     if let Some(lexical) = args.get(1) {
-        let (capture_lexical, trim_context, mut eval_env) = match lexical {
-            Value::Nil => (false, false, Vec::new()),
+        let (capture_lexical, mut eval_env) = match lexical {
+            Value::Nil => (false, Vec::new()),
             Value::T => (
                 true,
-                false,
                 vec![EnvFrame::with_lisp_environment_and_identity(
                     Vec::new(),
                     Value::list([Value::T]),
@@ -193,11 +192,10 @@ pub(crate) fn eval_impl(
             ),
             Value::Cons(_) => {
                 let frame = lexical_alist_frame(interp, lexical, caller_env)?;
-                (true, true, vec![frame.into()])
+                (true, vec![frame.into()])
             }
             _ => (
                 true,
-                false,
                 vec![EnvFrame::with_lisp_environment_and_identity(
                     Vec::new(),
                     Value::list([Value::T]),
@@ -205,7 +203,7 @@ pub(crate) fn eval_impl(
                 )],
             ),
         };
-        interp.push_lambda_eval_context(capture_lexical, trim_context);
+        interp.push_lambda_eval_context(capture_lexical);
         // A fresh `eval' is a fresh activation: closures it creates must not
         // share captured-environment cells with content-identical captures
         // from the caller's activation (bug#51695's interpreted lambda).
@@ -221,7 +219,7 @@ pub(crate) fn eval_impl(
         // directly evaluated forms as dynamic; lexical function call
         // boundaries mask this context so their internal lambdas and lets
         // retain the function's definition-time semantics.
-        interp.push_lambda_eval_context(false, false);
+        interp.push_lambda_eval_context(false);
         let previous_activation = interp.enter_activation();
         let result = interp.eval(&args[0], &mut Vec::new());
         interp.leave_activation(previous_activation);
@@ -234,13 +232,13 @@ fn lexical_alist_frame(
     interp: &Interpreter,
     value: &Value,
     env: &Env,
-) -> Result<Vec<(String, Value)>, LispError> {
+) -> Result<Vec<(crate::lisp::types::SymbolName, Value)>, LispError> {
     let mut frame = Vec::new();
     for entry in value.to_vec()? {
         let Some((key, val)) = entry.cons_values() else {
             continue;
         };
-        if let Ok(name) = checked_symbol_name(interp, &key, env) {
+        if let Ok(name) = checked_symbol_identity(interp, &key, env) {
             frame.push((name, val));
         }
     }
@@ -400,9 +398,8 @@ pub(crate) fn eval_region_impl(
     });
 
     if interp.current_buffer_id() == buffer_id {
-        interp
-            .buffer
-            .goto_char(saved_point.min(interp.buffer.point_max()));
+        let buffer = &mut interp.buffer;
+        buffer.goto_char(saved_point.min(buffer.point_max()));
     }
     for restore in restores.into_iter().rev() {
         if let Err(error) = interp.restore_special_binding(restore, env)
@@ -518,7 +515,7 @@ fn with_fresh_eval_environment<T>(
     } else {
         Vec::new()
     };
-    interp.push_lambda_eval_context(lexical, false);
+    interp.push_lambda_eval_context(lexical);
     let previous_activation = interp.enter_activation();
     let result = body(interp, &mut eval_env);
     interp.leave_activation(previous_activation);
@@ -703,6 +700,214 @@ pub(crate) fn resolve_load_target_in_env(
         }
     }
     interp.resolve_load_target(target)
+}
+
+/// GNU lread.c:maybe_swap_for_eln.  A bare `load' first resolves its normal
+/// `.elc' target, then substitutes a matching, at-least-as-new `.eln' from
+/// `native-comp-eln-load-path'.  Explicit `.elc' loads deliberately bypass
+/// this substitution.
+pub(crate) fn maybe_swap_for_native(
+    interp: &mut Interpreter,
+    requested: &str,
+    resolved: &Path,
+    env: &Env,
+) -> Result<PathBuf, LispError> {
+    let no_native = requested.ends_with(".elc")
+        || interp
+            .forwarded_c_value("load-no-native", env)
+            .is_some_and(|value| value.is_truthy());
+    // lread.c updates this table for every selected file, before testing
+    // its suffix. comp.c uses the entry to suppress deferred compilation
+    // when an explicit .elc load or load-no-native requested bytecode.
+    let table = interp
+        .forwarded_c_value("comp-no-native-file-h", env)
+        .ok_or_else(|| LispError::Void("comp-no-native-file-h".into()))?;
+    let filename = Value::string(resolved.to_string_lossy().as_ref());
+    let mut native_env = env.clone();
+    if no_native {
+        super::call(
+            interp,
+            "puthash",
+            &[filename, Value::T, table],
+            &mut native_env,
+        )?;
+    } else {
+        super::call(interp, "remhash", &[filename, table], &mut native_env)?;
+    }
+    if no_native
+        || resolved
+            .extension()
+            .is_none_or(|extension| extension != "elc")
+    {
+        return Ok(resolved.to_path_buf());
+    }
+
+    // GNU takes this list snapshot before file-exists-p and source hashing:
+    // a file-name handler can rebind the C slot during either call.
+    let mut load_paths = interp
+        .forwarded_c_value("native-comp-eln-load-path", env)
+        .unwrap_or(Value::Nil);
+    let mut source = resolved.to_path_buf();
+    source.set_extension("el");
+    let exists = |interp: &mut Interpreter, path: &Path, env: &mut Env| {
+        super::call(
+            interp,
+            "file-exists-p",
+            &[Value::string(path.to_string_lossy().as_ref())],
+            env,
+        )
+        .map(|value| value.is_truthy())
+    };
+    if !exists(interp, &source, &mut native_env)? {
+        source = PathBuf::from(format!("{}.gz", source.display()));
+        if !exists(interp, &source, &mut native_env)?
+            && interp
+                .lookup_var("native-comp-warning-on-missing-source", env)
+                .unwrap_or(Value::Unbound)
+                .is_truthy()
+        {
+            let load_path = interp
+                .forwarded_c_value("load-path", env)
+                .unwrap_or(Value::Nil);
+            // An installation with no central .el sources must not produce
+            // a warning cascade. This is GNU's own sanity check, not a test
+            // or filename-specific execution substitute.
+            if !locate_file_internal(
+                interp,
+                &Value::string("simple.el"),
+                &load_path,
+                &Value::Nil,
+                &Value::Nil,
+                &mut native_env,
+            )?
+            .is_nil()
+            {
+                let warning = Value::list([
+                    Value::symbol("native-compiler"),
+                    Value::string(&format!(
+                        "Cannot look up .eln file for {} because no source file was found for it",
+                        resolved.display()
+                    )),
+                ]);
+                let pending = interp
+                    .forwarded_c_value("delayed-warnings-list", env)
+                    .unwrap_or(Value::Nil);
+                interp.set_forwarded_lisp_value(
+                    "delayed-warnings-list",
+                    Value::cons(warning, pending),
+                );
+            }
+            return Ok(resolved.to_path_buf());
+        }
+    }
+
+    let mut filename_env = env.clone();
+    let relative = super::dispatch::comp_el_to_eln_rel_filename(
+        interp,
+        &Value::String(source.display().to_string().into()),
+        &mut filename_env,
+    )?;
+    let resolved_mtime = fs::metadata(resolved)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+
+    let expand = |interp: &mut Interpreter, name: Value, base: Value, env: &mut Env| {
+        super::call(interp, "expand-file-name", &[name, base], env)
+    };
+    let mut system_directory = Value::Nil;
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    // FOR_EACH_TAIL_SAFE in lread.c stops at a dotted tail or cycle, while
+    // preserving every directory already visited.
+    while let Some((car, cdr)) = load_paths.cons_cells() {
+        if seen.step(car.cell_id()) {
+            break;
+        }
+        system_directory = car.borrow().clone();
+        // Unlike the path-list snapshot, the version slot is read afresh
+        // for each candidate's expansion in lread.c.
+        let version = interp
+            .forwarded_c_value("comp-native-version-dir", env)
+            .unwrap_or(Value::Nil);
+        let directory = expand(interp, version, system_directory.clone(), &mut native_env)?;
+        let candidate = PathBuf::from(string_text(&expand(
+            interp,
+            Value::string(&relative),
+            directory,
+            &mut native_env,
+        )?)?);
+        if native_candidate_is_current(&candidate, resolved_mtime) {
+            record_native_source(interp, &candidate, &source, env)?;
+            return Ok(candidate);
+        }
+        load_paths = cdr.borrow().clone();
+    }
+
+    // GNU also searches the `preloaded' subdirectory of the final (system)
+    // native directory after all ordinary cache directories.
+    let version = interp
+        .forwarded_c_value("comp-native-version-dir", env)
+        .unwrap_or(Value::Nil);
+    let directory = expand(interp, version, system_directory, &mut native_env)?;
+    let preloaded = expand(
+        interp,
+        Value::string("preloaded"),
+        directory,
+        &mut native_env,
+    )?;
+    let candidate = PathBuf::from(string_text(&expand(
+        interp,
+        Value::string(&relative),
+        preloaded,
+        &mut native_env,
+    )?)?);
+    if native_candidate_is_current(&candidate, resolved_mtime) {
+        record_native_source(interp, &candidate, &source, env)?;
+        return Ok(candidate);
+    }
+
+    Ok(resolved.to_path_buf())
+}
+
+fn native_candidate_is_current(
+    candidate: &Path,
+    resolved_mtime: Option<std::time::SystemTime>,
+) -> bool {
+    let Ok(metadata) = fs::File::open(candidate).and_then(|file| file.metadata()) else {
+        return false;
+    };
+    if metadata.is_dir() {
+        return false;
+    }
+    match (metadata.modified().ok(), resolved_mtime) {
+        (Some(native), Some(resolved)) => native >= resolved,
+        _ => false,
+    }
+}
+
+fn record_native_source(
+    interp: &mut Interpreter,
+    native: &Path,
+    source: &Path,
+    env: &Env,
+) -> Result<(), LispError> {
+    let table = interp
+        .forwarded_c_value("comp-eln-to-el-h", env)
+        .ok_or_else(|| LispError::Void("comp-eln-to-el-h".into()))?;
+    let Some(basename) = native.file_name() else {
+        return Ok(());
+    };
+    let mut put_env = env.clone();
+    super::call(
+        interp,
+        "puthash",
+        &[
+            Value::String(basename.to_string_lossy().into_owned().into()),
+            Value::String(source.display().to_string().into()),
+            table,
+        ],
+        &mut put_env,
+    )?;
+    Ok(())
 }
 
 pub(crate) fn read_symbol_shorthands_in_env(
@@ -962,4 +1167,427 @@ pub(crate) fn history_args_for_call(
         }
     }
     recorded
+}
+
+#[cfg(test)]
+mod native_load_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn directory() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("emaxx-native-load-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).expect("create unique native loader fixture directory");
+        path
+    }
+
+    fn path_value(path: &Path) -> Value {
+        Value::string(path.to_string_lossy().as_ref())
+    }
+
+    fn table_entry(interp: &mut Interpreter, name: &str, key: Value, env: &mut Env) -> Value {
+        let table = interp.lookup_var(name, env).expect("C-initialized table");
+        super::super::call(interp, "gethash", &[key, table, Value::Nil], env).expect("gethash")
+    }
+
+    fn detach_and_replace(
+        interp: &mut Interpreter,
+        name: &str,
+        replacement: Value,
+        env: &mut Env,
+    ) -> Value {
+        let original = interp.forwarded_c_value(name, env).expect("C slot exists");
+        super::super::call(interp, "makunbound", &[Value::symbol(name)], env)
+            .expect("detach forwarded symbol");
+        assert!(interp.lookup_var(name, env).is_none());
+        interp.set_variable(name, replacement.clone(), env);
+        assert_eq!(interp.lookup_var(name, env), Some(replacement));
+        assert_eq!(interp.forwarded_c_value(name, env), Some(original.clone()));
+        original
+    }
+
+    #[test]
+    fn native_load_keeps_detached_c_slots_separate_from_lisp_bindings() {
+        let work = directory();
+        let selected = work.join("absent.elc");
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let suppression =
+            detach_and_replace(&mut interp, "comp-no-native-file-h", Value::Nil, &mut env);
+        interp.set_variable("load-no-native", Value::T, &mut env);
+        detach_and_replace(&mut interp, "load-no-native", Value::Nil, &mut env);
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "absent", &selected, &env)
+                .expect("detached C bool still suppresses native load"),
+            selected
+        );
+        assert_eq!(
+            super::super::call(
+                &mut interp,
+                "gethash",
+                &[path_value(&selected), suppression, Value::Nil],
+                &mut env
+            )
+            .expect("read retained C suppression table"),
+            Value::T
+        );
+        assert_eq!(
+            interp.lookup_var("comp-no-native-file-h", &env),
+            Some(Value::Nil)
+        );
+
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        interp.set_variable(
+            "load-path",
+            Value::list([path_value(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/lisp"),
+            )]),
+            &mut env,
+        );
+        detach_and_replace(&mut interp, "load-path", Value::Nil, &mut env);
+        let user_value = Value::symbol("independent-warning-binding");
+        detach_and_replace(
+            &mut interp,
+            "delayed-warnings-list",
+            user_value.clone(),
+            &mut env,
+        );
+        let warning = Value::list([
+            Value::symbol("native-compiler"),
+            Value::string(&format!(
+                "Cannot look up .eln file for {} because no source file was found for it",
+                selected.display()
+            )),
+        ]);
+        for count in 1..=2 {
+            maybe_swap_for_native(&mut interp, "absent", &selected, &env)
+                .expect("warning appended to retained C slot");
+            assert_eq!(
+                interp.forwarded_c_value("delayed-warnings-list", &env),
+                Some(Value::list(std::iter::repeat_n(warning.clone(), count)))
+            );
+            assert_eq!(
+                interp.lookup_var("delayed-warnings-list", &env),
+                Some(user_value.clone())
+            );
+        }
+        fs::remove_dir_all(&work).expect("remove successful detached loader fixture");
+    }
+
+    #[test]
+    fn native_load_suppression_and_missing_source_follow_lread_c() {
+        let work = directory();
+        let selected = work.join("missing-source.elc");
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        interp.set_variable("default-directory", path_value(&work), &mut env);
+        interp.set_variable("load-path", Value::Nil, &mut env);
+
+        // Exercise the selected-file boundary without creating or evaluating
+        // diagnostic Elisp. lread.c records suppression before inspecting the
+        // source, so an explicit .elc request needs no source file.
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "missing-source.elc", &selected, &env)
+                .expect("explicit bytecode load"),
+            selected
+        );
+        assert_eq!(
+            table_entry(
+                &mut interp,
+                "comp-no-native-file-h",
+                path_value(&selected),
+                &mut env
+            ),
+            Value::T
+        );
+        interp.set_variable("load-no-native", Value::T, &mut env);
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "missing-source", &selected, &env)
+                .expect("dynamic bytecode suppression"),
+            selected
+        );
+        assert_eq!(
+            table_entry(
+                &mut interp,
+                "comp-no-native-file-h",
+                path_value(&selected),
+                &mut env
+            ),
+            Value::T
+        );
+
+        interp.set_variable("load-no-native", Value::Nil, &mut env);
+        interp.set_variable("native-comp-warning-on-missing-source", Value::T, &mut env);
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "missing-source", &selected, &env)
+                .expect("installation with no central sources"),
+            selected
+        );
+        assert_eq!(
+            table_entry(
+                &mut interp,
+                "comp-no-native-file-h",
+                path_value(&selected),
+                &mut env
+            ),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.lookup_var("delayed-warnings-list", &env),
+            Some(Value::Nil)
+        );
+
+        // GNU warns only when ordinary central sources are available. Use
+        // the unchanged pinned installation, not a generated simple.el.
+        let upstream_lisp = Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/lisp");
+        assert!(upstream_lisp.join("simple.el").is_file());
+        interp.set_variable(
+            "load-path",
+            Value::list([path_value(&upstream_lisp)]),
+            &mut env,
+        );
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "missing-source", &selected, &env)
+                .expect("missing source warning"),
+            selected
+        );
+        assert_eq!(
+            interp.lookup_var("delayed-warnings-list", &env),
+            Some(Value::list([Value::list([
+                Value::symbol("native-compiler"),
+                Value::string(&format!(
+                    "Cannot look up .eln file for {} because no source file was found for it",
+                    selected.display()
+                ))
+            ])]))
+        );
+        // GNU still attempts the source hash when this warning is disabled;
+        // comp.c then signals file-missing. Do not invent a quiet fallback.
+        interp.set_variable(
+            "native-comp-warning-on-missing-source",
+            Value::Nil,
+            &mut env,
+        );
+        let error = maybe_swap_for_native(&mut interp, "missing-source", &selected, &env)
+            .expect_err("GNU source hashing rejects the absent .el.gz");
+        assert!(matches!(error, LispError::SignalValue(ref signal)
+            if *signal == Value::list([Value::symbol("file-missing"), path_value(&work.join("missing-source.el.gz"))])));
+
+        let source = work.join("ordinary.el");
+        interp.set_variable("load-no-native", Value::T, &mut env);
+        maybe_swap_for_native(&mut interp, "ordinary.el", &source, &env)
+            .expect("source suppression entry");
+        assert_eq!(
+            table_entry(
+                &mut interp,
+                "comp-no-native-file-h",
+                path_value(&source),
+                &mut env
+            ),
+            Value::T
+        );
+        interp.set_variable("load-no-native", Value::Nil, &mut env);
+        maybe_swap_for_native(&mut interp, "ordinary.el", &source, &env)
+            .expect("clear source suppression entry");
+        assert_eq!(
+            table_entry(
+                &mut interp,
+                "comp-no-native-file-h",
+                path_value(&source),
+                &mut env
+            ),
+            Value::Nil
+        );
+        fs::remove_dir_all(&work).expect("remove successful loader fixture");
+    }
+
+    #[test]
+    fn native_load_cache_resolution_uses_default_directory_and_file_times() {
+        let work = directory();
+        let upstream = Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs");
+        let source = work.join("sample.el");
+        let bytecode = work.join("sample.elc");
+        // These copies remain byte-for-byte GNU files. This contract tests
+        // path selection only; execution and .eln identity have separate gates.
+        fs::copy(upstream.join("lisp/emacs-lisp/seq.el"), &source).expect("copy GNU source");
+        fs::copy(upstream.join("lisp/emacs-lisp/seq.elc"), &bytecode).expect("copy GNU bytecode");
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        interp.set_variable("default-directory", path_value(&work), &mut env);
+        interp.set_variable(
+            "invocation-directory",
+            path_value(&work.join("not-the-cache-base")),
+            &mut env,
+        );
+        interp.set_variable(
+            "native-comp-eln-load-path",
+            Value::list([Value::string("cache")]),
+            &mut env,
+        );
+        let version = string_text(
+            &interp
+                .lookup_var("comp-native-version-dir", &env)
+                .expect("ABI version"),
+        )
+        .expect("version string");
+        let relative = super::super::dispatch::comp_el_to_eln_rel_filename(
+            &mut interp,
+            &path_value(&source),
+            &mut env,
+        )
+        .expect("GNU relative native name");
+        let native_source = fs::read_dir(
+            upstream
+                .join("native-lisp")
+                .join(&version)
+                .join("preloaded"),
+        )
+        .expect("pinned native preload directory")
+        .map(|entry| entry.expect("native preload entry").path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("seq-"))
+                && path.extension().is_some_and(|extension| extension == "eln")
+        })
+        .expect("unchanged GNU seq native artifact");
+        let native = work.join("cache").join(&version).join(&relative);
+        fs::create_dir_all(native.parent().expect("cache directory")).expect("create cache");
+        fs::copy(&native_source, &native).expect("copy GNU native artifact");
+        let set_time = |path: &Path, seconds| {
+            fs::File::open(path)
+                .expect("open fixture")
+                .set_times(
+                    fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)),
+                )
+                .expect("set deterministic fixture timestamp");
+        };
+        set_time(&bytecode, 100);
+        set_time(&native, 99);
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "sample", &bytecode, &env)
+                .expect("old native artifact"),
+            bytecode
+        );
+        set_time(&native, 100);
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "sample", &bytecode, &env)
+                .expect("equal timestamps permit native selection"),
+            native
+        );
+        assert_eq!(
+            table_entry(
+                &mut interp,
+                "comp-eln-to-el-h",
+                Value::string(&relative),
+                &mut env
+            ),
+            path_value(&source)
+        );
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "sample.elc", &bytecode, &env)
+                .expect("explicit bytecode wins over native cache"),
+            bytecode
+        );
+
+        let preloaded = work.join(&version).join("preloaded").join(&relative);
+        fs::create_dir_all(preloaded.parent().expect("preloaded directory"))
+            .expect("create fallback cache");
+        fs::copy(&native_source, &preloaded).expect("copy GNU fallback artifact");
+        set_time(&preloaded, 100);
+        for path in [Value::Nil, Value::list([Value::Nil])] {
+            interp.set_variable("native-comp-eln-load-path", path, &mut env);
+            assert_eq!(
+                maybe_swap_for_native(&mut interp, "sample", &bytecode, &env)
+                    .expect("nil directory uses Lisp default-directory"),
+                preloaded
+            );
+        }
+        assert!(!native_candidate_is_current(&native, None));
+        assert!(!native_candidate_is_current(&work, Some(UNIX_EPOCH)));
+
+        interp.set_variable(
+            "native-comp-eln-load-path",
+            Value::list([Value::string("cache")]),
+            &mut env,
+        );
+        // A real C primitive can act as the file handler here: `set'
+        // receives (OPERATION FILENAME), and the variable alias redirects
+        // that write to the native path slot. No diagnostic Elisp or test
+        // callback is needed to exercise reentrant C-slot mutation.
+        interp
+            .set_variable_alias("file-exists-p", "native-comp-eln-load-path")
+            .expect("redirect the handler's C set operation");
+        interp.put_symbol_property(
+            "set",
+            "operations",
+            Value::list([Value::symbol("file-exists-p")]),
+        );
+        interp.set_variable(
+            "file-name-handler-alist",
+            Value::list([Value::cons(
+                Value::string("sample\\.el\\'"),
+                Value::symbol("set"),
+            )]),
+            &mut env,
+        );
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "sample", &bytecode, &env)
+                .expect("path list is captured before the file handler runs"),
+            native
+        );
+        assert_eq!(
+            interp.lookup_var("native-comp-eln-load-path", &env),
+            Some(path_value(
+                &fs::canonicalize(&source).expect("real source path")
+            ))
+        );
+        interp.set_variable("file-name-handler-alist", Value::Nil, &mut env);
+        interp.set_variable(
+            "native-comp-eln-load-path",
+            Value::list([Value::string("cache")]),
+            &mut env,
+        );
+
+        for (name, replacement) in [
+            ("comp-native-version-dir", Value::Nil),
+            ("native-comp-eln-load-path", Value::Integer(17)),
+            ("load-no-native", Value::T),
+            ("comp-no-native-file-h", Value::Nil),
+        ] {
+            detach_and_replace(&mut interp, name, replacement, &mut env);
+        }
+        let origins = detach_and_replace(&mut interp, "comp-eln-to-el-h", Value::Nil, &mut env);
+        super::super::call(
+            &mut interp,
+            "remhash",
+            &[Value::string(&relative), origins.clone()],
+            &mut env,
+        )
+        .expect("clear old origin record");
+        assert_eq!(
+            maybe_swap_for_native(&mut interp, "sample", &bytecode, &env)
+                .expect("native selection reads retained C slots"),
+            native
+        );
+        assert_eq!(
+            super::super::call(
+                &mut interp,
+                "gethash",
+                &[Value::string(&relative), origins, Value::Nil],
+                &mut env,
+            )
+            .expect("fresh mapping in retained C table"),
+            path_value(&source)
+        );
+        assert_eq!(
+            interp.lookup_var("comp-eln-to-el-h", &env),
+            Some(Value::Nil)
+        );
+        fs::remove_dir_all(&work).expect("remove successful native path fixture");
+    }
 }

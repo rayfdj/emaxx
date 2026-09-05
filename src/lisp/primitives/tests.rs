@@ -20,6 +20,165 @@ fn call_via_lisp(
     interp.call_function_value(function, Some(name), args, env)
 }
 
+#[test]
+fn bytecode_call_roots_live_operands_and_releases_returned_frames() {
+    // bytecode.c: Bcons creates the key on the operand stack, outside the
+    // constant vector and lexical environment. Bcall3 inserts it into a weak
+    // table while retaining the original below the call's arguments. The
+    // following zero-argument GC call must see that lower live operand.
+    let program = r#"(let* ((table (make-hash-table :test 'eq :weakness 'key))
+                             (function
+                              (make-byte-code
+                               0
+                               (unibyte-string
+                                192 193 66 195 1 192 194 35 136
+                                196 32 136 197 194 33 135)
+                               (vector t nil table 'puthash
+                                       'garbage-collect 'hash-table-count)
+                               5)))
+                       (list (funcall function)
+                             (progn (garbage-collect)
+                                    (hash-table-count table))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(1 0)");
+    let mut interpreter = Interpreter::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("stack-root contract parses")
+        .expect("stack-root contract contains a form");
+    assert_eq!(
+        interpreter
+            .eval(&form, &mut Env::new())
+            .expect("bytecode stack-root contract evaluates"),
+        Value::list([Value::Integer(1), Value::Integer(0)])
+    );
+}
+
+#[test]
+fn list_and_vector_storage_follow_alloc_c_without_symbol_tags() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    // alloc.c:Flist conses every argument, while Fvector copies every
+    // argument into vector slots. Neither inspects the first Lisp symbol.
+    for elements in [
+        Vec::new(),
+        vec![Value::symbol("vector-literal")],
+        vec![Value::symbol("vector-literal"), Value::Integer(23)],
+        vec![Value::symbol("ordinary-data"), Value::Integer(41)],
+    ] {
+        let list = call(&mut interp, "list", &elements, &mut env).expect("list");
+        let vector = call(&mut interp, "vector", &elements, &mut env).expect("vector");
+        assert_eq!(list.to_vec().expect("proper list"), elements);
+        assert_eq!(vector_items(&vector).expect("real vector"), elements);
+        assert!(matches!(list, Value::Nil | Value::Cons(_)));
+        assert!(matches!(vector, Value::Vector(_)));
+        assert!(
+            matches!(vector.to_vec(), Err(LispError::WrongTypeArgument(predicate, _))
+            if predicate == "listp")
+        );
+        for (name, list_answer, vector_answer) in [
+            ("listp", Value::T, Value::Nil),
+            ("vectorp", Value::Nil, Value::T),
+        ] {
+            assert_eq!(
+                call(&mut interp, name, std::slice::from_ref(&list), &mut env)
+                    .expect("list predicate"),
+                list_answer
+            );
+            assert_eq!(
+                call(&mut interp, name, std::slice::from_ref(&vector), &mut env)
+                    .expect("vector predicate"),
+                vector_answer
+            );
+        }
+        assert_eq!(
+            call(
+                &mut interp,
+                "equal",
+                &[list.clone(), vector.clone()],
+                &mut env
+            )
+            .expect("cross-type equality"),
+            Value::Nil
+        );
+        for (value, is_vector) in [(&list, false), (&vector, true)] {
+            let copy = call(
+                &mut interp,
+                "copy-sequence",
+                std::slice::from_ref(value),
+                &mut env,
+            )
+            .expect("copy-sequence");
+            assert_eq!(&copy, value);
+            assert_eq!(matches!(copy, Value::Vector(_)), is_vector);
+            if !elements.is_empty() {
+                assert!(
+                    !values_eql(&copy, value),
+                    "a nonempty copy has fresh storage"
+                );
+                assert_eq!(
+                    call(
+                        &mut interp,
+                        "elt",
+                        &[value.clone(), Value::Integer(0)],
+                        &mut env
+                    )
+                    .expect("first element"),
+                    elements[0]
+                );
+            }
+            let reversed = call(
+                &mut interp,
+                "reverse",
+                std::slice::from_ref(value),
+                &mut env,
+            )
+            .expect("reverse");
+            assert_eq!(matches!(reversed, Value::Vector(_)), is_vector);
+            assert_eq!(
+                sequence_values(&interp, &reversed).expect("reversed elements"),
+                elements.iter().rev().cloned().collect::<Vec<_>>()
+            );
+        }
+    }
+    let ordinary = Value::list([Value::symbol("vector-literal"), Value::Integer(23)]);
+    assert_eq!(ordinary.to_string(), "(vector-literal 23)");
+    let json = call(
+        &mut interp,
+        "json-serialize",
+        &[Value::vector([Value::Integer(23), Value::Integer(41)])],
+        &mut env,
+    )
+    .expect("JSON vector serialization");
+    assert_eq!(string_text(&json).expect("JSON text"), "[23,41]");
+}
+
+#[test]
+fn apply_follows_eval_c_proper_list_contract() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+
+    let zero_argument_call = Value::list([Value::symbol("list")]);
+    assert_eq!(
+        call(&mut interp, "apply", &[zero_argument_call], &mut env,)
+            .expect("one-element apply list calls its function with no arguments"),
+        Value::Nil
+    );
+
+    let vector = Value::vector([Value::Integer(1)]);
+    match call(
+        &mut interp,
+        "apply",
+        &[Value::symbol("list"), vector.clone()],
+        &mut env,
+    ) {
+        Err(LispError::WrongTypeArgument(predicate, value)) => {
+            assert_eq!(predicate, "listp");
+            assert_eq!(value, vector);
+        }
+        other => panic!("apply must reject a vector spread argument, got {other:?}"),
+    }
+}
+
 fn upstream_primitive_contract_output(program: &str) -> String {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
@@ -105,18 +264,14 @@ fn assert_upstream_primitive_contract_with_stdin(program: &str, stdin: &str, exp
 
 #[test]
 fn record_literal_detection_does_not_traverse_vector_storage() {
-    let vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-    ]);
-    let (_, tail) = vector
-        .cons_cells()
-        .expect("the vector facade should have a tagged cons root");
-    let _exclusive_tail_borrow = tail.borrow_mut();
+    let vector = Value::vector([Value::Integer(1), Value::Integer(2)]);
+    let Value::Vector(vector_storage) = &vector else {
+        panic!("vector syntax must construct a GNU-class vector object")
+    };
+    let _exclusive_slots_borrow = vector_storage.slots_mut();
 
-    // Holding the tail exclusively makes any attempted traversal panic.
-    // Record detection must reject the vector solely from its distinct tag.
+    // Holding the slots exclusively makes any attempted traversal panic.
+    // Record detection must reject the vector solely from its object class.
     assert!(record_literal_items(&vector).is_none());
 }
 
@@ -127,7 +282,7 @@ fn character_table_literal_materializes_nested_bytecode_decoder() {
         slots: vec![
             Value::Integer(0),
             Value::String(String::new().into()),
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(0),
         ],
     }));
@@ -140,8 +295,10 @@ fn character_table_literal_materializes_nested_bytecode_decoder() {
     ));
 
     let mut interp = Interpreter::new();
-    let Value::CharTable(table_id) = materialize_read_char_table_literals(&mut interp, &literal)
-        .expect("materialize a character table with a bytecode decoder")
+    let mut env = Env::new();
+    let Value::CharTable(table_id) =
+        materialize_read_char_table_literals(&mut interp, &literal, &mut env)
+            .expect("materialize a character table with a bytecode decoder")
     else {
         panic!("character-table syntax must produce a typed table");
     };
@@ -186,6 +343,123 @@ fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
             .to_string(),
         expected
     );
+}
+
+#[test]
+fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let positioned = |interp: &mut Interpreter, name: &str, position: i64, env: &mut Env| {
+        call(
+            interp,
+            "position-symbol",
+            &[Value::Symbol(name.into()), Value::Integer(position)],
+            env,
+        )
+        .expect("construct a positioned symbol")
+    };
+
+    let positioned_car = positioned(&mut interp, "car", 1, &mut env);
+    assert_eq!(
+        call(&mut interp, "func-arity", &[positioned_car], &mut env)
+            .expect("resolve a positioned function name"),
+        Value::cons(Value::Integer(1), Value::Integer(1))
+    );
+
+    let optional = positioned(&mut interp, "&optional", 2, &mut env);
+    let argument = positioned(&mut interp, "argument", 3, &mut env);
+    let closure = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Closure,
+        "byte-code-function",
+        vec![Value::list([optional, argument])],
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[closure], &mut env)
+            .expect("read positioned byte-code argument descriptors"),
+        Value::cons(Value::Integer(0), Value::Integer(1))
+    );
+
+    let macro_tag = positioned(&mut interp, "macro", 4, &mut env);
+    let macro_function = Value::cons(
+        macro_tag,
+        Value::lambda(Vec::new().into(), Vec::new().into(), shared_env(Vec::new())),
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[macro_function], &mut env)
+            .expect("unwrap a positioned macro tag"),
+        Value::cons(Value::Integer(0), Value::Integer(0))
+    );
+
+    let closure_parameters = Value::list([
+        positioned(&mut interp, "number", 5, &mut env),
+        positioned(&mut interp, "value", 6, &mut env),
+    ]);
+    let interpreted = call(
+        &mut interp,
+        "make-interpreted-closure",
+        &[
+            closure_parameters.clone(),
+            Value::list([Value::Nil]),
+            Value::list([Value::T]),
+        ],
+        &mut env,
+    )
+    .expect("construct an interpreted closure with positioned parameters");
+    let Value::Lambda(lambda) = &interpreted else {
+        panic!("make-interpreted-closure must return a lambda")
+    };
+    let visible_parameters = interp.interpreted_closure_slots(lambda)[0].clone();
+    assert_eq!(
+        call(
+            &mut interp,
+            "eq",
+            &[visible_parameters, closure_parameters],
+            &mut env,
+        )
+        .expect("compare GNU-visible argument-list identity"),
+        Value::T
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[interpreted], &mut env)
+            .expect("read an interpreted closure's positioned argument list"),
+        Value::cons(Value::Integer(2), Value::Integer(2))
+    );
+}
+
+#[test]
+fn defvar_and_defconst_use_gnu_check_symbol_for_positioned_names() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+
+    for (form, name, value, position) in [
+        ("defvar", "positioned-variable", 17, 1),
+        ("defconst", "positioned-constant", 29, 2),
+    ] {
+        let positioned = call(
+            &mut interp,
+            "position-symbol",
+            &[Value::Symbol(name.into()), Value::Integer(position)],
+            &mut env,
+        )
+        .expect("construct a positioned definition name");
+        let definition = Value::list([
+            Value::Symbol(form.into()),
+            positioned.clone(),
+            Value::Integer(value),
+        ]);
+        assert_eq!(
+            interp
+                .eval(&definition, &mut env)
+                .expect("evaluate a positioned variable definition"),
+            positioned
+        );
+        assert_eq!(
+            interp
+                .lookup(name, &env)
+                .expect("look up the bare definition name"),
+            Value::Integer(value)
+        );
+    }
 }
 
 #[test]
@@ -1003,7 +1277,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::T,
         Value::Integer(1),
         Value::big_integer(BigInt::from(i64::MAX) + 1),
-        Value::Float(1.5),
+        Value::float(1.5),
         Value::String("inline string".into()),
         string_object,
         Value::symbol("symbol"),
@@ -2959,8 +3233,7 @@ fn coding_system_eol_type_exposes_base_variant_vectors() {
     for (coding, expected) in [
         (
             "utf-8",
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([
                 Value::Symbol("utf-8-unix".into()),
                 Value::Symbol("utf-8-dos".into()),
                 Value::Symbol("utf-8-mac".into()),
@@ -2969,8 +3242,7 @@ fn coding_system_eol_type_exposes_base_variant_vectors() {
         ("utf-8-unix", Value::Integer(0)),
         (
             "undecided",
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([
                 Value::Symbol("undecided-unix".into()),
                 Value::Symbol("undecided-dos".into()),
                 Value::Symbol("undecided-mac".into()),
@@ -4570,6 +4842,31 @@ fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
 }
 
 #[test]
+fn eql_uses_position_aware_eq_for_non_numbers() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let left = call(
+        &mut interp,
+        "position-symbol",
+        &[Value::Symbol("&aux".into()), Value::Integer(7)],
+        &mut env,
+    )
+    .expect("make the first positioned symbol");
+    let right = call(
+        &mut interp,
+        "position-symbol",
+        &[Value::Symbol("&aux".into()), Value::Integer(19)],
+        &mut env,
+    )
+    .expect("make the second positioned symbol");
+
+    assert_eq!(
+        call(&mut interp, "eql", &[left, right], &mut env).expect("compare positioned symbols"),
+        Value::T
+    );
+}
+
+#[test]
 fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
     let program = r#"
           (list
@@ -5301,7 +5598,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.1)],
+            &[process.clone(), Value::float(0.1)],
             &mut env,
         )
         .expect("wait for PTY output");
@@ -5363,7 +5660,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.1)],
+            &[process.clone(), Value::float(0.1)],
             &mut env,
         )
         .expect("wait for split PTY output");
@@ -6307,7 +6604,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
     call(
         &mut interp,
         "accept-process-output",
-        &[Value::Nil, Value::Float(0.05)],
+        &[Value::Nil, Value::float(0.05)],
         &mut env,
     )
     .expect("event pump should report the connection");
@@ -6387,7 +6684,8 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
-    interp.buffer.goto_char(interp.buffer.point_max());
+    let buffer = &mut interp.buffer;
+    buffer.goto_char(buffer.point_max());
     let mut env = Vec::new();
 
     call_via_lisp(
@@ -9186,10 +9484,8 @@ fn network_interface_info_reports_the_real_interface() {
         .expect("evaluate interface-info program");
     let rendered = string_text(&rendered).expect("prin1-to-string returns a string");
 
-    // Compare Lisp-rendered text on both sides.  Rust's `Display' for a cons
-    // whose CDR is a vector flattens it -- `(18 vector-literal 74 ...)' -- while
-    // `prin1' correctly writes `(18 . [74 ...])'; only the Lisp printer is the
-    // contract, and only it is what GNU is being compared against.
+    // Compare Lisp-rendered text on both sides: `prin1' is the public
+    // contract, including dotted vector tails such as `(18 . [74 ...])'.
     assert_upstream_primitive_contract(&format!("(princ {program})"), &rendered);
 
     let rows = Reader::new(&rendered)
@@ -9361,6 +9657,160 @@ fn thread_join_leaves_unrelated_timers_pending() {
             .eval(&form, &mut Vec::new())
             .expect("evaluate thread-join timer program"),
         Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn threads_retain_lexical_caller_roots_across_separate_callee_environments() {
+    // GNU marks all live thread stacks, including an interpreted caller's
+    // lexical cells which its independently scoped callee cannot access.
+    // Neither backtrace display nor a captured lambda owns KEY here.
+    let program = r#"
+        (progn
+          (defvar suspension-roots-table nil)
+          (defvar suspension-roots-stage nil)
+          (defun suspension-roots-wait ()
+            (setq suspension-roots-stage 'parked)
+            (while (eq suspension-roots-stage 'parked) (thread-yield)))
+          (defun suspension-roots-run (helper)
+            (setq suspension-roots-table (make-hash-table :test 'eq :weakness 'key)
+                  suspension-roots-stage nil)
+            (fset 'suspension-roots-helper helper)
+            (let ((worker
+                   (make-thread
+                    (eval '(lambda ()
+                             (let ((key (list 'owned-only-by-caller)))
+                               (puthash key t suspension-roots-table)
+                               (suspension-roots-helper)
+                               (gethash key suspension-roots-table))) t))))
+              (while (not (eq suspension-roots-stage 'parked)) (thread-yield))
+              (garbage-collect)
+              (let ((during (hash-table-count suspension-roots-table)))
+                (setq suspension-roots-stage 'resume)
+                (let ((result (thread-join worker)))
+                  (garbage-collect)
+                  (list during result (hash-table-count suspension-roots-table))))))
+          (list
+           (suspension-roots-run (eval '(lambda () (suspension-roots-wait)) nil))
+           (suspension-roots-run (eval '(lambda () (suspension-roots-wait)) t))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 t 0) (1 t 0))",
+        "live suspended caller environments",
+    );
+}
+
+#[test]
+fn suspended_bytecode_retains_operand_and_unwind_roots() {
+    // GNU bytecode.c:mark_bytecode marks the live operand stack, and the
+    // specpdl marks pending cleanup functions. The keys are allocated at
+    // runtime, not held by bytecode constants or a test-owned strong root.
+    let program = r#";;; -*- lexical-binding: t; -*-
+        (require 'bytecomp)
+        (defvar vm-suspension-table nil)
+        (defvar vm-suspension-stage nil)
+        (defvar vm-suspension-observed nil)
+        (defvar vm-suspension-result nil)
+        (defun vm-suspension-pause (&rest _)
+          (setq vm-suspension-stage 'parked)
+          (while (eq vm-suspension-stage 'parked) (thread-yield)))
+        (defun vm-suspension-key ()
+          (let ((key (list 'runtime-key)))
+            (puthash key t vm-suspension-table)
+            key))
+        (defun vm-suspension-cleanup ()
+          (let ((key (vm-suspension-key)))
+            (lambda ()
+              (setq vm-suspension-observed (gethash key vm-suspension-table)))))
+        (defun vm-suspension-lookup (key)
+          (gethash key vm-suspension-table))
+        (defun vm-suspension-run (function)
+          (setq vm-suspension-table (make-hash-table :test 'eq :weakness 'key)
+                vm-suspension-stage nil vm-suspension-observed nil)
+          (let ((worker (make-thread function)))
+            (while (not (eq vm-suspension-stage 'parked)) (thread-yield))
+            (garbage-collect)
+            (let ((during (hash-table-count vm-suspension-table)))
+              (setq vm-suspension-stage 'resume)
+              (let ((result (thread-join worker)))
+                (garbage-collect)
+                (list during (or result vm-suspension-observed)
+                      (hash-table-count vm-suspension-table))))))
+        (setq vm-suspension-result
+              (list
+               ;; Runtime cleanup closure held in the VM's unwind stack.
+               (vm-suspension-run
+                (make-byte-code
+                 0
+                 (unibyte-string byte-constant byte-call byte-unwind-protect
+                                 (+ byte-constant 1) byte-call
+                                 (+ byte-unbind 1) byte-return)
+                 [vm-suspension-cleanup vm-suspension-pause] 1))
+               ;; A live key below Binsert's argument while its ordinary
+               ;; modification hook suspends in the dedicated opcode.
+               (with-temp-buffer
+                 (add-hook 'before-change-functions #'vm-suspension-pause nil t)
+                 (vm-suspension-run
+                  (make-byte-code
+                   0
+                   (unibyte-string byte-constant (+ byte-constant 1) byte-call
+                                   (+ byte-constant 2) byte-insert byte-discard
+                                   (+ byte-call 1) byte-return)
+                   [vm-suspension-lookup vm-suspension-key "payload"] 3)))))
+        (prin1 vm-suspension-result)"#;
+    assert_oracle_file_contract_matches_interpreter(
+        program,
+        "vm-suspension-result",
+        "((1 t 0) (1 t 0))",
+    );
+}
+
+#[test]
+fn dead_thread_results_are_rooted_only_through_reachable_thread_objects() {
+    // thread.c removes finished threads from all_threads, but an externally
+    // reachable thread still owns its result. Test retention AND release.
+    // Keep the original file's top-level evaluation boundaries. Wrapping
+    // everything in one progn lets GNU's conservative C-stack scan retain
+    // the earlier thread-join result even after the Lisp reference is gone.
+    let program = r#";;; -*- lexical-binding: t; -*-
+        (defvar dead-thread-roots-table (make-hash-table :test 'eq :weakness 'key))
+        (defvar dead-thread-roots-worker nil)
+        (defvar dead-thread-roots-result nil)
+        (setq dead-thread-roots-worker
+              (make-thread
+               (lambda ()
+                 (let ((key (list 'owned-by-thread-result)))
+                   (puthash key t dead-thread-roots-table)
+                   key))))
+        (thread-join dead-thread-roots-worker)
+        (garbage-collect)
+        (let ((reachable (hash-table-count dead-thread-roots-table)))
+          (setq dead-thread-roots-worker nil)
+          (garbage-collect)
+          (setq dead-thread-roots-result
+                (list reachable (hash-table-count dead-thread-roots-table))))
+        (prin1 dead-thread-roots-result)"#;
+    assert_oracle_file_contract_matches_interpreter(program, "dead-thread-roots-result", "(1 0)");
+}
+
+#[test]
+fn logarithm_nil_base_supports_finite_backtrace_print_limits() {
+    // floatfns.c:Flog receives a fixed optional argument: Qnil selects the
+    // natural logarithm. This ordinary printer exercises that ABI boundary
+    // without a thread, a test-name branch, or a manufactured backtrace.
+    let program = r#"
+        (progn
+          (require 'cl-print)
+          (list (= (log 80) (log 80 nil))
+                (= (log 8 2) 3)
+                (= (log 100 10) 2)
+                (condition-case error (log 80 'bad-base) (error (cadr error)))
+                (condition-case error (log (make-marker)) (error (cadr error)))
+                (cl-print-to-string-with-limit #'prin1 '(a b) 80)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t t numberp numberp \"(a b)\")",
+        "logarithm optional nil and finite print limit",
     );
 }
 
@@ -9607,6 +10057,48 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
             .to_string(),
         expected
     );
+}
+
+/// Load the identical source file on both editors. Unlike a single wrapped
+/// expression, this preserves top-level return boundaries for GC tests.
+fn assert_oracle_file_contract_matches_interpreter(
+    program: &str,
+    result_variable: &str,
+    expected: &str,
+) {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-file-contract-{}-{}.el",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("timestamp")
+            .as_nanos(),
+    ));
+    fs::File::create_new(&path)
+        .expect("create unique contract fixture")
+        .write_all(program.as_bytes())
+        .expect("write contract fixture");
+    crate::test_support::mark_process_test();
+    let oracle = std::process::Command::new(upstream_emacs_repo().join("src/emacs"))
+        .args(["-Q", "--batch", "-l"])
+        .arg(&path)
+        .output()
+        .expect("run GNU file contract");
+    assert!(
+        oracle.status.success(),
+        "{}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&oracle.stdout), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    interp
+        .load_resolved_path(&path, &Env::new(), true)
+        .expect("load identical contract fixture");
+    let result = interp
+        .lookup_var(result_variable, &Env::new())
+        .expect("fixture sets its result variable");
+    fs::remove_file(&path).expect("remove owned contract fixture");
+    assert_eq!(result.to_string(), expected);
 }
 
 #[cfg(target_os = "linux")]
@@ -9999,17 +10491,22 @@ fn eval_region_delegates_to_load_read_function_without_reinterning() {
 }
 
 #[test]
-fn gnu_c_bool_variables_match_fresh_grep() {
-    // The DEFVAR_BOOL table is every `DEFVAR_BOOL ("name"' in the pinned
-    // oracle's src/*.c, sorted by byte order and deduplicated; the
-    // coercion in prepare_variable_assignment keys on it, so it must not
-    // drift from the sources.
+fn gnu_c_bool_variables_match_independent_source_scan() {
+    // Independently cross-check the Boolean subset. Full typed regeneration
+    // and adversarial lexer tests are enforced by anti_cheat; this additional
+    // scan must include Objective-C and whitespace-free macro invocations.
+    use super::generated_gnu_c_forwarded_variables::{
+        ForwardedVariableKind, GNU_C_FORWARDED_VARIABLES,
+    };
     let source_root = upstream_emacs_repo().join("src");
-    let pattern = regex::Regex::new(r#"DEFVAR_BOOL \("([^"]+)""#).expect("valid pattern");
+    let pattern = regex::Regex::new(r#"\bDEFVAR_BOOL\s*\(\s*"([^"]+)""#).expect("valid pattern");
     let mut names = std::collections::BTreeSet::new();
     for entry in std::fs::read_dir(&source_root).expect("read oracle src directory") {
         let path = entry.expect("directory entry").path();
-        if path.extension().is_some_and(|extension| extension == "c") {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "c" || extension == "m")
+        {
             // A few C sources carry non-UTF-8 bytes in comments.
             let bytes = std::fs::read(&path).expect("read C source");
             let text = String::from_utf8_lossy(&bytes);
@@ -10019,10 +10516,14 @@ fn gnu_c_bool_variables_match_fresh_grep() {
         }
     }
     let fresh = names.into_iter().collect::<Vec<_>>();
+    let committed = GNU_C_FORWARDED_VARIABLES
+        .iter()
+        .filter_map(|(name, kind)| (*kind == ForwardedVariableKind::Bool).then_some(*name))
+        .collect::<Vec<_>>();
     assert_eq!(
-        crate::lisp::primitives::generated_gnu_c_bool_variables::GNU_C_BOOL_VARIABLES,
+        committed,
         fresh.as_slice(),
-        "regenerate src/lisp/primitives/generated_gnu_c_bool_variables.rs from the oracle sources"
+        "regenerate the typed forwarded-variable inventory from the oracle sources"
     );
 }
 
@@ -12523,6 +13024,172 @@ fn add_face_text_property_preserves_other_string_properties() {
 }
 
 #[test]
+fn concat_allocates_mutable_strings_before_argument_binding() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let source = Value::String("abc".into());
+    let result = call(
+        &mut interp,
+        "concat",
+        std::slice::from_ref(&source),
+        &mut env,
+    )
+    .expect("concat allocates its output object");
+    let alias = result.clone();
+    assert_eq!(
+        call(
+            &mut interp,
+            "eq",
+            &[source.clone(), result.clone()],
+            &mut env
+        )
+        .expect("nonempty concat copies its input"),
+        Value::Nil,
+    );
+    // Exercise the primitive result directly, before any evaluator binding
+    // or bytecode prologue could mask an incorrect immutable allocation.
+    call(
+        &mut interp,
+        "put-text-property",
+        &[
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::symbol("face"),
+            Value::symbol("bold"),
+            result.clone(),
+        ],
+        &mut env,
+    )
+    .expect("mutate the freshly allocated result");
+    assert_eq!(
+        call(
+            &mut interp,
+            "get-text-property",
+            &[Value::Integer(0), Value::symbol("face"), alias.clone()],
+            &mut env,
+        )
+        .expect("observe property mutation through the original alias"),
+        Value::symbol("bold"),
+    );
+    call(
+        &mut interp,
+        "aset",
+        &[result, Value::Integer(0), Value::Integer(i64::from(b'Z'))],
+        &mut env,
+    )
+    .expect("mutate result characters in place");
+    assert_eq!(string_text(&alias).expect("result text"), "Zbc");
+    assert_eq!(string_text(&source).expect("unchanged input text"), "abc");
+
+    for args in [
+        Vec::new(),
+        vec![Value::string("")],
+        vec![Value::Nil],
+        vec![Value::vector([])],
+    ] {
+        let empty = call(&mut interp, "concat", &args, &mut env)
+            .expect("allocate the empty unibyte string");
+        assert_eq!(
+            call(&mut interp, "eq", &[empty, Value::string("")], &mut env)
+                .expect("alloc.c shares zero-length unibyte allocations"),
+            Value::T,
+        );
+    }
+}
+
+#[test]
+fn error_message_string_preserves_direct_identity_and_allocates_rendered_results() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let mutable = call(
+        &mut interp,
+        "concat",
+        &[Value::string("diagnostic")],
+        &mut env,
+    )
+    .expect("allocate a mutable message");
+    call(
+        &mut interp,
+        "put-text-property",
+        &[
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::symbol("face"),
+            Value::symbol("bold"),
+            mutable.clone(),
+        ],
+        &mut env,
+    )
+    .expect("attach a property before returning the message");
+    for message in [mutable.clone(), Value::string("constant diagnostic")] {
+        let returned = call(
+            &mut interp,
+            "error-message-string",
+            &[Value::list([Value::symbol("error"), message.clone()])],
+            &mut env,
+        )
+        .expect("return the original string for exactly (error STRING)");
+        assert!(values_eql(&returned, &message));
+        assert_eq!(
+            string_property_at(&returned, 0, "face"),
+            string_property_at(&message, 0, "face"),
+        );
+    }
+
+    // An additional datum takes print.c's rendering/allocation path, not
+    // the original-string fast path. Exercise it without any Lisp binding.
+    let condition = Value::list([Value::symbol("error"), mutable.clone(), Value::Integer(23)]);
+    let render = |interp: &mut Interpreter, env: &mut Env| {
+        call(
+            interp,
+            "error-message-string",
+            std::slice::from_ref(&condition),
+            env,
+        )
+        .expect("allocate a rendered diagnostic")
+    };
+    let result = render(&mut interp, &mut env);
+    let other = render(&mut interp, &mut env);
+    assert_eq!(
+        string_text(&result).expect("rendered text"),
+        "diagnostic: 23"
+    );
+    assert!(!values_eql(&result, &mutable));
+    assert!(!values_eql(&result, &other));
+    let alias = result.clone();
+    call(
+        &mut interp,
+        "put-text-property",
+        &[
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::symbol("field"),
+            Value::symbol("output"),
+            result.clone(),
+        ],
+        &mut env,
+    )
+    .expect("mutate freshly rendered string properties");
+    assert_eq!(
+        string_property_at(&alias, 0, "field"),
+        Some(Value::symbol("output"))
+    );
+    call(
+        &mut interp,
+        "aset",
+        &[result, Value::Integer(0), Value::Integer(i64::from(b'D'))],
+        &mut env,
+    )
+    .expect("mutate freshly rendered string characters");
+    assert_eq!(string_text(&alias).expect("alias text"), "Diagnostic: 23");
+    assert_eq!(
+        string_text(&other).expect("independent text"),
+        "diagnostic: 23"
+    );
+    assert_eq!(string_text(&mutable).expect("original text"), "diagnostic");
+}
+
+#[test]
 fn mapconcat_result_preserves_gnu_mutable_string_identity() {
     let contract = r#"(let* ((string (mapconcat #'identity '("a" "b") ""))
                              (alias string))
@@ -12579,45 +13246,187 @@ fn propertize_preserves_existing_string_properties() {
 }
 
 #[test]
+fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    // alloc.c starts with purify-flag=t; exercise Fintern's ordinary
+    // post-loadup path explicitly, without changing that GNU default.
+    interp.define_special_variable("purify-flag", Value::Nil);
+    let first_table = make_obarray(&mut interp);
+    let second_table = make_obarray(&mut interp);
+    let name = make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
+    let second_name =
+        make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
+    let first = call(
+        &mut interp,
+        "intern",
+        &[name.clone(), first_table.clone()],
+        &mut env,
+    )
+    .expect("Fintern miss");
+    let again = call(
+        &mut interp,
+        "intern",
+        &[second_name.clone(), first_table],
+        &mut env,
+    )
+    .expect("Fintern hit");
+    let other = call(
+        &mut interp,
+        "intern",
+        &[second_name.clone(), second_table],
+        &mut env,
+    )
+    .expect("a different obarray owns a distinct symbol");
+    let (Value::Symbol(first_symbol), Value::Symbol(again_symbol), Value::Symbol(other_symbol)) =
+        (&first, &again, &other)
+    else {
+        panic!("intern returns symbols")
+    };
+    assert_eq!(first_symbol.identity_ptr(), again_symbol.identity_ptr());
+    assert_ne!(first_symbol.identity_ptr(), other_symbol.identity_ptr());
+    for (symbol, supplied) in [(first, name.clone()), (again, name), (other, second_name)] {
+        let returned = call(&mut interp, "symbol-name", &[symbol], &mut env)
+            .expect("SYMBOL_NAME is the stored string, not the internal lookup key");
+        assert_eq!(
+            string_text(&returned).expect("symbol name string"),
+            "local-name"
+        );
+        let Value::StringObject(returned) = returned else {
+            panic!("Fintern must retain the original string object")
+        };
+        let Value::StringObject(supplied) = supplied else {
+            unreachable!()
+        };
+        assert!(Rc::ptr_eq(&returned, &supplied));
+    }
+}
+
+#[test]
+fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let table = make_obarray(&mut interp);
+    let bad_name = Value::symbol("not-a-string");
+    let error = call(
+        &mut interp,
+        "intern",
+        &[bad_name.clone(), Value::Integer(1)],
+        &mut env,
+    )
+    .expect_err("CHECK_OBARRAY precedes CHECK_STRING");
+    let LispError::SignalValue(condition) = error else {
+        panic!("CHECK_OBARRAY must signal wrong-type-argument, got {error:?}")
+    };
+    assert_eq!(
+        condition,
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("obarrayp"),
+            Value::Integer(1),
+        ]),
+    );
+    assert!(matches!(
+        call(&mut interp, "intern", &[bad_name, table.clone()], &mut env),
+        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "stringp"
+    ));
+
+    interp.define_special_variable("purify-flag", Value::T);
+    let name = make_shared_string_value_with_multibyte("pure-name".into(), Vec::new(), false);
+    let symbol = call(
+        &mut interp,
+        "intern",
+        &[name.clone(), table.clone()],
+        &mut env,
+    )
+    .expect("Fintern purecopy miss");
+    let copied = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&symbol),
+        &mut env,
+    )
+    .expect("symbol-name returns the copied name");
+    assert!(
+        matches!(copied, Value::String(_)),
+        "Fpurecopy strips mutable string storage"
+    );
+    assert_eq!(string_text(&copied).expect("pure name string"), "pure-name");
+    let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", |_| {
+        panic!("an oblookup hit must not allocate or purecopy a name")
+    })
+    .expect("oblookup hit");
+    let (Value::Symbol(symbol), Value::Symbol(hit)) = (symbol, hit) else {
+        unreachable!()
+    };
+    assert_eq!(symbol.identity_ptr(), hit.identity_ptr());
+
+    interp.define_special_variable(
+        "read-symbol-shorthands",
+        Value::list([Value::cons(Value::string("short-"), Value::string("long-"))]),
+    );
+    let shorthand = make_shared_string_value_with_multibyte("short-name".into(), Vec::new(), false);
+    let expanded = call(&mut interp, "intern", &[shorthand, table], &mut env)
+        .expect("Fintern constructs the longhand name");
+    let expanded = call(&mut interp, "symbol-name", &[expanded], &mut env)
+        .expect("symbol-name returns the longhand name");
+    assert_eq!(
+        string_text(&expanded).expect("longhand string"),
+        "long-name"
+    );
+    assert!(
+        string_like(&expanded)
+            .expect("longhand string metadata")
+            .multibyte
+    );
+}
+
+#[test]
 fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
+    let supplied_name = Value::String("help".into());
 
     let left = call(
         &mut interp,
         "make-symbol",
-        &[Value::String("help".into())],
+        std::slice::from_ref(&supplied_name),
         &mut env,
     )
     .expect("make-symbol should return a symbol");
     let right = call(
         &mut interp,
         "make-symbol",
-        &[Value::String("help".into())],
+        std::slice::from_ref(&supplied_name),
         &mut env,
     )
     .expect("make-symbol should return a distinct symbol");
 
     assert_ne!(left, right);
+    let left_name = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&left),
+        &mut env,
+    )
+    .expect("symbol-name should preserve the visible name");
+    let right_name = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&right),
+        &mut env,
+    )
+    .expect("symbol-name should preserve the visible name");
+    let (Value::String(supplied), Value::String(left), Value::String(right)) =
+        (&supplied_name, left_name, right_name)
+    else {
+        unreachable!("immutable symbol names")
+    };
+    assert!(left.ptr_eq(supplied));
+    assert!(right.ptr_eq(supplied));
     assert_eq!(
-        call(
-            &mut interp,
-            "symbol-name",
-            std::slice::from_ref(&left),
-            &mut env
-        )
-        .expect("symbol-name should preserve the visible name"),
-        Value::String("help".into())
-    );
-    assert_eq!(
-        call(
-            &mut interp,
-            "symbol-name",
-            std::slice::from_ref(&right),
-            &mut env
-        )
-        .expect("symbol-name should preserve the visible name"),
-        Value::String("help".into())
+        call(&mut interp, "symbol-name", &[Value::Nil], &mut env).expect("nil has a symbol name"),
+        Value::String("nil".into())
     );
 }
 
@@ -12898,11 +13707,8 @@ fn key_description_matches_upstream_string_and_vector_cases() {
         &mut interp,
         "key-description",
         &[
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Symbol("right".into()),
-            ]),
-            Value::list([Value::Symbol("vector-literal".into()), Value::Integer(0x18)]),
+            Value::vector([Value::Symbol("right".into())]),
+            Value::vector([Value::Integer(0x18)]),
         ],
         &mut env,
     )
@@ -12913,14 +13719,8 @@ fn key_description_matches_upstream_string_and_vector_cases() {
         &mut interp,
         "key-description",
         &[
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer('<' as i64),
-            ]),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer(KEY_DESCRIPTION_META_PREFIX),
-            ]),
+            Value::vector([Value::Integer('<' as i64)]),
+            Value::vector([Value::Integer(KEY_DESCRIPTION_META_PREFIX)]),
         ],
         &mut env,
     )
@@ -12931,12 +13731,8 @@ fn key_description_matches_upstream_string_and_vector_cases() {
         &mut interp,
         "key-description",
         &[
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer('c' as i64),
-            ]),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([Value::Integer('c' as i64)]),
+            Value::vector([
                 Value::Integer(KEY_DESCRIPTION_META_PREFIX),
                 Value::Integer('g' as i64),
                 Value::Integer(KEY_DESCRIPTION_META_PREFIX),
@@ -12959,8 +13755,7 @@ fn key_description_matches_upstream_string_and_vector_cases() {
     let list_event = call(
         &mut interp,
         "key-description",
-        &[Value::list([
-            Value::Symbol("vector-literal".into()),
+        &[Value::vector([
             Value::list([Value::Symbol("control".into()), Value::Symbol("x".into())]),
             Value::list([Value::Symbol("control".into()), Value::Symbol("f".into())]),
         ])],
@@ -12993,8 +13788,7 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         vec!["C-c".to_string(), "g".to_string()]
     );
     assert_eq!(
-        key_sequence_binding_parts(&Value::list([
-            Value::Symbol("vector-literal".into()),
+        key_sequence_binding_parts(&Value::vector([
             Value::Integer(3),
             Value::Integer('g' as i64),
         ]))
@@ -13010,6 +13804,19 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
             .expect("Meta function key should remain one symbolic event"),
         vec!["M-up".to_string()]
+    );
+}
+
+#[test]
+fn keymap_lookup_uses_the_event_head_of_a_character_range() {
+    let range_event = Value::vector([Value::cons(
+        Value::Integer('w' as i64),
+        Value::Integer('x' as i64),
+    )]);
+    assert_eq!(
+        key_sequence_keymap_parts(&range_event)
+            .expect("a map-keymap character range should remain a valid lookup event"),
+        vec!["w".to_string()]
     );
 }
 
@@ -13155,8 +13962,7 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
             &mut env,
         )
         .expect("where-is-internal should find control-prefixed binding"),
-        vec![Value::list([
-            Value::Symbol("vector-literal".into()),
+        vec![Value::vector([
             Value::Integer(3),
             Value::Integer('g' as i64),
         ])]
@@ -13804,7 +14610,8 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
     let marker = interp
         .copy_marker_value(&Value::Integer(interp.buffer.point_max() as i64), false)
         .expect("copy marker at process output boundary");
-    interp.buffer.goto_char(interp.buffer.point_min());
+    let buffer = &mut interp.buffer;
+    buffer.goto_char(buffer.point_min());
     call(
         &mut interp,
         "internal-default-process-filter",
@@ -14997,10 +15804,7 @@ fn terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event() {
 
     assert_eq!(
         interp.lookup_var("last-kbd-macro", &env),
-        Some(Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(6),
-        ]))
+        Some(Value::vector([Value::Integer(6),]))
     );
     assert_eq!(
         interp.lookup_var("last-input-event", &env),
@@ -15044,8 +15848,7 @@ fn keyboard_macro_records_input_read_inside_a_command() {
 
     assert_eq!(
         interp.lookup_var("last-kbd-macro", &env),
-        Some(Value::list([
-            Value::Symbol("vector-literal".into()),
+        Some(Value::vector([
             Value::Integer(3),
             Value::Integer(114),
             Value::Integer(97),
@@ -15097,8 +15900,7 @@ fn keyboard_macro_records_minibuffer_command_events_exactly_once() {
     );
     assert_eq!(
         interp.lookup_var("last-kbd-macro", &env),
-        Some(Value::list([
-            Value::Symbol("vector-literal".into()),
+        Some(Value::vector([
             Value::Integer(3),
             Value::Integer(99),
             Value::Integer(98),
@@ -16603,7 +17405,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     call(
         &mut interp,
         "accept-process-output",
-        &[process.clone(), Value::Float(1.0)],
+        &[process.clone(), Value::float(1.0)],
         &mut env,
     )
     .expect("pump serial process input");
@@ -17205,7 +18007,7 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.05)],
+            &[process.clone(), Value::float(0.05)],
             &mut env,
         )
         .expect("wait while output is held"),
@@ -18380,7 +19182,7 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
             upper.clone(),
             Value::Integer(12),
             Value::Nil,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -18563,9 +19365,7 @@ fn dumped_default_bindings_resolve_for_the_terminal_frontend() {
             "delete-forward-char",
         ),
     ] {
-        let key_vector = Value::list(
-            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
-        );
+        let key_vector = Value::vector(keys.iter().cloned());
         let binding = call(
             &mut interp,
             "key-binding",
@@ -18783,7 +19583,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
     assert_eq!(interp.buffer.point(), 87, "goal column 3 within the row");
 
-    let float_goal = Value::cons(Value::Float(3.0), Value::Integer(-1));
+    let float_goal = Value::cons(Value::float(3.0), Value::Integer(-1));
     call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
     assert_eq!(
         interp.buffer.point(),
@@ -19265,7 +20065,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     let lower = call(
         &mut interp,
         "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
         &mut env,
     )
     .expect("split-window-internal");
@@ -19312,7 +20112,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
             upper_left.clone(),
             Value::Integer(11),
             Value::Nil,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -19324,7 +20124,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
             upper_left.clone(),
             Value::Integer(40),
             Value::T,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -19370,7 +20170,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let lower = call(
         &mut interp,
         "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
         &mut env,
     )
     .expect("split");

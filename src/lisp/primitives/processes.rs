@@ -1251,7 +1251,7 @@ fn pump_external_process_output_for(
 /// GNU conv_sockaddr_to_lisp: an inet address as [a b c d port] (ipv4)
 /// or [w0 .. w7 port] (ipv6).
 pub(crate) fn sockaddr_vector(addr: std::net::SocketAddr) -> Value {
-    let mut items = vec![Value::symbol("vector-literal")];
+    let mut items = Vec::new();
     match addr.ip() {
         std::net::IpAddr::V4(ip) => {
             items.extend(
@@ -1269,14 +1269,11 @@ pub(crate) fn sockaddr_vector(addr: std::net::SocketAddr) -> Value {
         }
     }
     items.push(Value::Integer(addr.port() as i64));
-    Value::list(items)
+    Value::vector(items)
 }
 
 pub(crate) fn socket_addr_from_value(value: &Value) -> Option<std::net::SocketAddr> {
-    let mut items = value.to_vec().ok()?;
-    if matches!(items.first(), Some(Value::Symbol(tag)) if tag == "vector-literal") {
-        items.remove(0);
-    }
+    let items = vector_items(value).ok()?;
     let integers = items
         .iter()
         .map(Value::as_integer)
@@ -2444,7 +2441,7 @@ pub(crate) fn wait_pumping_processes(
         nap = nap
             .min(std::time::Duration::from_millis(10))
             .max(std::time::Duration::from_millis(1));
-        std::thread::sleep(nap);
+        interp.sleep_current_thread(env, nap)?;
     }
     let result = if let Some(process_id) = target_process_id {
         interp.process_output_delivery_count(process_id) != target_start

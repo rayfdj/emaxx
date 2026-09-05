@@ -105,8 +105,8 @@ pub(crate) fn window_record_slots(
         Value::Integer(height),
         Value::Integer(left),
         Value::Integer(top),
-        Value::Float(1.0),
-        Value::Float(1.0),
+        Value::float(1.0),
+        Value::float(1.0),
         Value::Nil,
         Value::Integer(0),
         Value::Integer(0),
@@ -361,7 +361,8 @@ pub(crate) fn scroll_selected_window(
         let offset = line_distance(interp, window_start, point_line);
         let (target, target_shortage) = move_screen_lines(interp, env, new_start, offset as isize);
         if target_shortage > 0 {
-            interp.buffer.goto_char(interp.buffer.point_max());
+            let buffer = &mut interp.buffer;
+            buffer.goto_char(buffer.point_max());
         } else {
             interp.buffer.goto_char(target);
         }

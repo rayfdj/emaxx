@@ -25,6 +25,26 @@ fn main() {
         "cargo:rustc-env=EMAXX_SYSTEM_CONFIGURATION={}",
         system_configuration_triple()
     );
+    // comp.c uses the Lisp directory configured when the executable was
+    // built, not the mutable Lisp source-directory variable. Our ordinary
+    // source layout puts the unchanged GNU Lisp tree in the sibling emacs
+    // checkout. Resolve symlinks now, never during native compilation.
+    let manifest = env::var("CARGO_MANIFEST_DIR").expect("Cargo provides its manifest directory");
+    let lisp_directory = Path::new(&manifest)
+        .parent()
+        .expect("the project has a parent directory")
+        .join("emacs/lisp");
+    let configured_lisp_directory = match lisp_directory.canonicalize() {
+        Ok(directory) => directory,
+        // Building the executable does not require an installed Lisp tree;
+        // retain the configured absolute path if it is not installed yet.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => lisp_directory,
+        Err(error) => panic!("resolve configured Lisp directory: {error}"),
+    };
+    println!(
+        "cargo:rustc-env=EMAXX_COMPILED_LISP_DIRECTORY={}",
+        configured_lisp_directory.display()
+    );
     println!("cargo:rerun-if-changed=build.rs");
 }
 

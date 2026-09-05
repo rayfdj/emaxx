@@ -271,11 +271,11 @@ pub(crate) fn legacy_unsigned_id(value: &Value) -> Result<u32, LispError> {
         Value::Integer(_) | Value::BigInteger(_) => integer_part(value),
         Value::Float(value)
             if value.is_finite()
-                && *value >= 0.0
-                && *value <= f64::from(u32::MAX)
+                && value.get() >= 0.0
+                && value.get() <= f64::from(u32::MAX)
                 && value.fract() == 0.0 =>
         {
-            Some(*value as u64)
+            Some(value.get() as u64)
         }
         Value::Cons(_) => (|| {
             let (high, rest) = value.cons_values().expect("matched cons");
@@ -1411,6 +1411,21 @@ pub(crate) fn emacs_version_value() -> String {
     "30.2".to_string()
 }
 
+/// The actual immutable path inputs consumed by comp.c's loadsearch cache.
+/// Exposed together so the configured-header audit checks production values.
+pub(crate) fn native_loadsearch_paths() -> [(&'static str, String); 2] {
+    [
+        (
+            "PATH_REL_LOADSEARCH",
+            format!("{}/lisp", emacs_version_value()),
+        ),
+        (
+            "PATH_DUMPLOADSEARCH",
+            env!("EMAXX_COMPILED_LISP_DIRECTORY").to_owned(),
+        ),
+    ]
+}
+
 pub(crate) fn system_configuration() -> String {
     // emacs.c: EMACS_CONFIGURATION, the host triple recorded when the
     // build was configured -- computed by build.rs at build time, never at
@@ -1602,6 +1617,7 @@ pub(crate) fn find_file_name_handler(
             if interp.file_name_handler_match_cache.len() >= 4096 {
                 interp.file_name_handler_match_cache.clear();
             }
+            let definition_generation = interp.current_definition_generation();
             interp.file_name_handler_match_cache.insert(
                 cache_key,
                 crate::lisp::eval::FileNameHandlerMatchCacheEntry {
@@ -1610,7 +1626,7 @@ pub(crate) fn find_file_name_handler(
                     // tables.  Stamp the derived result after that work so
                     // the entry is not born stale.
                     cons_epoch: crate::lisp::types::cons_mutation_epoch(),
-                    definition_generation: interp.current_definition_generation(),
+                    definition_generation,
                     pattern_snapshots,
                     matches: matches.clone(),
                 },

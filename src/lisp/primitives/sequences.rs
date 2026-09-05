@@ -13,7 +13,7 @@ pub(crate) fn copy_sequence_value(
     }
 
     if is_vector_value(value) {
-        return Ok(Value::list(value.to_vec()?));
+        return Ok(Value::vector(vector_items(value)?));
     }
 
     match value {
@@ -69,7 +69,7 @@ pub(crate) fn default_sort_lt(
 
 pub(crate) enum SortSequenceKind {
     List,
-    Vector(String),
+    Vector,
 }
 
 pub(crate) fn list_or_vector_type_error(value: &Value) -> LispError {
@@ -84,16 +84,7 @@ pub(crate) fn sort_sequence_kind_and_items(
     value: &Value,
 ) -> Result<(SortSequenceKind, Vec<Value>), LispError> {
     if is_vector_value(value) {
-        let items = value.to_vec()?;
-        let tag = items
-            .first()
-            .and_then(|value| value.as_symbol().ok())
-            .unwrap_or("vector")
-            .to_string();
-        return Ok((
-            SortSequenceKind::Vector(tag),
-            items.into_iter().skip(1).collect(),
-        ));
+        return Ok((SortSequenceKind::Vector, vector_items(value)?));
     }
     if matches!(value, Value::Nil | Value::Cons(_)) {
         return Ok((SortSequenceKind::List, value.to_vec()?));
@@ -197,7 +188,7 @@ pub(crate) fn resolve_direct_sort_key_fn(
 pub(crate) fn parse_direct_sort_operand(
     interp: &Interpreter,
     value: &Value,
-    params: &[String],
+    params: &[crate::lisp::types::SymbolName],
     env: &Env,
 ) -> Option<DirectSortOperand> {
     match value {
@@ -317,7 +308,7 @@ pub(crate) fn direct_sort_abs_value(value: &Value) -> Result<Value, LispError> {
             None => Ok(normalize_bigint_value(BigInt::from(*number).abs())),
         },
         Value::BigInteger(number) => Ok(normalize_bigint_value(number.abs())),
-        Value::Float(number) => Ok(Value::Float(number.abs())),
+        Value::Float(number) => Ok(Value::float(number.abs())),
         _ => Err(LispError::WrongTypeArgument(
             "numberp".into(),
             value.clone(),
@@ -451,16 +442,14 @@ pub(crate) fn write_sorted_sequence(
             }
             Ok(())
         }
-        SortSequenceKind::Vector(_) => write_vector_items_in_place(target, items),
+        SortSequenceKind::Vector => write_vector_items_in_place(target, items),
     }
 }
 
 pub(crate) fn build_sorted_sequence(kind: &SortSequenceKind, items: Vec<Value>) -> Value {
     match kind {
         SortSequenceKind::List => Value::list(items),
-        SortSequenceKind::Vector(tag) => {
-            Value::list(std::iter::once(Value::Symbol(tag.clone().into())).chain(items))
-        }
+        SortSequenceKind::Vector => Value::vector(items),
     }
 }
 
@@ -472,13 +461,12 @@ pub(crate) fn write_vector_items_in_place(
         return Err(list_or_vector_type_error(target));
     }
 
-    let slots = vector_slot_refs(target)?;
-    if slots.len() != items.len() {
+    if vector_items(target)?.len() != items.len() {
         return Err(LispError::Signal("Args out of range".into()));
     }
 
-    for (slot, item) in slots.iter().zip(items.iter()) {
-        *slot.borrow_mut() = item.clone();
+    for (index, item) in items.iter().enumerate() {
+        aset_vector_value(target, index, item.clone())?;
     }
 
     Ok(())

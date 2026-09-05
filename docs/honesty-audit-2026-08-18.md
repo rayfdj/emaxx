@@ -5892,3 +5892,903 @@ zero failures and only the two reviewed TTY wrappers ignored; compat-harness
 passed 38/38, perf-harness 1/1, CLI 13/13, ERT integration 3/3, package
 lifecycle 5/5, and doc tests were clean.  No 7,883-test corpus run was made as
 part of this integration.
+
+## 2026-09-05 native-comp, threads, and startup integration (in progress)
+
+The integration starts from main `84f342a` and native-comp `38b2ee8`, whose
+merge base is `b50bdd2`.  The native branch has eleven additional commits;
+main has the Eshell bytecode argument-identity fix, Darwin exec-failure
+contract, and the close-findings/Editfns bundle.  The work is isolated on
+`integrate-native-threads-startup`; the shared native-comp branch is retained.
+Server/emacsclient and MML remain with their existing owner.
+
+Source review of the combined tree found an unmarked semantic conflict:
+both branches added eval.c Ffuncall depth accounting independently.  Keeping
+both would count every indirect call twice.  The merge retains one explicit
+`begin_funcall`/`end_funcall` boundary, shared by ordinary and native calls;
+direct eval_sub application and record unwrapping do not add another count.
+Main's existing oracle-backed depth contract remains unchanged.
+
+The native evaluator's direct forwarded-value fields also needed to preserve
+main's data.c set_internal detachment behavior: after `makunbound`, ordinary
+Lisp stores must neither coerce the detached symbol nor rewrite its old C
+slot.  The combined store, clone, quit, and depth-floor paths now preserve
+that distinction, with a direct Rust contract covering the interaction.
+The first gate-profile compile check exposed the bundle's sleep-duration
+reader still expecting an inline f64; it now reads native-comp's SharedFloat.
+
+Two incoming ignores are removed.  The whole-file native artifact identity
+ladder is part of the ordinary integration gate.  The native hot-path test
+also runs normally, asserts its numeric and cons results, and locates the
+exercised primitives in the selected ABI table rather than using Darwin-only
+integer indices.  The two pre-existing TTY wrappers are unchanged.  Upstream
+tests, compatibility selectors, expected results, manifests, and timeouts
+have not been altered.
+
+These are integration changes awaiting verification, not a green checkpoint
+or a new compatibility score.  Thread suspension and the Simple/ERC startup
+failures have not yet been repaired.  Final audit, warning gates, optimized
+serial gate, and the complete 7,883-outcome measurement remain required.
+
+The storage audit also found an incomplete vector migration. `Value::list`
+treated the ordinary first symbol `vector-literal` as an internal type tag,
+and `Value::to_vec` projected real vectors back into tagged lists. This made
+public `list` behavior depend on user data and left stale tag handling in
+copy/reverse/sort, interactive specifications, circular reading, coding
+tables, socket addresses, and JSON serialization. GNU 30.2 `alloc.c:Flist`
+always conses its arguments; `Fvector` always allocates vector slots;
+`fns.c:Felt` and `Freverse` select by object type, not list contents.
+
+The integration now uses explicit `Value::vector` constructors throughout,
+keeps `Value::list`/`to_vec` exclusively for proper lists, and accesses vector
+slots without adding or stripping a Lisp symbol. Existing Rust fixtures were
+migrated to explicit vector construction without changing their logical
+contents or assertions. The added direct Rust contract
+`list_and_vector_storage_follow_alloc_c_without_symbol_tags` checks ordinary
+marker-named data, empty aggregates, type predicates, cross-type equality,
+copy identity, element zero, reversal, printing, and JSON serialization.
+Production sources no longer contain `vector-literal` handling; the symbol
+occurs only in regressions. No new diagnostic Elisp or modified GNU test is
+used for this repair. `cargo fmt --all` and `git diff --check` are clean.
+The optimized all-target/all-feature compilation passed with zero warnings
+(13.56s); focused reader/types/primitive tests passed 70/70, zero failed and
+zero ignored. Artifacts belong under
+`/private/tmp/emaxx-native-threads-01a05a9d.EqHRnl/` (`vector-check.log` and
+`vector-focused.log`).
+
+The ABI inventory now has a mandatory configured-C regeneration preflight;
+its execution is pending. A test-only C header probe will independently
+measure the native handler/thread layout constants without linking GNU
+runtime code. The exact-artifact walker now reports traversal errors instead
+of treating unreadable directories as empty. The optional native
+image-template clone path remains under review. The remote main/native-comp
+tips were rechecked after the vector edits and still matched the integration
+inputs above.
+
+The next source audit follows `lread.c:maybe_swap_for_eln` directly. The
+incoming code omitted `comp-no-native-file-h` bookkeeping, missing-source
+warnings/errors, default-directory-relative cache resolution, and the open
+check on native candidates. Those C branches are now implemented, with two
+direct Rust selection contracts reusing unchanged GNU source, bytecode, and
+native artifacts. These tests prove selection only, not native execution;
+the unchanged upstream native tests and whole-file identity ladder remain
+required. A compile-time error-name typo was caught before tests ran and
+corrected. This batch is awaiting optimized verification, including the
+earlier detached evaluator-cell and native-runtime contracts.
+
+That optimized batch completed: all 51 tests passed, with zero failures and
+zero ignored, including fresh configured-C subroutine-table regeneration,
+the detached evaluator-cell contract, both loader contracts, and the native
+runtime tests. Logs are `loader-abi-check-v2.log` and
+`native-runtime-loader-abi.log` in the session directory above. The independent
+header probe (`native-layout.log`) then exposed a real gap in the previous
+Rust-only layout assertion: both Rust's storage and its test trusted the same
+incorrect Darwin `HANDLER_SIZE=304`. The configured GNU headers measure 288;
+all seven other measured size/offset constants agree. GNU `comp.c` uses this
+sizeof value for its handler type's final padding, so the integration corrects
+the production constant rather than accepting the mismatch.
+
+The existing C-source ABI development tool now also compiles and runs the
+test-only layout probe using the configured build's own compiler flags.
+The mandatory anti-cheat preflight compares its complete output against the
+actual runtime/backend constants. It does not link GNU runtime code, add
+Elisp, or execute the GNU editor. This extension and the corrected native
+artifacts still await validation; Darwin evidence does not verify Linux.
+
+The loader follow-up also ports the distinction between C slot access and
+Lisp symbol lookup after `makunbound`. Suppression, native path/version,
+source lookup, and origin tables now use the retained forwarded slots.
+`Vdelayed_warnings_list` assignment changes its C slot, leaving a detached
+plain Lisp binding untouched. Added direct Rust regressions check both
+directions and native selection with invalid replacement Lisp bindings.
+These new regressions and the exact-artifact ladder are queued serially,
+with an occupancy check before each stage; they are not yet claimed green.
+
+The follow-up optimized check completed with zero warnings (14.90s), and
+all 52 focused tests passed with zero failures/ignores (24.03s). This includes
+the configured-header sizeof/offsetof comparison, complete ABI-table
+regeneration, all three loader contracts, and native-runtime regressions.
+Evidence: `layout-detachment-check.log` and `layout-detachment-focused.log`.
+The whole-file artifact ladder has not yet run; its stage is waiting for
+another worker's live build. The other worker started that build during our
+focused batch; those results are functional checks, not performance evidence.
+
+Further read-only integration review found two related open findings. GNU
+`lread.c:defvar_lisp` registers the C slot with `staticpro`, and
+`alloc.c:visit_roots` visits it independently of the Lisp symbol binding.
+Emaxx's `weak_hash_reachability` does not visit retained detached C slots.
+Its `makunbound` also currently saves ordinary Lisp values in the same map,
+so marking the whole map would incorrectly retain dead non-C bindings.
+The repair must distinguish real forwarded storage from plain void symbols.
+
+Tokenizing the pinned `src/*.c` and `src/*.m` outside comments and quoted
+strings found 908 unique forwarded declarations, with no conflicting kinds:
+574 Lisp, three Lisp-no-protect, 184 Boolean, 73 integer, 14 keyboard, and
+60 buffer declarations. This is a declaration inventory, not a claim that
+every platform's declaration is active in the running interpreter. The
+existing Boolean inventory and regeneration check both scan only `.c` and
+require a space before `(`. Consequently they omit six NS declarations in
+`nsfns.m`/`nsterm.m` and `DEFVAR_BOOL("word-wrap-by-category", ...)` in
+`xdisp.c`. These are registered as I05/I06 in the parity ledger; no source
+repair or passing regression is claimed yet.
+
+The I05/I06 repair now separates startup-installed C slots from ordinary
+Lisp value cells. The declaration generator inventories 908 names and their
+six forwarding kinds across C and Objective-C. Its four standalone parser
+tests pass, including macro-definition/comment/string decoys, unsupported
+argument rejection and Objective-C file coverage. The incomplete Boolean-only
+file has been replaced by the typed generated inventory. Mandatory preflight
+runs the parser tests and complete regeneration; a separate source scan
+cross-checks the Boolean subset independently.
+
+At interpreter construction, only declared slots with actual initialized
+values become forwarded. A later Lisp binding of an unavailable platform's
+name cannot invent C storage or Boolean coercion. Voiding ordinary variables
+keeps only name-level fallback suppression, never their old values. Genuine
+slots detach once; subsequent Lisp stores and makunbound cannot overwrite
+the retained C value. Detached DEFVAR_LISP slots now remain GC roots as in
+`lread.c:defvar_lisp`/`alloc.c:visit_roots`. Direct quit/depth-limit updates
+keep their retained slots current. Voiding a fallback-only value also
+invalidates native symbol caches even when no explicit global binding existed.
+
+New direct Rust contracts cover retained-versus-dead weak keys, unavailable
+declarations, repeated detachment, image-copy identity, explicit C assignment,
+quit-root release, and live-versus-inactive Boolean coercion. These introduce
+no Elisp helper, altered upstream expectation, skip or deadline change.
+The optimized all-target/all-feature check passed with zero warnings in
+13.33s (`forwarded-roots-check.log`). Focused runtime tests are in progress;
+the first test command stopped at Cargo argument parsing before tests ran,
+and was corrected to pass filters after `--`. No result from that failed
+invocation is counted as a test pass. Evidence is under
+`/private/tmp/emaxx-native-threads-01a05a9d.EqHRnl/`.
+
+I04's native compiler/loader C-slot reads and output-path regression are also
+in this pending focused batch. The earlier native identity build was canceled
+before tests began; it is not evidence of artifact parity. A further source
+review records I07: incoming loadsearch normalization reads mutable Lisp
+`source-directory`, whereas GNU `comp.c` uses `epaths.h` build constants and
+a static regexp cache. That finding remains open.
+
+The focused batch completed successfully: 11 passed, zero failed/ignored,
+13.06s after a 2m20s optimized build (`forwarded-roots-focused.log`). This
+includes full typed regeneration and its parser tests, the independent
+Boolean scan, the unchanged existing GNU-oracle Boolean contract, all new
+GC/image/release tests, the reentrant loader regression and native output
+detachment. It does not establish unchanged native execution or whole-file
+artifact identity. Strict all-target/all-feature Clippy is next.
+
+Strict optimized all-target/all-feature Clippy now passes with zero warnings
+(17.99s, `forwarded-roots-clippy-v2.log`), as does rustfmt. Both ordinary and
+test builds of the standalone generator also pass `clippy-driver -D warnings`.
+The first Clippy pass caught five newly added test `unwrap()` calls; these
+were replaced with descriptive `expect()` messages, with no lint suppression
+or assertion weakening. Native artifact identity is the next serial check.
+
+Before starting that artifact run, the remote advanced to `9097866`
+(`Preserve GNU symbol ownership across native compilation`). Main remained
+`84f342a`. The new native commit was fetched, its entire code delta reviewed,
+and its symbol-value/intern/closure-printing boundaries checked against
+GNU `data.c:Fsymbol_value`, `lread.c:Fintern`, and `print.c:PVEC_CLOSURE`.
+It retains original lexical symbols and symbol-name objects, removes the
+Rust-owned closure-print trimming, and adds unchanged `comp.el` as the
+permanent ninth artifact fixture. The upstream worker's results are not
+substituted for verification of this integrated tree.
+
+The pending merge was advanced without creating a commit: all current work
+was preserved in Git tree `81cbd43205dc42be37e97a83d749ac21275c323a` and
+`integration-before-native-9097866.patch` in the session directory, then the
+new native delta was three-way applied cleanly across all 25 files. The
+pending merge parent is now `9097866`; HEAD remains main's `84f342a`.
+The earlier vector, native-layout, loader and forwarded-GC fixes remain.
+An optimized all-target/all-feature check passed in 13.28s with zero warnings
+(`native-909-integration-check.log`). Fresh Clippy, focused contracts and
+the nine-fixture identity comparison are queued serially; none is claimed
+complete yet. I07 remains open, and no commit or push has been made.
+
+On the `9097866` integration, strict all-target/all-feature Clippy passes
+with zero warnings (17.99s), and all 83 selected contracts/audits pass with
+zero failures or ignores (`native-909-clippy.log`, `native-909-focused.log`).
+This includes the updated native symbol-identity/GC tests, closure printing,
+all anti-cheat gate tests, and our forwarded-slot/loader regressions. The
+build took 2m27s; the 131.97s test wall time includes an explicit pause while
+another worker built, so it is not performance evidence. Only our process
+group was paused and then resumed; no test was restarted. The nine-fixture
+artifact stage is still waiting for the host's serial slot.
+
+The nine-fixture artifact stage subsequently ran and failed (exit 101).
+The first four fixtures passed, including the intentional no-artifact case;
+`test/lisp/emacs-lisp/comp-tests.el` failed at zero-based byte 768 with both
+files 86,384 bytes. The last four fixtures were not run. Evidence:
+`/private/tmp/emaxx-native-threads-01a05a9d.EqHRnl/native-909-identity.log`;
+GNU artifact:
+`/var/folders/js/swz7g_zx0qj34jhbbc1hr_6w0000gn/T/native-comp-identity-76282-1788583864218547000/comp-tests.gnu.eln`;
+Emaxx artifact:
+`target/native-lisp/30.2-adba4e3f/comp-tests-9608e287-d5ff1e9e.eln`.
+These are failures on this integrated tree, regardless of the incoming
+branch's earlier identity results. No commit or push has been made.
+
+Read-only `cmp`, `otool`, `nm` and `strings` inspection locates a 16-byte
+increase in `text_data_reloc_imp_blob`: GNU shares a string constant across
+several compiled closures using `#18=...` / `#18#`; Emaxx prints independent
+strings. Later data addresses shift by 16, accounting for widespread code
+relocation differences. This is not merely a UUID difference. No evidence
+currently attributes this failure to the separately measured handler size.
+
+Main's Eshell repair (17da04f) promotes every compact string argument to a
+fresh object in the packed bytecode prologue. GNU `bytecode.c:exec_byte_code`
+instead pushes `*args` unchanged. A direct Rust identity contract has been
+added to expose that boundary; it is not yet run. The original mutability
+regression checked only the returned object, not identity or mutation
+visibility through the caller's original reference. The string allocation
+owners must supply mutable results before the call; changing the argument
+object is not an equivalent allocation boundary. The concat fast path and
+print string-return paths are being checked against `fns.c` / `print.c`.
+
+The optional pre-fix unit build was paused when the native worker started
+its separate normal ERT run. It was then deliberately canceled before any
+unit test executed, to permit implementation during that occupied host slot.
+Monitor session 98908 exited 130; its own cargo/rustc processes were verified
+absent. No external process was signaled, and no pre-fix unit result is claimed.
+The retained failing native artifact remains the empirical baseline.
+
+I08 now moves allocation back to its C owner. `exec_byte_code` pushes cloned
+handles to the original arguments without allocating replacement strings.
+The optimized concat input traversal remains, but its nonempty ASCII result
+is now a mutable Lisp string, as in `fns.c:concat_to_string`. Empty unibyte
+results retain `alloc.c:make_clear_string`'s shared identity. The new direct
+primitive regression checks mutation before any argument binding can hide
+an incorrect allocation, caller-visible properties/characters, unchanged
+input and empty-object identity. The earlier bytecode mutability regression
+now obtains its input from ordinary concat, retains every property assertion
+and additionally requires caller/return EQ and caller-visible mutation. The
+separate compact-constant regression still checks identity over repeated
+calls; no output normalization or expectation weakening was introduced.
+
+I07 is also implemented from `comp.c:Fcomp_el_to_eln_rel_filename` and
+`syms_of_comp`. Build configuration resolves the ordinary sibling Lisp tree
+once; native path normalization no longer reads Lisp source-directory.
+The two regexps are installed only after successful construction, retained
+as independent C roots and copied through the same image graph as aliases.
+The independent configured-header probe now includes PATH_REL_LOADSEARCH and
+PATH_DUMPLOADSEARCH alongside the eight ABI measurements; it links no GNU
+runtime code and executes no Elisp. On this tree, the configured sibling
+resolves to `/Users/nbmhqa186/projects/emacs/lisp`, matching GNU epaths.h.
+New direct Rust coverage uses unchanged GNU seq.el, rebinds source-directory
+before initialization and checks path hashing, cache identity, weak GC and
+image-copy aliasing. Formatting and diff checks are clean. Runtime, Clippy,
+unchanged Eshell and native artifact verification are still pending.
+
+The optimized all-target/all-feature check completed with zero warnings
+(10.97s, string-loadsearch-check.log). A fresh fetch still shows main
+84f342a and native-comp 9097866; no new merge input was substituted.
+Strict all-target/all-feature gate-profile Clippy with -D warnings also
+completed successfully (string-loadsearch-clippy.log). Its 1m27s wall time
+includes a pause for an external native run and is not performance evidence.
+The combined focused Rust/native/Eshell batch is now building serially;
+neither its runtime result nor new native artifact parity is claimed yet.
+
+That focused batch is now terminal: 108 passed, one failed, zero ignored
+(`string-loadsearch-focused.log`, session 47383 exit 101). All ABI/path,
+native-runtime, bytecode identity and concat allocation contracts passed.
+The unchanged Eshell prompt-navigation regression failed because its error
+diagnostic lacked the output field. Source tracing reaches
+`print.c:Ferror_message_string`: except for exactly `(error STRING)`, GNU
+returns an allocated buffer string. Emaxx returned compact immutable host
+text, so bytecode property writes were lost after removing the incorrect
+argument-copy workaround. The production repair now allocates a mutable
+rendered result at this owner and preserves the original STRING on GNU's
+exact fast path. A direct Rust regression checks identity, independent
+allocations, caller-visible property/character mutation and unchanged input.
+No upstream assertions, timeouts or selectors were changed. This follow-up
+still needs focused verification and native artifact comparison; the previous
+Clippy result does not cover the new changes.
+
+The error-string follow-up then passed all five selected tests, zero failures
+or ignores (`error-string-owner-focused.log`, session 6317 exit 0, 11.29s):
+the unchanged Eshell regression, both bytecode identity/allocation contracts,
+concat allocation, and direct error-string identity/mutation coverage.
+
+A fresh remote fetch found native-comp 36dd465, which merges main 84f342a
+into 9097866. The pre-integration recovery tree is
+8597b7018ba2e00adc9f65e8efe8867ed953c794; complete recovery and incoming patches
+are `integration-before-native-36dd465.patch` and `native-909-to-36dd465.patch`
+in the session directory. The incoming merge's C-root, direct-field ownership,
+coding-state image-copy and multibyte diagnostic corrections were reviewed
+and integrated. Its own artifact/177-test reports remain branch evidence,
+not passing results for this combined tree.
+
+Semantic resolutions preserve the complete typed forwarding inventory and
+regeneration, initialized-slot filtering, ordinary-variable negative GC
+controls, native loader/path audits, real vector storage and independently
+measured ABI. Direct evaluator slots now keep only detachment markers in the
+map; C reads and roots use their actual fields, avoiding stale-value retention.
+Pending thread events and coding-state children are rooted and image-copied.
+The incoming bytecode error-message contract is retained under a distinct
+name alongside both existing argument/concat tests, with real vector storage.
+Its multibyte assertion is preserved: GNU buffer.c initializes the invisible
+print buffer as multibyte, and Ferror_message_string does not perform the
+unibyte conversion used by Fprin1_to_string. No assertion was weakened.
+The superseded Boolean-only generated file was removed again; Git retains
+it, and the complete typed inventory remains authoritative. Duplicate merge
+fields/initialization were removed before compilation. MERGE_HEAD is exactly
+36dd465; HEAD and origin/main remain 84f342a. No commit or push has occurred.
+New optimized all-target/all-feature checks and focused runtime validation
+are required before any claim about the combined tree.
+
+The combined 36dd465 integration now passes the optimized all-target/all-feature
+check (14.26s) and strict Clippy with zero warnings (18.97s). Its focused
+runtime run passed all 123 selected tests, zero failed/ignored, in 35.20s
+after a 2m21s build. This includes every bytecode test, native runtime and
+mandatory audit check, incoming direct-C-field/root/image contracts, typed
+forwarding negative controls, loader/path contracts and unchanged Eshell.
+Evidence: `native-36-integration-check.log`, `native-36-clippy.log` and
+`native-36-focused.log` in the session directory. The normal nine-fixture
+artifact comparison is next; whole native execution and the final full
+gate/7,883-outcome corpus are not yet verified on this tree.
+
+The integrated-tree native artifact run completed successfully: all nine
+fixtures passed, with eight complete `.eln` files byte-identical and the
+unchanged no-byte-compile fixture producing no artifact in either editor.
+The previously failing shared-string fixture now matches all 86,384 bytes;
+the final compiler fixture matches all 881,800 bytes. Session 25321 exited 0;
+test time 227.26s after a 4m00s optimized build. Evidence:
+`native-36-identity.log`; source index tree
+e707269ae409fecd6ed3e41569727c401d852372; subject SHA-256
+b42760c29570a06ca424d5bece8884587ba4e0c48d0460f7e4c5293587d4ba1e.
+The artifact-test binary's SHA-256 is
+ac3f2762f112dc2023ecc7de0452edc900fb09ab08292b698a16bd753f699a21.
+
+Default-selected native execution is next, GNU then Emaxx, with unchanged
+test and resource copies under `native-execution.bH5ZKU/test/` in the session
+directory. Both load the explicit `.el` test source and use the same pinned
+default selector; the upstream file itself compiles and loads its native
+helpers. Distinct homes/caches prevent the subject from reusing GNU's freshly
+compiled test helpers. The GNU checkout is clean at pinned 636f166; its binary
+SHA-256 matches oracle.lock.json exactly. No test deadlines or corpus timeout
+configuration were changed; EMACS_TEST_TIMEOUT was verified unset.
+
+The GNU reference run exposed an orchestration issue: its compiler children
+use separate process groups, so the old monitor briefly paused their parent
+as if a second worker had started. The test was not restarted and all logs
+are retained. The monitor now follows process ancestry as well as group
+membership for subsequent runs. These GNU timings are not performance
+evidence. Full native execution results are still pending.
+
+The GNU reference completed: 177 passed, zero unexpected results, exit 0
+(session 2502; `native-execution.bH5ZKU/gnu.stderr`). Its timings include the
+monitor pauses above and are not used for performance comparison. Three
+standalone process-ownership checks then passed: descendants with separate
+groups belong to the current job, unrelated batch jobs still occupy the
+slot, and orphaned former children hold the slot for the next job. No test
+process was signaled by those checks. The corrected monitor is supervising
+the same default-selected Emaxx native execution run, session 22107. Its
+first 77 tests passed; the run is incomplete. The subject binary is unchanged
+from the successful artifact comparison, with its hash recorded separately
+in the execution fixture directory. No full gate or compatibility corpus
+has been rerun, and no code has been committed or pushed.
+
+### Attached C-slot lexical lookup (integration finding I09)
+
+Source review found that `forwarded_c_value` used ordinary lexical lookup
+for still-attached slots. GNU `lread.c:1417` reads `Vload_path` directly,
+whereas `eval.c:2489` separately consults the explicit lexical environment
+for Lisp symbol evaluation. `eval.c:Fdefvaralias` also rejects making a
+live forwarded variable into an alias. A caller-supplied lexical namesake
+must not replace C storage; real dynamic binding must still change it.
+
+The attached path now reads the actual symbol value cell. Existing direct
+evaluator-field and detached-slot paths remain intact. A direct Rust
+regression exercises three initialized slots with distinct lexical values,
+dynamic binding/unbinding, makunbound, an independent replacement symbol
+binding, and subsequent C assignment. It checks object identity as well as
+the independent lexical and plain bindings. No test-specific production
+dispatch or GNU input/expectation was added or changed.
+
+Validation is pending. This source change was made while session 22107 was
+running the immutable pre-fix binary b42760c and unchanged copied GNU inputs.
+The binary hash was rechecked unchanged; no build or second test was started.
+The native run had passed 125/177 before its serial monitor paused it for
+an unrelated worker's live run. Whatever its final result, it applies to
+pre-I09 source tree e707269, not this new change. Focused checks must follow
+that run's terminal result; the final full gate and corpus remain required.
+
+The user subsequently approved overlapping independent, isolated correctness
+jobs with other workers. The unchanged native run now continues without the
+old host-global pause policy; only its own obsolete supervisor was parked,
+with automatic restoration after the child exits to preserve the original
+exit status. No other worker was signaled. Native execution timings include
+pauses and contention and are not performance evidence. Same-target/output
+work remains serial, and performance measurements still require isolation.
+
+The first I09 optimized all-target/all-feature check passed (37.32s).
+Strict Clippy then rejected the new test module's placement before a constant;
+moving the unchanged test module to the end of bindings.rs fixed that warning
+without a suppression. The second strict all-target/all-feature Clippy passed
+with zero warnings (48.21s). The focused library tests are still building.
+Logs: `i09-check.log`, `i09-clippy.log` (retained failed check), and
+`i09-v2-clippy.log` in the session directory. These isolated checks leave the
+native run's b42760c binary untouched; its hash remains unchanged.
+
+### Thread baseline on the integrated native binary
+
+All four requested cases were reproduced individually against the immutable
+pre-I09 integration binary and the pinned GNU 30.2 oracle. Both GNU test files
+were copied unchanged and verified with cmp. Each editor/case had independent
+HOME and TMPDIR directories. GNU passed all four; Emaxx reported each as one
+unexpected FAILED result and exited 2. None timed out. The diagnostic's 180s
+whole-command ceiling is not the compatibility harness's separate setup/test
+phase budget, and this is not a frozen compatibility score or performance run.
+No expected outcome or test body was altered.
+
+Cases: `threads-mutex-contention`, `threads-condvar-wait`,
+`thread-tests-thread-list-send-error`, and
+`thread-tests-thread-list-show-backtrace`. Full arguments, binary hashes,
+exit statuses and raw stdout/stderr are in
+`thread-baseline.S3KNBf/results.jsonl` under the session directory. Session
+29794 exited 0 because all observations were collected; that launcher status
+does not mean the Emaxx tests passed. Actual suspension/resumption and its
+owned runtime state remain to implement; the four mismatches are not closed.
+
+The integrated native execution run has now completed: Emaxx passed 177/177,
+zero unexpected results, exit 0 on the original session 22107. Helper 97776
+restored the original supervisor after the native child ended, and both exited
+normally. No restart occurred. The subject SHA-256 remains b42760c29570a06ca424d5bece8884587ba4e0c48d0460f7e4c5293587d4ba1e.
+GNU also passed 177/177. Evidence is `native-execution.bH5ZKU/emaxx.stderr`
+and `gnu.stderr`; neither run's timing is a performance comparison. Together
+with the nine artifact fixtures this validates the integrated pre-I09 tree
+e707269's default-selected native surface, not the entire 7,883 corpus or
+every native execution configuration. The I09 focused test build is still
+running; no thread/startup fix, final full gate, commit or push is claimed.
+
+I09 focused validation has now completed successfully (session 78775, exit 0):
+86 passed, zero failed/ignored, 36.44s after the optimized library-test build.
+The new exact-identity/lexical-decoy/dynamic-binding/detachment contract passed,
+as did all selected native runtime, loader/output, direct C-field/GC/image and
+mandatory adversarial gate contracts. `i09-v2-focused.log` retains the complete
+inventory and outcomes. Rustfmt and strict all-target/all-feature Clippy are
+clean; the first placement warning and its correction remain recorded above.
+The validation script's final hash assertion also confirmed that it never
+replaced the b42760c subject used by the independent native/thread runs. No
+entire native suite was restarted for I09. The four reproduced thread failures
+are the next implementation work, followed by Simple/ERC and the required
+final full optimized gate and 7,883-outcome corpus before publication.
+
+### Live bytecode roots prerequisite for thread suspension
+
+GNU `bytecode.c:mark_bytecode` traces live operand stacks, including the
+function and arguments retained by `Bcall`. Emaxx previously removed the
+function before calling and did not mark the local operand Vec. A direct
+bytecode contract creates a weak-table key only on that stack, collects in a
+zero-argument call, then collects again after the bytecode frame returns.
+The pinned GNU 30.2 oracle returns `(1 0)`; the unchanged integration binary
+b42760c returns `(0 0)`. This is an observed pre-fix failure, not a guessed
+expectation or a test-body substitution.
+
+A scoped registry now traces Bcall's actual borrowed operand stack, retaining
+the callee until the call completes. Its private closure-owned guard removes
+the registration on return or unwind; callers cannot forget a public guard
+and leave a dangling GC pointer. Root tracing cannot evaluate Lisp or switch
+threads. A nested-scope regression checks both live-key preservation and
+collection after unwind/return, including an unrelated dead key. No pooled
+inactive stack is treated as live, and no whole-stack cloning is introduced.
+
+Optimized all-target/all-feature check and strict Clippy pass, with zero
+warnings. Session 76992 passes 89 focused tests, zero failed/ignored, including
+both new contracts, all bytecode tests, selected weak-GC contracts and the
+native runtime tests. Evidence: `stack-roots-clippy.log` and
+`stack-roots-focused.log` in the integration session directory. The deliberate
+caught panic in the unwind test is followed by an `ok` result. These results
+do not close the four thread mismatches: other VM callouts, suspended lexical
+environments and native stacks still need their ownership/root audit. The
+final full gate and complete compatibility corpus remain outstanding.
+
+### Interpreter ownership boundary for real continuations
+
+`Interpreter` now holds its actual state in an owned boxed payload; a parked
+execution shell can be empty while a different shell owns that same allocation.
+All existing fields and their initializers remain in the payload. This avoids
+cloning the editor or accessing the same parked `&mut Interpreter` from another
+continuation. Field-splitting sites now explicitly borrow the payload once or
+evaluate scalar arguments before the mutable borrow; no Lisp result, test
+selector, deadline or expectation was changed.
+
+The new ownership regression transfers the payload between distinct shells
+while a scoped weak-key root is live. It requires the same payload address and
+Lisp key identity, visible buffer/global writes, and collection after the
+original root scope ends. Optimized all-target/all-feature check passes, as
+does strict Clippy with zero warnings after correcting a new test's unwrap to
+expect. The focused optimized library test run is still building (16473).
+Evidence: `state-shell-v2-check.log`, `state-shell-clippy.log` (retained first
+lint failure), `state-shell-v2-clippy.log`, `state-shell-focused.log`.
+
+This does not yet switch threads. GNU `thread.h` and `thread.c:87-148` require
+separate execution state and dynamic-binding activation, while editor buffers
+remain shared. GNU `eval.c:specpdl_unrewind` deliberately skips ordinary unwind
+actions during variable-only thread switches; not every C global may be made
+thread-local. Native shared heap/registry ownership, per-thread native stacks,
+GC roots and explicit coroutine teardown remain prerequisites before enabling
+the new scheduler. The four reproduced thread mismatches remain open.
+
+The interpreter-shell run completed successfully: session 16473 passed all 93
+selected tests, zero failed/ignored, 1.96s after a 3m55s optimized build. The
+new cross-shell root/identity test, image-copy contract and selected buffer,
+bytecode and native runtime regressions all passed. This result precedes the
+native ownership changes described next.
+
+### Native ownership boundaries for suspended frames
+
+NativeRuntime now separates its shared heap, permanent relocation roots, link
+table and stable relocation-pointer cells from each execution shell's native
+thread layout, handlers, unwind actions, call frames and ephemeral roots. A
+native call activates its thread through the existing stable pointer cell.
+The registry similarly has a movable owned payload. Loaded units now have
+stable Rc ownership across loader callbacks instead of references into a Vec
+that a nested load may grow; their existing loaded/ongoing flags remain shared
+Cells with unchanged branch conditions. The compiler retains one Rc-owned
+RefCell, preserving its active-context and live-borrow exclusion rules rather
+than copying a libgccjit context.
+
+Two new contracts check native payload/word/relocation identity with distinct
+local call frames, and compiler acquisition/release through two owners while
+a real RefMut is held. Optimized all-target/all-feature check passes (23.90s),
+as does strict Clippy with zero warnings (31.79s). A prior compiler-owner type
+mismatch was corrected at the active-loader callback signature; its failed
+check is retained. Focused optimized native/bytecode/root tests are building.
+Logs: `native-shell-check.log`, `native-owners-check.log` (retained type error),
+`native-owners-v2-check.log`, `native-owners-clippy.log`,
+`native-owners-focused.log` in the session directory.
+
+These are ownership prerequisites, not yet a working native thread switch.
+The scheduler still needs to transfer these payloads at a quiescent boundary,
+switch active TLS and native stack bounds, trace every suspended frame, and
+finish all Rust/native frames before freeing a coroutine stack. No native
+artifact/execution result from the earlier binary is attributed to this new
+source. The thread fixes, startup fixes and final gate/corpus are outstanding.
+
+Native ownership focused validation completed: session 85221 passed 98/98,
+zero failed/ignored, 2.30s after a 4m09s optimized build. Both new ownership
+contracts passed, along with the native ABI registration/layout checks,
+libgccjit smoke execution, compiler context checks, all bytecode tests and
+the selected root/image/load-path contracts. `native-owners-focused.log`
+records the complete inventory. Other workers' builds used separate targets;
+none was paused or signaled. These are correctness results, not performance
+measurements or a claim that real thread suspension has been implemented.
+
+The current tree also passes all 18 mandatory anti-cheating gate tests,
+zero failed/ignored (session 36680, 33.64s, `native-owners-anti.log`). This
+includes fresh configured-C ABI/forwarding manifest regeneration and checks
+against oracle delegation, private Lisp state and non-GNU native dispatch.
+Rustfmt and diff whitespace checks are clean. These automated gates supplement
+the source/ownership review; they do not close the remaining thread/native
+suspension audit or replace the final full gate and 7,883-outcome measurement.
+
+## 2026-09-05 native merge: correction to the bytecode argument repair
+
+During the `native-comp` merge of main `84f342a`, the ordinary native artifact
+ladder caught a semantic problem in `17da04f` despite its passing Eshell and
+runtime tests. The fifth unchanged GNU fixture,
+`test/lisp/emacs-lisp/comp-tests.el`, produced two 86,384-byte files that differ
+from byte 768. The serialized constants lost the shared `" *temp file*"`
+string references, shifting data layout and machine-code addresses. The saved
+pre-merge `9097866` editor still emits the exact GNU artifact for that same
+source under the same locale. Nothing was normalized in the comparison.
+
+GNU `bytecode.c:exec_byte_code` pushes `*args`: it does not copy string
+objects when binding bytecode arguments. The incoming `stored_value` call
+instead creates a fresh mutable string for each compact-string argument.
+That per-call allocation is removed. The actual diagnostic producer is
+corrected at `print.c:Ferror_message_string`'s boundary: a general diagnostic
+is already a mutable multibyte Lisp string when returned from the print
+buffer; `(error STRING)` returns the original STRING, preserving identity and
+properties without allocation. No promotion cache or package-specific branch
+is introduced. GNU Elisp remains unchanged.
+
+The Rust bytecode contract is strengthened to require the caller's original
+string identity across repeated calls and caller-visible property mutation,
+using an actual C-owned diagnostic producer. Its former mutation-only check
+could pass while losing identity. The existing Eshell fixture and its
+expectations are unchanged. The corrected tree passes 112 optimized Rust
+tests, including every bytecode test, all native-runtime correctness tests,
+17 anti-cheating checks, Eshell and error-message rendering; one separate
+native timing probe is ignored. Format/check/strict Clippy pass. The full
+artifact replay subsequently passes all nine fixtures: eight complete `.eln`
+files identical, including GNU `comp.el`, and one correctly absent artifact
+(`identity-string-fixed.log`, 216.48s). The complete native execution replay
+also passes 177/177, zero unexpected results, exit 0, with both helper `.eln`
+files freshly compiled and loaded (`emaxx-native.stderr`, 1114.12s wall /
+1024.41s user CPU). No compiler-spawning or image-cloning shortcut was used.
+Evidence: `/private/tmp/emaxx-main-84f342a.3jARTW` and the L12 entry in
+`docs/native-comp-c-parity-ledger.md`. This is not a claim that all string
+representation or forwarding gaps elsewhere in the runtime are closed.
+
+The final pre-commit audit passes all 17 gates; formatting, all-target check
+and strict all-feature/all-target Clippy are clean. Two serial full-compiler
+timing pairs used 62.81/63.02s and 69.94/66.42s before/merged user CPU; GNU
+used 8.43s and 9.47s. All measured artifacts are byte-identical. This shows no
+material merge regression, not a defensible speedup; Emaxx remains about 7.2x
+GNU including startup. Detailed timings/hashes are in the parity ledger.
+
+### 2026-09-05 integration: actual continuation/native suspension boundary
+
+This is implementation progress toward the four thread mismatches, not a
+claim that they are fixed. The old scheduler is not yet wired to the new
+owned continuation backend; final whole-gate/corpus validation and publication
+remain outstanding.
+
+GNU 30.2 `alloc.c:5502-5535` requires register spilling before releasing the
+interpreter lock; `thread.c:663-705` marks every live thread's machine stack,
+specpdl, handlers and bytecode stack. The new `eval/continuations.rs` transfers
+the actual boxed editor state between distinct interpreter shells on guarded
+corosensei 0.3.4 stacks. It resumes the original Rust/native frames rather than
+classifying Lisp function bodies or replaying their effects. No unsafe Send,
+oracle execution, timeout change, expectation change or ignore is added.
+
+The native suspension scope retains an explicit register-spill frame on Darwin
+arm64 / Linux x86-64 and registers the actual paused stack span through its
+public allocation bound. It retains ephemeral word arrays, native handler
+words, and scoped Lisp roots for native handlers, cleanup actions, saved
+excursions/restrictions, pending errors and the active environment. Saved undo
+state is traced from the canonical interpreter specbindings, including entries
+not materialized into a Lisp list. Historical native restore-token copies must
+not become an alternate root authority after dynamic binding swaps.
+
+The native heap and code registry move between separately owned shells. The
+compiler retains its single Rc/RefCell and re-entry exclusion. Native TLS and
+the active stack bound are switched/restored; process-global heap-pointer
+changes are restricted to an activation that actually owns the native lock.
+OS-thread-local lock ownership counts live activations independently of their
+return order. Outermost return is now per logical native thread, while heap
+tracking persists until all native calls return. Forwarded symbol-position
+state is refreshed from the resumed interpreter's actual variable cell.
+
+Evidence directory: `/private/tmp/emaxx-native-threads-01a05a9d.EqHRnl`.
+`native-suspension-check.log`: optimized all-target/all-feature check succeeds
+(32.36s), with explicitly unfinished/unused scheduler scaffolding warnings.
+`native-suspension-focused.log`: 96 optimized tests pass, zero failures/ignores
+(4m49 build, 1.97s tests), including an actual native machine-frame suspension,
+GC from another stack, another native activation, resumption of the native-only
+word, and release of a weak key owned only by the suspended unwind frame. The
+existing native runtime, bytecode and scoped-root tests also pass. Deliberate
+caught Rust panics in root/spill tests are successful unwind checks, not crashes.
+These results precede the added two-native-continuation non-LIFO regression,
+loader panic-restoration regression and final root/forwarding review corrections;
+those changes need their own validation. No performance claim follows from this
+correctness run. Current source is not yet a zero-warning publication tree.
+
+The follow-up `native-suspension-v2-focused.log` passes 98/98 optimized tests,
+zero failures/ignores (2.04s tests). It includes both actual native stacks
+returning in non-LIFO order, collection with two then one suspended unwind
+roots, resumption-time forwarded-variable changes, and restoration of loader
+owners/TLS before a deliberate Rust panic propagates. Unused scheduler
+scaffolding warnings remain explicit. All our builds are terminal at this
+checkpoint. The fresh remote adds `c236c21` on native-comp (main stays
+`84f342a`); its full eight-file change has been reviewed against GNU 30.2,
+and the pinned oracle confirms the seven predicate boundary/negative controls
+in `c236c21-gnu-type-boundaries.log`. Incoming integration will change this
+tested tree and requires affected-area revalidation.
+
+The complete `36dd465..c236c21` delta is now applied, preserving the tested
+suspension work. A normalized diff comparison (ignoring only Git object IDs
+and hunk line numbers) confirms the worktree delta exactly matches all eight
+upstream file changes. The pending merge parent is advanced to `c236c21` so
+the eventual commit retains native-comp ancestry; no commit/push has occurred.
+`native-c236-integration-check.log` passes the optimized all-target/all-feature
+check in 24.28s. This compilation result does not extend the earlier 98-test
+runtime result to the newly merged tree; affected runtime/anti-cheating tests
+remain required, along with scheduler wiring and the final full gates.
+
+### 2026-09-05 integration: real scheduler wired, focused runtime validation
+
+This checkpoint supersedes the earlier "scheduler not wired" status. The
+dispatcher now resumes owned continuations for arbitrary Lisp functions. The
+`ThreadProgram` body classifier and fruitless-yield counters are removed.
+Mutex and condition-variable waits retain the original call stack; condition
+waits release and restore the full recursive mutex depth. Signal delivery,
+join-entry error snapshots and blocked-thread backtraces use actual per-thread
+state. Dynamic binding cells are exchanged without running ordinary unwind
+actions. Sleeping children retain their own event loops and binding context;
+`thread-yield` and the joining parent do not run unrelated timers. Existing
+process-poll intervals and deadlines are unchanged.
+
+GNU references: `thread.c` mutex/condition callbacks, `Fthread_signal`,
+`thread_join_callback`, `Fthread_join`, and `mark_one_thread`; `eval.c`
+variable-only specpdl unrewind. The native suspension implementation described
+above remains in use at actual scheduler boundaries. No per-test production
+branch, result fabrication, retry, expectation edit or ignore was introduced.
+
+Evidence in `/private/tmp/emaxx-native-threads-01a05a9d.EqHRnl`:
+`thread-scheduler-v2-check.log` passes the optimized all-target/all-feature
+check with zero warnings (34.87s). `thread-scheduler-focused.log` passes
+128/128 optimized library tests, zero failures/ignores (8m25 build, 175.73s
+tests). This includes the latest native-comp predicate changes, native and
+bytecode tests, scoped GC-root tests, all 18 anti-cheating checks,
+and existing thread binding, handler, signal, join, timer and process-owner
+contracts. Deliberately caught panic probes pass; incidental timing output
+does not establish performance under concurrent independent host workloads.
+
+Open audit work is explicit: caller lexical environments at fresh-callee-env
+boundaries need a focused GC regression; VM live operands/unwind entries need
+coverage beyond Bcall; unconditional rooting of dead thread outcomes differs
+from GNU's unlink-on-death and reachable-thread marking. Orderly teardown and
+context restoration need adversarial coverage. The four unchanged upstream
+thread cases still require a freshly built executable replay at this point.
+Final strict Clippy, full optimized gate, frozen 7,883 corpus, publication and
+Simple/ERC work remain outstanding. These focused results are not a claim
+that the four compatibility mismatches or the full audit are closed.
+
+The freshly built `20b7093960f1c9c9e77deedaf2eb17def826321c6005fba8f9c32e2d5a316a35`
+executable then passes three unchanged upstream cases: `threads-mutex-contention`,
+`threads-condvar-wait`, and `thread-tests-thread-list-send-error`. The fourth,
+`thread-tests-thread-list-show-backtrace`, fails normally (exit 2, no timeout).
+GNU passes all four. Exact argv, executable hashes and outputs are preserved
+in `thread-scheduler-replay.jsonl` and `thread-replay-np9b3n18/`; these are
+focused diagnostics, not a frozen compatibility score.
+
+The failed case's actual suspended frames include `mutex-lock` and the original
+thread function. Its rendered buffer stops in the printer with
+`(wrong-type-argument number-or-marker-p nil)`. The independent ordinary call
+`(cl-print-to-string-with-limit #'prin1 '(a b) 80)` reproduces that error;
+nil/zero/t print limits succeed. GNU returns the string for all four limits.
+`floatfns.c:Flog` checks `NILP(base)`, while Emaxx's dispatcher incorrectly
+converted an explicit or native-ABI-padded nil base to a number. That path is
+corrected, with `extract_float`'s number-not-marker type check and direct native
+funcall regressions. Arithmetic advice makes the old printer succeed, so its
+trace is diagnostic of a changed call route, not an unchanged passing replay.
+The new binary still needs to verify the fourth upstream case.
+
+Independent live-oracle weak-key probes also expose two real GC gaps on that
+same immutable executable. `caller-roots.el` gives GNU `((1 t 0) (1 t 0))`
+but Emaxx `((0 nil 0) (0 nil 0))`; the caller's lexical cells must remain rooted
+across a callee's separate environment. `dead-thread-roots.el` gives GNU
+`(1 0)` but Emaxx `(1 1)`; unreachable finished threads must not independently
+root their results. Both ownership rules are now corrected, with live-oracle
+regressions testing retention and release. These changes require new runtime
+validation and do not inherit the preceding 128-test result. The next focused
+selection explicitly includes the three low-level continuation tests which
+the 128-test name filter did not select (their earlier 98-test proof remains
+historical only). Broader VM callout-root coverage and teardown audit remain
+open. No ignores, changed upstream expectations, or timing relaxations were
+used to obtain these results.
+
+### 2026-09-05 integration: fourth thread replay and VM GC follow-up
+
+The new optimized executable, SHA256
+`551fce17b1e0c7c232ffe75364f509ffb209ad52fb77af9461d765196ea2e741`,
+passes the unchanged `thread-tests-thread-list-show-backtrace` test, as does
+the pinned GNU 30.2 oracle. Both exit zero without timeout; exact commands
+and outputs are in `thread-backtrace-fixed-replay.jsonl` and
+`thread-replay-s1ufmigp/` under the evidence directory above. All four original
+failures now have passing upstream replays, but not yet a single final-tree
+run. This is not a full-corpus result or a completed merge audit.
+
+`thread-gc-log-focused.log` records 134 passes, one failure, zero ignored.
+The caller-environment GC, ordinary finite printer, native optional-log ABI,
+and three actual continuation tests pass. The one failure is the new
+dead-thread fixture's GNU-side assertion: wrapping its original file in a
+single expression retained a conservative C-stack reference. The regression
+now loads the identical file on both editors, preserving its top-level return
+boundaries and the original `(1 0)` retention-and-release requirement. That
+corrected fixture still needs its own passing result.
+
+An independent real-bytecode probe (`vm-suspended-roots.el`) exposes another
+GC gap. The pinned GNU produces `(1 t 0)` for both cleanup and operand cases;
+the older `20b709` executable produces `(1 t 0)` for the cleanup control but
+`(0 nil 0)` for the operand case. The latter holds a freshly allocated weak
+key below Binsert's argument while a normal before-change hook suspends. No
+test-specific production route or synthesized function body is involved.
+
+The VM fix now roots its actual operands and pending unwind entries at Lisp
+callouts, including dedicated primitive opcodes, bindings, interpreted forms,
+and cleanup execution. Program constants, actual arguments, pending return or
+error values, and saved window configurations are rooted for their live scopes.
+Canonical thread specbindings remain authoritative; historical binding restore
+tokens are not used as a second root stack. Immutable borrows exist only while
+the vectors cannot be mutated; no vector alias is held across VM writes. The
+first check found three private-field access errors, corrected by implementing
+the labeled-restriction trace in its owning module without widening visibility.
+The new live-oracle regression checks both retention and release. Runtime
+validation of this VM change is pending; the preceding executable and 134
+passes do not prove it. Final gates, Simple/ERC and publication remain open.
+
+The subsequent VM validation is green: `vm-roots-clippy.log` records zero
+warnings from all-target/all-feature gate-profile Clippy (44.27s), and
+`vm-roots-focused.log` records 136/136 passing optimized tests, zero failures
+or ignores (5m46 build, 194.67s tests). This includes the corrected same-file
+dead-thread result probe, the actual Binsert/unwind-root regression, all three
+low-level continuation tests, existing native/bytecode/thread contracts, and
+all 18 anti-cheating checks. The new retention/release outputs match GNU:
+`(1 0)` and `((1 t 0) (1 t 0))`. Formatting and diff whitespace checks pass.
+These are focused results, not the final full gate or compatibility corpus.
+
+The fresh optimized CLI (`vm-roots-cli-build.log`, 3m07; SHA256
+`ff026fb2a75c28f25d48f0ffa0da01747b114c64d94ae87d41e79c1260575507`)
+then runs both unchanged upstream thread files together under the pinned
+default selector. GNU and Emaxx each report 34 actual passes, one identical
+configuration skip (`thread-tests-list-threads-error-when-not-configured`),
+zero unexpected results and no timeouts. Thus all four original failures
+pass together on the VM-fixed tree, alongside the other selected thread
+cases. Exact source hashes, commands and outcomes are in
+`vm-roots-upstream-threads.jsonl`. No skip was added: that upstream test
+requires an editor configured without threads, whereas both editors have
+thread support. A new Rust/native suspended-frame teardown regression has
+been added after the 136-test build and still requires validation. Simple/ERC
+diagnostics start next; this is not a publication-ready full-gate claim.
+
+### 2026-09-05 integration: Simple/ERC baseline after thread fixes
+
+`startup-before.jsonl` records all three unchanged cases on the same `ff026f`
+CLI. GNU passes all three. Emaxx Simple fails its original four-second
+`accept-process-output` assertion. Both ERC cases fail with `end-of-file`
+after their original ten-second output waits. The ERC parent subsequently
+hangs during editor destruction: `erc-before-stall.sample.txt` shows
+`RunningProcess::drop -> Child::wait -> wait4`, not active test evaluation.
+The diagnostic supervisor terminates that parent at its pre-existing
+180-second outer watchdog; record this as two actual failures AND a process
+timeout, not merely three ordinary failures. The secondary teardown wait is
+not yet explained. No production change, retry, deadline relaxation or test
+modification is used for these baseline results. Empty-startup profiling is
+next; elapsed times under instrumentation will not be benchmark evidence.
+
+The empty-startup profile subsequently completes normally, exit zero. Its
+21.401s instrumented duration is not a benchmark. `startup-profile.jsonl`
+and `startup-profile-hr00irsi/{calls.log,sample.txt}` identify repeated GC
+marking/hash-set construction beneath the unchanged GNU `loadup.el`
+after-load hook (`loadup.el:134`). This is evidence for optimizing generic
+collector bookkeeping, not for skipping a collection or changing that hook.
+The printed `gcs-done`/`gc-elapsed` values are existing zero/fallback values
+and are not used as measurements. No startup optimization is implemented at
+this checkpoint; the Simple/ERC failures and secondary process teardown
+wait remain open.
+
+### 2026-09-05 integration: local checkpoint preparation
+
+The user permits a local native-comp/thread checkpoint before Simple/ERC
+work. It includes the pending merge from native-comp `c236c21` onto main
+`84f342a`, the real scheduler, native/bytecode/root safety corrections,
+optional-nil logarithm correction, regression tests and this ledger. It is
+not publication to main and does not certify the full merge audit, full gate
+or frozen compatibility corpus. Those requirements remain unchanged.
+
+`thread-checkpoint-clippy.log` passes all-target/all-feature gate-profile
+Clippy with `-D warnings` (19.49s), including compilation of the newly added
+teardown regression. `cargo fmt --all -- --check`, unstaged and staged diff
+whitespace checks pass. Production code is unchanged from the `ff026f`
+34-pass/one-matching-skip upstream thread replay. The pending runtime check
+selects all four low-level continuation tests, including the new teardown
+test; its result will be recorded separately, without rerunning the full
+gate or claiming the earlier 136-test result covered this new test.
+
+`thread-checkpoint-teardown.log` subsequently passes all four selected
+continuation tests, zero failures/ignores (2m45 optimized build; 0.09s
+tests). The new regression registers two real suspended execution stacks,
+one crossing the native C ABI, then drops the editor. It observes ordinary
+non-catchable termination from both original frames, both Rust frame guards
+being released, a cleared resume scope, and a successful native call in a
+fresh interpreter. This checks actual lifecycle behavior, not a fabricated
+thread status or a bypass of the native stack. The other tests retain their
+GC retention/release and non-LIFO completion checks. GNU `thread.c` condition
+wait, join-entry error snapshot and live-thread root contracts were also
+rechecked against the current scheduler. No production change followed the
+136-test/34-upstream-pass result; only the additional tested regression and
+ledger updates are newer. The local checkpoint remains explicitly short of
+the final publication requirements listed above.

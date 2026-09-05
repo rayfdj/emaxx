@@ -9,6 +9,107 @@ fn eval_atoms() {
 }
 
 #[test]
+fn detached_eval_cells_keep_their_c_values_after_lisp_stores() {
+    // data.c:set_internal switches a voided SYMBOL_FORWARDED to
+    // SYMBOL_PLAINVAL, leaving the old C slot untouched.  The native
+    // evaluator's direct slot access must retain the same separation.
+    let mut interpreter = Interpreter::new();
+    let mut environment = Env::new();
+    interpreter.set_global_binding("max-lisp-eval-depth", Value::Integer(200));
+    for name in ["max-lisp-eval-depth", "debug-on-next-call", "quit-flag"] {
+        primitives::call(
+            &mut interpreter,
+            "makunbound",
+            &[Value::symbol(name)],
+            &mut environment,
+        )
+        .expect("detach forwarded evaluator variable");
+        assert!(interpreter.symbol_value_cell(name).is_err());
+    }
+    for (name, value) in [
+        ("max-lisp-eval-depth", Value::string("plain value")),
+        ("debug-on-next-call", Value::Integer(7)),
+        ("quit-flag", Value::T),
+    ] {
+        let value = interpreter
+            .prepare_variable_assignment(name, value)
+            .expect("a detached symbol accepts an ordinary Lisp value");
+        interpreter.set_global_binding(name, value.clone());
+        assert_eq!(interpreter.symbol_value_cell(name).unwrap(), value);
+    }
+    assert_eq!(interpreter.max_lisp_eval_depth_value(), 200);
+    assert!(!interpreter.debug_on_next_call());
+    interpreter
+        .maybe_quit(&mut environment)
+        .expect("the detached Lisp quit-flag does not change Vquit_flag");
+
+    // eval.c raises its C depth limit to 100 without rewriting the detached
+    // Lisp symbol or coercing that symbol's unrelated value.
+    interpreter.max_lisp_eval_depth = 0;
+    interpreter.begin_funcall(&mut environment).unwrap();
+    interpreter.end_funcall();
+    assert_eq!(interpreter.max_lisp_eval_depth_value(), 100);
+    assert_eq!(
+        interpreter
+            .symbol_value_cell("max-lisp-eval-depth")
+            .unwrap(),
+        Value::string("plain value")
+    );
+    let copy = interpreter.deep_clone_image();
+    assert!(copy.quit_flag_is_nil());
+    assert_eq!(copy.symbol_value_cell("quit-flag").unwrap(), Value::T);
+}
+
+#[test]
+fn bool_forwarding_requires_an_initialized_c_slot() {
+    use primitives::generated_gnu_c_forwarded_variables::{
+        ForwardedVariableKind, GNU_C_FORWARDED_VARIABLES,
+    };
+
+    let mut interpreter = Interpreter::new();
+    let mut environment = Env::new();
+    let inactive = GNU_C_FORWARDED_VARIABLES
+        .iter()
+        .find_map(|(name, kind)| {
+            (*kind == ForwardedVariableKind::Bool && interpreter.symbol_value_cell(name).is_err())
+                .then_some(*name)
+        })
+        .expect("the all-platform inventory contains unavailable Boolean slots");
+    for (name, expected) in [
+        ("word-wrap-by-category", Value::T),
+        ("comp-file-preloaded-p", Value::T),
+        (inactive, Value::Integer(7)),
+    ] {
+        primitives::call(
+            &mut interpreter,
+            "set",
+            &[Value::symbol(name), Value::Integer(7)],
+            &mut environment,
+        )
+        .expect("store through normal variable assignment");
+        assert_eq!(interpreter.symbol_value_cell(name).unwrap(), expected);
+        primitives::call(
+            &mut interpreter,
+            "makunbound",
+            &[Value::symbol(name)],
+            &mut environment,
+        )
+        .expect("detach or void the symbol");
+        primitives::call(
+            &mut interpreter,
+            "set",
+            &[Value::symbol(name), Value::Integer(9)],
+            &mut environment,
+        )
+        .expect("store to an ordinary plain variable");
+        assert_eq!(
+            interpreter.symbol_value_cell(name).unwrap(),
+            Value::Integer(9)
+        );
+    }
+}
+
+#[test]
 fn native_printer_obeys_gnu_print_symbols_bare_contract() {
     // GNU 30.2 src/print.c handles PVEC_SYMBOL_WITH_POS directly and exposes
     // `print-symbols-bare' as a dynamically scoped DEFVAR_BOOL.
@@ -1045,7 +1146,7 @@ fn eval_arithmetic() {
     assert_eq!(eval_str("(* 4 5)"), Value::Integer(20));
     assert_eq!(eval_str("(/ 2)"), Value::Integer(0));
     assert_eq!(eval_str("(/ -1)"), Value::Integer(-1));
-    assert_eq!(eval_str("(/ 2.0)"), Value::Float(0.5));
+    assert_eq!(eval_str("(/ 2.0)"), Value::float(0.5));
     {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -1133,7 +1234,7 @@ fn aset_is_a_normal_primitive_with_left_to_right_argument_evaluation() {
                      (subrp (symbol-function 'aset))))"
         ),
         Value::list([
-            Value::list([Value::Symbol("vector-literal".into()), Value::Integer(7),]),
+            Value::vector([Value::Integer(7),]),
             Value::list([Value::Symbol("value".into()), Value::Symbol("index".into()),]),
             Value::Nil,
             Value::T,
@@ -1439,11 +1540,7 @@ fn setf_supports_aref_places_bound_in_lexical_variables() {
         eval_str_with_upstream_batch(
             "(let ((stats (vector 0 0)) (i 1)) (setf (aref stats (mod i 2)) 7) stats)",
         ),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(0),
-            Value::Integer(7),
-        ])
+        Value::vector([Value::Integer(0), Value::Integer(7),])
     );
 }
 
@@ -1503,11 +1600,7 @@ fn setf_resolves_conditional_places() {
 fn aset_mutates_vectors_bound_in_lexical_variables() {
     assert_eq!(
         eval_str("(let ((stats (make-vector 2 nil))) (aset stats 1 'ok) stats)"),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Nil,
-            Value::Symbol("ok".into()),
-        ])
+        Value::vector([Value::Nil, Value::Symbol("ok".into()),])
     );
 }
 
@@ -1515,11 +1608,7 @@ fn aset_mutates_vectors_bound_in_lexical_variables() {
 fn prog1_returns_vectors_after_in_place_mutation() {
     assert_eq!(
         eval_str("(let ((stats (make-vector 2 nil))) (prog1 stats (aset stats 1 'ok)))"),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Nil,
-            Value::Symbol("ok".into()),
-        ])
+        Value::vector([Value::Nil, Value::Symbol("ok".into()),])
     );
 }
 
@@ -1556,11 +1645,7 @@ fn prog2_returns_vectors_after_in_place_mutation() {
             "(let ((stats (make-vector 2 nil)))
                    (prog2 'ignored stats (aset stats 1 'ok)))"
         ),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Nil,
-            Value::Symbol("ok".into()),
-        ])
+        Value::vector([Value::Nil, Value::Symbol("ok".into()),])
     );
 }
 
@@ -1581,7 +1666,7 @@ fn make_temp_name_preserves_prefix_and_changes_across_calls() {
 #[test]
 fn temporary_file_directory_names_a_directory_with_trailing_separator() {
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"(list (string-suffix-p "/" temporary-file-directory)
                      (equal temporary-file-directory
                             (file-name-as-directory temporary-file-directory)))"#
@@ -2109,11 +2194,7 @@ fn remove_filters_lists_vectors_and_strings() {
     );
     assert_eq!(
         items[1],
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(1),
-            Value::Integer(3),
-        ])
+        Value::vector([Value::Integer(1), Value::Integer(3),])
     );
     assert_eq!(primitives::string_text(&items[2]).unwrap(), "b");
 }
@@ -2257,21 +2338,16 @@ fn assert_eval_string_ops() {
     assert_string_value(eval_str(r#"(substring "hello" 0 -1)"#), "hell");
     assert_eq!(
         eval_str(r#"(substring [255 99 98 97] 1 4)"#),
-        Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(99),
-            Value::Integer(98),
-            Value::Integer(97),
-        ])
+        Value::vector([Value::Integer(99), Value::Integer(98), Value::Integer(97),])
     );
-    assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::Float(0.1));
+    assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::float(0.1));
     assert_eq!(
         eval_str(r#"(string-to-number ".1..e1")"#),
-        Value::Float(0.1)
+        Value::float(0.1)
     );
     assert_eq!(
         eval_str(r#"(string-to-number "1e+1.1")"#),
-        Value::Float(10.0)
+        Value::float(10.0)
     );
     assert_eq!(
         eval_str(r#"(string-to-number "ffzz" 16)"#),
@@ -2387,9 +2463,9 @@ fn eval_string_ops() {
 #[test]
 fn reader_printer_and_string_to_number_share_gnu_special_float_syntax() {
     let positive_infinity = eval_str(r#"(string-to-number "1.0e+INFjunk")"#);
-    assert!(matches!(positive_infinity, Value::Float(value) if value == f64::INFINITY));
+    assert!(matches!(positive_infinity, Value::Float(value) if value.get() == f64::INFINITY));
     let negative_infinity = eval_str(r#"(string-to-number "-2.e+INF")"#);
-    assert!(matches!(negative_infinity, Value::Float(value) if value == f64::NEG_INFINITY));
+    assert!(matches!(negative_infinity, Value::Float(value) if value.get() == f64::NEG_INFINITY));
 
     let positive_nan = eval_str(r#"(string-to-number "2.e+NaNjunk")"#);
     assert!(
@@ -2405,7 +2481,7 @@ fn reader_printer_and_string_to_number_share_gnu_special_float_syntax() {
         Value::Integer(1)
     );
     assert_eq!(eval_str("'1e-INF"), Value::Symbol("1e-INF".into()));
-    assert!(matches!(eval_str("1e+INF"), Value::Float(value) if value == f64::INFINITY));
+    assert!(matches!(eval_str("1e+INF"), Value::Float(value) if value.get() == f64::INFINITY));
     assert_string_value(eval_str(r#"(prin1-to-string (intern "1e-INF"))"#), "1e-INF");
     assert_string_value(
         eval_str(r#"(prin1-to-string (intern "1e+INF"))"#),
@@ -3288,9 +3364,11 @@ fn file_name_handlers_honor_precedence_operations_and_inhibition() {
 
 #[test]
 fn file_name_handler_match_cache_reuses_stable_scans() {
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     crate::lisp::primitives::reset_file_name_handler_scan_count();
     assert_eq!(
-        eval_str(
+        eval_str_with(
+            &mut interp,
             r#"(let ((file-name-handler-alist
                       '(("cache-target" . emaxx-cache-handler))))
                  (list (find-file-name-handler
@@ -3960,11 +4038,11 @@ fn float_constants_are_available_as_builtin_variables() {
     // float-sup.el owns these; they exist only in the loaded image.
     assert_eq!(
         eval_str_with_upstream_batch("float-e"),
-        Value::Float(std::f64::consts::E)
+        Value::float(std::f64::consts::E)
     );
     assert_eq!(
         eval_str_with_upstream_batch("float-pi"),
-        Value::Float(std::f64::consts::PI)
+        Value::float(std::f64::consts::PI)
     );
 }
 
@@ -4084,7 +4162,7 @@ fn native_buffer_ticks_are_signed_distinct_and_honor_buffer_arguments() {
 fn gc_counter_variables_are_available_for_benchmark() {
     assert_eq!(
         eval_str("(list gcs-done gc-elapsed)"),
-        Value::list([Value::Integer(0), Value::Float(0.0)])
+        Value::list([Value::Integer(0), Value::float(0.0)])
     );
 }
 
@@ -4299,8 +4377,10 @@ fn native_minibuffer_completion_session_state_is_bound_and_special() {
 
 #[test]
 fn evaluator_debugger_policy_is_bound_and_dynamic_across_function_calls() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     assert_eq!(
-        eval_str(
+        eval_str_with(
+            &mut interp,
             r#"(progn
                  (defun emaxx-test-active-debugger-policy ()
                    (list debugger debug-on-error debug-on-quit debug-on-signal
@@ -4862,6 +4942,124 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
 }
 
 #[test]
+fn c_owned_defaults_are_not_replaced_with_later_dumped_values() {
+    let interp = Interpreter::new();
+    let env = Env::new();
+    assert_eq!(
+        interp.lookup_var("gc-cons-percentage", &env),
+        Some(Value::float(0.1))
+    );
+    assert_eq!(
+        interp.lookup_var("undo-outer-limit", &env),
+        Some(Value::Integer(24_000_000))
+    );
+    assert_eq!(interp.lookup_var("font-log", &env), Some(Value::Nil));
+    assert_eq!(interp.lookup_var("purify-flag", &env), Some(Value::T));
+    assert_eq!(interp.lookup_var("display-hourglass", &env), Some(Value::T));
+    for name in [
+        "inhibit-x-resources",
+        "internal-doc-file-name",
+        "load-source-file-function",
+        "resize-mini-windows",
+        "exec-suffixes",
+        "temporary-file-directory",
+    ] {
+        assert_eq!(
+            interp.lookup_var(name, &env),
+            Some(Value::Nil),
+            "wrong C initializer for {name}"
+        );
+    }
+    assert_eq!(
+        interp.lookup_var("debugger", &env),
+        Some(Value::symbol("debug-early"))
+    );
+    assert_eq!(
+        interp.lookup_var("native-comp-enable-subr-trampolines", &env),
+        Some(Value::Nil)
+    );
+    assert_eq!(interp.lookup_var("use-dialog-box", &env), Some(Value::T));
+    assert_eq!(
+        interp.lookup_var("frame-internal-parameters", &env),
+        Some(Value::list([
+            Value::symbol("name"),
+            Value::symbol("parent-id"),
+            Value::symbol("window-id"),
+        ]))
+    );
+    assert_eq!(
+        interp.lookup_var("auto-save-list-file-prefix", &env),
+        None,
+        "startup.el, not Rust, owns auto-save-list-file-prefix"
+    );
+    assert_eq!(
+        interp.get_symbol_property("temporary-file-directory", "standard-value"),
+        None,
+        "cus-start.el, not Rust, owns the Custom standard value"
+    );
+    assert_eq!(
+        interp.lookup_var("terminal-frame", &env),
+        Some(Value::Frame(interp.selected_frame_id))
+    );
+    for name in [
+        "redisplay--all-windows-cause",
+        "redisplay--mode-lines-cause",
+    ] {
+        let table = interp
+            .lookup_var(name, &env)
+            .unwrap_or_else(|| panic!("xdisp.c did not initialize {name}"));
+        assert_eq!(
+            crate::lisp::json::hash_table_entries(&interp, &table),
+            Some(("eql".to_string(), Vec::new()))
+        );
+    }
+    assert_eq!(
+        interp.lookup_var("eol-mnemonic-dos", &env),
+        Some(Value::string("\\"))
+    );
+    assert_eq!(
+        interp.lookup_var("eol-mnemonic-mac", &env),
+        Some(Value::string("/"))
+    );
+    let frame_title = interp
+        .lookup_var("frame-title-format", &env)
+        .expect("xdisp.c initializes frame-title-format");
+    let icon_title = interp
+        .lookup_var("icon-title-format", &env)
+        .expect("xdisp.c initializes icon-title-format");
+    assert!(crate::lisp::primitives::values::values_eq_in_env(
+        &interp,
+        &frame_title,
+        &icon_title,
+        &env,
+    ));
+    assert_eq!(
+        frame_title,
+        Value::list([
+            Value::symbol("multiple-frames"),
+            Value::string("%b"),
+            Value::list([
+                Value::string(""),
+                Value::string("%b - GNU Emacs at "),
+                Value::symbol("system-name"),
+            ]),
+        ])
+    );
+    let Value::Record(comp_units_id) = interp
+        .lookup_var("comp-loaded-comp-units-h", &env)
+        .expect("comp.c initializes the loaded-unit table")
+    else {
+        panic!("comp-loaded-comp-units-h is not a hash table record")
+    };
+    assert_eq!(
+        interp
+            .find_record(comp_units_id)
+            .and_then(|record| record.slots.get(5)),
+        Some(&Value::symbol("value"))
+    );
+}
+
+#[test]
 fn startup_features_own_their_capability_metadata_in_one_manifest() {
     let interp = Interpreter::new();
     let mut unique = std::collections::HashSet::new();
@@ -4888,28 +5086,19 @@ fn startup_features_own_their_capability_metadata_in_one_manifest() {
 }
 
 #[test]
-fn dumped_auto_buffer_locals_share_their_defaults_and_locality_manifest() {
+fn native_syntax_propertize_progress_is_buffer_local() {
     let interp = Interpreter::new();
-    let mut unique = std::collections::HashSet::new();
-    for variable in DUMPED_AUTO_BUFFER_LOCALS {
-        assert!(
-            unique.insert(variable.name),
-            "dumped auto-buffer-local manifest contains duplicate `{}`",
-            variable.name
-        );
-        assert_eq!(
-            interp.builtin_var_value(variable.name),
-            Some(variable.default.value()),
-            "dumped auto-buffer-local `{}` lost its default",
-            variable.name
-        );
-        assert!(
-            interp.is_auto_buffer_local(variable.name),
-            "dumped auto-buffer-local `{}` lost its locality",
-            variable.name
-        );
-        assert!(interp.is_special_variable(variable.name));
-    }
+    assert_eq!(
+        interp.builtin_var_value("syntax-propertize--done"),
+        Some(Value::Integer(-1))
+    );
+    assert!(interp.is_auto_buffer_local("syntax-propertize--done"));
+    assert!(interp.is_special_variable("syntax-propertize--done"));
+    assert_eq!(
+        interp.lookup_var("font-lock-defaults", &Env::new()),
+        None,
+        "font-core.el, not Rust, owns font-lock-defaults"
+    );
 }
 
 #[test]
@@ -5287,7 +5476,7 @@ fn gnu_keyboard_c_startup_policy_has_one_bound_special_value_cell() {
         Value::list([
             Value::Integer(1),
             Value::T,
-            Value::Float(2.0),
+            Value::float(2.0),
             Value::Integer(500),
             Value::Integer(3),
             Value::Integer(0),
@@ -5338,7 +5527,7 @@ fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
 }
 
 #[test]
-fn dumped_lread_loader_policy_defaults_are_complete() {
+fn batch_lread_loader_policy_defaults_are_complete() {
     #[cfg(target_os = "macos")]
     let dynamic_suffixes =
         Value::list([Value::String(".dylib".into()), Value::String(".so".into())]);
@@ -5353,7 +5542,7 @@ fn dumped_lread_loader_policy_defaults_are_complete() {
         .into_iter()
         .chain([Value::String(".elc".into()), Value::String(".el".into())]);
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             "(list load-suffixes
                    dynamic-library-suffixes
                    load-file-rep-suffixes
@@ -5434,7 +5623,7 @@ fn host_noninteractive_flag_is_dynamically_visible_across_function_calls() {
 #[test]
 fn trimmed_closure_frame_does_not_alias_same_shaped_caller_frame() {
     let mut interp = Interpreter::new();
-    interp.push_lambda_eval_context(true, true);
+    interp.push_lambda_eval_context(true);
     let result = eval_str_with(
         &mut interp,
         r#"(let* ((make-inner
@@ -5462,7 +5651,7 @@ fn trimmed_closure_frame_does_not_alias_same_shaped_caller_frame() {
 fn letstar_initializer_closure_does_not_capture_a_later_binding() {
     let mut interp = Interpreter::new();
     interp.set_global_binding("later-binding", Value::Symbol("global".into()));
-    interp.push_lambda_eval_context(true, false);
+    interp.push_lambda_eval_context(true);
     let result = eval_str_with(
         &mut interp,
         r#"(let* ((reader (function (lambda () later-binding)))
@@ -7505,26 +7694,6 @@ fn assoc_honors_optional_test_function() {
             Value::list([Value::Nil, Value::T, Value::Nil])
         );
     });
-}
-
-#[test]
-fn garbage_collect_prunes_synthetic_weak_hash_table_entries() {
-    assert_eq!(
-        eval_str(
-            "(let ((table (make-hash-table :test 'equal :weakness 'key)))
-                   (puthash \"00-key-alive\" \"00-val-alive\" table)
-                   (puthash \"01-key-dead\" \"01-val-alive\" table)
-                   (garbage-collect)
-                   (list (hash-table-count table)
-                         (gethash \"00-key-alive\" table)
-                         (gethash \"01-key-dead\" table 'missing)))"
-        ),
-        Value::list([
-            Value::Integer(1),
-            Value::String("00-val-alive".into()),
-            Value::Symbol("missing".into()),
-        ])
-    );
 }
 
 #[test]

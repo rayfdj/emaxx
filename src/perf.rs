@@ -806,7 +806,8 @@ fn run_noverlay_marker_suite(
             let mut interpreter = Interpreter::new();
             insert_perf_text(&mut interpreter.buffer, n);
             seed_markers(&mut interpreter, n, sample as u64 + 1);
-            interpreter.buffer.goto_char(interpreter.buffer.point_min());
+            let buffer = &mut interpreter.buffer;
+            buffer.goto_char(buffer.point_min());
             timed_operation(|| {
                 for _ in 0..(n / 2) {
                     interpreter.insert_current_buffer("X");
@@ -817,7 +818,8 @@ fn run_noverlay_marker_suite(
             let mut interpreter = Interpreter::new();
             insert_perf_text(&mut interpreter.buffer, n);
             seed_markers(&mut interpreter, n, sample as u64 + 11);
-            interpreter.buffer.goto_char(interpreter.buffer.point_max());
+            let buffer = &mut interpreter.buffer;
+            buffer.goto_char(buffer.point_max());
             timed_operation(|| {
                 for _ in 0..(n / 2) {
                     interpreter.insert_current_buffer("X");
@@ -828,7 +830,8 @@ fn run_noverlay_marker_suite(
             let mut interpreter = Interpreter::new();
             insert_perf_text(&mut interpreter.buffer, n);
             seed_markers(&mut interpreter, n, sample as u64 + 21);
-            interpreter.buffer.goto_char(interpreter.buffer.point_min());
+            let buffer = &mut interpreter.buffer;
+            buffer.goto_char(buffer.point_min());
             let mut rng = PerfRng::new(0x51_0000 + sample as u64);
             timed_operation(|| {
                 for _ in 0..(n / 2) {
@@ -843,7 +846,8 @@ fn run_noverlay_marker_suite(
             let mut interpreter = Interpreter::new();
             insert_perf_text(&mut interpreter.buffer, n);
             seed_markers(&mut interpreter, n, sample as u64 + 31);
-            interpreter.buffer.goto_char(interpreter.buffer.point_min());
+            let buffer = &mut interpreter.buffer;
+            buffer.goto_char(buffer.point_min());
             timed_operation(|| {
                 for _ in 0..(n / 2) {
                     let _ = interpreter.delete_char_current_buffer(1);
@@ -854,7 +858,8 @@ fn run_noverlay_marker_suite(
             let mut interpreter = Interpreter::new();
             insert_perf_text(&mut interpreter.buffer, n);
             seed_markers(&mut interpreter, n, sample as u64 + 41);
-            interpreter.buffer.goto_char(interpreter.buffer.point_max());
+            let buffer = &mut interpreter.buffer;
+            buffer.goto_char(buffer.point_max());
             timed_operation(|| {
                 for _ in 0..(n / 2) {
                     let _ = interpreter.delete_char_current_buffer(-1);
@@ -865,7 +870,8 @@ fn run_noverlay_marker_suite(
             let mut interpreter = Interpreter::new();
             insert_perf_text(&mut interpreter.buffer, n);
             seed_markers(&mut interpreter, n, sample as u64 + 51);
-            interpreter.buffer.goto_char(interpreter.buffer.point_max());
+            let buffer = &mut interpreter.buffer;
+            buffer.goto_char(buffer.point_max());
             let mut rng = PerfRng::new(0x61_0000 + sample as u64);
             timed_operation(|| {
                 for _ in 0..(n / 2) {

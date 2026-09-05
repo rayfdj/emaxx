@@ -7,6 +7,7 @@
 //! The dispatch match is exhaustive over the decoded opcode set, so the
 //! compiler proves every GNU 30.2 opcode has an execution arm.
 
+use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
 use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
 use super::super::types::{Env, LispError, Value};
@@ -41,6 +42,43 @@ enum UnwindEntry {
     },
     /// Bunwind_protect: a handler function (24.4+) or list of forms.
     Protect(Value),
+}
+
+impl TraceLispRoots for UnwindEntry {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        match self {
+            // These are restore tokens, not an alternate binding stack.
+            // A thread switch updates the canonical interpreter specpdl.
+            Self::Binding(_) | Self::CurrentBuffer { .. } => {}
+            Self::Excursion { marker_id, .. } => marker.value(&Value::Marker(*marker_id)),
+            Self::RestrictionWide { labeled, .. } | Self::Restriction { labeled, .. } => {
+                if let Self::Restriction { beg_id, end_id, .. } = self {
+                    marker.value(&Value::Marker(*beg_id));
+                    marker.value(&Value::Marker(*end_id));
+                }
+                for restriction in labeled {
+                    restriction.trace_lisp_roots(marker);
+                }
+            }
+            Self::Protect(handler) => marker.value(handler),
+        }
+    }
+}
+
+/// Borrow only while calling out: the VM may mutate either vector between
+/// calls, but neither may change while Lisp/GC runs on another stack.
+struct VmCallRoots<'a> {
+    operands: &'a [Value],
+    unwinds: &'a [UnwindEntry],
+}
+
+impl TraceLispRoots for VmCallRoots<'_> {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        self.operands.trace_lisp_roots(marker);
+        for entry in self.unwinds {
+            entry.trace_lisp_roots(marker);
+        }
+    }
 }
 
 /// Undo one specpdl-style entry (GNU's do_one_unbind).
@@ -116,15 +154,17 @@ fn unwind_one(
         UnwindEntry::Protect(handler) => {
             // GNU records bcall0 for functions (24.4+) and prog_ignore
             // for the obsolete forms-list shape.
-            let is_function = prim(interp, "functionp", std::slice::from_ref(&handler), env)?;
-            if is_function.is_truthy() {
-                interp.call_function_value(handler, None, &[], env)?;
-            } else if let Ok(forms) = handler.to_vec() {
-                for form in &forms {
-                    interp.eval(form, env)?;
+            interp.with_lisp_stack_roots(&handler, |interp| {
+                let is_function = prim(interp, "functionp", std::slice::from_ref(&handler), env)?;
+                if is_function.is_truthy() {
+                    interp.call_function_value(handler.clone(), None, &[], env)?;
+                } else if let Ok(forms) = handler.to_vec() {
+                    for form in &forms {
+                        interp.eval(form, env)?;
+                    }
                 }
-            }
-            Ok(())
+                Ok(())
+            })
         }
     }
 }
@@ -176,7 +216,7 @@ fn materialize_constant_inner(
     seen: &mut std::collections::HashSet<usize>,
 ) -> Result<Value, LispError> {
     if matches!(constant, Value::ReaderForm(_)) {
-        return interp.materialize_read_object_literals(constant.clone());
+        return interp.materialize_read_object_literals(constant.clone(), env);
     }
     let head = constant.car().ok();
     match head.as_ref() {
@@ -244,7 +284,11 @@ fn prim(
             facts
         }
     };
-    primitives::call_with_facts(interp, name, facts, args, env)
+    // Dedicated opcodes have already popped their arguments off the VM
+    // stack. Those actual argument slots remain live throughout callbacks.
+    interp.with_lisp_stack_roots(&args, |interp| {
+        primitives::call_with_facts(interp, name, facts, args, env)
+    })
 }
 
 /// A byte-code function decoded, validated, and materialized once:
@@ -258,6 +302,15 @@ pub struct CachedProgram {
     pub offset_index: Vec<u32>,
     pub constants: Vec<Value>,
     pub stack_depth: usize,
+}
+
+impl TraceLispRoots for CachedProgram {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        self.constants.trace_lisp_roots(marker);
+        if let ArgSpec::Legacy(arguments) = &self.argspec {
+            marker.value(arguments);
+        }
+    }
 }
 
 impl CachedProgram {
@@ -287,19 +340,13 @@ fn build_cached(
         .iter()
         .any(super::super::reader::contains_circular_read_syntax)
     {
-        let vector = Value::list(
-            std::iter::once(Value::symbol("vector-literal"))
-                .chain(object.constants.iter().cloned()),
-        );
+        let vector = Value::vector(object.constants.iter().cloned());
         let resolved = super::super::reader::resolve_circular_read_syntax(vector)?;
-        let mut items = resolved.to_vec()?;
-        if !matches!(items.first(), Some(Value::Symbol(marker)) if marker == "vector-literal") {
-            return Err(LispError::Signal(
-                "byte-code constants did not resolve to a vector".into(),
-            ));
-        }
-        items.remove(0);
-        Some(items)
+        Some(
+            crate::lisp::primitives::vector_items(&resolved).map_err(|_| {
+                LispError::Signal("byte-code constants did not resolve to a vector".into())
+            })?,
+        )
     } else {
         None
     };
@@ -389,7 +436,9 @@ fn run(
     stack.clear();
     stack.reserve(object.stack_depth.max(8));
     let frames_at_entry = interp.backtrace_frames_len();
-    let result = run_with_stack(interp, object, args, env, &mut stack);
+    let result = interp.with_lisp_stack_roots(&(object, args), |interp| {
+        run_with_stack(interp, object, args, env, &mut stack)
+    });
     // A signaling byte op recorded itself as a backtrace frame
     // (bytecode.c's record_in_backtrace) so handler-bind handlers saw it;
     // the handlers have run by now, so unwind it like GNU's specpdl does.
@@ -411,6 +460,27 @@ fn run_with_stack(
     let stack = &mut *stack;
     let mut unwinds: Vec<UnwindEntry> = Vec::new();
 
+    macro_rules! vm_call {
+        ($interpreter:ident, $body:expr) => {
+            $interpreter.with_lisp_stack_roots(
+                &VmCallRoots {
+                    operands: stack,
+                    unwinds: &unwinds,
+                },
+                |$interpreter| $body,
+            )
+        };
+    }
+
+    macro_rules! prim {
+        ($interpreter:ident, $name:expr, $arguments:expr, $environment:expr $(,)?) => {
+            vm_call!(
+                $interpreter,
+                prim($interpreter, $name, $arguments, $environment)
+            )
+        };
+    }
+
     // Argument prologue (exec_byte_code's ARGS_TEMPLATE handling).
     match &object.argspec {
         ArgSpec::Packed {
@@ -427,16 +497,10 @@ fn run_with_stack(
                 ));
             }
             let pushed = args.len().min(nonrest);
-            // Genuine GNU strings are heap objects before bytecode binds
-            // them.  Emaxx's native primitives can return compact host
-            // strings, so promote direct arguments exactly as interpreted
-            // lambda binding does before bytecode mutates them in place.
-            stack.extend(
-                args[..pushed]
-                    .iter()
-                    .cloned()
-                    .map(Interpreter::stored_value),
-            );
+            // bytecode.c:exec_byte_code pushes the original Lisp objects.
+            // Allocation belongs to their producers; copying a string here
+            // splits aliases and shared compiler constants.
+            stack.extend(args[..pushed].iter().cloned());
             if args.len() > nonrest {
                 stack.push(Value::list(args[nonrest..].iter().cloned()));
             } else {
@@ -465,7 +529,9 @@ fn run_with_stack(
                             other.clone(),
                         ]));
                         while let Some(entry) = unwinds.pop() {
-                            unwind_one(interp, entry, env)?;
+                            interp.with_lisp_stack_roots(&error, |interp| {
+                                vm_call!(interp, unwind_one(interp, entry, env))
+                            })?;
                         }
                         return Err(error);
                     }
@@ -486,7 +552,7 @@ fn run_with_stack(
                     Value::Nil
                 } else {
                     while let Some(entry) = unwinds.pop() {
-                        unwind_one(interp, entry, env)?;
+                        vm_call!(interp, unwind_one(interp, entry, env))?;
                     }
                     return Err(LispError::WrongNumberOfArgs(
                         "byte-code function".into(),
@@ -498,7 +564,7 @@ fn run_with_stack(
                 } else {
                     index += 1;
                 }
-                let restore = interp.bind_special_variable(&name, value, env)?;
+                let restore = vm_call!(interp, interp.bind_special_variable(&name, value, env))?;
                 unwinds.push(UnwindEntry::Binding(restore));
                 if rest {
                     break;
@@ -506,7 +572,7 @@ fn run_with_stack(
             }
             if !rest && index < args.len() {
                 while let Some(entry) = unwinds.pop() {
-                    unwind_one(interp, entry, env)?;
+                    vm_call!(interp, unwind_one(interp, entry, env))?;
                 }
                 return Err(LispError::WrongNumberOfArgs(
                     "byte-code function".into(),
@@ -781,13 +847,13 @@ fn run_with_stack(
                 }
                 Op::VarRef(index) => {
                     let name = object.constants[index as usize].clone();
-                    let value = prim(interp, "symbol-value", &[name], env)?;
+                    let value = prim!(interp, "symbol-value", &[name], env)?;
                     stack.push(value);
                 }
                 Op::VarSet(index) => {
                     let name = object.constants[index as usize].clone();
                     let value = pop!();
-                    prim(interp, "set", &[name, value], env)?;
+                    prim!(interp, "set", &[name, value], env)?;
                 }
                 Op::VarBind(index) => {
                     let name = object.constants[index as usize]
@@ -795,13 +861,14 @@ fn run_with_stack(
                         .map_err(|_| LispError::Signal("varbind constant must be a symbol".into()))?
                         .to_string();
                     let value = pop!();
-                    let restore = interp.bind_special_variable(&name, value, env)?;
+                    let restore =
+                        vm_call!(interp, interp.bind_special_variable(&name, value, env))?;
                     unwinds.push(UnwindEntry::Binding(restore));
                 }
                 Op::Unbind(count) => {
                     for _ in 0..count {
                         match unwinds.pop() {
-                            Some(entry) => unwind_one(interp, entry, env)?,
+                            Some(entry) => vm_call!(interp, unwind_one(interp, entry, env))?,
                             None => {
                                 return Err(LispError::Signal("byte code unbind underflow".into()));
                             }
@@ -866,12 +933,13 @@ fn run_with_stack(
                     let body = pop!();
                     let snapshot = interp.snapshot_window_configuration();
                     let mut value = Value::Nil;
-                    let result: Result<(), LispError> = (|| {
-                        for form in &body.to_vec()? {
-                            value = interp.eval(form, env)?;
-                        }
-                        Ok(())
-                    })();
+                    let result: Result<(), LispError> =
+                        interp.with_lisp_stack_roots(&(&body, &snapshot), |interp| {
+                            for form in &body.to_vec()? {
+                                value = vm_call!(interp, interp.eval(form, env))?;
+                            }
+                            Ok(())
+                        });
                     let _ = interp.restore_window_configuration(snapshot);
                     result?;
                     stack.push(value);
@@ -880,15 +948,17 @@ fn run_with_stack(
                     // Obsolete since 25: TAG below an unevaluated body form.
                     let body = pop!();
                     let tag = pop!();
-                    let value = match interp.eval(&body, env) {
-                        Err(LispError::Throw(thrown, thrown_value))
-                            if prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?
-                                .is_truthy() =>
-                        {
-                            thrown_value
+                    let value = interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
+                        match vm_call!(interp, interp.eval(&body, env)) {
+                            Err(LispError::Throw(thrown, thrown_value))
+                                if prim!(interp, "eq", &[tag.clone(), thrown.clone()], env)?
+                                    .is_truthy() =>
+                            {
+                                Ok(thrown_value)
+                            }
+                            other => other,
                         }
-                        other => other?,
-                    };
+                    })?;
                     stack.push(value);
                 }
                 Op::ConditionCase => {
@@ -899,7 +969,10 @@ fn run_with_stack(
                     let var = pop!();
                     let mut form = vec![Value::symbol("condition-case"), var, body];
                     form.extend(handlers.to_vec()?);
-                    let value = interp.eval(&Value::list(form), env)?;
+                    let form = Value::list(form);
+                    let value = interp.with_lisp_stack_roots(&form, |interp| {
+                        vm_call!(interp, interp.eval(&form, env))
+                    })?;
                     stack.push(value);
                 }
                 Op::TempOutputBufferSetup => {
@@ -907,14 +980,16 @@ fn run_with_stack(
                     // bind standard-output to it (GNU temp_output_buffer_setup
                     // specbinds, so Bunbind pops it).
                     let name = pop!();
-                    let buffer = prim(interp, "get-buffer-create", &[name], env)?;
+                    let buffer = prim!(interp, "get-buffer-create", &[name], env)?;
                     let saved = interp.current_buffer_id();
                     let buffer_id = interp.resolve_buffer_id(&buffer)?;
                     let _ = interp.set_current_buffer_id(buffer_id);
-                    prim(interp, "erase-buffer", &[], env)?;
+                    prim!(interp, "erase-buffer", &[], env)?;
                     let _ = interp.set_current_buffer_id(saved);
-                    let restore =
-                        interp.bind_special_variable("standard-output", buffer.clone(), env)?;
+                    let restore = vm_call!(
+                        interp,
+                        interp.bind_special_variable("standard-output", buffer.clone(), env)
+                    )?;
                     unwinds.push(UnwindEntry::Binding(restore));
                     stack.push(buffer);
                 }
@@ -926,19 +1001,25 @@ fn run_with_stack(
                     let show = interp
                         .lookup_var("temp-buffer-show-function", env)
                         .unwrap_or(Value::Nil);
-                    if show.is_truthy() {
-                        interp.call_function_value(
-                            show,
-                            None,
-                            std::slice::from_ref(&buffer),
-                            env,
-                        )?;
-                    } else {
-                        prim(interp, "display-buffer", &[buffer], env)?;
-                    }
+                    interp.with_lisp_stack_roots(&value, |interp| {
+                        if show.is_truthy() {
+                            vm_call!(
+                                interp,
+                                interp.call_function_value(
+                                    show,
+                                    None,
+                                    std::slice::from_ref(&buffer),
+                                    env,
+                                )
+                            )?;
+                        } else {
+                            prim!(interp, "display-buffer", &[buffer], env)?;
+                        }
+                        Ok::<_, LispError>(())
+                    })?;
                     stack.push(value);
                     match unwinds.pop() {
-                        Some(entry) => unwind_one(interp, entry, env)?,
+                        Some(entry) => vm_call!(interp, unwind_one(interp, entry, env))?,
                         None => {
                             return Err(LispError::Signal("byte code unbind underflow".into()));
                         }
@@ -946,11 +1027,14 @@ fn run_with_stack(
                 }
                 Op::InteractiveP => {
                     // Obsolete since 24.1: GNU call0s the Lisp function.
-                    let value = interp.call_function_value(
-                        Value::symbol("interactive-p"),
-                        Some("interactive-p"),
-                        &[],
-                        env,
+                    let value = vm_call!(
+                        interp,
+                        interp.call_function_value(
+                            Value::symbol("interactive-p"),
+                            Some("interactive-p"),
+                            &[],
+                            env,
+                        )
                     )?;
                     stack.push(value);
                 }
@@ -981,7 +1065,7 @@ fn run_with_stack(
                         Op::CurrentBuffer => "current-buffer",
                         _ => "widen",
                     };
-                    let value = prim(interp, name, &[], env)?;
+                    let value = prim!(interp, name, &[], env)?;
                     stack.push(value);
                 }
                 // One-argument buffer/navigation ops (TOP = F(TOP)).
@@ -1010,13 +1094,13 @@ fn run_with_stack(
                         Op::MatchBeginning => "match-beginning",
                         _ => "match-end",
                     };
-                    let value = prim(interp, name, &[a], env)?;
+                    let value = prim!(interp, name, &[a], env)?;
                     stack.push(value);
                 }
                 Op::IndentTo => {
                     // GNU passes an explicit nil MINIMUM.
                     let column = pop!();
-                    let value = prim(interp, "indent-to", &[column, Value::Nil], env)?;
+                    let value = prim!(interp, "indent-to", &[column, Value::Nil], env)?;
                     stack.push(value);
                 }
                 // Two-argument region/motion ops.
@@ -1034,14 +1118,14 @@ fn run_with_stack(
                         Op::DeleteRegion => "delete-region",
                         _ => "narrow-to-region",
                     };
-                    let value = prim(interp, name, &[a, b], env)?;
+                    let value = prim!(interp, name, &[a, b], env)?;
                     stack.push(value);
                 }
                 Op::SetMarker => {
                     let position_buffer = pop!();
                     let position = pop!();
                     let marker = pop!();
-                    let value = prim(
+                    let value = prim!(
                         interp,
                         "set-marker",
                         &[marker, position, position_buffer],
@@ -1051,7 +1135,7 @@ fn run_with_stack(
                 }
                 Op::InsertN(n) => {
                     let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
-                    let value = prim(interp, "insert", &items, env)?;
+                    let value = prim!(interp, "insert", &items, env)?;
                     stack.push(value);
                 }
                 Op::Call(argc) => {
@@ -1060,13 +1144,14 @@ fn run_with_stack(
                     // Call with the arguments still on the stack (GNU's
                     // exec_byte_code does the same); an error unwind
                     // truncates to the handler's recorded depth anyway.
-                    let func = std::mem::replace(&mut stack[args_start - 1], Value::Nil);
+                    // GNU retains TOP (the function) as well as its arguments
+                    // until the call returns. Keep that exact object rooted
+                    // even if entry processing itself invokes Lisp/GC.
+                    let func = stack[args_start - 1].clone();
                     let trace_call = trace_errors.then(|| func.to_string());
-                    let value = match interp.call_function_value(
-                        func,
-                        None,
-                        &stack[args_start..],
-                        env,
+                    let value = match vm_call!(
+                        interp,
+                        interp.call_function_value(func, None, &stack[args_start..], env)
                     ) {
                         Ok(value) => value,
                         Err(error) => {
@@ -1160,7 +1245,7 @@ fn run_with_stack(
                 Op::Switch => {
                     let table = pop!();
                     let value = pop!();
-                    let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
+                    let dest = prim!(interp, "gethash", &[value, table, Value::Nil], env)?;
                     if let Value::Integer(dest) = dest {
                         pc = object.instr_at(dest as usize);
                     }
@@ -1171,7 +1256,7 @@ fn run_with_stack(
                 }
                 Op::ConcatN(n) => {
                     let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
-                    let value = prim(interp, "concat", &items, env)?;
+                    let value = prim!(interp, "concat", &items, env)?;
                     stack.push(value);
                 }
                 Op::List1 | Op::List2 | Op::List3 | Op::List4 => {
@@ -1221,7 +1306,7 @@ fn run_with_stack(
                         Op::Leq => "<=",
                         _ => ">=",
                     };
-                    let value = prim(interp, name, &[a, b], env)?;
+                    let value = prim!(interp, name, &[a, b], env)?;
                     stack.push(value);
                 }
                 Op::Plus | Op::Diff | Op::Mult => {
@@ -1243,7 +1328,7 @@ fn run_with_stack(
                         Op::Diff => "-",
                         _ => "*",
                     };
-                    let value = prim(interp, name, &[a, b], env)?;
+                    let value = prim!(interp, name, &[a, b], env)?;
                     stack.push(value);
                 }
                 Op::Max | Op::Min => {
@@ -1259,7 +1344,7 @@ fn run_with_stack(
                         return Ok(());
                     }
                     let name = if matches!(op, Op::Max) { "max" } else { "min" };
-                    let value = prim(interp, name, &[a, b], env)?;
+                    let value = prim!(interp, name, &[a, b], env)?;
                     stack.push(value);
                 }
                 // Two-argument primitive ops.
@@ -1306,7 +1391,7 @@ fn run_with_stack(
                         _ => "nconc",
                     };
                     let call_args = [a, b];
-                    let value = match prim(interp, name, &call_args, env) {
+                    let value = match prim!(interp, name, &call_args, env) {
                         Ok(value) => value,
                         Err(error) => {
                             // bytecode.c's record_in_backtrace covers
@@ -1341,7 +1426,7 @@ fn run_with_stack(
                         _ => {
                             let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
                             let call_args = [a];
-                            let value = match prim(interp, name, &call_args, env) {
+                            let value = match prim!(interp, name, &call_args, env) {
                                 Ok(value) => value,
                                 Err(error) => {
                                     // bytecode.c records the signaling op
@@ -1382,7 +1467,7 @@ fn run_with_stack(
                         Op::Sub1 => "1-",
                         _ => "-",
                     };
-                    let value = prim(interp, name, &[a], env)?;
+                    let value = prim!(interp, name, &[a], env)?;
                     stack.push(value);
                 }
                 Op::Consp => {
@@ -1393,11 +1478,16 @@ fn run_with_stack(
                         Value::Nil
                     });
                 }
+                Op::Length => {
+                    let sequence = pop!();
+                    stack.push(Value::Integer(primitives::sequence_length_value(
+                        interp, &sequence,
+                    )?));
+                }
                 // One-argument primitive ops.
                 Op::Symbolp
                 | Op::Stringp
                 | Op::Listp
-                | Op::Length
                 | Op::SymbolValue
                 | Op::SymbolFunction
                 | Op::Nreverse
@@ -1410,7 +1500,6 @@ fn run_with_stack(
                         Op::Symbolp => "symbolp",
                         Op::Stringp => "stringp",
                         Op::Listp => "listp",
-                        Op::Length => "length",
                         Op::SymbolValue => "symbol-value",
                         Op::SymbolFunction => "symbol-function",
                         Op::Nreverse => "nreverse",
@@ -1419,7 +1508,7 @@ fn run_with_stack(
                         Op::Upcase => "upcase",
                         _ => "downcase",
                     };
-                    let value = prim(interp, name, &[a], env)?;
+                    let value = prim!(interp, name, &[a], env)?;
                     stack.push(value);
                 }
                 // Three-argument primitive ops.
@@ -1433,7 +1522,7 @@ fn run_with_stack(
                         _ => "concat",
                     };
                     let call_args = [a, b, c];
-                    let value = match prim(interp, name, &call_args, env) {
+                    let value = match prim!(interp, name, &call_args, env) {
                         Ok(value) => value,
                         Err(error) => {
                             if matches!(op, Op::Aset)
@@ -1455,7 +1544,7 @@ fn run_with_stack(
                     let c = pop!();
                     let b = pop!();
                     let a = pop!();
-                    let value = prim(interp, "concat", &[a, b, c, d], env)?;
+                    let value = prim!(interp, "concat", &[a, b, c, d], env)?;
                     stack.push(value);
                 }
             }
@@ -1481,7 +1570,7 @@ fn run_with_stack(
                     }
                     let matched_value = match (&handler.kind, &error) {
                         (HandlerKind::Catch(tag), LispError::Throw(thrown, value)) => {
-                            let same = prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?;
+                            let same = prim!(interp, "eq", &[tag.clone(), thrown.clone()], env)?;
                             if same.is_truthy() {
                                 Some(value.clone())
                             } else {
@@ -1514,7 +1603,10 @@ fn run_with_stack(
                         }
                         while unwinds.len() > handler.unwind_len {
                             match unwinds.pop() {
-                                Some(entry) => unwind_one(interp, entry, env)?,
+                                Some(entry) => interp
+                                    .with_lisp_stack_roots(&(&error, &value), |interp| {
+                                        vm_call!(interp, unwind_one(interp, entry, env))
+                                    })?,
                                 None => break,
                             }
                         }
@@ -1566,9 +1658,12 @@ fn run_with_stack(
             interp.pop_handler_bindings(start);
         }
     }
-    while let Some(entry) = unwinds.pop() {
-        unwind_one(interp, entry, env)?;
-    }
+    interp.with_lisp_stack_roots(&result, |interp| {
+        while let Some(entry) = unwinds.pop() {
+            vm_call!(interp, unwind_one(interp, entry, env))?;
+        }
+        Ok::<_, LispError>(())
+    })?;
     // GNU runs `handler-bind' handlers from `signal' itself, so an error
     // raised inside byte-code reaches them exactly as one raised by the
     // interpreter does.  Emaxx dispatches at each native-call boundary
@@ -1665,7 +1760,7 @@ mod tests {
             )
         );
 
-        let vector = Value::list([Value::symbol("vector-literal"), Value::Integer(9)]);
+        let vector = Value::vector([Value::Integer(9)]);
         let value = run("emaxx-fx-branch", std::slice::from_ref(&vector)).unwrap();
         assert_eq!(value, Value::list([vector, Value::symbol("tagged")]));
     }
@@ -1885,7 +1980,7 @@ mod native_surface_tests {
             &[
                 Value::Integer(257),
                 Value::String("\u{89}\u{54}\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
+                Value::vector([]),
                 Value::Integer(3),
             ],
             &mut env,
@@ -1895,6 +1990,43 @@ mod native_surface_tests {
             .call_function_value(object, None, &[Value::Integer(41)], &mut env)
             .unwrap();
         assert_eq!(value, Value::Integer(42));
+    }
+
+    #[test]
+    fn byte_code_argument_prologue_preserves_string_identity() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let object = prim(
+            &mut interp,
+            "make-byte-code",
+            &[
+                Value::Integer(257),
+                Value::String("\u{87}".into()),
+                Value::vector([]),
+                Value::Integer(1),
+            ],
+            &mut env,
+        )
+        .expect("make a one-argument return function");
+        // bytecode.c:exec_byte_code pushes *args, not a copy of its
+        // pointed-to object. This includes shared immutable constants.
+        let argument = Value::String("shared constant".into());
+        for _ in 0..2 {
+            let returned = interp
+                .call_function_value(
+                    object.clone(),
+                    None,
+                    std::slice::from_ref(&argument),
+                    &mut env,
+                )
+                .expect("return the original argument");
+            assert_eq!(
+                prim(&mut interp, "eq", &[argument.clone(), returned], &mut env,)
+                    .expect("compare Lisp object identity"),
+                Value::T,
+                "the argument prologue must not allocate a different string",
+            );
+        }
     }
 
     #[test]
@@ -1908,20 +2040,34 @@ mod native_surface_tests {
             &[
                 Value::Integer(257),
                 Value::String("\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
+                Value::vector([]),
                 Value::Integer(1),
             ],
             &mut env,
         )
         .unwrap();
+        // fns.c:concat_to_string allocates the mutable object before the
+        // bytecode call. A compact host string is not that allocation.
+        let argument = prim(
+            &mut interp,
+            "concat",
+            &[Value::String("native diagnostic".into())],
+            &mut env,
+        )
+        .expect("allocate the argument through the ordinary string primitive");
         let value = interp
-            .call_function_value(
-                object,
-                None,
-                &[Value::String("native diagnostic".into())],
-                &mut env,
-            )
+            .call_function_value(object, None, std::slice::from_ref(&argument), &mut env)
             .unwrap();
+        assert_eq!(
+            prim(
+                &mut interp,
+                "eq",
+                &[argument.clone(), value.clone()],
+                &mut env
+            )
+            .expect("compare caller and callee string identity"),
+            Value::T,
+        );
 
         prim(
             &mut interp,
@@ -1946,6 +2092,132 @@ mod native_surface_tests {
             .unwrap(),
             Value::Symbol("command-output".into())
         );
+        assert_eq!(
+            prim(
+                &mut interp,
+                "get-text-property",
+                &[Value::Integer(0), Value::Symbol("field".into()), argument],
+                &mut env,
+            )
+            .expect("the caller must observe the callee's mutation"),
+            Value::Symbol("command-output".into()),
+        );
+    }
+
+    #[test]
+    fn byte_code_error_message_arguments_preserve_identity_and_multibyte_properties() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        // argspec 257: one mandatory arg; code: return that argument.
+        let object = prim(
+            &mut interp,
+            "make-byte-code",
+            &[
+                Value::Integer(257),
+                Value::String("\u{87}".into()),
+                Value::vector([]),
+                Value::Integer(1),
+            ],
+            &mut env,
+        )
+        .unwrap();
+        // Even compact strings retain their original identity across calls.
+        // A per-call promotion passed the mutation-only assertion below but
+        // silently duplicated shared compiler constants.
+        let compact = Value::String("native diagnostic".into());
+        for _ in 0..2 {
+            let returned = interp
+                .call_function_value(
+                    object.clone(),
+                    None,
+                    std::slice::from_ref(&compact),
+                    &mut env,
+                )
+                .expect("bytecode returns the original argument");
+            assert_eq!(
+                prim(&mut interp, "eq", &[compact.clone(), returned], &mut env)
+                    .expect("string identity"),
+                Value::T,
+            );
+        }
+        // print.c:Ferror_message_string's general path returns Fbuffer_string:
+        // the diagnostic is already a mutable Lisp string before the VM sees it.
+        let argument = prim(
+            &mut interp,
+            "error-message-string",
+            &[Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("listp"),
+                Value::T,
+            ])],
+            &mut env,
+        )
+        .expect("C-owned diagnostic producer");
+        let value = interp
+            .call_function_value(object, None, std::slice::from_ref(&argument), &mut env)
+            .unwrap();
+        assert_eq!(
+            prim(
+                &mut interp,
+                "eq",
+                &[argument.clone(), value.clone()],
+                &mut env
+            )
+            .expect("same diagnostic object"),
+            Value::T,
+        );
+        assert_eq!(
+            prim(
+                &mut interp,
+                "multibyte-string-p",
+                std::slice::from_ref(&argument),
+                &mut env
+            )
+            .expect("print buffer is multibyte"),
+            Value::T,
+        );
+
+        prim(
+            &mut interp,
+            "put-text-property",
+            &[
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Symbol("field".into()),
+                Value::Symbol("command-output".into()),
+                value.clone(),
+            ],
+            &mut env,
+        )
+        .unwrap();
+        assert_eq!(
+            prim(
+                &mut interp,
+                "get-text-property",
+                &[
+                    Value::Integer(0),
+                    Value::Symbol("field".into()),
+                    argument.clone(),
+                ],
+                &mut env,
+            )
+            .unwrap(),
+            Value::Symbol("command-output".into())
+        );
+        // Ferror_message_string's allocation-free (error STRING) branch
+        // returns that exact string, including its properties.
+        let plain_error = Value::list([Value::symbol("error"), argument.clone()]);
+        let returned = prim(
+            &mut interp,
+            "error-message-string",
+            &[plain_error],
+            &mut env,
+        )
+        .expect("original error string");
+        assert_eq!(
+            prim(&mut interp, "eq", &[argument, returned], &mut env).expect("fast-return identity"),
+            Value::T,
+        );
     }
 
     /// GNU's `byte-code' executes a bare program against a constants
@@ -1960,11 +2232,7 @@ mod native_surface_tests {
             "byte-code",
             &[
                 Value::String("\u{c0}\u{c1}\u{5c}\u{87}".into()),
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    Value::Integer(40),
-                    Value::Integer(2),
-                ]),
+                Value::vector([Value::Integer(40), Value::Integer(2)]),
                 Value::Integer(4),
             ],
             &mut env,

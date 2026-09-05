@@ -77,10 +77,7 @@ fn charset_map(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
             .flatten()
     })?;
     if is_vector_value(&map) {
-        let values = map.to_vec().ok()?;
-        let values = values
-            .strip_prefix(&[Value::Symbol("vector-literal".into())])
-            .unwrap_or(&values);
+        let values = vector_items(&map).ok()?;
         return Some(
             values
                 .as_chunks::<2>()
@@ -210,10 +207,7 @@ fn charset_code_space(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u
             _ => None,
         };
     };
-    let values = space.to_vec().ok()?;
-    let values = values
-        .strip_prefix(&[Value::Symbol("vector-literal".into())])
-        .unwrap_or(&values);
+    let values = vector_items(&space).ok()?;
     let bounds: Vec<(u32, u32)> = values
         .as_chunks::<2>()
         .0
@@ -414,7 +408,8 @@ fn run_coding_conversion(
     // bytes starting at point, so leaving point after the insertion silently
     // turns the conversion into a no-op.
     if !pre_write {
-        interp.buffer.goto_char(interp.buffer.point_min());
+        let buffer = &mut interp.buffer;
+        buffer.goto_char(buffer.point_min());
     }
     let arguments = if pre_write {
         vec![
@@ -648,38 +643,18 @@ pub(crate) fn aset_vector_value(
     index: usize,
     new_value: Value,
 ) -> Result<(), LispError> {
-    if is_vector_value(target) {
-        let slot = vector_slot_refs(target)?
-            .get(index)
-            .cloned()
-            .ok_or_else(|| LispError::Signal("Args out of range".into()))?;
-        *slot.borrow_mut() = new_value;
-        return Ok(());
-    }
-
-    let mut current = target.clone();
-    let mut offset = 0usize;
-    loop {
-        match current {
-            Value::Cons(cons_cell) => {
-                let car = &cons_cell.car;
-                let cdr = &cons_cell.cdr;
-                if offset == index {
-                    *car.borrow_mut() = new_value;
-                    return Ok(());
-                }
-                offset += 1;
-                current = cdr.borrow().clone();
-            }
-            Value::Nil => return Err(LispError::Signal("Args out of range".into())),
-            _ => {
-                return Err(LispError::WrongTypeArgument(
-                    "arrayp".into(),
-                    target.clone(),
-                ));
-            }
-        }
-    }
+    let Value::Vector(vector) = target else {
+        return Err(LispError::WrongTypeArgument(
+            "arrayp".into(),
+            target.clone(),
+        ));
+    };
+    let mut slots = vector.slots_mut();
+    let slot = slots
+        .get_mut(index)
+        .ok_or_else(|| LispError::Signal("Args out of range".into()))?;
+    *slot = new_value;
+    Ok(())
 }
 
 pub(crate) fn base64_whitespace(byte: u8) -> bool {

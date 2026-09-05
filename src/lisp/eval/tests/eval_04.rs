@@ -5601,23 +5601,23 @@ fn inhibited_interaction_is_dynamic_across_separately_defined_prompt_helpers() {
 
 #[test]
 fn native_comp_capability_probes_are_honest() {
-    assert_eq!(eval_str_with_upstream_batch("(featurep 'emacs)"), Value::T);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    assert_eq!(eval_str_with(&mut interp, "(featurep 'emacs)"), Value::T);
     assert_eq!(
-        eval_str_with_upstream_batch("(native-comp-available-p)"),
-        Value::Nil
+        eval_str_with(&mut interp, "(native-comp-available-p)"),
+        Value::T
     );
-    // Emaxx models a build without native compilation, so comp.c registers
-    // nothing: `native-comp-available-p' and `(featurep 'native-compile)' are
-    // both nil and must agree.  Claiming the feature while denying the
-    // capability was the inconsistency phase 6 removed.  The pinned oracle is
-    // a native-comp build and answers t to both — a documented build
-    // divergence, not a target to imitate.
+    // The Rust comp.c boundary is available and registers GNU's native-compile
+    // feature, so the public capability probe and feature must agree.
     assert_eq!(
-        eval_str_with_upstream_batch("(featurep 'native-compile)"),
-        Value::Nil
+        eval_str_with(&mut interp, "(featurep 'native-compile)"),
+        Value::T
     );
     assert_eq!(
-        eval_str_with_upstream_batch("(native-comp-function-p (symbol-function 'car))"),
+        eval_str_with(
+            &mut interp,
+            "(native-comp-function-p (symbol-function 'car))",
+        ),
         Value::Nil
     );
 }

@@ -653,17 +653,16 @@ fn string_text(value: &Value) -> Option<String> {
 pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
     slots.len() >= 4
         && matches!(slots[0], Value::Integer(_) | Value::Nil | Value::Cons(_))
-        && string_text(&slots[1]).is_some()
-        && vector_items(&slots[2]).is_some()
+        && slots[1].is_string()
+        && matches!(slots[2], Value::Vector(_))
         && matches!(slots[3], Value::Integer(_))
 }
 
 fn vector_items(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(marker), rest)) if marker == "vector-literal" => Some(rest.to_vec()),
-        _ => None,
-    }
+    let Value::Vector(vector) = value else {
+        return None;
+    };
+    Some(vector.slots().clone())
 }
 
 impl ByteCodeObject {
@@ -1044,7 +1043,7 @@ pub(crate) mod tests {
         let slots = [
             Value::Integer(257),
             Value::String("\u{89}\u{87}".into()),
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(3),
         ];
         let object = ByteCodeObject::from_slots(&slots).unwrap().unwrap();
@@ -1061,19 +1060,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn bytecode_shape_checks_do_not_read_or_copy_payloads() {
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{87}".repeat(4096),
+            Vec::new(),
+            false,
+        );
+        let constants = Value::vector(std::iter::repeat_n(Value::Integer(1), 4096));
+        let Value::StringObject(string) = &code else {
+            panic!("mutable code string")
+        };
+        let Value::Vector(vector) = &constants else {
+            panic!("constant vector")
+        };
+        // STRINGP and VECTORP inspect tags, not payloads. Exclusive payload
+        // borrows expose even an otherwise invisible clone/read in the check.
+        let _code_payload = string.borrow_mut();
+        let _constant_payload = vector.slots_mut();
+        assert!(slots_are_genuine_bytecode(&[
+            Value::Integer(0),
+            code.clone(),
+            constants.clone(),
+            Value::Integer(1),
+        ]));
+    }
+
+    #[test]
     fn from_slots_rejects_corrupt_code() {
         // Genuine shape but with an undefined opcode byte.
         let slots = [
             Value::Integer(0),
             Value::String("\u{53}".into()), // 0o123 is Sub1 — fine; use 0o153
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(2),
         ];
         assert!(ByteCodeObject::from_slots(&slots).unwrap().is_some());
         let slots = [
             Value::Integer(0),
             Value::String("\u{6B}".into()), // 0o153: undefined in GNU 30.2
-            Value::list([Value::symbol("vector-literal")]),
+            Value::vector([]),
             Value::Integer(2),
         ];
         assert_eq!(

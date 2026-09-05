@@ -103,7 +103,7 @@ pub(crate) fn run_pending_user_signal_events(
             break;
         }
 
-        let keys = Value::list([Value::symbol("vector-literal"), event]);
+        let keys = Value::vector([event]);
         interp.call_function_value(
             Value::Symbol("command-execute".into()),
             Some("command-execute"),
@@ -223,20 +223,21 @@ pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool 
 }
 
 pub(crate) fn is_vector_value(value: &Value) -> bool {
-    matches!(
-        value,
-        Value::Cons(cell)
-            if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal")
-    )
+    matches!(value, Value::Vector(_))
 }
 
-/// Whether VALUE has GNU cons identity despite Emaxx's internal facade
-/// representations.  Vector literals use cons storage but are not Lisp
-/// conses; runtime keymaps use records but project the list identity GNU
-/// exposes.  Keep this decision shared by native predicates and VM opcodes.
+pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
+    match value {
+        Value::Vector(vector) => Some(crate::lisp::types::VectorValue::identity(vector)),
+        _ => None,
+    }
+}
+
+/// Whether VALUE has GNU cons identity despite Emaxx's internal runtime-keymap
+/// projection.  Ordinary vectors have their own object class and never enter
+/// this predicate.
 pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
-    (matches!(value, Value::Cons(_)) && !is_vector_value(value))
-        || keymap_record_id(interp, value).is_some()
+    matches!(value, Value::Cons(_)) || keymap_record_id(interp, value).is_some()
 }
 
 pub(crate) fn fixnum_bounds(interp: &Interpreter) -> Result<(i64, i64), LispError> {
@@ -294,6 +295,35 @@ pub(crate) fn checked_symbol_name(
         && let Ok(symbol) = symbol.as_symbol()
     {
         return Ok(symbol.to_string());
+    }
+    Err(LispError::WrongTypeArgument(
+        "symbolp".into(),
+        value.clone(),
+    ))
+}
+
+/// The same CHECK_SYMBOL/XSYMBOL boundary when the caller stores the symbol
+/// itself, rather than using its name to address legacy host-side tables.
+pub(crate) fn checked_symbol_identity(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<crate::lisp::types::SymbolName, LispError> {
+    match value {
+        Value::Symbol(symbol) => return Ok(symbol.clone()),
+        Value::Nil => return Ok("nil".into()),
+        Value::T => return Ok("t".into()),
+        _ => {}
+    }
+    if symbols_with_pos_enabled(interp, env)
+        && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
+    {
+        match symbol {
+            Value::Symbol(symbol) => return Ok(symbol),
+            Value::Nil => return Ok("nil".into()),
+            Value::T => return Ok("t".into()),
+            _ => {}
+        }
     }
     Err(LispError::WrongTypeArgument(
         "symbolp".into(),
@@ -580,11 +610,10 @@ pub(crate) fn parse_interactive_string(
                 // mouse posn); keyboard keys never do.
                 let event = interp
                     .lookup_var("this-command-keys-vector", env)
-                    .and_then(|keys| keys.to_vec().ok())
+                    .and_then(|keys| vector_items(&keys).ok())
                     .and_then(|events| {
                         events
                             .into_iter()
-                            .skip(1)
                             .find(|event| matches!(event, Value::Cons(_)))
                     });
                 match event {
@@ -932,8 +961,7 @@ pub(crate) fn resolve_key_sequence(
             lookup_events.push(event.clone());
         }
     }
-    let key_vector =
-        Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(lookup_events));
+    let key_vector = Value::vector(lookup_events);
     let binding = match command_loop_call(interp, env, "key-binding", &[key_vector, Value::T]) {
         Ok(binding) => binding,
         Err(_) => Value::Nil,
@@ -987,8 +1015,7 @@ pub(crate) fn resolve_key_sequence(
                 // no quit (MENU_FOR_CLICK).
                 return KeyResolution::Command(Value::Symbol("ignore".into()));
             }
-            let vector =
-                Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(path));
+            let vector = Value::vector(path);
             let chosen = super::call(interp, "lookup-key", &[resolved, vector], env)
                 .ok()
                 .filter(|value| !value.is_nil())
@@ -1011,9 +1038,7 @@ fn pending_sequence_is_prefix(interp: &mut Interpreter, env: &mut Env, pending: 
     if pending.len() == 1 && matches!(pending.first(), Some(Value::Integer(27))) {
         return true;
     }
-    let key_vector = Value::list(
-        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
-    );
+    let key_vector = Value::vector(pending.iter().cloned());
     // `key-binding' with ACCEPT-DEFAULT nil still answers prefix keymaps.
     command_loop_call(interp, env, "key-binding", &[key_vector])
         .map(|binding| {
@@ -1102,9 +1127,7 @@ fn execute_command_binding_inner(
     set_command_key_state(interp, keys.to_vec(), keys.to_vec(), env);
     interp.set_variable(
         "this-command-keys-vector",
-        Value::list(
-            std::iter::once(Value::Symbol("vector-literal".into())).chain(keys.iter().cloned()),
-        ),
+        Value::vector(keys.iter().cloned()),
         env,
     );
     interp.set_variable("this-command", binding.clone(), env);
@@ -1963,10 +1986,7 @@ pub(crate) fn menu_bar_row_items(
         .ok()
         .and_then(|maps| maps.to_vec().ok())
         .unwrap_or_default();
-    let menu_bar_key = Value::list([
-        Value::Symbol("vector-literal".into()),
-        Value::Symbol("menu-bar".into()),
-    ]);
+    let menu_bar_key = Value::vector([Value::Symbol("menu-bar".into())]);
     let same_key = |a: &Value, b: &Value| match (a, b) {
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Integer(a), Value::Integer(b)) => a == b,
@@ -2123,8 +2143,7 @@ pub(crate) fn menu_item_details_with_button(
             def = def.cdr().ok()?;
         }
         if def.car().is_ok_and(|cache| {
-            matches!(cache.car(), Ok(Value::Nil))
-                || matches!(cache.car(), Ok(Value::Symbol(tag)) if tag == "vector-literal")
+            matches!(cache.car(), Ok(Value::Nil)) || matches!(cache, Value::Vector(_))
         }) {
             def = def.cdr().ok()?;
         }
@@ -2462,12 +2481,7 @@ pub(crate) fn tty_menu_pane_from_keymap(
                     // GNU prefers a typed key sequence (its where-is
                     // sorts ASCII sequences first) and never shows a
                     // menu path as the equivalent key.
-                    let event_kinds = |key: &Value| {
-                        key.to_vec()
-                            .ok()
-                            .map(|events| events.iter().skip(1).cloned().collect::<Vec<_>>())
-                            .unwrap_or_default()
-                    };
+                    let event_kinds = |key: &Value| vector_items(key).unwrap_or_default();
                     let is_menu_path = |key: &Value| {
                         matches!(
                             event_kinds(key).first(),

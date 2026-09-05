@@ -612,12 +612,34 @@ pub(crate) fn make_hash_table(
     test: &str,
     entries: Vec<(Value, Value)>,
 ) -> Value {
+    make_hash_table_with_capacity(interp, test, entries, 0)
+}
+
+pub(crate) fn make_hash_table_with_capacity(
+    interp: &mut Interpreter,
+    test: &str,
+    entries: Vec<(Value, Value)>,
+    capacity: usize,
+) -> Value {
+    let requested_capacity = capacity;
+    let capacity = crate::lisp::eval::gnu_hash_grown_capacity(capacity, entries.len());
+    crate::lisp::native_comp::note_lisp_allocation(
+        crate::lisp::eval::gnu_hash_table_storage_bytes(capacity),
+    );
     let table = interp.create_pseudovector(
         crate::lisp::eval::RecordKind::HashTable,
         HASH_TABLE_RECORD_TYPE,
         vec![
             Value::Symbol(test.to_string().into()),
-            entries_to_list(entries.clone()),
+            // Indexed runtime storage below is the counterpart of GNU's
+            // key_and_value arrays.  Do not also retain a Lisp cons-list:
+            // that would invent live Lisp objects and distort GC accounting.
+            Value::Nil,
+            Value::Integer(requested_capacity as i64),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
         ],
     );
     if let Value::Record(id) = table {
@@ -626,6 +648,19 @@ pub(crate) fn make_hash_table(
     } else {
         table
     }
+}
+
+pub(crate) fn hash_table_entry_list_len(value: &Value) -> usize {
+    let mut cursor = value.clone();
+    let mut len = 0;
+    while let Value::Cons(cell) = cursor {
+        len += 1;
+        let Ok(next) = Value::Cons(cell).cdr() else {
+            return 0;
+        };
+        cursor = next;
+    }
+    if cursor.is_nil() { len } else { 0 }
 }
 
 pub(crate) fn hash_table_entries(
@@ -710,7 +745,7 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
         JsonNode::True => Value::T,
         JsonNode::Integer(value) => Value::Integer(value),
         JsonNode::BigInteger(value) => Value::BigInteger(value.into()),
-        JsonNode::Float(value) => Value::Float(value),
+        JsonNode::Float(value) => Value::float(value),
         JsonNode::String(value) => Value::String(value.into()),
         JsonNode::Array(items) => {
             let items: Vec<Value> = items
@@ -718,9 +753,7 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
                 .map(|item| node_to_lisp(interp, item, options))
                 .collect();
             match options.array_type {
-                JsonArrayType::Vector => Value::list(
-                    std::iter::once(Value::Symbol("vector-literal".into())).chain(items),
-                ),
+                JsonArrayType::Vector => Value::vector(items),
                 JsonArrayType::List => Value::list(items),
             }
         }
@@ -802,14 +835,10 @@ fn serialize_value(
         Value::Record(_) if is_hash_table(interp, value) => {
             serialize_hash_table(interp, value, options, depth)
         }
+        Value::Vector(_) => serialize_array(interp, &vector_items(value)?, options, depth),
         Value::Cons(_) => {
             if let Some(rendered) = serialize_hash_table_literal(interp, value, options, depth)? {
                 return Ok(rendered);
-            }
-            if let Ok(items) = vector_items(value)
-                && matches!(value.to_vec().ok().and_then(|v| v.first().cloned()), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
-            {
-                return serialize_array(interp, &items, options, depth);
             }
             if string_like(value).is_some() {
                 return serialize_string(value);
@@ -1073,14 +1102,6 @@ fn utf8_bytes_to_unibyte_text(bytes: &[u8]) -> String {
         }
     }
     text
-}
-
-fn entries_to_list(entries: Vec<(Value, Value)>) -> Value {
-    Value::list(
-        entries
-            .into_iter()
-            .map(|(key, value)| Value::cons(key, value)),
-    )
 }
 
 fn list_to_entries(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {

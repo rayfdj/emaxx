@@ -818,7 +818,7 @@ fn generated_numeric_property_table_uncompresses_and_decodes_values() {
         Value::list([
             Value::Integer(5),
             Value::Integer(5),
-            Value::Float(0.25),
+            Value::float(0.25),
             Value::Integer(12),
             Value::symbol("Nd"),
         ])
@@ -1894,8 +1894,7 @@ fn macroexpanded_backquote_preserves_a_dynamic_dotted_vector_tail() {
         Value::list([
             Value::cons(
                 Value::symbol("abc"),
-                Value::list([
-                    Value::symbol("vector-literal"),
+                Value::vector([
                     Value::Integer(9),
                     Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3),]),
                 ]),
@@ -4009,8 +4008,7 @@ fn cl_loop_collect_into_finally_return() {
                       collect (symbol-name item) into names
                       finally return (apply #'vector names))",
         ),
-        Value::list([
-            Value::symbol("vector-literal"),
+        Value::vector([
             Value::String("a".into()),
             Value::String("b".into()),
             Value::String("c".into()),
@@ -4025,8 +4023,7 @@ fn cl_loop_vconcat_accumulates_vector_elements() {
             "cl-macs",
             "(cl-loop for x in (list 1 2 3 4 5) vconcat (vector (1+ x)))",
         ),
-        Value::list([
-            Value::symbol("vector-literal"),
+        Value::vector([
             Value::Integer(2),
             Value::Integer(3),
             Value::Integer(4),
@@ -5681,10 +5678,10 @@ fn cached_source_dispatch_analysis_observes_head_mutation() {
         .read()
         .expect("literal should parse")
         .expect("literal should exist");
-    assert_eq!(
-        literal.cons_id(),
-        interp.eval(&literal, &mut env).unwrap().cons_id()
-    );
+    assert!(matches!(
+        interp.eval(&literal, &mut env),
+        Err(LispError::VoidFunction(name)) if name == "vector-literal"
+    ));
     literal
         .set_car(Value::symbol("quote"))
         .expect("literal head should be mutable");
@@ -6370,14 +6367,8 @@ fn preloaded_kbd_preserves_gnu_ascii_string_and_symbolic_vector_results() {
         Value::list([
             Value::String("\r".into()),
             Value::String("a\r".into()),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Symbol("return".into()),
-            ]),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
-                Value::Integer('é' as i64),
-            ]),
+            Value::vector([Value::Symbol("return".into()),]),
+            Value::vector([Value::Integer('é' as i64),]),
             Value::T,
             Value::T,
         ])

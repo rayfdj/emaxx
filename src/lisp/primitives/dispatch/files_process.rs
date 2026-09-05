@@ -481,9 +481,7 @@ fn link_layer_address(name: &str) -> Value {
         let bytes: Vec<Value> = (0..6)
             .map(|offset| Value::Integer(unsafe { *address.add(offset) } as i64))
             .collect();
-        let mut vector = vec![Value::symbol("vector-literal")];
-        vector.extend(bytes);
-        result = Value::cons(Value::Integer(family as i64), Value::list(vector));
+        result = Value::cons(Value::Integer(family as i64), Value::vector(bytes));
         break;
     }
     // SAFETY: `list' came from a successful getifaddrs and is freed once.
@@ -857,6 +855,7 @@ define_dispatch!(
                         Value::String(target.into()),
                     ])));
                 };
+                let path = maybe_swap_for_native(interp, &target, &path, env)?;
                 interp.load_resolved_path(&path, env, args.get(2).is_some_and(Value::is_truthy))
             }
             "locate-file-internal" => {
@@ -2561,9 +2560,8 @@ define_dispatch!(
                 interp.buffer.goto_char(start);
                 let text = decode_raw_text_bytes(&output);
                 interp.insert_current_buffer(&text);
-                interp
-                    .buffer
-                    .goto_char(saved_point.min(interp.buffer.point_max()));
+                let buffer = &mut interp.buffer;
+                buffer.goto_char(saved_point.min(buffer.point_max()));
                 run_change_hooks(
                     interp,
                     "after-change-functions",

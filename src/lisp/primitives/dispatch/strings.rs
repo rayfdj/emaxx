@@ -51,10 +51,7 @@ define_dispatch!(
                     return Err(LispError::Signal("Wrong type argument: natnump".into()));
                 }
                 let init = args[1].clone();
-                let items: Vec<Value> = std::iter::repeat_n(init, length as usize).collect();
-                let mut result = vec![Value::symbol("vector-literal")];
-                result.extend(items);
-                Ok(Value::list(result))
+                Ok(Value::vector(std::iter::repeat_n(init, length as usize)))
             }
             "make-bool-vector" => {
                 need_args(name, args, 2)?;
@@ -96,11 +93,11 @@ define_dispatch!(
                 ))
             }
             "vconcat" => {
-                let mut items = vec![Value::symbol("vector-literal")];
+                let mut items = Vec::new();
                 for value in args {
                     items.extend(sequence_values(interp, value)?);
                 }
-                Ok(Value::list(items))
+                Ok(Value::vector(items))
             }
             "copy-keymap" => {
                 need_args(name, args, 1)?;
@@ -144,10 +141,6 @@ define_dispatch!(
                 // StringLike route below clones each argument and re-derives
                 // property offsets, which made repeated accumulation
                 // (`(setq s (concat "x" s))') quadratic with a large constant.
-                // The final value can skip the result re-scan only when every
-                // argument's multibyte verdict came from an authoritative scan
-                // here, so track that.
-                let mut all_plain_scanned = true;
                 for a in args {
                     match a {
                         Value::String(text) => {
@@ -161,17 +154,12 @@ define_dispatch!(
                         }
                         Value::StringObject(state) if state.borrow().props.is_empty() => {
                             let state = state.borrow();
-                            // Cached flags may be stale relative to the text, so
-                            // route the final value through the re-scanning
-                            // constructor below.
-                            all_plain_scanned = false;
                             multibyte |= state.multibyte;
                             result.push_str(&state.text);
                             continue;
                         }
                         _ => {}
                     }
-                    all_plain_scanned = false;
                     if let Some(string) = string_like(a) {
                         let offset = result.chars().count();
                         result.push_str(&string.text);
@@ -193,8 +181,11 @@ define_dispatch!(
                         ])));
                     }
                 }
-                if all_plain_scanned && !multibyte {
-                    return Ok(Value::String(result.into()));
+                // fns.c:concat_to_string allocates a mutable Lisp string,
+                // including its ASCII fast path. The zero-length unibyte
+                // allocation is alloc.c's shared empty_unibyte_string.
+                if result.is_empty() && !multibyte {
+                    return Ok(Value::string(""));
                 }
                 Ok(string_like_value_with_multibyte(
                     result,
@@ -274,10 +265,7 @@ define_dispatch!(
                     let len = items.len() as i64;
                     let from = normalize_string_index(args.get(1), 0, len)? as usize;
                     let to = normalize_string_index(args.get(2), len, len)? as usize;
-                    return Ok(Value::list(
-                        std::iter::once(Value::symbol("vector-literal"))
-                            .chain(items[from..to].iter().cloned()),
-                    ));
+                    return Ok(Value::vector(items[from..to].iter().cloned()));
                 }
                 if is_bool_vector_value(interp, &args[0]) {
                     let items = bool_vector_values(interp, &args[0])?;
@@ -843,7 +831,12 @@ define_dispatch!(
             "make-char" => {
                 need_arg_range(name, args, 1, 2)?;
                 let _charset = args[0].as_symbol()?;
-                let code = args.get(1).map(Value::as_integer).transpose()?.unwrap_or(0);
+                let code = args
+                    .get(1)
+                    .filter(|code| code.is_truthy())
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .unwrap_or(0);
                 Ok(Value::Integer(code))
             }
             "string-to-char" => {
@@ -1046,7 +1039,7 @@ fn registered_unicode_property(
     property: &str,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
-    let Some(mut registered) = find_registered_unicode_property(interp, property, env) else {
+    let Some(mut registered) = find_registered_unicode_property(interp, property) else {
         return Ok(None);
     };
     let filename = match &registered {
@@ -1060,17 +1053,16 @@ fn registered_unicode_property(
         return Ok(Some(registered));
     };
     crate::lisp::load_file_strict(interp, &path)?;
-    registered = find_registered_unicode_property(interp, property, env)
+    registered = find_registered_unicode_property(interp, property)
         .unwrap_or(Value::String(filename.into()));
     Ok(Some(registered))
 }
 
-fn find_registered_unicode_property(
-    interp: &Interpreter,
-    property: &str,
-    env: &Env,
-) -> Option<Value> {
-    let mut alist = interp.lookup_var("char-code-property-alist", env)?;
+fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Option<Value> {
+    // chartab.c:uniprop_table reads Vchar_code_property_alist, the C-owned
+    // symbol value cell.  A caller's same-named lexical binding is not part
+    // of this primitive's state.
+    let mut alist = interp.symbol_value_cell("char-code-property-alist").ok()?;
     loop {
         let (entry, rest) = alist.cons_values()?;
         if let Some((key, value)) = entry.cons_values()
@@ -1105,30 +1097,12 @@ pub(crate) fn decode_unicode_property_value(
     let Some(vector) = interp.char_table_extra_slot(table_id, 4) else {
         return Ok(value);
     };
-    let items = vector.to_vec()?;
-    let values = if matches!(
-        items.first(),
-        Some(Value::Symbol(symbol)) if symbol == "vector-literal"
-    ) {
-        &items[1..]
-    } else {
-        &items
-    };
+    let values = vector_items(&vector)?;
     Ok(values.get(index).cloned().unwrap_or(value))
 }
 
 fn unicode_property_vector_values(value: &Value) -> Result<Vec<Value>, LispError> {
-    let items = value.to_vec()?;
-    Ok(
-        if matches!(
-            items.first(),
-            Some(Value::Symbol(symbol)) if symbol == "vector-literal"
-        ) {
-            items[1..].to_vec()
-        } else {
-            items
-        },
-    )
+    vector_items(value)
 }
 
 fn encode_unicode_property_value(
@@ -1168,9 +1142,7 @@ fn encode_unicode_property_value(
                     // the newly allocated encoded index, not with the input
                     // number itself (chartab.c:uniprop_encode_value_numeric).
                     values.push(Value::Integer(index as i64));
-                    let mut public_vector = vec![Value::Symbol("vector-literal".into())];
-                    public_vector.extend(values);
-                    interp.set_char_table_extra_slot(table_id, 4, Value::list(public_vector))?;
+                    interp.set_char_table_extra_slot(table_id, 4, Value::vector(values))?;
                     index
                 }
                 None => {

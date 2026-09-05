@@ -3974,10 +3974,8 @@ fn custom_autoload_records_expected_symbol_properties() {
 #[test]
 fn temporary_file_directory_exposes_standard_value() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
         assert_eq!(
-            eval_str_with(
-                &mut interp,
+            eval_str_with_upstream_batch(
                 "(equal (eval (car (get 'temporary-file-directory 'standard-value)) t)
                             temporary-file-directory)"
             ),
@@ -7861,13 +7859,13 @@ fn number_sequence_defaults_to_positive_step() {
             Value::Nil,
             Value::Nil,
             Value::list([Value::Integer(3), Value::Integer(2), Value::Integer(1)]),
-            Value::list([Value::Float(7.5), Value::Float(6.5), Value::Float(5.5)]),
+            Value::list([Value::float(7.5), Value::float(6.5), Value::float(5.5)]),
             Value::list([
                 Value::Integer(1),
-                Value::Float(1.5),
-                Value::Float(2.0),
-                Value::Float(2.5),
-                Value::Float(3.0),
+                Value::float(1.5),
+                Value::float(2.0),
+                Value::float(2.5),
+                Value::float(3.0),
             ]),
             Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)]),
         ])

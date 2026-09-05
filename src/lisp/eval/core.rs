@@ -224,13 +224,6 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
     crate::lisp::primitives::generated_gnu_c_primitive_special_form(name)
 }
 
-#[derive(Clone, Copy, Default)]
-pub(super) enum SourceLiteralKind {
-    #[default]
-    None,
-    Vector,
-}
-
 impl Interpreter {
     /// GNU treats a symbol-with-position in function position as its bare
     /// symbol while `symbols-with-pos-enabled' is non-nil.  The byte compiler
@@ -241,10 +234,10 @@ impl Interpreter {
             return Some(name.clone());
         }
         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
-            && let Some((Value::Symbol(name), _)) =
-                crate::lisp::primitives::symbol_with_pos_parts(self, value)
+            && let Some((symbol, _)) = crate::lisp::primitives::symbol_with_pos_parts(self, value)
+            && let Ok(name) = symbol.as_symbol()
         {
-            return Some(name);
+            return Some(name.into());
         }
         None
     }
@@ -273,7 +266,6 @@ impl Interpreter {
         // that subtree in the same validity snapshot.
         let mutations = crate::lisp::types::ConsMutationSnapshot::list_spine(source);
         let mut native_form = None;
-        let mut literal_kind = SourceLiteralKind::None;
         if let Some(Value::Symbol(name)) = items.first() {
             // A Lisp symbol may select a Rust evaluator arm only when the
             // generated GNU C manifest owns that native surface.  In
@@ -283,15 +275,10 @@ impl Interpreter {
                 .is_some_and(|available| available)
                 .then(|| NativeForm::for_name(name))
                 .flatten();
-            literal_kind = match name.as_str() {
-                "vector-literal" => SourceLiteralKind::Vector,
-                _ => SourceLiteralKind::None,
-            };
         }
         let analysis = SourceFormAnalysis {
             items,
             native_form,
-            literal_kind,
             macro_calls: Rc::new(RefCell::new(SourceMacroCallCache::default())),
             function_call: Rc::new(RefCell::new(None)),
         };
@@ -326,14 +313,14 @@ impl Interpreter {
             }
             return result;
         }
+        // eval.c:eval_sub checks for a pending quit after the symbol/scalar
+        // fast paths and before GC, depth accounting, or form dispatch.
+        self.maybe_quit(env)?;
         self.lisp_eval_depth += 1;
-        // eval.c:2504-2509.  NOTE: GNU increments at TWO sites -- `eval_sub'
-        // here and `Ffuncall' (eval.c:3078) -- while Emaxx increments only
-        // here, so a `funcall'/`apply' chain counts 2 units per level where
-        // GNU counts 3.  Emaxx therefore trips LATER on those paths, never
-        // earlier, so no honest program fails that GNU accepts; the limit
-        // simply means something slightly different there.  Tracked
-        // separately rather than claimed as done.
+        // eval.c:2504-2509.  GNU increments separately in `eval_sub' and
+        // `Ffuncall'; this is the eval_sub half.  Public
+        // `call_function_value' below owns the Ffuncall half, while direct
+        // source dispatch stays on `call_function_value_named'.
         //   if (++lisp_eval_depth > max_lisp_eval_depth) {
         //     if (max_lisp_eval_depth < 100) max_lisp_eval_depth = 100;
         //     if (lisp_eval_depth > max_lisp_eval_depth)
@@ -347,27 +334,7 @@ impl Interpreter {
         // raised a plain `error' where GNU raises `excessive-lisp-nesting'
         // carrying the depth -- a condition this tree already defines
         // (eval.rs:732) and never signalled.
-        let limit = self.lisp_eval_depth_limit(env);
-        if self.lisp_eval_depth > limit {
-            let reached = self.lisp_eval_depth;
-            self.lisp_eval_depth -= 1;
-            return Err(LispError::SignalValue(Value::list([
-                Value::symbol("excessive-lisp-nesting"),
-                Value::Integer(reached as i64),
-            ])));
-        }
-        // GNU grows `max-lisp-eval-depth' while C stack remains and signals
-        // before the stack dies (eval.c near_C_stack_top).  The counter above
-        // cannot see the actual stack, and a deep non-tail recursion can
-        // exhaust even the 8 GiB batch thread before it trips (the pinned
-        // semantic-utest-ia.el did exactly that, as a SIGABRT with no
-        // report).  Mirror GNU's contract directly: when the running thread's
-        // stack headroom falls below the margin, signal
-        // `excessive-lisp-nesting' instead of crashing -- and signal it as
-        // that CONDITION, which this arm previously did not do.  It raised a
-        // plain `error' while the comment above claimed otherwise, so a
-        // `condition-case' keyed on `recursion-error' missed it.
-        if self.lisp_eval_depth.is_multiple_of(64) && !Self::stack_headroom_remains() {
+        if self.lisp_eval_depth_exceeded() {
             let reached = self.lisp_eval_depth;
             self.lisp_eval_depth -= 1;
             return Err(LispError::SignalValue(Value::list([
@@ -383,46 +350,26 @@ impl Interpreter {
         result
     }
 
-    /// True while the current thread still has comfortable stack left.
-    /// macOS reports the thread's stack extent exactly; the margin covers
-    /// the deepest single native frame chain between two depth checks plus
-    /// unwinding.  On other platforms the probe is inert (the counter
-    /// guard above still applies).
-    #[cfg(target_os = "macos")]
-    fn stack_headroom_remains() -> bool {
-        let approximate_sp = {
-            let probe = 0u8;
-            std::ptr::addr_of!(probe) as usize
-        };
-        unsafe {
-            let thread = libc::pthread_self();
-            let top = libc::pthread_get_stackaddr_np(thread) as usize;
-            let size = libc::pthread_get_stacksize_np(thread);
-            // The stack grows down from `top'; headroom is what remains
-            // above the guard page.
-            let bottom = top.saturating_sub(size);
-            const MARGIN: usize = 48 * 1024 * 1024;
-            approximate_sp > bottom.saturating_add(MARGIN)
+    /// eval.c's literal post-increment depth check.  DEFVAR_INT makes the
+    /// limit an intmax_t field, so the evaluator reads it directly; only a
+    /// depth that already exceeds a sub-100 value raises that live cell to
+    /// 100 before deciding whether to signal.
+    fn lisp_eval_depth_exceeded(&mut self) -> bool {
+        let depth = i64::try_from(self.lisp_eval_depth).unwrap_or(i64::MAX);
+        if depth <= self.max_lisp_eval_depth_value() {
+            return false;
         }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn stack_headroom_remains() -> bool {
-        true
-    }
-
-    /// The effective `max-lisp-eval-depth', read through the DYNAMIC binding
-    /// so a `let' is honoured, with eval.c:2506's floor: a limit below 100 is
-    /// raised to 100 rather than rejected.
-    fn lisp_eval_depth_limit(&self, env: &Env) -> usize {
-        // Clamp BEFORE converting: `usize::try_from(-5)' fails, so folding
-        // the conversion into the default turned a negative limit into 1600 --
-        // LARGER than requested, where eval.c:2506 floors it at 100.
-        let requested = self
-            .lookup_var("max-lisp-eval-depth", env)
-            .and_then(|value| value.as_integer().ok())
-            .unwrap_or(1600);
-        usize::try_from(requested.max(100)).unwrap_or(100)
+        if self.max_lisp_eval_depth_value() < 100 {
+            if self
+                .detached_forwarded_variables
+                .contains_key("max-lisp-eval-depth")
+            {
+                self.max_lisp_eval_depth = 100;
+            } else {
+                self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(100));
+            }
+        }
+        depth > self.max_lisp_eval_depth_value()
     }
 
     fn eval_inner(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
@@ -433,6 +380,13 @@ impl Interpreter {
             | Value::BigInteger(_)
             | Value::Float(_)
             | Value::StringObject(_) => Ok(expr.clone()),
+
+            // GNU has already constructed every nested reader object by the
+            // time eval_sub sees a vector.  Emaxx's parser is deliberately
+            // interpreter-free, so finish that existing reader contract at
+            // the evaluation boundary before returning this self-evaluating
+            // object.
+            Value::Vector(_) => self.materialize_read_object_literals(expr.clone(), env),
 
             // Evaluating a string literal yields a string object with its
             // own identity, so `eq' distinguishes evaluations of distinct
@@ -448,7 +402,15 @@ impl Interpreter {
                 else {
                     return Ok(expr.clone());
                 };
-                let name = symbol.as_symbol()?;
+                let name = symbol
+                    .as_symbol()
+                    .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), expr.clone()))?;
+                if name == "t" {
+                    return Ok(Value::T);
+                }
+                if name == "nil" {
+                    return Ok(Value::Nil);
+                }
                 match self.lookup(name, env) {
                     Ok(value) => Ok(value),
                     Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
@@ -471,27 +433,19 @@ impl Interpreter {
             | Value::Finalizer(_)
             | Value::Unbound => Ok(expr.clone()),
 
-            Value::ReaderForm(_) => self.materialize_read_object_literals(expr.clone()),
+            Value::ReaderForm(_) => self.materialize_read_object_literals(expr.clone(), env),
 
-            Value::Symbol(name) => self.lookup(name, env),
+            Value::Symbol(name) => self.lookup_symbol(name, env),
 
             Value::Cons(_) => {
                 let SourceFormAnalysis {
                     items,
                     native_form,
-                    literal_kind,
                     macro_calls,
                     function_call,
                 } = self.source_form_analysis(expr)?;
                 if items.is_empty() {
                     return Ok(Value::Nil);
-                }
-
-                match literal_kind {
-                    SourceLiteralKind::Vector => {
-                        return self.materialize_read_object_literals(expr.clone());
-                    }
-                    SourceLiteralKind::None => {}
                 }
 
                 let callable_name = self.callable_symbol_name(&items[0], env);
@@ -525,7 +479,7 @@ impl Interpreter {
                     });
                     if let Some(native_form) = effective_native_form {
                         match native_form {
-                            NativeForm::Quote => return self.sf_quote(&items),
+                            NativeForm::Quote => return self.sf_quote(&items, env),
                             NativeForm::If => return self.sf_if(&items, env),
                             NativeForm::And => return self.sf_and(&items, env),
                             NativeForm::Or => return self.sf_or(&items, env),
@@ -677,11 +631,9 @@ impl Interpreter {
             (Some(name), FunctionResolution::Resolved(func)) => {
                 // eval_sub applies the function itself (apply_lambda /
                 // funcall_lambda), without passing through Ffuncall.
-                self.direct_form_call = true;
                 self.call_function_value_named(func, Some(CallName::Symbol(name)), &args, env)
             }
             (None, FunctionResolution::Resolved(func)) => {
-                self.direct_form_call = true;
                 self.call_function_value_named(func, None, &args, env)
             }
             (None, FunctionResolution::DirectBuiltin(_)) => {
@@ -697,7 +649,69 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.call_function_value_named(func, original_name.map(CallName::Text), args, env)
+        self.begin_funcall(env)?;
+        let result =
+            self.call_function_value_named(func, original_name.map(CallName::Text), args, env);
+        self.end_funcall();
+        result
+    }
+
+    /// eval.c:Ffuncall's entry sequence.  Generated code uses the same
+    /// boundary before it dispatches an already encoded Lisp_Object vector.
+    pub(crate) fn begin_funcall(&mut self, env: &mut Env) -> Result<(), LispError> {
+        self.maybe_quit(env)?;
+        self.lisp_eval_depth += 1;
+        if self.lisp_eval_depth_exceeded() {
+            let reached = self.lisp_eval_depth;
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn end_funcall(&mut self) {
+        self.lisp_eval_depth = self
+            .lisp_eval_depth
+            .checked_sub(1)
+            .expect("Ffuncall depth is balanced");
+    }
+
+    /// eval.c:maybe_quit/probably_quit/process_quit_flag for the Lisp-visible
+    /// quit state.  Platform pending-signal delivery remains owned by the
+    /// process/terminal layer; once it sets quit-flag, this is the exact C
+    /// dispatch among kill-emacs, throw-on-input, and ordinary quit.
+    pub(crate) fn maybe_quit(&mut self, env: &mut Env) -> Result<(), LispError> {
+        // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
+        // the overwhelmingly common nil case.  These are eval.c's forwarded
+        // cells, not symbol-name lookups.
+        if self.quit_flag_is_nil() {
+            return Ok(());
+        }
+        let flag = self.quit_flag_value();
+        if self.inhibit_quit_is_truthy() {
+            return Ok(());
+        }
+
+        // process_quit_flag writes Vquit_flag, not a possibly detached plain
+        // Lisp binding with the same name.
+        if self.detached_forwarded_variables.contains_key("quit-flag") {
+            self.quit_flag = Value::Nil;
+        } else {
+            self.set_symbol_value_cell("quit-flag", Value::Nil);
+        }
+        if matches!(&flag, Value::Symbol(name) if name == "kill-emacs") {
+            return primitives::call(self, "kill-emacs", &[Value::Nil, Value::Nil], env).map(drop);
+        }
+
+        let throw_on_input = self.throw_on_input_value();
+        if primitives::values_eq_in_env(self, &throw_on_input, &flag, env) {
+            Err(LispError::Throw(throw_on_input, Value::T))
+        } else {
+            Err(LispError::SignalValue(Value::list([Value::symbol("quit")])))
+        }
     }
 
     fn call_function_value_named(
@@ -710,39 +724,6 @@ impl Interpreter {
         if let Some(termination) = self.pending_termination().cloned() {
             return Err(LispError::Terminate(termination));
         }
-        // eval.c increments `lisp_eval_depth' at TWO sites: eval_sub (the
-        // `eval' above) and Ffuncall (eval.c:3078).  Every call that does
-        // not come straight from a form's application -- `funcall',
-        // `apply', mapc, hooks, sort predicates, call1..N -- is an Ffuncall
-        // entry and costs a unit of its own; eval_call marks its direct
-        // applications so they cost only the eval_sub unit.
-        let via_ffuncall = !std::mem::take(&mut self.direct_form_call);
-        if via_ffuncall {
-            self.lisp_eval_depth += 1;
-            let limit = self.lisp_eval_depth_limit(env);
-            if self.lisp_eval_depth > limit {
-                let reached = self.lisp_eval_depth;
-                self.lisp_eval_depth -= 1;
-                return Err(LispError::SignalValue(Value::list([
-                    Value::symbol("excessive-lisp-nesting"),
-                    Value::Integer(reached as i64),
-                ])));
-            }
-        }
-        let result = self.call_function_value_counted(func, original_name, args, env);
-        if via_ffuncall {
-            self.lisp_eval_depth -= 1;
-        }
-        result
-    }
-
-    fn call_function_value_counted(
-        &mut self,
-        func: Value,
-        original_name: Option<CallName<'_>>,
-        args: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
         // Dev-only flat profiler: EMAXX_PROFILE=<path> accumulates per-name
         // call counts and self-time, periodically rewriting <path>.
         if let Some(path) = profile_path() {
@@ -821,9 +802,10 @@ impl Interpreter {
             FunctionResolution::Resolved(self.lookup_function(name, env)?)
         };
         if !local_context {
-            self.function_resolution_cache.insert(
+            let state = &mut **self;
+            state.function_resolution_cache.insert(
                 name.to_string(),
-                (self.definition_generation, resolution.clone()),
+                (state.definition_generation, resolution.clone()),
             );
         }
         Ok(resolution)
@@ -875,6 +857,23 @@ impl Interpreter {
             .unwrap_or(Value::Record(record_id));
         self.push_backtrace_frame(backtrace_function, args);
         self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
+        let result = self.execute_bytecode_funcall_body(record_id, args, env);
+        if let Err(error) = &result {
+            self.capture_batch_error_backtrace(error, env);
+        }
+        self.pop_backtrace_frame();
+        result
+    }
+
+    /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
+    /// owns Ffuncall's depth and backtrace entry; this supplies only the
+    /// byte-code activation boundary shared by source and native callers.
+    pub(crate) fn execute_bytecode_funcall_body(
+        &mut self,
+        record_id: u64,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         // A genuine byte-code function starts a new evaluator scope just as
         // an interpreted lexical closure does.  Its Bvarbind opcodes update
         // special value cells, so native calls made by the VM must not see a
@@ -885,11 +884,15 @@ impl Interpreter {
         self.special_scan_floor = env.len();
         let result = crate::lisp::bytecode::vm::execute_record(self, record_id, args, env);
         self.special_scan_floor = previous_floor;
-        if let Err(error) = &result {
-            self.capture_batch_error_backtrace(error, env);
-        }
-        self.pop_backtrace_frame();
         result
+    }
+
+    pub(crate) fn is_genuine_bytecode_function(&self, record_id: u64) -> bool {
+        // data.c:Fbyte_code_function_p: classification neither executes nor
+        // validates the bytecode and does not inspect payload contents.
+        self.find_record(record_id).is_some_and(|record| {
+            record.kind == RecordKind::Closure && record.slots.get(1).is_some_and(Value::is_string)
+        })
     }
 
     fn call_function_value_inner(
@@ -1023,23 +1026,40 @@ impl Interpreter {
             Value::Record(id)
                 if self
                     .find_record(id)
+                    .is_some_and(|record| record.kind == RecordKind::NativeCompiledFunction) =>
+            {
+                let backtrace_function = original_name
+                    .map(CallName::original_symbol_value)
+                    .unwrap_or(Value::Record(id));
+                self.push_backtrace_frame(backtrace_function, args);
+                self.capture_current_backtrace_context(
+                    original_name.map(CallName::as_str),
+                    env,
+                    None,
+                );
+                let result = match crate::lisp::native_comp::call_function(self, env, id, args) {
+                    Ok(value) => Ok(value),
+                    Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+                    Err(error) => self.dispatch_handler_bindings(error, env),
+                };
+                if let Err(error) = &result {
+                    self.capture_batch_error_backtrace(error, env);
+                }
+                self.pop_backtrace_frame();
+                result
+            }
+            Value::Record(id)
+                if self
+                    .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::Closure) =>
             {
                 let (inner, uses_dynamic_binding) = {
                     let Some(record) = self.find_record(id) else {
                         unreachable!("checked record presence");
                     };
-                    // Genuine GNU bytecode (argspec/code/constants/depth
-                    // slots) executes on the VM; Emaxx byte-compile facade
-                    // objects carry an executable lambda in slot 0 instead.
-                    // A cached program implies the slots already passed the
-                    // genuineness check, so skip re-walking them.
-                    if (id as usize)
-                        .checked_sub(1)
-                        .and_then(|index| self.bytecode_program_cache.get(index))
-                        .is_some_and(|slot| slot.is_some())
-                        || crate::lisp::bytecode::slots_are_genuine_bytecode(&record.slots)
-                    {
+                    // A byte-code closure has a string code slot. Leave
+                    // instruction validation to the VM, not this type check.
+                    if record.slots.get(1).is_some_and(Value::is_string) {
                         return self.execute_bytecode_record_named(id, original_name, args, env);
                     }
                     let Some(inner) = record.slots.first().cloned() else {
@@ -1053,12 +1073,10 @@ impl Interpreter {
                 // Unwrapping the record is still the same Ffuncall entry.
                 if uses_dynamic_binding {
                     self.push_lambda_capture_override(false);
-                    self.direct_form_call = true;
                     let result = self.call_function_value_named(inner, original_name, args, env);
                     self.pop_lambda_capture_override();
                     result
                 } else {
-                    self.direct_form_call = true;
                     self.call_function_value_named(inner, original_name, args, env)
                 }
             }
@@ -1169,7 +1187,7 @@ impl Interpreter {
                 let call_capture_override =
                     (self.lambda_capture_override() != Some(call_context)).then_some(call_context);
                 if let Some(capture) = call_capture_override {
-                    self.push_lambda_eval_context(capture, false);
+                    self.push_lambda_eval_context(capture);
                 }
                 let previous_activation = self.enter_activation();
                 let result = if closure_env.borrow().is_empty() && !lexical_closure {
@@ -1178,31 +1196,40 @@ impl Interpreter {
                     // environment for its body.  No caller lexical frame is
                     // visible, while ordinary dynamic lets remain visible
                     // through their value-cell bindings.
-                    let mut call_env = Vec::new();
-                    let mut restores = Vec::with_capacity(frame.len());
-                    let setup = frame.iter().try_for_each(|(name, value)| {
-                        self.bind_special_variable(name, value.clone(), &mut call_env)
-                            .map(|restore| restores.push(restore))
-                    });
-                    let previous_floor = self.special_scan_floor;
-                    self.special_scan_floor = 0;
-                    let result = match setup {
-                        Ok(()) => self.sf_progn(function_executable_body(body), &mut call_env),
-                        Err(error) => Err(error),
-                    };
-                    self.special_scan_floor = previous_floor;
-                    let mut restore_error = None;
-                    for restore in restores.into_iter().rev() {
-                        if let Err(error) = self.restore_special_binding(restore, &mut call_env)
-                            && restore_error.is_none()
-                        {
-                            restore_error = Some(error);
+                    // The caller's lexical cells remain live even though
+                    // the dynamic callee cannot see them. Root the actual
+                    // parked environment across binding watchers and body.
+                    self.with_lisp_stack_roots(&*env, |interp| {
+                        let mut call_env = Vec::new();
+                        let mut restores = Vec::with_capacity(frame.len());
+                        let setup = frame.iter().try_for_each(|(name, value)| {
+                            interp
+                                .bind_special_variable(name, value.clone(), &mut call_env)
+                                .map(|restore| restores.push(restore))
+                        });
+                        let previous_floor = interp.special_scan_floor;
+                        interp.special_scan_floor = 0;
+                        let result = match setup {
+                            Ok(()) => {
+                                interp.sf_progn(function_executable_body(body), &mut call_env)
+                            }
+                            Err(error) => Err(error),
+                        };
+                        interp.special_scan_floor = previous_floor;
+                        let mut restore_error = None;
+                        for restore in restores.into_iter().rev() {
+                            if let Err(error) =
+                                interp.restore_special_binding(restore, &mut call_env)
+                                && restore_error.is_none()
+                            {
+                                restore_error = Some(error);
+                            }
                         }
-                    }
-                    match result {
-                        Ok(value) => restore_error.map_or(Ok(value), Err),
-                        Err(error) => Err(error),
-                    }
+                        match result {
+                            Ok(value) => restore_error.map_or(Ok(value), Err),
+                            Err(error) => Err(error),
+                        }
+                    })
                 } else if body_has_marker(body, ":closure-transparent-env") {
                     // Advice wrappers are plumbing: run them on the caller's
                     // environment chain with the wrapper's captured frames
@@ -1255,7 +1282,9 @@ impl Interpreter {
                     call_env.push(frame.clone());
                     let previous_floor = self.special_scan_floor;
                     self.special_scan_floor = 0;
-                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    let result = self.with_lisp_stack_roots(&*env, |interp| {
+                        interp.sf_progn(function_executable_body(body), &mut call_env)
+                    });
                     self.special_scan_floor = previous_floor;
                     call_env.truncate(captured_len);
                     result
@@ -1283,6 +1312,10 @@ impl Interpreter {
                 self.pop_backtrace_frame();
                 result
             }
+            Value::Nil => Err(LispError::SignalValue(Value::list([
+                Value::Symbol("void-function".into()),
+                Value::Nil,
+            ]))),
             other => Err(LispError::SignalValue(Value::list([
                 Value::Symbol("invalid-function".into()),
                 other,
@@ -1296,6 +1329,410 @@ impl Interpreter {
 #[cfg(test)]
 mod eval_value_buffer_tests {
     use super::*;
+
+    #[test]
+    fn lexical_binding_symbols_are_gc_roots_before_closure_projection() {
+        let interpreter = Interpreter::new();
+        let lisp_name = Value::string("binding");
+        let name = SymbolName::make_uninterned(lisp_name.clone(), "binding", 1);
+        let key = Value::Symbol(name.clone());
+        let env = vec![EnvFrame::with_identity(
+            vec![(name.clone(), Value::Integer(7))],
+            Interpreter::fresh_frame_identity(),
+        )];
+        let mut marked = LispReachability::default();
+        marked.mark_env(&interpreter, &env);
+        assert!(
+            marked.contains(&key),
+            "alloc.c marks the symbol car of a lexical binding"
+        );
+        assert!(marked.contains(&lisp_name), "alloc.c marks SYMBOL_NAME");
+
+        let function = Value::lambda(
+            vec![name].into(),
+            vec![Value::Nil].into(),
+            shared_env(Vec::new()),
+        );
+        let mut marked = LispReachability::default();
+        marked.mark(&interpreter, &function);
+        assert!(
+            marked.contains(&key),
+            "closure parameters retain their symbol objects"
+        );
+        assert!(!LispReachability::default().contains(&key));
+    }
+
+    #[test]
+    fn eval_depth_limit_follows_eval_c_post_increment_floor() {
+        let mut interpreter = Interpreter::new();
+        interpreter.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(50));
+
+        interpreter.lisp_eval_depth = 50;
+        assert!(!interpreter.lisp_eval_depth_exceeded());
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("max-lisp-eval-depth")
+                .expect("forwarded depth cell"),
+            Value::Integer(50)
+        );
+
+        interpreter.lisp_eval_depth = 51;
+        assert!(!interpreter.lisp_eval_depth_exceeded());
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("max-lisp-eval-depth")
+                .expect("raised forwarded depth cell"),
+            Value::Integer(100)
+        );
+
+        interpreter.lisp_eval_depth = 101;
+        assert!(interpreter.lisp_eval_depth_exceeded());
+    }
+
+    #[test]
+    fn funcall_depth_limit_follows_eval_c_post_increment_floor() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(50));
+
+        interpreter.lisp_eval_depth = 50;
+        interpreter
+            .begin_funcall(&mut environment)
+            .expect("eval.c raises a sub-100 limit before rejecting the call");
+        assert_eq!(interpreter.lisp_eval_depth, 51);
+        assert_eq!(interpreter.max_lisp_eval_depth_value(), 100);
+        interpreter.end_funcall();
+        assert_eq!(interpreter.lisp_eval_depth, 50);
+
+        interpreter.lisp_eval_depth = 100;
+        let error = interpreter
+            .begin_funcall(&mut environment)
+            .expect_err("eval.c rejects the first call beyond the raised limit");
+        assert_eq!(error.condition_type(), "excessive-lisp-nesting");
+        assert_eq!(interpreter.lisp_eval_depth, 100);
+    }
+
+    #[test]
+    fn eval_sub_processes_quit_before_form_dispatch() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.set_symbol_value_cell("quit-flag", Value::T);
+        let form = Value::list([Value::symbol("quote"), Value::symbol("unreached")]);
+
+        match interpreter.eval(&form, &mut environment) {
+            Err(LispError::SignalValue(value)) => {
+                assert_eq!(value, Value::list([Value::symbol("quit")]))
+            }
+            other => panic!("eval_sub must process the pending quit first, got {other:?}"),
+        }
+        assert_eq!(interpreter.lisp_eval_depth, 0);
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("quit-flag")
+                .expect("forwarded quit cell"),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn forwarded_eval_cells_follow_current_buffer() {
+        let mut interpreter = Interpreter::new();
+        let original_buffer = interpreter.current_buffer_id();
+        let (other_buffer, _) = interpreter.create_buffer(" *forwarded-cell-test*");
+
+        interpreter.set_buffer_local_value(
+            original_buffer,
+            "debug-on-next-call",
+            Value::symbol("non-nil"),
+        );
+        assert!(interpreter.debug_on_next_call());
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("debug-on-next-call")
+                .expect("localized bool cell"),
+            Value::T
+        );
+
+        interpreter
+            .set_current_buffer_id(other_buffer)
+            .expect("switch to buffer using the default cell");
+        assert!(!interpreter.debug_on_next_call());
+
+        interpreter
+            .set_current_buffer_id(original_buffer)
+            .expect("switch back to buffer using the local cell");
+        assert!(interpreter.debug_on_next_call());
+        interpreter.remove_buffer_local_value(original_buffer, "debug-on-next-call");
+        assert!(!interpreter.debug_on_next_call());
+    }
+
+    #[test]
+    fn makunbound_disconnects_all_direct_eval_fields() {
+        for (name, initial, c_value) in [
+            ("quit-flag", Value::Integer(17), Value::Integer(17)),
+            ("inhibit-quit", Value::Integer(17), Value::Integer(17)),
+            ("throw-on-input", Value::Integer(17), Value::Integer(17)),
+            (
+                "overriding-plist-environment",
+                Value::Integer(17),
+                Value::Integer(17),
+            ),
+            (
+                "max-lisp-eval-depth",
+                Value::Integer(50),
+                Value::Integer(50),
+            ),
+            ("debug-on-next-call", Value::Integer(17), Value::T),
+        ] {
+            let mut interpreter = Interpreter::new();
+            let mut env = Env::new();
+            let symbol = Value::symbol(name);
+            interpreter.set_symbol_value_cell(name, initial);
+            for _ in 0..2 {
+                primitives::call(
+                    &mut interpreter,
+                    "makunbound",
+                    std::slice::from_ref(&symbol),
+                    &mut env,
+                )
+                .expect("data.c detaches the symbol without changing its C slot");
+                assert!(interpreter.symbol_value_cell(name).is_err(), "{name}");
+                assert_eq!(
+                    interpreter.forwarded_c_value(name, &env),
+                    Some(c_value.clone())
+                );
+                let plain = Value::string("uncoerced plain value");
+                primitives::call(
+                    &mut interpreter,
+                    "set",
+                    &[symbol.clone(), plain.clone()],
+                    &mut env,
+                )
+                .expect("a detached plain symbol has no forwarded type restriction");
+                interpreter.refresh_forwarded_eval_cells();
+                assert_eq!(
+                    interpreter.symbol_value_cell(name).expect("plain binding"),
+                    plain
+                );
+                assert_eq!(
+                    interpreter.forwarded_c_value(name, &env),
+                    Some(c_value.clone())
+                );
+                assert_eq!(
+                    interpreter.detached_forwarded_variables.get(name),
+                    Some(&Value::Nil)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn c_eval_writes_do_not_overwrite_detached_lisp_bindings() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        for (name, value) in [
+            ("quit-flag", Value::T),
+            ("max-lisp-eval-depth", Value::Integer(50)),
+        ] {
+            interpreter.set_symbol_value_cell(name, value);
+            primitives::call(
+                &mut interpreter,
+                "makunbound",
+                &[Value::symbol(name)],
+                &mut env,
+            )
+            .expect("detach forwarded symbol");
+            primitives::call(
+                &mut interpreter,
+                "set",
+                &[Value::symbol(name), Value::string("plain")],
+                &mut env,
+            )
+            .expect("store plain value");
+        }
+        match interpreter.maybe_quit(&mut env) {
+            Err(LispError::SignalValue(value)) => {
+                assert_eq!(value, Value::list([Value::symbol("quit")]));
+            }
+            other => panic!("process_quit_flag must consume the C flag: {other:?}"),
+        }
+        interpreter.maybe_quit(&mut env).expect("C flag is now nil");
+        assert_eq!(
+            interpreter.forwarded_c_value("quit-flag", &env),
+            Some(Value::Nil)
+        );
+        interpreter.lisp_eval_depth = 51;
+        assert!(!interpreter.lisp_eval_depth_exceeded());
+        assert_eq!(interpreter.max_lisp_eval_depth_value(), 100);
+        for name in ["quit-flag", "max-lisp-eval-depth"] {
+            assert_eq!(
+                interpreter.symbol_value_cell(name).expect("plain value"),
+                Value::string("plain")
+            );
+        }
+    }
+
+    #[test]
+    fn c_slot_and_incoming_main_objects_are_gc_roots() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        let table = primitives::call(
+            &mut interpreter,
+            "make-hash-table",
+            &[
+                Value::symbol(":test"),
+                Value::symbol("eq"),
+                Value::symbol(":weakness"),
+                Value::symbol("key"),
+            ],
+            &mut env,
+        )
+        .expect("weak-key table");
+        let Value::Record(table_id) = table else {
+            panic!("hash table record")
+        };
+        interpreter.set_global_binding("weak-table-root", Value::Record(table_id));
+        let keys: Vec<Value> = (0..9)
+            .map(|n| Value::cons(Value::Integer(n), Value::Nil))
+            .collect();
+        for (index, key) in keys.iter().enumerate() {
+            primitives::call(
+                &mut interpreter,
+                "puthash",
+                &[
+                    key.clone(),
+                    Value::Integer(index as i64),
+                    Value::Record(table_id),
+                ],
+                &mut env,
+            )
+            .expect("weak entry");
+        }
+        for (name, key) in [
+            "quit-flag",
+            "inhibit-quit",
+            "throw-on-input",
+            "overriding-plist-environment",
+        ]
+        .into_iter()
+        .zip(&keys)
+        {
+            interpreter.set_symbol_value_cell(name, key.clone());
+            primitives::call(
+                &mut interpreter,
+                "makunbound",
+                &[Value::symbol(name)],
+                &mut env,
+            )
+            .expect("C slot remains independently rooted");
+        }
+        interpreter
+            .detached_forwarded_variables
+            .insert("text-quoting-style".into(), keys[4].clone());
+        interpreter.pending_thread_events.push(keys[5].clone());
+        interpreter.coding_systems[0].charset_list = keys[6].clone();
+        interpreter.coding_systems[0].type_args = vec![keys[7].clone()];
+        let marked = interpreter.weak_hash_reachability(&env, &[]);
+        let (_, entries, keep) = marked
+            .tables
+            .iter()
+            .find(|(id, _, _)| *id == table_id)
+            .expect("marked weak table");
+        assert_eq!(entries.len(), 9);
+        for ((_, index), retained) in entries.iter().zip(keep) {
+            assert_eq!(
+                *retained,
+                index != &Value::Integer(8),
+                "unrooted negative control must be rejected"
+            );
+        }
+
+        // Once C clears the quit slot, no detachment snapshot may keep its
+        // former object alive. The other seven independently rooted keys stay.
+        interpreter.quit_flag = Value::Nil;
+        let marked = interpreter.weak_hash_reachability(&env, &[]);
+        let (_, entries, keep) = marked
+            .tables
+            .iter()
+            .find(|(id, _, _)| *id == table_id)
+            .expect("marked weak table");
+        for ((_, index), retained) in entries.iter().zip(keep) {
+            assert_eq!(
+                *retained,
+                index != &Value::Integer(0) && index != &Value::Integer(8)
+            );
+        }
+    }
+
+    #[test]
+    fn image_copy_preserves_detached_c_slots_and_new_main_children() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        let c_value = Value::cons(Value::Integer(1), Value::Nil);
+        let plain = Value::cons(Value::Integer(2), Value::Nil);
+        interpreter.set_symbol_value_cell("quit-flag", c_value.clone());
+        primitives::call(
+            &mut interpreter,
+            "makunbound",
+            &[Value::symbol("quit-flag")],
+            &mut env,
+        )
+        .expect("detach C field");
+        interpreter.set_symbol_value_cell("quit-flag", plain.clone());
+        interpreter.set_symbol_value_cell("inhibit-quit", c_value.clone());
+        interpreter
+            .detached_forwarded_variables
+            .insert("text-quoting-style".into(), c_value.clone());
+        interpreter.pending_thread_events.push(c_value.clone());
+        interpreter.coding_systems[0].charset_list = c_value.clone();
+        interpreter.coding_systems[0].type_args = vec![c_value.clone()];
+        let mut copied = interpreter.deep_clone_image();
+        let copied_c = copied.quit_flag_value();
+        assert!(!primitives::values_eq_in_env(
+            &copied, &copied_c, &c_value, &env
+        ));
+        assert_eq!(copied_c, c_value);
+        for child in [
+            copied.inhibit_quit.clone(),
+            copied
+                .symbol_value_cell("inhibit-quit")
+                .expect("still forwarded"),
+            copied.detached_forwarded_variables["text-quoting-style"].clone(),
+            copied.pending_thread_events[0].clone(),
+            copied.coding_systems[0].charset_list.clone(),
+            copied.coding_systems[0].type_args[0].clone(),
+        ] {
+            assert!(
+                primitives::values_eq_in_env(&copied, &copied_c, &child, &env),
+                "copied graph must preserve aliasing"
+            );
+        }
+        let copied_plain = copied
+            .symbol_value_cell("quit-flag")
+            .expect("independent Lisp binding");
+        assert_eq!(copied_plain, plain);
+        assert!(!primitives::values_eq_in_env(
+            &copied,
+            &copied_plain,
+            &plain,
+            &env
+        ));
+        assert!(!primitives::values_eq_in_env(
+            &copied,
+            &copied_plain,
+            &copied_c,
+            &env
+        ));
+        primitives::call(
+            &mut copied,
+            "setcar",
+            &[copied_c, Value::Integer(9)],
+            &mut env,
+        )
+        .expect("mutate copied C graph");
+        assert_eq!(c_value, Value::cons(Value::Integer(1), Value::Nil));
+        assert_eq!(copied_plain, plain);
+    }
 
     #[test]
     fn scratch_buffers_are_cleared_and_oversized_storage_is_not_retained() {

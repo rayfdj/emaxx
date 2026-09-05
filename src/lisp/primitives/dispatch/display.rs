@@ -512,10 +512,7 @@ fn frame_or_buffer_changed(
     let state = if reusable {
         old_state
     } else {
-        Value::list(
-            std::iter::once(Value::symbol("vector-literal"))
-                .chain(std::iter::repeat_n(Value::symbol("lambda"), required + 20)),
-        )
+        Value::vector(std::iter::repeat_n(Value::symbol("lambda"), required + 20))
     };
     for (index, value) in current.into_iter().enumerate() {
         aset_vector_value(&state, index, value)?;
@@ -2383,6 +2380,11 @@ define_dispatch!(
                 let Some(Value::Symbol(condition)) = items.first() else {
                     return Ok(Value::String(args[0].to_string().into()));
                 };
+                // print.c:Ferror_message_string returns the original object
+                // for (error STRING), without allocating or losing properties.
+                if condition == "error" && items.len() == 2 && items[1].is_string() {
+                    return Ok(items[1].clone());
+                }
                 // A file-error condition promotes its first datum to the
                 // message ("Opening input file: ...").
                 let file_error = interp
@@ -2456,7 +2458,14 @@ define_dispatch!(
                     }
                     text.push_str(&rendered.join(", "));
                 }
-                Ok(Value::String(text.into()))
+                // The general C path returns Fbuffer_string from the
+                // multibyte prin1 buffer. It is already mutable at creation;
+                // bytecode argument passing only copies the Lisp_Object.
+                Ok(make_shared_string_value_with_multibyte(
+                    text,
+                    Vec::new(),
+                    true,
+                ))
             }
             "command-error-default-function" => {
                 need_args(name, args, 3)?;
@@ -2594,13 +2603,9 @@ define_dispatch!(
                     .lookup_var("defining-kbd-macro", env)
                     .is_some_and(|value| value.is_truthy())
                 {
-                    interp
-                        .kbd_macro_definition
-                        .truncate(interp.kbd_macro_committed_len);
-                    let last_macro = Value::list(
-                        std::iter::once(Value::symbol("vector-literal"))
-                            .chain(interp.kbd_macro_definition.iter().cloned()),
-                    );
+                    let committed_len = interp.kbd_macro_committed_len;
+                    interp.kbd_macro_definition.truncate(committed_len);
+                    let last_macro = Value::vector(interp.kbd_macro_definition.iter().cloned());
                     interp.set_variable("last-kbd-macro", last_macro, env);
                 }
                 interp.set_variable("unread-command-events", Value::Nil, env);
@@ -2826,9 +2831,7 @@ define_dispatch!(
                     // first character in KEYS (`ESC' + `v' -> `M-v').
                     let mut events = key_description_events(prefix)?;
                     events.extend(key_description_events(&args[0])?);
-                    let sequence = Value::list(
-                        std::iter::once(Value::Symbol("vector-literal".into())).chain(events),
-                    );
+                    let sequence = Value::vector(events);
                     append_key_description_parts(&sequence, &mut parts)?;
                 } else {
                     append_key_description_parts(&args[0], &mut parts)?;
@@ -3551,7 +3554,7 @@ define_dispatch!(
                     .find_record(window_id)
                     .and_then(|record| record.slots.get(slot))
                     .cloned()
-                    .unwrap_or(Value::Float(1.0)))
+                    .unwrap_or(Value::float(1.0)))
             }
             "set-window-new-pixel" | "set-window-new-total" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -4292,6 +4295,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args
                     .first()
+                    .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 if window_record_id_from_value(interp, &window).is_none() {
@@ -4525,6 +4529,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args
                     .first()
+                    .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let window_id = window_id_or_selected(interp, &window)?;
@@ -4648,6 +4653,7 @@ define_dispatch!(
                 need_arg_range(name, args, 0, 1)?;
                 let window = args
                     .first()
+                    .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
                 let Some(window_id) = window_record_id_from_value(interp, &window) else {
@@ -5352,7 +5358,7 @@ fn mode_line_min_width(value: &Value) -> Option<usize> {
         [Value::Symbol(key), width] if key == "min-width" => {
             let widths = width.to_vec().ok()?;
             match widths.first()? {
-                Value::Float(width) => Some(*width as usize),
+                Value::Float(width) => Some(width.get() as usize),
                 Value::Integer(width) => Some(*width as usize),
                 _ => None,
             }

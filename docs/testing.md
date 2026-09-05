@@ -140,7 +140,57 @@ Do not use this when:
 - You want to know whether `emaxx` actually matches Emacs
 - You need full or even broad upstream coverage
 
-## 3. Authoritative Compatibility Harness
+## 3. Native Compiler Artifact Identity
+
+Native-comp development also has an oracle-backed integration test that walks
+unchanged GNU test inputs from small to large and requires the complete `.eln`
+files produced by GNU Emacs and Emaxx to be byte-for-byte identical:
+
+```bash
+cargo test --profile gate --test native_comp_identity -- --nocapture --test-threads=1
+```
+
+The test invokes each editor through its ordinary `-f batch-native-compile`
+entry point.  It does not load helper Elisp, modify the upstream tests, or use
+the compatibility reporter.  It runs in the full gate and requires the pinned
+sibling GNU native-comp build.  Both compiler processes run sequentially for
+each fixture.  The native hot-path test also runs normally, with assertions
+on comparison results and the allocated cons chain; it resolves primitive
+addresses from the target's ABI table instead of hardcoding Darwin indices.
+
+The fixtures are deliberately ordered by size.  Each exact rung records the
+semantic ground already covered, so the first later mismatch identifies the
+new compiler surface introduced by that file:
+
+| Upstream GNU source | Bytes | Semantics exercised | Current identity status |
+|---|---:|---|---|
+| `test/src/comp-resources/comp-test-45603.el` | 923 | Lexical closures, captured lambda arguments, aliases, conditional function selection | Exact `.eln` |
+| `test/src/comp-resources/comp-test-funcs-dyn2.el` | 1,073 | Dynamic binding and the unchanged `no-byte-compile` policy | Neither editor emits an artifact |
+| `test/src/comp-resources/comp-test-pure.el` | 1,244 | Direct calls, recursion, arithmetic, pure/impure relocation classification | Exact `.eln` |
+| `test/src/comp-resources/comp-test-funcs-dyn.el` | 1,494 | Dynamic binding, fixed/optional/rest arguments, `cl-loop`, `cl-defun` | Exact `.eln` |
+| `test/lisp/emacs-lisp/comp-tests.el` | 3,364 | ERT and CL expansion, nested cleanup closures, filesystem control flow, shared constants | Exact `.eln` |
+| `test/lisp/emacs-lisp/comp-cstr-tests.el` | 7,141 | Constraint type conversion, unions, intersections, negations, integer ranges, member sets, conservative normalization | Exact `.eln` |
+| `test/src/comp-resources/comp-test-funcs.el` | 18,832 | Broad opcode lowering, variables, aggregates, argument ABIs, branches and jump tables, mutation, handlers/unwind, buffers, interactive forms, records, cyclic constants, non-ASCII names, and dead/no-return control flow | Exact `.eln` |
+| `test/src/comp-tests.el` | 49,628 | Full upstream native-compiler ERT definitions, resource orchestration, options, diagnostics, asynchronous compilation, loading, runtime assertions, positioned definition names, and positioned interpreted-closure argument lists | Exact `.eln` (`995b8230bb390928510d256567da4c1639d5ab396c4ffa8139c8ca76d3ad6f39`) |
+| `lisp/emacs-lisp/comp.el` | 154,670 | The unchanged native-compiler frontend itself: SSA construction/propagation, call optimization, relocation emission, backend orchestration | Exact `.eln`; permanent ninth fixture (881,800 identical bytes at the 2026-09-05 checkpoint) |
+
+“Exact” means equality of the complete artifact bytes for the same copied
+source path, platform, GNU source tree, and toolchain—not merely equal code
+sections, matching behavior, or matching extracted strings.
+
+The 2026-09-05 run passed all nine fixtures (eight identical artifacts and
+one correctly absent artifact).  The test now prints a `PASS` line only after
+each completed comparison; its earlier source/coverage line announces the
+start of compilation, not success.  Artifact equality is separate from the
+native execution suite and from the C-runtime contract tests.
+
+Native-runtime regression runs must use fresh images and serial execution
+(`--test-threads=1`); leave `EMAXX_IMAGE_TEMPLATE` unset. An interpreter with
+live native compiler/runtime state cannot safely be cloned. The experimental
+grouped image-template schedule above is not an acceptance route for these
+native-enabled runs.
+
+## 4. Authoritative Compatibility Harness
 
 This is the real compatibility runner.
 

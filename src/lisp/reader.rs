@@ -1,6 +1,6 @@
 use super::types::{
     LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
-    make_uninterned_symbol_name,
+    VectorValue, make_uninterned_symbol_name,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -60,6 +60,7 @@ fn nonsensical_circular_self_reference() -> LispError {
 pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
     let mut pending = vec![value.clone()];
     let mut seen_cons = HashSet::new();
+    let mut seen_vectors = HashSet::new();
     while let Some(value) = pending.pop() {
         if circular_read_ref_form(&value).is_some() || circular_read_label_form(&value).is_some() {
             return true;
@@ -72,6 +73,11 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
                 if seen_cons.insert(car.cell_id()) {
                     pending.push(cdr.borrow().clone());
                     pending.push(car.borrow().clone());
+                }
+            }
+            Value::Vector(vector) => {
+                if seen_vectors.insert(VectorValue::identity(&vector)) {
+                    pending.extend(vector.slots().iter().cloned());
                 }
             }
             Value::ReaderForm(form) => match form.as_ref() {
@@ -114,11 +120,7 @@ fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
 }
 
 fn circular_vector_skeleton(len: usize) -> Value {
-    let mut tail = Value::Nil;
-    for _ in 0..len {
-        tail = Value::cons(Value::Nil, tail);
-    }
-    Value::cons(Value::symbol("vector-literal"), tail)
+    Value::vector(std::iter::repeat_n(Value::Nil, len))
 }
 
 fn fill_circular_label_value(
@@ -126,19 +128,17 @@ fn fill_circular_label_value(
     target: &Value,
     labels: &mut HashMap<u32, Value>,
 ) -> Result<(), LispError> {
-    if let Ok(items) = template.to_vec()
-        && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
-    {
-        let Some((_, target_cdr)) = target.cons_cells() else {
+    if let Value::Vector(template_vector) = template {
+        let items = template_vector.slots();
+        let Value::Vector(vector) = target else {
             return Err(invalid_circular_read_syntax());
         };
-        let mut current = target_cdr.borrow().clone();
-        for item in &items[1..] {
-            let Some((slot, next)) = current.cons_cells() else {
-                return Err(invalid_circular_read_syntax());
-            };
-            *slot.borrow_mut() = resolve_circular_read_syntax_inner(item, labels)?;
-            current = next.borrow().clone();
+        if vector.slots().len() != items.len() {
+            return Err(invalid_circular_read_syntax());
+        }
+        for (index, item) in items.iter().enumerate() {
+            let resolved = resolve_circular_read_syntax_inner(item, labels)?;
+            vector.slots_mut()[index] = resolved;
         }
         return Ok(());
     }
@@ -176,10 +176,8 @@ fn resolve_circular_read_syntax_inner(
             return Err(nonsensical_circular_self_reference());
         }
 
-        let placeholder = if let Ok(items) = template.to_vec()
-            && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
-        {
-            circular_vector_skeleton(items.len().saturating_sub(1))
+        let placeholder = if let Value::Vector(vector) = &template {
+            circular_vector_skeleton(vector.slots().len())
         } else if matches!(template, Value::Cons(_)) {
             Value::cons(Value::Nil, Value::Nil)
         } else {
@@ -197,16 +195,13 @@ fn resolve_circular_read_syntax_inner(
         return Ok(placeholder);
     }
 
-    if let Ok(items) = value.to_vec()
-        && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
-    {
-        return Ok(Value::list(
-            std::iter::once(Value::symbol("vector-literal")).chain(
-                items[1..]
-                    .iter()
-                    .map(|item| resolve_circular_read_syntax_inner(item, labels))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
+    if let Value::Vector(vector) = value {
+        return Ok(Value::vector(
+            vector
+                .slots()
+                .iter()
+                .map(|item| resolve_circular_read_syntax_inner(item, labels))
+                .collect::<Result<Vec<_>, _>>()?,
         ));
     }
 
@@ -293,6 +288,7 @@ pub(crate) fn resolve_circular_read_syntax(value: Value) -> Result<Value, LispEr
 /// as-is, sharing structure exactly like GNU's quote.
 pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
     let mut seen = std::collections::HashSet::new();
+    let mut seen_vectors = std::collections::HashSet::new();
     let mut stack = vec![value.clone()];
     while let Some(current) = stack.pop() {
         match &current {
@@ -306,6 +302,11 @@ pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
                 }
                 stack.push(car_cell.borrow().clone());
                 stack.push(cdr_cell.borrow().clone());
+            }
+            Value::Vector(vector) => {
+                if seen_vectors.insert(VectorValue::identity(vector)) {
+                    stack.extend(vector.slots().iter().cloned());
+                }
             }
             Value::StringObject(state) => {
                 for span in &state.borrow().props {
@@ -602,7 +603,7 @@ impl<'a> Reader<'a> {
 
     fn read_vector(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume '['
-        let mut items = vec![Value::symbol("vector-literal")];
+        let mut items = Vec::new();
         loop {
             self.skip_whitespace_and_comments();
             match self.peek() {
@@ -617,7 +618,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Ok(Some(Value::list(items)))
+        Ok(Some(Value::vector(items)))
     }
 
     fn read_string(&mut self) -> Result<Option<Value>, LispError> {
@@ -632,6 +633,16 @@ impl<'a> Reader<'a> {
                 None => return Err(LispError::EndOfInput),
                 Some(b'"') => {
                     self.advance();
+                    // alloc.c canonicalizes every zero-length unibyte string
+                    // to empty_unibyte_string.  It is the one reader literal
+                    // whose identity is intentionally shared globally.
+                    if s.is_empty()
+                        && extended_chars.is_empty()
+                        && !has_explicit_multibyte
+                        && !has_invalid_unicode
+                    {
+                        return Ok(Some(Value::String("".into())));
+                    }
                     // A Lisp string is an object even when it has no text
                     // properties.  Keeping ordinary source literals as the
                     // scalar `Value::String` shortcut loses object identity
@@ -1500,9 +1511,7 @@ impl<'a> Reader<'a> {
                 if let Some(string) = self.try_read_string_literal_with_properties(&items)? {
                     Ok(Some(string))
                 } else {
-                    Ok(Some(Value::list(
-                        std::iter::once(Value::symbol("vector-literal")).chain(items),
-                    )))
+                    Ok(Some(Value::vector(items)))
                 }
             }
             Some(ch) if ch.is_ascii_digit() => {
@@ -1873,7 +1882,7 @@ impl<'a> Reader<'a> {
             }
 
             if let Some(f) = parse_special_float_token(&token) {
-                return Ok(Some(Value::Float(f)));
+                return Ok(Some(Value::float(f)));
             }
             if let Some(number) = parse_decimal_token(&token) {
                 return Ok(Some(number));
@@ -1948,7 +1957,7 @@ fn parse_decimal_token(token: &str) -> Option<Value> {
     if (token.contains('.') || token.contains('e') || token.contains('E'))
         && let Ok(value) = token.parse::<f64>()
     {
-        return Some(Value::Float(value));
+        return Some(Value::float(value));
     }
     None
 }
@@ -2344,8 +2353,7 @@ mod tests {
     fn bare_vector_syntax() {
         assert_eq!(
             read_one("[1 2 foo]"),
-            Value::list([
-                Value::Symbol("vector-literal".into()),
+            Value::vector([
                 Value::Integer(1),
                 Value::Integer(2),
                 Value::Symbol("foo".into()),
@@ -2538,11 +2546,9 @@ mod tests {
                 if kind == "a"
                     && field == "b"
                     && matches!(nested.as_ref(), ReaderForm::Record { .. })
-                    && vector.to_vec().ok().is_some_and(|items| matches!(
-                        items.as_slice(),
-                        [Value::Symbol(name), Value::Symbol(item)]
-                            if name == "vector-literal" && item == "e"
-                    ))
+                    && matches!(vector, Value::Vector(vector)
+                        if matches!(vector.slots().as_slice(),
+                            [Value::Symbol(item)] if item == "e"))
         ));
     }
 

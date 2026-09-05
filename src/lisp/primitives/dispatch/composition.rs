@@ -1,7 +1,7 @@
 use super::*;
 
 fn vector_value(items: impl IntoIterator<Item = Value>) -> Value {
-    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(items))
+    Value::vector(items)
 }
 
 fn args_out_of_range(values: impl IntoIterator<Item = Value>) -> LispError {

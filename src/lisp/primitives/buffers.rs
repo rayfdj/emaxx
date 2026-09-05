@@ -228,13 +228,7 @@ fn translation_characters(value: &Value) -> Option<Vec<u32>> {
             .filter(|character| char::from_u32(*character).is_some())
             .map(|character| vec![character]);
     }
-    let items = value.to_vec().ok()?;
-    let (Value::Symbol(marker), characters) = items.split_first()? else {
-        return None;
-    };
-    if marker != "vector-literal" {
-        return None;
-    }
+    let characters = vector_items(value).ok()?;
     characters
         .iter()
         .map(|character| {
@@ -300,13 +294,13 @@ pub(crate) fn marker_target(
 }
 
 pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
-    if is_vector_value(value) {
-        Ok(vector_slot_refs(value)?
-            .iter()
-            .map(|slot| slot.borrow().clone())
-            .collect())
+    if let Value::Vector(vector) = value {
+        Ok(vector.slots().clone())
     } else {
-        Ok(value.to_vec()?)
+        Err(LispError::WrongTypeArgument(
+            "vectorp".into(),
+            value.clone(),
+        ))
     }
 }
 
@@ -328,120 +322,42 @@ pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool 
         .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::BoolVector)
 }
 
-pub(crate) fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
-    match value {
-        Value::Cons(cell) if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") => {
-            Some(ConsSlot::car(cell))
-        }
-        _ => None,
-    }
-}
-
-/// Run OP against the cached slot vector of VALUE without cloning the
-/// `Rc<Vec>` per access; a cold cache falls back to the filling path.
-fn with_vector_slots<T>(value: &Value, op: impl Fn(&[ConsSlot]) -> Option<T>) -> Option<T> {
-    let root = vector_root_slot(value)?;
-    let key = root.cell_id();
-    let mut hit = false;
-    let cached = VECTOR_SLOT_CACHE.with_borrow(|cache| {
-        let (cached_root, slots) = cache.get(&key)?;
-        let live = cached_root.upgrade()?;
-        if !live.ptr_eq(&root) {
-            return None;
-        }
-        hit = true;
-        op(slots)
-    });
-    if hit {
-        return cached;
-    }
-    let slots = vector_slot_refs(value).ok()?;
-    op(&slots)
-}
-
-/// O(1) element read for the VM's Baref: Some only when VALUE is a plain
-/// list-vector and INDEX is in range; strings, char-tables, records,
-/// closures, and out-of-range all return None so the caller takes the
-/// full `aref' path (and its exact errors).
+/// O(1) element read for the VM's Baref.  Strings, char-tables, records,
+/// closures, and out-of-range accesses return None so the caller takes the
+/// full `aref' path and preserves GNU's exact error behavior.
 pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
-    with_vector_slots(value, |slots| {
-        slots.get(index).map(|slot| slot.borrow().clone())
-    })
+    let Value::Vector(vector) = value else {
+        return None;
+    };
+    vector.slots().get(index).cloned()
 }
 
 /// O(1) element write for the VM's Baset, same contract as
 /// [`vector_aref_fast`].
 pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -> Option<()> {
-    with_vector_slots(value, |slots| {
-        let slot = slots.get(index)?;
-        *slot.borrow_mut() = new_value.clone();
-        Some(())
-    })
-}
-
-pub(crate) fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispError> {
-    let Some(root) = vector_root_slot(value) else {
-        return Err(LispError::WrongTypeArgument(
-            "vectorp".into(),
-            value.clone(),
-        ));
+    let Value::Vector(vector) = value else {
+        return None;
     };
-    let key = root.cell_id();
-    if let Some(slots) = VECTOR_SLOT_CACHE.with_borrow_mut(|cache| match cache.get(&key) {
-        Some((cached_root, slots)) => match cached_root.upgrade() {
-            Some(cached_root) if cached_root.ptr_eq(&root) => Some(slots.clone()),
-            _ => {
-                cache.remove(&key);
-                None
-            }
-        },
-        None => None,
-    }) {
-        return Ok(slots);
-    }
-
-    let Some((_, cdr)) = (value).cons_cells() else {
-        return Err(LispError::WrongTypeArgument(
-            "vectorp".into(),
-            value.clone(),
-        ));
-    };
-    let mut current = cdr.borrow().clone();
-    let mut slots = Vec::new();
-    loop {
-        match current {
-            Value::Cons(cell) => {
-                slots.push(ConsSlot::car(&cell));
-                current = cell.cdr.borrow().clone();
-            }
-            Value::Nil => break,
-            _ => {
-                return Err(LispError::WrongTypeArgument(
-                    "vectorp".into(),
-                    value.clone(),
-                ));
-            }
-        }
-    }
-
-    let slots = Rc::new(slots);
-    VECTOR_SLOT_CACHE.with_borrow_mut(|cache| {
-        cache.insert(key, (root.downgrade(), slots.clone()));
-    });
-    Ok(slots)
+    let mut slots = vector.slots_mut();
+    let slot = slots.get_mut(index)?;
+    *slot = new_value.clone();
+    Some(())
 }
 
 pub(crate) fn vector_slot_value(value: &Value, index: usize) -> Result<Value, LispError> {
-    vector_slot_refs(value)?
-        .get(index)
-        .map(|slot| slot.borrow().clone())
-        .ok_or_else(|| {
-            LispError::SignalValue(Value::list([
-                Value::Symbol("args-out-of-range".into()),
-                value.clone(),
-                Value::Integer(index as i64),
-            ]))
-        })
+    let Value::Vector(vector) = value else {
+        return Err(LispError::WrongTypeArgument(
+            "vectorp".into(),
+            value.clone(),
+        ));
+    };
+    vector.slots().get(index).cloned().ok_or_else(|| {
+        LispError::SignalValue(Value::list([
+            Value::Symbol("args-out-of-range".into()),
+            value.clone(),
+            Value::Integer(index as i64),
+        ]))
+    })
 }
 
 pub(crate) fn bool_vector_values(
@@ -753,6 +669,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Value::Float(_) => "float",
         Value::String(_) | Value::StringObject(_) => "string",
         Value::Symbol(_) => "symbol",
+        Value::Vector(_) => "vector",
         Value::Cons(_) if is_vector_value(value) => "vector",
         Value::Cons(_) => "cons",
         Value::BuiltinFunc(name) if is_special_form_name(name) => "special-form",
@@ -800,6 +717,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 crate::lisp::eval::RecordKind::Mutex => "mutex",
                 crate::lisp::eval::RecordKind::ConditionVariable => "condition-variable",
                 crate::lisp::eval::RecordKind::NativeCompUnit => "native-comp-unit",
+                crate::lisp::eval::RecordKind::NativeCompiledFunction => "native-comp-function",
                 crate::lisp::eval::RecordKind::TreeSitterParser => "treesit-parser",
                 crate::lisp::eval::RecordKind::TreeSitterNode => "treesit-node",
                 crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => "treesit-compiled-query",

@@ -51,7 +51,7 @@ define_dispatch!(
 );
 
 fn make_vector(items: impl IntoIterator<Item = Value>) -> Value {
-    Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(items))
+    Value::vector(items)
 }
 
 fn ccl_program_p(interp: &Interpreter, object: &Value) -> bool {

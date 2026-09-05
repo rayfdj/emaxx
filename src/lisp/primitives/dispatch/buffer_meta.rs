@@ -1,7 +1,5 @@
 use super::*;
 
-const PORTABLE_DUMPER_UNAVAILABLE: &str = "Portable dumper backend is unavailable";
-
 fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
     let Ok(items) = plist.to_vec() else {
         return false;
@@ -783,6 +781,17 @@ define_dispatch!(
                                 "emaxx: no GNU-derived arity for subr {symbol}"
                             ))
                         }),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        let record = interp.find_record(*id).expect("record checked above");
+                        Ok(Value::cons(
+                            record.slots[1].clone(),
+                            record.slots[2].clone(),
+                        ))
+                    }
                     // GNU data.c CHECK_SUBR signals the subrp predicate with
                     // the offending value itself.
                     other => Err(crate::lisp::primitives::wrong_type_argument(
@@ -797,29 +806,31 @@ define_dispatch!(
                 // reports the expander's arity.
                 let unwrap_macro = |value: &Value| -> Value {
                     if let Some((car, cdr)) = value.cons_values()
-                        && matches!(&car, Value::Symbol(head) if head == "macro")
+                        && values_eq_in_env(interp, &car, &Value::Symbol("macro".into()), env)
                     {
                         cdr
                     } else {
                         value.clone()
                     }
                 };
-                match &args[0] {
-                    Value::Symbol(symbol) => {
-                        if let Some(arity) = special_form_arity_value(symbol) {
-                            Ok(arity)
-                        } else {
-                            let function = interp.lookup_function(symbol, env)?;
-                            function_arity_value(interp, &unwrap_macro(&function), env)
-                        }
-                    }
-                    other => function_arity_value(interp, &unwrap_macro(other), env),
-                }
+                let function = resolve_callable(interp, &args[0], env)?;
+                function_arity_value(interp, &unwrap_macro(&function), env)
             }
             "subr-name" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(Value::String(symbol.clone().into())),
+                    Value::BuiltinFunc(symbol) => Ok(Value::string(symbol.as_str())),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        let name = crate::lisp::native_comp::function_name(interp, *id)
+                            .ok_or_else(|| {
+                                LispError::Signal("native subr is not registered".into())
+                            })?;
+                        Ok(Value::string(&name))
+                    }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",
                         other.clone(),
@@ -830,6 +841,18 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match &args[0] {
                     Value::BuiltinFunc(_) => Ok(Value::T),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        let record = interp.find_record(*id).expect("record checked above");
+                        Ok(if record.slots[10].is_truthy() {
+                            record.slots[9].clone()
+                        } else {
+                            Value::T
+                        })
+                    }
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",
                         other.clone(),
@@ -838,7 +861,13 @@ define_dispatch!(
             }
             "native-comp-available-p" => {
                 need_args(name, args, 0)?;
-                Ok(Value::Nil)
+                Ok(
+                    if crate::lisp::native_comp::NativeCompilerState::available() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "comp--subr-signature" => {
                 need_args(name, args, 1)?;
@@ -857,15 +886,30 @@ define_dispatch!(
                     format!("{symbol}{}", render_prin1(interp, &arity, env)?).into(),
                 ))
             }
-            "comp-libgccjit-version"
-            | "comp-native-compiler-options-effective-p"
+            "comp-libgccjit-version" => {
+                need_args(name, args, 0)?;
+                Ok(crate::lisp::native_comp::NativeCompilerState::version()
+                    .map(|(major, minor, patch)| {
+                        Value::list([
+                            Value::Integer(i64::from(major)),
+                            Value::Integer(i64::from(minor)),
+                            Value::Integer(i64::from(patch)),
+                        ])
+                    })
+                    .unwrap_or(Value::Nil))
+            }
+            "comp-native-compiler-options-effective-p"
             | "comp-native-driver-options-effective-p" => {
                 need_args(name, args, 0)?;
-                // These are capability queries, not compiler emulation.  Emaxx
-                // has no libgccjit/native-comp backend, as reported by
-                // `native-comp-available-p', so GNU's documented unavailable
-                // result is nil for all three.
-                Ok(Value::Nil)
+                Ok(
+                    if crate::lisp::native_comp::NativeCompilerState::version()
+                        .is_some_and(|(major, _, _)| major >= 9)
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "dump-emacs-portable--sort-predicate" => {
                 need_args(name, args, 2)?;
@@ -909,17 +953,30 @@ define_dispatch!(
             }
             "native-comp-function-p" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Nil)
+                Ok(
+                    if matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "subr-native-comp-unit" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::BuiltinFunc(symbol) => Ok(interp.create_pseudovector(
-                        crate::lisp::eval::RecordKind::NativeCompUnit,
-                        "native-comp-unit",
-                        vec![Value::String(format!("{symbol}.eln").into())],
+                    Value::BuiltinFunc(_) => Ok(Value::Nil),
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        Ok(interp.find_record(*id).expect("record checked above").slots[8].clone())
+                    }
+                    other => Err(crate::lisp::primitives::wrong_type_argument(
+                        "subrp",
+                        other.clone(),
                     )),
-                    other => Err(LispError::TypeError("subr".into(), other.type_name())),
                 }
             }
             "native-comp-unit-file" => {
@@ -966,7 +1023,7 @@ define_dispatch!(
                 } else {
                     record.slots[0] = args[1].clone();
                 }
-                Ok(args[1].clone())
+                Ok(args[0].clone())
             }
             "decode-char" => {
                 need_args(name, args, 2)?;
@@ -1167,7 +1224,12 @@ define_dispatch!(
                 let function = args[0].clone();
                 let charset = args[1].as_symbol()?.to_string();
                 let arg = args.get(2).cloned().unwrap_or(Value::Nil);
-                let from = args.get(3).map(Value::as_integer).transpose()?.unwrap_or(0);
+                let from = args
+                    .get(3)
+                    .filter(|from| from.is_truthy())
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .unwrap_or(0);
                 let to = args
                     .get(4)
                     .map(Value::as_integer)
@@ -1507,12 +1569,10 @@ define_dispatch!(
                         .iter()
                         .all(|variant| interp.has_coding_system(variant))
                     {
-                        Value::list(
-                            std::iter::once(Value::Symbol("vector-literal".into())).chain(
-                                variants
-                                    .into_iter()
-                                    .map(|value| Value::Symbol(value.into())),
-                            ),
+                        Value::vector(
+                            variants
+                                .into_iter()
+                                .map(|value| Value::Symbol(value.into())),
                         )
                     } else {
                         Value::Nil

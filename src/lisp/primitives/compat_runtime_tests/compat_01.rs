@@ -198,7 +198,8 @@ fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
     interp.buffer = crate::buffer::Buffer::from_text("*lines*", "\n\n\n\n\n\n\n\n\n\n");
-    interp.buffer.goto_char(interp.buffer.point_max());
+    let buffer = &mut interp.buffer;
+    buffer.goto_char(buffer.point_max());
 
     assert_eq!(
         call(&mut interp, "line-number-at-pos", &[Value::Nil], &mut env,)
@@ -859,12 +860,7 @@ fn fillarray_mutates_supported_sequences() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
 
-    let vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-        Value::Integer(3),
-    ]);
+    let vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
     call(
         &mut interp,
         "fillarray",
@@ -1086,28 +1082,13 @@ fn reverse_and_nreverse_preserve_vector_types() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
 
-    let literal_vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-        Value::Integer(3),
-    ]);
+    let literal_vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
     assert_eq!(
         call(&mut interp, "reverse", &[literal_vector], &mut env).expect("reverse vector"),
-        Value::list([
-            Value::symbol("vector-literal"),
-            Value::Integer(3),
-            Value::Integer(2),
-            Value::Integer(1),
-        ])
+        Value::vector([Value::Integer(3), Value::Integer(2), Value::Integer(1),])
     );
 
-    let vector = Value::list([
-        Value::symbol("vector-literal"),
-        Value::Integer(1),
-        Value::Integer(2),
-        Value::Integer(3),
-    ]);
+    let vector = Value::vector([Value::Integer(1), Value::Integer(2), Value::Integer(3)]);
     assert_eq!(
         call(
             &mut interp,
@@ -1155,13 +1136,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
             &mut env,
         )
         .expect("vconcat should accept bool-vectors"),
-        Value::list([
-            Value::symbol("vector-literal"),
-            Value::T,
-            Value::T,
-            Value::Nil,
-            Value::Nil,
-        ])
+        Value::vector([Value::T, Value::T, Value::Nil, Value::Nil,])
     );
     assert_eq!(
         call(

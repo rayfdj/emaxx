@@ -235,11 +235,11 @@ pub(crate) fn parse_event_symbol_modifiers(
 }
 
 pub(crate) fn parse_kbd_sequence(text: &str) -> Result<Value, LispError> {
-    let mut items = vec![Value::Symbol("vector-literal".into())];
+    let mut items = Vec::new();
     for token in text.split_whitespace() {
         items.extend(parse_kbd_token(token));
     }
-    Ok(Value::list(items))
+    Ok(Value::vector(items))
 }
 
 pub(crate) fn parse_kbd_token(token: &str) -> Vec<Value> {
@@ -394,7 +394,7 @@ pub(crate) fn normalize_lucid_key_events(
     }) {
         return Ok(key.clone());
     }
-    let mut converted = vec![Value::Symbol("vector-literal".into())];
+    let mut converted = Vec::with_capacity(events.len());
     for event in events {
         let event = if lucid_event_type_list_p(&event) {
             event_convert_list_value(interp, &event)?
@@ -409,7 +409,7 @@ pub(crate) fn normalize_lucid_key_events(
             event
         });
     }
-    Ok(Value::list(converted))
+    Ok(Value::vector(converted))
 }
 
 /// keymap.c's Fdefine_key: a DEF vector whose first element is a cons "is
@@ -425,7 +425,7 @@ pub(crate) fn normalize_xemacs_macro_definition(
     if !matches!(events.first(), Some(Value::Cons(_))) {
         return Ok(def.clone());
     }
-    let mut converted = vec![Value::Symbol("vector-literal".into())];
+    let mut converted = Vec::with_capacity(events.len());
     for event in events {
         converted.push(if lucid_event_type_list_p(&event) {
             event_convert_list_value(interp, &event)?
@@ -433,18 +433,13 @@ pub(crate) fn normalize_xemacs_macro_definition(
             event
         });
     }
-    Ok(Value::list(converted))
+    Ok(Value::vector(converted))
 }
 
 /// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
 /// symbols whose head is not one of the posn-bearing pseudo-event kinds.
 fn lucid_event_type_list_p(event: &Value) -> bool {
     if !matches!(event, Value::Cons(_)) {
-        return false;
-    }
-    // GNU's CONSP is false for a real vector; Emaxx's vector-literal
-    // facade uses cons storage, so exclude it explicitly.
-    if crate::lisp::primitives::interactive::is_vector_value(event) {
         return false;
     }
     if matches!(
@@ -492,7 +487,7 @@ pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, Li
     // event-convert-list instead of taking their car.
     if let Ok(events) = vector_items(value)
         && events.iter().any(|event| {
-            matches!(event.car(), Ok(Value::Symbol(_)))
+            event.cons_values().is_some()
                 && !lucid_event_type_list_p(event)
                 && !crate::lisp::primitives::interactive::is_vector_value(event)
         })
@@ -503,13 +498,13 @@ pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, Li
             {
                 return event;
             }
-            match event.car() {
-                Ok(Value::Symbol(head)) => Value::Symbol(head),
-                _ => event,
-            }
+            // keymap.c:lookup_key_1 converts proper Lucid event lists first;
+            // access_keymap_1 then applies EVENT_HEAD to every remaining
+            // cons event.  That includes both parameterized events and the
+            // dotted (FROM . TO) character ranges emitted by map-keymap.
+            event.car().unwrap_or(event)
         });
-        let vector =
-            Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(heads));
+        let vector = Value::vector(heads);
         return keymap_parts_from_display_parts(key_sequence_binding_parts(&vector)?);
     }
     keymap_parts_from_display_parts(key_sequence_binding_parts(value)?)
@@ -522,7 +517,7 @@ pub(crate) fn key_sequence_prefix_event_count(
     let mut consumed_parts = 0;
     let mut consumed_events = 0;
     for event in key_description_events(value)? {
-        let sequence = Value::list([Value::Symbol("vector-literal".into()), event]);
+        let sequence = Value::vector([event]);
         consumed_parts += key_sequence_keymap_parts(&sequence)?.len();
         if consumed_parts > keymap_prefix_len {
             break;
@@ -629,7 +624,7 @@ pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, Lis
 
     match sequence {
         Value::Nil => Ok(Vec::new()),
-        Value::Cons(_) => Ok(vector_items(sequence)?
+        value if is_vector_value(value) => Ok(vector_items(sequence)?
             .into_iter()
             .map(normalize_key_description_event)
             .collect()),
@@ -661,6 +656,8 @@ pub(crate) fn sequence_values(
         Ok(string_sequence_values(&string))
     } else if let Some(items) = keymap_list_items(interp, sequence)? {
         Ok(items)
+    } else if matches!(sequence, Value::Nil | Value::Cons(_)) {
+        sequence.to_vec()
     } else if is_bool_vector_value(interp, sequence) {
         bool_vector_values(interp, sequence)
     } else {
@@ -734,20 +731,7 @@ pub(crate) fn concat_sequence_string(
 }
 
 pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
-    match value {
-        Value::String(_) | Value::StringObject(_) => string_like(value),
-        Value::Cons(_) => {
-            let items = value.to_vec().ok()?;
-            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
-                && matches!(items.get(1), Some(Value::String(_)))
-            {
-                string_like(value)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
+    string_like(value)
 }
 
 pub(crate) fn single_key_description_text(

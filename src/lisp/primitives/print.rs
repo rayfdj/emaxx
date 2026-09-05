@@ -68,6 +68,7 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PrintRefKey {
     Cons(usize),
+    Vector(usize),
     Lambda(usize),
     Record(u64),
     StringObject(usize),
@@ -117,7 +118,7 @@ impl PrintContext {
         let number_table = interp
             .lookup_var("print-number-table", env)
             .filter(|value| json::is_hash_table(interp, value));
-        let labels = if options.circle && options.continuous_numbering {
+        let mut labels = if options.circle && options.continuous_numbering {
             parse_print_number_table(interp, number_table.as_ref(), options)
         } else {
             HashMap::new()
@@ -125,14 +126,25 @@ impl PrintContext {
         // print.c's `print_number_index' is independent of the public hash
         // table.  In particular, `print--preprocess' can advance the counter
         // in a temporary dynamic binding before a nested printer reuses it.
-        let next_label = if options.continuous_numbering {
+        let mut next_label = if options.continuous_numbering {
             interp.print_number_index.saturating_add(1)
         } else {
             1
         };
         let mut counts = HashMap::new();
         if options.circle {
-            collect_print_counts(interp, value, options, &mut counts, &mut HashSet::new())?;
+            if options.continuous_numbering {
+                collect_print_counts(interp, value, options, &mut counts)?;
+            } else {
+                collect_print_sharing(
+                    interp,
+                    value,
+                    options,
+                    &mut counts,
+                    &mut labels,
+                    &mut next_label,
+                )?;
+            }
         }
         Ok(Self {
             options,
@@ -209,6 +221,13 @@ pub(crate) fn print_ref_key(
         Value::Cons(cell) => Some(PrintRefKey::Cons(crate::lisp::types::ConsCell::identity(
             cell,
         ))),
+        Value::Vector(vector) => Some(PrintRefKey::Vector(
+            crate::lisp::types::VectorValue::identity(vector),
+        )),
+        // print.c:PRINT_CIRCLE_CANDIDATE_P includes every string.  Immutable
+        // strings still have Lisp identity: cloning SharedText preserves its
+        // Rc allocation, so repeated occurrences must receive one #N label.
+        Value::String(text) => Some(PrintRefKey::StringObject(text.identity_ptr())),
         Value::Lambda(lambda) => Some(PrintRefKey::Lambda(std::rc::Rc::as_ptr(lambda) as usize)),
         Value::StringObject(state) => Some(PrintRefKey::StringObject(Rc::as_ptr(state) as usize)),
         Value::Symbol(symbol)
@@ -314,11 +333,42 @@ pub(crate) fn collect_print_counts(
     value: &Value,
     options: PrintOptions,
     counts: &mut HashMap<PrintRefKey, usize>,
-    expanded: &mut HashSet<PrintRefKey>,
 ) -> Result<(), LispError> {
+    let mut expanded = HashSet::new();
     walk_print_graph(interp, value, options, |key, _| {
         *counts.entry(key.clone()).or_insert(0) += 1;
         expanded.insert(key)
+    })
+}
+
+/// Match print.c:print_preprocess's numbering rule: a shared object's label
+/// is allocated when the traversal encounters that object for the second
+/// time, not when the printer later reaches its first occurrence.  These
+/// orders differ for nested vectors and are observable in serialized .eln
+/// constants.
+fn collect_print_sharing(
+    interp: &Interpreter,
+    value: &Value,
+    options: PrintOptions,
+    counts: &mut HashMap<PrintRefKey, usize>,
+    labels: &mut HashMap<PrintRefKey, PrintLabel>,
+    next_label: &mut usize,
+) -> Result<(), LispError> {
+    walk_print_graph(interp, value, options, |key, object| {
+        let count = counts.entry(key.clone()).or_insert(0);
+        *count += 1;
+        if *count == 2 {
+            labels.insert(
+                key,
+                PrintLabel {
+                    number: *next_label,
+                    printed: false,
+                    object: object.clone(),
+                },
+            );
+            *next_label += 1;
+        }
+        *count == 1
     })
 }
 
@@ -341,7 +391,7 @@ fn walk_print_graph(
         }
 
         match &value {
-            Value::Cons(_) if is_vector_value(&value) => {
+            Value::Vector(_) | Value::Cons(_) if is_vector_value(&value) => {
                 let items = vector_items(&value)?;
                 pending.extend(items.into_iter().rev());
             }
@@ -374,12 +424,7 @@ fn walk_print_graph(
                 }
             }
             Value::Lambda(lambda) => {
-                pending.extend(
-                    interp
-                        .interpreted_closure_print_slots(lambda)
-                        .into_iter()
-                        .rev(),
-                );
+                pending.extend(interp.interpreted_closure_slots(lambda).into_iter().rev());
             }
             _ => {}
         }
@@ -1052,7 +1097,7 @@ pub(crate) fn render_prin1_body(
             Ok("\\,@".into())
         }
         Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
-        Value::Cons(_) if is_vector_value(value) => {
+        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             let items = vector_items(value)?;
             let mut rendered_items = Vec::new();
             for (index, item) in items.iter().enumerate() {
@@ -1075,7 +1120,9 @@ pub(crate) fn render_prin1_body(
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
-            let slots = interp.interpreted_closure_print_slots(lambda_value);
+            // GNU print.c prints every stored closure slot. Capture filtering
+            // belongs to cconv.el at construction, never to the printer.
+            let slots = interp.interpreted_closure_slots(lambda_value);
             let mut rendered_slots = Vec::new();
             for (index, slot) in slots.iter().enumerate() {
                 if context.options.length.is_some_and(|limit| index >= limit) {
@@ -1476,7 +1523,7 @@ fn read_one_positioned_form(
     // before read-positioning-symbols returns.  In particular, the byte
     // compiler must receive an actual hash table constant rather than
     // Emaxx's parser-private ReaderForm marker.
-    let value = interp.materialize_read_object_literals(value)?;
+    let value = interp.materialize_read_object_literals(value, env)?;
     Ok((value, consumed))
 }
 
@@ -1624,7 +1671,7 @@ pub(crate) fn read_from_lisp_source(
     // materializer the load path uses; the partial record/hash/char pass
     // left `#<reader-form>' placeholders in `#[...]' data for `read'
     // consumers (pp-tests--sanity).
-    interp.materialize_read_object_literals(value)
+    interp.materialize_read_object_literals(value, env)
 }
 
 // GNU's reader constructs real hash tables for `#s(hash-table ...)' input;
@@ -1635,9 +1682,18 @@ pub(crate) fn read_from_lisp_source(
 pub(crate) fn materialize_read_hash_table_literals(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut seen = HashSet::new();
-    materialize_hash_table_literals_inner(interp, value, &mut seen)
+    materialize_hash_table_literals_inner(interp, value, env, &mut seen)
+}
+
+pub(crate) fn materialize_read_hash_table_literal_fields(
+    interp: &mut Interpreter,
+    fields: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    hash_table_from_literal_fields(interp, fields, env, &mut HashSet::new())
 }
 
 const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
@@ -1651,9 +1707,10 @@ const MAX_CHAR: u32 = 0x3f_ffff;
 pub(crate) fn materialize_read_char_table_literals(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut seen = HashSet::new();
-    materialize_char_table_literals_inner(interp, value, &mut seen)
+    materialize_char_table_literals_inner(interp, value, env, &mut seen)
 }
 
 fn char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
@@ -1679,10 +1736,22 @@ fn sub_char_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
 fn materialize_char_table_literals_inner(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     if let Some(fields) = char_table_literal_fields(value) {
-        return char_table_from_literal_fields(interp, &fields, seen);
+        return char_table_from_literal_fields(interp, &fields, env, seen);
+    }
+    if let Value::Vector(vector) = value {
+        if !seen.insert(crate::lisp::types::VectorValue::identity(vector)) {
+            return Ok(value.clone());
+        }
+        let slots = vector.slots().clone();
+        for (index, slot) in slots.iter().enumerate() {
+            vector.slots_mut()[index] =
+                materialize_char_table_literals_inner(interp, slot, env, seen)?;
+        }
+        return Ok(value.clone());
     }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());
@@ -1692,9 +1761,9 @@ fn materialize_char_table_literals_inner(
         return Ok(value.clone());
     }
     let car = car_cell.borrow().clone();
-    *car_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &car, seen)?;
+    *car_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &car, env, seen)?;
     let cdr = cdr_cell.borrow().clone();
-    *cdr_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &cdr, seen)?;
+    *cdr_cell.borrow_mut() = materialize_char_table_literals_inner(interp, &cdr, env, seen)?;
     Ok(value.clone())
 }
 
@@ -1705,14 +1774,15 @@ fn invalid_char_table_literal(message: &str) -> LispError {
 fn char_table_from_literal_fields(
     interp: &mut Interpreter,
     fields: &[Value],
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     if fields.len() < CHAR_TABLE_STANDARD_SLOTS {
         return Err(invalid_char_table_literal("invalid size char-table"));
     }
 
-    let default = materialize_literal_value(interp, &fields[0], seen)?;
-    let parent = materialize_literal_value(interp, &fields[1], seen)?;
+    let default = materialize_literal_value(interp, &fields[0], env, seen)?;
+    let parent = materialize_literal_value(interp, &fields[1], env, seen)?;
     let subtype = match &fields[2] {
         Value::Nil => None,
         Value::T => Some("t".into()),
@@ -1744,14 +1814,21 @@ fn char_table_from_literal_fields(
             let end = start + 0xffff;
             // GNU consults the dedicated ASCII slot for 0..127 and never
             // falls through to root slot zero.
-            flatten_char_table_value(interp, value, start.max(128), end, &mut flatten_context)?;
+            flatten_char_table_value(
+                interp,
+                value,
+                start.max(128),
+                end,
+                env,
+                &mut flatten_context,
+            )?;
         }
-        flatten_char_table_value(interp, &fields[3], 0, 127, &mut flatten_context)?;
+        flatten_char_table_value(interp, &fields[3], 0, 127, env, &mut flatten_context)?;
     }
 
     let extra_slots = fields[CHAR_TABLE_STANDARD_SLOTS..]
         .iter()
-        .map(|value| materialize_literal_value(interp, value, seen))
+        .map(|value| materialize_literal_value(interp, value, env, seen))
         .collect::<Result<Vec<_>, _>>()?;
     let state = interp
         .find_char_table_mut(id)
@@ -1777,6 +1854,7 @@ fn flatten_char_table_value(
     value: &Value,
     allowed_start: u32,
     allowed_end: u32,
+    env: &mut Env,
     context: &mut CharTableFlattenContext<'_>,
 ) -> Result<(), LispError> {
     if allowed_start > allowed_end || allowed_start > MAX_CHAR {
@@ -1811,6 +1889,7 @@ fn flatten_char_table_value(
                 content,
                 start.max(allowed_start),
                 end.min(allowed_end),
+                env,
                 context,
             )?;
         }
@@ -1831,7 +1910,7 @@ fn flatten_char_table_value(
         return Ok(());
     }
 
-    let value = materialize_literal_value(interp, value, context.seen)?;
+    let value = materialize_literal_value(interp, value, env, context.seen)?;
     if value.is_nil() {
         return Ok(());
     }
@@ -1845,13 +1924,7 @@ fn flatten_char_table_value(
 }
 
 fn literal_vector_values(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    match items.split_first() {
-        Some((Value::Symbol(marker), values)) if marker == "vector-literal" => {
-            Some(values.to_vec())
-        }
-        _ => Some(items),
-    }
+    vector_items(value).ok()
 }
 
 fn uncompress_char_property_values(
@@ -1969,6 +2042,7 @@ fn uncompress_decomposition_values(
 fn materialize_literal_value(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     // GNU's reader constructs every identity-bearing object recursively.  A
@@ -1977,9 +2051,9 @@ fn materialize_literal_value(
     // hash- and character-table passes.  Each object kind keeps an independent
     // cycle/identity context: sharing `seen` would make a later pass mistake an
     // ordinary cons already visited by an earlier pass for a cycle.
-    let value = interp.materialize_read_record_literals(value)?;
-    let value = materialize_read_hash_table_literals(interp, &value)?;
-    materialize_char_table_literals_inner(interp, &value, seen)
+    let value = interp.materialize_read_record_literals(value, env)?;
+    let value = materialize_read_hash_table_literals(interp, &value, env)?;
+    materialize_char_table_literals_inner(interp, &value, env, seen)
 }
 
 fn append_char_table_range(
@@ -2044,13 +2118,25 @@ fn bare_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
 fn materialize_hash_table_literals_inner(
     interp: &mut Interpreter,
     value: &Value,
+    env: &mut Env,
     seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     if let Some(fields) = quoted_hash_table_literal_fields(value) {
-        return hash_table_from_literal_fields(interp, &fields, seen);
+        return hash_table_from_literal_fields(interp, &fields, env, seen);
     }
     if let Some(fields) = bare_hash_table_literal_fields(value) {
-        return hash_table_from_literal_fields(interp, &fields, seen);
+        return hash_table_from_literal_fields(interp, &fields, env, seen);
+    }
+    if let Value::Vector(vector) = value {
+        if !seen.insert(crate::lisp::types::VectorValue::identity(vector)) {
+            return Ok(value.clone());
+        }
+        let slots = vector.slots().clone();
+        for (index, slot) in slots.iter().enumerate() {
+            vector.slots_mut()[index] =
+                materialize_hash_table_literals_inner(interp, slot, env, seen)?;
+        }
+        return Ok(value.clone());
     }
     let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
         return Ok(value.clone());
@@ -2060,10 +2146,10 @@ fn materialize_hash_table_literals_inner(
         return Ok(value.clone());
     }
     let car = car_cell.borrow().clone();
-    let new_car = materialize_hash_table_literals_inner(interp, &car, seen)?;
+    let new_car = materialize_hash_table_literals_inner(interp, &car, env, seen)?;
     *car_cell.borrow_mut() = new_car;
     let cdr = cdr_cell.borrow().clone();
-    let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, seen)?;
+    let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, env, seen)?;
     *cdr_cell.borrow_mut() = new_cdr;
     Ok(value.clone())
 }
@@ -2071,13 +2157,12 @@ fn materialize_hash_table_literals_inner(
 fn hash_table_from_literal_fields(
     interp: &mut Interpreter,
     fields: &[Value],
+    env: &mut Env,
     _seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
     let mut test = "eql".to_string();
-    let mut size = Value::Integer(65);
-    let mut rehash_size = Value::Float(1.5);
-    let mut rehash_threshold = Value::Float(0.8125);
     let mut weakness = Value::Nil;
+    let mut purecopy = Value::Nil;
     let mut entries = Vec::new();
     let mut index = 0usize;
     while index + 1 < fields.len() {
@@ -2089,18 +2174,16 @@ fn hash_table_from_literal_fields(
         let field_value = fields[index + 1].clone();
         match key.as_str() {
             "test" => test = field_value.as_symbol()?.to_string(),
-            "size" => size = field_value,
-            "rehash-size" => rehash_size = field_value,
-            "rehash-threshold" => rehash_threshold = field_value,
             "weakness" => weakness = field_value,
+            "purecopy" => purecopy = field_value,
             "data" => {
                 let items = field_value.to_vec()?;
                 let mut cursor = 0usize;
                 while cursor + 1 < items.len() {
                     let entry_key =
-                        interp.materialize_read_object_literals(items[cursor].clone())?;
+                        interp.materialize_read_object_literals(items[cursor].clone(), env)?;
                     let entry_value =
-                        interp.materialize_read_object_literals(items[cursor + 1].clone())?;
+                        interp.materialize_read_object_literals(items[cursor + 1].clone(), env)?;
                     entries.push((entry_key, entry_value));
                     cursor += 2;
                 }
@@ -2109,19 +2192,38 @@ fn hash_table_from_literal_fields(
         }
         index += 2;
     }
-    let table = crate::lisp::json::make_hash_table(interp, &test, entries);
+    // lread.c:hash_table_from_plist ignores serialized size/rehash metadata,
+    // creates the table with exactly one slot per DATA pair, then calls
+    // Fputhash for every pair.  In particular, a user-defined test runs its
+    // hash/comparison functions here, while the object is read; delaying that
+    // work until the first lookup changes both side effects and bucket state.
+    let capacity = entries.len();
+    let table =
+        crate::lisp::json::make_hash_table_with_capacity(interp, &test, Vec::new(), capacity);
     if let Value::Record(id) = &table
         && let Some(record) = interp.find_record_mut(*id)
     {
-        if record.slots.len() < 6 {
-            record.slots.resize(6, Value::Nil);
+        if record.slots.len() < 7 {
+            record.slots.resize(7, Value::Nil);
         }
-        record.slots[2] = size;
-        record.slots[3] = rehash_size;
-        record.slots[4] = rehash_threshold;
+        record.slots[2] = Value::Integer(capacity as i64);
         record.slots[5] = weakness;
+        record.slots[6] = purecopy;
     }
-    Ok(table)
+    let Value::Record(id) = table else {
+        unreachable!("make_hash_table_with_capacity returns a hash-table record")
+    };
+    for (key, value) in entries {
+        if matches!(test.as_str(), "eq" | "eql" | "equal") {
+            if !interp.equal_hash_put(id, key, value, env) {
+                return Err(LispError::Signal("Invalid hash table test".into()));
+            }
+        } else if !custom_hash_put_indexed(interp, &Value::Record(id), id, &test, key, value, env)?
+        {
+            return Err(LispError::Signal("Invalid hash table test".into()));
+        }
+    }
+    Ok(Value::Record(id))
 }
 
 fn read_from_lisp_source_raw(

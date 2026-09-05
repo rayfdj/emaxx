@@ -3,7 +3,7 @@ use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{
     ConsSlot, EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
-    WeakConsSlot, shared_env,
+    shared_env,
 };
 use crate::buffer::TextPropertySpan;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
@@ -33,6 +33,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+pub(crate) const PORTABLE_DUMPER_UNAVAILABLE: &str = "Portable dumper backend is unavailable";
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
@@ -54,8 +56,8 @@ mod completion;
 mod dispatch;
 mod file_io;
 mod generated_builtin_arities;
-pub(crate) mod generated_gnu_c_bool_variables;
 mod generated_gnu_c_defsyms;
+pub(crate) mod generated_gnu_c_forwarded_variables;
 pub(crate) use generated_gnu_c_defsyms::GNU_C_DEFSYMS;
 #[allow(dead_code)]
 mod generated_gnu_c_primitives;
@@ -82,6 +84,7 @@ mod loading;
 mod numeric_time;
 pub(crate) mod print;
 mod processes;
+mod purecopy;
 mod regexp;
 mod sequences;
 mod strings;
@@ -110,6 +113,7 @@ pub(crate) use loading::*;
 pub(crate) use numeric_time::*;
 pub(crate) use print::*;
 pub(crate) use processes::*;
+pub(crate) use purecopy::*;
 pub(crate) use sequences::*;
 pub(crate) use strings::*;
 pub(crate) use syntax::standard_syntax_table_default_value;
@@ -147,16 +151,11 @@ pub(crate) const STANDARD_FRINGE_BITMAPS: &[&str] = &[
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
-type VectorSlotCache = HashMap<usize, (WeakConsSlot, Rc<Vec<ConsSlot>>), dispatch::FnvBuildHasher>;
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-thread_local! {
-    static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::default());
-}
 
 fn signal_condition(condition: &str) -> LispError {
     // (signal CONDITION nil): the error object is (CONDITION), not
@@ -197,10 +196,6 @@ fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
         .count()
 }
 
-pub(crate) fn prefer_builtin_override(name: &str) -> bool {
-    dispatch::prefer_builtin_override(name)
-}
-
 pub(crate) fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("wrong-type-argument".into()),
@@ -222,6 +217,7 @@ pub(crate) use dispatch::echo_area_message_with_spans;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::name_facts;
+pub(crate) use dispatch::native_elisp_load;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::{

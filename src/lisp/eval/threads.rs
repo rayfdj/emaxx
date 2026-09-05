@@ -451,6 +451,7 @@ impl Interpreter {
         } else {
             ProcessKind::Pipe
         };
+        let thread_id = Some(self.active_thread_id);
         self.process_states.push(ProcessState {
             record_id,
             kind,
@@ -462,7 +463,7 @@ impl Interpreter {
             sentinel_notified: false,
             log: None,
             name,
-            thread_id: Some(self.active_thread_id),
+            thread_id,
             query_on_exit_flag: true,
             traffic_stopped: false,
             inherit_coding_system_flag: false,
@@ -529,6 +530,7 @@ impl Interpreter {
         let initial_position =
             buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
+        let thread_id = Some(self.active_thread_id);
         self.process_states.push(ProcessState {
             record_id,
             kind: ProcessKind::Network,
@@ -540,7 +542,7 @@ impl Interpreter {
             sentinel_notified: false,
             log,
             name: name.to_string(),
-            thread_id: Some(self.active_thread_id),
+            thread_id,
             query_on_exit_flag: true,
             traffic_stopped: false,
             inherit_coding_system_flag,
@@ -598,6 +600,7 @@ impl Interpreter {
             .get_buffer_by_id(buffer_id)
             .map(|buffer| buffer.point_max());
         self.set_marker(mark_marker_id, initial_position, Some(buffer_id))?;
+        let thread_id = Some(self.active_thread_id);
         self.process_states.push(ProcessState {
             record_id,
             kind: ProcessKind::Serial,
@@ -609,7 +612,7 @@ impl Interpreter {
             sentinel_notified: false,
             log: None,
             name,
-            thread_id: Some(self.active_thread_id),
+            thread_id,
             query_on_exit_flag,
             traffic_stopped: stopped,
             inherit_coding_system_flag: false,
@@ -1779,41 +1782,6 @@ impl Interpreter {
     /// process.c Fprocess_tty_name: the pty device name, nil for pipes.
     /// STREAM selects which half must be a pty (stdin/stdout); nil accepts
     /// either.
-    /// Any spawned thread the scheduler could still advance: runnable now,
-    /// or parked in a sleep that a wake pass will finish.
-    pub(crate) fn has_advanceable_spawned_thread(&self) -> bool {
-        self.thread_states.iter().any(|thread| {
-            thread.record_id != self.main_thread_id
-                && matches!(
-                    thread.status,
-                    ThreadStatus::Runnable | ThreadStatus::Blocked(ThreadBlocker::Sleep)
-                )
-        })
-    }
-
-    pub(crate) fn current_thread_is_main(&self) -> bool {
-        self.active_thread_id == self.main_thread_id
-    }
-
-    pub(crate) fn note_stepped_yield(&mut self) {
-        self.fruitless_stepped_yields = self.fruitless_stepped_yields.saturating_add(1);
-        if std::env::var_os("EMAXX_DEBUG_YIELD").is_some()
-            && self.fruitless_stepped_yields.is_multiple_of(10_000)
-        {
-            eprintln!("YIELD-GUARD count={}", self.fruitless_stepped_yields);
-        }
-    }
-
-    pub(crate) fn reset_stepped_yields(&mut self) {
-        self.fruitless_stepped_yields = 0;
-    }
-
-    pub(crate) fn stepped_yield_exhausted(&self) -> bool {
-        // Generous: real cooperative handoffs reset this in drive_threads
-        // whenever another thread actually runs.
-        self.fruitless_stepped_yields > 10_000
-    }
-
     pub(crate) fn process_tty_name(
         &self,
         record_id: u64,
@@ -3160,7 +3128,7 @@ impl Interpreter {
                     || wake_sleepers
                         && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::Sleep)))
         });
-        self.drive_threads_inner(env, wake_sleepers, false)?;
+        self.drive_threads_inner(env, wake_sleepers, false, true)?;
         Ok(user_signal_events || file_events || timer_events || thread_events)
     }
 
@@ -3174,22 +3142,32 @@ impl Interpreter {
         name: Option<String>,
         disposition: BufferDisposition,
     ) -> Result<Value, LispError> {
-        let program = self.thread_program_from_callable(&function)?;
+        // thread.c:Fmake_thread stores FUNCTION unchanged. Callability is
+        // checked by the child's ordinary funcall, not by a body classifier.
+        let continuation = continuations::ThreadContinuation::new(function.clone())
+            .map_err(|_| LispError::Signal("Could not start a new thread".into()))?;
         let value = self.create_pseudovector(RecordKind::Thread, "thread", Vec::new());
         let Value::Record(record_id) = value else {
             unreachable!("thread records are always record values");
         };
+        let buffer_id = self.current_buffer_id;
         self.thread_states.push(ThreadState {
             record_id,
             name,
-            buffer_id: self.current_buffer_id,
+            buffer_id,
             buffer_disposition: disposition,
             buffer_killed: false,
             status: ThreadStatus::Runnable,
-            program,
+            entry: Some(function),
             outcome: None,
+            pending_signal: None,
+            wake_at: None,
+            context: Some(Box::default()),
             waiting_for_user_input: false,
         });
+        self.new_thread_continuations
+            .threads
+            .insert(record_id, continuation);
         Ok(Value::Record(record_id))
     }
 
@@ -3332,6 +3310,7 @@ impl Interpreter {
         {
             Some(ThreadStatus::Blocked(ThreadBlocker::Mutex(id))) => Value::Record(*id),
             Some(ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id))) => Value::Record(*id),
+            Some(ThreadStatus::Blocked(ThreadBlocker::Thread(id))) => Value::Record(*id),
             _ => Value::Nil,
         }
     }
@@ -3346,11 +3325,25 @@ impl Interpreter {
         let Some(thread) = self.find_thread_state(record_id) else {
             return Vec::new();
         };
-        // GNU thread.c walks the blocked thread's real backtrace.  Emaxx has
-        // no per-thread backtrace capture yet, so report none rather than
-        // synthesising frames.
-        let _ = &thread.status;
-        Vec::new()
+        thread
+            .context
+            .as_ref()
+            .map(|context| {
+                context
+                    .backtrace_frames
+                    .iter()
+                    .rev()
+                    .map(|frame| {
+                        (
+                            frame.evald,
+                            frame.function_snapshot(),
+                            frame.args_snapshot(),
+                            frame.debug_on_exit,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn thread_buffer_disposition(&self, record_id: u64) -> Result<Value, LispError> {
@@ -3405,9 +3398,6 @@ impl Interpreter {
         data: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        // thread.c Fthread_signal: the current thread signals itself at once;
-        // the main thread receives a THREAD_EVENT through the input queue;
-        // any other thread has the error stored for delivery when it runs.
         if record_id == self.active_thread_id {
             return Err(LispError::SignalValue(build_signal_value(condition, data)));
         }
@@ -3415,98 +3405,131 @@ impl Interpreter {
             self.deliver_signal_to_main_thread(self.active_thread_id, condition, data, env)?;
             return Ok(Value::Nil);
         }
-        let signal = build_signal_value(condition, data);
-        self.finish_thread_with_signal(record_id, signal, true);
+        // thread.c:Fthread_signal stores even into a dead target. Delivery
+        // occurs on the target's real stack at post_acquire_global_lock.
+        let signal = (!condition.is_nil()).then(|| build_signal_value(condition, data));
+        self.find_thread_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?
+            .pending_signal = signal;
         Ok(Value::Nil)
     }
 
-    pub fn thread_join(&mut self, record_id: u64, env: &mut Env) -> Result<Value, LispError> {
-        if record_id == self.main_thread_id {
-            return Err(LispError::Signal("Cannot join the current thread".into()));
-        }
-        while self.thread_live(record_id) {
-            // Fthread_join waits for the target without returning to the
-            // process event loop.  Sleeping cooperative threads must still
-            // advance, but unrelated timers and file notifications remain
-            // pending until an actual event-loop wait.
-            self.drive_threads_inner(env, true, false)?;
-            if self.thread_live(record_id)
-                && self
-                    .find_thread_state(record_id)
-                    .is_some_and(|thread| matches!(thread.program, ThreadProgram::InfiniteYield))
-            {
-                break;
-            }
-            // A child asleep for SECONDS keeps the joiner waiting for that
-            // long; nap until its deadline or the next timer the child will
-            // run, whichever is first.
-            let sleeping_until = self
-                .find_thread_state(record_id)
-                .and_then(|thread| match thread.program {
-                    ThreadProgram::Sleep {
-                        blocked: true,
-                        until,
-                        ..
-                    } => until,
-                    _ => None,
-                });
-            if let Some(until) = sleeping_until {
-                let now = std::time::Instant::now();
-                let mut nap = until.saturating_duration_since(now);
-                if let Some(due) = self.next_timer_due() {
-                    nap = nap.min(due.saturating_duration_since(now));
-                }
-                if !nap.is_zero() {
-                    std::thread::sleep(nap.min(std::time::Duration::from_millis(10)));
-                }
-            }
-        }
-        let thread = self
-            .find_thread_state(record_id)
-            .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?;
-        if thread.buffer_killed && thread.buffer_disposition == BufferDisposition::Default {
-            return Err(LispError::SignalValue(Value::list([Value::Symbol(
-                "thread-buffer-killed".into(),
-            )])));
-        }
-        match thread
-            .outcome
-            .clone()
-            .unwrap_or(ThreadOutcome::Returned(Value::Nil))
+    fn check_thread_signal(&mut self) -> Result<(), LispError> {
+        self.check_thread_termination()?;
+        if let Some(signal) = self
+            .find_thread_state_mut(self.active_thread_id)
+            .and_then(|thread| thread.pending_signal.take())
         {
-            ThreadOutcome::Returned(value) => Ok(value),
-            // thread.c:815 runs the whole thread function inside
-            // `internal_condition_case (..., record_thread_error)': a body
-            // error is ALWAYS caught, recorded for `thread-last-error', and
-            // the thread finishes normally with a nil result.  Fthread_join's
-            // re-signal branch (thread.c:1088) reads `error_symbol', which
-            // belongs to the separate `thread-signal' delivery machinery and
-            // is cleared by the target's own handler -- so joining an errored
-            // thread returns NIL.  Re-raising here made
-            // `(thread-join (make-thread (lambda () (car 42))))' signal in
-            // the JOINING thread where GNU answers nil, which is the
-            // `threads-errors' mismatch in test/src/thread-tests.el.
-            // `finish_thread_with_signal' has already stored the error for
-            // `thread-last-error', exactly as `record_thread_error' does.
-            ThreadOutcome::Signaled {
-                delivered: false, ..
-            } => Ok(Value::Nil),
-            // The injected signal comes back out of the join, exactly as
-            // GNU's snapshot re-raise does.  (One disclosed shortcut: GNU
-            // returns nil if the target managed to PROCESS the delivery
-            // before join was called, because the snapshot is then already
-            // clear.  Emaxx's cooperative `thread-signal' kills the target
-            // instantly, so that window does not exist here and every
-            // delivered signal re-raises.)
-            ThreadOutcome::Signaled {
-                value,
-                delivered: true,
-            } => Err(LispError::SignalValue(value)),
+            return Err(LispError::SignalValue(signal));
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_thread_termination(&self) -> Result<(), LispError> {
+        match self.pending_termination() {
+            Some(termination) => Err(LispError::Terminate(termination.clone())),
+            None => Ok(()),
         }
     }
 
+    pub fn thread_join(&mut self, record_id: u64, env: &mut Env) -> Result<Value, LispError> {
+        if record_id == self.active_thread_id {
+            return Err(LispError::Signal("Cannot join current thread".into()));
+        }
+        // Fthread_join snapshots the target's injected error on entry, not
+        // the eventual body error. Retain that real snapshot across GC/yields.
+        let snapshot = self
+            .find_thread_state(record_id)
+            .ok_or_else(|| wrong_type_argument("threadp", Value::Record(record_id)))?
+            .pending_signal
+            .clone()
+            .unwrap_or(Value::Nil);
+        let thread_id = self.active_thread_id;
+        self.with_lisp_stack_roots(&snapshot, |interpreter| {
+            let wait: Result<(), LispError> = (|| {
+                while interpreter.thread_live(record_id) {
+                    interpreter
+                        .find_thread_state_mut(thread_id)
+                        .expect("joiner")
+                        .status = ThreadStatus::Blocked(ThreadBlocker::Thread(record_id));
+                    interpreter.drive_threads_inner(env, true, false, false)?;
+                    interpreter.check_thread_signal()?;
+                }
+                Ok(())
+            })();
+            interpreter
+                .find_thread_state_mut(thread_id)
+                .expect("joiner")
+                .status = ThreadStatus::Runnable;
+            wait?;
+            if !snapshot.is_nil() {
+                return Err(LispError::SignalValue(snapshot.clone()));
+            }
+            Ok(interpreter
+                .find_thread_state(record_id)
+                .expect("joined thread")
+                .outcome
+                .clone()
+                .unwrap_or(Value::Nil))
+        })
+    }
+
     pub fn drive_threads(&mut self, env: &mut Env, wake_sleepers: bool) -> Result<(), LispError> {
-        self.drive_threads_inner(env, wake_sleepers, wake_sleepers)
+        self.drive_threads_inner(env, wake_sleepers, wake_sleepers, true)
+    }
+
+    pub(crate) fn yield_current_thread(&mut self, env: &mut Env) -> Result<Value, LispError> {
+        // Fthread_yield does not itself read keyboard events or run timers.
+        // Woken child event loops resume and service their own due timers.
+        self.drive_threads_inner(env, true, false, true)?;
+        Ok(Value::Nil)
+    }
+
+    fn run_thread_wait_events(&mut self, env: &mut Env) -> Result<(), LispError> {
+        if self.waiting_for_user_input() {
+            if primitives::unread_command_events(self, env)?.is_empty() {
+                let _ = primitives::run_pending_user_signal_events(self, env)?;
+            }
+            let _ = self.service_file_notifications(env)?;
+        } else {
+            let _ = self.run_pending_synthetic_file_notifications(env)?;
+        }
+        let _ = self.run_pending_timer_events(env)?;
+        Ok(())
+    }
+
+    fn thread_ready(&self, thread: &ThreadState, wake_sleepers: bool) -> bool {
+        if matches!(thread.status, ThreadStatus::Finished) {
+            return false;
+        }
+        if self.pending_termination().is_some() {
+            return true;
+        }
+        let signaled = thread.pending_signal.is_some();
+        match thread.status {
+            ThreadStatus::Runnable => true,
+            ThreadStatus::Blocked(ThreadBlocker::Mutex(id)) => {
+                signaled
+                    || self
+                        .mutex_states
+                        .iter()
+                        .any(|mutex| mutex.record_id == id && mutex.owner.is_none())
+            }
+            ThreadStatus::Blocked(ThreadBlocker::ReacquireMutex(id)) => self
+                .mutex_states
+                .iter()
+                .any(|mutex| mutex.record_id == id && mutex.owner.is_none()),
+            ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(_)) => signaled,
+            ThreadStatus::Blocked(ThreadBlocker::Thread(id)) => signaled || !self.thread_live(id),
+            ThreadStatus::Blocked(ThreadBlocker::Sleep) => {
+                signaled
+                    || wake_sleepers
+                        && thread
+                            .wake_at
+                            .is_some_and(|until| std::time::Instant::now() >= until)
+            }
+            ThreadStatus::Finished => false,
+        }
     }
 
     fn drive_threads_inner(
@@ -3514,73 +3537,90 @@ impl Interpreter {
         env: &mut Env,
         wake_sleepers: bool,
         service_events: bool,
+        deliver_signal: bool,
     ) -> Result<(), LispError> {
-        let entry_yield_count = self.fruitless_stepped_yields;
-        // Never re-step the thread that is currently executing: it reached
-        // this scheduler pass from inside its own body (thread-yield, a
-        // blocking wait), and stepping it again would re-enter that body
-        // from the top -- the recursion that wedged threads-let-binding.
-        let thread_ids = self
-            .thread_states
-            .iter()
-            .filter(|thread| {
-                thread.record_id != self.main_thread_id
-                    && thread.record_id != self.active_thread_id
-                    && !self.executing_thread_ids.contains(&thread.record_id)
-            })
-            .map(|thread| thread.record_id)
-            .collect::<Vec<_>>();
-        for thread_id in thread_ids {
-            let status = self
-                .find_thread_state(thread_id)
-                .map(|thread| thread.status.clone())
-                .unwrap_or(ThreadStatus::Finished);
-            match status {
-                ThreadStatus::Runnable => {
-                    if thread_id != self.active_thread_id {
-                        self.fruitless_stepped_yields = 0;
-                    }
-                    self.step_thread(thread_id, env)?;
+        self.check_thread_termination()?;
+        if deliver_signal {
+            self.check_thread_signal()?;
+        }
+        if continuations::can_suspend(self) {
+            if service_events {
+                self.run_thread_wait_events(env)?;
+            }
+            self.with_lisp_stack_roots(&*env, continuations::suspend)?;
+        } else {
+            let ids = self
+                .thread_states
+                .iter()
+                .filter(|thread| thread.record_id != self.main_thread_id)
+                .map(|thread| thread.record_id)
+                .collect::<Vec<_>>();
+            let mut advanced = false;
+            for id in ids {
+                if self
+                    .find_thread_state(id)
+                    .is_some_and(|thread| self.thread_ready(thread, wake_sleepers))
+                {
+                    self.step_thread(id, env)?;
+                    advanced = true;
                 }
-                ThreadStatus::Blocked(ThreadBlocker::Sleep) if wake_sleepers => {
-                    // The child sits in wait_reading_process_output for its
-                    // SECONDS: until they elapse it runs the timers that come
-                    // due, on its own specpdl (thread.c swaps the bindings),
-                    // and only then returns.
-                    let until =
-                        self.find_thread_state(thread_id)
-                            .and_then(|thread| match thread.program {
-                                ThreadProgram::Sleep { until, .. } => until,
-                                _ => None,
-                            });
-                    if until.is_some_and(|until| std::time::Instant::now() < until) {
-                        self.run_pending_timer_events_as_thread(thread_id, env)?;
-                    } else {
-                        self.finish_thread_success(thread_id, Value::Nil);
+            }
+            if service_events {
+                self.run_thread_wait_events(env)?;
+            }
+            if !advanced {
+                if self
+                    .find_thread_state(self.active_thread_id)
+                    .is_some_and(|thread| matches!(thread.status, ThreadStatus::Blocked(_)))
+                {
+                    let now = std::time::Instant::now();
+                    let nap = self
+                        .thread_states
+                        .iter()
+                        .filter_map(|thread| thread.wake_at)
+                        .map(|until| until.saturating_duration_since(now))
+                        .min()
+                        .unwrap_or(std::time::Duration::from_millis(10))
+                        .min(std::time::Duration::from_millis(10));
+                    if !nap.is_zero() {
+                        std::thread::sleep(nap);
                     }
+                } else {
+                    std::thread::yield_now();
                 }
-                _ => {}
             }
         }
-        let _ = entry_yield_count;
-        if service_events {
-            // wait_reading_process_output selects keyboard-class descriptors
-            // (the inotify/kqueue queue among them) only for a READ_KBD wait,
-            // and read_char then dispatches the buffered special events.  A
-            // READ_KBD 0 wait such as accept-process-output or sleep-for runs
-            // timers and delivers handler-backed notifications, which GNU
-            // receives as monitor process output, but never reads that queue.
-            if self.waiting_for_user_input() {
-                if primitives::unread_command_events(self, env)?.is_empty() {
-                    let _ = primitives::run_pending_user_signal_events(self, env)?;
-                }
-                let _ = self.service_file_notifications(env)?;
-            } else {
-                let _ = self.run_pending_synthetic_file_notifications(env)?;
-            }
-            let _ = self.run_pending_timer_events(env)?;
+        if deliver_signal {
+            self.check_thread_signal()?;
         }
         Ok(())
+    }
+
+    /// A real event-loop polling sleep. Only this thread is suspended; its
+    /// caller's original deadline and process-poll interval are unchanged.
+    pub(crate) fn sleep_current_thread(
+        &mut self,
+        env: &mut Env,
+        duration: std::time::Duration,
+    ) -> Result<(), LispError> {
+        if !continuations::can_suspend(self) {
+            std::thread::sleep(duration);
+            return self.check_thread_signal();
+        }
+        let thread_id = self.active_thread_id;
+        let thread = self
+            .find_thread_state_mut(thread_id)
+            .expect("sleeping thread");
+        thread.status = ThreadStatus::Blocked(ThreadBlocker::Sleep);
+        thread.wake_at = Some(std::time::Instant::now() + duration);
+        let result = self.drive_threads_inner(env, true, false, false);
+        let thread = self
+            .find_thread_state_mut(thread_id)
+            .expect("resumed thread");
+        thread.status = ThreadStatus::Runnable;
+        thread.wake_at = None;
+        result?;
+        self.check_thread_signal()
     }
 
     pub fn lock_mutex_for_current_thread(
@@ -3588,54 +3628,96 @@ impl Interpreter {
         mutex_id: u64,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if self.try_lock_mutex(self.active_thread_id, mutex_id) {
-            return Ok(Value::Nil);
-        }
         let thread_id = self.active_thread_id;
-        if let Some(thread) = self.find_thread_state_mut(thread_id) {
-            thread.status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
-        }
-        while !self.try_lock_mutex(thread_id, mutex_id) {
-            // This scheduler runs a spawned thread's whole body inside one
-            // `step_thread' call from the owning (usually main) thread.  If
-            // the mutex is held by a thread that is suspended up-stack
-            // waiting for THIS step to return -- the main thread cannot be
-            // driven by drive_threads at all -- no interleaving can ever
-            // release it: spinning here burned CPU forever on GNU's
-            // thread-tests.el, whose child locks a mutex its parent holds
-            // across the child's entire lifetime.  GNU's preemptive threads
-            // simply block and later resume; this model cannot, so the
-            // honest degraded behavior is to signal the deadlock (the file
-            // then completes with mismatching outcomes instead of hanging).
-            // Disclosed in docs/honesty-audit-2026-08-18.md.
-            let holder = self
-                .find_mutex_state_mut(mutex_id)
-                .and_then(|mutex| mutex.owner);
-            if holder == Some(self.main_thread_id) && thread_id != self.main_thread_id {
-                if let Some(thread) = self.find_thread_state_mut(thread_id) {
-                    thread.status = ThreadStatus::Runnable;
-                }
-                return Err(LispError::Signal(
-                    "Cooperative thread model deadlock: mutex is held by the suspended parent thread"
-                        .into(),
-                ));
+        self.find_thread_state_mut(thread_id)
+            .expect("mutex waiter")
+            .status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
+        let result = (|| {
+            while !self.try_lock_mutex(thread_id, mutex_id) {
+                self.drive_threads_inner(env, true, false, false)?;
+                self.check_thread_signal()?;
             }
-            if let Err(error) = self.drive_threads(env, false) {
-                if let Some(thread) = self.find_thread_state_mut(thread_id) {
-                    thread.status = ThreadStatus::Runnable;
-                }
-                return Err(error);
-            }
-        }
-        if let Some(thread) = self.find_thread_state_mut(thread_id) {
-            thread.status = ThreadStatus::Runnable;
-        }
-        Ok(Value::Nil)
+            Ok(Value::Nil)
+        })();
+        self.find_thread_state_mut(thread_id)
+            .expect("mutex waiter")
+            .status = ThreadStatus::Runnable;
+        result
     }
 
     pub fn unlock_mutex_for_current_thread(&mut self, mutex_id: u64) -> Result<Value, LispError> {
+        if !self
+            .mutex_states
+            .iter()
+            .any(|mutex| mutex.record_id == mutex_id && mutex.owner == Some(self.active_thread_id))
+        {
+            return Err(LispError::Signal(
+                "Cannot unlock mutex owned by another thread".into(),
+            ));
+        }
         self.unlock_mutex(self.active_thread_id, mutex_id);
         Ok(Value::Nil)
+    }
+
+    fn condition_mutex_depth(&self, condvar_id: u64, env: &Env) -> Result<(u64, usize), LispError> {
+        let mutex_id = self
+            .condition_variable_mutex_id(condvar_id)
+            .ok_or_else(|| {
+                wrong_type_argument("condition-variable-p", Value::Record(condvar_id))
+            })?;
+        let depth = self
+            .mutex_states
+            .iter()
+            .find(|mutex| mutex.record_id == mutex_id && mutex.owner == Some(self.active_thread_id))
+            .map(|mutex| mutex.recursion_depth)
+            .filter(|depth| *depth > 0)
+            .ok_or_else(|| {
+                LispError::Signal(format!(
+                    "Condition variable{}s mutex is not held by current thread",
+                    if primitives::values::effective_text_quoting_style(self, env) == "curve" {
+                        '\u{2019}'
+                    } else {
+                        '\''
+                    },
+                ))
+            })?;
+        Ok((mutex_id, depth))
+    }
+
+    fn release_condition_mutex(&mut self, mutex_id: u64) {
+        let mutex = self
+            .find_mutex_state_mut(mutex_id)
+            .expect("condition mutex");
+        mutex.owner = None;
+        mutex.recursion_depth = 0;
+    }
+
+    fn reacquire_condition_mutex(
+        &mut self,
+        mutex_id: u64,
+        depth: usize,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let thread_id = self.active_thread_id;
+        // thread.c clears event_object before this reacquisition. An injected
+        // error cannot interrupt it: new_count != 0 restores full ownership.
+        self.find_thread_state_mut(thread_id)
+            .expect("condition waiter")
+            .status = ThreadStatus::Blocked(ThreadBlocker::ReacquireMutex(mutex_id));
+        let result: Result<(), LispError> = (|| {
+            while !self.try_lock_mutex(thread_id, mutex_id) {
+                self.drive_threads_inner(env, true, false, false)?;
+            }
+            self.find_mutex_state_mut(mutex_id)
+                .expect("reacquired mutex")
+                .recursion_depth = depth;
+            Ok(())
+        })();
+        self.find_thread_state_mut(thread_id)
+            .expect("condition waiter")
+            .status = ThreadStatus::Runnable;
+        result?;
+        self.check_thread_signal()
     }
 
     pub fn wait_condition_variable(
@@ -3643,135 +3725,47 @@ impl Interpreter {
         condvar_id: u64,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let mutex_id = self
-            .condition_variable_mutex_id(condvar_id)
-            .ok_or_else(|| {
-                wrong_type_argument("condition-variable-p", Value::Record(condvar_id))
-            })?;
+        let (mutex_id, depth) = self.condition_mutex_depth(condvar_id, env)?;
         let thread_id = self.active_thread_id;
-        let saved_depth = self
-            .mutex_states
-            .iter()
-            .find(|mutex| mutex.record_id == mutex_id && mutex.owner == Some(thread_id))
-            .map(|mutex| mutex.recursion_depth)
-            .filter(|depth| *depth > 0)
-            .ok_or_else(|| {
-                // thread.c:499 spells this with an ASCII apostrophe; the
-                // curl is applied only when the effective quoting style is
-                // `curve'.
-                LispError::Signal(format!(
-                    "Condition variable{}s mutex is not held by current thread",
-                    if crate::lisp::primitives::values::effective_text_quoting_style(self, env)
-                        == "curve"
-                    {
-                        '\u{2019}'
-                    } else {
-                        '\''
-                    }
-                ))
-            })?;
-        if let Some(mutex) = self.find_mutex_state_mut(mutex_id) {
-            mutex.owner = None;
-            mutex.recursion_depth = 0;
+        self.release_condition_mutex(mutex_id);
+        self.find_thread_state_mut(thread_id)
+            .expect("condition waiter")
+            .status = ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(condvar_id));
+        while self.find_thread_state(thread_id).is_some_and(|thread| {
+            thread.pending_signal.is_none()
+                && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id)) if id == condvar_id)
+        }) {
+            self.drive_threads_inner(env, true, false, false)?;
         }
-        if let Some(thread) = self.find_thread_state_mut(thread_id) {
-            thread.status = ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(condvar_id));
-        }
-
-        let wait_result = loop {
-            if !self.find_thread_state(thread_id).is_some_and(|thread| {
-                matches!(
-                    thread.status,
-                    ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id))
-                        if id == condvar_id
-                )
-            }) {
-                break Ok(());
-            }
-            // Same cooperative-model limit as the yield loop (finding 84):
-            // a stepped thread waiting on a condvar only its suspended
-            // parent can notify would spin here forever; GNU's preemptive
-            // threads would block and get woken.  Signal instead.
-            if thread_id != self.main_thread_id {
-                self.note_stepped_yield();
-                if self.stepped_yield_exhausted() {
-                    self.reset_stepped_yields();
-                    if let Some(thread) = self.find_thread_state_mut(thread_id) {
-                        thread.status = ThreadStatus::Runnable;
-                    }
-                    while !self.try_lock_mutex(thread_id, mutex_id) {
-                        self.drive_threads(env, false)?;
-                    }
-                    break Err(LispError::Signal(
-                        "Cooperative thread model deadlock: condition variable can only be notified by the suspended parent thread".into(),
-                    ));
-                }
-            }
-            if let Err(error) = self.drive_threads(env, false) {
-                break Err(error);
-            }
-        };
-
-        while !self.try_lock_mutex(thread_id, mutex_id) {
-            self.drive_threads(env, false)?;
-        }
-        for _ in 1..saved_depth {
-            // Restoring recursive ownership is observable behavior, not a
-            // debug-only invariant.  Keeping the state transition inside
-            // `debug_assert!` made release builds silently restore depth one.
-            let restored = self.try_lock_mutex(thread_id, mutex_id);
-            debug_assert!(restored);
-        }
-        wait_result.map(|()| Value::Nil)
+        self.reacquire_condition_mutex(mutex_id, depth, env)?;
+        Ok(Value::Nil)
     }
 
     pub fn notify_condition_variable(
         &mut self,
         condvar_id: u64,
         notify_all: bool,
-        env: &Env,
+        env: &mut Env,
     ) -> Result<(), LispError> {
-        let mutex_id = self
-            .condition_variable_mutex_id(condvar_id)
-            .ok_or_else(|| {
-                wrong_type_argument("condition-variable-p", Value::Record(condvar_id))
-            })?;
-        if !self.mutex_states.iter().any(|mutex| {
-            mutex.record_id == mutex_id
-                && mutex.owner == Some(self.active_thread_id)
-                && mutex.recursion_depth > 0
-        }) {
-            // thread.c:558, as above.
-            return Err(LispError::Signal(format!(
-                "Condition variable{}s mutex is not held by current thread",
-                if crate::lisp::primitives::values::effective_text_quoting_style(self, env)
-                    == "curve"
-                {
-                    '\u{2019}'
-                } else {
-                    '\''
+        let (mutex_id, depth) = self.condition_mutex_depth(condvar_id, env)?;
+        self.release_condition_mutex(mutex_id);
+        for thread in &mut self.thread_states {
+            if matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id)) if id == condvar_id)
+            {
+                thread.status = ThreadStatus::Runnable;
+                if !notify_all {
+                    break;
                 }
-            )));
-        }
-        for thread in self.thread_states.iter_mut() {
-            if !matches!(
-                thread.status,
-                ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id)) if id == condvar_id
-            ) {
-                continue;
-            }
-            thread.status = ThreadStatus::Runnable;
-            if !notify_all {
-                break;
             }
         }
-        Ok(())
+        self.reacquire_condition_mutex(mutex_id, depth, env)
     }
 
     pub fn allow_kill_buffer_for_threads(&mut self, buffer_id: u64) -> bool {
         let mut blocked = false;
+        let main_thread_id = self.main_thread_id;
         for thread in self.thread_states.iter_mut() {
-            if thread.record_id == self.main_thread_id
+            if thread.record_id == main_thread_id
                 || thread.buffer_id != buffer_id
                 || matches!(thread.status, ThreadStatus::Finished)
             {
@@ -3823,25 +3817,16 @@ impl Interpreter {
     pub(super) fn finish_thread_success(&mut self, record_id: u64, value: Value) {
         if let Some(thread) = self.find_thread_state_mut(record_id) {
             thread.status = ThreadStatus::Finished;
-            thread.outcome = Some(ThreadOutcome::Returned(value));
+            thread.outcome = Some(value);
+            thread.entry = None;
+            thread.context = None;
+            thread.wake_at = None;
         }
         self.unlock_processes_for_thread(record_id);
     }
 
-    pub(super) fn finish_thread_with_signal(
-        &mut self,
-        record_id: u64,
-        value: Value,
-        delivered: bool,
-    ) {
-        if let Some(thread) = self.find_thread_state_mut(record_id) {
-            thread.status = ThreadStatus::Finished;
-            thread.outcome = Some(ThreadOutcome::Signaled {
-                value: value.clone(),
-                delivered,
-            });
-        }
-        self.unlock_processes_for_thread(record_id);
+    pub(super) fn finish_thread_with_signal(&mut self, record_id: u64, value: Value) {
+        self.finish_thread_success(record_id, Value::Nil);
         self.last_thread_error = Some(value);
     }
 
@@ -3865,219 +3850,56 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Run the due timers as THREAD would inside its own wait: with the
-    /// driving thread's dynamic bindings and handlers swapped out
-    /// (thread.c:87-100) and THREAD as the current thread.
-    fn run_pending_timer_events_as_thread(
-        &mut self,
-        record_id: u64,
-        env: &mut Env,
-    ) -> Result<(), LispError> {
-        let previous_active = self.active_thread_id;
-        self.active_thread_id = record_id;
-        let swap_start = self.thread_swap_boundaries.last().copied().unwrap_or(0);
-        self.swap_special_bindings_for_thread_switch(swap_start, false);
-        self.thread_swap_boundaries
-            .push(self.active_special_restores.len());
-        let parent_handlers = std::mem::take(&mut self.active_handlers);
-        let mut thread_env = Vec::new();
-        let result = self.run_pending_timer_events(&mut thread_env);
-        self.active_handlers = parent_handlers;
-        self.thread_swap_boundaries.pop();
-        self.swap_special_bindings_for_thread_switch(swap_start, true);
-        self.active_thread_id = previous_active;
-        let _ = env;
-        result.map(|_| ())
-    }
-
     pub(super) fn step_thread(&mut self, record_id: u64, env: &mut Env) -> Result<(), LispError> {
-        let _ = &env;
-        // An event wait can nest scheduler passes: A waits for process I/O,
-        // the pump runs B, and B pumps again.  `active_thread_id' identifies
-        // B at that point but A is still live on the Rust stack.  Re-entering
-        // A from the top recursively restarts its Lisp body and eventually
-        // reports `excessive-lisp-nesting'.
-        if self.executing_thread_ids.contains(&record_id) {
+        self.materialize_native_backtrace_arguments()?;
+        let new = std::mem::take(&mut self.new_thread_continuations.threads);
+        self.continuations.threads.extend(new);
+        let Some(mut continuation) = self.continuations.threads.remove(&record_id) else {
             return Ok(());
-        }
-        self.executing_thread_ids.push(record_id);
-        let previous_active = self.active_thread_id;
-        let previous_buffer_id = self.current_buffer_id();
-        let thread_buffer_id = self
-            .find_thread_state(record_id)
-            .map(|thread| thread.buffer_id)
-            .unwrap_or(previous_buffer_id);
-        if self.has_buffer_id(thread_buffer_id)
-            && let Err(error) = self.set_current_buffer_id(thread_buffer_id)
-        {
-            self.executing_thread_ids.pop();
-            return Err(error);
-        }
-        self.active_thread_id = record_id;
-        let program = self
-            .find_thread_state(record_id)
-            .map(|thread| thread.program.clone())
-            .unwrap_or(ThreadProgram::Noop);
-
-        let mut result = match program {
-            ThreadProgram::Main => Ok(()),
-            ThreadProgram::Ignore | ThreadProgram::Noop => {
-                self.finish_thread_success(record_id, Value::Nil);
-                Ok(())
-            }
-            ThreadProgram::Call(function) => {
-                // Each GNU thread gets its OWN specpdl: the spawner's dynamic
-                // `let' bindings are invisible to the child, which sees
-                // globals (and writes globals with `setq').  Passing the
-                // driving thread's `env' here leaked the parent's entire
-                // dynamic stack into the child --
-                // `(let ((zz 1)) (thread-join (make-thread (lambda () zz))))'
-                // answered 1 where GNU answers the global.  Lexical captures
-                // live inside `function' itself and are unaffected.
-                let mut thread_env = Vec::new();
-                // ...and its own view of the dynamic cells: swap every live
-                // special binding out for the duration of the body
-                // (thread.c:87-100), so the child reads and writes GLOBALS.
-                // The swap is two-way; see
-                // `swap_special_bindings_for_thread_switch'.
-                let swap_start = self.thread_swap_boundaries.last().copied().unwrap_or(0);
-                self.swap_special_bindings_for_thread_switch(swap_start, false);
-                self.thread_swap_boundaries
-                    .push(self.active_special_restores.len());
-                // GNU also swaps the HANDLER list per thread (m_handlerlist):
-                // a child starts with no condition handlers, so the parent's
-                // `handler-bind' handlers must not see the child's signals.
-                // ERT is the proving case -- ert.el:803 wraps every test body
-                // in `(handler-bind (((error quit) debugfun)) ...)', and with
-                // a shared stack a child's `(error ...)' ran ERT's debugfun,
-                // whose `cl-return-from' then died at the thread boundary as
-                // `(no-catch --cl-block-error-- nil)' instead of the child's
-                // real error reaching `thread-last-error'.
-                // (Catches need no such swap: a child's `throw' bubbles as a
-                // Rust Err to this boundary and is recorded as no-catch,
-                // which is GNU's per-thread catchlist behaviour already.)
-                let parent_handlers = std::mem::take(&mut self.active_handlers);
-                let outcome = self.call_function_value(function, None, &[], &mut thread_env);
-                self.active_handlers = parent_handlers;
-                self.thread_swap_boundaries.pop();
-                self.swap_special_bindings_for_thread_switch(swap_start, true);
-                match outcome {
-                    Ok(value) => {
-                        self.finish_thread_success(record_id, value);
-                        Ok(())
-                    }
-                    Err(error) => {
-                        self.finish_thread_with_signal(
-                            record_id,
-                            error_condition_value(&error),
-                            false,
-                        );
-                        Ok(())
-                    }
-                }
-            }
-            ThreadProgram::Sleep {
-                blocked, seconds, ..
-            } => {
-                if !blocked && let Some(thread) = self.find_thread_state_mut(record_id) {
-                    thread.program = ThreadProgram::Sleep {
-                        blocked: true,
-                        seconds,
-                        until: Some(
-                            std::time::Instant::now()
-                                + std::time::Duration::from_secs_f64(seconds.max(0.0)),
-                        ),
-                    };
-                    thread.status = ThreadStatus::Blocked(ThreadBlocker::Sleep);
-                }
-                Ok(())
-            }
-            ThreadProgram::InfiniteYield => Ok(()),
         };
-        let current_thread_buffer_id = self.current_buffer_id();
-        if let Some(thread) = self.find_thread_state_mut(record_id) {
-            thread.buffer_id = current_thread_buffer_id;
+        let parent = self.active_thread_id;
+        let result = self.with_lisp_stack_roots(&*env, |interpreter| {
+            crate::lisp::native_comp::with_thread_suspended(interpreter, |interpreter| {
+                interpreter.park_thread_context();
+                interpreter.activate_thread_context(record_id)?;
+                let resumed =
+                    continuation.resume(interpreter.state.take().expect("driver owns editor"));
+                let completion = match resumed {
+                    corosensei::CoroutineResult::Yield(state) => {
+                        interpreter.state = Some(state);
+                        None
+                    }
+                    corosensei::CoroutineResult::Return(completion) => {
+                        interpreter.state = Some(completion.state);
+                        Some(completion.result)
+                    }
+                };
+                interpreter.park_thread_context();
+                interpreter.activate_thread_context(parent)?;
+                Ok::<_, LispError>(completion)
+            })
+        });
+        if !continuation.done() {
+            self.continuations.threads.insert(record_id, continuation);
         }
-        if self.has_buffer_id(previous_buffer_id)
-            && let Err(error) = self.set_current_buffer_id(previous_buffer_id)
-            && result.is_ok()
-        {
-            result = Err(error);
-        }
-        self.active_thread_id = previous_active;
-        let popped = self.executing_thread_ids.pop();
-        debug_assert_eq!(popped, Some(record_id));
-        result
-    }
-
-    pub(super) fn thread_program_from_callable(
-        &self,
-        function: &Value,
-    ) -> Result<ThreadProgram, LispError> {
-        match function {
-            Value::Symbol(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
-            Value::Symbol(_) => Ok(ThreadProgram::Call(function.clone())),
-            Value::BuiltinFunc(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
-            Value::BuiltinFunc(_) => Ok(ThreadProgram::Call(function.clone())),
-            Value::Lambda(lambda) if lambda.params.is_empty() => self
-                .thread_program_from_lambda(function_executable_body(&lambda.body))
-                .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
-            _ => Err(LispError::Signal("Unsupported thread entry point".into())),
-        }
-    }
-
-    /// Classify a thread body by *shape* for the cooperative scheduler.
-    ///
-    /// Emaxx has no preemptive threads: `ThreadProgram::Call' runs a body to
-    /// completion in one scheduler step, so only the shapes recognised here can
-    /// interleave with the main thread at all.  This must stay shape-generic —
-    /// never keyed to any function or variable name — and an unrecognised body
-    /// falls through to `Call', which is honest about running without
-    /// interleaving.  Genuine cooperative stepping of arbitrary bodies is a
-    /// tracked architectural gap.
-    pub(super) fn thread_program_from_lambda(
-        &self,
-        body: &[Value],
-    ) -> Result<ThreadProgram, LispError> {
-        if body.len() == 1
-            && let Ok(items) = body[0].to_vec()
-            && matches!(items.first(), Some(Value::Symbol(name)) if name == "sleep-for")
-            && items.len() == 2
-            && let Some(seconds) = match &items[1] {
-                Value::Integer(seconds) => Some(*seconds as f64),
-                Value::Float(seconds) => Some(*seconds),
-                _ => None,
+        let Some(completion) = result?? else {
+            return Ok(());
+        };
+        match completion {
+            Ok(Ok(value)) => self.finish_thread_success(record_id, value),
+            Ok(Err(LispError::Terminate(termination))) => {
+                self.finish_thread_success(record_id, Value::Nil);
+                return Err(LispError::Terminate(termination));
             }
-        {
-            return Ok(ThreadProgram::Sleep {
-                blocked: false,
-                seconds,
-                until: None,
-            });
-        }
-
-        if body.len() == 1
-            && let Ok(items) = body[0].to_vec()
-            && matches!(
-                items.first(),
-                Some(Value::Symbol(head)) if head == "while"
-            )
-        {
-            let condition = items.get(1).cloned().unwrap_or(Value::Nil);
-            if condition == Value::T
-                && items.len() == 3
-                && items[2]
-                    .to_vec()
-                    .ok()
-                    .is_some_and(|inner| matches!(inner.first(), Some(Value::Symbol(name)) if name == "thread-yield"))
-            {
-                return Ok(ThreadProgram::InfiniteYield);
+            Ok(Err(error)) => {
+                self.finish_thread_with_signal(record_id, error_condition_value(&error));
+            }
+            Err(panic) => {
+                self.finish_thread_success(record_id, Value::Nil);
+                std::panic::resume_unwind(panic);
             }
         }
-
-        Err(LispError::Signal(
-            "Unsupported anonymous thread entry point".into(),
-        ))
+        Ok(())
     }
 }
 

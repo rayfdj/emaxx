@@ -707,8 +707,8 @@ fn wrapped_echo_cursor(
 fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
     match interpreter.lookup_var("max-mini-window-height", &Vec::new()) {
         Some(Value::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
-        Some(Value::Float(fraction)) if fraction > 0.0 => {
-            (((rows as f64) * fraction) as usize).clamp(1, rows.saturating_sub(2))
+        Some(Value::Float(fraction)) if fraction.get() > 0.0 => {
+            (((rows as f64) * fraction.get()) as usize).clamp(1, rows.saturating_sub(2))
         }
         _ => ((rows as f64 * 0.25) as usize).clamp(1, rows.saturating_sub(2)),
     }
@@ -1535,11 +1535,11 @@ fn window_render_geometry(
             let current_x = point_dcol + lnum_cols as i64;
             let step = interpreter.lookup_var("hscroll-step", env);
             let new_hscroll = match step {
-                Some(Value::Float(relative)) if relative >= 0.0 => {
+                Some(Value::Float(relative)) if relative.get() >= 0.0 => {
                     let wanted = if cursor_x >= text_w - margin {
-                        (w as f64) * (1.0 - relative) - margin as f64
+                        (w as f64) * (1.0 - relative.get()) - margin as f64
                     } else {
-                        (w as f64) * relative + (margin + x_offset) as f64
+                        (w as f64) * relative.get() + (margin + x_offset) as f64
                     };
                     (current_x - wanted as i64).max(0)
                 }
@@ -2331,9 +2331,8 @@ fn displayed_line_with_map(
         let display = buffer.text_property_at(line_begin + offset, "display");
         // Lisp often builds the replacement with `concat' or
         // `substitute-command-keys', so it can itself be a propertized
-        // string represented by a vector-literal value.  It is still a
-        // string for display purposes; matching only the two direct Rust
-        // string variants dropped Dired's free-space suffix.
+        // string. Resolve its text through the common string accessor so
+        // Dired's free-space suffix retains its string properties.
         let replacement = display
             .as_ref()
             .and_then(|value| crate::lisp::primitives::string_text(value).ok());
@@ -6612,7 +6611,7 @@ fn make_menu_executor(
                 .lookup_var("echo-keystrokes", env)
                 .map(|value| match value {
                     Value::Integer(seconds) => seconds as f64,
-                    Value::Float(seconds) => seconds,
+                    Value::Float(seconds) => seconds.get(),
                     _ => 0.0,
                 })
                 .unwrap_or(1.0);

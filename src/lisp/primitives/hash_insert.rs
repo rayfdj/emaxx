@@ -19,23 +19,27 @@ pub(crate) fn call_hash_table_test_function(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let Some((_, before_entries)) = json::hash_table_entries(interp, table) else {
+    let Value::Record(id) = table else {
         return Err(LispError::WrongTypeArgument(
             "hash-table-p".into(),
             table.clone(),
         ));
     };
-    let result = call_function_value(interp, function, args, env);
-    let Some((_, after_entries)) = json::hash_table_entries(interp, table) else {
+    if !json::is_hash_table(interp, table) {
         return Err(LispError::WrongTypeArgument(
             "hash-table-p".into(),
             table.clone(),
         ));
-    };
-    if before_entries != after_entries {
-        set_hash_table_entries(interp, table, before_entries)?;
-        return Err(LispError::Signal("hash table test modifies table".into()));
     }
+
+    // fns.c's hash_table_user_defined_call makes only this table immutable
+    // while the callback runs and inhibits collection because the table's
+    // temporary probing state is not markable.
+    let entered = interp.enter_hash_table_test(*id);
+    interp.inhibit_garbage_collection();
+    let result = call_function_value(interp, function, args, env);
+    interp.allow_garbage_collection();
+    interp.leave_hash_table_test(*id, entered);
     result
 }
 
@@ -51,6 +55,103 @@ pub(crate) fn touch_hash_table_key(
     };
     let _ = call_hash_table_test_function(interp, table, &hash_fn, std::slice::from_ref(key), env)?;
     Ok(())
+}
+
+fn custom_hash_code(
+    interp: &mut Interpreter,
+    table: &Value,
+    test: &str,
+    key: &Value,
+    env: &mut Env,
+) -> Result<i64, LispError> {
+    let Some((_, hash_fn)) = hash_table_user_test_functions(interp, test) else {
+        return Err(LispError::Signal("Invalid hash table test".into()));
+    };
+    let hash =
+        call_hash_table_test_function(interp, table, &hash_fn, std::slice::from_ref(key), env)?;
+    Ok(match hash {
+        Value::Integer(hash) => hash,
+        other => sxhash_value_in_env(interp, &other, HashMode::Equal, env),
+    })
+}
+
+fn custom_hash_matching_index(
+    interp: &mut Interpreter,
+    table: &Value,
+    id: u64,
+    test: &str,
+    key: &Value,
+    hash: i64,
+    env: &mut Env,
+) -> Result<Option<(usize, Value)>, LispError> {
+    let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
+        return Err(LispError::Signal("Invalid hash table test".into()));
+    };
+    let candidates = interp
+        .custom_hash_candidates(id, hash)
+        .expect("custom hash index disappeared during lookup");
+    for (index, existing_key, value) in candidates {
+        let identity_match = values_eq_in_env(interp, &existing_key, key, env);
+        let comparison_match = !identity_match
+            && call_hash_table_test_function(
+                interp,
+                table,
+                &compare_fn,
+                &[key.clone(), existing_key],
+                env,
+            )?
+            .is_truthy();
+        if identity_match || comparison_match {
+            return Ok(Some((index, value)));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn custom_hash_lookup_indexed(
+    interp: &mut Interpreter,
+    table: &Value,
+    id: u64,
+    test: &str,
+    key: &Value,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    let hash = custom_hash_code(interp, table, test, key, env)?;
+    Ok(
+        custom_hash_matching_index(interp, table, id, test, key, hash, env)?
+            .map(|(_, value)| value),
+    )
+}
+
+pub(crate) fn custom_hash_put_indexed(
+    interp: &mut Interpreter,
+    table: &Value,
+    id: u64,
+    test: &str,
+    key: Value,
+    value: Value,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let hash = custom_hash_code(interp, table, test, &key, env)?;
+    let existing = custom_hash_matching_index(interp, table, id, test, &key, hash, env)?
+        .map(|(index, _)| index);
+    Ok(interp.custom_hash_put_at(id, hash, existing, key, value))
+}
+
+pub(crate) fn custom_hash_remove_indexed(
+    interp: &mut Interpreter,
+    table: &Value,
+    id: u64,
+    test: &str,
+    key: &Value,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let hash = custom_hash_code(interp, table, test, key, env)?;
+    let Some((index, _)) = custom_hash_matching_index(interp, table, id, test, key, hash, env)?
+    else {
+        return Ok(true);
+    };
+    Ok(interp.custom_hash_remove_at(id, index))
 }
 
 pub(crate) fn hash_table_key_matches(
@@ -81,39 +182,16 @@ pub(crate) fn hash_table_key_matches(
     }
 }
 
-pub(crate) fn weak_hash_component_is_dead(value: &Value) -> bool {
-    string_like(value)
-        .map(|string| string.text.ends_with("-dead"))
-        .unwrap_or(false)
-}
-
-pub(crate) fn collect_weak_hash_tables(interp: &mut Interpreter) -> Result<(), LispError> {
-    let table_ids = interp.record_ids_by_type("hash-table");
-    for id in table_ids {
-        let table = Value::Record(id);
-        let weakness = hash_table_metadata_slot(interp, &table, 5, Value::Nil)?;
-        let Some(weakness_name) = weakness.as_symbol().ok() else {
-            continue;
-        };
-        let Some((_, entries)) = json::hash_table_entries(interp, &table) else {
-            continue;
-        };
-        let retained = entries
-            .into_iter()
-            .filter(|(key, value)| {
-                let key_live = !weak_hash_component_is_dead(key);
-                let value_live = !weak_hash_component_is_dead(value);
-                match weakness_name {
-                    "key" => key_live,
-                    "value" => value_live,
-                    "key-and-value" => key_live && value_live,
-                    "key-or-value" => key_live || value_live,
-                    _ => true,
-                }
-            })
-            .collect();
-        set_hash_table_entries(interp, &table, retained)?;
+pub(crate) fn collect_weak_hash_tables(
+    interp: &mut Interpreter,
+    env: &Env,
+    native_roots: &[Value],
+) -> Result<(), LispError> {
+    let reachability = interp.weak_hash_reachability(env, native_roots);
+    for (id, entries, keep) in reachability.tables {
+        interp.sweep_weak_hash_table(id, entries, &keep);
     }
+    interp.install_gc_record_census(reachability.live_records);
     Ok(())
 }
 
@@ -157,6 +235,199 @@ pub(crate) fn keymap_list_items(
     value: &Value,
 ) -> Result<Option<Vec<Value>>, LispError> {
     keymap_list_items_inner(interp, value, &mut HashSet::new(), &mut HashSet::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weak_key_collection_uses_reachability() {
+        let mut interp = Interpreter::new();
+        let env = Env::new();
+        let table = json::make_hash_table(&mut interp, "equal", Vec::new());
+        let Value::Record(id) = table.clone() else {
+            panic!("hash table is not a record");
+        };
+        interp.find_record_mut(id).expect("new hash table").slots[5] = Value::symbol("key");
+
+        let rooted_key = Value::string("rooted key");
+        let unrooted_key = Value::string("unrooted key");
+        assert!(interp.equal_hash_put(id, rooted_key.clone(), Value::Integer(1), &env,));
+        assert!(interp.equal_hash_put(id, unrooted_key, Value::Integer(2), &env));
+        interp.set_global_binding("weak-table-root", table);
+        interp.set_global_binding("weak-key-root", Value::cons(rooted_key.clone(), Value::Nil));
+
+        collect_weak_hash_tables(&mut interp, &env, &[]).expect("collect weak table");
+        let entries = interp
+            .hash_table_runtime_entries(id)
+            .expect("indexed hash table entries");
+        assert_eq!(entries.len(), 1);
+        assert!(crate::lisp::primitives::values_equal(
+            &interp,
+            &entries[0].0,
+            &rooted_key,
+        ));
+    }
+
+    #[test]
+    fn weak_collection_retains_only_real_detached_c_slots() {
+        use super::super::generated_gnu_c_forwarded_variables::{
+            ForwardedVariableKind, GNU_C_FORWARDED_VARIABLES,
+        };
+
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let table = json::make_hash_table(&mut interp, "equal", Vec::new());
+        let Value::Record(id) = table.clone() else {
+            panic!("hash table is not a record");
+        };
+        interp.find_record_mut(id).expect("new hash table").slots[5] = Value::symbol("key");
+        interp.set_global_binding("weak-table-root", table);
+
+        // A declaration belonging to an unavailable platform does not create
+        // a live C slot when ordinary Lisp later uses the same symbol name.
+        let inactive = GNU_C_FORWARDED_VARIABLES
+            .iter()
+            .find_map(|(name, kind)| {
+                (*kind == ForwardedVariableKind::Lisp && interp.symbol_value_cell(name).is_err())
+                    .then_some(*name)
+            })
+            .expect("the all-platform inventory contains unavailable C variables");
+        let retained_key = Value::string("retained C value");
+        let keys = [
+            ("delayed-warnings-list", retained_key.clone()),
+            ("plain-weak-root", Value::string("ordinary Lisp value")),
+            (inactive, Value::string("unavailable C declaration")),
+        ];
+        for (name, key) in keys {
+            assert!(interp.equal_hash_put(id, key.clone(), Value::Nil, &env));
+            interp.set_global_binding(name, Value::cons(key, Value::Nil));
+            call(&mut interp, "makunbound", &[Value::symbol(name)], &mut env)
+                .expect("void the symbol");
+            assert!(interp.symbol_value_cell(name).is_err());
+        }
+        assert!(
+            !interp
+                .detached_forwarded_variables
+                .contains_key("plain-weak-root")
+        );
+        assert!(!interp.detached_forwarded_variables.contains_key(inactive));
+        assert!(
+            interp
+                .detached_forwarded_variables
+                .contains_key("delayed-warnings-list")
+        );
+
+        // Rebinding and voiding the Lisp symbol a second time must not
+        // overwrite the independent C slot (data.c:set_internal).
+        let replacement_key = Value::string("replacement plain Lisp value");
+        assert!(interp.equal_hash_put(id, replacement_key.clone(), Value::Nil, &env));
+        interp.set_global_binding(
+            "delayed-warnings-list",
+            Value::cons(replacement_key, Value::Nil),
+        );
+        call(
+            &mut interp,
+            "makunbound",
+            &[Value::symbol("delayed-warnings-list")],
+            &mut env,
+        )
+        .expect("void the new plain binding");
+        let retained = interp
+            .forwarded_c_value("delayed-warnings-list", &env)
+            .expect("the original C slot still exists");
+        assert!(values_eq_in_env(
+            &interp,
+            &retained
+                .car()
+                .expect("retained C slot contains its key cons"),
+            &retained_key,
+            &env
+        ));
+
+        // Deep image cloning must keep this independent root and its object
+        // graph too. The weak table's copied key must alias the copied C slot.
+        let mut copy = interp.deep_clone_image();
+        for interpreter in [&mut interp, &mut copy] {
+            collect_weak_hash_tables(interpreter, &env, &[]).expect("collect weak table");
+            let entries = interpreter
+                .hash_table_runtime_entries(id)
+                .expect("indexed hash table");
+            assert_eq!(entries.len(), 1);
+            let slot_key = interpreter
+                .forwarded_c_value("delayed-warnings-list", &env)
+                .expect("retained C root")
+                .car()
+                .expect("copied C slot contains its key cons");
+            assert!(values_eq_in_env(
+                interpreter,
+                &entries[0].0,
+                &slot_key,
+                &env
+            ));
+        }
+
+        // An actual C assignment releases the old root, without rebinding
+        // the detached Lisp symbol or consulting variable watchers.
+        interp.set_forwarded_lisp_value("delayed-warnings-list", Value::Nil);
+        assert!(interp.symbol_value_cell("delayed-warnings-list").is_err());
+        collect_weak_hash_tables(&mut interp, &env, &[]).expect("collect released C value");
+        assert!(
+            interp
+                .hash_table_runtime_entries(id)
+                .expect("live weak table")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn clearing_detached_quit_slot_releases_its_old_gc_root() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let table = json::make_hash_table(&mut interp, "equal", Vec::new());
+        let Value::Record(id) = table.clone() else {
+            panic!("hash table is not a record");
+        };
+        interp.find_record_mut(id).expect("new hash table").slots[5] = Value::symbol("key");
+        interp.set_global_binding("weak-table-root", table);
+        let key = Value::string("quit payload");
+        assert!(interp.equal_hash_put(id, key.clone(), Value::Nil, &env));
+        interp.set_global_binding("quit-flag", Value::cons(key, Value::Nil));
+        call(
+            &mut interp,
+            "makunbound",
+            &[Value::symbol("quit-flag")],
+            &mut env,
+        )
+        .expect("detach quit-flag");
+        collect_weak_hash_tables(&mut interp, &env, &[]).expect("collect while quit is pending");
+        assert_eq!(
+            interp
+                .hash_table_runtime_entries(id)
+                .expect("live weak table")
+                .len(),
+            1
+        );
+        let error = interp
+            .maybe_quit(&mut env)
+            .expect_err("deliver pending quit");
+        assert!(
+            matches!(error, LispError::SignalValue(value) if value == Value::list([Value::symbol("quit")]))
+        );
+        assert_eq!(
+            interp.forwarded_c_value("quit-flag", &env),
+            Some(Value::Nil)
+        );
+        assert!(interp.symbol_value_cell("quit-flag").is_err());
+        collect_weak_hash_tables(&mut interp, &env, &[]).expect("collect delivered quit payload");
+        assert!(
+            interp
+                .hash_table_runtime_entries(id)
+                .expect("live weak table")
+                .is_empty()
+        );
+    }
 }
 
 fn keymap_list_items_inner(
@@ -283,6 +554,9 @@ pub(crate) fn set_hash_table_entries(
             table.clone(),
         ));
     };
+    if !interp.hash_table_is_mutable(*id) {
+        return Err(LispError::Signal("hash table test modifies table".into()));
+    }
     let Some(test) = interp
         .find_record(*id)
         .filter(|record| record.kind == crate::lisp::eval::RecordKind::HashTable)
@@ -295,6 +569,12 @@ pub(crate) fn set_hash_table_entries(
             table.clone(),
         ));
     };
+    let indexed = matches!(test.as_str(), "eq" | "eql" | "equal") || entries.is_empty();
+    let stored_entries = if indexed {
+        Value::Nil
+    } else {
+        hash_table_entries_to_value(entries.clone())
+    };
     let Some(record) = interp.find_record_mut(*id) else {
         return Err(LispError::WrongTypeArgument(
             "hash-table-p".into(),
@@ -304,7 +584,7 @@ pub(crate) fn set_hash_table_entries(
     if record.slots.len() < 2 {
         record.slots.resize(2, Value::Nil);
     }
-    record.slots[1] = hash_table_entries_to_value(entries.clone());
+    record.slots[1] = stored_entries;
     interp.replace_hash_table_runtime_entries(*id, &test, entries);
     Ok(())
 }
@@ -476,19 +756,17 @@ fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
 }
 
 pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Value> {
+    if let Value::Vector(vector) = value {
+        return vector
+            .slots()
+            .iter()
+            .find_map(|item| display_property_value(item, property));
+    }
     if let Ok(items) = value.to_vec() {
         if let Some(Value::Symbol(name)) = items.first()
             && name == property
         {
             return items.get(1).cloned();
-        }
-        if matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
-            for item in items.iter().skip(1) {
-                if let Some(found) = display_property_value(item, property) {
-                    return Some(found);
-                }
-            }
-            return None;
         }
         for item in items {
             if let Some(found) = display_property_value(&item, property) {
