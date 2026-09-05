@@ -692,6 +692,13 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
         "native_string_type_predicates_do_not_read_payloads",
         "native_string_type_predicates_reject_vector_spoofing",
         "native_string_type_predicates_follow_gnu_array_and_character_classes",
+        "native_gc_traces_vector_contents_before_sweeping_cons_storage",
+        "native_gc_marks_current_cons_fields_car_first",
+        "native_gc_ordinary_subr_route_preserves_vector_element_identity",
+        "native_gc_traces_unencoded_vectors_and_native_cycles",
+        "native_gc_traces_interpreter_roots_and_current_native_fields",
+        "native_gc_finishes_weak_table_marking_before_sweeping",
+        "native_gc_weak_tables_reach_a_fixed_point_before_sweeping",
     ] {
         assert!(
             runtime.contains(&format!("fn {test}")),

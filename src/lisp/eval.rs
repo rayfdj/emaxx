@@ -2830,7 +2830,8 @@ pub(crate) struct LiveObjectCensus {
 }
 
 #[derive(Default)]
-struct LispReachability {
+struct LispReachability<'mark, 'heap> {
+    native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
     big_integers: HashSet<usize>,
     floats: HashSet<usize>,
     strings: HashSet<usize>,
@@ -2857,7 +2858,7 @@ pub(crate) struct WeakHashReachability {
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
 
-impl LispReachability {
+impl LispReachability<'_, '_> {
     fn contains(&self, value: &Value) -> bool {
         match value {
             Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
@@ -2929,6 +2930,22 @@ impl LispReachability {
         };
         if !newly_marked {
             return false;
+        }
+
+        // alloc.c completes one graph traversal before sweeping either
+        // vectors or conses. Follow native words here, including edges
+        // discovered by the weak-table fixed point, rather than sweeping
+        // that storage before this pass can discover it.
+        if let Some(native) = self.native.as_deref_mut() {
+            let (native_cons, children) = native.trace_lisp_value(value);
+            for child in &children {
+                self.mark(interp, child);
+            }
+            if native_cons {
+                // Generated code's current car/cdr words are authoritative;
+                // tracing a stale typed mirror would retain replaced edges.
+                return true;
+            }
         }
 
         match value {
@@ -3100,7 +3117,19 @@ impl Interpreter {
         env: &Env,
         native_roots: &[Value],
     ) -> WeakHashReachability {
-        let mut marked = LispReachability::default();
+        self.weak_hash_reachability_with_native(env, native_roots, None)
+    }
+
+    pub(crate) fn weak_hash_reachability_with_native(
+        &self,
+        env: &Env,
+        native_roots: &[Value],
+        native: Option<&mut crate::lisp::native_comp::NativeMark<'_>>,
+    ) -> WeakHashReachability {
+        let mut marked = LispReachability {
+            native,
+            ..LispReachability::default()
+        };
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);

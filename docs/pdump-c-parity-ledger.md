@@ -18,7 +18,10 @@ work and must not be restored as part of this goal.
 
 Evidence directory: `/private/tmp/emaxx-pdump-contracts.Yyf1mY`.
 
-- Baseline editor SHA-256:
+Latest published checkpoint: `a92e620` (startup/loading); after its push,
+freshly fetched `origin/main` at `84f342a` was already included.
+
+- Original `b432d86` baseline editor SHA-256:
   `e3547c198c6b65bb551101bdf8e511963c5f1c485f23205c260547a2d1419db4`.
 - Separate GNU oracle SHA-256:
   `7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82`.
@@ -31,7 +34,315 @@ Evidence directory: `/private/tmp/emaxx-pdump-contracts.Yyf1mY`.
   `NativeCompilerState::clone` refuses live compiler/native state. Do not
   remove that safeguard or silently disable native libraries.
 
+### Current D03/D06 unit: finish graph marking before native sweeping
+
+GNU `alloc.c:process_mark_stack` marks regular vector contents and cons
+fields; `garbage_collect` completes strong marking and the weak-table
+fixed point before `gc_sweep`. `pdumper.c:dump_cons` and
+`dump_vectorlike_generic` retain those same object references. A vector
+must therefore keep its cons element alive at its original native address.
+
+At `a92e620`, Rust `NativeHeap::collect` marked a handle without traversing its
+typed payload, then swept native conses before the separate
+`Interpreter::weak_hash_reachability` pass. The new Rust-level control
+places an arena cons inside a vector, retains only the vector's native
+root, and requires both unchanged cons identity and actual reclamation of
+an unrelated cons. Evidence is under
+`/private/tmp/emaxx-native-gc-graph.tkKNPk`. The executed old-code control
+fails, 0/1 with zero ignored (`vector-red.log`); an earlier invocation
+used an incomplete exact test name and selected zero tests, not a pass.
+The first corrected build passes 11/11 native-GC tests with zero ignored
+(`gc-green1.log`, build 2m55s, tests 0.03s). Four new controls cover vector
+contents/native identity, unencoded nested vectors and cycles, interpreter
+roots/current native writes, and weak-table retention followed by removal.
+
+The candidate connects the existing typed reachability traversal and its
+weak-table fixed point to native marking before native sweeping. It does
+not add a second type traversal, permanent root cache, new Lisp object, or
+new Elisp. Changed cons mirrors are synchronized before the exclusive mark
+borrow, and the existing read-barrier guard prevents raw-pointer reentry
+during that borrow. The native work stack is reused throughout the pass,
+as GNU's mark stack is; it is not allocated afresh for each visited cons.
+The expanded native-runtime/root/weak-table selection passes 86 tests,
+zero failures, with only the existing timing probe ignored
+(`runtime-focused.log`, 16.74s). This includes all 18 adversarial checks.
+Formatting, all-target check (7.93s) and strict Clippy (26.02s) pass with no
+warnings. The release editor builds in 3m08s; SHA-256:
+`be2b3284eb48420d11916e0461f254899efabbe0635315c07862ed5ac4031926`.
+All nine unchanged-source artifact fixtures pass in 249.78s (`identity.log`):
+eight entire byte-identical .eln files through comp.el (881,800 bytes),
+plus the deliberate no-artifact case. No byte normalization is performed.
+The GNU-execution negative control rejects GNU with exit 71.
+
+A fifth Rust control additionally exercises the ordinary garbage-collect
+subr from a native ABI call and checks that GC actually ran. It passes 1/1,
+zero ignored (`public-gc-route.log`, build 2m23s, test 0.01s). The final
+combined run passes 87 tests, zero failures, with just the existing timing
+probe ignored (`runtime-focused-final.log`, 14.70s). Fresh formatting,
+all-target check (8.43s) and strict all-target/all-feature Clippy (18.43s)
+pass without warnings. The saved `a92e620` editor's SHA-256 is
+`b5b16b0898407cf1ef2429d7555405e20aa3e3b1b037cd03a649089a3a17c10c`.
+
+**First candidate rejected before commit/push.** Its additional
+`synchronize_touched_conses(true)` before marking scans all
+tracked mirrors. GNU `alloc.c:process_mark_stack` reads each reached object's
+authoritative fields; it has no such blanket synchronization pre-pass.
+This discrepancy should have been reviewed before running a benchmark.
+Do not replace it with another unreviewed mechanism or drop synchronization
+without proving that current fields, identity and root discovery remain
+correct. The existing Rust/GNU representation split is not permission to
+invent additional GC behavior. The inherited raw cons mark loop also
+visits cdr before car; GNU explicitly expands car first. This is another
+source-review finding, not a claim that that traversal exactly
+matches GNU.
+
+For the record, two premature serial full unchanged `comp.el` timing pairs
+completed under `comparison/` (fresh HOME/TMP per run, common unchanged
+source pathname, no profiler, GNU execution forbidden in each Emaxx run):
+
+| Pair/order | Before real / user / sys | Candidate real / user / sys | GNU real / user / sys |
+|---|---|---|---|
+| Before, candidate, GNU | 74.43 / 67.85 / 4.28 | 74.44 / 69.62 / 3.77 | 9.23 / 8.88 / 0.18 |
+| Candidate, before, GNU | 73.49 / 67.85 / 3.63 | 75.58 / 70.39 / 3.83 | 9.56 / 9.05 / 0.28 |
+
+Candidate user+system CPU increased 1.75% and 3.83%. Whole-file `cmp`
+against each pair's GNU artifact succeeds for both before and candidate.
+These loaded-host, startup-inclusive measurements neither establish the
+cause of the increase nor approve the candidate. Preserve the logs;
+**do not run more timings until source-faithfulness review clears the
+correction and correctness/de-cheating checks pass**. This order is Ray's
+explicit instruction, not a reason to skip later performance verification.
+
+**Revised source review, before new correctness or timing runs:**
+
+- `alloc.c:process_mark_stack` keeps cons fields and vector contents in the
+  same reachability computation, while `garbage_collect` finishes weak
+  marking before `gc_sweep`. The Rust mark borrow now spans its existing
+  typed walker and weak fixed point; native sweep follows, rather than
+  preceding, discovery through vectors and interpreter roots.
+- The added blanket pre-pass is removed. `NativeMark::cons_value` uses the
+  existing per-cons reconciliation only when a reached cons's cached fields
+  differ from its actual words. It does not introduce a new cache, root
+  policy, mutation rule or word encoding. Dirty Rust writes are published
+  first through the existing mutation queue. The borrow guard prevents
+  reentering the exclusively borrowed heap; it does not skip tracing cons
+  edges, which come from the native words themselves.
+- The raw cons work stack now pushes a non-nil cdr and then car, so car is
+  expanded first as GNU explicitly requires. Both arena conses and the
+  Rust-owned cons branch use this order. This is not a claim that the two
+  current Rust representations reproduce every GNU mark-stack step.
+- Root and metadata consumers were read: `EnvFrame` iteration retains
+  references to binding values and its optional Lisp environment; the
+  existing hash-table walker uses its runtime entries (or its existing
+  internal entry-list representation) without evaluating Lisp callbacks.
+  Neither becomes an excuse to introduce a second type walker or mark weak
+  entries unconditionally. Tests cover current native writes and actual
+  removal, not just retention.
+- No GNU source, Elisp, threshold, fixture selection, delegation path or
+  comparison was changed. The six new Rust controls are also required by
+  the existing adversarial inventory; source-name presence is not execution
+  proof. The new mark-stage control checks both cons owners, car-first
+  discovery and no refresh of an unreached mirror; the existing native-write
+  control now requires the replaced typed object to disappear too.
+
+This clears source review for **focused testing of the bounded correction**,
+not a declaration of exact GC or approval to commit. In particular, the
+reference-count root heuristic and split object representation are still
+known GNU differences; they are not approved exceptions or completed
+prerequisites. Fresh correctness/de-cheating results must precede any new
+artifact or timing runs. `source-review-check.log`: all-target check passes
+with zero warnings (7.04s). The prior 87-test and artifact results apply to
+the rejected first candidate, not this revised code.
+
+The reached-cons revision passed 88 focused checks, zero failures, with
+the one existing timing probe ignored (`reached-cons-focused.log`, 15.28s;
+build 2m19s). This includes all 18 adversarial checks. However, continued
+source review caught another ordering mismatch before artifact or timing
+runs: GNU removes dead weak-table entries before `gc_sweep`; the candidate
+computed the keep set before sweeping native storage but left actual entry
+removal to its caller afterward. Tests passing did not approve that order.
+
+The subsequent correction makes `NativeHeap::collect` perform the existing
+weak-entry removal before native storage is swept. Native-runtime callers
+and the ordinary garbage-collect primitive no longer finish that step later.
+No new GC mechanism, callback or phase is invented: this follows
+`alloc.c:garbage_collect`'s explicit sequence. The existing no-active-stack
+branch still performs only typed collection and remains an open D06 gap.
+The native-only record control now allocates real records and checks their
+installed live census and later reclamation, rather than inspecting a
+returned root set containing a fabricated record ID. A seventh new Rust
+control requires repeated weak-table marking: Z keeps X alive through the
+second table, then X keeps Y alive through the earlier table; after removing
+Z's strong root, both tables and all three native conses must be swept.
+The source review also checked `fns.c:keep_entry_p` and `sweep_weak_table`:
+the existing keep predicates match GNU, and weak removal must not invoke
+public mutability checks or user callbacks. Source review of the bounded
+ordering correction is followed by **89 passing focused checks**, zero
+failures, one separate timing probe ignored (`weak-order-focused.log`,
+14.08s; release test build 2m25s). All seven new controls and all 18
+adversarial checks execute. Formatting, all-target check (7.14s) and strict
+all-target/all-feature Clippy (13.09s) are clean (`weak-order-final-check2.log`,
+`weak-order-clippy2.log`). An earlier Clippy run rejected two new test
+`unwrap` calls; they were replaced with diagnostic `expect` calls, not
+suppressed.
+
+The corrected ordinary editor is now rebuilt (`weak-order-editor-build.log`,
+3m09s), SHA-256
+`15d1486fa62578847331fde3ea934726089f51d8266368d6ae0a51c7095adc10`.
+All nine unchanged-source fixtures pass in 243.10s
+(`weak-order-identity.log`): eight entire byte-identical artifacts through
+comp.el (881,800 bytes), plus the correctly absent no-byte-compile artifact.
+The explicitly selected integration test reports 1 passed, 0 failed,
+0 ignored. It checks artifact identity, not execution of the 177 cases.
+The GNU oracle remains unchanged (SHA-256
+`7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82`);
+the fresh GNU-execution negative control returns exit 71 as expected
+(`weak-order-gnu-exec-negative.log`). No Elisp, GNU source, comparison or
+fixture selection was changed. Only after these stages passed did the new
+serial before/current/oracle comparison run under
+`weak-order-comparison.9fF1WW/`.
+
+**Measurement-scope correction (Ray, 2026-09-05):** these six completed
+runs still include preload reconstruction. They are cold-process
+diagnostics, not comparable post-startup compiler/runtime measurements and
+not a performance acceptance gate for this GC correction. Preserve the
+observations, but do not use them to assert a hot-path slowdown or reject
+GNU-faithful code. Direct post-startup results are recorded below.
+
+| Run order | Editor | Wall / user / system seconds |
+|---|---|---|
+| 1 | Current worktree | 69.11 / 65.03 / 3.31 |
+| 2 | Before (`a92e620`) | 66.63 / 62.88 / 2.89 |
+| 3 | GNU | 8.93 / 8.49 / 0.22 |
+| 4 | Before (`a92e620`) | 68.22 / 64.27 / 3.10 |
+| 5 | Current worktree | 71.59 / 67.26 / 3.31 |
+| 6 | GNU | 8.82 / 8.37 / 0.22 |
+
+All six ordinary `-Q --batch -f batch-native-compile` processes exited 0,
+using the same unchanged copied `comp.el`, fresh separate HOME/TMPDIR,
+`env -i`, matching PATH and C locale. Both before/current pairs ran under
+the GNU-execution fence. All four Emaxx outputs compare byte-for-byte with
+their paired GNU output (881,800 bytes; SHA-256
+`f2752387ccbf72e1f21def74a0e438e8890d06e86b36ab30229c39ec79821c83`).
+The saved before executable has SHA-256
+`b5b16b0898407cf1ef2429d7555405e20aa3e3b1b037cd03a649089a3a17c10c`.
+Per-run stdout/stderr and artifacts remain in that comparison directory.
+
+Whole-process CPU increased 3.91% and 4.75% in these pairs, while the
+baseline's own CPU varied 2.43%. Both the loaded host and the unseparated
+reconstruction phase prevent attributing those differences to post-startup
+work. Neither a demonstrated post-startup regression nor performance
+neutrality follows. The approximately 8x current/GNU whole-process ratio
+likewise cannot answer how much slower native compilation itself is.
+
+For subsequent compiler/runtime measurements, exclude preload rebuilding
+from the timed interval for both editors; retain startup/image-build cost
+as a separate category. Observe the same complete post-startup operation,
+including GNU's unchanged frontend and backend work. Do not subtract a
+separately measured startup duration, label libgccjit/backend time as the
+complete compilation, or add helper Elisp/private runtime interfaces to
+make the comparison.
+Continue checking full artifacts, executable independence, repeated
+order-balanced runs and loaded-host variation. No further cold command
+timings are needed to answer this compiler-performance question.
+
+**Direct post-startup observation:** the external LLDB script at
+`/private/tmp/emaxx-native-poststartup.mXNHW4/native_phase.py` observes entry
+to unchanged GNU `comp.el:batch-native-compile` and that function's actual
+return instruction in both editors. It verifies the entry address, a
+single return instruction, the same thread/stack pointer, successful editor
+exit, and both boundary events. Preload reconstruction and loading the
+compiler library precede entry; all the invoked frontend/backend passes
+and waited-for compiler children fall inside the interval. This measures
+that full operation, not library-loading cost or steady-state native
+function execution. The observer does not evaluate expressions in the
+target, change Lisp variables, add Elisp, replace entry points, or change
+either executable. Timing still includes debugger/scheduling overhead.
+
+The first GNU observer probe was rejected: a breakpoint at the shared
+caller's return address fired during a nested call. The corrected observer
+disassembles the actual function and observes its own `ret`, checking the
+original stack pointer. Small unchanged-source probes then reached both
+boundaries and produced identical entire artifacts. The preliminary probes'
+CPU numbers are also rejected: CPU counters require the queried Mach
+timebase, not an assumed nanosecond unit. The corrected conversion is
+validated independently inside the observer against `getrusage`: 0.153094s
+versus 0.153075s (`clock-control.log`, timebase 125/3). No editor code is
+involved in this clock control. Apple's
+[fill_task_rusage](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/bsd_kern.c)
+supplies the task counters, and
+[gather_rusage_info/update_rusage_info_child](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_resource.c)
+supplies accumulated child counters.
+
+Current executable and saved baseline hashes were rechecked against the
+above evidence; the source copy still compares unchanged with GNU. Six
+serial measurements completed, each with fresh separate HOME/TMPDIR and
+matching cleared environment/PATH/C locale. The four Emaxx runs used the
+same GNU-execution fence, whose fresh negative control exits 71. Only
+the following entry-to-return intervals count as compiler measurements:
+
+| Run order | Editor | Post-startup wall seconds | CPU including waited-for children |
+|---|---|---|---|
+| 1 | Current | 54.183 | 53.638 |
+| 2 | Before (`a92e620`) | 55.916 | 55.145 |
+| 3 | GNU | 8.588 | 8.425 |
+| 4 | Before (`a92e620`) | 52.320 | 52.112 |
+| 5 | Current | 52.439 | 52.218 |
+| 6 | GNU | 8.717 | 8.458 |
+
+Logs are `{current1,before1,gnu1,before2,current2,gnu2}.log` in the new
+post-startup evidence directory. Each contains the observed function,
+loaded module, entry/return addresses, initial counters, elapsed wall/user/
+system/child times and successful boundary/exit verification. All four
+Emaxx outputs compare against their paired GNU output as entire files;
+all six have 881,800 bytes and SHA-256
+`f2752387ccbf72e1f21def74a0e438e8890d06e86b36ab30229c39ec79821c83`.
+The observer script's SHA-256 is
+`bbec55ac08176ac28075362dcfc61c4b0991b81b832abf57f9010c7bf37966aa`.
+It remains an external diagnostic, not a new editor interface or runner.
+
+The GC correction's paired CPU changes are -2.73% and +0.20%; the baseline
+varies 5.82% between its own samples. This establishes no consistent
+post-startup regression and no precise speedup on the loaded host. The
+bounded correctness correction is acceptable on this evidence; no
+performance regression or semantic exception is being approved. Current
+post-startup native compilation remains approximately 6.2x GNU by mean
+elapsed time (about 6.3x by CPU) for this input under this observer. This
+is not universal performance parity or a measurement of generated-code
+execution speed. The remaining gap needs a post-startup profile.
+
+Final precommit refresh: `cargo fmt --all -- --check`, all-target check,
+and strict all-target/all-feature Clippy pass with zero warnings. The
+cargo-driven release focused/adversarial run again passes 89 checks,
+zero failures, one separate timing probe ignored (13.49s). Logs are
+`checkpoint-check.log`, `checkpoint-clippy.log`, `checkpoint-focused.log`;
+the fresh fenced GNU negative control exits 71. The source diff has no
+authored Elisp, GNU changes, altered comparison, oracle delegation,
+fixture-conditioned production branch, threshold change or new cache.
+The saved retired harness paths remain untouched. The 177-case native
+execution suite was not rerun for this bounded unit; the nine-fixture
+artifact ladder and focused ABI/GC controls are the current evidence.
+
+This does not complete D06: the existing reference-count-based external
+handle roots, missing native collection outside an active stack boundary,
+full per-type/root census, pure objects and finalizers remain unverified or
+incomplete. In particular, a future pre-dump collection must not silently
+skip native storage merely because no generated frame is active.
+The public garbage-collect report also still uses Rust ConsCell size and
+placeholder free counts; `alloc.c:Fgarbage_collect` uses GNU object sizes
+and allocator counts. This belongs to the existing D06/L08 accounting
+obligation, not a completed contract or an approved semantic exception.
+This is an existing D03/D06 prerequisite, not an additional open-ended
+runtime optimization or proof that the dumper exists.
+
 ## Admission rule
+
+Before expensive validation or any timing, review the implementation diff
+against its GNU C owner. Reject unexplained behavioral departures or added
+mechanisms at that stage. Then run focused correctness/de-cheating checks;
+only a candidate that clears both stages proceeds to expensive artifact,
+execution and performance evidence. Passing tests or timings cannot grant
+an exception to GNU behavior. Re-review later implementation changes.
 
 A prerequisite must identify the exact GNU contract and explain what would
 be incorrect in a real image without it. An open performance item is not,

@@ -74,8 +74,105 @@ precedence over older plans and handovers.
     If main is already an ancestor, record that it is up to date; do not
     manufacture an empty merge. Do not begin the next checkpoint on a stale
     main base.
+13. **Standing checkpoint-push authorization** (Ray, 2026-09-05). Ray
+    explicitly authorizes all pushes related to checkpoint commits of the
+    GNU-faithful runtime, portable-dump, and native-comp goal to
+    `https://github.com/rayfdj/emaxx.git`, branch `native-comp`
+    (`origin/native-comp`). Do not request separate user approval for each
+    such push. Continue stating the exact scope, verifying the checkpoint,
+    auditing before commit/push, and integrating current main afterward.
+    This does not authorize force-pushes, branch deletion, unrelated work,
+    or publication to another destination. Required tool permission checks
+    still apply; this record is not permission to bypass a rejection.
+14. **GNU faithfulness is the first gate, before expensive testing or timing**
+    (Ray, 2026-09-05). Read the corresponding pinned GNU C before changing
+    Rust. Review the proposed and actual diff against that C: control flow,
+    authoritative object state, ownership, roots, mutation, errors and
+    boundaries. Record unexplained extra work or behavior as a failed
+    source review, not something a fast benchmark or passing tests can
+    excuse. The order is source-faithfulness review, focused correctness
+    and adversarial de-cheating checks, then expensive artifact/execution
+    verification and comparable timings. Stop at the first failed stage.
+    Re-review any subsequent implementation change before benchmarking it.
+    Source review is necessary but is not a claim of automatic proof of
+    semantic equivalence; all later acceptance checks still apply.
+15. **Loaded-host noise is not a demonstrated performance regression**
+    (Ray, 2026-09-05). Do not reject a correct, GNU-faithful correction
+    merely because one run is slower on this loaded machine. Use repeated,
+    order-balanced controls and report the baseline's own variation;
+    CPU time as well as elapsed time can vary. Distinguish an inconclusive
+    result from a demonstrated regression. This does not approve an actual
+    regression or waive the final GNU performance target, and timings
+    never override the C-faithfulness requirement.
+16. **Exclude preload reconstruction from compiler/runtime performance**
+    (Ray, 2026-09-05). Until portable dumping exists, rebuilding Emaxx's
+    preload state must be outside every compiler/runtime comparison and
+    before/after performance acceptance window. Measure equivalent work
+    after preload/startup finishes in each process. Record image building
+    and startup separately; cold command duration is not a compiler-speed
+    result. Do not subtract an unrelated startup run to manufacture a
+    phase measurement. The earlier approximately 8x whole-process GNU
+    comparison does not establish the post-startup slowdown. Require
+    direct post-startup evidence for that ratio. Use unchanged GNU entry
+    points and external observation or existing instrumentation, not new
+    Elisp, a private runner, or a backend-only interval mislabeled as the
+    complete frontend/backend compilation.
 
-## Startup/loading checkpoint based on b432d86 (2026-09-05)
+## Current work after pushed a92e620 (2026-09-05)
+
+The startup/loading checkpoint below is committed and pushed as `a92e620`.
+Freshly fetched main at `84f342a` is included. The next uncommitted D03/D06
+unit fixes native GC graph marking: a rooted vector's native cons element
+was reclaimed before the separate Lisp reachability pass could see it.
+The old-code control fails. C-first review has removed an added blanket
+cons synchronization pass, corrected the raw cons work stack to car-first
+order, and moved dead weak-entry removal before native storage sweeping.
+The current worktree follows GNU's mark/fixed-point/weak-entry-removal/sweep
+sequence for this bounded correction. It passes **89 focused checks**, zero
+failures, with only the existing timing probe ignored. All 18 adversarial
+checks are included; formatting, compiler and strict Clippy checks are clean.
+Seven new Rust controls cover retained identity, cycles, current native
+writes, car-first marking, repeated weak-table marking and actual removal,
+and the ordinary GC subr called through the native ABI.
+
+The unit has now cleared the bounded correctness and performance review.
+Fresh precommit formatting, check and strict Clippy gates pass without
+warnings; the combined focused/adversarial run again passes 89 tests,
+zero failures, one separate timing probe ignored (13.49s). The earlier, rejected
+candidate passed nine artifact fixtures but increased CPU by 1.75% and
+3.83% in two prematurely run timing pairs. Those results do not verify the
+current revision. The corrected editor has now been rebuilt and passes
+all nine artifact fixtures: eight entire identical .eln files through
+comp.el and one correctly absent artifact. Two new serial before/after
+pairs completed after C review, focused/adversarial checks and artifact
+verification. However, those measurements still include preload rebuilding:
+they establish neither the post-startup cost of this correction nor its
+performance acceptance. They are retained as cold-process diagnostics only.
+The recorded roughly 8x GNU comparison likewise includes preload and must
+not be quoted as a compiler/runtime-speed comparison. Direct post-startup
+measurement now completes two pairs: current 54.18/52.44s, baseline
+55.92/52.32s, GNU 8.59/8.72s inside unchanged `batch-native-compile`.
+The correction's CPU differences reverse sign (-2.73%, +0.20%) while the
+baseline itself varies 5.82%; no consistent regression or precise speedup
+is established. All outputs are entire-byte identical. The remaining
+post-startup gap is approximately 6.2x GNU by elapsed time for this input,
+not the earlier startup-inclusive 8x. See the dump ledger for the external
+observer's boundary/unit controls, logs and limitations.
+Neither a passing test nor a faster run approves a departure from GNU. See
+[the dump ledger](pdump-c-parity-ledger.md) for the source review, evidence,
+and remaining root/representation/inactive-GC/accounting/finalizer gaps.
+No dumper exists yet.
+
+Ray's next priority (2026-09-05): once this bounded GC fix is accepted,
+checkpoint and push it, integrate current main, then investigate the
+largest contributor to Rust's post-startup native-comp slowness. Use a
+fresh profile of the ordinary compilation route to rank costs, compare
+the dominant Rust work with its GNU C owner, and fix an evidenced
+behavior/representation deviation first. Do not assume GC is dominant,
+add a speculative cache, or count preload reconstruction as compiler cost.
+The portable-image goal and finite dump prerequisites remain in scope.
+
+## Startup/loading checkpoint a92e620 (2026-09-05)
 
 This intermediate checkpoint removes the production GNU-executable path
 query, handwritten startup Elisp/policy, private source/bytecode preference,

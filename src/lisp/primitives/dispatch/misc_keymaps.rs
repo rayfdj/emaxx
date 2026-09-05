@@ -1654,8 +1654,7 @@ define_dispatch!(
                 // whose keys/values are no longer reachable are dropped, as
                 // GNU's sweep does.  Everything else is freed by ownership
                 // the moment it becomes unreachable.
-                let native_roots = crate::lisp::native_comp::begin_garbage_collection(interp);
-                collect_weak_hash_tables(interp, env, &native_roots)?;
+                crate::lisp::native_comp::begin_garbage_collection(interp, env);
                 let census = interp.live_object_census();
                 let threshold = interp
                     .symbol_value_cell("gc-cons-threshold")

@@ -24,7 +24,7 @@ mod state;
 
 pub(crate) use loader::{RegistrationKind, UnitLibrary, open_unit};
 pub(crate) use runtime::{
-    decode_active_backtrace_arguments, note_lisp_allocation, synchronize_cons_read,
+    NativeMark, decode_active_backtrace_arguments, note_lisp_allocation, synchronize_cons_read,
 };
 pub(crate) use state::NativeCompilerState;
 
@@ -288,13 +288,15 @@ pub(crate) fn garbage_collection_finished(
     interpreter.native_compiler = state;
 }
 
-pub(crate) fn begin_garbage_collection(interpreter: &mut Interpreter) -> Vec<Value> {
-    if let Some(roots) = runtime::with_current_runtime(|runtime| runtime.begin_garbage_collection())
+pub(crate) fn begin_garbage_collection(interpreter: &mut Interpreter, environment: &Env) {
+    if runtime::with_current_runtime(|runtime| {
+        runtime.begin_garbage_collection(interpreter, environment)
+    })
+    .is_some()
     {
-        return roots;
+        return;
     }
     let mut state = std::mem::take(&mut interpreter.native_compiler);
-    let roots = state.begin_garbage_collection();
+    state.begin_garbage_collection(interpreter, environment);
     interpreter.native_compiler = state;
-    roots
 }

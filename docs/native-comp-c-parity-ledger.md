@@ -75,6 +75,14 @@ only after Ray explicitly approves a visible exception with a defensible
 justification, a regression test, and performance evidence.  The approved
 exception inventory is currently empty.
 
+The acceptance order is mandatory: review the actual Rust diff against
+the pinned GNU C first, then focused correctness and adversarial checks,
+then expensive artifact/execution verification and comparable timings.
+An unexplained departure fails the first stage; do not benchmark it to
+decide whether to keep it. Re-review implementation changes before further
+timings. A source review is not itself proof of semantic equivalence, and
+neither tests nor speed can approve an unapproved semantic exception.
+
 No item authorizes new Elisp, changes to GNU Elisp, a compatibility runner, or
 calling GNU C from Emaxx.  GNU C is the behavior oracle; C-owned behavior is
 implemented in Rust and GNU Elisp remains GNU Elisp.
@@ -284,6 +292,31 @@ Lisp object model.
 | R02b | `lisp.h:make_lisp_ptr` pointer tagging | verified | The private bridge cache indexes one pre-mixed identity word with exact equality and GC reuse. The rejected clustering mix was removed; lookup fell from 2,847 to 9 leaves in equal five-second samples, with no measured CPU regression. |
 | R02c | Native words remain native words across C-owned calls | open | Eliminate repeated encode-cache lookup by carrying the assigned native word in the object representation itself. A separate 64-entry Rust cache was rejected after two exact-output runs regressed to 88.87s and 94.87s user CPU. |
 | R03 | GNU's single object storage across generated code and primitives | partial | Conses expose their two ABI words directly and vectors share one slot array; remove the remaining mirror/reconciliation work only where both mutation directions and GC visibility are proven. |
+
+R03/D03/D06 follow-up after `a92e620`: a failing Rust control demonstrates
+native GC reclaiming a cons still held by a rooted vector. The candidate
+connects typed/native marking and weak-table reachability before native
+sweeping. C-first review removed the added blanket synchronization pass,
+corrected raw cons marking to car-first order, and moved weak-entry removal
+before storage sweeping. The revised code passes 89 focused tests (one
+separate timing probe ignored), all 18 included adversarial checks and
+warning gates. The rebuilt current editor also passes all nine unchanged
+artifact fixtures in 243.10s. Direct post-startup checks now complete too:
+CPU differences reverse sign (-2.73%, +0.20%), compared with 5.82% baseline
+variation; no consistent regression or precise speedup is established.
+Full measured outputs remain byte-identical. This bounded correction is
+accepted; refreshed precommit warning gates and all 89 focused/adversarial
+checks pass (one separate timing probe ignored). Two earlier before/current pairs
+completed, but include preload reconstruction and are retained only as
+cold-process diagnostics, not compiler/runtime acceptance evidence. The
+roughly 8x GNU whole-process comparison also does not establish a native
+compiler slowdown. Exclude rebuilding preload state from subsequent
+compiler/runtime timing windows; keep startup costs separate, and do not
+subtract an unrelated startup run. The rejected first candidate's nine
+artifact passes and two premature timing pairs (CPU +1.75% and +3.83%) do not verify this
+revision. Source review and correctness/de-cheating checks precede timing.
+Complete ownership/root/GC parity is not claimed. See
+[the current dump-ledger unit](pdump-c-parity-ledger.md).
 
 ## Symbol-value contracts (6)
 

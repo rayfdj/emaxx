@@ -182,17 +182,14 @@ pub(crate) fn hash_table_key_matches(
     }
 }
 
-pub(crate) fn collect_weak_hash_tables(
+pub(crate) fn sweep_weak_hash_tables(
     interp: &mut Interpreter,
-    env: &Env,
-    native_roots: &[Value],
-) -> Result<(), LispError> {
-    let reachability = interp.weak_hash_reachability(env, native_roots);
+    reachability: crate::lisp::eval::WeakHashReachability,
+) {
     for (id, entries, keep) in reachability.tables {
         interp.sweep_weak_hash_table(id, entries, &keep);
     }
     interp.install_gc_record_census(reachability.live_records);
-    Ok(())
 }
 
 pub(crate) fn hash_table_metadata_slot(
@@ -244,7 +241,7 @@ mod tests {
     #[test]
     fn weak_key_collection_uses_reachability() {
         let mut interp = Interpreter::new();
-        let env = Env::new();
+        let mut env = Env::new();
         let table = json::make_hash_table(&mut interp, "equal", Vec::new());
         let Value::Record(id) = table.clone() else {
             panic!("hash table is not a record");
@@ -258,7 +255,8 @@ mod tests {
         interp.set_global_binding("weak-table-root", table);
         interp.set_global_binding("weak-key-root", Value::cons(rooted_key.clone(), Value::Nil));
 
-        collect_weak_hash_tables(&mut interp, &env, &[]).expect("collect weak table");
+        crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+            .expect("collect weak table through the ordinary C-owned entry point");
         let entries = interp
             .hash_table_runtime_entries(id)
             .expect("indexed hash table entries");
