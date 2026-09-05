@@ -223,20 +223,21 @@ pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool 
 }
 
 pub(crate) fn is_vector_value(value: &Value) -> bool {
-    matches!(
-        value,
-        Value::Cons(cell)
-            if matches!(&*cell.car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal")
-    )
+    matches!(value, Value::Vector(_))
 }
 
-/// Whether VALUE has GNU cons identity despite Emaxx's internal facade
-/// representations.  Vector literals use cons storage but are not Lisp
-/// conses; runtime keymaps use records but project the list identity GNU
-/// exposes.  Keep this decision shared by native predicates and VM opcodes.
+pub(crate) fn vector_identity(value: &Value) -> Option<usize> {
+    match value {
+        Value::Vector(vector) => Some(crate::lisp::types::VectorValue::identity(vector)),
+        _ => None,
+    }
+}
+
+/// Whether VALUE has GNU cons identity despite Emaxx's internal runtime-keymap
+/// projection.  Ordinary vectors have their own object class and never enter
+/// this predicate.
 pub(crate) fn is_cons_value(interp: &Interpreter, value: &Value) -> bool {
-    (matches!(value, Value::Cons(_)) && !is_vector_value(value))
-        || keymap_record_id(interp, value).is_some()
+    matches!(value, Value::Cons(_)) || keymap_record_id(interp, value).is_some()
 }
 
 pub(crate) fn fixnum_bounds(interp: &Interpreter) -> Result<(i64, i64), LispError> {
@@ -294,6 +295,35 @@ pub(crate) fn checked_symbol_name(
         && let Ok(symbol) = symbol.as_symbol()
     {
         return Ok(symbol.to_string());
+    }
+    Err(LispError::WrongTypeArgument(
+        "symbolp".into(),
+        value.clone(),
+    ))
+}
+
+/// The same CHECK_SYMBOL/XSYMBOL boundary when the caller stores the symbol
+/// itself, rather than using its name to address legacy host-side tables.
+pub(crate) fn checked_symbol_identity(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<crate::lisp::types::SymbolName, LispError> {
+    match value {
+        Value::Symbol(symbol) => return Ok(symbol.clone()),
+        Value::Nil => return Ok("nil".into()),
+        Value::T => return Ok("t".into()),
+        _ => {}
+    }
+    if symbols_with_pos_enabled(interp, env)
+        && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
+    {
+        match symbol {
+            Value::Symbol(symbol) => return Ok(symbol),
+            Value::Nil => return Ok("nil".into()),
+            Value::T => return Ok("t".into()),
+            _ => {}
+        }
     }
     Err(LispError::WrongTypeArgument(
         "symbolp".into(),

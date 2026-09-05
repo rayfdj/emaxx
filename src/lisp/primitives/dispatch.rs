@@ -4,6 +4,7 @@ mod buffer_edit;
 mod buffer_meta;
 mod collections;
 mod comp;
+pub(crate) use comp::{comp_el_to_eln_rel_filename, native_elisp_load};
 mod composition;
 mod display;
 mod emacs_module;
@@ -30,8 +31,9 @@ pub(crate) use display::{
     window_hscroll_state, window_line_number_layout, window_render_layout,
 };
 pub(crate) use display::{
-    echo_area_message, echo_area_message_tick, echo_area_print, echo_display_message,
-    expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,
+    clear_message, echo_area_message, echo_area_message_tick, echo_area_print,
+    echo_display_message, expire_echo_area_message, set_echo_area_message,
+    set_echo_area_message_with_spans,
 };
 pub(crate) use lists::{
     prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,
@@ -227,10 +229,6 @@ pub(crate) fn name_facts(name: &str) -> NameFacts {
 
 pub fn is_builtin(name: &str) -> bool {
     name_facts(name).builtin
-}
-
-pub(crate) fn prefer_builtin_override(name: &str) -> bool {
-    name_facts(name).prefer_override
 }
 
 #[cfg(test)]

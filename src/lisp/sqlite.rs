@@ -468,7 +468,7 @@ fn bind_parameter(value: Value) -> Result<SqlValue, LispError> {
             .to_i64()
             .map(SqlValue::Integer)
             .ok_or_else(|| LispError::Signal("integer out of range".into())),
-        Value::Float(number) => Ok(SqlValue::Real(number)),
+        Value::Float(number) => Ok(SqlValue::Real(number.get())),
         Value::Nil => Ok(SqlValue::Null),
         Value::T => Ok(SqlValue::Integer(1)),
         Value::Symbol(symbol) if symbol == "false" => Ok(SqlValue::Integer(0)),
@@ -513,7 +513,7 @@ fn row_to_value(row: &rusqlite::Row<'_>, column_count: usize) -> Result<Value, L
         let value = match row.get_ref(index).map_err(sqlite_error)? {
             ValueRef::Null => Value::Nil,
             ValueRef::Integer(number) => Value::Integer(number),
-            ValueRef::Real(number) => Value::Float(number),
+            ValueRef::Real(number) => Value::float(number),
             ValueRef::Text(bytes) => {
                 let text = String::from_utf8_lossy(bytes).into_owned();
                 make_shared_string_value_with_multibyte(text, Vec::new(), true)

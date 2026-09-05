@@ -2310,6 +2310,112 @@ fn compile_elisp_regex_with_case_fold(
     Ok(compiled)
 }
 
+/// search.c:fast_c_string_match_internal, used by lread.c's bytecode header
+/// probe. Both pattern and input use the existing unibyte representation:
+/// ASCII scalars and byte8 markers, never Unicode Latin-1 characters. Only
+/// ASCII has case pairs in this domain, matching the initial
+/// Vascii_canon_table. The shared regexp engine still needs support for
+/// replacement canonical tables installed by set-standard-case-table.
+pub(super) fn fast_c_string_match_ignore_case(
+    interp: &mut Interpreter,
+    pattern: &Value,
+    bytes: &[u8],
+) -> Result<bool, LispError> {
+    let string =
+        string_like(pattern).ok_or_else(|| wrong_type_argument("stringp", pattern.clone()))?;
+    // GNU converts the regexp before compile_pattern, even when its low
+    // bytes change regexp syntax. Reuse the C-owned conversion primitive.
+    let pattern = if string.multibyte {
+        let unibyte = super::call(
+            interp,
+            "string-make-unibyte",
+            std::slice::from_ref(pattern),
+            &mut Env::new(),
+        )?;
+        string_like(&unibyte).expect("string-make-unibyte returns a string")
+    } else {
+        string
+    };
+    let regex = compile_elisp_regex_with_case_fold(
+        interp,
+        &pattern,
+        "",
+        true,
+        None,
+        RegexpCategoryScope::Standard,
+        true,
+    )?;
+    let text: String = bytes
+        .iter()
+        .map(|&byte| {
+            if byte.is_ascii() {
+                char::from(byte)
+            } else {
+                raw_byte_regex_char(byte)
+            }
+        })
+        .collect();
+    regex
+        .captures_from_pos(&text, 0)
+        .map(|captures| captures.is_some())
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+#[cfg(test)]
+mod c_string_match_tests {
+    use super::*;
+
+    #[test]
+    fn c_string_match_folds_only_ascii_and_preserves_match_data() {
+        let mut interp = Interpreter::new();
+        interp.set_variable("case-fold-search", Value::Nil, &mut Env::new());
+        let saved = Some(vec![Some((3, 7)), None]);
+        interp.last_match_data = saved.clone();
+        let saved_buffer = Some(interp.current_buffer_id());
+        interp.last_match_data_buffer_id = saved_buffer;
+        // casetab.c:init_casetab_once gives Vascii_canon_table mappings
+        // only for ASCII. Every other byte must remain distinct.
+        for pattern_byte in 0..=u8::MAX {
+            let literal = bytes_to_shared_unibyte_value(&[pattern_byte]);
+            let pattern =
+                super::super::call(&mut interp, "regexp-quote", &[literal], &mut Env::new())
+                    .expect("quote one byte through the ordinary C primitive");
+            for input_byte in 0..=u8::MAX {
+                assert_eq!(
+                    fast_c_string_match_ignore_case(&mut interp, &pattern, &[input_byte])
+                        .expect("search a quoted byte"),
+                    pattern_byte.eq_ignore_ascii_case(&input_byte),
+                    "pattern byte {pattern_byte:#x}, input byte {input_byte:#x}"
+                );
+            }
+        }
+        assert_eq!(interp.last_match_data, saved);
+        assert_eq!(interp.last_match_data_buffer_id, saved_buffer);
+    }
+
+    #[test]
+    fn c_string_match_converts_the_pattern_to_unibyte_before_compilation() {
+        let mut interp = Interpreter::new();
+        // fns.c:string_make_unibyte / copy_text retain the low byte of
+        // multibyte characters. 0x141 becomes ASCII A, not Unicode L.
+        for (pattern, input, expected) in [
+            ("\u{141}", b'a', true),
+            ("\u{141}", b'L', false),
+            ("\u{e9}", 0xe9, true),
+            ("\u{e9}", 0xc9, false),
+            ("[\u{141}-\u{143}]", b'b', true),
+            ("[\u{c0}-\u{df}]", 0xe9, false),
+        ] {
+            assert_eq!(
+                fast_c_string_match_ignore_case(&mut interp, &Value::string(pattern), &[input])
+                    .expect("compile the converted byte pattern"),
+                expected,
+                "pattern {pattern:?}, input byte {input:#x}"
+            );
+        }
+    }
+}
+
 /// search.c `fast_looking_at', reduced to the result the composition engine
 /// consumes: match PATTERN at the very start of HAYSTACK (the accessible
 /// text from the match position up to the composition search limit) and

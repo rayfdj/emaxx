@@ -1,16 +1,32 @@
 use super::*;
 
 impl Interpreter {
-    pub(super) fn parse_params(&self, spec: &Value) -> Result<Vec<String>, LispError> {
+    pub(super) fn parse_params(&self, spec: &Value) -> Result<Vec<SymbolName>, LispError> {
         match spec {
             Value::Nil => Ok(Vec::new()),
             Value::Cons(_) => {
                 let items = spec.to_vec()?;
-                validate_lambda_list(spec, &items)?;
-                items
+                // eval.c:Fmake_interpreted_closure stores ARGS verbatim and
+                // does not consult `symbols_with_pos_enabled`.  Normalize
+                // its typed symbol-with-position storage only for Emaxx's
+                // fast internal binding vector; the original Lisp list is
+                // retained on LambdaValue as the public closure slot.
+                let normalized = items
                     .into_iter()
-                    .map(|v| match v {
-                        Value::Symbol(s) => Ok(s.to_string()),
+                    .map(|item| match item {
+                        Value::Symbol(_) => Ok(item),
+                        _ => crate::lisp::primitives::symbol_with_pos_parts(self, &item)
+                            .map(|(symbol, _)| symbol)
+                            .ok_or_else(|| invalid_function(spec.clone())),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                validate_lambda_list(spec, &normalized)?;
+                normalized
+                    .into_iter()
+                    .map(|item| match item {
+                        Value::Symbol(name) => Ok(name),
+                        Value::Nil => Ok("nil".into()),
+                        Value::T => Ok("t".into()),
                         _ => Err(invalid_function(spec.clone())),
                     })
                     .collect()
@@ -23,7 +39,7 @@ impl Interpreter {
         &self,
         spec: &Value,
         env: &Env,
-    ) -> Result<Vec<String>, LispError> {
+    ) -> Result<Vec<SymbolName>, LispError> {
         let items = spec.to_vec()?;
         let positioned = crate::lisp::primitives::symbols_with_pos_enabled(self, env);
         let normalized = items
@@ -39,10 +55,11 @@ impl Interpreter {
         validate_lambda_list(spec, &normalized)?;
         normalized
             .into_iter()
-            .map(|item| {
-                item.as_symbol()
-                    .map(str::to_string)
-                    .map_err(|_| invalid_function(spec.clone()))
+            .map(|item| match item {
+                Value::Symbol(name) => Ok(name),
+                Value::Nil => Ok("nil".into()),
+                Value::T => Ok("t".into()),
+                _ => Err(invalid_function(spec.clone())),
             })
             .collect()
     }
@@ -86,7 +103,7 @@ impl Interpreter {
 
     /// Push FRAME onto ENV with a fresh typed identity, so closure alignment
     /// can tell it apart from other frames that happen to bind the same names.
-    pub(crate) fn push_marked_frame(env: &mut Env, frame: Vec<(String, Value)>) {
+    pub(crate) fn push_marked_frame(env: &mut Env, frame: Vec<(SymbolName, Value)>) {
         env.push(EnvFrame::with_identity(frame, Self::fresh_frame_identity()));
     }
 

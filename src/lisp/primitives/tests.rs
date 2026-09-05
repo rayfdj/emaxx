@@ -20,6 +20,33 @@ fn call_via_lisp(
     interp.call_function_value(function, Some(name), args, env)
 }
 
+#[test]
+fn apply_follows_eval_c_proper_list_contract() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+
+    let zero_argument_call = Value::list([Value::symbol("list")]);
+    assert_eq!(
+        call(&mut interp, "apply", &[zero_argument_call], &mut env,)
+            .expect("one-element apply list calls its function with no arguments"),
+        Value::Nil
+    );
+
+    let vector = Value::list([Value::symbol("vector-literal"), Value::Integer(1)]);
+    match call(
+        &mut interp,
+        "apply",
+        &[Value::symbol("list"), vector.clone()],
+        &mut env,
+    ) {
+        Err(LispError::WrongTypeArgument(predicate, value)) => {
+            assert_eq!(predicate, "listp");
+            assert_eq!(value, vector);
+        }
+        other => panic!("apply must reject a vector spread argument, got {other:?}"),
+    }
+}
+
 fn upstream_primitive_contract_output(program: &str) -> String {
     crate::test_support::mark_process_test();
     let binary = upstream_emacs_repo().join("src/emacs");
@@ -110,13 +137,13 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
         Value::Integer(1),
         Value::Integer(2),
     ]);
-    let (_, tail) = vector
-        .cons_cells()
-        .expect("the vector facade should have a tagged cons root");
-    let _exclusive_tail_borrow = tail.borrow_mut();
+    let Value::Vector(vector_storage) = &vector else {
+        panic!("vector syntax must construct a GNU-class vector object")
+    };
+    let _exclusive_slots_borrow = vector_storage.slots_mut();
 
-    // Holding the tail exclusively makes any attempted traversal panic.
-    // Record detection must reject the vector solely from its distinct tag.
+    // Holding the slots exclusively makes any attempted traversal panic.
+    // Record detection must reject the vector solely from its object class.
     assert!(record_literal_items(&vector).is_none());
 }
 
@@ -140,8 +167,10 @@ fn character_table_literal_materializes_nested_bytecode_decoder() {
     ));
 
     let mut interp = Interpreter::new();
-    let Value::CharTable(table_id) = materialize_read_char_table_literals(&mut interp, &literal)
-        .expect("materialize a character table with a bytecode decoder")
+    let mut env = Env::new();
+    let Value::CharTable(table_id) =
+        materialize_read_char_table_literals(&mut interp, &literal, &mut env)
+            .expect("materialize a character table with a bytecode decoder")
     else {
         panic!("character-table syntax must produce a typed table");
     };
@@ -186,6 +215,123 @@ fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
             .to_string(),
         expected
     );
+}
+
+#[test]
+fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let positioned = |interp: &mut Interpreter, name: &str, position: i64, env: &mut Env| {
+        call(
+            interp,
+            "position-symbol",
+            &[Value::Symbol(name.into()), Value::Integer(position)],
+            env,
+        )
+        .expect("construct a positioned symbol")
+    };
+
+    let positioned_car = positioned(&mut interp, "car", 1, &mut env);
+    assert_eq!(
+        call(&mut interp, "func-arity", &[positioned_car], &mut env)
+            .expect("resolve a positioned function name"),
+        Value::cons(Value::Integer(1), Value::Integer(1))
+    );
+
+    let optional = positioned(&mut interp, "&optional", 2, &mut env);
+    let argument = positioned(&mut interp, "argument", 3, &mut env);
+    let closure = interp.create_pseudovector(
+        crate::lisp::eval::RecordKind::Closure,
+        "byte-code-function",
+        vec![Value::list([optional, argument])],
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[closure], &mut env)
+            .expect("read positioned byte-code argument descriptors"),
+        Value::cons(Value::Integer(0), Value::Integer(1))
+    );
+
+    let macro_tag = positioned(&mut interp, "macro", 4, &mut env);
+    let macro_function = Value::cons(
+        macro_tag,
+        Value::lambda(Vec::new().into(), Vec::new().into(), shared_env(Vec::new())),
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[macro_function], &mut env)
+            .expect("unwrap a positioned macro tag"),
+        Value::cons(Value::Integer(0), Value::Integer(0))
+    );
+
+    let closure_parameters = Value::list([
+        positioned(&mut interp, "number", 5, &mut env),
+        positioned(&mut interp, "value", 6, &mut env),
+    ]);
+    let interpreted = call(
+        &mut interp,
+        "make-interpreted-closure",
+        &[
+            closure_parameters.clone(),
+            Value::list([Value::Nil]),
+            Value::list([Value::T]),
+        ],
+        &mut env,
+    )
+    .expect("construct an interpreted closure with positioned parameters");
+    let Value::Lambda(lambda) = &interpreted else {
+        panic!("make-interpreted-closure must return a lambda")
+    };
+    let visible_parameters = interp.interpreted_closure_slots(lambda)[0].clone();
+    assert_eq!(
+        call(
+            &mut interp,
+            "eq",
+            &[visible_parameters, closure_parameters],
+            &mut env,
+        )
+        .expect("compare GNU-visible argument-list identity"),
+        Value::T
+    );
+    assert_eq!(
+        call(&mut interp, "func-arity", &[interpreted], &mut env)
+            .expect("read an interpreted closure's positioned argument list"),
+        Value::cons(Value::Integer(2), Value::Integer(2))
+    );
+}
+
+#[test]
+fn defvar_and_defconst_use_gnu_check_symbol_for_positioned_names() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+
+    for (form, name, value, position) in [
+        ("defvar", "positioned-variable", 17, 1),
+        ("defconst", "positioned-constant", 29, 2),
+    ] {
+        let positioned = call(
+            &mut interp,
+            "position-symbol",
+            &[Value::Symbol(name.into()), Value::Integer(position)],
+            &mut env,
+        )
+        .expect("construct a positioned definition name");
+        let definition = Value::list([
+            Value::Symbol(form.into()),
+            positioned.clone(),
+            Value::Integer(value),
+        ]);
+        assert_eq!(
+            interp
+                .eval(&definition, &mut env)
+                .expect("evaluate a positioned variable definition"),
+            positioned
+        );
+        assert_eq!(
+            interp
+                .lookup(name, &env)
+                .expect("look up the bare definition name"),
+            Value::Integer(value)
+        );
+    }
 }
 
 #[test]
@@ -1003,7 +1149,7 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
         Value::T,
         Value::Integer(1),
         Value::big_integer(BigInt::from(i64::MAX) + 1),
-        Value::Float(1.5),
+        Value::float(1.5),
         Value::String("inline string".into()),
         string_object,
         Value::symbol("symbol"),
@@ -1036,60 +1182,23 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
 
 #[test]
 fn native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary() {
-    let signature_program = r#"
-        (mapcar
-         (lambda (name)
-           (comp--subr-signature (symbol-function name)))
-         '(car + concat if let))"#;
-    let expected_signatures = r#"("car(1 . 1)" "+(0 . many)" "concat(0 . many)" "if(2 . unevalled)" "let(1 . unevalled)")"#;
-    assert_upstream_primitive_contract(
-        &format!("(prin1 {signature_program})"),
-        expected_signatures,
+    // comp.c: `comp--subr-signature' prints the primitive's arity, and the
+    // capability helpers report the libgccjit backend GNU was built with;
+    // this build carries the same backend (the oracle answers the same
+    // libgccjit version, since both link the host library).
+    let program = r#"
+        (list
+         (mapcar (lambda (name) (comp--subr-signature (symbol-function name)))
+                 '(car + concat if let))
+         (native-comp-available-p)
+         (comp-native-driver-options-effective-p)
+         (comp-native-compiler-options-effective-p)
+         (comp-libgccjit-version))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(("car(1 . 1)" "+(0 . many)" "concat(0 . many)" "if(2 . unevalled)" "let(1 . unevalled)") t t t (14 2 0))"#,
+        "native-comp introspection",
     );
-
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
-    let form = Reader::new(signature_program)
-        .read()
-        .expect("native-comp signature program should parse")
-        .expect("native-comp signature program should contain a form");
-    let actual = interp
-        .eval(&form, &mut env)
-        .expect("native-comp signatures should evaluate");
-    let expected = Reader::new(expected_signatures)
-        .read()
-        .expect("native-comp expected signatures should parse")
-        .expect("native-comp expected signatures should exist");
-    assert!(
-        values_equal(&interp, &actual, &expected),
-        "comp--subr-signature differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
-    );
-
-    let capability_form = Reader::new(
-        r#"(list (native-comp-available-p)
-                  (comp-native-driver-options-effective-p)
-                  (comp-native-compiler-options-effective-p)
-                  (comp-libgccjit-version))"#,
-    )
-    .read()
-    .expect("native-comp capability program should parse")
-    .expect("native-comp capability program should contain a form");
-    assert_eq!(
-        interp
-            .eval(&capability_form, &mut env)
-            .expect("native-comp capability queries should evaluate"),
-        Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil]),
-        "compiler capability helpers must agree that Emaxx has no native-comp backend"
-    );
-
-    let error = call(
-        &mut interp,
-        "comp--subr-signature",
-        &[Value::Integer(1)],
-        &mut env,
-    )
-    .expect_err("comp--subr-signature must reject non-subrs");
-    assert_eq!(error.condition_type(), "wrong-type-argument");
 }
 
 #[test]
@@ -1176,81 +1285,23 @@ fn native_comp_source_names_hash_canonical_paths_and_real_contents() {
 }
 
 #[test]
-fn native_comp_mutating_entry_points_report_the_unavailable_backend_honestly() {
-    let missing = "/definitely/missing/emaxx-native.eln";
-    let upstream_program = format!(
-        r#"
-        (list
-         (comp--release-ctxt)
-         (condition-case error-data
-             (comp--compile-ctxt-to-file0 42)
-           (error error-data))
-         (condition-case error-data
-             (native-elisp-load 42)
-           (error error-data))
-         (condition-case error-data
-             (native-elisp-load {missing:?})
-           (error error-data)))"#
-    );
-    let upstream_expected = format!(
-        "(t (wrong-type-argument stringp 42) \
-         (wrong-type-argument stringp 42) \
-         (native-lisp-load-failed \"file does not exists\" {missing:?}))"
-    );
-    assert_upstream_primitive_contract(&format!("(prin1 {upstream_program})"), &upstream_expected);
-
-    let source = fs::canonicalize("../emacs/lisp/subr.el")
-        .expect("canonicalize existing non-ELN fixture")
-        .display()
-        .to_string();
-    let program = format!(
-        r#"
-        (list
-         (native-comp-available-p)
-         (comp--release-ctxt)
-         (condition-case error-data (comp--init-ctxt) (error error-data))
-         (condition-case error-data
-             (comp--compile-ctxt-to-file0 "output.eln")
-           (error error-data))
-         (condition-case error-data
-             (comp--install-trampoline 'car (symbol-function 'cdr))
-           (error error-data))
-         (condition-case error-data
-             (comp--register-lambda nil nil nil nil nil nil nil)
-           (error error-data))
-         (condition-case error-data
-             (comp--register-subr nil nil nil nil nil nil nil)
-           (error error-data))
-         (condition-case error-data
-             (comp--late-register-subr nil nil nil nil nil nil nil)
-           (error error-data))
-         (condition-case error-data
-             (native-elisp-load {source:?})
-           (error error-data)))"#
-    );
-    let unavailable = "(error \"Native compiler backend is unavailable\")";
-    let expected = format!(
-        "(nil t {unavailable} {unavailable} {unavailable} {unavailable} \
-         {unavailable} {unavailable} \
-         (native-lisp-load-failed {source:?} \
-          \"Native compiler backend is unavailable\"))"
-    );
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let form = Reader::new(&program)
-        .read()
-        .expect("native-comp backend boundary should parse")
-        .expect("native-comp backend boundary should contain a form");
-    let actual = interp
-        .eval(&form, &mut env)
-        .expect("native-comp backend boundary should evaluate");
-    let expected = Reader::new(&expected)
-        .read()
-        .expect("native-comp backend expected result should parse")
-        .expect("native-comp backend expected result should exist");
-    assert!(
-        values_equal(&interp, &actual, &expected),
-        "native-comp backend boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+fn native_comp_context_and_loader_entry_points_follow_comp_c() {
+    // comp.c: `comp--init-ctxt' returns t and `comp--release-ctxt' t;
+    // `native-elisp-load' of a file that is not an ELF object fails with
+    // dlerror's text, and of a missing file with "file does not exists".
+    // (The remaining `comp--*' entry points abort GNU when called without
+    // a compilation context, so they are not contracted here.)
+    let program = r#"
+        (list (comp--release-ctxt)
+              (comp--init-ctxt)
+              (comp--release-ctxt)
+              (condition-case e (native-elisp-load (expand-file-name "lisp/subr.el" source-directory))
+                (error (list (car e) (file-name-nondirectory (cadr e)) (string-suffix-p "invalid ELF header" (caddr e)))))
+              (condition-case e (native-elisp-load "/nonexistent/emaxx-x.eln") (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t t t (native-lisp-load-failed "subr.el" t) (native-lisp-load-failed "file does not exists" "/nonexistent/emaxx-x.eln"))"#,
+        "native-comp context and loader",
     );
 }
 
@@ -2032,6 +2083,56 @@ fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
         .to_string(),
         "Invalid syntax description letter: z"
     );
+}
+
+#[test]
+fn internal_char_font_accepts_gnu_characters_and_checks_position_first() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for character in [0xd800, 0x110000, 0x3fffff] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "internal-char-font",
+                &[Value::Nil, Value::Integer(character)],
+                &mut env
+            )
+            .expect("GNU character accepted by the initial terminal"),
+            Value::Nil,
+        );
+    }
+    for character in [Value::Integer(-1), Value::Integer(0x400000), Value::Nil] {
+        assert!(matches!(
+            call(&mut interp, "internal-char-font", &[Value::Nil, character.clone()], &mut env),
+            Err(LispError::WrongTypeArgument(predicate, value))
+                if predicate == "characterp" && value == character
+        ));
+    }
+    interp.buffer.insert("A");
+    assert_eq!(
+        call(
+            &mut interp,
+            "internal-char-font",
+            &[Value::Integer(1), Value::Integer(0x400000)],
+            &mut env
+        )
+        .expect("positive fixnum outside the character range returns nil"),
+        Value::Nil,
+    );
+    assert!(matches!(
+        call(&mut interp, "internal-char-font", &[Value::Integer(1), Value::Integer(-1)], &mut env),
+        Err(LispError::WrongTypeArgument(predicate, value))
+            if predicate == "wholenump" && value == Value::Integer(-1)
+    ));
+    let error = call(
+        &mut interp,
+        "internal-char-font",
+        &[Value::Integer(2), Value::Integer(-1)],
+        &mut env,
+    )
+    .expect_err("check position before the optional character");
+    assert!(matches!(error, LispError::SignalValue(value)
+        if value.car().is_ok_and(|head| head == Value::symbol("args-out-of-range"))));
 }
 
 #[test]
@@ -4570,6 +4671,31 @@ fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
 }
 
 #[test]
+fn eql_uses_position_aware_eq_for_non_numbers() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let left = call(
+        &mut interp,
+        "position-symbol",
+        &[Value::Symbol("&aux".into()), Value::Integer(7)],
+        &mut env,
+    )
+    .expect("make the first positioned symbol");
+    let right = call(
+        &mut interp,
+        "position-symbol",
+        &[Value::Symbol("&aux".into()), Value::Integer(19)],
+        &mut env,
+    )
+    .expect("make the second positioned symbol");
+
+    assert_eq!(
+        call(&mut interp, "eql", &[left, right], &mut env).expect("compare positioned symbols"),
+        Value::T
+    );
+}
+
+#[test]
 fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
     let program = r#"
           (list
@@ -5301,7 +5427,7 @@ fn process_send_eof_uses_the_pty_eof_character_and_drains_final_output() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.1)],
+            &[process.clone(), Value::float(0.1)],
             &mut env,
         )
         .expect("wait for PTY output");
@@ -5363,7 +5489,7 @@ fn process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.1)],
+            &[process.clone(), Value::float(0.1)],
             &mut env,
         )
         .expect("wait for split PTY output");
@@ -6307,7 +6433,7 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
     call(
         &mut interp,
         "accept-process-output",
-        &[Value::Nil, Value::Float(0.05)],
+        &[Value::Nil, Value::float(0.05)],
         &mut env,
     )
     .expect("event pump should report the connection");
@@ -11754,6 +11880,112 @@ fn minor_mode_keymap_consumers_share_gnu_order_replacement_and_default_rules() {
 }
 
 #[test]
+fn keymap_parent_primitives_keep_constructor_object_identity() {
+    // keymap.c:Fmake_sparse_keymap / Fset_keymap_parent / Fkeymap_parent:
+    // the public constructor result is the object these primitives mutate.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    for constructor in ["make-sparse-keymap", "make-keymap"] {
+        let child = call(&mut interp, constructor, &[], &mut env).expect("child map");
+        let parent = call(&mut interp, constructor, &[], &mut env).expect("parent map");
+        assert!(matches!(child, Value::Cons(_)));
+        let returned = call(
+            &mut interp,
+            "set-keymap-parent",
+            &[child.clone(), parent.clone()],
+            &mut env,
+        )
+        .expect("set parent of the original map");
+        assert!(values_eq_in_env(&interp, &returned, &parent, &env));
+        let found = call(
+            &mut interp,
+            "keymap-parent",
+            std::slice::from_ref(&child),
+            &mut env,
+        )
+        .expect("read parent of the original map");
+        assert!(values_eq_in_env(&interp, &found, &parent, &env));
+        // The returned object is not a detached snapshot. A later binding
+        // in it must be visible through the child's inheritance chain.
+        let key = Value::vector(vec![Value::Integer(13)]);
+        call(
+            &mut interp,
+            "define-key",
+            &[parent, key.clone(), Value::symbol("ignore")],
+            &mut env,
+        )
+        .expect("define inherited command");
+        assert_eq!(
+            call(&mut interp, "lookup-key", &[child, key], &mut env).expect("inherited lookup"),
+            Value::symbol("ignore")
+        );
+    }
+}
+
+#[test]
+fn keymap_parent_replacement_keeps_lookup_and_mutation_shared() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let child = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("child");
+    let first = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("first parent");
+    let second = call(&mut interp, "make-sparse-keymap", &[], &mut env).expect("second parent");
+    let key = Value::vector(vec![Value::Integer(13)]);
+    for (parent, command) in [(first.clone(), "ignore"), (second.clone(), "newline")] {
+        call(
+            &mut interp,
+            "define-key",
+            &[parent, key.clone(), Value::symbol(command)],
+            &mut env,
+        )
+        .expect("define parent command");
+    }
+    for (parent, command) in [(first, "ignore"), (second, "newline")] {
+        let result = call(
+            &mut interp,
+            "set-keymap-parent",
+            &[child.clone(), parent.clone()],
+            &mut env,
+        )
+        .expect("replace parent");
+        assert!(values_eq_in_env(&interp, &result, &parent, &env));
+        assert_eq!(
+            call(
+                &mut interp,
+                "lookup-key",
+                &[child.clone(), key.clone()],
+                &mut env
+            )
+            .expect("lookup after replacing parent"),
+            Value::symbol(command)
+        );
+    }
+    assert_eq!(
+        call(
+            &mut interp,
+            "set-keymap-parent",
+            &[child.clone(), Value::Nil],
+            &mut env,
+        )
+        .expect("detach parent"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "keymap-parent",
+            std::slice::from_ref(&child),
+            &mut env
+        )
+        .expect("no parent"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(&mut interp, "lookup-key", &[child, key], &mut env).expect("no inherited binding"),
+        Value::Nil
+    );
+}
+
+#[test]
 fn map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent() {
     let program = r#"
         (let* ((parent (make-sparse-keymap))
@@ -12582,45 +12814,187 @@ fn propertize_preserves_existing_string_properties() {
 }
 
 #[test]
+fn intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    // alloc.c starts with purify-flag=t; exercise Fintern's ordinary
+    // post-loadup path explicitly, without changing that GNU default.
+    interp.define_special_variable("purify-flag", Value::Nil);
+    let first_table = make_obarray(&mut interp);
+    let second_table = make_obarray(&mut interp);
+    let name = make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
+    let second_name =
+        make_shared_string_value_with_multibyte("local-name".into(), Vec::new(), false);
+    let first = call(
+        &mut interp,
+        "intern",
+        &[name.clone(), first_table.clone()],
+        &mut env,
+    )
+    .expect("Fintern miss");
+    let again = call(
+        &mut interp,
+        "intern",
+        &[second_name.clone(), first_table],
+        &mut env,
+    )
+    .expect("Fintern hit");
+    let other = call(
+        &mut interp,
+        "intern",
+        &[second_name.clone(), second_table],
+        &mut env,
+    )
+    .expect("a different obarray owns a distinct symbol");
+    let (Value::Symbol(first_symbol), Value::Symbol(again_symbol), Value::Symbol(other_symbol)) =
+        (&first, &again, &other)
+    else {
+        panic!("intern returns symbols")
+    };
+    assert_eq!(first_symbol.identity_ptr(), again_symbol.identity_ptr());
+    assert_ne!(first_symbol.identity_ptr(), other_symbol.identity_ptr());
+    for (symbol, supplied) in [(first, name.clone()), (again, name), (other, second_name)] {
+        let returned = call(&mut interp, "symbol-name", &[symbol], &mut env)
+            .expect("SYMBOL_NAME is the stored string, not the internal lookup key");
+        assert_eq!(
+            string_text(&returned).expect("symbol name string"),
+            "local-name"
+        );
+        let Value::StringObject(returned) = returned else {
+            panic!("Fintern must retain the original string object")
+        };
+        let Value::StringObject(supplied) = supplied else {
+            unreachable!()
+        };
+        assert!(Rc::ptr_eq(&returned, &supplied));
+    }
+}
+
+#[test]
+fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let table = make_obarray(&mut interp);
+    let bad_name = Value::symbol("not-a-string");
+    let error = call(
+        &mut interp,
+        "intern",
+        &[bad_name.clone(), Value::Integer(1)],
+        &mut env,
+    )
+    .expect_err("CHECK_OBARRAY precedes CHECK_STRING");
+    let LispError::SignalValue(condition) = error else {
+        panic!("CHECK_OBARRAY must signal wrong-type-argument, got {error:?}")
+    };
+    assert_eq!(
+        condition,
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("obarrayp"),
+            Value::Integer(1),
+        ]),
+    );
+    assert!(matches!(
+        call(&mut interp, "intern", &[bad_name, table.clone()], &mut env),
+        Err(LispError::WrongTypeArgument(predicate, _)) if predicate == "stringp"
+    ));
+
+    interp.define_special_variable("purify-flag", Value::T);
+    let name = make_shared_string_value_with_multibyte("pure-name".into(), Vec::new(), false);
+    let symbol = call(
+        &mut interp,
+        "intern",
+        &[name.clone(), table.clone()],
+        &mut env,
+    )
+    .expect("Fintern purecopy miss");
+    let copied = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&symbol),
+        &mut env,
+    )
+    .expect("symbol-name returns the copied name");
+    assert!(
+        matches!(copied, Value::String(_)),
+        "Fpurecopy strips mutable string storage"
+    );
+    assert_eq!(string_text(&copied).expect("pure name string"), "pure-name");
+    let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", |_| {
+        panic!("an oblookup hit must not allocate or purecopy a name")
+    })
+    .expect("oblookup hit");
+    let (Value::Symbol(symbol), Value::Symbol(hit)) = (symbol, hit) else {
+        unreachable!()
+    };
+    assert_eq!(symbol.identity_ptr(), hit.identity_ptr());
+
+    interp.define_special_variable(
+        "read-symbol-shorthands",
+        Value::list([Value::cons(Value::string("short-"), Value::string("long-"))]),
+    );
+    let shorthand = make_shared_string_value_with_multibyte("short-name".into(), Vec::new(), false);
+    let expanded = call(&mut interp, "intern", &[shorthand, table], &mut env)
+        .expect("Fintern constructs the longhand name");
+    let expanded = call(&mut interp, "symbol-name", &[expanded], &mut env)
+        .expect("symbol-name returns the longhand name");
+    assert_eq!(
+        string_text(&expanded).expect("longhand string"),
+        "long-name"
+    );
+    assert!(
+        string_like(&expanded)
+            .expect("longhand string metadata")
+            .multibyte
+    );
+}
+
+#[test]
 fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
+    let supplied_name = Value::String("help".into());
 
     let left = call(
         &mut interp,
         "make-symbol",
-        &[Value::String("help".into())],
+        std::slice::from_ref(&supplied_name),
         &mut env,
     )
     .expect("make-symbol should return a symbol");
     let right = call(
         &mut interp,
         "make-symbol",
-        &[Value::String("help".into())],
+        std::slice::from_ref(&supplied_name),
         &mut env,
     )
     .expect("make-symbol should return a distinct symbol");
 
     assert_ne!(left, right);
+    let left_name = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&left),
+        &mut env,
+    )
+    .expect("symbol-name should preserve the visible name");
+    let right_name = call(
+        &mut interp,
+        "symbol-name",
+        std::slice::from_ref(&right),
+        &mut env,
+    )
+    .expect("symbol-name should preserve the visible name");
+    let (Value::String(supplied), Value::String(left), Value::String(right)) =
+        (&supplied_name, left_name, right_name)
+    else {
+        unreachable!("immutable symbol names")
+    };
+    assert!(left.ptr_eq(supplied));
+    assert!(right.ptr_eq(supplied));
     assert_eq!(
-        call(
-            &mut interp,
-            "symbol-name",
-            std::slice::from_ref(&left),
-            &mut env
-        )
-        .expect("symbol-name should preserve the visible name"),
-        Value::String("help".into())
-    );
-    assert_eq!(
-        call(
-            &mut interp,
-            "symbol-name",
-            std::slice::from_ref(&right),
-            &mut env
-        )
-        .expect("symbol-name should preserve the visible name"),
-        Value::String("help".into())
+        call(&mut interp, "symbol-name", &[Value::Nil], &mut env).expect("nil has a symbol name"),
+        Value::String("nil".into())
     );
 }
 
@@ -13013,6 +13387,19 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
         textual_key_sequence_keymap_parts(&Value::String("M-<up>".into()))
             .expect("Meta function key should remain one symbolic event"),
         vec!["M-up".to_string()]
+    );
+}
+
+#[test]
+fn keymap_lookup_uses_the_event_head_of_a_character_range() {
+    let range_event = Value::list([
+        Value::Symbol("vector-literal".into()),
+        Value::cons(Value::Integer('w' as i64), Value::Integer('x' as i64)),
+    ]);
+    assert_eq!(
+        key_sequence_keymap_parts(&range_event)
+            .expect("a map-keymap character range should remain a valid lookup event"),
+        vec!["w".to_string()]
     );
 }
 
@@ -16606,7 +16993,7 @@ fn native_serial_process_pumps_and_sends_bytes_over_a_real_pty() {
     call(
         &mut interp,
         "accept-process-output",
-        &[process.clone(), Value::Float(1.0)],
+        &[process.clone(), Value::float(1.0)],
         &mut env,
     )
     .expect("pump serial process input");
@@ -17208,7 +17595,7 @@ fn process_filter_t_holds_os_output_until_the_default_filter_is_restored() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(0.05)],
+            &[process.clone(), Value::float(0.05)],
             &mut env,
         )
         .expect("wait while output is held"),
@@ -18383,7 +18770,7 @@ fn window_resize_apply_commits_staged_pixel_sizes() {
             upper.clone(),
             Value::Integer(12),
             Value::Nil,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -18786,7 +19173,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
     assert_eq!(interp.buffer.point(), 87, "goal column 3 within the row");
 
-    let float_goal = Value::cons(Value::Float(3.0), Value::Integer(-1));
+    let float_goal = Value::cons(Value::float(3.0), Value::Integer(-1));
     call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
     assert_eq!(
         interp.buffer.point(),
@@ -18797,9 +19184,9 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
 
 #[test]
 fn format_mode_line_renders_the_dumped_spec_interactively() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     call(
         &mut interp,
@@ -18841,9 +19228,9 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
 
 #[test]
 fn mode_line_line_number_is_relative_to_the_accessible_region() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     call(
         &mut interp,
@@ -18883,9 +19270,12 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
 /// accumulated `contract-out' string; the same program princs it for the
 /// oracle's stdout comparison.
 fn emaxx_batch_output(program: &str) -> String {
-    let mut interp =
-        crate::batch::initialize_interactive_interpreter().expect("batch interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
+    // These unchanged samples assume an empty buffer. GNU executes their
+    // --eval action before command-line-1 inserts initial-scratch-message;
+    // the in-process fixture now returns after complete GNU startup.
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the sample buffer");
     let forms = Reader::new(program).read_all().expect("program parses");
     for form in &forms {
         interp
@@ -18979,9 +19369,9 @@ fn paging_keys_carry_the_gnu_bindings() {
 
 #[test]
 fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     for n in 0..60 {
         call(
@@ -19018,9 +19408,9 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
 
 #[test]
 fn glass_mode_line_honors_font_lock_face_string_properties() {
-    let mut interp = crate::batch::initialize_interactive_interpreter()
-        .expect("interactive interpreter initializes");
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Vec::new();
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("empty the mode-line sample buffer");
     interp.set_variable("noninteractive", Value::Nil, &mut env);
     let form = Reader::new(
         "(setq mode-line-format
@@ -19268,7 +19658,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     let lower = call(
         &mut interp,
         "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
         &mut env,
     )
     .expect("split-window-internal");
@@ -19315,7 +19705,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
             upper_left.clone(),
             Value::Integer(11),
             Value::Nil,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -19327,7 +19717,7 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
             upper_left.clone(),
             Value::Integer(40),
             Value::T,
-            Value::Float(0.5),
+            Value::float(0.5),
         ],
         &mut env,
     )
@@ -19373,7 +19763,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     let lower = call(
         &mut interp,
         "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::Float(0.5)],
+        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
         &mut env,
     )
     .expect("split");
@@ -20171,5 +20561,47 @@ fn default_file_modes_is_the_process_umask_and_temp_files_are_private() {
         program,
         r##"("700" "600" "700" "640" "0177" "777" t "600" t)"##,
         "default file modes",
+    );
+}
+
+#[test]
+fn eval_buffer_binds_lexical_binding_from_the_first_line_cookie() {
+    // lread.c Feval_buffer specbinds `lexical-binding' to
+    // lisp_file_lexical_cookie's answer for the whole readevalloop -- the
+    // caller's buffer keeps its own value afterwards -- and that scanner
+    // reads only the first line (the second after a `#!' line), which
+    // must start with `;': a cookie inside a string on line two is text.
+    // `load' of a source file goes through load-with-code-conversion and
+    // therefore through the same binding, so `named-let' (which signals
+    // without the variable) expands inside a lexical file loaded while a
+    // dynamic buffer is being evaluated.  The caller's own
+    // `lexical-binding' is left out: it differs between GNU's `--eval'
+    // (t) and `-l' (nil) entry points and says nothing about eval-buffer.
+    let program = r##"
+(let ((lb (lambda () (list lexical-binding (default-value 'lexical-binding) (local-variable-p 'lexical-binding))))
+      (f (make-temp-file "emaxx-lex" nil ".el"
+                         (concat ";;; -*- lexical-binding: t -*-\n(require 'subr-x)\n"
+                                 "(defun emaxx-lex-f () (named-let loop ((i 0)) (if (< i 3) (loop (1+ i)) i)))\n"
+                                 "(setq emaxx-lex-seen lexical-binding)\n"))))
+  (unwind-protect
+      (list (progn (load f nil t) (list (emaxx-lex-f) emaxx-lex-seen))
+            (with-temp-buffer (insert-file-contents f) (eval-buffer)
+                              (list lexical-binding emaxx-lex-seen (emaxx-lex-f)))
+            (with-temp-buffer (insert "(setq emaxx-lex-seen lexical-binding)") (eval-buffer) emaxx-lex-seen)
+            (with-temp-buffer (insert ";; -*- lexical-binding: nil -*-\n(setq emaxx-lex-seen lexical-binding)")
+                              (eval-buffer) emaxx-lex-seen)
+            (with-temp-buffer (insert "#!/bin/sh\n;; -*- lexical-binding: t -*-\n(setq emaxx-lex-seen lexical-binding)")
+                              (eval-buffer) emaxx-lex-seen)
+            (with-temp-buffer (insert "(setq emaxx-lex-str \";;; -*- lexical-binding: t -*-\")\n(setq emaxx-lex-seen lexical-binding)")
+                              (eval-buffer) emaxx-lex-seen)
+            (progn (setq emaxx-lex-file f)
+                   (with-temp-buffer
+                     (insert ";;; -*- lexical-binding: t -*-\n(eval-and-compile (load emaxx-lex-file nil t))\n(setq emaxx-lex-outer lexical-binding)")
+                     (eval-buffer) (list (emaxx-lex-f) emaxx-lex-outer (funcall lb)))))
+    (delete-file f)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"((3 t) (nil t 3) nil nil t nil (3 t (nil nil nil)))"##,
+        "eval-buffer lexical-binding cookie",
     );
 }

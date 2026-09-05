@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::SymbolName;
 
 impl BacktraceFrame {
     fn function_snapshot(&self) -> Value {
@@ -9,6 +10,11 @@ impl BacktraceFrame {
     }
 
     fn args_snapshot(&self) -> Vec<Value> {
+        if let Some(words) = &self.native_args {
+            return crate::lisp::native_comp::decode_active_backtrace_arguments(words)
+                .expect("a native backtrace frame is inspected only during its activation")
+                .expect("a native backtrace frame contains valid Lisp words");
+        }
         let Some(form) = &self.source_form else {
             return self.args.clone();
         };
@@ -120,7 +126,13 @@ impl Interpreter {
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
-        let value = Self::stored_value(value);
+        if self.buffer_local_capable_variables.insert(name.to_string()) {
+            self.bump_symbol_value_cell_epoch();
+        }
+        let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
+        if buffer_id == self.current_buffer_id() {
+            self.update_forwarded_eval_cell(name, &value);
+        }
         let locals = self
             .buffer_locals
             .entry(buffer_id)
@@ -142,6 +154,11 @@ impl Interpreter {
             });
         if remove_buffer {
             self.buffer_locals.remove(&buffer_id);
+        }
+        if buffer_id == self.current_buffer_id()
+            && let Some(value) = self.global_binding_value(name)
+        {
+            self.update_forwarded_eval_cell(name, &value);
         }
         // Buffer-local hooks are part of the local binding: killing the
         // local variable discards them, as in GNU Emacs.
@@ -249,6 +266,9 @@ impl Interpreter {
 
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
         self.auto_buffer_locals.insert(name.to_string());
+        if self.buffer_local_capable_variables.insert(name.to_string()) {
+            self.bump_symbol_value_cell_epoch();
+        }
     }
 
     pub fn is_auto_buffer_local(&self, name: &str) -> bool {
@@ -892,6 +912,7 @@ impl Interpreter {
         } else {
             self.variable_aliases.push((alias.to_string(), target));
         }
+        self.bump_symbol_value_cell_epoch();
         Ok(())
     }
 
@@ -903,6 +924,7 @@ impl Interpreter {
         {
             self.variable_aliases.remove(index);
             self.variable_aliases_index.remove(name);
+            self.bump_symbol_value_cell_epoch();
             true
         } else {
             false
@@ -933,18 +955,144 @@ impl Interpreter {
     }
 
     pub fn remove_global_binding(&mut self, name: &str) {
-        self.globals.remove(name);
+        if self.globals.remove(name).is_some() {
+            self.bump_symbol_value_cell_epoch();
+        }
+    }
+
+    pub(crate) fn symbol_value_cell_epoch(&self) -> u64 {
+        self.symbol_value_cell_epoch
+    }
+
+    fn bump_symbol_value_cell_epoch(&mut self) {
+        self.symbol_value_cell_epoch = self.symbol_value_cell_epoch.wrapping_add(1);
+    }
+
+    fn normalize_forwarded_eval_cell(&self, name: &str, value: Value) -> Value {
+        match name {
+            // lread.c:defvar_bool exposes only t or nil from the forwarded
+            // C bool even when Lisp stores an arbitrary non-nil object.
+            "debug-on-next-call" if !self.detached_forwarded_variables.contains_key(name) => {
+                if value.is_nil() {
+                    Value::Nil
+                } else {
+                    Value::T
+                }
+            }
+            // data.c:store_symval_forwarding stores an intmax_t and
+            // do_symval_forwarding recreates the corresponding Lisp integer.
+            "max-lisp-eval-depth" if !self.detached_forwarded_variables.contains_key(name) => value
+                .as_integer()
+                .map(crate::lisp::primitives::normalize_integer_value)
+                .unwrap_or(value),
+            _ => value,
+        }
+    }
+
+    fn update_forwarded_eval_cell(&mut self, name: &str, value: &Value) {
+        // data.c:set_internal turns a voided forwarded symbol into a plain
+        // symbol. Later stores cannot reconnect it to the C variable.
+        if self.detached_forwarded_variables.contains_key(name) {
+            return;
+        }
+        match name {
+            "quit-flag" => self.quit_flag = value.clone(),
+            "inhibit-quit" => self.inhibit_quit = value.clone(),
+            "throw-on-input" => self.throw_on_input = value.clone(),
+            "overriding-plist-environment" => self.overriding_plist_environment = value.clone(),
+            "load-path" => self.load_path = value.clone(),
+            "max-lisp-eval-depth" => {
+                if let Ok(depth) = value.as_integer() {
+                    self.max_lisp_eval_depth = depth;
+                }
+            }
+            "debug-on-next-call" => self.debug_on_next_call = value.is_truthy(),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn forwarded_eval_cell_value(&self, name: &str) -> Option<Value> {
+        match name {
+            "quit-flag" => Some(self.quit_flag.clone()),
+            "inhibit-quit" => Some(self.inhibit_quit.clone()),
+            "throw-on-input" => Some(self.throw_on_input.clone()),
+            "overriding-plist-environment" => Some(self.overriding_plist_environment.clone()),
+            "load-path" => Some(self.load_path.clone()),
+            "max-lisp-eval-depth" => Some(crate::lisp::primitives::normalize_integer_value(
+                self.max_lisp_eval_depth,
+            )),
+            "debug-on-next-call" => Some(if self.debug_on_next_call {
+                Value::T
+            } else {
+                Value::Nil
+            }),
+            _ => None,
+        }
+    }
+
+    pub(super) fn refresh_forwarded_eval_cells(&mut self) {
+        for name in [
+            "quit-flag",
+            "inhibit-quit",
+            "throw-on-input",
+            "overriding-plist-environment",
+            "load-path",
+            "max-lisp-eval-depth",
+            "debug-on-next-call",
+        ] {
+            if let Some(value) = self
+                .buffer_local_value(self.current_buffer_id(), name)
+                .or_else(|| self.global_binding_value(name))
+            {
+                self.update_forwarded_eval_cell(name, &value);
+            }
+        }
+    }
+
+    pub(crate) fn quit_flag_is_nil(&self) -> bool {
+        self.quit_flag.is_nil()
+    }
+
+    pub(crate) fn quit_flag_value(&self) -> Value {
+        self.quit_flag.clone()
+    }
+
+    pub(crate) fn inhibit_quit_is_truthy(&self) -> bool {
+        self.inhibit_quit.is_truthy()
+    }
+
+    pub(crate) fn throw_on_input_value(&self) -> Value {
+        self.throw_on_input.clone()
+    }
+
+    pub(crate) fn overriding_plist_environment_value(&self) -> Value {
+        self.overriding_plist_environment.clone()
+    }
+
+    pub(crate) fn max_lisp_eval_depth_value(&self) -> i64 {
+        self.max_lisp_eval_depth
+    }
+
+    pub(crate) fn debug_on_next_call(&self) -> bool {
+        self.debug_on_next_call
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
         self.globals.get(name).cloned()
     }
 
+    pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
+        self.globals
+            .raw_entry()
+            .from_key_hashed_nocheck(name.ordered_binding_hash(), name.as_str())
+            .map(|(_, value)| value.clone())
+    }
+
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
         let name = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        let value = Self::stored_value(value);
+        let value = Self::stored_value(self.normalize_forwarded_eval_cell(&name, value));
         if name == "features" {
             self.provided_features = value
                 .to_vec()
@@ -958,6 +1106,13 @@ impl Interpreter {
         {
             self.mark_ascii_case_table(*id);
         }
+        if self
+            .buffer_local_value(self.current_buffer_id(), &name)
+            .is_none()
+        {
+            self.update_forwarded_eval_cell(&name, &value);
+        }
+        self.bump_symbol_value_cell_epoch();
         if let Some(existing) = self.globals.get_mut(&name) {
             *existing = value;
         } else {
@@ -1001,10 +1156,15 @@ impl Interpreter {
     }
 
     /// Return the active global special binding as seen from the current
-    /// buffer.  Automatically buffer-local variables can have nested global
-    /// specbind layers belonging to other buffers; peel those layers until
-    /// this buffer's binding or the top-level value is reached.
+    /// buffer.  GNU's ordinary SPECPDL_LET already lives in the symbol's
+    /// current value cell, so looking through the restore stack would only
+    /// rediscover `global_value'.  The bridge-specific scan is needed solely
+    /// for always-buffer-local slots when the current buffer differs from the
+    /// buffer that established a global restore record.
     pub(super) fn active_global_special_value(&self, name: &str) -> Option<Option<Value>> {
+        if !self.is_always_buffer_local_special(name) {
+            return None;
+        }
         let mut value = self.global_value(name);
         let current_buffer_id = self.current_buffer_id();
         let mut found = false;
@@ -1014,10 +1174,9 @@ impl Interpreter {
                 && matches!(restore.scope, SpecialBindingScope::Global)
         }) {
             found = true;
-            if self.is_always_buffer_local_special(name)
-                && restore
-                    .binding_buffer_id
-                    .is_some_and(|buffer_id| buffer_id != current_buffer_id)
+            if restore
+                .binding_buffer_id
+                .is_some_and(|buffer_id| buffer_id != current_buffer_id)
             {
                 value = restore.previous.clone();
             } else {
@@ -1189,7 +1348,20 @@ impl Interpreter {
                 ])))
             };
         }
+        // CHECK_SYMBOL/constant checks still apply, but the symbol no longer
+        // forwards through a typed C slot after data.c:set_internal voids it.
+        if self.detached_forwarded_variables.contains_key(name) {
+            return Ok(value);
+        }
         match name {
+            "max-lisp-eval-depth" => match value.as_integer() {
+                Ok(_) => Ok(value),
+                Err(_) if value.is_integer() => Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("overflow-error".into()),
+                    value,
+                ]))),
+                Err(error) => Err(error),
+            },
             "display-hourglass" => Ok(if value.is_nil() { Value::Nil } else { Value::T }),
             "gc-cons-threshold" => match value {
                 Value::Integer(_) | Value::BigInteger(_) => Ok(value),
@@ -1198,7 +1370,9 @@ impl Interpreter {
             "scroll-up-aggressively" => match value {
                 Value::Nil => Ok(Value::Nil),
                 Value::Integer(number) if (0..=1).contains(&number) => Ok(Value::Integer(number)),
-                Value::Float(number) if (0.0..=1.0).contains(&number) => Ok(Value::Float(number)),
+                Value::Float(number) if (0.0..=1.0).contains(&number.get()) => {
+                    Ok(Value::Float(number))
+                }
                 other => Err(wrong_type_argument("numberp", other)),
             },
             "vertical-scroll-bar" => match value {
@@ -1216,8 +1390,7 @@ impl Interpreter {
                 // `makunbound' has detached the symbol from its slot.
                 if crate::lisp::primitives::generated_gnu_c_bool_variables::is_gnu_c_bool_variable(
                     name,
-                ) && !self.detached_forwarded_variables.contains_key(name)
-                {
+                ) {
                     return Ok(if value.is_nil() { Value::Nil } else { Value::T });
                 }
                 Ok(value)
@@ -1374,7 +1547,7 @@ impl Interpreter {
                     match record.previous.take() {
                         Some(value) => self.set_global_binding(&record.name, value),
                         None => {
-                            self.globals.remove(&record.name);
+                            self.remove_global_binding(&record.name);
                         }
                     }
                     record.previous = current;
@@ -1478,6 +1651,19 @@ impl Interpreter {
         self.push_backtrace_frame_with_evald(function, pooled, true);
     }
 
+    pub(crate) fn push_native_backtrace_frame(&mut self, function: Value, args: &[usize]) {
+        self.backtrace_frames.push(BacktraceFrame {
+            function,
+            args: Vec::new(),
+            native_args: Some(args.iter().copied().collect()),
+            source_form: None,
+            locals: Vec::new(),
+            lexical_context: None,
+            evald: true,
+            debug_on_exit: false,
+        });
+    }
+
     pub fn push_backtrace_frame_with_evald(
         &mut self,
         function: Value,
@@ -1491,6 +1677,7 @@ impl Interpreter {
         self.backtrace_frames.push(BacktraceFrame {
             function: Value::Nil,
             args: Vec::new(),
+            native_args: None,
             source_form: Some(source_form.clone()),
             locals: Vec::new(),
             lexical_context: None,
@@ -1503,12 +1690,13 @@ impl Interpreter {
         &mut self,
         function: Value,
         args: Vec<Value>,
-        locals: Vec<(String, Value)>,
+        locals: Vec<(SymbolName, Value)>,
         evald: bool,
     ) {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
+            native_args: None,
             source_form: None,
             locals,
             lexical_context: None,
@@ -1543,7 +1731,7 @@ impl Interpreter {
         &mut self,
         function_name: Option<&str>,
         env: &Env,
-        activation_frame: Option<&[(String, Value)]>,
+        activation_frame: Option<&[(SymbolName, Value)]>,
     ) {
         if function_name != Some("backtrace-eval") && !self.edebug_entered_active(env) {
             return;
@@ -1613,7 +1801,7 @@ impl Interpreter {
             .collect()
     }
 
-    pub(super) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
+    pub(crate) fn capture_batch_error_backtrace(&mut self, error: &LispError, env: &Env) {
         if matches!(error, LispError::Throw(_, _) | LispError::Terminate(_)) {
             return;
         }
@@ -1647,7 +1835,10 @@ impl Interpreter {
         self.batch_error_backtrace = None;
     }
 
-    pub fn backtrace_frame_locals_snapshot(&self, index: usize) -> Option<Vec<(String, Value)>> {
+    pub fn backtrace_frame_locals_snapshot(
+        &self,
+        index: usize,
+    ) -> Option<Vec<(SymbolName, Value)>> {
         self.backtrace_frames
             .iter()
             .rev()
@@ -1659,7 +1850,7 @@ impl Interpreter {
         &self,
         index: usize,
         base: Option<&Value>,
-    ) -> Option<Vec<(String, Value)>> {
+    ) -> Option<Vec<(SymbolName, Value)>> {
         let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
         let start = base
             .and_then(|base| {
@@ -1694,7 +1885,7 @@ impl Interpreter {
         {
             return context;
         }
-        let mut merged: Vec<(String, Value)> = Vec::new();
+        let mut merged: Vec<(SymbolName, Value)> = Vec::new();
         for frame in frames.into_iter().skip(start + index) {
             for (name, value) in &frame.locals {
                 if !merged.iter().any(|(existing, _)| existing == name) {

@@ -232,7 +232,7 @@ pub(crate) fn buffer_line_statistics_value(
         return Ok(Value::list([
             Value::Integer(0),
             Value::Integer(0),
-            Value::Float(0.0),
+            Value::float(0.0),
         ]));
     }
 
@@ -267,7 +267,7 @@ pub(crate) fn buffer_line_statistics_value(
     Ok(Value::list([
         Value::Integer(lines as i64),
         Value::Integer(longest as i64),
-        Value::Float(mean),
+        Value::float(mean),
     ]))
 }
 
@@ -351,7 +351,7 @@ pub(crate) fn integer_for_format(
     match value {
         Value::Integer(n) => Ok((Some(*n), BigInt::from(*n))),
         Value::BigInteger(n) => Ok((None, n.clone().into())),
-        Value::Float(f) => Ok((None, bigint_from_truncated_float(*f)?)),
+        Value::Float(f) => Ok((None, bigint_from_truncated_float(f.get())?)),
         Value::Marker(_) => {
             let n = integer_like_i64(interp, value)?;
             Ok((Some(n), BigInt::from(n)))

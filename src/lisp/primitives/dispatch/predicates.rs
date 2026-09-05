@@ -49,8 +49,10 @@ define_dispatch!(
             "char-or-string-p" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if matches!(args[0], Value::Integer(code) if (0..=0x10_FFFF).contains(&code))
-                        || string_like(&args[0]).is_some()
+                    // data.c:Fchar_or_string_p uses character.h:MAX_CHAR,
+                    // not Unicode's scalar limit, and STRINGP reads a tag.
+                    if matches!(args[0], Value::Integer(code) if (0..=0x3F_FFFF).contains(&code))
+                        || args[0].is_string()
                     {
                         Value::T
                     } else {
@@ -61,11 +63,7 @@ define_dispatch!(
             "arrayp" => {
                 need_args(name, args, 1)?;
                 Ok(
-                    if string_like(&args[0]).is_some()
-                        || is_vector_value(&args[0])
-                        || is_bool_vector_value(interp, &args[0])
-                        || matches!(args[0], Value::CharTable(_))
-                    {
+                    if args[0].is_string() || is_vector_like_value(interp, &args[0]) {
                         Value::T
                     } else {
                         Value::Nil
@@ -76,9 +74,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(
                     if matches!(args[0], Value::Nil | Value::Cons(_))
-                        || string_like(&args[0]).is_some()
-                        || is_vector_value(&args[0])
-                        || is_bool_vector_value(interp, &args[0])
+                        || args[0].is_string()
+                        || is_vector_like_value(interp, &args[0])
                     {
                         Value::T
                     } else {
@@ -154,7 +151,7 @@ define_dispatch!(
             }
             "stringp" => {
                 need_args(name, args, 1)?;
-                Ok(if string_like(&args[0]).is_some() {
+                Ok(if args[0].is_string() {
                     Value::T
                 } else {
                     Value::Nil
@@ -163,9 +160,9 @@ define_dispatch!(
             "documentation-stringp" => {
                 need_args(name, args, 1)?;
                 let valid = matches!(&args[0], Value::Integer(_))
-                    || string_like(&args[0]).is_some()
+                    || args[0].is_string()
                     || args[0].cons_values().is_some_and(|(file, position)| {
-                        string_like(&file).is_some() && matches!(position, Value::Integer(_))
+                        file.is_string() && matches!(position, Value::Integer(_))
                     });
                 Ok(if valid { Value::T } else { Value::Nil })
             }
@@ -210,13 +207,10 @@ define_dispatch!(
             }
             "byte-code-function-p" => {
                 need_args(name, args, 1)?;
+                // data.c:Fbyte_code_function_p checks CLOSUREP and the
+                // code slot's STRINGP tag, never names or parameter lists.
                 Ok(
-                    if record_type_name(interp, &args[0]) == Some("byte-code-function")
-                        || matches!(
-                            &args[0],
-                            Value::Lambda(lambda)
-                                if lambda.params.as_slice() == ["vals", "start", "end"]
-                        )
+                    if matches!(args[0], Value::Record(id) if interp.is_genuine_bytecode_function(id))
                     {
                         Value::T
                     } else {
@@ -229,43 +223,8 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "make-closure" => {
-                // GNU Fmake_closure (alloc.c): copy PROTOTYPE, replacing the
-                // first CLOSURE-VARS elements of its constants vector.
                 need_args(name, args, 1)?;
-                let Value::Record(id) = &args[0] else {
-                    return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
-                };
-                let Some(record) = interp.find_record(*id) else {
-                    return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
-                };
-                if record.kind != crate::lisp::eval::RecordKind::Closure {
-                    return Err(wrong_type_argument("byte-code-function-p", args[0].clone()));
-                }
-                let mut slots = record.slots.clone();
-                let mut constants = slots
-                .get(2)
-                .and_then(|slot| slot.to_vec().ok())
-                .filter(|items| {
-                    matches!(items.first(), Some(Value::Symbol(marker)) if marker == "vector-literal")
-                })
-                .map(|items| items[1..].to_vec())
-                .ok_or_else(|| {
-                    LispError::Signal("make-closure prototype has no constants vector".into())
-                })?;
-                let vars = &args[1..];
-                if vars.len() > constants.len() {
-                    return Err(LispError::Signal(
-                        "Closure vars do not fit in constvec".into(),
-                    ));
-                }
-                constants[..vars.len()].clone_from_slice(vars);
-                slots[2] =
-                    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(constants));
-                Ok(interp.create_pseudovector(
-                    crate::lisp::eval::RecordKind::Closure,
-                    "byte-code-function",
-                    slots,
-                ))
+                interp.make_closure(&args[0], &args[1..])
             }
             "make-byte-code" => {
                 // GNU Fmake_byte_code (alloc.c): the arguments become the
@@ -321,6 +280,7 @@ define_dispatch!(
                     | Value::StringObject(_)
                     | Value::Symbol(_)
                     | Value::Cons(_)
+                    | Value::Vector(_)
                     | Value::BuiltinFunc(_)
                     | Value::Lambda(_)
                     | Value::Buffer(_)
@@ -362,6 +322,13 @@ define_dispatch!(
                 // is a subr; disguising any as Lisp forged provenance.
                 Ok(match &args[0] {
                     Value::BuiltinFunc(_) => Value::T,
+                    Value::Record(id)
+                        if interp.find_record(*id).is_some_and(|record| {
+                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
+                        }) =>
+                    {
+                        Value::T
+                    }
                     _ => Value::Nil,
                 })
             }
@@ -553,7 +520,7 @@ define_dispatch!(
             "local-variable-p" => {
                 need_arg_range(name, args, 1, 2)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                let buffer_id = if let Some(buffer) = args.get(1) {
+                let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
                     interp.resolve_buffer_id(buffer)?
                 } else {
                     interp.current_buffer_id()
@@ -571,7 +538,7 @@ define_dispatch!(
             "local-variable-if-set-p" => {
                 need_arg_range(name, args, 1, 2)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                let buffer_id = if let Some(buffer) = args.get(1) {
+                let buffer_id = if let Some(buffer) = args.get(1).filter(|value| !value.is_nil()) {
                     interp.resolve_buffer_id(buffer)?
                 } else {
                     interp.current_buffer_id()

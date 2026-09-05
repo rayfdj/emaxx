@@ -197,7 +197,7 @@ pub(crate) fn resolve_direct_sort_key_fn(
 pub(crate) fn parse_direct_sort_operand(
     interp: &Interpreter,
     value: &Value,
-    params: &[String],
+    params: &[crate::lisp::types::SymbolName],
     env: &Env,
 ) -> Option<DirectSortOperand> {
     match value {
@@ -317,7 +317,7 @@ pub(crate) fn direct_sort_abs_value(value: &Value) -> Result<Value, LispError> {
             None => Ok(normalize_bigint_value(BigInt::from(*number).abs())),
         },
         Value::BigInteger(number) => Ok(normalize_bigint_value(number.abs())),
-        Value::Float(number) => Ok(Value::Float(number.abs())),
+        Value::Float(number) => Ok(Value::float(number.abs())),
         _ => Err(LispError::WrongTypeArgument(
             "numberp".into(),
             value.clone(),
@@ -472,13 +472,12 @@ pub(crate) fn write_vector_items_in_place(
         return Err(list_or_vector_type_error(target));
     }
 
-    let slots = vector_slot_refs(target)?;
-    if slots.len() != items.len() {
+    if vector_items(target)?.len() != items.len() {
         return Err(LispError::Signal("Args out of range".into()));
     }
 
-    for (slot, item) in slots.iter().zip(items.iter()) {
-        *slot.borrow_mut() = item.clone();
+    for (index, item) in items.iter().enumerate() {
+        aset_vector_value(target, index, item.clone())?;
     }
 
     Ok(())

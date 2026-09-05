@@ -67,7 +67,7 @@ impl Interpreter {
         // These are the inherited ert-test-result slots: messages,
         // should-forms, and duration.  Condition-bearing subclasses append
         // condition, backtrace, and infos in that order.
-        let mut slots = vec![Value::Nil, Value::Nil, Value::Float(duration.as_secs_f64())];
+        let mut slots = vec![Value::Nil, Value::Nil, Value::float(duration.as_secs_f64())];
         if let Some(error) = error {
             slots.extend([error_condition_value(error), Value::Nil, Value::Nil]);
         }

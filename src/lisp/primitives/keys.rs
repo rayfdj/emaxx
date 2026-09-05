@@ -492,7 +492,7 @@ pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, Li
     // event-convert-list instead of taking their car.
     if let Ok(events) = vector_items(value)
         && events.iter().any(|event| {
-            matches!(event.car(), Ok(Value::Symbol(_)))
+            event.cons_values().is_some()
                 && !lucid_event_type_list_p(event)
                 && !crate::lisp::primitives::interactive::is_vector_value(event)
         })
@@ -503,10 +503,11 @@ pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, Li
             {
                 return event;
             }
-            match event.car() {
-                Ok(Value::Symbol(head)) => Value::Symbol(head),
-                _ => event,
-            }
+            // keymap.c:lookup_key_1 converts proper Lucid event lists first;
+            // access_keymap_1 then applies EVENT_HEAD to every remaining
+            // cons event.  That includes both parameterized events and the
+            // dotted (FROM . TO) character ranges emitted by map-keymap.
+            event.car().unwrap_or(event)
         });
         let vector =
             Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(heads));
@@ -629,7 +630,7 @@ pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, Lis
 
     match sequence {
         Value::Nil => Ok(Vec::new()),
-        Value::Cons(_) => Ok(vector_items(sequence)?
+        value if is_vector_value(value) => Ok(vector_items(sequence)?
             .into_iter()
             .map(normalize_key_description_event)
             .collect()),
@@ -661,6 +662,8 @@ pub(crate) fn sequence_values(
         Ok(string_sequence_values(&string))
     } else if let Some(items) = keymap_list_items(interp, sequence)? {
         Ok(items)
+    } else if matches!(sequence, Value::Nil | Value::Cons(_)) {
+        sequence.to_vec()
     } else if is_bool_vector_value(interp, sequence) {
         bool_vector_values(interp, sequence)
     } else {

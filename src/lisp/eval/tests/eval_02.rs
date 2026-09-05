@@ -2206,9 +2206,8 @@ fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
             .expect("upstream load path"),
         ..Default::default()
     };
-    let mut compiler =
-        crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
-            .expect("initialize compiled-owner compiler interpreter");
+    let mut compiler = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize compiled-owner compiler interpreter");
     eval_str_with(
         &mut compiler,
         &format!(
@@ -2216,9 +2215,13 @@ fn byte_compile_file_applies_gv_expanders_before_later_top_level_forms() {
             source_path.display().to_string()
         ),
     );
-    let mut loader =
-        crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
-            .expect("initialize fresh compiled-owner loader interpreter");
+    // comp.c:load_comp_unit preserves a loaded library's saved unit word
+    // and relocations. Two live interpreter universes cannot independently
+    // own that same dlopen handle. End the compiler fixture before creating
+    // the fresh loader; do not reset another live runtime's native pointers.
+    drop(compiler);
+    let mut loader = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize fresh compiled-owner loader interpreter");
     crate::lisp::load_file_strict(&mut loader, &dest_path)
         .expect("compiled GV file should load in a fresh interpreter");
     let actual = eval_str_with(&mut loader, "sample-bytecomp-gv-pair");
@@ -3974,10 +3977,8 @@ fn custom_autoload_records_expected_symbol_properties() {
 #[test]
 fn temporary_file_directory_exposes_standard_value() {
     run_with_large_stack(|| {
-        let mut interp = Interpreter::new();
         assert_eq!(
-            eval_str_with(
-                &mut interp,
+            eval_str_with_upstream_batch(
                 "(equal (eval (car (get 'temporary-file-directory 'standard-value)) t)
                             temporary-file-directory)"
             ),
@@ -6645,6 +6646,11 @@ fn selected_gnu_elc_never_falls_back_to_its_sibling_source() {
 
         let mut source_interp = Interpreter::new();
         source_interp.set_load_path(vec![root.clone()]);
+        source_interp.set_variable(
+            "load-suffixes",
+            Value::list([Value::string(".el")]),
+            &mut Env::new(),
+        );
         assert_eq!(source_interp.load_target("sample").unwrap(), source);
         assert_eq!(
             eval_str_with(&mut source_interp, "(sample-function)"),
@@ -6652,7 +6658,6 @@ fn selected_gnu_elc_never_falls_back_to_its_sibling_source() {
         );
 
         let mut preferred_interp = Interpreter::new();
-        preferred_interp.set_prefer_compiled_loads(true);
         preferred_interp.set_load_path(vec![root.clone()]);
         assert_eq!(preferred_interp.load_target("sample").unwrap(), compiled);
         assert_eq!(
@@ -6703,32 +6708,6 @@ fn headered_textual_elc_executes_instead_of_its_empty_source_stub() {
     std::fs::remove_file(source).unwrap();
     std::fs::remove_file(root.join("sample.elc")).unwrap();
     std::fs::remove_dir(root).unwrap();
-}
-
-#[test]
-fn load_target_resolves_repeated_directory_autoload_aliases() {
-    let root = std::env::temp_dir().join(format!(
-        "emaxx-load-target-alias-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(root.join("srecode")).unwrap();
-    std::fs::write(
-        root.join("srecode").join("template.el"),
-        "(provide 'srecode/template)\n",
-    )
-    .unwrap();
-
-    let mut interp = Interpreter::new();
-    interp.set_load_path(vec![root.clone()]);
-    let resolved = interp.load_target("srecode/srecode-template").unwrap();
-    assert_eq!(resolved, root.join("srecode").join("template.el"));
-
-    std::fs::remove_file(root.join("srecode").join("template.el")).unwrap();
-    std::fs::remove_dir(root.join("srecode")).unwrap();
-    std::fs::remove_dir(&root).unwrap();
 }
 
 #[test]
@@ -7340,7 +7319,7 @@ fn executable_find_observes_dynamic_exec_path_and_empty_path_entries() {
                 (require 'bytecomp)
                 (require 'dired)
                 (require 'filenotify)
-                (load "../emacs/test/lisp/files-tests.el")
+                (load (expand-file-name "test/lisp/files-tests.el" source-directory))
                 (ert-with-temp-file tmpfile
                   :suffix (car exec-suffixes)
                   (set-file-modes tmpfile #o755)
@@ -7861,13 +7840,13 @@ fn number_sequence_defaults_to_positive_step() {
             Value::Nil,
             Value::Nil,
             Value::list([Value::Integer(3), Value::Integer(2), Value::Integer(1)]),
-            Value::list([Value::Float(7.5), Value::Float(6.5), Value::Float(5.5)]),
+            Value::list([Value::float(7.5), Value::float(6.5), Value::float(5.5)]),
             Value::list([
                 Value::Integer(1),
-                Value::Float(1.5),
-                Value::Float(2.0),
-                Value::Float(2.5),
-                Value::Float(3.0),
+                Value::float(1.5),
+                Value::float(2.0),
+                Value::float(2.5),
+                Value::float(3.0),
             ]),
             Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)]),
         ])

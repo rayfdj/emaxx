@@ -1067,6 +1067,9 @@ fn write_process_output_merges_stderr_for_t_cons_destination() {
 fn write_process_output_decodes_with_the_default_process_coding_system() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
+    // The fixture's *scratch* holds the banner command-line-1 inserts at
+    // the end of GNU's startup; this test uses the buffer as scratch space.
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
 
     write_process_output(
         &mut interp,
@@ -1089,6 +1092,8 @@ fn write_process_output_decodes_with_the_default_process_coding_system() {
 #[test]
 fn process_coding_alist_overrides_the_default_for_synchronous_output() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    crate::test_support::eval_lisp(&mut interp, &mut Vec::new(), "(erase-buffer)")
+        .expect("erase scratch");
     let mut env = vec![
         vec![(
             "process-coding-system-alist".into(),
@@ -1728,13 +1733,13 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
     let obarray2 = call(&mut interp, "obarray-make", &[], &mut env).expect("obarray2");
 
     let cases = vec![
-        ("zero_float", Value::Integer(0), Value::Float(0.0)),
-        ("zero_neg_zero", Value::Integer(0), Value::Float(-0.0)),
-        ("float_neg_zero", Value::Float(0.0), Value::Float(-0.0)),
+        ("zero_float", Value::Integer(0), Value::float(0.0)),
+        ("zero_neg_zero", Value::Integer(0), Value::float(-0.0)),
+        ("float_neg_zero", Value::float(0.0), Value::float(-0.0)),
         (
             "large_int_float_equal",
             Value::big_integer(BigInt::from(72057594037927936_i128)),
-            Value::Float(72057594037927936.0),
+            Value::float(72057594037927936.0),
         ),
         // fns.c value_cmp promotes a fixnum to double before comparing, so
         // a fixnum the double cannot represent compares unordered against
@@ -1742,29 +1747,29 @@ fn value_less_selected_upstream_unordered_cases_match_emacs() {
         (
             "fixnum_float_unrepresentable_1",
             Value::Integer(72057594037927935),
-            Value::Float(72057594037927936.0),
+            Value::float(72057594037927936.0),
         ),
         (
             "fixnum_float_unrepresentable_2",
-            Value::Float(72057594037927936.0),
+            Value::float(72057594037927936.0),
             Value::Integer(72057594037927937),
         ),
         (
             "fixnum_float_unrepresentable_3",
-            Value::Float(-72057594037927936.0),
+            Value::float(-72057594037927936.0),
             Value::Integer(-72057594037927935),
         ),
         (
             "fixnum_float_unrepresentable_4",
             Value::Integer(-72057594037927937),
-            Value::Float(-72057594037927936.0),
+            Value::float(-72057594037927936.0),
         ),
         (
             "fixnum_float_unrepresentable_5",
             Value::Integer(2305843009213693951),
-            Value::Float(2305843009213693952.0),
+            Value::float(2305843009213693952.0),
         ),
-        ("nan", Value::Integer(1), Value::Float(f64::NAN)),
+        ("nan", Value::Integer(1), Value::float(f64::NAN)),
         (
             "symbol_plain_uninterned_same_visible",
             Value::Symbol("a".into()),
@@ -2052,6 +2057,16 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         .expect("disabled equal plain"),
         Value::Nil
     );
+    assert_eq!(
+        call(
+            &mut interp,
+            "equal-including-properties",
+            &[foo1.clone(), plain.clone()],
+            &mut disabled_env
+        )
+        .expect("disabled equal-including-properties plain"),
+        Value::Nil
+    );
 
     let mut enabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
     assert_eq!(
@@ -2105,6 +2120,16 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         Value::T
     );
     assert_eq!(
+        call(
+            &mut interp,
+            "equal-including-properties",
+            &[foo1.clone(), plain.clone()],
+            &mut enabled_env
+        )
+        .expect("enabled equal-including-properties plain"),
+        Value::T
+    );
+    assert_eq!(
         call(&mut interp, "equal", &[foo1, plain], &mut enabled_env).expect("enabled equal plain"),
         Value::T
     );
@@ -2130,5 +2155,42 @@ fn member_ignore_case_matches_strings_case_insensitively_on_the_image() {
             Value::Nil,
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn obarray_make_accepts_explicit_nil_as_the_default_size() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let obarray = call(&mut interp, "obarray-make", &[Value::Nil], &mut env)
+        .expect("nil selects the default obarray size");
+    assert_eq!(
+        call(&mut interp, "obarrayp", &[obarray], &mut env).expect("obarrayp"),
+        Value::T
+    );
+}
+
+#[test]
+fn unicode_property_registry_uses_the_c_owned_symbol_value_cell() {
+    let mut interp = Interpreter::new();
+    let global_registry = Value::list([Value::cons(Value::symbol("probe"), Value::T)]);
+    interp.set_symbol_value_cell("char-code-property-alist", global_registry);
+    let lexical_registry = Value::list([Value::cons(
+        Value::symbol("probe"),
+        Value::String("wrong.el".into()),
+    )]);
+    let mut env = vec![crate::lisp::types::EnvFrame::new(vec![(
+        "char-code-property-alist".into(),
+        lexical_registry,
+    )])];
+    assert_eq!(
+        call(
+            &mut interp,
+            "unicode-property-table-internal",
+            &[Value::symbol("probe")],
+            &mut env,
+        )
+        .expect("read the C-owned Unicode property registry"),
+        Value::T
     );
 }

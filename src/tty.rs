@@ -13,7 +13,6 @@
 //! loop without changing its shape.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::{cursor, event, execute, queue, style, terminal};
@@ -270,28 +269,15 @@ impl TtyState {
     }
 }
 
-pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
-    let mut interpreter = batch::initialize_interactive_interpreter()?;
+pub fn run(command_line_args: &[String], no_site_lisp: bool) -> Result<i32, String> {
+    let mut interpreter = batch::initialize_interactive_interpreter(no_site_lisp)?;
     let mut env: Env = Vec::new();
-    interpreter.set_variable("noninteractive", Value::Nil, &mut env);
-    initialize_session_buffers(&mut interpreter, &mut env)?;
-
-    // Publish the terminal's color capability before the first redraw, then
-    // recompute every face from its spec exactly as GNU's set_tty_color_mode
-    // does after tty_setup_colors: safe_calln (Qtty_set_up_initial_frame_faces)
-    // hands the work to faces.el against the new display.
+    // emacs.c:init_display establishes the terminal before keyboard.c
+    // evaluates top-level. startup.el then owns palette registration,
+    // terminal Lisp initialization, buffers, file visitation, and messages.
     interpreter.set_tty_display_colors(terminal_color_cells());
     interpreter.set_tty_terminal_type(std::env::var("TERM").ok());
-    if let Ok(forms) = crate::lisp::reader::Reader::new(
-        // startup.el registers the standard tty palette before faces
-        // realize (command-line's tty-register-default-colors call).
-        "(progn (tty-register-default-colors) (tty-set-up-initial-frame-faces))",
-    )
-    .read_all()
-        && let Some(form) = forms.first()
-    {
-        let _ = interpreter.eval(form, &mut env);
-    }
+    batch::initialize_initial_frame_faces(&mut interpreter)?;
 
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
     let queue = SharedEventQueue::default();
@@ -356,66 +342,23 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
         let queue = queue.clone();
         move || queue.input_pending()
     })));
-    // startup.el runs the terminal library before command-line file
-    // visitation.  Besides key definitions, term/xterm installs the palette
-    // and capability answers used when later packages realize display-
-    // dependent faces.  Skipping this left ordinary colors and `supports'
-    // defface alternatives frozen against the pre-terminal frame.
-    let terminal_init = crate::lisp::reader::Reader::new(
-        "(tty-run-terminal-initialization (selected-frame) nil t)",
-    )
-    .read()
-    .map_err(|error| format!("read terminal initialization form: {error}"))?
-    .ok_or_else(|| "terminal initialization form is empty".to_string())?;
-    interpreter
-        .eval(&terminal_init, &mut env)
-        .map_err(|error| format!("run terminal initialization: {error}"))?;
-
-    if let Some(path) = initial_file {
-        let path = path.display().to_string();
-        let find_file = call(
-            &mut interpreter,
-            &mut env,
-            "find-file",
-            &[Value::String(path.clone().into())],
-        );
-        if let Err(error) = &find_file {
-            // The real files.el `find-file' is the only honest visit path;
-            // fabricating a native visit here would keep the screen
-            // plausible while hiding the breakage.
-            panic!("find-file {path} failed: {error:?}");
+    // keyboard.c:command_loop enters top_level_1 after terminal input is
+    // available, then the editing loop. Do not replay Lisp startup actions.
+    let startup = batch::run_startup_top_level(&mut interpreter, command_line_args);
+    let termination = match startup {
+        Err(LispError::Terminate(termination)) => Some(termination),
+        Err(error) => {
+            let text = command_error_text(&mut interpreter, &mut env, &error);
+            crate::lisp::primitives::set_echo_area_message(Some(text));
+            interpreter.take_pending_termination()
         }
-        debug_log(&format!(
-            "startup buffer={:?} point={}",
-            interpreter.buffer.name,
-            interpreter.buffer.point()
-        ));
-    }
-    // startup.el's display-startup-echo-area-message: the startup hint
-    // sits in the echo area until the first command replaces it (F10's
-    // menu leaves it visible, as GNU does).
-    let message = interpreter
-        .call_function_value(
-            Value::Symbol("substitute-command-keys".into()),
-            None,
-            &[Value::String(
-                "For information about GNU Emacs and the GNU system, type \\[about-emacs].".into(),
-            )],
-            &mut env,
-        )
-        .map_err(|error| format!("build startup echo message: {error}"))?;
-    // `message' both paints the propertized key binding and appends the
-    // startup hint to *Messages*.  Calling the GNU Lisp owner matters:
-    // directly setting the echo row left Buffer Menu with a reconstruction
-    // diagnostic in a Fundamental-mode *Messages* buffer instead.
-    call(
-        &mut interpreter,
-        &mut env,
-        "message",
-        &[Value::String("%s".into()), message],
-    )
-    .map_err(|error| format!("publish startup echo message: {error}"))?;
-    let code = command_loop(&mut interpreter, &mut env, &queue, &state);
+        Ok(_) => interpreter.take_pending_termination(),
+    };
+    let code = if let Some(termination) = termination {
+        Ok(termination.exit_code)
+    } else {
+        command_loop(&mut interpreter, &mut env, &queue, &state)
+    };
     crate::lisp::primitives::set_tty_frame_redraw(None);
     crate::lisp::primitives::set_tty_event_reader(None);
     crate::lisp::primitives::set_tty_event_poller(None);
@@ -424,37 +367,6 @@ pub fn run(initial_file: Option<PathBuf>) -> Result<i32, String> {
     crate::lisp::primitives::set_interactive_window_metrics(None);
     drop(guard);
     code
-}
-
-fn initialize_session_buffers(interpreter: &mut Interpreter, env: &mut Env) -> Result<(), String> {
-    // startup.el's normal-top-level first turns the dump-created Messages
-    // buffer into its real major mode.  Emaxx's source reconstruction can
-    // emit load diagnostics that GNU's already-built dump never carries, so
-    // the live session begins from the same empty buffer before the startup
-    // echo is logged below.
-    //
-    // Later in command-line, GNU inserts `initial-scratch-message' into the
-    // still-empty *scratch* buffer even when a command-line file will become
-    // selected.  Buffer switching and Buffer Menu therefore see the normal
-    // four-line scratch buffer rather than an invented blank one.
-    let source = "(progn
-      (with-current-buffer \"*Messages*\"
-        (let ((inhibit-read-only t)) (erase-buffer))
-        (messages-buffer-mode))
-      (and initial-scratch-message
-           (get-buffer \"*scratch*\")
-           (with-current-buffer \"*scratch*\"
-             (when (zerop (buffer-size))
-               (insert (substitute-command-keys initial-scratch-message))
-               (set-buffer-modified-p nil)))))";
-    let form = crate::lisp::reader::Reader::new(source)
-        .read()
-        .map_err(|error| format!("read interactive startup buffer form: {error}"))?
-        .ok_or_else(|| "interactive startup buffer form is empty".to_string())?;
-    interpreter
-        .eval(&form, env)
-        .map_err(|error| format!("initialize interactive startup buffers: {error}"))?;
-    Ok(())
 }
 
 /// The session's single event stream, shared between the command loop and
@@ -707,8 +619,8 @@ fn wrapped_echo_cursor(
 fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
     match interpreter.lookup_var("max-mini-window-height", &Vec::new()) {
         Some(Value::Integer(lines)) if lines > 0 => (lines as usize).min(rows.saturating_sub(2)),
-        Some(Value::Float(fraction)) if fraction > 0.0 => {
-            (((rows as f64) * fraction) as usize).clamp(1, rows.saturating_sub(2))
+        Some(Value::Float(fraction)) if fraction.get() > 0.0 => {
+            (((rows as f64) * fraction.get()) as usize).clamp(1, rows.saturating_sub(2))
         }
         _ => ((rows as f64 * 0.25) as usize).clamp(1, rows.saturating_sub(2)),
     }
@@ -1535,11 +1447,11 @@ fn window_render_geometry(
             let current_x = point_dcol + lnum_cols as i64;
             let step = interpreter.lookup_var("hscroll-step", env);
             let new_hscroll = match step {
-                Some(Value::Float(relative)) if relative >= 0.0 => {
+                Some(Value::Float(relative)) if relative.get() >= 0.0 => {
                     let wanted = if cursor_x >= text_w - margin {
-                        (w as f64) * (1.0 - relative) - margin as f64
+                        (w as f64) * (1.0 - relative.get()) - margin as f64
                     } else {
-                        (w as f64) * relative + (margin + x_offset) as f64
+                        (w as f64) * relative.get() + (margin + x_offset) as f64
                     };
                     (current_x - wanted as i64).max(0)
                 }
@@ -4920,6 +4832,7 @@ fn call(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::initialized_upstream_interactive_interpreter as initialized_interactive_runtime;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -4949,6 +4862,8 @@ mod tests {
     #[test]
     fn terminal_glyphless_expansion_tracks_coding_faces_and_point_columns() {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        crate::test_support::eval_lisp(&mut interpreter, &mut Vec::new(), "(erase-buffer)")
+            .expect("erase scratch");
         interpreter.set_terminal_coding_system(None);
         interpreter.buffer.insert("AöB€C😀D\n");
         let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
@@ -5511,12 +5426,23 @@ mod tests {
 
     #[test]
     fn interactive_startup_initializes_scratch_and_messages_buffers() {
-        let mut interp = crate::batch::initialize_interactive_interpreter()
-            .expect("interactive interpreter initializes");
+        let mut interp = initialized_interactive_runtime();
         let mut env: Env = Vec::new();
         interp.set_variable("noninteractive", Value::Nil, &mut env);
-        initialize_session_buffers(&mut interp, &mut env)
-            .expect("interactive session buffers initialize");
+        // This fixture now reaches the end of GNU startup, not the former
+        // handwritten midpoint before its startup message. A separate GNU
+        // -nw -Q session confirms this line in *Messages*. Check the text
+        // too: an unrelated preload diagnostic can have the same length.
+        let (messages, _) = interp
+            .find_buffer("*Messages*")
+            .expect("startup messages buffer");
+        assert_eq!(
+            interp
+                .get_buffer_by_id(messages)
+                .expect("live messages buffer")
+                .full_buffer_string(),
+            "For information about GNU Emacs and the GNU system, type C-h C-a.\n",
+        );
         let probe = crate::lisp::reader::Reader::new(
             "(list
                (with-current-buffer \"*scratch*\"
@@ -5539,7 +5465,7 @@ mod tests {
                 ]),
                 Value::list([
                     Value::Symbol("messages-buffer-mode".into()),
-                    Value::Integer(0),
+                    Value::Integer(66),
                 ]),
             ])
         );
@@ -5824,8 +5750,7 @@ mod tests {
 
     #[test]
     fn active_minibuffer_only_owns_cursor_while_its_window_is_selected() {
-        let mut interpreter = crate::batch::initialize_interactive_interpreter()
-            .expect("interactive Lisp initializes");
+        let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = Vec::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         let ordinary_window = interpreter.selected_window_id();
@@ -5848,8 +5773,7 @@ mod tests {
 
     #[test]
     fn transient_printed_value_takes_precedence_over_an_active_minibuffer() {
-        let mut interpreter = crate::batch::initialize_interactive_interpreter()
-            .expect("interactive Lisp initializes");
+        let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = Vec::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
@@ -5879,8 +5803,7 @@ mod tests {
 
     #[test]
     fn minibuffer_before_string_inherits_its_prompt_anchor_face() {
-        let mut interpreter = crate::batch::initialize_interactive_interpreter()
-            .expect("interactive Lisp initializes");
+        let mut interpreter = initialized_interactive_runtime();
         let mut env: Env = Vec::new();
         interpreter.set_variable("noninteractive", Value::Nil, &mut env);
         let active = crate::lisp::primitives::activate_minibuffer(
@@ -6612,7 +6535,7 @@ fn make_menu_executor(
                 .lookup_var("echo-keystrokes", env)
                 .map(|value| match value {
                     Value::Integer(seconds) => seconds as f64,
-                    Value::Float(seconds) => seconds,
+                    Value::Float(seconds) => seconds.get(),
                     _ => 0.0,
                 })
                 .unwrap_or(1.0);

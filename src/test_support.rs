@@ -197,7 +197,6 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
         crate::compat::emaxx_upstream_load_path(&upstream)
             .expect("resolve upstream GNU Lisp load path"),
     );
-    interpreter.set_prefer_compiled_loads(crate::lisp::bytecode_vm_enabled());
     for library in [
         "emacs-lisp/debug-early",
         "emacs-lisp/byte-run",
@@ -208,7 +207,33 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
             .load_target(library)
             .unwrap_or_else(|error| panic!("load GNU early owner {library}: {error}"));
     }
+    // This deliberately-small fixture represents a running dumped Emacs,
+    // not the raw temacs state from `Interpreter::new'.  The production
+    // image builder reaches this transition by executing unchanged
+    // loadup.el, whose final pre-dump assignment clears `purify-flag'.
+    // Materialize that already-established phase boundary here so runtime
+    // definitions are not recursively copied into simulated pure storage.
+    interpreter.set_global_binding("purify-flag", Value::Nil);
+    configure_embedded_native_compilation(&mut interpreter);
     interpreter
+}
+
+/// comp.el's `comp--final' compiles in a child editor started as
+/// `invocation-name -no-comp-spawn -Q --batch -l TEMP', and data.c's
+/// `fset' of a primitive asks comp-run.el to compile a trampoline the same
+/// way.  A Rust test process is its own `invocation-name', and libtest
+/// cannot act as that child ("Unrecognized option: 'n'"), so the fixtures
+/// take the configuration GNU's own child runs under: `comp-no-spawn' t
+/// compiles in this process, and the implicit compilations (trampolines
+/// on `fset', deferred compilation of loaded files) are switched off with
+/// GNU's own options.  The CLI keeps GNU's defaults.
+pub(crate) fn configure_embedded_native_compilation(interpreter: &mut Interpreter) {
+    eval_lisp(
+        interpreter,
+        &mut Vec::new(),
+        "(setq comp-no-spawn t comp-enable-subr-trampolines nil native-comp-jit-compilation nil)",
+    )
+    .expect("configure embedded native compilation");
 }
 
 /// Replace a bare test interpreter with the same GNU Lisp image used by
@@ -224,8 +249,9 @@ pub(crate) fn replace_with_gnu_batch_runtime(interpreter: &mut Interpreter) {
             .expect("resolve upstream GNU Lisp load path"),
         ..Default::default()
     };
-    *interpreter = crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
+    *interpreter = crate::batch::initialize_batch_interpreter(&options)
         .expect("reconstruct compiled GNU batch Lisp image");
+    configure_embedded_native_compilation(interpreter);
 }
 
 /// Initialize the same GNU-owned Lisp environment used by Emaxx batch mode.
@@ -252,6 +278,19 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter_with(libraries: &[&str]) ->
             .load_target(library)
             .unwrap_or_else(|error| panic!("load GNU library {library}: {error}"));
     }
+    interpreter
+}
+
+/// Run the production C entry and unchanged GNU interactive startup. Quick
+/// startup skips init files, but still reads GNU's normal abbrev file. Run
+/// this fixture in a process with an isolated HOME; -Q alone is not isolation.
+pub(crate) fn initialized_upstream_interactive_interpreter() -> Interpreter {
+    let mut interpreter = crate::batch::initialize_interactive_interpreter(true)
+        .expect("reconstruct interactive runtime");
+    crate::batch::initialize_initial_frame_faces(&mut interpreter).expect("initialize frame faces");
+    crate::batch::run_startup_top_level(&mut interpreter, &["emaxx".into(), "-Q".into()])
+        .expect("GNU interactive startup completes");
+    assert!(interpreter.take_pending_termination().is_none());
     interpreter
 }
 
@@ -310,8 +349,10 @@ fn build_upstream_batch_interpreter() -> Interpreter {
             .expect("upstream GNU Emacs load path"),
         ..Default::default()
     };
-    crate::batch::initialize_batch_interpreter_with_load_preference(&options, true)
-        .expect("initialize compiled GNU-compatible batch interpreter")
+    let mut interpreter = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize compiled GNU-compatible batch interpreter");
+    configure_embedded_native_compilation(&mut interpreter);
+    interpreter
 }
 
 pub(crate) fn eval_lisp(

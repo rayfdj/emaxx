@@ -4045,7 +4045,7 @@ impl Interpreter {
             && items.len() == 2
             && let Some(seconds) = match &items[1] {
                 Value::Integer(seconds) => Some(*seconds as f64),
-                Value::Float(seconds) => Some(*seconds),
+                Value::Float(seconds) => Some(**seconds),
                 _ => None,
             }
         {

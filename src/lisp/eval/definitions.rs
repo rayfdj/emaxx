@@ -1,21 +1,5 @@
 use super::*;
 
-pub(super) fn body_closure_dont_trim_context(body: &[Value]) -> bool {
-    let mut start = 0usize;
-    if body.len() > 1
-        && matches!(
-            body.first(),
-            Some(Value::String(_) | Value::StringObject(_))
-        )
-    {
-        start = 1;
-    }
-    matches!(
-        body.get(start),
-        Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
-    ) && body.len().saturating_sub(start) > 1
-}
-
 type NormalizedClosureBody = (Option<Value>, Option<Value>, Vec<Value>);
 
 impl Interpreter {
@@ -63,16 +47,19 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<NormalizedClosureBody, LispError> {
         let (documentation, mut body) = self.normalize_function_body_documentation(forms, env)?;
-        let interactive = body
+        let interactive_form = body
             .first()
-            .and_then(crate::lisp::types::LambdaValue::interactive_slot_from_form);
-        if interactive.is_some() {
+            .filter(|form| {
+                crate::lisp::types::LambdaValue::interactive_slot_from_form(form).is_some()
+            })
+            .cloned();
+        if interactive_form.is_some() {
             body.remove(0);
         }
         if body.is_empty() {
             body.push(Value::Nil);
         }
-        Ok((documentation, interactive, body))
+        Ok((documentation, interactive_form, body))
     }
 
     pub(super) fn sf_setq(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -139,7 +126,10 @@ impl Interpreter {
         if items.len() < 2 {
             return Err(LispError::WrongNumberOfArgs("defvar".into(), 0));
         }
-        let name = items[1].as_symbol()?.to_string();
+        // eval.c:Fdefvar uses CHECK_SYMBOL/XSYMBOL.  While source-position
+        // symbols are enabled, that means the definition is installed on
+        // the underlying bare symbol while the original object is returned.
+        let name = crate::lisp::primitives::checked_symbol_name(self, &items[1], env)?;
         let resolved = self.resolve_variable_name(&name)?;
         if items.len() > 4 {
             return Err(LispError::Signal("Too many arguments".into()));
@@ -154,7 +144,8 @@ impl Interpreter {
         if items.len() > 2 {
             self.mark_special_variable(&resolved);
             if let Some(doc) = items.get(3).filter(|value| !value.is_nil()) {
-                self.put_symbol_property(&resolved, "variable-documentation", doc.clone());
+                let doc = crate::lisp::primitives::purecopy_value(self, doc, env)?;
+                self.put_symbol_property(&resolved, "variable-documentation", doc);
             }
             self.record_definition_in_load_history("defvar", &resolved);
         } else if self.interpreter_environment_is_lexical(env) {
@@ -173,7 +164,7 @@ impl Interpreter {
             let val = self.eval(&items[2], env)?;
             self.set_default_toplevel_value(&resolved, val);
         }
-        Ok(Value::Symbol(resolved.into()))
+        Ok(items[1].clone())
     }
 
     pub(super) fn sf_defconst(
@@ -187,20 +178,24 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let name = items[1].as_symbol()?.to_string();
+        // eval.c:Fdefconst has the same CHECK_SYMBOL/XSYMBOL contract as
+        // defvar for source-position symbols.
+        let name = crate::lisp::primitives::checked_symbol_name(self, &items[1], env)?;
         let resolved = self.resolve_variable_name(&name)?;
         if items.len() > 4 {
             return Err(LispError::Signal("Too many arguments".into()));
         }
+        let value = self.eval(&items[2], env)?;
         self.mark_special_variable(&resolved);
         if let Some(doc) = items.get(3).filter(|value| !value.is_nil()) {
-            self.put_symbol_property(&resolved, "variable-documentation", doc.clone());
+            let doc = crate::lisp::primitives::purecopy_value(self, doc, env)?;
+            self.put_symbol_property(&resolved, "variable-documentation", doc);
         }
-        let value = self.eval(&items[2], env)?;
+        let value = crate::lisp::primitives::purecopy_value(self, &value, env)?;
         self.set_default_toplevel_value(&resolved, value);
         self.put_symbol_property(&resolved, "risky-local-variable", Value::T);
         self.record_definition_in_load_history("defvar", &resolved);
-        Ok(Value::Symbol(resolved.into()))
+        Ok(items[1].clone())
     }
 
     // Expand registered `cl-generic-define-context-rewriter' heads inside a
@@ -226,20 +221,10 @@ impl Interpreter {
             return Err(LispError::Signal("lambda needs params".into()));
         }
         let params = self.parse_source_params(&items[1], env)?;
-        let (documentation, interactive, body) =
+        let (documentation, interactive_form, body) =
             self.normalize_interpreted_closure_body(&items[2..], env)?;
-        let keep_full_context = body_closure_dont_trim_context(&body);
-        let mut capture_forms = body.clone();
-        if let Some(interactive) = &interactive {
-            capture_forms.push(interactive.clone());
-        }
         let capture_override = self.lambda_capture_override();
         let closure_env = if capture_override.unwrap_or(true) {
-            let captured = if !keep_full_context && self.lambda_trim_override() {
-                trim_lambda_closure_env(env, &capture_forms)
-            } else {
-                env.clone()
-            };
             // A lexical lambda carries an explicit context marker even when
             // it has no free variables.  Besides forming the scope boundary,
             // invocation uses this marker to give delayed macro expansion
@@ -248,7 +233,7 @@ impl Interpreter {
                 || self
                     .lookup_var("lexical-binding", env)
                     .is_some_and(|value| value.is_truthy());
-            let closure_env = self.capture_closure_env(captured);
+            let closure_env = self.capture_closure_env(env.clone());
             if lexical_source {
                 self.mark_lexical_closure_env(&closure_env);
             }
@@ -258,6 +243,31 @@ impl Interpreter {
             self.mark_closure_eval_context(&closure_env, false);
             closure_env
         };
+        let public_environment = self.materialize_public_interpreted_environment(&closure_env);
+
+        // eval.c:Ffunction delegates lexical-environment filtering to the
+        // preloaded `internal-make-interpreted-closure-function'.  In GNU 30
+        // that function is the unchanged Elisp `cconv-make-interpreted-closure';
+        // C neither scans free variables nor rewrites the body itself.
+        if !public_environment.is_nil()
+            && let Some(filter) = self
+                .lookup_var("internal-make-interpreted-closure-function", env)
+                .filter(Value::is_truthy)
+        {
+            return self.call_function_value(
+                filter,
+                None,
+                &[
+                    items[1].clone(),
+                    Value::list(body.iter().cloned()),
+                    public_environment,
+                    documentation.clone().unwrap_or(Value::Nil),
+                    interactive_form.clone().unwrap_or(Value::Nil),
+                ],
+                env,
+            );
+        }
+
         let body = match source.and_then(|source| source.cons_cells().map(|(car, _)| car)) {
             Some(source_anchor) => {
                 let source_id = source_anchor.cell_id();
@@ -291,9 +301,12 @@ impl Interpreter {
             }
             None => Rc::new(body),
         };
-        let public_environment = self.materialize_public_interpreted_environment(&closure_env);
+        let interactive = interactive_form
+            .as_ref()
+            .and_then(crate::lisp::types::LambdaValue::interactive_slot_from_form);
         Ok(Value::lambda_with_public_environment(
             params.into(),
+            items[1].clone(),
             body,
             closure_env,
             documentation,
@@ -301,92 +314,4 @@ impl Interpreter {
             public_environment,
         ))
     }
-}
-
-pub(super) fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
-    let mut referenced = HashSet::new();
-    for form in body {
-        collect_referenced_symbols(form, &mut referenced);
-    }
-
-    env.iter()
-        .filter_map(|frame| {
-            // Events at each position are locally-special declarations first,
-            // then the real binding at that position.  Preserve that order so
-            // trimming retains exactly the prefix GNU's environment alist did.
-            let mut cutoff = None;
-            for position in 0..=frame.len() {
-                for (declaration_index, (_, name)) in frame
-                    .local_special_declarations()
-                    .iter()
-                    .filter(|(declared_at, _)| *declared_at == position)
-                    .enumerate()
-                {
-                    if referenced.contains(name.as_str()) {
-                        cutoff = Some((position, Some(declaration_index)));
-                    }
-                }
-                if position < frame.len() && referenced.contains(frame[position].0.as_str()) {
-                    cutoff = Some((position, None));
-                }
-            }
-            let (cutoff_position, cutoff_declaration) = cutoff?;
-            let binding_count = cutoff_position + usize::from(cutoff_declaration.is_none());
-            let mut declarations_seen_at_cutoff = 0;
-            let local_special_declarations = frame
-                .local_special_declarations()
-                .iter()
-                .filter(|(position, _)| {
-                    if *position < cutoff_position {
-                        true
-                    } else if *position > cutoff_position {
-                        false
-                    } else if let Some(last_declaration) = cutoff_declaration {
-                        let keep = declarations_seen_at_cutoff <= last_declaration;
-                        declarations_seen_at_cutoff += 1;
-                        keep
-                    } else {
-                        true
-                    }
-                })
-                .cloned()
-                .collect();
-            Some(EnvFrame::from_parts(
-                frame[..binding_count].to_vec(),
-                frame.identity(),
-                frame.has_function_bindings(),
-                local_special_declarations,
-            ))
-        })
-        .collect()
-}
-
-fn collect_referenced_symbols(value: &Value, referenced: &mut HashSet<String>) {
-    match value {
-        Value::Symbol(symbol) => {
-            referenced.insert(symbol.to_string());
-        }
-        Value::Cons(_) => {
-            let Ok(items) = value.to_vec() else {
-                collect_dotted_list_symbols(value, referenced);
-                return;
-            };
-            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "quote") {
-                return;
-            }
-            for item in items {
-                collect_referenced_symbols(&item, referenced);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_dotted_list_symbols(value: &Value, referenced: &mut HashSet<String>) {
-    let Some((car, cdr)) = value.cons_values() else {
-        collect_referenced_symbols(value, referenced);
-        return;
-    };
-    collect_referenced_symbols(&car, referenced);
-    collect_referenced_symbols(&cdr, referenced);
 }

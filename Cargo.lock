@@ -370,6 +370,7 @@ dependencies = [
  "sha2",
  "sha3",
  "signal-hook",
+ "smallvec",
  "streebog",
  "sysinfo",
  "trash",
