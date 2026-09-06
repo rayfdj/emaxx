@@ -31,6 +31,14 @@ and the fresh isolated native execution gate passes 177/177 with zero
 unexpected results in 1,245.17 seconds. This accepts the placement half of
 L03; complete live-object census/accounting parity remains open under L08.
 
+**L06 target-resolution audit (2026-09-06):** GNU `eval.c:funcall_general`
+resolves symbol indirection before selecting `funcall_subr`,
+`funcall_lambda`, or the invalid-function/error paths. The native word path
+now has focused coverage for an aliased builtin, an interpreted lambda, and
+an invalid function, with the exact GNU error value and clean evaluator
+unwind; all eight native-Ffuncall tests pass. Autoload loading and the wider
+callable-class matrix remain open, so L06 stays partial.
+
 ### Historical September 6 continuation — EQ/live-flag and reader work
 
 The live-flag dependency described below is now implemented, not just

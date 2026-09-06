@@ -7232,6 +7232,61 @@ mod tests {
     }
 
     #[test]
+    fn native_funcall_falls_back_for_alias_lambda_and_invalid_function() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        interpreter.set_function_binding("native-funcall-alias", Some(Value::symbol("identity")));
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_one as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::symbol("native-funcall-alias"), Value::Integer(41)],
+                )
+                .expect("native funcall follows a symbol alias"),
+            Value::Integer(41)
+        );
+
+        let lambda = Value::lambda(
+            Rc::new(vec![SymbolName::from("value")]),
+            Rc::new(vec![Value::symbol("value")]),
+            Rc::new(std::cell::RefCell::new(Env::new())),
+        );
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_one as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[lambda, Value::Integer(42)],
+                )
+                .expect("native funcall falls back to an interpreted lambda"),
+            Value::Integer(42)
+        );
+
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_funcall_one as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::Integer(7), Value::Nil],
+            )
+            .expect_err("native funcall preserves invalid-function fallback");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([Value::symbol("invalid-function"), Value::Integer(7)])
+        );
+        assert_eq!(interpreter.backtrace_frames_len(), 0);
+        assert_eq!(interpreter.lisp_eval_depth, 0);
+    }
+
+    #[test]
     fn native_apply_spreads_the_final_list_into_funcall_words() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
