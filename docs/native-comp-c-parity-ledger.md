@@ -3,8 +3,8 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Latest pushed checkpoint: `0d06050`, including implementation `4cb9d12`'s
-bounded L07 GNU finite-n-ary dispatch correction, the earlier bounded L08
+Latest pushed checkpoint: `af7f01b`, including implementation `8e395b5`'s
+bounded L07 GNU native finite-n-ary dispatch correction, the earlier bounded L08
 `Fgarbage_collect_maybe` ordinary-state threshold correction, the merge of
 `origin/main`, the macOS process-pipe portability follow-up, and the public
 GC `symbols-with-pos-enabled` scope correction. Focused
@@ -23,6 +23,9 @@ its test phase was 1,266.137 seconds versus GNU's 158.694 seconds.
 The post-merge `0d06050` rerun passed 177/177 with zero mismatches; its test
 phase was 1,352.154 seconds versus GNU's 90.710 seconds (run
 `1788707918100126000-73169`).
+The post-loader merge `af7f01b` rerun passed 177/177 with zero mismatches; its
+test phase was 1,241.694 seconds versus GNU's 88.108 seconds (run
+`1788709909540756000-77602`).
 This unit comes from the completed post-startup profile and GNU C audit,
 not a speculative optimization. The chronology below is historical, not a claim that all its
 "worktree" changes remain uncommitted.

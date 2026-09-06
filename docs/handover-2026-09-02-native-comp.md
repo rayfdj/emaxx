@@ -5,11 +5,11 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 0d06050 after merging main (2026-09-06)
+## Resume here — pushed af7f01b after merging main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest implementation checkpoint: `4cb9d12` — match GNU's finite
-`funcall_subr` n-ary dispatch; the resolved merge checkpoint is `0d06050`.**
+**Latest implementation checkpoint: `8e395b5` — match GNU's finite native
+subroutine n-ary dispatch; the resolved merge checkpoint is `af7f01b`.**
 It retains the ordinary GC threshold correction from
 `bc8402d`, the `origin/main` merge, and the `pipe`/`fcntl(FD_CLOEXEC)` fallback
 required because macOS has no `libc::pipe2`; it additionally temporarily
@@ -26,6 +26,12 @@ passed 177/177 with zero mismatches. The GNU test phase took 90.710 seconds
 and the Emaxx test phase took 1,352.154 seconds; setup took 3.096 versus
 46.535 seconds. The complete result is the harness summary for run
 `1788707918100126000-73169`.
+
+Post-loader validation for `af7f01b`: the normal upstream native selector
+passed 177/177 with zero mismatches. The GNU test phase took 88.108 seconds
+and the Emaxx test phase took 1,241.694 seconds; setup took 2.891 versus
+41.752 seconds. The complete result is the harness summary for run
+`1788709909540756000-77602`.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
 This checkpoint closes only the public GNU C layout-size portion; the census
@@ -91,6 +97,14 @@ through `aMANY` without an upper-bound rejection or Fapply padding. Rust now
 matches both rules, with a focused regression for the dispatcher and spread
 path. The complete native-Ffuncall group passes 10/10; the broader callable
 class and full 0..8 matrix remain open.
+
+**L07 native-loader arity correction (2026-09-06):** The same GNU split also
+applies to non-dynamic native-compiled subroutines registered through the
+loader. Rust now records finite `max_args > 8` as MANY with no upper-bound
+check, while dynamic lambda-list functions retain their finite bound. The
+loader boundary regression, all 10 native-Ffuncall tests, strict gates, and
+the post-merge 177/177 native selector pass; broader native callable-class
+coverage remains open.
 
 **L08 bounded layout correction (2026-09-06):** GNU `alloc.c` reports the C
 allocator layouts, not the host implementation's struct sizes. The configured
