@@ -268,7 +268,7 @@ pub(crate) fn intern_in_obarray_with_name(
     }
     let name = make_name(interp)?;
     let symbol = Value::Symbol(crate::lisp::types::SymbolName::intern_with_lisp_name(
-        crate::lisp::types::make_obarray_symbol_name(symbol_name, *id),
+        crate::lisp::types::make_fresh_obarray_symbol_name(symbol_name, *id),
         Some(name),
     ));
     symbols.push(symbol.clone());
