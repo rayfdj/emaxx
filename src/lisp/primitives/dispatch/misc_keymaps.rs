@@ -1669,30 +1669,14 @@ define_dispatch!(
             }
             "garbage-collect" => {
                 need_args(name, args, 0)?;
-                if interp.garbage_collection_is_inhibited() {
-                    return Ok(Value::Nil);
-                }
                 // The reclamation emaxx really performs: weak hash entries
                 // whose keys/values are no longer reachable are dropped, as
                 // GNU's sweep does.  Everything else is freed by ownership
                 // the moment it becomes unreachable.
-                crate::lisp::native_comp::begin_garbage_collection(interp, env);
-                let census = interp.live_object_census();
-                let threshold = interp
-                    .symbol_value_cell("gc-cons-threshold")
-                    .ok()
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(800_000);
-                let percentage = match interp.symbol_value_cell("gc-cons-percentage") {
-                    Ok(Value::Float(value)) => Some(value.get()),
-                    _ => None,
+                let Some(census) = crate::lisp::native_comp::garbage_collect_now(interp, env)
+                else {
+                    return Ok(Value::Nil);
                 };
-                crate::lisp::native_comp::garbage_collection_finished(
-                    interp,
-                    census.total_bytes_of_live_objects(),
-                    threshold,
-                    percentage,
-                );
                 // GNU returns ((TYPE SIZE USED FREE) ...) in exactly this
                 // row order (alloc.c, oracle-confirmed).  SIZE is the GNU C
                 // layout reported by Fgarbage_collect, not Rust's host
@@ -1778,28 +1762,13 @@ define_dispatch!(
                         args[0].clone(),
                     ));
                 }
-                if !crate::lisp::native_comp::garbage_collection_maybe_due(interp, env, factor) {
+                if !crate::lisp::native_comp::garbage_collection_maybe_due(interp, factor) {
                     return Ok(Value::Nil);
                 }
                 // alloc.c:Fgarbage_collect_maybe calls garbage_collect when
-                // since_gc > gc_threshold / factor and returns Qt only then.
-                crate::lisp::native_comp::begin_garbage_collection(interp, env);
-                let census = interp.live_object_census();
-                let threshold = interp
-                    .symbol_value_cell("gc-cons-threshold")
-                    .ok()
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(800_000);
-                let percentage = match interp.symbol_value_cell("gc-cons-percentage") {
-                    Ok(Value::Float(value)) => Some(value.get()),
-                    _ => None,
-                };
-                crate::lisp::native_comp::garbage_collection_finished(
-                    interp,
-                    census.total_bytes_of_live_objects(),
-                    threshold,
-                    percentage,
-                );
+                // since_gc > gc_threshold / factor and returns Qt then, even
+                // when the collection itself is inhibited.
+                crate::lisp::native_comp::garbage_collect_now(interp, env);
                 Ok(Value::T)
             }
             "memory-use-counts" => {
