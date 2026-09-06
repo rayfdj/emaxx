@@ -1514,6 +1514,35 @@ fn garbage_collect_maybe_reads_the_counters_the_last_collection_left() {
 }
 
 #[test]
+fn interning_after_unintern_makes_a_fresh_symbol_in_a_private_obarray() {
+    // lread.c:intern_driver allocates a new symbol on every obarray miss;
+    // Funintern only drops the old one from the table, which keeps its
+    // cells.  Emaxx keyed a private obarray's symbol by its name, so the
+    // re-interned name was the old symbol, still bound.  Semantic's
+    // preprocessor pushes a macro argument (`intern' + `set'), pops it
+    // (`unintern') and pushes it again on the next expansion; the second
+    // push then saw a bound symbol, treated it as an outer binding to
+    // stack, and the argument name survived as a macro (six
+    // semantic-utest-ia completions).
+    let program = r#"
+        (let* ((ob (obarray-make 13)) (s1 (intern "alias" ob)))
+          (set s1 5)
+          (unintern "alias" ob)
+          (let ((s2 (intern "alias" ob)))
+            (list (eq s1 s2) (boundp s2) (boundp s1) (symbol-value s1)
+                  (progn (set s2 7) (list (symbol-value s1) (symbol-value s2)))
+                  (equal (symbol-name s1) (symbol-name s2))
+                  (eq (intern-soft "alias" ob) s2)
+                  (unintern s1 ob)
+                  (eq (intern-soft "alias" ob) s2))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(nil nil t 5 (5 7) t t nil t)",
+        "intern after unintern",
+    );
+}
+
+#[test]
 fn message_log_disables_undo_in_the_messages_buffer() {
     // xdisp.c message_dolog sets `buffer-undo-list' to t and
     // `cache-long-scans' to nil in the log buffer every time it logs, so

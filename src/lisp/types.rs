@@ -2055,6 +2055,18 @@ pub(crate) fn make_obarray_symbol_name(base: &str, obarray_id: u64) -> String {
     format!("{base}{OBARRAY_SYMBOL_MARKER}{obarray_id}")
 }
 
+static FRESH_OBARRAY_SYMBOL_SERIAL: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// lread.c:intern_driver allocates a new symbol object on every obarray
+/// miss.  A private obarray's symbol is keyed by its name here, so a name
+/// uninterned and interned again must not resolve to the old object with
+/// its old value, function and plist: each miss gets a fresh serial.
+pub(crate) fn make_fresh_obarray_symbol_name(base: &str, obarray_id: u64) -> String {
+    let serial = FRESH_OBARRAY_SYMBOL_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{base}{OBARRAY_SYMBOL_MARKER}{obarray_id}.{serial}")
+}
+
 pub(crate) fn is_uninterned_symbol(symbol: &str) -> bool {
     symbol.contains(UNINTERNED_SYMBOL_MARKER)
 }
