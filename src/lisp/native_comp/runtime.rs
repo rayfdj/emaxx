@@ -708,7 +708,6 @@ pub(crate) struct NativeRuntime {
     heap: NativeHeap,
     thread: Box<NativeThreadState>,
     thread_pointer: Box<*mut NativeThreadState>,
-    symbols_with_positions_enabled: Box<bool>,
     link_table: Box<[*mut c_void]>,
     handlers: Vec<HandlerEntry>,
     unwind: Vec<UnwindAction>,
@@ -741,7 +740,6 @@ impl Default for NativeRuntime {
             heap: NativeHeap::default(),
             thread,
             thread_pointer,
-            symbols_with_positions_enabled: Box::new(false),
             link_table: runtime_link_table().into_boxed_slice(),
             handlers: Vec::new(),
             unwind: Vec::new(),
@@ -866,10 +864,6 @@ impl NativeRuntime {
         (&mut *self.thread_pointer as *mut *mut NativeThreadState).cast()
     }
 
-    pub(crate) fn symbols_with_positions_relocation(&mut self) -> *mut bool {
-        &mut *self.symbols_with_positions_enabled
-    }
-
     pub(crate) fn pure_relocation(&self) -> *mut c_void {
         usize::MAX as *mut c_void
     }
@@ -941,14 +935,6 @@ impl NativeRuntime {
         // function without crossing a C-subr wrapper, so reconcile the Rust
         // registrations before snapshotting the nested call's handler depth.
         self.sync_handlers(interpreter)?;
-
-        // data.c exposes this as a forwarded C bool.  Since the variable is
-        // intrinsically special, its value cell (including any buffer-local
-        // forwarding) is the authority; walking lexical frames here is both
-        // unlike GNU and needlessly charges every native call.
-        *self.symbols_with_positions_enabled = interpreter
-            .symbol_value_cell("symbols-with-pos-enabled")
-            .is_ok_and(|value| value.is_truthy());
 
         let mut invocation = NativeInvocation::new(target);
         self.begin_call(invocation.jump_buffer(), interpreter);
@@ -1364,7 +1350,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         match (subroutine.name, arguments) {
             ("eq", [left, right])
                 if left == right
-                    || !*unsafe { &*active.runtime }.symbols_with_positions_enabled =>
+                    || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(left == right);
             }
@@ -1376,7 +1362,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             }
             ("symbolp", [value])
                 if *value & TAG_MASK == TAG_SYMBOL
-                    || !*unsafe { &*active.runtime }.symbols_with_positions_enabled =>
+                    || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
             }
@@ -2360,7 +2346,7 @@ fn native_symbolp(active: &mut ActiveCall, word: NativeWord) -> Result<bool, Lis
     if word & TAG_MASK == TAG_SYMBOL {
         return Ok(true);
     }
-    if !*unsafe { &*active.runtime }.symbols_with_positions_enabled {
+    if !unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
         return Ok(false);
     }
     let value = decode_word(active, word)?;
@@ -2480,6 +2466,40 @@ unsafe fn native_cdr(value: NativeWord) -> NativeWord {
     unsafe { (*(value.wrapping_sub(TAG_CONS) as *const NativeCons)).cdr() }
 }
 
+/// lisp.h:maybe_remove_pos_from_symbol after the caller checked the C flag.
+/// PSEUDOVECTORP only reads the subtype; it never traverses an unrelated
+/// cons or vector. Only a positioned symbol needs its bare-symbol field.
+fn native_remove_symbol_position(
+    active: &mut ActiveCall,
+    word: NativeWord,
+) -> Result<NativeWord, LispError> {
+    if word & TAG_MASK != TAG_VECTORLIKE {
+        return Ok(word);
+    }
+    let runtime = unsafe { &*active.runtime };
+    // The active native arguments keep the complete pointed-to object live.
+    let handle = unsafe { runtime.heap.live_handle(word) }
+        .ok_or_else(|| super::lisp::native_ice("native EQ object has a mismatched tag"))?;
+    let Value::Record(id) = &handle.value else {
+        return Ok(word);
+    };
+    let symbol = unsafe { &*active.interpreter }
+        .find_record(*id)
+        .filter(|record| record.kind == crate::lisp::eval::RecordKind::SymbolWithPos)
+        .and_then(|record| record.slots.first())
+        .cloned();
+    let Some(symbol) = symbol else {
+        return Ok(word);
+    };
+    // The record currently owns a typed symbol reference, not an ABI word.
+    // Use the existing bridge only for that field; R02c/R03 still owns the
+    // work of storing these object references directly as native words.
+    unsafe { &mut *active.runtime }
+        .heap
+        .encode(&symbol)
+        .map_err(|error| super::lisp::native_ice(&error))
+}
+
 fn native_eq(
     active: &mut ActiveCall,
     left: NativeWord,
@@ -2488,20 +2508,15 @@ fn native_eq(
     if left == right {
         return Ok(true);
     }
-    if !*unsafe { &*active.runtime }.symbols_with_positions_enabled {
+    if !unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
         return Ok(false);
     }
     if left & TAG_MASK != TAG_VECTORLIKE && right & TAG_MASK != TAG_VECTORLIKE {
         return Ok(false);
     }
-    let left = decode_word(active, left)?;
-    let right = decode_word(active, right)?;
-    Ok(crate::lisp::primitives::values_eq_in_env(
-        unsafe { &*active.interpreter },
-        &left,
-        &right,
-        unsafe { &*active.environment },
-    ))
+    let left = native_remove_symbol_position(active, left)?;
+    let right = native_remove_symbol_position(active, right)?;
+    Ok(left == right)
 }
 
 /// fns.c:Feql only inspects float and bignum payloads; every other object
@@ -2534,7 +2549,7 @@ fn native_eql(
             &left_value,
             &right_value,
         ))
-    } else if *unsafe { &*active.runtime }.symbols_with_positions_enabled {
+    } else if unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
         Ok(crate::lisp::primitives::values_eq_in_env(
             unsafe { &*active.interpreter },
             &left_value,
@@ -2752,7 +2767,7 @@ fn native_get_symbol_name(
     if let Ok(name) = value.as_symbol() {
         return Ok(SymbolName::from(name));
     }
-    if *unsafe { &*active.runtime }.symbols_with_positions_enabled
+    if unsafe { &*active.interpreter }.symbols_with_positions_enabled()
         && let Some((bare, _)) = symbol_with_pos_parts(unsafe { &*active.interpreter }, &value)
         && let Ok(name) = bare.as_symbol()
     {
@@ -5221,6 +5236,51 @@ mod tests {
         invoke_subr(index, &[value])
     }
 
+    extern "C" fn call_eq_by_subr(left: NativeWord, right: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "eq")
+            .expect("eq belongs to the native ABI");
+        invoke_subr(index, &[left, right])
+    }
+
+    extern "C" fn eq_native_cons_and_object(object: NativeWord, reverse: NativeWord) -> NativeWord {
+        let pair = invoke_cons(TAG_FIXNUM_LOW, 0);
+        if reverse == 0 {
+            direct_native_eq(pair, object)
+        } else {
+            direct_native_eq(object, pair)
+        }
+    }
+
+    extern "C" fn eq_across_position_flag_binding(
+        flag: NativeWord,
+        value: NativeWord,
+        bare: NativeWord,
+        positioned: NativeWord,
+    ) -> NativeWord {
+        let before = direct_native_eq(bare, positioned);
+        runtime_specbind(flag, value);
+        let during = direct_native_eq(bare, positioned);
+        runtime_unbind_n((1 << FIXNUM_BITS) + TAG_FIXNUM_LOW);
+        let after = direct_native_eq(bare, positioned);
+        invoke_cons(before, invoke_cons(during, invoke_cons(after, 0)))
+    }
+
+    extern "C" fn set_position_flag_then_eq(
+        flag: NativeWord,
+        value: NativeWord,
+        bare: NativeWord,
+        positioned: NativeWord,
+    ) -> NativeWord {
+        let set = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "set")
+            .expect("set belongs to the native ABI");
+        invoke_subr(set, &[flag, value]);
+        call_eq_by_subr(bare, positioned)
+    }
+
     extern "C" fn cons_then_funcall_car(function: NativeWord, value: NativeWord) -> NativeWord {
         let list = invoke_cons(value, 0);
         let funcall = super::super::abi::native_subrs()
@@ -6728,6 +6788,297 @@ mod tests {
                     .expect("native cl-type-of subr"),
                 expected
             );
+        }
+    }
+
+    fn check_native_eq_position_flag_binding(initial: Value, bound: Value) {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let flag = Value::symbol("symbols-with-pos-enabled");
+        let bare = Value::symbol("eq-position-probe");
+        let positioned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "position-symbol",
+            &[bare.clone(), Value::Integer(19)],
+            &mut environment,
+        )
+        .expect("allocate a positioned symbol through the ordinary primitive");
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial.clone());
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                eq_across_position_flag_binding as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[flag, bound.clone(), bare, positioned],
+            )
+            .expect("bind and restore the flag inside one native call");
+        assert_eq!(
+            result,
+            Value::list([initial.clone(), bound, initial.clone()])
+        );
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("symbols-with-pos-enabled")
+                .expect("restored flag remains bound"),
+            initial
+        );
+    }
+
+    #[test]
+    fn native_eq_observes_position_flag_enabled_inside_native_call() {
+        check_native_eq_position_flag_binding(Value::Nil, Value::T);
+    }
+
+    #[test]
+    fn native_eq_observes_position_flag_disabled_inside_native_call() {
+        check_native_eq_position_flag_binding(Value::T, Value::Nil);
+    }
+
+    #[test]
+    fn native_eq_observes_position_flag_set_inside_native_call() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let flag = Value::symbol("symbols-with-pos-enabled");
+        let bare = Value::symbol("eq-position-probe");
+        let positioned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "position-symbol",
+            &[bare.clone(), Value::Integer(19)],
+            &mut environment,
+        )
+        .expect("allocate the positioned symbol for the Fset control");
+        for (initial, next) in [(Value::Nil, Value::T), (Value::T, Value::Nil)] {
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial);
+            let result = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    set_position_flag_then_eq as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[flag.clone(), next.clone(), bare.clone(), positioned.clone()],
+                )
+                .expect("Fset changes the live C flag without another native invocation");
+            assert_eq!(result, next);
+            assert_eq!(
+                interpreter
+                    .symbol_value_cell("symbols-with-pos-enabled")
+                    .expect("the native Fset leaves the flag bound"),
+                next
+            );
+        }
+    }
+
+    #[test]
+    fn native_and_ordinary_position_flag_readers_ignore_lexical_and_detached_cells() {
+        for (initial, opposite) in [(Value::Nil, Value::T), (Value::T, Value::Nil)] {
+            let mut interpreter = Interpreter::new();
+            // An explicit lexical alist is not GNU's C slot. Real dynamic
+            // bindings are exercised by the specbind controls above.
+            let mut environment =
+                vec![vec![("symbols-with-pos-enabled".into(), opposite.clone())].into()];
+            let mut runtime = NativeRuntime::default();
+            let bare = Value::symbol("eq-position-probe");
+            let positioned = crate::lisp::primitives::call(
+                &mut interpreter,
+                "position-symbol",
+                &[bare.clone(), Value::Integer(19)],
+                &mut environment,
+            )
+            .expect("allocate the positioned symbol for the detachment control");
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial.clone());
+            for detached in [false, true] {
+                if detached {
+                    crate::lisp::primitives::call(
+                        &mut interpreter,
+                        "makunbound",
+                        &[Value::symbol("symbols-with-pos-enabled")],
+                        &mut environment,
+                    )
+                    .expect("detach the symbol without changing its C boolean");
+                    interpreter.set_symbol_value_cell("symbols-with-pos-enabled", opposite.clone());
+                    assert_eq!(
+                        interpreter
+                            .symbol_value_cell("symbols-with-pos-enabled")
+                            .expect("the detached symbol now has a plain value"),
+                        opposite
+                    );
+                }
+                for name in ["eq", "eql"] {
+                    assert_eq!(
+                        crate::lisp::primitives::call(
+                            &mut interpreter,
+                            name,
+                            &[bare.clone(), positioned.clone()],
+                            &mut environment,
+                        )
+                        .expect("ordinary equality reads the live C flag"),
+                        initial,
+                        "{name} reads the C slot, detached={detached}",
+                    );
+                }
+                for function in [
+                    direct_native_eq as *const c_void,
+                    direct_native_eql as *const c_void,
+                    call_eq_by_subr as *const c_void,
+                ] {
+                    assert_eq!(
+                        runtime
+                            .invoke(
+                                &mut interpreter,
+                                &mut environment,
+                                function,
+                                NativeCallingConvention::Fixed,
+                                &[bare.clone(), positioned.clone()],
+                            )
+                            .expect("native equality reads the live C flag"),
+                        initial,
+                        "native predicate reads the C slot, detached={detached}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_eq_does_not_materialize_unrelated_cons_fields() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
+        let record = interpreter.create_record("eq-word-probe", vec![Value::Integer(7)]);
+        for object in [Value::vector(Vec::new()), record] {
+            for reverse in [Value::Nil, Value::T] {
+                let mut runtime = NativeRuntime::default();
+                assert_eq!(
+                    runtime
+                        .invoke(
+                            &mut interpreter,
+                            &mut environment,
+                            eq_native_cons_and_object as *const c_void,
+                            NativeCallingConvention::Fixed,
+                            &[object.clone(), reverse],
+                        )
+                        .expect("GNU EQ compares distinct object identities"),
+                    Value::Nil
+                );
+                assert!(
+                    runtime.heap.cons_values.is_empty(),
+                    "lisp.h:EQ never reads or materializes an unrelated cons's fields"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_and_ordinary_eq_preserve_allocated_bignum_identity() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let number: num_bigint::BigInt = num_bigint::BigInt::from(MOST_POSITIVE_FIXNUM) + 1;
+        let left = Value::BigInteger(number.clone().into());
+        let right = Value::BigInteger(number.into());
+        for positions_enabled in [Value::T, Value::Nil] {
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", positions_enabled);
+            let arguments = [left.clone(), right.clone()];
+            let ordinary =
+                crate::lisp::primitives::call(&mut interpreter, "eq", &arguments, &mut environment)
+                    .expect("ordinary eq on distinct bignums");
+            let native = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    direct_native_eq as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &arguments,
+                )
+                .expect("native eq on distinct bignums");
+            assert_eq!((ordinary, native), (Value::Nil, Value::Nil));
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        direct_native_eq as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[left.clone(), left.clone()],
+                    )
+                    .expect("copies retain the same bignum object"),
+                Value::T
+            );
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        direct_native_eql as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &arguments,
+                    )
+                    .expect("fns.c:Feql still compares bignum numeric values"),
+                Value::T
+            );
+        }
+    }
+
+    #[test]
+    fn native_eq_unwraps_only_positioned_symbols_and_preserves_identity() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let uninterned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-symbol",
+            &[Value::string("eq-position-probe")],
+            &mut environment,
+        )
+        .expect("allocate an uninterned symbol");
+        for bare in [
+            Value::Nil,
+            Value::T,
+            Value::symbol("integer"),
+            Value::symbol("eq-position-probe"),
+            uninterned,
+        ] {
+            let positions = [0, 19].map(|position| {
+                crate::lisp::primitives::call(
+                    &mut interpreter,
+                    "position-symbol",
+                    &[bare.clone(), Value::Integer(position)],
+                    &mut environment,
+                )
+                .expect("data.c:Fposition_symbol")
+            });
+            let mut runtime = NativeRuntime::default();
+            for enabled in [Value::T, Value::Nil] {
+                interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled.clone());
+                for (left, right, expected) in [
+                    (positions[0].clone(), bare.clone(), enabled.clone()),
+                    (bare.clone(), positions[0].clone(), enabled.clone()),
+                    (positions[0].clone(), positions[1].clone(), enabled.clone()),
+                    (positions[0].clone(), positions[0].clone(), Value::T),
+                    (positions[0].clone(), Value::vector(Vec::new()), Value::Nil),
+                    (positions[0].clone(), Value::symbol("different"), Value::Nil),
+                ] {
+                    for function in [
+                        direct_native_eq as *const c_void,
+                        call_eq_by_subr as *const c_void,
+                    ] {
+                        assert_eq!(
+                            runtime
+                                .invoke(
+                                    &mut interpreter,
+                                    &mut environment,
+                                    function,
+                                    NativeCallingConvention::Fixed,
+                                    &[left.clone(), right.clone()],
+                                )
+                                .expect("native EQ follows lisp.h positioned-symbol identity"),
+                            expected,
+                        );
+                    }
+                }
+            }
         }
     }
 

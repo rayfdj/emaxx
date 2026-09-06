@@ -42,6 +42,26 @@ finite dump prerequisite inventory below is unchanged.
   `NativeCompilerState::clone` refuses live compiler/native state. Do not
   remove that safeguard or silently disable native libraries.
 
+### D04 follow-up in progress: one live forwarded position flag (2026-09-06)
+
+After pushed `ae12db4`, the EQ source audit found that native code's
+`symbols-with-pos-enabled` relocation points to a per-call snapshot rather
+than GNU's live C bool. The uncommitted correction makes the stable
+interpreter-owned cell the destination for ordinary/native readers and the
+loader; binding/unbinding and selected/default/local stores use the existing
+forwarding machinery. This is part of D04's existing forwarding-destination
+contract, not a new image prerequisite or a new dump format. Full V02–V05
+symbol representation remains open. It adds no Lisp object root, and loaded
+native interpreters still cannot be cloned.
+
+Two inner-native flag-binding controls fail on the snapshot implementation;
+the corrected focused run passes 128 tests, zero failures, with the existing
+manual timing probe ignored. Strict Clippy/check/format are clean. Final
+focused/artifact checks are pending and no timing has run. See the
+[current handover](handover-2026-09-02-native-comp.md) and
+[P13/R03 native ledger](native-comp-c-parity-ledger.md) for evidence and
+remaining forwarding limitations. No image writer/loader is implemented.
+
 ### Current D03/D06 unit: finish graph marking before native sweeping
 
 GNU `alloc.c:process_mark_stack` marks regular vector contents and cons

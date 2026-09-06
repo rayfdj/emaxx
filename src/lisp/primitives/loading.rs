@@ -518,6 +518,12 @@ fn eval_buffer_forms(
             // lread.c reads through the dynamically active `obarray', so a
             // let-bound private obarray owns the parsed symbols.
             let form = interp.intern_read_symbols_in_value(form, eval_env)?;
+            // GNU constructs identity-bearing reader literals before the
+            // form reaches eval-buffer's evaluator.  In particular, native
+            // compilation contexts contain #s records, hash tables, and
+            // circular #[...] constants; leaving ReaderForm markers here
+            // makes the later compiler read fail with invalid-read-syntax.
+            let form = interp.materialize_read_object_literals(form, eval_env)?;
             result = if eager_macroexpand {
                 eager_expand_eval(interp, &form, eval_env)?
             } else {

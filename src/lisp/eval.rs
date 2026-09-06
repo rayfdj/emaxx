@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -3919,6 +3919,10 @@ pub struct Interpreter {
     overriding_plist_environment: Value,
     max_lisp_eval_depth: i64,
     debug_on_next_call: bool,
+    /// data.c's forwarded C boolean, also read through comp.c's native
+    /// relocation. The box keeps its address stable if the interpreter moves;
+    /// Cell permits same-thread FFI reads while Rust updates the live slot.
+    symbols_with_positions_enabled: Box<Cell<bool>>,
     /// data.c set_internal: storing void into a variable forwarded to a C
     /// slot (DEFVAR_LISP/BOOL/INT) detaches the symbol from that slot and
     /// leaves it void, so `boundp' reads nil and the built-in fallback no
@@ -4780,6 +4784,7 @@ impl Interpreter {
             overriding_plist_environment: Value::Nil,
             max_lisp_eval_depth: 1600,
             debug_on_next_call: false,
+            symbols_with_positions_enabled: Box::new(Cell::new(false)),
             variable_aliases: Vec::new(),
             variable_aliases_index: HashMap::new(),
             special_variables_index: HashSet::default(),

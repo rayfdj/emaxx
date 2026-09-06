@@ -791,6 +791,10 @@ impl SharedBigInt {
     pub(crate) fn identity_ptr(&self) -> usize {
         Rc::as_ptr(&self.0) as usize
     }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl Deref for SharedBigInt {
