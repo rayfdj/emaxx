@@ -351,7 +351,8 @@ object/performance and portable-dump goals remain open.
 
 V05 correction (2026-09-06): GNU `Fset`/`Fset_default` return their original
 NEWVAL and notify watchers with that original object before bool storage
-normalizes it; `set-default` watchers also receive the `set-default` action.
+normalizes it; GNU canonicalizes the `set-default` watcher operation to
+`set` before invoking callbacks.
 `dispatch/misc.rs` now preserves those contracts while retaining normalized
 storage. Focused watcher coverage, the 18-case adversarial audit, formatting,
 all-target checking, and strict Clippy are clean. The post-correction native
