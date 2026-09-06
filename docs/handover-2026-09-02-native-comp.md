@@ -5,11 +5,11 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 2e0b5cf and merged main (2026-09-06)
+## Resume here — pushed 0d06050 after merging main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest implementation checkpoint: `7bfce9b` — match GNU's
-`Fgarbage_collect` symbol mode; handover evidence is pushed in `2e0b5cf`.**
+**Latest implementation checkpoint: `4cb9d12` — match GNU's finite
+`funcall_subr` n-ary dispatch; the resolved merge checkpoint is `0d06050`.**
 It retains the ordinary GC threshold correction from
 `bc8402d`, the `origin/main` merge, and the `pipe`/`fcntl(FD_CLOEXEC)` fallback
 required because macOS has no `libc::pipe2`; it additionally temporarily
@@ -18,9 +18,14 @@ binds `symbols-with-pos-enabled` to nil around public GC exactly as GNU
 (18/18), formatting, all-target checking, and strict all-feature Clippy pass.
 The merged-tree identity and normal native gates also pass, as recorded below.
 
-The implementation checkpoint is pushed; `origin/main` was fetched and merged
-before the documentation push, and the worktree is clean. Continue from the
-remaining L08 source obligation.
+The implementation and merge checkpoints are pushed, and the worktree is
+clean. Continue from the remaining L08 source obligation.
+
+Post-merge validation for `0d06050`: the normal upstream native selector
+passed 177/177 with zero mismatches. The GNU test phase took 90.710 seconds
+and the Emaxx test phase took 1,352.154 seconds; setup took 3.096 versus
+46.535 seconds. The complete result is the harness summary for run
+`1788707918100126000-73169`.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
 This checkpoint closes only the public GNU C layout-size portion; the census
@@ -79,6 +84,13 @@ coverage for the direct fixed-optional, MANY, and UNEVALLED branches: native
 Ffuncall preserves nil padding, forwards the complete MANY vector, and rejects
 special forms with the resolved subr object. The full 0..8 arity matrix and
 remaining subroutine edge cases remain open.
+
+**L07 finite n-ary correction (2026-09-06):** GNU's `funcall_subr` enters its
+fixed-arity switch only when `max_args <= 8`; a finite `max_args > 8` is sent
+through `aMANY` without an upper-bound rejection or Fapply padding. Rust now
+matches both rules, with a focused regression for the dispatcher and spread
+path. The complete native-Ffuncall group passes 10/10; the broader callable
+class and full 0..8 matrix remain open.
 
 **L08 bounded layout correction (2026-09-06):** GNU `alloc.c` reports the C
 allocator layouts, not the host implementation's struct sizes. The configured
