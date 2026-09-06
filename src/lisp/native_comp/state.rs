@@ -60,6 +60,16 @@ impl NativeCompilerState {
             .garbage_collection_finished(live_bytes, threshold, percentage);
     }
 
+    pub(crate) fn garbage_collection_maybe_due(
+        &mut self,
+        factor: i64,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> bool {
+        self.runtime
+            .garbage_collection_maybe_due(factor, threshold, percentage)
+    }
+
     pub(crate) fn version() -> Option<(i32, i32, i32)> {
         gccjit::version()
     }

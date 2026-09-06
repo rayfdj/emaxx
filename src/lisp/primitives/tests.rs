@@ -9234,6 +9234,19 @@ fn native_conditional_gc_and_memory_info_match_the_host_contract() {
             Value::Nil,
         ])
     );
+
+    let due_form = Reader::new(
+        "(let ((gc-cons-threshold 10000)) (make-list 2000 nil) (garbage-collect-maybe 1000))",
+    )
+    .read()
+    .expect("ordinary conditional GC form should parse")
+    .expect("ordinary conditional GC form should contain a form");
+    assert_eq!(
+        interp
+            .eval(&due_form, &mut Vec::new())
+            .expect("ordinary conditional GC should evaluate"),
+        Value::T
+    );
 }
 
 #[test]
