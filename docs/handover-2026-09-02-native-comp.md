@@ -17,6 +17,20 @@ The next open native contract is L03, GNU `eval.c:eval_sub` `maybe_gc`
 placement and live-object accounting. Continue from the ledger's exact C
 source obligation; do not infer that the passing native suite closes it.
 
+**L03 bounded placement correction (2026-09-06):** GNU `eval.c:eval_sub`
+performs `maybe_quit`, then `maybe_gc`, then increments the evaluation depth.
+Rust now invokes the active native GC trampoline in that same position before
+form dispatch; outside a native activation the helper is the corresponding
+fast no-op. A Rust-only control allocates past the configured native threshold
+inside an active native call and evaluates a cons form; the old placement
+would perform no collection, while the new path observes the collection at
+the eval boundary. The focused placement probe, 14 native-GC controls,
+formatting, all-target checking, and strict Clippy pass. The nine-rung
+unchanged-source identity ladder passes, including byte-identical `comp.el`,
+and the fresh isolated native execution gate passes 177/177 with zero
+unexpected results in 1,245.17 seconds. This accepts the placement half of
+L03; complete live-object census/accounting parity remains open under L08.
+
 ### Historical September 6 continuation — EQ/live-flag and reader work
 
 The live-flag dependency described below is now implemented, not just

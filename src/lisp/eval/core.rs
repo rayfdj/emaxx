@@ -316,6 +316,10 @@ impl Interpreter {
         // eval.c:eval_sub checks for a pending quit after the symbol/scalar
         // fast paths and before GC, depth accounting, or form dispatch.
         self.maybe_quit(env)?;
+        // eval.c:2502 calls maybe_gc after maybe_quit and before the depth
+        // increment. The active native boundary owns the conservative stack
+        // scan; outside native execution this is the corresponding fast no-op.
+        crate::lisp::native_comp::maybe_gc_active();
         self.lisp_eval_depth += 1;
         // eval.c:2504-2509.  GNU increments separately in `eval_sub' and
         // `Ffuncall'; this is the eval_sub half.  Public

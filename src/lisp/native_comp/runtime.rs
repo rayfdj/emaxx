@@ -576,6 +576,22 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
     })
 }
 
+/// eval.c:lisp.h:maybe_gc's active native boundary. The assembly trampoline
+/// spills callee-saved registers before the conservative collector scans the
+/// stack, exactly as the generated native call path does.
+pub(crate) fn maybe_gc_active() {
+    if ACTIVE_CALL.with(|active| active.get().is_null()) {
+        return;
+    }
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    unsafe {
+        emaxx_native_gc_trampoline();
+    }
+}
+
 pub(crate) fn decode_active_backtrace_arguments(
     words: &[NativeWord],
 ) -> Option<Result<Vec<Value>, String>> {
@@ -3545,6 +3561,8 @@ struct NativeGcState {
     /// Last point consumed from LISP_ALLOCATED_BYTES.  Keeping the source
     /// monotonic makes allocations outside native activation visible here.
     observed_allocated_bytes: u64,
+    /// Internal evidence for placement tests; not a Lisp-visible counter.
+    collections: usize,
 }
 
 impl NativeGcState {
@@ -3603,6 +3621,7 @@ impl NativeGcState {
 
     /// The post-sweep reset at the end of alloc.c:garbage_collect.
     fn collection_finished(&mut self, live_bytes: usize, threshold: i64, percentage: Option<f64>) {
+        self.collections += 1;
         self.observed_allocated_bytes = lisp_allocated_bytes();
         self.live_bytes = live_bytes;
         self.gc_threshold = self.consing_threshold(threshold, percentage, 0);
@@ -4804,6 +4823,26 @@ mod tests {
     extern "C" fn call_maybe_quit() -> NativeWord {
         runtime_maybe_quit();
         0
+    }
+
+    extern "C" fn eval_form_triggers_maybe_gc() -> NativeWord {
+        with_active(|active| {
+            let runtime = unsafe { &mut *active.runtime };
+            let interpreter = unsafe { &mut *active.interpreter };
+            runtime
+                .heap
+                .native_conses
+                .gc
+                .collection_finished(0, NATIVE_GC_DEFAULT_THRESHOLD, None);
+            for _ in 0..52_000 {
+                runtime.heap.cons(TAG_FIXNUM_LOW, 0);
+            }
+            let form = Value::list([Value::symbol("identity"), Value::Nil]);
+            let result = interpreter
+                .eval(&form, unsafe { &mut *active.environment })
+                .expect("the probe form evaluates");
+            runtime.heap.encode(&result).expect("probe result encodes")
+        })
     }
 
     extern "C" fn raise_wrong_type(predicate: NativeWord, value: NativeWord) -> NativeWord {
@@ -7556,6 +7595,29 @@ mod tests {
         assert!(!gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
         gc.tally_consing(1);
         assert!(gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
+    }
+
+    #[test]
+    fn eval_sub_runs_maybe_gc_before_form_dispatch() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        assert_eq!(runtime.heap.native_conses.gc.collections, 0);
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    eval_form_triggers_maybe_gc as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[],
+                )
+                .expect("eval form with due native GC"),
+            Value::Nil
+        );
+        // One setup reset and one collection at the GNU eval_sub boundary.
+        assert_eq!(runtime.heap.native_conses.gc.collections, 2);
     }
 
     #[test]
