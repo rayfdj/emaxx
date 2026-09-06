@@ -3,9 +3,10 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Latest pushed checkpoint: `8883607`, including the bounded L08 GNU
+Latest pushed checkpoint: `7bfce9b`, including the bounded L08 GNU
 `Fgarbage_collect_maybe` ordinary-state threshold correction, the merge of
-`origin/main`, and the macOS process-pipe portability follow-up. Focused
+`origin/main`, the macOS process-pipe portability follow-up, and the public
+GC `symbols-with-pos-enabled` scope correction. Focused
 testing, 18 anti-cheat gates, formatting, all-target checking, strict
 all-feature Clippy, the merged-tree nine-rung artifact identity ladder, and
 the normal 177-case native execution gate are green. The native execution
