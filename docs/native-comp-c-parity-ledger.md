@@ -5,9 +5,10 @@ finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
 Latest implementation checkpoint: `52298d7`, the bounded L08 GNU
 `Fgarbage_collect` layout-size correction after the L03/L05/L06/L07 audits.
-Focused testing, 18 anti-cheat gates, formatting, all-target checking, and
-strict all-feature Clippy are green; the full native execution and artifact
-identity gates are still pending for this checkpoint. See
+Focused testing, 18 anti-cheat gates, formatting, all-target checking, strict
+all-feature Clippy, the nine-rung artifact identity ladder, and the normal
+177-case native execution gate are green. The native execution performance
+gap remains open. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the exact continuation point.
 This unit comes from the completed post-startup profile and GNU C audit,
