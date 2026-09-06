@@ -1376,17 +1376,28 @@ impl RecordKind {
             // Both configured structs are 88 bytes on the supported GNU
             // 64-bit ABI (comp.h and lisp.h:Lisp_Subr).
             Self::NativeCompUnit | Self::NativeCompiledFunction => 11,
+            // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
+            // which is 42 words on the configured GNU 64-bit ABI.
+            Self::Process => 42,
+            // window.c allocates struct window as a full pseudovector.  Its
+            // configured VECSIZE is 66 words, including the header word.
+            Self::Window => 66,
+            // window.c:struct save_window_data has eight Lisp fields and ten
+            // trailing ints; VECSIZE is 13 words on the configured ABI.
+            Self::WindowConfiguration => 13,
+            // thread.c allocates the complete struct thread_state, while the
+            // GC only traces its leading Lisp fields.  sweep_vectors still
+            // accounts the complete VECSIZE: 63 words here.
+            Self::Thread => 63,
+            // thread.c allocates these fixed-layout pseudovectors with their
+            // complete C structs: 9 and 8 words respectively.
+            Self::Mutex => 9,
+            Self::ConditionVariable => 8,
             // Keymaps are Lisp cons structures in GNU, not pseudovectors.
             Self::Keymap => 0,
             // These fixed-layout host objects are added as their C allocation
             // sites are mapped; never substitute the Rust struct size.
             Self::Font
-            | Self::Process
-            | Self::Window
-            | Self::WindowConfiguration
-            | Self::Thread
-            | Self::Mutex
-            | Self::ConditionVariable
             | Self::TreeSitterParser
             | Self::TreeSitterNode
             | Self::TreeSitterCompiledQuery
@@ -2806,15 +2817,16 @@ impl ImageGraphCopier {
 ///
 /// - `conses' counts every live cons cell, vector-literal spines
 ///   included: vectors ride on conses internally, so cons cells are where
-///   their storage truthfully is.  `vectors'/`vector_slots' are 0 -- no
-///   vector heap objects exist in this implementation.
+///   their storage truthfully is.  `vectors'/`vector_slots' use GNU's
+///   configured C layout for ordinary vectors and fixed-layout
+///   pseudovectors represented by records.
 /// - `floats' is 0: emaxx floats are immediate f64s, not heap cells.
 /// - `intervals' counts text-property spans (buffer spans plus string
 ///   spans), the closest live analogue of GNU's interval tree nodes.
-/// - Markers, overlays, char-tables, frames and records are id-indexed
-///   host state rather than Lisp heap objects and have no row of their
-///   own.  Records are never reclaimed, so values they reference remain
-///   live allocations and stay counted.
+/// - Markers, overlays, char-tables, frames and records are id-indexed host
+///   state.  The fixed-layout records that already have a direct GNU
+///   pseudovector counterpart are included with their C footprint; the
+///   remaining host facades are mapped as their allocation sites are audited.
 #[derive(Default)]
 pub(crate) struct LiveObjectCensus {
     pub(crate) conses: usize,

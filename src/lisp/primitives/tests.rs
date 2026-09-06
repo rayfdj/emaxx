@@ -15422,6 +15422,42 @@ fn native_record_and_pseudovector_type_names_match_gnu_data_c() {
 }
 
 #[test]
+fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
+    // alloc.c:sweep_vectors accounts the complete VECSIZE of these
+    // pseudovectors, not only the Lisp fields traced by the marker.  These
+    // values come from the configured GNU headers:
+    // process=42, window=66, window-configuration=13, thread=63,
+    // mutex=9, and condition-variable=8 words.
+    let mut interp = Interpreter::new();
+    let before = interp.live_object_census();
+    let values = [
+        (crate::lisp::eval::RecordKind::Process, "process"),
+        (crate::lisp::eval::RecordKind::Window, "window"),
+        (
+            crate::lisp::eval::RecordKind::WindowConfiguration,
+            "window-configuration",
+        ),
+        (crate::lisp::eval::RecordKind::Thread, "thread"),
+        (crate::lisp::eval::RecordKind::Mutex, "mutex"),
+        (
+            crate::lisp::eval::RecordKind::ConditionVariable,
+            "condition-variable",
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, name)| interp.create_pseudovector(kind, name, Vec::new()))
+    .collect::<Vec<_>>();
+    let after = interp.live_object_census();
+
+    assert_eq!(after.vectors - before.vectors, values.len());
+    assert_eq!(
+        after.vector_slots - before.vector_slots,
+        42 + 66 + 13 + 63 + 9 + 8
+    );
+    assert_eq!(values.len(), 6);
+}
+
+#[test]
 fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
     let validation = r#"(let* (;; thread.c:499,558 spell the apostrophe ASCII and `error'
                                ;; requotes it per the effective style, so pin the
