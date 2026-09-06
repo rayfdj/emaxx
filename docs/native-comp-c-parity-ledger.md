@@ -525,6 +525,16 @@ Lisp object model.
 | R02c | Native words remain native words across C-owned calls | open | Eliminate repeated encode-cache lookup by carrying the assigned native word in the object representation itself. A separate 64-entry Rust cache was rejected after two exact-output runs regressed to 88.87s and 94.87s user CPU. |
 | R03 | GNU's single object storage across generated code and primitives | partial | Conses expose their two ABI words directly and vectors share one slot array; remove the remaining mirror/reconciliation work only where both mutation directions and GC visibility are proven. |
 
+R02c caller audit (2026-09-06): generated `funcall`, `apply`, and `mapcar`
+already keep their arguments as native words through the direct C-shaped path.
+The remaining Rust-owned round trips are explicit: public `Value` arguments at
+the native entry boundary, byte-code direct calls (decode arguments, execute
+typed Rust bytecode, encode the result), hash-table key/value extraction, and
+relocation materialization. GNU's corresponding C paths retain `Lisp_Object`
+words. No cache or object-field patch is accepted from this audit; the next
+bounded implementation must first provide a runtime-owned word transport for
+one of those typed boundaries, with GC and mutation coverage.
+
 R03/D03/D06 follow-up after `a92e620`: a failing Rust control demonstrates
 native GC reclaiming a cons still held by a rooted vector. The candidate
 connects typed/native marking and weak-table reachability before native
