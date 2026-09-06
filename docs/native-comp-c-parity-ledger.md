@@ -365,7 +365,7 @@ This remains separate from full forwarded-variable parity.
 |---|---|---|---|
 | L01 | `eval.c:eval_sub` depth limit | verified | Extra platform stack probe removed; GNU post-increment/floor behavior tested; smallest unchanged `.eln` is identical. |
 | L02 | `eval.c:eval_sub` `maybe_quit` placement | verified | Focused quit-order test passes; smallest unchanged `.eln` is identical. |
-| L03 | `eval.c:eval_sub` `maybe_gc` placement | open | Map GNU allocation counter and live-byte threshold to all Rust-owned and native-mirrored Lisp objects before implementation. |
+| L03 | `eval.c:eval_sub` `maybe_gc` placement | partial | Rust now calls the active native GC trampoline after `maybe_quit` and before depth/form dispatch; placement probe, anti-cheating, identity, and 177-case native gates pass. Full live-object census/accounting parity remains open under L08. |
 | L04 | `eval.c:Ffuncall` depth limit | verified | Extra platform stack probe removed; focused test and smallest unchanged `.eln` identity pass. |
 | L05 | `eval.c:Ffuncall` debugger-on-exit | verified | Native return path now performs GNU's `backtrace_debug_on_exit`/`call_debugger` branch, including the debugger-control dynamic bindings; focused, anti-cheating, unchanged-source identity, and 177-case native execution gates pass. Headless redisplay top-level unwinding remains outside scope. |
 | L06 | `eval.c:funcall_general` target resolution | partial | Builtin, native, and byte-code direct targets are covered; verify indirection, autoload, interpreted closure, and invalid-function fallback behavior. |
