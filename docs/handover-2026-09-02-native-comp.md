@@ -123,6 +123,22 @@ identity ladder passed all fixtures, including byte-identical `comp.el`. This
 correction is ready for its checkpoint commit. The identity ladder completed
 in 249.06 seconds; the fresh native suite completed in 1,365.02 seconds.
 
+**L05 debugger-on-exit correction (2026-09-06):** GNU `eval.c:Ffuncall`
+checks `backtrace_debug_on_exit` after the callee returns and calls
+`call_debugger (list2 (Qexit, val))` before dropping that activation frame.
+The native Ffuncall path now retains the returned native word, decodes the
+same Lisp value, invokes an evaluator-level `call_debugger`, and re-encodes
+the debugger's return value. The helper follows GNU `eval.c:call_debugger` by
+clearing `debug-on-next-call` and dynamically binding
+`debugger-may-continue`, `inhibit-redisplay`, `inhibit-debugger`, and
+`inhibit-changing-match-data` around the callback. Focused L05 and surrounding
+native-Ffuncall tests pass 8/8, the adversarial audit passes 18/18, all-target
+checking and strict Clippy are clean, all nine unchanged-source identity
+fixtures pass including byte-identical `comp.el`, and the fresh isolated
+native execution gate passes 177/177 with zero unexpected results in
+1,253.37 seconds. This closes the bounded L05 contract; redisplay-specific
+top-level unwinding remains outside the headless native runtime scope.
+
 The full active goal and seven milestone states below remain unchanged:
 GNU-faithful runtime foundations, a real portable startup image as soon as
 its actual correctness prerequisites permit, then remaining native-comp

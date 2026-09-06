@@ -368,7 +368,7 @@ This remains separate from full forwarded-variable parity.
 | L02 | `eval.c:eval_sub` `maybe_quit` placement | verified | Focused quit-order test passes; smallest unchanged `.eln` is identical. |
 | L03 | `eval.c:eval_sub` `maybe_gc` placement | open | Map GNU allocation counter and live-byte threshold to all Rust-owned and native-mirrored Lisp objects before implementation. |
 | L04 | `eval.c:Ffuncall` depth limit | verified | Extra platform stack probe removed; focused test and smallest unchanged `.eln` identity pass. |
-| L05 | `eval.c:Ffuncall` debugger-on-exit | open | Direct native return path does not yet perform GNU's `backtrace_debug_on_exit`/`call_debugger` branch. |
+| L05 | `eval.c:Ffuncall` debugger-on-exit | verified | Native return path now performs GNU's `backtrace_debug_on_exit`/`call_debugger` branch, including the debugger-control dynamic bindings; focused, anti-cheating, unchanged-source identity, and 177-case native execution gates pass. Headless redisplay top-level unwinding remains outside scope. |
 | L06 | `eval.c:funcall_general` target resolution | partial | Builtin, native, and byte-code direct targets are covered; verify indirection, autoload, interpreted closure, and invalid-function fallback behavior. |
 | L07 | `eval.c:funcall_subr` arity and nil padding | partial | Fixed optional padding, wrong arity, and direct builtin errors are tested; audit every 0..8/MANY/UNEVALLED branch. |
 | L08 | `alloc.c` GC live-byte accounting | partial | Threshold/default behavior is implemented; prove the census includes exactly the same live Lisp object classes and bytes as GNU at equivalent state. |

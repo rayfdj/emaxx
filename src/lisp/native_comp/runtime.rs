@@ -2001,6 +2001,27 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
     unsafe { emaxx_native_gc_trampoline() };
     let result = target.invoke(active, call_arguments);
     let result = match result {
+        Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
+            // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
+            // dropping its backtrace record when backtrace-debug marked the
+            // frame.  Keep the native word live until the debugger receives
+            // the same Lisp object, then encode the debugger's return value.
+            let value = runtime
+                .heap
+                .decode(word)
+                .map_err(|error| super::lisp::native_ice(&error));
+            value.and_then(|value| {
+                let argument = Value::list([Value::symbol("exit"), value]);
+                interpreter
+                    .call_debugger(argument, environment)
+                    .and_then(|value| {
+                        runtime
+                            .heap
+                            .encode(&value)
+                            .map_err(|error| super::lisp::native_ice(&error))
+                    })
+            })
+        }
         Ok(word) => Ok(word),
         Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
         Err(error) => match interpreter.dispatch_handler_bindings(error, environment) {
@@ -7104,6 +7125,32 @@ mod tests {
             runtime.heap.cons_values.is_empty(),
             "funcall_subr must not materialize a native-only cons as a Rust Value"
         );
+        assert_eq!(interpreter.backtrace_frames_len(), 0);
+        assert_eq!(interpreter.lisp_eval_depth, 0);
+    }
+
+    #[test]
+    fn native_funcall_honors_gnu_debug_on_exit_frame_flag() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let previous_debugger = interpreter
+            .symbol_value_cell("debugger")
+            .expect("the debugger variable has a default value");
+        interpreter.set_global_binding("debugger", Value::BuiltinFunc("identity".into()));
+
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_funcall_two as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::symbol("backtrace-debug"), Value::Nil, Value::T],
+            )
+            .expect("backtrace-debug marks the active native Ffuncall frame");
+
+        interpreter.set_global_binding("debugger", previous_debugger);
+        assert_eq!(result, Value::list([Value::symbol("exit"), Value::Nil]));
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
     }
