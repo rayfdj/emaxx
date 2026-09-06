@@ -3,7 +3,8 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Latest pushed checkpoint: `5694cfb`, including implementation `234dcbb`'s
+Latest pushed checkpoint: `3a98eb3`, including the fixed-layout
+frame/terminal/buffer census extension after implementation `234dcbb`'s
 bounded L07 GNU native finite-n-ary dispatch correction, the earlier bounded L08
 `Fgarbage_collect_maybe` ordinary-state threshold correction, the merge of
 `origin/main`, the macOS process-pipe portability follow-up, and the public
@@ -32,6 +33,10 @@ with zero mismatches; its test phase was 1,274.360 seconds versus GNU's
 `1788714256563788000-85584`). The compatibility harness now redirects GNU's
 native-comp cache before loading each file so load-time native compilation has
 a writable isolated target.
+The frame/terminal/buffer-owner checkpoint `3a98eb3` rerun also passed
+177/177 with zero mismatches; its test phase was 1,298.906 seconds versus
+GNU's 86.992 seconds and setup was 40.796 versus 2.868 seconds (run
+`1788716210239467000-89735`).
 This unit comes from the completed post-startup profile and GNU C audit,
 not a speculative optimization. The chronology below is historical, not a claim that all its
 "worktree" changes remain uncommitted.
