@@ -5,16 +5,17 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 81d8052 and merged main (2026-09-06)
+## Resume here — pushed 7bfce9b and merged main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest pushed checkpoint: `81d8052` — merged `origin/main` and restored
-macOS process-pipe portability.** It contains the ordinary GC threshold
-binding correction from `bc8402d`, the nontrivial merge of `origin/main`, and
-the `pipe`/`fcntl(FD_CLOEXEC)` fallback required because macOS has no
-`libc::pipe2`. Focused testing, anti-cheat (18/18), formatting, all-target
-checking, and strict all-feature Clippy pass. The merged-tree identity and
-normal native gates also pass, as recorded below.
+**Latest pushed checkpoint: `7bfce9b` — match GNU's `Fgarbage_collect`
+symbol mode.** It retains the ordinary GC threshold correction from
+`bc8402d`, the `origin/main` merge, and the `pipe`/`fcntl(FD_CLOEXEC)` fallback
+required because macOS has no `libc::pipe2`; it additionally temporarily
+binds `symbols-with-pos-enabled` to nil around public GC exactly as GNU
+`alloc.c:Fgarbage_collect` does. The focused census regression, anti-cheat
+(18/18), formatting, all-target checking, and strict all-feature Clippy pass.
+The merged-tree identity and normal native gates also pass, as recorded below.
 
 The checkpoint is pushed; `origin/main` was fetched and merged before the
 push, and the worktree is clean. Continue from the remaining L08 source
@@ -89,6 +90,13 @@ for negative factors. The active native control, ordinary dynamically-bound
 threshold control, existing conditional-GC contract, anti-cheat, check, and
 Clippy gates pass; full native/artifact reruns for this final correction are
 still pending.
+
+**L08 public GC mode correction (2026-09-06):** GNU
+`Fgarbage_collect` dynamically binds `symbols-with-pos-enabled` to nil for
+the mark/sweep and restores the caller's value before taking the `gcstat`
+snapshot. Rust now follows that scope around the public `garbage-collect`
+primitive, with focused restoration coverage. This is separate from the
+remaining allocator free-list and cumulative-counter gaps.
 
 ### Historical September 6 continuation — EQ/live-flag and reader work
 
