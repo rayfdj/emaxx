@@ -218,7 +218,11 @@ fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
             .find_buffer(&buffer_name)
             .map(|(id, _)| id)
             .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
+        // xdisp.c message_dolog: `buffer-undo-list' is t and
+        // `cache-long-scans' nil in the log buffer on every message.
+        interp.set_buffer_local_value(buffer_id, "cache-long-scans", Value::Nil);
         if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+            buffer.disable_undo();
             let end = buffer.point_max();
             buffer.goto_char(end);
             buffer.insert(&format!("{text}\n"));
@@ -2428,9 +2432,12 @@ define_dispatch!(
                     }
                 }
                 // There is no echo area in batch mode.  GNU writes messages to
-                // the process stderr instead, including the newline used to
-                // clear an empty message.  Message capture remains independent
-                // of `inhibit-message', matching the advice used by ERT.
+                // the process stderr instead (xdisp.c message_to_stderr),
+                // including the newline used to clear an empty message, and
+                // first a newline of its own when stdout was written since
+                // the previous message (`noninteractive_need_newline').
+                // Message capture remains independent of `inhibit-message',
+                // matching the advice used by ERT.
                 if interp
                     .lookup_var("noninteractive", env)
                     .is_some_and(|value| value.is_truthy())
@@ -2438,8 +2445,14 @@ define_dispatch!(
                         .lookup_var("inhibit-message", env)
                         .is_none_or(|value| value.is_nil())
                 {
+                    let separator = if interp.batch_stdout_need_newline {
+                        "\n"
+                    } else {
+                        ""
+                    };
+                    interp.batch_stdout_need_newline = false;
                     std::io::stderr()
-                        .write_all(format!("{text}\n").as_bytes())
+                        .write_all(format!("{separator}{text}\n").as_bytes())
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                 }
                 if args.first().is_some_and(Value::is_nil) {

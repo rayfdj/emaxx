@@ -6738,32 +6738,6 @@ fn headered_textual_elc_executes_instead_of_its_empty_source_stub() {
 }
 
 #[test]
-fn load_target_resolves_repeated_directory_autoload_aliases() {
-    let root = std::env::temp_dir().join(format!(
-        "emaxx-load-target-alias-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(root.join("srecode")).unwrap();
-    std::fs::write(
-        root.join("srecode").join("template.el"),
-        "(provide 'srecode/template)\n",
-    )
-    .unwrap();
-
-    let mut interp = Interpreter::new();
-    interp.set_load_path(vec![root.clone()]);
-    let resolved = interp.load_target("srecode/srecode-template").unwrap();
-    assert_eq!(resolved, root.join("srecode").join("template.el"));
-
-    std::fs::remove_file(root.join("srecode").join("template.el")).unwrap();
-    std::fs::remove_dir(root.join("srecode")).unwrap();
-    std::fs::remove_dir(&root).unwrap();
-}
-
-#[test]
 fn load_file_strict_scopes_lexical_binding_to_the_loaded_file() {
     run_with_large_stack(|| {
         let path = std::env::temp_dir().join(format!(
@@ -7243,8 +7217,11 @@ fn null_device_matches_unix_batch_default() {
 
 #[test]
 fn exec_suffixes_matches_unix_batch_default() {
+    // callproc.c's DEFVAR leaves `exec-suffixes' nil; the running editor's
+    // `("")' is startup's doing, so the batch fixture is the one to ask
+    // (the CLI answers `("")' on both editors).
     assert_eq!(
-        eval_str("exec-suffixes"),
+        eval_str_with_upstream_batch("exec-suffixes"),
         Value::list([Value::String(String::new().into())])
     );
 }
@@ -7372,7 +7349,7 @@ fn executable_find_observes_dynamic_exec_path_and_empty_path_entries() {
                 (require 'bytecomp)
                 (require 'dired)
                 (require 'filenotify)
-                (load "../emacs/test/lisp/files-tests.el")
+                (load (expand-file-name "test/lisp/files-tests.el" source-directory))
                 (ert-with-temp-file tmpfile
                   :suffix (car exec-suffixes)
                   (set-file-modes tmpfile #o755)

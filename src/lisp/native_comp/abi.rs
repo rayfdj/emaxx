@@ -52,6 +52,14 @@ pub(crate) const HANDLER_SIZE: usize = 304;
 // m_handlerlist, so an approximate opaque tail would change the artifact.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) const THREAD_STATE_SIZE: usize = 512;
+// puresize.h PURESIZE, which comp.c's PURE_P check compares an object's
+// distance from `pure' against: BASE_PURESIZE (3400000 plus the
+// configuration's SYSTEM_PURESIZE_EXTRA, 200000 on Darwin/NS) times
+// PURESIZE_RATIO 10/6 on 64-bit hosts, times 12/10 only under
+// ENABLE_CHECKING.  The immediate lands in every `.eln', so it is measured
+// from the pinned reference build's headers like the layout constants.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) const PURESIZE: i64 = 6_000_000;
 
 // glibc's x86-64 `jmp_buf` is 200 bytes; the pinned X11/GTK reference build
 // defines `HAVE_X_WINDOWS`, so `struct handler` ends with
@@ -69,6 +77,13 @@ pub(crate) const HANDLER_JMP_OFFSET: usize = 64;
 pub(crate) const HANDLER_SIZE: usize = 304;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) const THREAD_STATE_SIZE: usize = 520;
+// The pinned Linux reference build has no SYSTEM_PURESIZE_EXTRA and no
+// ENABLE_CHECKING: 3400000 * 10 / 6 = 5666666 (measured from its
+// puresize.h with its own compiler flags; the Darwin 6000000 produced a
+// three-byte `cmp' immediate difference in every Linux `.eln' with a
+// PURE_P check, comp-tests.el's `setcar' first).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) const PURESIZE: i64 = 5_666_666;
 
 #[cfg(not(any(
     all(target_os = "macos", target_arch = "aarch64"),
@@ -92,8 +107,11 @@ mod tests {
     // supported target.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     const PINNED_SUBR_COUNT: usize = 1_445;
+    // The pinned Linux oracle (--with-x-toolkit=no, no dbus) registers
+    // 1455 subroutines; the gtk3/cairo/dbus build the table first came
+    // from had 1467.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    const PINNED_SUBR_COUNT: usize = 1_467;
+    const PINNED_SUBR_COUNT: usize = 1_455;
 
     #[test]
     fn generated_native_subr_table_has_the_pinned_gnu_registration_order() {

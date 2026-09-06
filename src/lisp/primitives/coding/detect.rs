@@ -583,34 +583,6 @@ fn detect_ccl(
     true
 }
 
-/// Fdefine_coding_system_internal's `charset_valids' vector for a
-/// charset-type coding: per first byte, the charsets it may start,
-/// smaller dimensions first.
-fn charset_valids(interp: &Interpreter, coding: &str) -> Vec<Option<Vec<String>>> {
-    let mut valids: Vec<Option<Vec<String>>> = vec![None; 256];
-    for charset in coding_system_charset_names(interp, coding) {
-        let Some(canonical) = interp.charset_canonical_name(&charset) else {
-            continue;
-        };
-        let dim = charset_dimension(interp, &canonical) as usize;
-        let Some(bounds) = charset_code_space(interp, &canonical) else {
-            continue;
-        };
-        let Some(&(min, max)) = bounds.get(dim - 1) else {
-            continue;
-        };
-        for byte in min..=max.min(255) {
-            let entry = valids[byte as usize].get_or_insert_with(Vec::new);
-            let position = entry
-                .iter()
-                .position(|existing| charset_dimension(interp, existing) as usize > dim)
-                .unwrap_or(entry.len());
-            entry.insert(position, canonical.clone());
-        }
-    }
-    valids
-}
-
 fn detect_charset(
     interp: &Interpreter,
     src: &DetectSource,

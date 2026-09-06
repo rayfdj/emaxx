@@ -128,7 +128,7 @@ pub(crate) fn call_interactively_impl(
     }
     let mut func = resolve_callable(interp, &args[0], env)?;
     if let (Some(symbol), Some((file, _, _))) = (args[0].as_symbol().ok(), autoload_parts(&func)) {
-        interp.load_target_with_env(&file, env)?;
+        interp.load_autoload_target(&file, env)?;
         func = interp.lookup_function(symbol, env)?;
     }
     // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
@@ -298,6 +298,23 @@ pub(crate) fn eval_buffer_impl(
         Value::list([source_file.clone()]),
         env,
     )?;
+    // Feval_buffer specbinds the Lisp variable `lexical-binding' to the
+    // buffer's file-variable cookie (lisp_file_lexical_cookie) for the
+    // whole readevalloop, so macros that consult the variable while the
+    // buffer's forms expand (`named-let' signals without it) see the
+    // buffer's own setting, not the caller's.  The fresh interpreter
+    // environment below decides how the forms are evaluated; this is the
+    // variable the forms themselves can read.
+    let cookie_lexical = interp
+        .get_buffer_by_id(buffer_id)
+        .map(|buffer| buffer.buffer_string())
+        .and_then(|text| lisp_file_lexical_cookie(&text))
+        .unwrap_or(false);
+    let previous_lexical_binding = interp.bind_special_variable(
+        "lexical-binding",
+        if cookie_lexical { Value::T } else { Value::Nil },
+        env,
+    )?;
     // Feval_buffer returns nil whatever the last form evaluated to.
     let result = eval_buffer_forms(interp, buffer_id, eager_macroexpand, env).map(|_| Value::Nil);
     if result.is_ok() {
@@ -306,6 +323,7 @@ pub(crate) fn eval_buffer_impl(
             .unwrap_or(Value::Nil);
         interp.commit_entire_load_history(&source_file, current);
     }
+    interp.restore_special_binding(previous_lexical_binding, env)?;
     interp.restore_special_binding(previous_load_list, env)?;
     result
 }
@@ -395,7 +413,13 @@ pub(crate) fn eval_region_impl(
             .buffer
             .buffer_substring(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
+        // lread.c reads through `read-symbol-shorthands' (oblookup_
+        // considering_shorthand); load-with-code-conversion binds it from
+        // the file's local variables around the evaluation.
+        let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+        let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(&text, shorthands);
+        let forms = reader.read_all()?;
+        record_unescaped_character_literals(interp, &reader, env);
         let mut result = Value::Nil;
         for form in forms {
             // lread.c reads through the dynamically active `obarray', so a
@@ -476,6 +500,35 @@ fn eval_region_via_read_function(
     Ok(result)
 }
 
+/// lread.c lisp_file_lexical_cookie: the `lexical-binding' file variable
+/// of a Lisp source, read the way readevalloop's callers read it.  Only
+/// the first line counts (the second when the first is a `#!' line), and
+/// only when that line starts with `;': the `-*- ... -*-' fields are
+/// scanned for `lexical-binding', whose value is lexical unless it is
+/// `nil'.  A cookie-looking string on a later line is just text.
+pub(crate) fn lisp_file_lexical_cookie(text: &str) -> Option<bool> {
+    let mut lines = text.split('\n');
+    let mut line = lines.next()?;
+    if line.starts_with("#!") {
+        line = lines.next()?;
+    }
+    if !line.starts_with(';') {
+        return None;
+    }
+    let start = line.find("-*-")? + 3;
+    let rest = &line[start..];
+    let end = rest.find("-*-").unwrap_or(rest.len());
+    for field in rest[..end].split(';') {
+        let Some((name, value)) = field.split_once(':') else {
+            continue;
+        };
+        if name.trim() == "lexical-binding" {
+            return Some(value.trim() != "nil");
+        }
+    }
+    None
+}
+
 fn eval_buffer_forms(
     interp: &mut Interpreter,
     buffer_id: u64,
@@ -496,8 +549,7 @@ fn eval_buffer_forms(
     // a cookie-less buffer's defuns are dynamic even when `eval-buffer'
     // is called from inside a lexical closure (testcover's
     // instrumentation runner is exactly that caller).
-    let lexical = crate::lisp::extract_mode_line_variable(&text, "lexical-binding")
-        .is_some_and(|value| value != "nil");
+    let lexical = lisp_file_lexical_cookie(&text).unwrap_or(false);
     if !matches!(&load_read, Value::Symbol(symbol) if symbol == "read") {
         // A customized reader (like `edebug--read') reads from the buffer
         // itself, form by form, moving point like `readevalloop' does.
@@ -511,7 +563,14 @@ fn eval_buffer_forms(
             )
         });
     }
-    let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
+    // lread.c reads through `read-symbol-shorthands' (oblookup_considering_
+    // shorthand); load-with-code-conversion binds it from the file's local
+    // variables around `eval-buffer', so `(defun f-test3 ...)' under
+    // `(("f-" . "elisp--foo-"))' defines `elisp--foo-test3'.
+    let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(&text, shorthands);
+    let forms = reader.read_all()?;
+    record_unescaped_character_literals(interp, &reader, env);
     with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
         let mut result = Value::Nil;
         for form in forms {
@@ -905,6 +964,38 @@ fn record_native_source(
         &mut put_env,
     )?;
     Ok(())
+}
+
+/// lread.c read_char_literal conses every unescaped `?)'-style literal
+/// onto `lread--unescaped-character-literals', which `load' binds to nil
+/// around a file and warns about as it unwinds
+/// (load_warn_unescaped_character_literals).  The eval-buffer path
+/// `load-with-code-conversion' takes reads with its own reader, so its
+/// literals are added here.
+fn record_unescaped_character_literals(
+    interp: &mut Interpreter,
+    reader: &crate::lisp::reader::Reader<'_>,
+    env: &mut Env,
+) {
+    let mut items = interp
+        .lookup_var("lread--unescaped-character-literals", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    let mut changed = false;
+    for literal in reader.unescaped_character_literals() {
+        let literal = Value::Integer(literal);
+        if !items.contains(&literal) {
+            items.insert(0, literal);
+            changed = true;
+        }
+    }
+    if changed {
+        interp.set_variable(
+            "lread--unescaped-character-literals",
+            Value::list(items),
+            env,
+        );
+    }
 }
 
 pub(crate) fn read_symbol_shorthands_in_env(

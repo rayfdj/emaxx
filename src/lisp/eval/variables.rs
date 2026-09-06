@@ -2068,10 +2068,30 @@ impl Interpreter {
         error: LispError,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if matches!(error, LispError::Terminate(_)) {
+        if matches!(error, LispError::Terminate(_) | LispError::Throw(_, _)) {
             return Err(error);
         }
         if self.handler_dispatch_depth > 0 {
+            return Err(error);
+        }
+        // signal_or_quit searches the handlers once per signal.  Every frame
+        // boundary the error unwinds through dispatches here, so the object
+        // the handlers already ran for (the search rewrites the error to
+        // that object) passes outward untouched.  A fresh `signal' of the
+        // same symbol and data is a new object and runs them again, as in
+        // GNU.
+        if let LispError::SignalValue(value) = &error
+            && self.dispatched_signal.as_ref().is_some_and(|seen| {
+                crate::lisp::primitives::values_eq_in_env(self, seen, value, env)
+            })
+        {
+            return Err(error);
+        }
+        if !self
+            .active_handlers
+            .iter()
+            .any(|handler| matches!(handler, ActiveHandler::Bind(..)))
+        {
             return Err(error);
         }
         let error_value = error_condition_value(&error);
@@ -2128,6 +2148,7 @@ impl Interpreter {
         }
         self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
         if handled {
+            self.dispatched_signal = Some(error_value.clone());
             Err(LispError::SignalValue(error_value))
         } else {
             Err(error)

@@ -833,7 +833,7 @@ pub(crate) fn process_attributes_value(pid: i64) -> Value {
                     push("etime", old_style_rational_time(etime, denom));
                     let etime_seconds = etime as f64 / common as f64;
                     let pcpu = 100.0 * (stime + utime) as f64 / (hz as f64 * etime_seconds);
-                    push("pcpu", Value::Float(pcpu));
+                    push("pcpu", Value::float(pcpu));
                 }
             }
 
@@ -843,7 +843,7 @@ pub(crate) fn process_attributes_value(pid: i64) -> Value {
             push("vsize", Value::Integer((vsize / 1024) as i64));
             push("rss", Value::Integer(4 * rss));
             let pmem = (4.0 * 100.0 * rss as f64 / procfs_total_memory_kb() as f64).min(100.0);
-            push("pmem", Value::Float(pmem));
+            push("pmem", Value::float(pmem));
         }
     }
 
@@ -2018,18 +2018,6 @@ pub(crate) fn directory_files(
     })))
 }
 
-pub(crate) fn charset_for_char(code: u32) -> &'static str {
-    if code <= 0x7f {
-        "ascii"
-    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&code)
-        || (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&code)
-    {
-        "eight-bit"
-    } else {
-        "unicode"
-    }
-}
-
 pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {
     match interp.charset_canonical_name(name)?.as_str() {
         "ascii" => Some(Value::list([
@@ -2048,19 +2036,23 @@ pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<
     }
 }
 
+/// charset.c find_charsets_in_text: the charset CHAR_CHARSET picks for
+/// each character (a raw byte is `eight-bit'), listed in charset id
+/// order as Ffind_charset_region conses them.
 pub(crate) fn charsets_for_text(text: &str, interp: &Interpreter) -> Vec<Value> {
-    let mut names = Vec::new();
-    if text.chars().any(|ch| (ch as u32) <= 0x7f) {
-        names.push("ascii".to_string());
+    let ordered = interp.charset_priority_list();
+    let head = interp.charset_non_preferred_head();
+    let mut names: Vec<String> = Vec::new();
+    for ch in text.chars() {
+        let code = raw_byte_from_regex_char(ch)
+            .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
+            .unwrap_or(ch as u32);
+        let (charset, _) = char_charset_ordered(interp, &ordered, head.as_deref(), code);
+        if !names.contains(&charset) {
+            names.push(charset);
+        }
     }
-    if text.chars().any(|ch| (ch as u32) > 0x7f) {
-        names.push("unicode".to_string());
-    }
-    if names.is_empty() {
-        names.push("ascii".to_string());
-    }
-    names.sort_by_key(|name| interp.charset_priority_rank(name));
-    names.dedup();
+    names.sort_by_key(|name| interp.charset_id(name).unwrap_or(i64::MAX));
     names
         .into_iter()
         .map(|value| Value::Symbol(value.into()))

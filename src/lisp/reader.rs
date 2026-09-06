@@ -1295,6 +1295,17 @@ impl<'a> Reader<'a> {
                 self.advance();
                 Ok(Some(Value::Symbol("".into())))
             }
+            // lread.c read0: `#!' (the shebang line of an executable
+            // script) skips the rest of the line and reads on.
+            Some(b'!') => {
+                while let Some(byte) = self.peek() {
+                    self.advance();
+                    if byte == b'\n' {
+                        break;
+                    }
+                }
+                self.read()
+            }
             Some(b'_') => {
                 self.advance();
                 match self.peek() {

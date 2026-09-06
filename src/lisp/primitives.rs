@@ -47,6 +47,7 @@ use unicode_general_category::get_general_category;
 use unicode_width::UnicodeWidthChar;
 
 mod accessors_random;
+pub(crate) mod batch_stdout;
 mod buffers;
 mod case;
 mod ccl;
