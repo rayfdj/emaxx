@@ -97,6 +97,8 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 165 | Backtraces record unevaluated frames only for `cond', `let', `let*', `setq', `while' and in-progress calls; eval_sub records one for every special form (`condition-case', `unwind-protect', `catch', `save-excursion', ...).  A handler-bind handler or `debug-early' sees those frames in GNU and not in Emaxx | OPEN (recorded 2026-09-05; shape divergence, no corpus test pins it) |
 | 166 | After batch startup GNU's empty *Messages* buffer answers `(buffer-modified-p)' t (loadup's messages were logged and erased before the image was dumped); Emaxx's fresh *Messages* answers nil until the first message | OPEN (recorded 2026-09-06; the flag is a dump artefact, no corpus test pins it) |
 | 167 | `time-convert' with FORM t (or nil under a nil `current-time-list') answers `(TICKS . HZ)' with the HZ GNU decoded from the input (1000000000000 for a four-element list, 2^k for a float, the pair's own HZ); Emaxx reduces the fraction first, so `(time-convert 1.5 t)' is `(3 . 2)' where GNU has `(6755399441055744 . 4503599627370496)'.  `time-add'/`time-subtract' results are reduced the same way | OPEN (recorded 2026-09-06; `current-time' and the nil-FORM list answer are fixed, the rational HZ needs timefns.c's lisp_time carried unreduced through the module) |
+| 168 | `garbage-collect' reports GNU's C object layouts in its SIZE columns (conses 16, symbols 48, strings 32, vectors 16, vector-slots 8, floats 8, intervals 56, buffers 992) rather than this process's allocation sizes, so memory-report.el's byte totals describe a GNU Emacs heap; finding 110 had chosen the process's own sizes.  The same constants drive the GNU-style `gc-cons-threshold' accounting | OPEN (recorded 2026-09-06 on the second native-comp merge, PR #52; disclosed here, the choice is the merge's and is left for review) |
+| 169 | Automatic garbage collection now happens where alloc.c's would (eval_sub's maybe_gc once `consing_until_gc' is negative against the retuned threshold, with the census, the weak-table sweep and `post-gc-hook'), but the consing tally is Emaxx's approximation of GNU's object sizes and the live-byte census is not GNU's mark phase, so the number of collections a given program provokes differs (GNU collects three times over 50000 interpreted conses in batch, Emaxx once over the same loop only after far more consing) | OPEN (recorded 2026-09-06; cadence, not the counters' semantics) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -6573,3 +6575,130 @@ the native artifact identity test (1028 s for the stage).  `cargo fmt
 --check' and `cargo clippy --profile gate --all-targets --all-features
 -- -D warnings' clean.  The four earlier runs of the gate on this tree
 and what each one found are described above.
+
+*Replays on the release build of the committed tree* (`compat-harness
+run --file', 3600 s, 2026-09-06 09:20 to 10:11; every file the first
+frozen run had regressed, plus the files the keymap, dired, help and
+message-log fixes touch):
+
+| file | outcomes |
+| --- | --- |
+| test/lisp/emacs-lisp/gv-tests.el | 8/8 |
+| test/lisp/dired-tests.el | 16/16 |
+| test/lisp/emacs-lisp/multisession-tests.el | 5/5 |
+| test/lisp/files-tests.el | 116/116 |
+| test/lisp/jsonrpc-tests.el | 5/5 |
+| test/lisp/progmodes/elisp-mode-tests.el | 63/63 |
+| test/lisp/progmodes/eglot-tests.el | 52/52 |
+| test/lisp/net/tramp-tests.el | 59/59 |
+| test/src/data-tests.el | 57/57 |
+| test/src/eval-tests.el | 26/26 |
+| test/src/keymap-tests.el | 46/46 |
+| test/src/lread-tests.el | 52/52 |
+| test/src/sqlite-tests.el | 12/12 |
+| test/src/json-tests.el | 23/23 |
+| test/lisp/json-tests.el | 59/59 |
+| test/lisp/help-tests.el | 31/31 |
+| test/lisp/dired-aux-tests.el | 5/5 |
+| test/lisp/simple-tests.el | 52/53 (`simple-tests-async-shell-command-30280', on the list above) |
+| test/lisp/tab-bar-tests.el | 2/2 |
+
+## 2026-09-06 second native-comp merge (PR #52, `4397ffa'): audit
+
+Main received twenty-three more native-comp commits after `9f95374'
+(merged as PR #52, with the branch's own merge of main and a macOS pipe
+portability fix on top).  They are: GNU `alloc.c' garbage-collect
+layout constants and the `since_gc > gc_threshold / factor' boundary of
+Fgarbage_collect_maybe (which was a constant nil before), eval_sub's
+maybe_gc placement, Ffuncall's debug-on-exit `call_debugger', funcall
+target and arity audits, `set'/`set-default' returning and notifying
+with the caller's original NEWVAL and canonicalising the watcher
+operation to `set', data.c's forwarded `symbols-with-pos-enabled' as
+one live C boolean owned by the interpreter (the runtime's per-call
+snapshot is gone; comp.c's relocation points at it), word-based native
+EQ that unwraps only positioned symbols, bignum EQ by allocation
+identity, Ftype_of without the old-struct policy (cl-lib.el's advice
+owns it) and Fcl_type_of from object tags, reader-literal
+materialisation on the eval-buffer path, and the pipe2-to-pipe
+fallback.
+
+*What was read.*  The handover document and both branch ledgers as
+merged, and every line of the code diff (`git diff 9f95374..4397ffa --
+src tests`).  Each change was checked against the C it names.
+
+*De-cheating checks, all on this Linux machine.*
+
+- No GNU delegation: the only `Command' sites that name the oracle are
+  a unit test's locale probe and the harnesses; the runtime re-executes
+  itself for `--restart'.  The anti-cheat suite
+  (`runtime_code_does_not_shell_out_to_oracle_emacs' and its seventeen
+  siblings) is part of the lightweight gate group and passed.
+- `comp-abi-hash' is computed as comp.c computes it (ABI version,
+  `emacs-version', configuration, options, the subr signature list,
+  md5, eight hex digits); it is not a literal.  It equals the oracle's
+  "1564b906" because the inputs are the same, which is what makes an
+  Emaxx `.eln' loadable by name.
+- The native-compilation corpus files run Emaxx's own compiler.  In the
+  frozen artifact for test/src/comp-tests.el both editors record 177
+  passed and no skipped test; Emaxx's log loads `.eln' files it
+  compiled itself (their names carry the hash of Emaxx's private copy
+  of the test tree, `comp-test-funcs-3def40ad-...', where the oracle's
+  are `...-742562c3-...'), and `comp-async' cases spawn `emaxx'
+  children (`invocation-name' is "emaxx", `invocation-directory' the
+  release directory).  One hardening note: both editors receive
+  HOME=/nonexistent as the GNU test Makefile does, so their user
+  `eln-cache' directories coincide on disk; the differing path hashes
+  keep the artifacts apart today, and a per-side HOME would make that
+  independent of how the harness copies the test tree.
+- The nine-source artifact identity test compiles unchanged GNU sources
+  through both editors and compares whole `.eln' files; it now runs in
+  every full gate (above), and comp.el's 914592-byte artifact is
+  identical.
+- Test edits in the merge replace fake lexical bindings of
+  `symbols-with-pos-enabled' with the C cell in five fixtures; the
+  expectations are unchanged.  No test was weakened or ignored.
+
+*Findings.*  One disclosed divergence, row 168: the public
+`garbage-collect' SIZE columns are GNU's constants, not this process's
+sizes.  Finding 110 had resolved this the other way (real sizes, so
+memory-report.el reports Emaxx-true totals); the merge reverses it with
+the argument that Fgarbage_collect reports allocator layouts.  Both are
+approximations of an ill-posed question (an Emaxx symbol is not a
+struct with a size), so the choice is recorded here for review rather
+than reverted.  Nothing else in the diff mimics an oracle value.
+
+*What the Linux gate found in the merge.*  The full grouped gate over
+`4397ffa' failed one primitives test,
+`native_conditional_gc_and_memory_info_match_the_host_contract': the
+oracle answers nil for `(garbage-collect-maybe 1)' in a fresh batch
+session and Emaxx answered t.  Two C details were missing.
+Fgarbage_collect_maybe compares `since_gc' with the `gc_threshold' the
+last collection computed and never retunes it; the merged port called
+bump_consing_until_gc first, so a let-bound `gc-cons-threshold' of
+10000 made factor 1 true after 32000 bytes of consing.  And the
+ordinary interpreter never collected on its own -- the merge added
+eval_sub's maybe_gc only for active native calls -- so `since_gc' had
+grown by the whole startup.  Both are ported: `garbage-collect-maybe'
+reads the counters as they are, and eval_sub's maybe_gc collects for
+the ordinary interpreter the way alloc.c:maybe_garbage_collect does
+(the counter goes negative, the threshold is retuned from
+`gc-cons-threshold' and `gc-cons-percentage', a collection follows if
+it is still negative: the native heap's sweep, the live census, the
+counter reset and `post-gc-hook', which `garbage-collect' had not run
+either).  Oracle contract
+`garbage_collect_maybe_reads_the_counters_the_last_collection_left`:
+`(t nil nil t 1)'.  What still differs is the cadence, row 169.  The
+cost on this machine: batch startup 20.3 s to 21.8 s (the startup
+collections and the first census), a three-million-cons loop
+unchanged.
+
+*Verification of `4397ffa' with these two ports.*  Full grouped gate,
+alone on the Linux machine, artifact
+`target/grouped-gate/run-1788698294152772461-6679` (2026-09-06 12:38 to
+14:05): eval_01 351, eval_02 284, eval_03 320, eval_04 251, eval_05 351,
+primitives 411, compat_runtime 84, tty 56 (two inventoried ignores),
+batch 46, lightweight 361 (the eighteen anti-cheat checks among them),
+the binaries 38 + 1 + 1, the integration targets 14 + 3 + 1 + 5 with the
+native artifact identity test (1208 s for the stage); zero failures,
+`cargo fmt --check' and strict clippy clean.  The frozen corpus over the
+commit is recorded below when it completes.

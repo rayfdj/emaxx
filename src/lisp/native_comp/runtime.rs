@@ -592,13 +592,21 @@ pub(crate) fn maybe_gc_active() {
     }
 }
 
-/// alloc.c:Fgarbage_collect_maybe's threshold test for the active native
-/// heap. The same state is retained by the interpreter for ordinary calls.
-pub(crate) fn garbage_collection_maybe_due(
-    interpreter: &mut Interpreter,
-    environment: &Env,
-    factor: i64,
-) -> bool {
+/// alloc.c:Fgarbage_collect_maybe's threshold test: `since_gc >
+/// gc_threshold / factor' on the counters as the last collection left them,
+/// for the active native heap or the interpreter's ordinary state.
+pub(crate) fn garbage_collection_maybe_due(interpreter: &mut Interpreter, factor: i64) -> bool {
+    if let Some(due) = with_current_runtime(|runtime| runtime.heap.collection_maybe_due(factor)) {
+        return due;
+    }
+    interpreter
+        .native_compiler
+        .garbage_collection_maybe_due(factor)
+}
+
+/// The `gc-cons-threshold' and `gc-cons-percentage' values alloc.c reads
+/// when it retunes the consing counter.
+pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, Option<f64>) {
     let threshold = interpreter
         .lookup_var("gc-cons-threshold", environment)
         .and_then(|value| value.as_integer().ok())
@@ -607,17 +615,41 @@ pub(crate) fn garbage_collection_maybe_due(
         Some(Value::Float(value)) => Some(value.get()),
         _ => None,
     };
-    if let Some(due) = with_current_runtime(|runtime| {
-        runtime
-            .heap
-            .collection_maybe_due(factor, threshold, percentage)
-    }) {
-        return due;
+    (threshold, percentage)
+}
+
+thread_local! {
+    /// alloc.c's gc_in_progress: a collection's own Lisp (post-gc-hook)
+    /// must not start another.
+    static ORDINARY_GC_IN_PROGRESS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// lisp.h:maybe_gc at eval_sub for the ordinary interpreter: when the
+/// consing counter has gone negative, alloc.c:maybe_garbage_collect retunes
+/// it from the Lisp variables and collects if it is still negative.  An
+/// active native call takes the conservative trampoline instead.
+pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
+    if !ACTIVE_CALL.with(|active| active.get().is_null()) {
+        maybe_gc_active();
+        return;
     }
-    let mut state = std::mem::take(&mut interpreter.native_compiler);
-    let due = state.garbage_collection_maybe_due(factor, threshold, percentage);
-    interpreter.native_compiler = state;
-    due
+    if ORDINARY_GC_IN_PROGRESS.with(Cell::get)
+        || !interpreter
+            .native_compiler
+            .garbage_collection_might_be_due()
+    {
+        return;
+    }
+    let (threshold, percentage) = gc_tuning(interpreter, environment);
+    if !interpreter
+        .native_compiler
+        .garbage_collection_due(threshold, percentage)
+    {
+        return;
+    }
+    ORDINARY_GC_IN_PROGRESS.with(|flag| flag.set(true));
+    let _ = super::garbage_collect_now(interpreter, environment);
+    ORDINARY_GC_IN_PROGRESS.with(|flag| flag.set(false));
 }
 
 pub(crate) fn decode_active_backtrace_arguments(
@@ -872,14 +904,23 @@ impl NativeRuntime {
         self.collect_native_heap_now(std::ptr::from_ref(&stack_marker), interpreter, environment)
     }
 
-    pub(crate) fn garbage_collection_maybe_due(
+    pub(crate) fn garbage_collection_maybe_due(&mut self, factor: i64) -> bool {
+        self.heap.collection_maybe_due(factor)
+    }
+
+    /// lisp.h:maybe_gc's counter test for the ordinary interpreter.
+    pub(crate) fn garbage_collection_might_be_due(&mut self) -> bool {
+        self.heap.collection_might_be_due()
+    }
+
+    /// alloc.c:maybe_garbage_collect's retuned test for the ordinary
+    /// interpreter.
+    pub(crate) fn garbage_collection_due(
         &mut self,
-        factor: i64,
         threshold: i64,
         percentage: Option<f64>,
     ) -> bool {
-        self.heap
-            .collection_maybe_due(factor, threshold, percentage)
+        self.heap.collection_due(threshold, percentage)
     }
 
     pub(crate) fn garbage_collection_finished(
@@ -3753,17 +3794,14 @@ impl NativeConsArena {
         self.gc.collection_might_be_due()
     }
 
-    fn collection_maybe_due(
-        &mut self,
-        factor: i64,
-        threshold: i64,
-        percentage: Option<f64>,
-    ) -> bool {
+    /// alloc.c:Fgarbage_collect_maybe reads `gc_threshold' and
+    /// `consing_until_gc' as the last collection left them; only
+    /// maybe_garbage_collect retunes them from the Lisp variables.
+    fn collection_maybe_due(&mut self, factor: i64) -> bool {
         if factor < 1 {
             return false;
         }
         self.gc.synchronize_allocations();
-        self.gc.bump_consing_until_gc(threshold, percentage);
         let since_gc = self
             .gc
             .gc_threshold
@@ -4074,14 +4112,8 @@ impl NativeHeap {
         self.native_conses.collection_might_be_due()
     }
 
-    fn collection_maybe_due(
-        &mut self,
-        factor: i64,
-        threshold: i64,
-        percentage: Option<f64>,
-    ) -> bool {
-        self.native_conses
-            .collection_maybe_due(factor, threshold, percentage)
+    fn collection_maybe_due(&mut self, factor: i64) -> bool {
+        self.native_conses.collection_maybe_due(factor)
     }
 
     fn collection_finished(
