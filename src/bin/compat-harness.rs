@@ -2737,6 +2737,20 @@ fn configure_isolated_source_directory(
     Ok(())
 }
 
+fn configure_isolated_native_comp_cache(
+    command: &mut Command,
+    cache_directory: &Path,
+) -> Result<(), String> {
+    let literal = serde_json::to_string(&cache_directory.display().to_string())
+        .map_err(|error| format!("encode isolated native-comp cache: {error}"))?;
+    // comp-tests.el native-compiles support files while the test file is
+    // being loaded.  Redirect GNU's cache before -l FILE; the later ERT
+    // wrapper is too late for that load-time compilation.
+    command.arg("--eval");
+    command.arg(format!("(startup-redirect-eln-cache {literal})"));
+    Ok(())
+}
+
 fn configure_loaded_marker(command: &mut Command, path: &Path) -> Result<(), String> {
     let literal = serde_json::to_string(&path.display().to_string())
         .map_err(|error| format!("encode loaded-marker path: {error}"))?;
@@ -2761,7 +2775,8 @@ fn run_oracle(
     let test_directory = repo_root.join("test");
     let mut command = Command::new(&local.emacs_binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
-    let _temp_directory = configure_isolated_temp_directory(&mut command, "oracle")?;
+    let temp_directory = configure_isolated_temp_directory(&mut command, "oracle")?;
+    configure_isolated_native_comp_cache(&mut command, &temp_directory.path)?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
     command.env("EMAXX_COMPAT_RELATIVE_FILE", relative_file);
     command.env("EMAXX_COMPAT_SELECTOR", format!("(quote {selector})"));
@@ -4182,6 +4197,27 @@ mod tests {
             vec![
                 "--eval".to_string(),
                 format!("(setq source-directory {expected_literal})"),
+            ]
+        );
+    }
+
+    #[test]
+    fn runner_redirects_native_comp_cache_before_loading_tests() {
+        let mut command = Command::new("emacs-test-command");
+        let cache = Path::new("/tmp/emaxx native-comp cache");
+        configure_isolated_native_comp_cache(&mut command, cache)
+            .expect("configure isolated native-comp cache");
+
+        let literal = serde_json::to_string(&cache.display().to_string()).unwrap();
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                "--eval".to_string(),
+                format!("(startup-redirect-eln-cache {literal})"),
             ]
         );
     }
