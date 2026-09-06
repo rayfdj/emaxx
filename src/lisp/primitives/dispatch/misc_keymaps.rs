@@ -1676,7 +1676,14 @@ define_dispatch!(
                 // whose keys/values are no longer reachable are dropped, as
                 // GNU's sweep does.  Everything else is freed by ownership
                 // the moment it becomes unreachable.
+                // alloc.c:Fgarbage_collect specbinds symbols-with-pos-enabled
+                // to nil for the mark/sweep, then restores it before taking
+                // the returned gcstat snapshot.  Positioned symbols are a
+                // temporary GNU marking mode, not a public GC-time root.
+                let symbols_with_pos_restore =
+                    interp.bind_special_dynamic("symbols-with-pos-enabled", Value::Nil, env)?;
                 crate::lisp::native_comp::begin_garbage_collection(interp, env);
+                interp.restore_special_dynamic(symbols_with_pos_restore, env)?;
                 let census = interp.live_object_census();
                 let threshold = interp
                     .symbol_value_cell("gc-cons-threshold")
