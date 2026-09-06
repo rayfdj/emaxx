@@ -2823,10 +2823,11 @@ impl ImageGraphCopier {
 /// - `floats' is 0: emaxx floats are immediate f64s, not heap cells.
 /// - `intervals' counts text-property spans (buffer spans plus string
 ///   spans), the closest live analogue of GNU's interval tree nodes.
-/// - Markers, overlays, and char-tables are id-indexed host state whose
-///   reachability filtering remains under audit.  Frames, terminals, buffers,
-///   and fixed-layout records with a direct GNU pseudovector counterpart are
-///   included with their measured C footprint.
+/// - Markers and finalizers are id-indexed host state whose reachability
+///   filtering remains under audit.  Overlays owned by live buffers and
+///   rooted char-tables are included with their measured C footprint. Frames,
+///   terminals, buffers, and fixed-layout records with a direct GNU
+///   pseudovector counterpart are included as well.
 #[derive(Default)]
 pub(crate) struct LiveObjectCensus {
     pub(crate) conses: usize,
@@ -2860,6 +2861,8 @@ pub(crate) const GNU_BUFFER_SIZE: usize = 992;
 pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
 pub(crate) const GNU_TERMINAL_VECTOR_SLOTS: usize = 66;
 pub(crate) const GNU_BUFFER_VECTOR_SLOTS: usize = 123;
+pub(crate) const GNU_OVERLAY_VECTOR_SLOTS: usize = 3;
+pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 
 #[derive(Default)]
 struct LispReachability<'mark, 'heap> {
@@ -3497,14 +3500,34 @@ impl Interpreter {
         let live_buffers = 1 + self.inactive_buffers.len();
         let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
         let live_terminals = usize::from(self.terminal_live);
+        let live_overlays = self
+            .buffer
+            .overlays
+            .iter()
+            .chain(
+                self.inactive_buffers
+                    .iter()
+                    .flat_map(|(_, buffer)| &buffer.overlays),
+            )
+            .filter(|overlay| !overlay.is_dead())
+            .count();
+        let char_table_slots = self
+            .char_tables
+            .iter()
+            .map(|table| GNU_CHAR_TABLE_VECTOR_SLOTS.saturating_add(table.extra_slots.len()))
+            .sum::<usize>();
         vector_count = vector_count
             .saturating_add(live_buffers)
             .saturating_add(live_frames)
-            .saturating_add(live_terminals);
+            .saturating_add(live_terminals)
+            .saturating_add(live_overlays)
+            .saturating_add(self.char_tables.len());
         vector_slots = vector_slots
             .saturating_add(live_buffers.saturating_mul(GNU_BUFFER_VECTOR_SLOTS))
             .saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS))
-            .saturating_add(live_terminals.saturating_mul(GNU_TERMINAL_VECTOR_SLOTS));
+            .saturating_add(live_terminals.saturating_mul(GNU_TERMINAL_VECTOR_SLOTS))
+            .saturating_add(live_overlays.saturating_mul(GNU_OVERLAY_VECTOR_SLOTS))
+            .saturating_add(char_table_slots);
         for record in self.records.iter().filter(|record| {
             !self.gc_has_record_census
                 || record.id >= self.gc_record_high_water
