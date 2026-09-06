@@ -1098,6 +1098,12 @@ impl Interpreter {
         self.debug_on_next_call
     }
 
+    /// eval.c:call_debugger clears the forwarded C flag before invoking the
+    /// debugger, so the debugger itself does not immediately re-enter.
+    pub(crate) fn clear_debug_on_next_call(&mut self) {
+        self.debug_on_next_call = false;
+    }
+
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
         self.globals.get(name).cloned()
     }
@@ -1794,6 +1800,14 @@ impl Interpreter {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.debug_on_exit = enabled;
         }
+    }
+
+    /// eval.c:backtrace_debug_on_exit reads the flag on the active
+    /// Ffuncall frame after the callee returns.
+    pub(crate) fn current_backtrace_debug_on_exit(&self) -> bool {
+        self.backtrace_frames
+            .last()
+            .is_some_and(|frame| frame.debug_on_exit)
     }
 
     pub fn current_backtrace_frame(&self) -> Option<(bool, Value, Vec<Value>, bool)> {

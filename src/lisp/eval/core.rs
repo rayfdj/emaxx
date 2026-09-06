@@ -654,6 +654,37 @@ impl Interpreter {
         result
     }
 
+    /// eval.c:call_debugger.  The C path specbinds the debugger control
+    /// variables around apply1(Vdebugger, arg); keep those bindings in the
+    /// same dynamic scope for native Ffuncall exits.
+    pub(crate) fn call_debugger(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
+        self.clear_debug_on_next_call();
+        let mut restores = Vec::with_capacity(4);
+        for (name, value) in [
+            ("debugger-may-continue", Value::T),
+            ("inhibit-redisplay", Value::Nil),
+            ("inhibit-debugger", Value::T),
+            ("inhibit-changing-match-data", Value::Nil),
+        ] {
+            match self.bind_special_dynamic(name, value, env) {
+                Ok(restore) => restores.push(restore),
+                Err(error) => {
+                    for restore in restores.into_iter().rev() {
+                        let _ = self.restore_special_dynamic(restore, env);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        let debugger = self.lookup_var("debugger", env).unwrap_or(Value::Nil);
+        let result = self.call_function_value(debugger, None, &[arg], env);
+        for restore in restores.into_iter().rev() {
+            self.restore_special_dynamic(restore, env)?;
+        }
+        result
+    }
+
     /// eval.c:Ffuncall's entry sequence.  Generated code uses the same
     /// boundary before it dispatches an already encoded Lisp_Object vector.
     pub(crate) fn begin_funcall(&mut self, env: &mut Env) -> Result<(), LispError> {
