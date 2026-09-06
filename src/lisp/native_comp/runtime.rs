@@ -1861,6 +1861,23 @@ enum DirectFuncallTarget {
     },
 }
 
+fn builtin_call_signature(
+    maximum: super::abi::NativeMaxArgs,
+) -> (NativeCallingConvention, Option<usize>) {
+    match maximum {
+        // eval.c:funcall_subr's fixed switch covers only a0..a8.
+        super::abi::NativeMaxArgs::Fixed(maximum) if maximum <= 8 => {
+            (NativeCallingConvention::Fixed, Some(maximum as usize))
+        }
+        // GNU dispatches larger finite max_args through aMANY and does not
+        // apply the finite value as an upper-bound check.
+        super::abi::NativeMaxArgs::Fixed(_) | super::abi::NativeMaxArgs::Many => {
+            (NativeCallingConvention::Many, None)
+        }
+        super::abi::NativeMaxArgs::Unevalled => unreachable!("handled before dispatch"),
+    }
+}
+
 impl DirectFuncallTarget {
     fn apply_padded_argument_count(self, argument_count: usize) -> usize {
         let (minimum, maximum) = match self {
@@ -1869,8 +1886,16 @@ impl DirectFuncallTarget {
             } => (
                 minimum,
                 match maximum {
-                    super::abi::NativeMaxArgs::Fixed(maximum) => Some(maximum as usize),
-                    super::abi::NativeMaxArgs::Many | super::abi::NativeMaxArgs::Unevalled => None,
+                    // eval.c:funcall_subr only pads finite C subrs in the
+                    // a0..a8 branch.  A finite max_args above eight is
+                    // dispatched through aMANY and receives the original
+                    // vector unchanged.
+                    super::abi::NativeMaxArgs::Fixed(maximum) if maximum <= 8 => {
+                        Some(maximum as usize)
+                    }
+                    super::abi::NativeMaxArgs::Fixed(_)
+                    | super::abi::NativeMaxArgs::Many
+                    | super::abi::NativeMaxArgs::Unevalled => None,
                 },
             ),
             Self::Native { function, .. } => (function.min_args, function.max_args),
@@ -1929,18 +1954,7 @@ impl DirectFuncallTarget {
                         Value::BuiltinFunc(name.into()),
                     ])));
                 }
-                let (convention, maximum) = match maximum {
-                    super::abi::NativeMaxArgs::Fixed(maximum) => (
-                        if maximum <= 8 {
-                            NativeCallingConvention::Fixed
-                        } else {
-                            NativeCallingConvention::Many
-                        },
-                        Some(maximum as usize),
-                    ),
-                    super::abi::NativeMaxArgs::Many => (NativeCallingConvention::Many, None),
-                    super::abi::NativeMaxArgs::Unevalled => unreachable!("handled above"),
-                };
+                let (convention, maximum) = builtin_call_signature(maximum);
                 (
                     native_subr_address(index).cast_const(),
                     convention,
@@ -7546,6 +7560,25 @@ mod tests {
             assert_eq!(interpreter.lisp_eval_depth, 0);
             assert!(runtime.calls.is_empty());
         }
+    }
+
+    #[test]
+    fn native_funcall_finite_max_above_eight_matches_gnu_many_dispatch() {
+        let target = DirectFuncallTarget::Builtin {
+            index: 0,
+            minimum: 0,
+            maximum: super::super::abi::NativeMaxArgs::Fixed(9),
+        };
+
+        // GNU's funcall_subr uses aMANY for max_args > 8.  Fapply therefore
+        // must not pad a finite-nadic call to the declared value, and the
+        // direct dispatcher must not retain it as an upper-bound check.
+        assert_eq!(target.apply_padded_argument_count(2), 2);
+        assert_eq!(target.apply_padded_argument_count(10), 10);
+        let (convention, maximum) =
+            builtin_call_signature(super::super::abi::NativeMaxArgs::Fixed(9));
+        assert!(matches!(convention, NativeCallingConvention::Many));
+        assert_eq!(maximum, None);
     }
 
     #[test]
