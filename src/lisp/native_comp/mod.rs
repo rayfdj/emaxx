@@ -296,12 +296,43 @@ pub(crate) fn garbage_collection_finished(
 pub(crate) fn garbage_collect_now(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-) -> Option<crate::lisp::eval::LiveObjectCensus> {
+) -> Result<Option<crate::lisp::eval::LiveObjectCensus>, LispError> {
+    garbage_collect_now_impl(interpreter, environment, false)
+}
+
+/// alloc.c:Fgarbage_collect's temporary `symbols-with-pos-enabled' binding
+/// surrounds only the mark/sweep.  Keep the shared finalization and hook path
+/// outside that binding, just as Fgarbage_collect restores its specpdl before
+/// reading gcstat.
+pub(crate) fn garbage_collect_now_with_symbols_disabled(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+) -> Result<Option<crate::lisp::eval::LiveObjectCensus>, LispError> {
+    garbage_collect_now_impl(interpreter, environment, true)
+}
+
+fn garbage_collect_now_impl(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    symbols_with_pos_disabled: bool,
+) -> Result<Option<crate::lisp::eval::LiveObjectCensus>, LispError> {
     if interpreter.garbage_collection_is_inhibited() {
-        return None;
+        return Ok(None);
     }
+    let symbols_with_pos_restore = if symbols_with_pos_disabled {
+        Some(interpreter.bind_special_dynamic(
+            "symbols-with-pos-enabled",
+            Value::Nil,
+            environment,
+        )?)
+    } else {
+        None
+    };
     begin_garbage_collection(interpreter, environment);
     let census = interpreter.live_object_census();
+    if let Some(restore) = symbols_with_pos_restore {
+        interpreter.restore_special_dynamic(restore, environment)?;
+    }
     let (threshold, percentage) = gc_tuning(interpreter, environment);
     garbage_collection_finished(
         interpreter,
@@ -315,7 +346,7 @@ pub(crate) fn garbage_collect_now(
         &[Value::symbol("post-gc-hook")],
         environment,
     );
-    Some(census)
+    Ok(Some(census))
 }
 
 pub(crate) fn begin_garbage_collection(interpreter: &mut Interpreter, environment: &Env) {

@@ -1673,7 +1673,13 @@ define_dispatch!(
                 // whose keys/values are no longer reachable are dropped, as
                 // GNU's sweep does.  Everything else is freed by ownership
                 // the moment it becomes unreachable.
-                let Some(census) = crate::lisp::native_comp::garbage_collect_now(interp, env)
+                // alloc.c:Fgarbage_collect specbinds symbols-with-pos-enabled
+                // to nil only for the mark/sweep, then restores it before
+                // gcstat finalization and post-gc-hook.
+                let Some(census) =
+                    crate::lisp::native_comp::garbage_collect_now_with_symbols_disabled(
+                        interp, env,
+                    )?
                 else {
                     return Ok(Value::Nil);
                 };
@@ -1768,7 +1774,7 @@ define_dispatch!(
                 // alloc.c:Fgarbage_collect_maybe calls garbage_collect when
                 // since_gc > gc_threshold / factor and returns Qt then, even
                 // when the collection itself is inhibited.
-                crate::lisp::native_comp::garbage_collect_now(interp, env);
+                let _ = crate::lisp::native_comp::garbage_collect_now(interp, env)?;
                 Ok(Value::T)
             }
             "memory-use-counts" => {

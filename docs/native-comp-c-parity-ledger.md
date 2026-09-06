@@ -3,19 +3,23 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Latest implementation checkpoint: `bc8402d`, the bounded L08 GNU
-`Fgarbage_collect_maybe` ordinary-state threshold correction after the
-layout-size and active-factor fixes and the L03/L05/L06/L07 audits. Focused
-testing, 18 anti-cheat gates, formatting, all-target checking, and strict
-all-feature Clippy are green. The prior checkpoint-specific nine-rung artifact
-identity ladder and normal 177-case native execution gate are green; they are
-rerun for this ordinary-path correction. The native execution performance gap
-remains open. See
+Latest pushed checkpoint: `2e0b5cf`, including implementation `7bfce9b`'s
+bounded L08 GNU
+`Fgarbage_collect_maybe` ordinary-state threshold correction, the merge of
+`origin/main`, the macOS process-pipe portability follow-up, and the public
+GC `symbols-with-pos-enabled` scope correction. Focused
+testing, 18 anti-cheat gates, formatting, all-target checking, strict
+all-feature Clippy, the merged-tree nine-rung artifact identity ladder, and
+the normal 177-case native execution gate are green. The native execution
+performance gap remains open. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the exact continuation point.
-The prior checkpoint's nine-rung identity ladder and normal 177-case native
-execution gate passed with zero mismatches; Emaxx's native execution phase
-was 1,395.899 seconds versus GNU's 89.751 seconds.
+The preceding merged-tree identity ladder passed all fixtures in 244.19
+seconds, and the rerun on `8883607` passed all fixtures in 303.20 seconds,
+including byte-identical `comp.el`; the post-merge native gate passed
+177/177 with zero mismatches in 1,302.477 seconds versus GNU's 82.642 seconds.
+The post-GC-mode-correction rerun also passed 177/177 with zero mismatches;
+its test phase was 1,266.137 seconds versus GNU's 158.694 seconds.
 This unit comes from the completed post-startup profile and GNU C audit,
 not a speculative optimization. The chronology below is historical, not a claim that all its
 "worktree" changes remain uncommitted.
