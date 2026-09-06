@@ -1744,15 +1744,41 @@ define_dispatch!(
             }
             "garbage-collect-maybe" => {
                 need_args(name, args, 1)?;
-                if !matches!(args[0], Value::Integer(value) if value >= 0) {
+                let Value::Integer(factor) = args[0] else {
+                    return Err(LispError::WrongTypeArgument(
+                        "wholenump".into(),
+                        args[0].clone(),
+                    ));
+                };
+                if factor < 0 {
                     return Err(LispError::WrongTypeArgument(
                         "wholenump".into(),
                         args[0].clone(),
                     ));
                 }
-                // Emaxx uses Rust ownership rather than GNU's byte-allocation GC
-                // threshold, so no pending automatic collection can be due.
-                Ok(Value::Nil)
+                if !crate::lisp::native_comp::garbage_collection_maybe_due(factor) {
+                    return Ok(Value::Nil);
+                }
+                // alloc.c:Fgarbage_collect_maybe calls garbage_collect when
+                // since_gc > gc_threshold / factor and returns Qt only then.
+                crate::lisp::native_comp::begin_garbage_collection(interp, env);
+                let census = interp.live_object_census();
+                let threshold = interp
+                    .symbol_value_cell("gc-cons-threshold")
+                    .ok()
+                    .and_then(|value| value.as_integer().ok())
+                    .unwrap_or(800_000);
+                let percentage = match interp.symbol_value_cell("gc-cons-percentage") {
+                    Ok(Value::Float(value)) => Some(value.get()),
+                    _ => None,
+                };
+                crate::lisp::native_comp::garbage_collection_finished(
+                    interp,
+                    census.total_bytes_of_live_objects(),
+                    threshold,
+                    percentage,
+                );
+                Ok(Value::T)
             }
             "memory-use-counts" => {
                 need_args(name, args, 0)?;

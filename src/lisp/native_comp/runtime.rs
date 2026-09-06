@@ -592,6 +592,13 @@ pub(crate) fn maybe_gc_active() {
     }
 }
 
+/// alloc.c:Fgarbage_collect_maybe's threshold test for the active native
+/// heap. The ordinary evaluator has no native arena to collect; its call
+/// remains the ownership backend's nil fast path.
+pub(crate) fn garbage_collection_maybe_due(factor: i64) -> bool {
+    with_current_runtime(|runtime| runtime.heap.collection_maybe_due(factor)).unwrap_or(false)
+}
+
 pub(crate) fn decode_active_backtrace_arguments(
     words: &[NativeWord],
 ) -> Option<Result<Vec<Value>, String>> {
@@ -3701,6 +3708,18 @@ impl NativeConsArena {
         self.gc.collection_might_be_due()
     }
 
+    fn collection_maybe_due(&mut self, factor: i64) -> bool {
+        if factor < 1 {
+            return false;
+        }
+        self.gc.synchronize_allocations();
+        let since_gc = self
+            .gc
+            .gc_threshold
+            .saturating_sub(self.gc.consing_until_gc);
+        since_gc > self.gc.gc_threshold / factor
+    }
+
     fn mark_word(&mut self, word: NativeWord) -> ArenaMark {
         let Some((block_index, slot)) = self.locate(word, true) else {
             return ArenaMark::NotArena;
@@ -4002,6 +4021,10 @@ impl NativeHeap {
 
     fn collection_might_be_due(&mut self) -> bool {
         self.native_conses.collection_might_be_due()
+    }
+
+    fn collection_maybe_due(&mut self, factor: i64) -> bool {
+        self.native_conses.collection_maybe_due(factor)
     }
 
     fn collection_finished(
@@ -4842,6 +4865,30 @@ mod tests {
                 .eval(&form, unsafe { &mut *active.environment })
                 .expect("the probe form evaluates");
             runtime.heap.encode(&result).expect("probe result encodes")
+        })
+    }
+
+    extern "C" fn garbage_collect_maybe_uses_gnu_factor() -> NativeWord {
+        with_active(|active| {
+            let runtime = unsafe { &mut *active.runtime };
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment };
+            runtime
+                .heap
+                .native_conses
+                .gc
+                .collection_finished(0, NATIVE_GC_DEFAULT_THRESHOLD, None);
+            for _ in 0..52_000 {
+                runtime.heap.cons(TAG_FIXNUM_LOW, 0);
+            }
+            let result = crate::lisp::native_comp::call_c_primitive(
+                interpreter,
+                environment,
+                "garbage-collect-maybe",
+                &[Value::Integer(1)],
+            )
+            .expect("garbage-collect-maybe primitive succeeds");
+            runtime.heap.encode(&result).expect("GC result encodes")
         })
     }
 
@@ -7709,6 +7756,27 @@ mod tests {
             Value::Nil
         );
         // One setup reset and one collection at the GNU eval_sub boundary.
+        assert_eq!(runtime.heap.native_conses.gc.collections, 2);
+    }
+
+    #[test]
+    fn garbage_collect_maybe_matches_gnu_factor_boundary() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    garbage_collect_maybe_uses_gnu_factor as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[],
+                )
+                .expect("garbage-collect-maybe probe completes"),
+            Value::T
+        );
         assert_eq!(runtime.heap.native_conses.gc.collections, 2);
     }
 
