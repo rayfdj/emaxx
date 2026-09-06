@@ -14,10 +14,14 @@ configured GNU C layouts (`alloc.c:Fgarbage_collect`) instead of Rust host
 representation sizes, and adds an exact row-size regression. Focused testing,
 anti-cheat (18/18), formatting, all-target checking, and strict all-feature
 Clippy pass. The full unchanged native execution and artifact identity gates
-remain to be run after the checkpoint merge.
+now pass: the nine-rung identity ladder is green, and the normal upstream
+native selector passes 177/177 with zero mismatches. The Emaxx execution
+phase took 1,218.105 seconds versus GNU's 103.786 seconds; that performance
+gap remains open and is not presented as a correctness failure.
 
-The commit is ready to push; after pushing, fetch and merge `origin/main`,
-validate the clean state, and continue.
+The commit is pushed; `origin/main` was fetched and merged after the push and
+was already up to date. The worktree is clean. Continue from the remaining
+L08 source obligation.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
 This checkpoint closes only the public GNU C layout-size portion; the census
