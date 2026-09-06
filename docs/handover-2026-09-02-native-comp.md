@@ -5,11 +5,11 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed af7f01b after merging main (2026-09-06)
+## Resume here — pushed 5694cfb after merging main (2026-09-07)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest implementation checkpoint: `8e395b5` — match GNU's finite native
-subroutine n-ary dispatch; the resolved merge checkpoint is `af7f01b`.**
+**Latest implementation checkpoint: `234dcbb` — match GNU's fixed-layout
+pseudovector census footprints; the resolved pushed checkpoint is `5694cfb`.**
 It retains the ordinary GC threshold correction from
 `bc8402d`, the `origin/main` merge, and the `pipe`/`fcntl(FD_CLOEXEC)` fallback
 required because macOS has no `libc::pipe2`; it additionally temporarily
@@ -19,7 +19,9 @@ binds `symbols-with-pos-enabled` to nil around public GC exactly as GNU
 The merged-tree identity and normal native gates also pass, as recorded below.
 
 The implementation and merge checkpoints are pushed, and the worktree is
-clean. Continue from the remaining L08 source obligation.
+clean. The compatibility harness now redirects GNU's native-comp cache before
+loading a file, because `comp-tests.el` native-compiles support code at load
+time. Continue from the remaining L08 source obligation.
 
 Post-merge validation for `0d06050`: the normal upstream native selector
 passed 177/177 with zero mismatches. The GNU test phase took 90.710 seconds
@@ -32,6 +34,12 @@ passed 177/177 with zero mismatches. The GNU test phase took 88.108 seconds
 and the Emaxx test phase took 1,241.694 seconds; setup took 2.891 versus
 41.752 seconds. The complete result is the harness summary for run
 `1788709909540756000-77602`.
+
+Post-footprint validation for `5694cfb`: after the oracle cache-ordering fix,
+the normal upstream native selector passed 177/177 with zero mismatches. The
+GNU test phase took 86.405 seconds and the Emaxx test phase took 1,274.360
+seconds; setup took 2.785 versus 40.716 seconds. The complete result is the
+harness summary for run `1788714256563788000-85584`.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
 This checkpoint closes only the public GNU C layout-size portion; the census
