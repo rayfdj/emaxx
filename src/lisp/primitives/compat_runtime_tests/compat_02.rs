@@ -1982,7 +1982,8 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
     .expect("foo3");
     let plain = Value::Symbol("foo".into());
 
-    let mut disabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::Nil)].into()];
+    let mut disabled_env = Env::new();
+    interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::Nil);
     assert_eq!(
         call(
             &mut interp,
@@ -2074,7 +2075,8 @@ fn eq_and_equal_match_emacs_for_symbols_with_position() {
         Value::Nil
     );
 
-    let mut enabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let mut enabled_env = Env::new();
+    interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
     assert_eq!(
         call(
             &mut interp,

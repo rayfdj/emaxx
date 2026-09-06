@@ -848,11 +848,16 @@ define_dispatch!(
                 // GNU 30.2 data.c:Fset reaches set_internal's CHECK_SYMBOL.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
                 let symbol = interp.resolve_variable_name(&checked)?;
-                let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
+                // data.c:set_internal notifies with NEWVAL before the
+                // forwarded C slot normalizes it.  The stored value may be
+                // t/nil for a DEFVAR_BOOL, but the watcher must receive the
+                // caller's original object.
+                let watcher_value = args[1].clone();
+                let value = interp.prepare_variable_assignment(&symbol, watcher_value.clone())?;
                 let buffer_id = interp.assignment_buffer_id(&symbol);
-                interp.notify_variable_watchers(&symbol, value.clone(), "set", buffer_id, env)?;
+                interp.notify_variable_watchers(&symbol, watcher_value, "set", buffer_id, env)?;
                 interp.set_symbol_value_cell(&symbol, value.clone());
-                Ok(value)
+                Ok(args[1].clone())
             }
             "set-default" => {
                 need_args(name, args, 2)?;
@@ -860,10 +865,19 @@ define_dispatch!(
                 // set_default_internal's CHECK_SYMBOL.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
                 let symbol = interp.resolve_variable_name(&checked)?;
-                let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
-                interp.notify_variable_watchers(&symbol, value.clone(), "set", None, env)?;
+                let watcher_value = args[1].clone();
+                let value = interp.prepare_variable_assignment(&symbol, watcher_value.clone())?;
+                interp.notify_variable_watchers(
+                    &symbol,
+                    watcher_value,
+                    // data.c:notify_variable_watchers canonicalizes
+                    // Qset_default to Qset before invoking callbacks.
+                    "set",
+                    None,
+                    env,
+                )?;
                 interp.set_global_binding(&symbol, value.clone());
-                Ok(value)
+                Ok(args[1].clone())
             }
             "symbol-value" => {
                 need_args(name, args, 1)?;

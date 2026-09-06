@@ -5286,6 +5286,33 @@ fn local_variable_watchers_allow_mutating_lexical_callback_state() {
 }
 
 #[test]
+fn set_default_watchers_match_gnu_operation_and_original_newval() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                "(let* ((watch-data nil)
+                            (watcher (lambda (&rest args) (setq watch-data args)))
+                            (old (default-value 'debug-on-next-call)))
+                       (add-variable-watcher 'debug-on-next-call watcher)
+                       (unwind-protect
+                           (progn
+                             (set-default 'debug-on-next-call 'sentinel)
+                             (list (nth 1 watch-data)
+                                   (nth 2 watch-data)
+                                   (default-value 'debug-on-next-call)))
+                         (remove-variable-watcher 'debug-on-next-call watcher)
+                         (set-default 'debug-on-next-call old)))"
+            ),
+            Value::list([
+                Value::Symbol("sentinel".into()),
+                Value::Symbol("set".into()),
+                Value::T,
+            ])
+        );
+    });
+}
+
+#[test]
 fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
     run_with_large_stack(|| {
         let mut interp = crate::test_support::initialized_upstream_batch_interpreter();

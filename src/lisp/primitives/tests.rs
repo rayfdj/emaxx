@@ -220,7 +220,8 @@ fn bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors() {
 #[test]
 fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
     let mut interp = Interpreter::new();
-    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let mut env = Env::new();
+    interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
     let positioned = |interp: &mut Interpreter, name: &str, position: i64, env: &mut Env| {
         call(
             interp,
@@ -301,7 +302,8 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
 #[test]
 fn defvar_and_defconst_use_gnu_check_symbol_for_positioned_names() {
     let mut interp = Interpreter::new();
-    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let mut env = Env::new();
+    interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
 
     for (form, name, value, position) in [
         ("defvar", "positioned-variable", 17, 1),
@@ -4948,7 +4950,8 @@ fn equal_structured_hash_tables_use_structural_buckets() {
 #[test]
 fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
     let mut interp = Interpreter::new();
-    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let mut env = Env::new();
+    interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
     let symbols = Value::list(
         (0..2_048).map(|index| Value::Symbol(format!("ordinary-symbol-{index}").into())),
     );
@@ -4999,7 +5002,8 @@ fn ordinary_memq_skips_symbol_with_position_mode_resolution() {
 #[test]
 fn eql_uses_position_aware_eq_for_non_numbers() {
     let mut interp = Interpreter::new();
-    let mut env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)].into()];
+    let mut env = Env::new();
+    interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
     let left = call(
         &mut interp,
         "position-symbol",
@@ -9461,6 +9465,19 @@ fn native_conditional_gc_and_memory_info_match_the_host_contract() {
             Value::Nil,
         ])
     );
+
+    let due_form = Reader::new(
+        "(let ((gc-cons-threshold 10000)) (make-list 2000 nil) (garbage-collect-maybe 1000))",
+    )
+    .read()
+    .expect("ordinary conditional GC form should parse")
+    .expect("ordinary conditional GC form should contain a form");
+    assert_eq!(
+        interp
+            .eval(&due_form, &mut Vec::new())
+            .expect("ordinary conditional GC should evaluate"),
+        Value::T
+    );
 }
 
 #[test]
@@ -11467,6 +11484,26 @@ fn garbage_collect_reports_the_live_census() {
     assert!(count_of("strings") > 100, "strings: {counts}");
     assert!(count_of("string-bytes") > 10_000, "string-bytes: {counts}");
     assert!(count_of("buffers") >= 1, "buffers: {counts}");
+
+    // alloc.c:Fgarbage_collect reports GNU C layout constants.  This catches
+    // accidental leakage of Rust host representation sizes into the public
+    // rows (notably symbol, string, vector-slot, interval, and buffer sizes).
+    let sizes_form = Reader::new(
+        r#"(mapcar (lambda (entry) (list (car entry) (nth 1 entry)))
+                   (garbage-collect))"#,
+    )
+    .read_all()
+    .expect("read garbage-collect sizes program")
+    .remove(0);
+    let sizes = interp
+        .eval(&sizes_form, &mut Vec::new())
+        .expect("evaluate garbage-collect sizes program")
+        .to_string();
+    assert_eq!(
+        sizes,
+        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) \
+(vectors 16) (vector-slots 8) (floats 8) (intervals 56) (buffers 992))"
+    );
 }
 
 #[test]

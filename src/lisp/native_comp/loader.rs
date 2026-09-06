@@ -658,7 +658,7 @@ fn first_load(
         initialize_pointer(
             &library,
             F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM,
-            runtime.symbols_with_positions_relocation(),
+            interpreter.symbols_with_positions_relocation(),
         )
         .map_err(|_| inconsistent(&file))?;
         initialize_pointer(&library, PURE_RELOC_SYM, runtime.pure_relocation())
