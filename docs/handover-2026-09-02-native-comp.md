@@ -36,7 +36,8 @@ gate.
 
 Merged-tree validation for `8883607`: the nine-rung identity test passed all
 fixtures, including byte-identical `comp.el` (881,800 bytes), in 244.19
-seconds on the preceding merged tree. After `origin/main` advanced, the
+seconds on the preceding merged tree; the rerun on `8883607` completed in
+303.20 seconds. After `origin/main` advanced, the
 same normal upstream native selector passed 177/177 with zero mismatches;
 Emaxx took 1,302.477 seconds versus GNU's 82.642 seconds. After
 `origin/main` advanced, the identity test became non-ignored, so the correct
