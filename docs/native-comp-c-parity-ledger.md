@@ -3,11 +3,11 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Last pushed checkpoint: `7e20c57`, the verified L05 GNU
-`Ffuncall` debugger-on-exit correction after the EQ/live-flag,
-reader-materialization, and variable-watcher corrections. Main is included
-and the worktree is clean. L05's focused controls, adversarial audit,
-artifact ladder, and full native execution gate are green. See
+Latest implementation checkpoint: `52298d7`, the bounded L08 GNU
+`Fgarbage_collect` layout-size correction after the L03/L05/L06/L07 audits.
+Focused testing, 18 anti-cheat gates, formatting, all-target checking, and
+strict all-feature Clippy are green; the full native execution and artifact
+identity gates are still pending for this checkpoint. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the exact continuation point.
 This unit comes from the completed post-startup profile and GNU C audit,
@@ -370,7 +370,7 @@ This remains separate from full forwarded-variable parity.
 | L05 | `eval.c:Ffuncall` debugger-on-exit | verified | Native return path now performs GNU's `backtrace_debug_on_exit`/`call_debugger` branch, including the debugger-control dynamic bindings; focused, anti-cheating, unchanged-source identity, and 177-case native execution gates pass. Headless redisplay top-level unwinding remains outside scope. |
 | L06 | `eval.c:funcall_general` target resolution | partial | Builtin, native, byte-code, symbol indirection, interpreted-lambda fallback, and invalid-function behavior are covered; autoload loading and the wider callable-class matrix remain open. |
 | L07 | `eval.c:funcall_subr` arity and nil padding | partial | Fixed optional padding, MANY forwarding, UNEVALLED rejection, wrong arity, and direct builtin errors are tested; audit the remaining 0..8 subroutine edge cases. |
-| L08 | `alloc.c` GC live-byte accounting | partial | Threshold/default behavior is implemented; prove the census includes exactly the same live Lisp object classes and bytes as GNU at equivalent state. |
+| L08 | `alloc.c` GC live-byte accounting | partial | GNU C SIZE constants now drive both live-byte totals and public `garbage-collect` rows, with exact row-size coverage; prove the census classes, allocator accounting, and free-list columns match GNU at equivalent state. |
 | L09 | `eval.c:Flet`, `FletX`, `funcall_lambda`, `Fmake_interpreted_closure`: retain original lexical symbols | verified | Original handles survive binding, parameter, environment, and debugger projections; symbol/name roots and native assq identity have explicit contracts. Full GNU execution, nine artifact fixtures, and paired no-regression measurements pass. Dynamic/global/local-special storage remains separate work. |
 | L10 | `print.c:print_object` `PVEC_CLOSURE`: print the stored slots | verified | Rust's extra free-variable scan/environment trimming is removed. GNU `cconv.el` remains the owner. Four Rust print tests and unchanged GNU `cconv-safe-for-space` pass, with full native execution/artifact/performance gates. |
 | L11 | `lread.c:Fintern`, `intern_driver`; `alloc.c:init_symbol`; `data.c:Fsymbol_name`: retain the Lisp name separately from private lookup identity | partial | Newly allocated symbols retain their Lisp name separately from the lookup key; ordinary-table Fintern name identity, existing hits, shorthand/purecopy, and type-check order pass focused contracts and full native gates. Full obarray storage/lifetime and early compact-abbreviation-table parity remain open. |

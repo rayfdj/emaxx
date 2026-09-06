@@ -5,17 +5,25 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 7e20c57 and merged main (2026-09-06)
+## Resume here — pushed 52298d7 and merged main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Last pushed commit: `7e20c57` — Match GNU native funcall debugger exit.**
-It contains the bounded L05 `eval.c:Ffuncall` debugger-on-exit correction,
-focused regression, and updated parity records. `origin/main` was fetched
-and merged after the push; it was already up to date. The worktree is clean.
+**Latest implementation commit: `52298d7` — Match GNU garbage-collect layout
+sizes.** It corrects the public `garbage-collect` SIZE columns to use the
+configured GNU C layouts (`alloc.c:Fgarbage_collect`) instead of Rust host
+representation sizes, and adds an exact row-size regression. Focused testing,
+anti-cheat (18/18), formatting, all-target checking, and strict all-feature
+Clippy pass. The full unchanged native execution and artifact identity gates
+remain to be run after the checkpoint merge.
 
-The next open native contract is L03, GNU `eval.c:eval_sub` `maybe_gc`
-placement and live-object accounting. Continue from the ledger's exact C
-source obligation; do not infer that the passing native suite closes it.
+The commit is ready to push; after pushing, fetch and merge `origin/main`,
+validate the clean state, and continue.
+
+The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
+This checkpoint closes only the public GNU C layout-size portion; the census
+classes, allocator accounting, free-list columns, and broader GC parity remain
+open. Continue from the ledger's exact C source obligation; do not infer that
+the passing focused gate closes L08.
 
 **L03 bounded placement correction (2026-09-06):** GNU `eval.c:eval_sub`
 performs `maybe_quit`, then `maybe_gc`, then increments the evaluation depth.
@@ -44,6 +52,14 @@ coverage for the direct fixed-optional, MANY, and UNEVALLED branches: native
 Ffuncall preserves nil padding, forwards the complete MANY vector, and rejects
 special forms with the resolved subr object. The full 0..8 arity matrix and
 remaining subroutine edge cases remain open.
+
+**L08 bounded layout correction (2026-09-06):** GNU `alloc.c` reports the C
+allocator layouts, not the host implementation's struct sizes. The configured
+64-bit GNU build reports cons=16, symbol=48, string=32, vector=16,
+vector-slot=8, float=8, interval=56, and buffer=992 bytes. Rust now uses those
+constants both for `LiveObjectCensus::total_bytes_of_live_objects` and for the
+public `garbage-collect` rows; a focused regression pins every SIZE column.
+The live census model and GNU free-list/accounting parity remain incomplete.
 
 ### Historical September 6 continuation — EQ/live-flag and reader work
 
