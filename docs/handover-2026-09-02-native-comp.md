@@ -34,10 +34,11 @@ the performance gap remains open. The full `check-all` selector additionally
 includes the separately tagged bootstrap case and is not the normal 177-case
 gate.
 
-Merged-tree validation for `81d8052`: the nine-rung identity test passed all
+Merged-tree validation for `8883607`: the nine-rung identity test passed all
 fixtures, including byte-identical `comp.el` (881,800 bytes), in 244.19
-seconds. The normal upstream native selector passed 177/177 with zero
-mismatches; Emaxx took 1,386.830 seconds versus GNU's 90.402 seconds. After
+seconds on the preceding merged tree. After `origin/main` advanced, the
+same normal upstream native selector passed 177/177 with zero mismatches;
+Emaxx took 1,302.477 seconds versus GNU's 82.642 seconds. After
 `origin/main` advanced, the identity test became non-ignored, so the correct
 command is `cargo test --release -j1 --test native_comp_identity --
 --nocapture --test-threads=1` without `--ignored`.
