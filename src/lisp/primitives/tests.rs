@@ -11229,6 +11229,26 @@ fn garbage_collect_reports_the_live_census() {
     assert!(count_of("strings") > 100, "strings: {counts}");
     assert!(count_of("string-bytes") > 10_000, "string-bytes: {counts}");
     assert!(count_of("buffers") >= 1, "buffers: {counts}");
+
+    // alloc.c:Fgarbage_collect reports GNU C layout constants.  This catches
+    // accidental leakage of Rust host representation sizes into the public
+    // rows (notably symbol, string, vector-slot, interval, and buffer sizes).
+    let sizes_form = Reader::new(
+        r#"(mapcar (lambda (entry) (list (car entry) (nth 1 entry)))
+                   (garbage-collect))"#,
+    )
+    .read_all()
+    .expect("read garbage-collect sizes program")
+    .remove(0);
+    let sizes = interp
+        .eval(&sizes_form, &mut Vec::new())
+        .expect("evaluate garbage-collect sizes program")
+        .to_string();
+    assert_eq!(
+        sizes,
+        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) \
+(vectors 16) (vector-slots 8) (floats 8) (intervals 56) (buffers 992))"
+    );
 }
 
 #[test]
