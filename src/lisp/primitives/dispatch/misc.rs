@@ -870,7 +870,9 @@ define_dispatch!(
                 interp.notify_variable_watchers(
                     &symbol,
                     watcher_value,
-                    "set-default",
+                    // data.c:notify_variable_watchers canonicalizes
+                    // Qset_default to Qset before invoking callbacks.
+                    "set",
                     None,
                     env,
                 )?;

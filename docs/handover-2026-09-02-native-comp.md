@@ -106,20 +106,22 @@ feature checking was clean, and strict all-target/all-feature Clippy was clean.
 The reader-materialization correction and the EQ/live-flag work are ready for
 this checkpoint commit. No new timing claim is made by this bounded fix.
 
-The C review also recorded an independent preexisting V05 bug: set and
-set-default can return/notify watchers with a normalized bool instead of
-GNU's original NEWVAL. This unit does not fix or certify those contracts.
-Full symbol storage/redirect ownership and native object representations
-remain open; this is not full forwarding parity or dump readiness.
+The C review recorded an independent V05 bug: `set` and `set-default` could
+return/notify watchers with a normalized bool instead of GNU's original
+NEWVAL. The bounded correction below fixes and tests that contract. Full
+symbol storage/redirect ownership and native object representations remain
+open; this is not full forwarding parity or dump readiness.
 
 **Post-merge V05 correction (2026-09-06):** the bounded follow-up now
 preserves GNU's original NEWVAL for `set`/`set-default` return values and
-watcher callbacks, and uses the GNU `set-default` watcher action. Focused
+watcher callbacks, and canonicalizes the GNU `set-default` operation to
+`set` before callbacks. Focused
 watcher coverage, the 18-case adversarial audit, formatting, all-target
 checking, and strict Clippy are clean. The post-correction fresh native
 execution gate passed 177/177 with zero unexpected results, and the nine-rung
 identity ladder passed all fixtures, including byte-identical `comp.el`. This
-correction is ready for its checkpoint commit.
+correction is ready for its checkpoint commit. The identity ladder completed
+in 249.06 seconds; the fresh native suite completed in 1,365.02 seconds.
 
 The full active goal and seven milestone states below remain unchanged:
 GNU-faithful runtime foundations, a real portable startup image as soon as
