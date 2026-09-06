@@ -2823,10 +2823,10 @@ impl ImageGraphCopier {
 /// - `floats' is 0: emaxx floats are immediate f64s, not heap cells.
 /// - `intervals' counts text-property spans (buffer spans plus string
 ///   spans), the closest live analogue of GNU's interval tree nodes.
-/// - Markers, overlays, char-tables, frames and records are id-indexed host
-///   state.  The fixed-layout records that already have a direct GNU
-///   pseudovector counterpart are included with their C footprint; the
-///   remaining host facades are mapped as their allocation sites are audited.
+/// - Markers, overlays, and char-tables are id-indexed host state whose
+///   reachability filtering remains under audit.  Frames, terminals, buffers,
+///   and fixed-layout records with a direct GNU pseudovector counterpart are
+///   included with their measured C footprint.
 #[derive(Default)]
 pub(crate) struct LiveObjectCensus {
     pub(crate) conses: usize,
@@ -2853,6 +2853,13 @@ pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
 pub(crate) const GNU_FLOAT_SIZE: usize = 8;
 pub(crate) const GNU_INTERVAL_SIZE: usize = 56;
 pub(crate) const GNU_BUFFER_SIZE: usize = 992;
+// alloc.c:sweep_vectors counts these fixed-layout objects in the vector
+// totals as well as in their more specific public rows.  These are the
+// configured GNU 64-bit VECSIZE values from frame.h, termhooks.h, and
+// buffer.h respectively.
+pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
+pub(crate) const GNU_TERMINAL_VECTOR_SLOTS: usize = 66;
+pub(crate) const GNU_BUFFER_VECTOR_SLOTS: usize = 123;
 
 #[derive(Default)]
 struct LispReachability<'mark, 'heap> {
@@ -3487,6 +3494,17 @@ impl Interpreter {
             .saturating_add(crate::lisp::types::census_live_uninterned_symbols());
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
+        let live_buffers = 1 + self.inactive_buffers.len();
+        let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
+        let live_terminals = usize::from(self.terminal_live);
+        vector_count = vector_count
+            .saturating_add(live_buffers)
+            .saturating_add(live_frames)
+            .saturating_add(live_terminals);
+        vector_slots = vector_slots
+            .saturating_add(live_buffers.saturating_mul(GNU_BUFFER_VECTOR_SLOTS))
+            .saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS))
+            .saturating_add(live_terminals.saturating_mul(GNU_TERMINAL_VECTOR_SLOTS));
         for record in self.records.iter().filter(|record| {
             !self.gc_has_record_census
                 || record.id >= self.gc_record_high_water
@@ -3508,7 +3526,7 @@ impl Interpreter {
             vector_slots,
             floats: crate::lisp::types::census_live_floats(),
             intervals: strings.property_spans,
-            buffers: 1 + self.inactive_buffers.len(),
+            buffers: live_buffers,
             hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
         };
         census.intervals += self.buffer.text_property_span_count();

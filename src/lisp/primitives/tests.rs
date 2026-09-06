@@ -15458,6 +15458,27 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
 }
 
 #[test]
+fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
+    // alloc.c:sweep_vectors counts PVEC_FRAME, PVEC_TERMINAL, and
+    // PVEC_BUFFER in total_vectors and total_vector_slots.  Their Rust owners
+    // are interpreter state rather than RecordState entries; creating one
+    // additional buffer gives a direct delta test for the 123-word buffer
+    // footprint while the always-live frame and terminal are included in the
+    // baseline census.
+    let mut interp = Interpreter::new();
+    let before = interp.live_object_census();
+    interp.create_buffer("census-buffer");
+    let after = interp.live_object_census();
+
+    assert_eq!(after.buffers - before.buffers, 1);
+    assert_eq!(after.vectors - before.vectors, 1);
+    assert_eq!(
+        after.vector_slots - before.vector_slots,
+        crate::lisp::eval::GNU_BUFFER_VECTOR_SLOTS
+    );
+}
+
+#[test]
 fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
     let validation = r#"(let* (;; thread.c:499,558 spell the apostrophe ASCII and `error'
                                ;; requotes it per the effective style, so pin the
