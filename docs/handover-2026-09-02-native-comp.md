@@ -112,6 +112,15 @@ GNU's original NEWVAL. This unit does not fix or certify those contracts.
 Full symbol storage/redirect ownership and native object representations
 remain open; this is not full forwarding parity or dump readiness.
 
+**Post-merge V05 correction (2026-09-06):** the bounded follow-up now
+preserves GNU's original NEWVAL for `set`/`set-default` return values and
+watcher callbacks, and uses the GNU `set-default` watcher action. Focused
+watcher coverage, the 18-case adversarial audit, formatting, all-target
+checking, and strict Clippy are clean. The post-correction fresh native
+execution gate passed 177/177 with zero unexpected results, and the nine-rung
+identity ladder passed all fixtures, including byte-identical `comp.el`. This
+correction is ready for its checkpoint commit.
+
 The full active goal and seven milestone states below remain unchanged:
 GNU-faithful runtime foundations, a real portable startup image as soon as
 its actual correctness prerequisites permit, then remaining native-comp

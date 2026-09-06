@@ -351,13 +351,15 @@ This accepts the reader-materialization correction for native execution; no
 new performance claim is made by this bounded fix, and the broader native
 object/performance and portable-dump goals remain open.
 
-Additional preexisting V05 finding, not closed by this unit: GNU `Fset`
-returns its original NEWVAL and notifies watchers before bool storage
-normalizes it. Rust's `dispatch/misc.rs` set/set-default routes use
-`prepare_variable_assignment`'s normalized value for their return/watcher
-arguments. The live-cell tests do not certify those independent return and
-watcher contracts. Keep this on the V05 audit; do not claim full forwarded
-variable parity from this bounded ownership correction.
+V05 correction (2026-09-06): GNU `Fset`/`Fset_default` return their original
+NEWVAL and notify watchers with that original object before bool storage
+normalizes it; `set-default` watchers also receive the `set-default` action.
+`dispatch/misc.rs` now preserves those contracts while retaining normalized
+storage. Focused watcher coverage, the 18-case adversarial audit, formatting,
+all-target checking, and strict Clippy are clean. The post-correction native
+execution gate passed 177/177 with zero unexpected results, and the nine-rung
+identity ladder passed all fixtures, including byte-identical `comp.el`.
+This remains separate from full forwarded-variable parity.
 
 ## Cross-cutting hot-path contracts (15)
 
