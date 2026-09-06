@@ -3,14 +3,11 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Last pushed checkpoint: `ae12db4`, the P19 type-query correction below.
-Main `84f342a` is included. Current uncommitted work is the P13/R03 EQ and
-V05 live-position-flag correction described below, with focused correctness
-and warning gates passed and the complete artifact ladder passed. Native
-execution exposed a reader-materialization omission in the default
-`eval-buffer` path; the correction is now in the worktree and the exact
-generated context reaches native compilation successfully. Full
-execution/performance acceptance remains pending. See
+Last pushed checkpoint: `17acc4e`, the reader-materialization and variable-
+watcher corrections below. Main `84f342a` is included and the worktree is
+clean. The P13/R03 EQ and V05 live-position-flag correction is committed and
+its focused controls, adversarial audit, artifact ladder, and full native
+execution gate are green. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the exact continuation point.
 This unit comes from the completed post-startup profile and GNU C audit,
@@ -249,9 +246,9 @@ The bridge is now the largest identified owner region. R02c/R03 caller
 attribution and GNU C comparison come next, without a new cache or an
 unbounded dump prerequisite.
 
-### P13/R03 follow-up: EQ must not traverse unrelated objects (in progress)
+### P13/R03 follow-up: EQ must not traverse unrelated objects (verified)
 
-After pushed `ae12db4`, the completed post-startup profile attributes 2,459
+After the preceding checkpoint, the completed post-startup profile attributes 2,459
 worker samples to `native_eq` and descendants, including cons decoding and
 binding lookup under `memq`/`assq`. This overlaps the object-bridge region;
 do not add those counts. Source review finds a concrete extra operation:
@@ -274,7 +271,7 @@ result wrongly depend on whether position handling is enabled. Ordinary
 `values_eq_in_env` shares that identity bug. Existing hash-table EQ matching
 uses the same ordinary predicate and must continue to respect its result.
 
-The intended bounded correction keeps native words opaque unless the
+The committed bounded correction keeps native words opaque unless the
 object really is a positioned symbol, then compares the resulting word
 identities. Positioned-symbol field encoding remains part of the existing
 bridge until R02c/R03 owns those fields directly; no new cache or alternate
@@ -282,34 +279,34 @@ symbol identity scheme is authorized. Correct ordinary bignum EQ without
 changing EQL's numeric comparison. This does not close all native object
 ownership or create another dump prerequisite.
 
-Two Rust-only controls ran against the old implementation and both failed
-as intended (`red.log`): unwanted cons materialization and distinct bignums
-reported EQ by both ordinary/native routes. An earlier compile failure
-executed no tests. The uncommitted candidate passes all-target checking
-without warnings (`check.log`), but has no green test, strict Clippy,
-artifact or timing acceptance yet. A third positioned-symbol identity
-matrix test has been added and has not run.
+The two Rust-only negative controls now pass against the corrected
+implementation: EQ does not materialize unrelated cons fields, and distinct
+bignums remain identity-unequal. The positioned-symbol identity matrix also
+passes. The focused P13/R03 controls pass; the full checkpoint acceptance is
+recorded above. No new performance claim is made by this bounded correction.
 
-Follow-up C review found a connected V05 dependency: NativeRuntime keeps a
-`Box<bool>` snapshot of `symbols-with-pos-enabled`, updated only at native
-call entry. Binding or setting the variable inside that call does not
-update this snapshot, which also backs the generated-code relocation.
+Follow-up C review found a connected V05 dependency in the old
+implementation: NativeRuntime kept a `Box<bool>` snapshot of
+`symbols-with-pos-enabled`, updated only at native call entry. Binding or
+setting the variable inside that call did not update this snapshot, which
+also backed the generated-code relocation.
 GNU `data.c:syms_of_data` initializes the forwarded C boolean to false;
 `do_symval_forwarding`/`store_symval_forwarding` read/write that live cell,
 and `comp.c` connects the relocation directly to its address. Removing
 Rust's EQ fallback can expose a stale-state error that its second Lisp
 lookup partly masked. Do not accept or benchmark this candidate until
 the live owner, binding/unbinding and detachment contracts are corrected
-and tested against C; no replacement snapshot/refresh cache is authorized.
+and tested against C. The committed correction uses the stable interpreter
+owner directly; no replacement snapshot/refresh cache was added.
 
 Evidence directory: `/private/tmp/emaxx-native-eq-words.aEIw2H`. Exact resume
 steps and the pushed-versus-uncommitted split are in the
 [current handover](handover-2026-09-02-native-comp.md#resume-here--pushed-ae12db4-and-unfinished-eq-work-2026-09-06).
-No production correction or performance conclusion is accepted yet.
+No new performance conclusion is claimed by this correction.
 
-2026-09-06 source-review follow-up: both inner-native binding controls now
-fail on the snapshot implementation (`live-flag-red.log`, 2 failed, 0 passed;
-an earlier test compile error executed nothing). The new uncommitted code
+2026-09-06 source-review follow-up: both inner-native binding controls failed
+on the old snapshot implementation (`live-flag-red.log`, 2 failed, 0 passed;
+an earlier test compile error executed nothing). The committed correction
 moves the live bool to a stable interpreter-owned `Box<Cell<bool>>`, removes
 NativeRuntime's snapshot and its entry-time lookup, and connects the loader
 and all ordinary/native flag readers to that owner. Existing forwarding
