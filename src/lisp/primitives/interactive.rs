@@ -257,12 +257,12 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-pub(crate) fn symbols_with_pos_enabled(interp: &Interpreter, env: &Env) -> bool {
+pub(crate) fn symbols_with_pos_enabled(interp: &Interpreter, _env: &Env) -> bool {
     #[cfg(test)]
     SYMBOL_WITH_POS_FLAG_READ_COUNT.with(|count| count.set(count.get() + 1));
-    interp
-        .lookup_var("symbols-with-pos-enabled", env)
-        .is_some_and(|value| value.is_truthy())
+    // lisp.h:SYMBOLP/EQ read the C boolean, not a lexical environment or
+    // even the Lisp value cell after makunbound has detached that symbol.
+    interp.symbols_with_positions_enabled()
 }
 
 /// GNU's `CHECK_SYMBOL' accepts a symbol-with-position while

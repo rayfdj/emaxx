@@ -5,21 +5,148 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — type-query checkpoint (2026-09-05)
+## Resume here — pushed ae12db4 and unfinished EQ work (2026-09-06)
 
-Branch `native-comp`, checkpoint built on pushed `9844664` (handover) and
-`a94d410` (GC). This is the type-query correction described in the
-[P19 ledger](native-comp-c-parity-ledger.md). Use Git HEAD/origin to identify
-the published commit; the older GC resume section below is history, not a
-claim that this correction is pending. Main `84f342a` is included. After
-each checkpoint push, fetch/integrate main before beginning another unit.
+Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
+**Last pushed commit: `ae12db495c3bc712760884e51636e83834fd8a1a` —
+Restore GNU type-query boundaries and remove redundant lookups.**
+Local HEAD and the recorded `origin/native-comp` both point to it. This is
+the type-query correction in the [P19 ledger](native-comp-c-parity-ledger.md),
+built on `9844664` (handover) and `a94d410` (GC). After that push, main was
+fetched; `84f342a132eb041286d98cf7afd6551996db1529` is already an ancestor.
+No empty merge was needed. Fetch/integrate main again after the next push,
+before beginning another checkpoint.
+
+**The worktree is not the pushed checkpoint.** It contains the unfinished
+EQ/live-flag correction and documentation. Do not commit those runtime
+edits as already verified, discard them as unrelated work, or describe
+them as pushed. The September 5 handover request changed documentation only;
+implementation resumed under the active goal on September 6.
+
+### September 6 continuation — pick up here first
+
+The live-flag dependency described below is now implemented, not just
+planned. The interpreter owns a stable `Box<Cell<bool>>`; native relocation
+and ordinary/native readers use it. NativeRuntime's snapshot and per-call
+lookup are removed. Existing forwarding paths handle stores, binding and
+restoration, buffer selection and detachment. No backend/codegen, GNU source
+or Elisp changed. Five existing Rust fixtures now set the real flag cell
+instead of faking it with a lexical Env; their expectations are unchanged.
+
+Evidence in `/private/tmp/emaxx-native-eq-words.aEIw2H`:
+
+- `live-flag-red.log`: both directions of inner-native binding fail with
+  the old snapshot (2 failed, 0 passed). The earlier
+  `live-flag-red-build-error.log` executed no tests.
+- `forwarding-focused.log`: **128 passed, zero failed, one preexisting
+  manual timing probe ignored**, 87.06s after a 2m09s serial release build.
+  This includes all 18 adversarial checks, new relocation/alias/local/copy
+  tests, native binding/store controls, detached/lexical-shadow controls,
+  earlier GC controls and existing positioned-symbol integration tests.
+- `forwarding-check.log`: all-target check clean. `final-clippy.log`:
+  strict all-target/all-feature Clippy clean. The initial Clippy log found
+  12 test-only `unwrap()` calls; they now have explanatory `expect()`
+  messages, not lint suppressions. Formatting and diff whitespace checks
+  are clean.
+- Final rerun/identity pipeline **75946 is terminal, exit 0**. The same focused
+  selection passed again in `final-focused.log`: **128 passed, 0 failed,
+  1 manual timing probe ignored**, 86.97s. `identity.log` then passed all nine
+  fixtures in 213.11s: eight entire byte-identical `.eln` files through the
+  881,800-byte `comp.el`, and one correct no-artifact result. No candidate
+  timing exists yet.
+- `gnu-exec-negative-control.log`: a fresh run of the existing GNU-executable
+  fence rejects GNU with exit **71**. Native execution inputs are prepared
+  under `execution/source`; the test file and complete resource directory
+  compare unchanged with GNU. Subject/oracle homes and temporary directories
+  are separate. The fenced candidate run (`execution/subject.log`, session
+  **73568**, exit **255**) failed before reaching any tests: its child
+  rejected GNU comp.el's serialized context with `invalid-read-syntax` while
+  compiling the first helper. The queued GNU suite did not start.
+- The saved pushed `ae12db4` binary fails at the same stage with the same
+  input in separate fresh directories (`execution/before.log`, session
+  **46824**, exit **255**). Thus this failure predates the current correction;
+  do not infer which earlier commit introduced it without more evidence.
+- GNU successfully byte-compiled an unchanged copy of the candidate's
+  rejected context (`execution/gnu-reader.log`, exit 0; only the expected
+  missing lexical-binding header warning). `execution/gnu-reader/context.el`
+  is 750,498 bytes, SHA-256
+  `adb349f9bfe16b3d36b797e43bb427b00378d66888910f03389514ebac81a74d`;
+  GNU produced a 750,740-byte `context.elc`. This proves GNU accepts these
+  bytes, not full frontend/execution parity.
+- Candidate release editor SHA-256:
+  `374895def0afc4218c58e460cc802dea6964edbc3d9df6da8f86e62a5f34d24c`.
+
+**Reader interruption resolved (2026-09-06):** the preserved GNU-generated
+context is byte-identical on both sides and the ordinary `load_file_strict`
+path materializes it correctly. The actual failure was in
+`primitives/loading.rs:eval_buffer_forms`: its default `read` path parsed and
+evaluated forms without the reader-dependent materialization step. GNU creates
+`#s` records, hash tables, and circular `#[...]` objects before evaluation;
+Emaxx therefore reached native compilation with `ReaderForm` markers and
+reported `invalid-read-syntax`. The path now calls
+`materialize_read_object_literals` after interning each form. The focused
+loading suite passes **21/21**, and the exact previously failing generated
+context now reaches native compilation and exits **0**. The temporary absolute
+path diagnostic was removed.
+
+Next: restore genuine native execution in the full fenced suite and complete
+the EQ/live-flag acceptance gates; then repeated
+direct post-startup before/after/GNU measurements, final audit and checkpoint
+push. The recorded `ae12db4` before binary is still the baseline. After pushing,
+fetch/integrate main, then continue the finite dump prerequisites.
+
+**Checkpoint acceptance completed (2026-09-06):** the fresh fenced native
+execution run passed **177/177**, zero unexpected, exit 0, using unchanged GNU
+`comp-tests.el` and a fresh isolated HOME/TMPDIR under `LANG=C`. The nine-rung
+unchanged-source identity test passed all fixtures, including byte-identical
+artifacts for the full `comp.el`; the focused native runtime suite passed
+70/70 with one separate timing probe ignored. The final adversarial audit
+passed 18/18, loading tests passed 21/21, formatting was clean, all-target/all-
+feature checking was clean, and strict all-target/all-feature Clippy was clean.
+The reader-materialization correction and the EQ/live-flag work are ready for
+this checkpoint commit. No new timing claim is made by this bounded fix.
+
+The C review also recorded an independent preexisting V05 bug: set and
+set-default can return/notify watchers with a normalized bool instead of
+GNU's original NEWVAL. This unit does not fix or certify those contracts.
+Full symbol storage/redirect ownership and native object representations
+remain open; this is not full forwarding parity or dump readiness.
 
 The full active goal and seven milestone states below remain unchanged:
 GNU-faithful runtime foundations, a real portable startup image as soon as
 its actual correctness prerequisites permit, then remaining native-comp
 correctness/performance. No dumper exists and no whole milestone is complete.
 Read the full objective attachment when resuming; keep every boundary and
-de-cheating requirement, not just this checkpoint's focused tests.
+de-cheating requirement, not just this checkpoint's focused tests. The
+attachment is
+`/Users/nbmhqa186/.codex/attachments/cc60fc9a-8d38-462a-8cb1-10ea579d9827/pasted-text-1.txt`.
+The repository summary below and the non-negotiable rules later in this
+document preserve the working contract if that local attachment is absent.
+
+### Current goal and milestone states
+
+The immediate major outcome is a **separate ordinary Emaxx process restoring
+a real persistent image, with native functions, without replaying preload**.
+Reach it once concrete correctness prerequisites permit; do not wait for
+every runtime optimization. Then finish native-comp correctness/performance.
+
+| Milestone, in dependency order | State and next obligation |
+|---|---|
+| 1. GNU dump contracts and baseline | Partial. The existing finite inventory is D01–D20 (PRE/BUILD/ENABLE/LATER), not just D01–D15 as older summaries said. Ordinary startup is corrected and direct post-startup measurements exist. Complete the relevant contract verification. |
+| 2. Shared object and symbol foundations | Partial. Correct authoritative identity, storage and shared mutation (R02c/R03); plain value cells, aliases, buffer-local and forwarded fields (V02–V05); affected closure/symbol roots and lifetimes. The current EQ/live-flag finding belongs here. |
+| 3. Function restoration and GC readiness | Partial. GC graph/weak-entry/sweep ordering is corrected. Callable identity versus process addresses, complete roots, weak/finalizer/pure-object behavior and accounting remain obligations. |
+| 4. Portable writer and loader | Not implemented. Follow GNU traversal, sections, relocations, roots, fingerprints and rejection behavior; use unchanged GNU loadup and Rust round-trip tests. |
+| 5. Native restoration and ordinary dumped startup | Not implemented. Reopen libraries and reconnect functions in GNU order; separate restored persistent state from fresh-process initialization. Do not replay native top levels that GNU does not replay. |
+| 6. Validate restored startup and accelerate tests | Not reached. Genuine native suite, entire-artifact ladder, sharing/GC/startup/rejection checks, broader integration gate and representative startup/test measurements. Template cloning is not dumping. |
+| 7. Remaining native correctness/performance | Open. Finish deferred runtime contracts and achieve fairly measured GNU-comparable hot-path performance; neither selected artifact identity nor 177 passing tests closes the goal. |
+
+Use the [finite dump prerequisite inventory](pdump-c-parity-ledger.md)
+alongside the [native contract ledger](native-comp-c-parity-ledger.md).
+Only concrete identity, ownership, root, relocation or startup correctness
+dependencies may delay the image milestone. Argument-copy elimination and
+other performance-only work do not automatically belong before dumping.
+
+### What the last pushed commit changed and proved
 
 What changed:
 
@@ -47,7 +174,7 @@ Verified evidence, `/private/tmp/emaxx-native-type-tags.E73e1Z`:
 - All nine artifact fixtures pass: **eight entire byte-identical `.eln`
   files through `comp.el`, one correctly absent artifact**. The 177-case
   native execution suite was not rerun for this bounded correction.
-- Two post-startup rounds: corrected CPU **48.97 / 49.78s**, pushed baseline
+- Two post-startup rounds: corrected CPU **48.97 / 49.78s**, previous checkpoint
   **52.06 / 52.26s**, GNU **8.37 / 8.33s**, including compiler children.
   Paired reductions are **5.94% / 4.75%**; baseline variation is 0.39%.
   The evidence supports roughly 5–6% less CPU for this input, not a precise
@@ -60,7 +187,7 @@ Verified evidence, `/private/tmp/emaxx-native-type-tags.E73e1Z`:
   Saved baseline `before-emaxx` in the same directory has SHA-256
   `15d1486fa62578847331fde3ea934726089f51d8266368d6ae0a51c7095adc10`.
 
-Next work: **native object conversion/synchronization, R02c/R03**, starting
+Next area: **native object conversion/synchronization, R02c/R03**, starting
 from the corrected editor's completed post-startup profile, not a fresh
 guess or another cache. `after.sample`, `profile.log`, and
 `after-attribution.txt` are in the type-tags directory. The worker is
@@ -84,12 +211,132 @@ collapsed leaves checked for the after-profile). The after-profile spans
 the 58.55-second instrumented operation; it is not another unprofiled timing
 sample. Its artifact also compares whole-byte identical with GNU.
 
-Read GNU `lisp.h` object access and the relevant `data.c`/`alloc.c` owners
-before changing the Rust representation or equality routes. Keep shared
-mutation, identity and roots correct; do not bypass mirrors until their
-authoritative replacement is proven. These remain obligations of the
-finite dump prerequisite list, not permission to postpone dumping for every
-optimization. No further runtime optimization is implemented at this point.
+The selected bounded unit and its unfinished state follow. No optimization
+after `ae12db4` has been accepted or benchmarked.
+
+### Discovery history — EQ identity and the live positioned-symbol flag
+
+This records the September 5 starting point. The September 6 continuation
+above supersedes its implementation/test status and pending-file list.
+
+In plain language: GNU can answer “are these the same object?” by comparing
+object words. Rust sometimes reconstructs an unrelated list and reads its
+contents first. It also treats two separately allocated, equal-valued big
+integers as the same object on this path, although GNU `eq` does not.
+These are concrete C deviations, not a proposed new compiler algorithm.
+
+GNU owners already inspected:
+
+- `data.c:Feq` and `lisp.h:EQ`, `PSEUDOVECTORP`, `SYMBOL_WITH_POS_P`,
+  `XSYMBOL_WITH_POS_SYM`, `maybe_remove_pos_from_symbol`: unwrap only an
+  actual positioned symbol when the live C flag enables it, then compare
+  object words. Do not traverse unrelated cons/vector contents.
+- `alloc.c:build_symbol_with_pos`: stores bare symbol and position
+  separately; EQ needs only the bare-symbol field.
+- `fns.c:Fmemq`/`Fassq` use EQ; `Feql` separately owns numeric bignum/float
+  comparison. Do not change EQL into identity comparison.
+
+Pending files, all belonging to this unfinished unit:
+
+- `src/lisp/native_comp/runtime.rs`: candidate `native_remove_symbol_position`
+  and word-based EQ, plus three Rust controls. Positioned-symbol fields
+  still use the existing typed/native bridge; this does not finish R02c/R03.
+- `src/lisp/primitives/values.rs`: ordinary bignum EQ uses allocation identity.
+- `src/lisp/types.rs`: `SharedBigInt::ptr_eq` supports that identity check.
+- `src/anti_cheat.rs`: requires the three new regression controls.
+- `docs/native-comp-c-parity-ledger.md`: P13/R03 findings and unfinished status.
+
+Evidence is in `/private/tmp/emaxx-native-eq-words.aEIw2H`:
+
+- `red.log`: two controls ran against old production code and **both failed**
+  as intended: unwanted cons materialization, and ordinary/native EQ both
+  returning `t` for distinct bignums. This is failing-control evidence,
+  not two passing tests. `red-build-error.log` is an earlier compile failure,
+  corrected before that run; no tests executed in that first attempt.
+- `check.log`: the candidate passed all-target compiler checking, zero
+  warnings (9.09s). Formatting was applied. **No green test run, strict
+  Clippy acceptance, new artifact run or candidate timing exists yet.**
+- `native_eq_unwraps_only_positioned_symbols_and_preserves_identity` was
+  added after the red run and has not run. It covers both direct/native-subr
+  routes, enabled/disabled handling, interned/uninterned symbols and identity.
+- `before-emaxx` is the saved pushed `ae12db4` binary. It and the current
+  `target/release/emaxx` still have SHA-256
+  `d8f0d55a78719caa23ca07dd667641a440c8a212798f12afbca506f2d2517a3c`.
+  The release unit-test binary is from the red run, not the candidate.
+
+**The source-faithfulness audit found a dependency before acceptance:**
+`NativeRuntime::symbols_with_positions_enabled` is a separate `Box<bool>`
+copied from the Lisp variable only at `NativeRuntime::invoke` entry. Native
+`runtime_specbind`/ordinary writes do not update that box. The native loader
+also points generated code's relocation at this snapshot. A binding changed
+inside the native call can therefore leave both the helper and generated
+code reading stale state. The old EQ fallback's second Lisp lookup masked
+one direction of this problem; removing it can expose a regression.
+
+GNU instead initializes the actual forwarded C boolean to false in
+`data.c:syms_of_data`; `do_symval_forwarding` reads it and
+`store_symval_forwarding` writes it immediately (nil versus non-nil).
+`comp.c` connects `F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM` directly to
+`&symbols_with_pos_enabled`. Rust needs that same live state contract,
+not an entry-time snapshot or another refresh cache.
+
+### Original dependency checklist (steps 2–5 now implemented and focused-tested)
+
+Use the current continuation above for the next action. Keep the remaining
+acceptance requirements here; do not redo completed source review or red runs.
+
+1. Read this resume section, the objective and the current diff. Preserve
+   the unfinished edits. Confirm HEAD/origin and actual process state.
+   The recorded red-build/check jobs finished; do not restart old jobs or
+   mistake the pushed release executable for a build of the candidate.
+2. Finish the GNU forwarding review before changing the flag owner:
+   `data.c:set_internal` (including detachment on makunbound),
+   `eval.c:specbind`/unbinding, aliases and buffer-local forwarding. Compare
+   `src/lisp/eval/variables.rs`'s existing normalization, update, read,
+   refresh and detached-forwarding machinery, and `eval.rs` field ownership.
+3. Add Rust-only failing controls for changing the flag **inside** an active
+   native call in both directions and restoring it. Use existing
+   `runtime_specbind` and `runtime_unbind_n`; the latter takes a tagged Lisp
+   integer count, not an untagged machine integer. Check ordinary stores
+   and the pointer read by loaded code as well, not just the EQ helper.
+4. Implement one stable, live forwarded boolean owner and connect the
+   loader/runtime to it. A boxed `Cell<bool>` owned by the interpreter is
+   a proposed Rust representation, **not yet implemented or accepted**.
+   Verify lifetime and FFI access, normalization, binding/unbinding,
+   aliases, buffer switching and detachment against GNU. Do not retain a
+   second runtime snapshot, add per-subr refreshes, or alter generated
+   machine code to compensate. Keep raw initialization false; later GNU
+   Elisp changes remain separate.
+5. Re-review the entire EQ candidate against C, including bignum identity
+   and native argument lifetimes. The existing cheap “neither operand is
+   vector-like” guard was removed by the draft: check preserving it rather
+   than adding unnecessary helper work. EQL conversion overhead remains
+   open; do not claim it was fixed by EQ.
+6. Only after faithfulness review: focused red/green tests, adversarial
+   de-cheating checks, clean formatting/check/strict Clippy, relevant whole
+   artifact and execution tests. Expand coverage for ownership/relocation
+   transitions where needed. Do not label historical 177-case results fresh.
+7. Then measure serial, order-balanced before/after/GNU post-startup work.
+   Use the saved `ae12db4` baseline and the existing external observer
+   `/private/tmp/emaxx-native-poststartup.mXNHW4/native_phase.py`; validate
+   its entry/return/exit evidence and whole artifacts. Exclude preload
+   directly, account for compiler children and loaded-host variation.
+   Observer logs are diagnostics, not a new editor interface or Elisp runner.
+8. Update both ledgers and this handover with accepted evidence. At a
+   natural verified checkpoint, state the exact scope, commit and push
+   under the standing authorization, then fetch/integrate main. Resume the
+   finite dump prerequisites and real writer/loader, not an unbounded
+   optimization campaign.
+
+All boundaries below still apply: **C-to-Rust only; unchanged GNU Elisp;
+no authored Elisp even for tests; no GNU runtime delegation; no approved
+semantic deviations; entire `.eln` identity; adversarial audits; zero
+warnings.** Artifact identity does not prove arbitrary execution, GC or
+dump correctness. No portable image exists, and the overall goal is active.
+
+The sections below preserve historical checkpoints and standing rules.
+For conflicting uses of “current”, “pending” or “last pushed” in that history,
+the resume section above and the actual Git state take precedence.
 
 ## Previous GC checkpoint — pushed a94d410 (2026-09-05)
 

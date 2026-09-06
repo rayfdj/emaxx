@@ -3,13 +3,18 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Current checkpoint: the P19 type-query correction below, based on pushed
-`9844664`/`a94d410` (handover/shared GC marking). Current main `84f342a`
-is included. See
+Last pushed checkpoint: `ae12db4`, the P19 type-query correction below.
+Main `84f342a` is included. Current uncommitted work is the P13/R03 EQ and
+V05 live-position-flag correction described below, with focused correctness
+and warning gates passed and the complete artifact ladder passed. Native
+execution exposed a reader-materialization omission in the default
+`eval-buffer` path; the correction is now in the worktree and the exact
+generated context reaches native compilation successfully. Full
+execution/performance acceptance remains pending. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
-current evidence, full-goal progress, and the next requested task: profile
-post-startup native compilation and fix its largest evidenced GNU C
-deviation. The chronology below is historical, not a claim that all its
+current evidence, full-goal progress, and the exact continuation point.
+This unit comes from the completed post-startup profile and GNU C audit,
+not a speculative optimization. The chronology below is historical, not a claim that all its
 "worktree" changes remain uncommitted.
 The startup/loading checkpoint based on b432d86 now has 91 distinct targeted
 tests passing, including all 18 adversarial checks, and all nine
@@ -243,6 +248,116 @@ own summary (`after-attribution.txt`). Sampling perturbs elapsed time;
 The bridge is now the largest identified owner region. R02c/R03 caller
 attribution and GNU C comparison come next, without a new cache or an
 unbounded dump prerequisite.
+
+### P13/R03 follow-up: EQ must not traverse unrelated objects (in progress)
+
+After pushed `ae12db4`, the completed post-startup profile attributes 2,459
+worker samples to `native_eq` and descendants, including cons decoding and
+binding lookup under `memq`/`assq`. This overlaps the object-bridge region;
+do not add those counts. Source review finds a concrete extra operation:
+when position handling is enabled and either operand is vector-like, Rust
+`native_eq` decodes both operands and invokes `values_eq_in_env`. An
+unrelated native cons therefore gets a typed mirror and its fields decoded
+just to answer an identity comparison.
+
+GNU `data.c:Feq` calls `lisp.h:EQ` (1354): when the C boolean permits it,
+unwrap only PVEC_SYMBOL_WITH_POS objects via XSYMBOL_WITH_POS_SYM, then
+BASE_EQ the two object words. `PSEUDOVECTORP` (1093) checks the tag and
+subtype; it does not read unrelated cons fields. `alloc.c:build_symbol_with_pos`
+(4004) stores the bare symbol and position separately; equality only needs
+the symbol. `fns.c:Fmemq` (1914) and `Fassq` use the same EQ contract.
+
+The general Rust equality fallback also numerically compares two separately
+allocated BigInteger objects. GNU EQ compares their identities; numeric
+bignum comparison belongs to `fns.c:Feql` (2759). This makes the old native
+result wrongly depend on whether position handling is enabled. Ordinary
+`values_eq_in_env` shares that identity bug. Existing hash-table EQ matching
+uses the same ordinary predicate and must continue to respect its result.
+
+The intended bounded correction keeps native words opaque unless the
+object really is a positioned symbol, then compares the resulting word
+identities. Positioned-symbol field encoding remains part of the existing
+bridge until R02c/R03 owns those fields directly; no new cache or alternate
+symbol identity scheme is authorized. Correct ordinary bignum EQ without
+changing EQL's numeric comparison. This does not close all native object
+ownership or create another dump prerequisite.
+
+Two Rust-only controls ran against the old implementation and both failed
+as intended (`red.log`): unwanted cons materialization and distinct bignums
+reported EQ by both ordinary/native routes. An earlier compile failure
+executed no tests. The uncommitted candidate passes all-target checking
+without warnings (`check.log`), but has no green test, strict Clippy,
+artifact or timing acceptance yet. A third positioned-symbol identity
+matrix test has been added and has not run.
+
+Follow-up C review found a connected V05 dependency: NativeRuntime keeps a
+`Box<bool>` snapshot of `symbols-with-pos-enabled`, updated only at native
+call entry. Binding or setting the variable inside that call does not
+update this snapshot, which also backs the generated-code relocation.
+GNU `data.c:syms_of_data` initializes the forwarded C boolean to false;
+`do_symval_forwarding`/`store_symval_forwarding` read/write that live cell,
+and `comp.c` connects the relocation directly to its address. Removing
+Rust's EQ fallback can expose a stale-state error that its second Lisp
+lookup partly masked. Do not accept or benchmark this candidate until
+the live owner, binding/unbinding and detachment contracts are corrected
+and tested against C; no replacement snapshot/refresh cache is authorized.
+
+Evidence directory: `/private/tmp/emaxx-native-eq-words.aEIw2H`. Exact resume
+steps and the pushed-versus-uncommitted split are in the
+[current handover](handover-2026-09-02-native-comp.md#resume-here--pushed-ae12db4-and-unfinished-eq-work-2026-09-06).
+No production correction or performance conclusion is accepted yet.
+
+2026-09-06 source-review follow-up: both inner-native binding controls now
+fail on the snapshot implementation (`live-flag-red.log`, 2 failed, 0 passed;
+an earlier test compile error executed nothing). The new uncommitted code
+moves the live bool to a stable interpreter-owned `Box<Cell<bool>>`, removes
+NativeRuntime's snapshot and its entry-time lookup, and connects the loader
+and all ordinary/native flag readers to that owner. Existing forwarding
+store/normalization/detachment and buffer-selection paths update it; no new
+refresh cache, generated-code change or Lisp policy is added. GNU
+`data.c:set_internal`, `set_default_internal`, `swap_in_symval_forwarding`
+and `eval.c:specbind`/`do_one_unbind` were read before making this change.
+The non-vector-like EQ guard is retained. The bool is not a Lisp object/root;
+ordinary cloning before any native library is loaded must copy it to an
+independent allocation, while live-native cloning remains prohibited.
+
+Added Rust controls cover both directions of binding and setting inside a
+native call, the relocated address, alias binding/unbinding, selected versus
+default/local cells, moves/clones, and C readers ignoring lexical shadows
+and detached Lisp cells. Existing Rust fixtures that faked a C variable by
+putting it in a lexical Env now set its actual value cell; expectations are
+unchanged. All-target checks are clean; focused/strict/artifact acceptance
+is still pending. No candidate timing has run.
+
+The first corrected focused run now passes **128 tests, zero failures, one
+preexisting manual timing probe ignored** (`forwarding-focused.log`, 87.06s),
+including all 18 adversarial checks. All-target check and final strict
+Clippy are clean; the initial Clippy findings were 12 new test-only unwraps,
+replaced with explanatory expects. The final focused rerun also passed
+128/0/1 in 86.97s; the unchanged identity ladder then passed all nine
+fixtures in 213.11s (eight entire identical `.eln` files through `comp.el`,
+one correctly absent). Pipeline 75946 is terminal, exit 0.
+
+The ordinary fenced native suite failed before reaching any tests: the
+child rejects comp.el's generated compiler-context file with
+`invalid-read-syntax`. The saved `ae12db4` binary fails at the same stage
+on the same source in independent fresh directories; this predates the
+current correction. GNU accepts and byte-compiles an unchanged copy of
+the rejected context. The reader/materialization investigation is in
+progress; see the handover for exact files, hashes and diagnostic handles.
+The fresh post-correction native execution gate now passes 177/177 with zero
+unexpected results, and the nine-rung identity ladder remains byte-identical.
+This accepts the reader-materialization correction for native execution; no
+new performance claim is made by this bounded fix, and the broader native
+object/performance and portable-dump goals remain open.
+
+Additional preexisting V05 finding, not closed by this unit: GNU `Fset`
+returns its original NEWVAL and notifies watchers before bool storage
+normalizes it. Rust's `dispatch/misc.rs` set/set-default routes use
+`prepare_variable_assignment`'s normalized value for their return/watcher
+arguments. The live-cell tests do not certify those independent return and
+watcher contracts. Keep this on the V05 audit; do not claim full forwarded
+variable parity from this bounded ownership correction.
 
 ## Cross-cutting hot-path contracts (15)
 
