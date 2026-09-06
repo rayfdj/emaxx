@@ -636,17 +636,39 @@ define_dispatch!(
             }
             "next-read-file-uses-dialog-p" => {
                 need_args(name, args, 0)?;
+                // fileio.c: only a toolkit build (USE_GTK, USE_MOTIF,
+                // HAVE_NS, HAVE_NTGUI, HAVE_HAIKU) can answer t, and then
+                // only when `last-nonmenu-event' is nil or a list, both
+                // dialog options are on, and window_system_available
+                // (SELECTED_FRAME ()) holds -- true of the initial frame a
+                // batch session keeps, false of a tty frame.  The Linux
+                // oracle is `--with-x-toolkit=no', so it always answers nil
+                // and `read-file-name' never reaches `x-file-dialog'; the
+                // Darwin oracle is `--with-ns'.
+                if !cfg!(target_os = "macos") {
+                    return Ok(Value::Nil);
+                }
+                let last_nonmenu_event = interp
+                    .lookup_var("last-nonmenu-event", env)
+                    .unwrap_or(Value::Nil);
+                let event_allows =
+                    last_nonmenu_event.is_nil() || matches!(last_nonmenu_event, Value::Cons(_));
                 let use_dialog = interp
                     .lookup_var("use-dialog-box", env)
                     .is_some_and(|value| value.is_truthy());
                 let use_file_dialog = interp
                     .lookup_var("use-file-dialog", env)
                     .is_some_and(|value| value.is_truthy());
-                Ok(if use_dialog && use_file_dialog {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                let initial_frame = interp
+                    .lookup_var("noninteractive", env)
+                    .is_some_and(|value| value.is_truthy());
+                Ok(
+                    if event_allows && use_dialog && use_file_dialog && initial_frame {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "do-auto-save" => {
                 let path = interp

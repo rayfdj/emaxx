@@ -430,6 +430,26 @@ define_dispatch!(
             "ash" => {
                 need_args(name, args, 2)?;
                 let value = integer_like_bigint(interp, &args[0])?;
+                // data.c Fash with a bignum COUNT: 0 stays 0, a negative
+                // count shifts everything else to -1 or 0 by its sign, and a
+                // positive one overflows.  (A fixnum count follows below;
+                // `most-positive-fixnum' is 2**61-1, so `(* 2
+                // most-positive-fixnum)' is a bignum GNU never converts.)
+                if let Value::BigInteger(count) = &args[1] {
+                    if value.sign() == Sign::NoSign {
+                        return Ok(Value::Integer(0));
+                    }
+                    if count.sign() == Sign::Minus {
+                        return Ok(Value::Integer(if value.sign() == Sign::Minus {
+                            -1
+                        } else {
+                            0
+                        }));
+                    }
+                    return Err(LispError::SignalValue(Value::list([Value::symbol(
+                        "overflow-error",
+                    )])));
+                }
                 let shift = integer_like_i64(interp, &args[1])?;
                 let shifted = if shift >= 0 {
                     value << shift as usize

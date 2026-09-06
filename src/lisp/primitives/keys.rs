@@ -1042,3 +1042,259 @@ pub(crate) fn count_backward_line_moves(buffer: &crate::buffer::Buffer) -> usize
     }
     count
 }
+
+/// keymap.c get_keymap (OBJECT, error_if_not_keymap = true, autoload =
+/// false): a `(keymap ...)' list is itself, a symbol whose function
+/// indirection is one yields that keymap, and anything else is
+/// `(wrong-type-argument keymapp OBJECT)'.
+fn keymap_list_for_copy(
+    interp: &mut Interpreter,
+    object: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let is_keymap_list =
+        |value: &Value| matches!(value.car(), Ok(Value::Symbol(head)) if head == "keymap");
+    if is_keymap_list(object) {
+        return Ok(object.clone());
+    }
+    if object.as_symbol().is_ok() {
+        let function = call(
+            interp,
+            "indirect-function",
+            std::slice::from_ref(object),
+            env,
+        )?;
+        if is_keymap_list(&function) {
+            return Ok(function);
+        }
+    }
+    Err(LispError::WrongTypeArgument(
+        "keymapp".into(),
+        object.clone(),
+    ))
+}
+
+/// keymap.c copy_keymap_1: a fresh `(keymap ...)' spine whose char-table
+/// and vector elements are copied with their items sent through
+/// `copy_keymap_item', whose nested `(keymap ...)' elements are copied,
+/// and whose `(EVENT . DEFINITION)' cells are fresh with the definition
+/// sent through `copy_keymap_item'; the tail from the parent keymap on
+/// is shared.
+pub(crate) fn copy_keymap_value(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    copy_keymap_1(interp, keymap, 0, env)
+}
+
+/// The copy of a keymap Emaxx owns through a runtime record (its public
+/// `(keymap ...)' cons is a view of the record): a new record with the
+/// same name, the parent shared, every binding's definition and the
+/// char-table sent through `copy_keymap_item', and a fresh public view.
+fn copy_runtime_keymap(
+    interp: &mut Interpreter,
+    id: u64,
+    depth: usize,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let (name, parent, bindings, char_table) = {
+        let record = interp
+            .find_record(id)
+            .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), Value::Record(id)))?;
+        (
+            record.slots.first().cloned().unwrap_or(Value::Nil),
+            record
+                .slots
+                .get(KEYMAP_PARENT_SLOT)
+                .cloned()
+                .unwrap_or(Value::Nil),
+            record
+                .slots
+                .get(KEYMAP_BINDINGS_SLOT)
+                .cloned()
+                .unwrap_or(Value::Nil),
+            keymap_char_table(record),
+        )
+    };
+    let name = string_like(&name).map(|string| string.text);
+    let copy = make_runtime_keymap(interp, name.as_deref());
+    let copy_id = keymap_record_id(interp, &copy)
+        .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), copy.clone()))?;
+    let mut copied_bindings = Vec::new();
+    for entry in bindings.to_vec()? {
+        let mut items = entry.to_vec()?;
+        if items.len() >= 2 {
+            items[1] = copy_keymap_item(interp, &items[1], depth + 1, env)?;
+        }
+        copied_bindings.push(Value::list(items));
+    }
+    let char_table = match char_table {
+        Some(table) => Some(copy_keymap_char_table(interp, &table, depth + 1, env)?),
+        None => None,
+    };
+    if let Some(record) = interp.find_record_mut(copy_id) {
+        if record.slots.len() <= KEYMAP_CHAR_TABLE_SLOT {
+            record.slots.resize(KEYMAP_CHAR_TABLE_SLOT + 1, Value::Nil);
+        }
+        record.slots[KEYMAP_PARENT_SLOT] = parent;
+        record.slots[KEYMAP_BINDINGS_SLOT] = Value::list(copied_bindings);
+        if let Some(table) = char_table {
+            record.slots[KEYMAP_CHAR_TABLE_SLOT] = table;
+        }
+    }
+    refresh_runtime_keymap_public_view(interp, copy_id)?;
+    Ok(runtime_keymap_public_view(interp, &copy).unwrap_or(copy))
+}
+
+fn copy_keymap_1(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    depth: usize,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if depth > 100 {
+        return Err(LispError::Signal(
+            "Possible infinite recursion when copying keymap".into(),
+        ));
+    }
+    if let Some(id) = keymap_record_id(interp, keymap) {
+        return copy_runtime_keymap(interp, id, depth, env);
+    }
+    let keymap = keymap_list_for_copy(interp, keymap, env)?;
+    if let Some(id) = keymap_record_id(interp, &keymap) {
+        return copy_runtime_keymap(interp, id, depth, env);
+    }
+    let mut items = Vec::new();
+    let mut tail = keymap.cdr()?;
+    while let Some((elt, rest)) = tail.cons_values() {
+        if matches!(&elt, Value::Symbol(head) if head == "keymap") {
+            break;
+        }
+        let copied = if matches!(elt, Value::CharTable(_)) {
+            copy_keymap_char_table(interp, &elt, depth + 1, env)?
+        } else if is_vector_value(&elt) {
+            let mut copied = Vec::new();
+            for item in vector_items(&elt)? {
+                copied.push(copy_keymap_item(interp, &item, depth + 1, env)?);
+            }
+            Value::vector(copied)
+        } else if let Some((car, cdr)) = elt.cons_values() {
+            if matches!(&car, Value::Symbol(head) if head == "keymap") {
+                copy_keymap_1(interp, &elt, depth + 1, env)?
+            } else {
+                Value::cons(car, copy_keymap_item(interp, &cdr, depth + 1, env)?)
+            }
+        } else {
+            elt
+        };
+        items.push(copied);
+        tail = rest;
+    }
+    let mut result = tail;
+    for item in items.into_iter().rev() {
+        result = Value::cons(item, result);
+    }
+    Ok(Value::cons(Value::symbol("keymap"), result))
+}
+
+/// `Fcopy_sequence' of the char-table, then every entry's definition sent
+/// through `copy_keymap_item' (keymap.c copy_keymap_set_char_table through
+/// map_char_table).  The values are rewritten in place: `equal' compares
+/// two tables entry by entry, so appending would leave the copy unequal to
+/// the original even with the same mappings.
+fn copy_keymap_char_table(
+    interp: &mut Interpreter,
+    table: &Value,
+    depth: usize,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let copy = call(interp, "copy-sequence", std::slice::from_ref(table), env)?;
+    let Value::CharTable(copy_id) = copy else {
+        return Ok(copy);
+    };
+    let entries = interp.char_table_entries(copy_id).unwrap_or_default();
+    let mut replaced = Vec::with_capacity(entries.len());
+    let mut changed = false;
+    for entry in entries {
+        let item = syntax::char_table_public_value(interp, copy_id, entry.value.clone());
+        let copied = copy_keymap_item(interp, &item, depth, env)?;
+        if crate::lisp::primitives::values_eq_in_env(interp, &copied, &item, env) {
+            replaced.push(entry);
+        } else {
+            changed = true;
+            replaced.push(crate::lisp::eval::CharTableEntry {
+                start: entry.start,
+                end: entry.end,
+                value: copied,
+            });
+        }
+    }
+    if changed {
+        interp.char_table_replace_entries(copy_id, replaced)?;
+    }
+    Ok(copy)
+}
+
+/// keymap.c copy_keymap_item: a `(menu-item NAME BINDING . REST)' gets
+/// fresh cells for the marker, the name and the binding (a keymap binding
+/// copied) and shares REST; an old-style `(STRING [HELP] . DEFINITION)'
+/// gets fresh cells for the strings and a copied keymap definition; a
+/// `(keymap ...)' is copied; anything else is shared.
+fn copy_keymap_item(
+    interp: &mut Interpreter,
+    elt: &Value,
+    depth: usize,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some((car, cdr)) = elt.cons_values() else {
+        return Ok(elt.clone());
+    };
+    let is_keymap_list =
+        |value: &Value| matches!(value.car(), Ok(Value::Symbol(head)) if head == "keymap");
+    let rebuild = |cells: Vec<Value>, rest: Value| {
+        let mut result = rest;
+        for cell in cells.into_iter().rev() {
+            result = Value::cons(cell, result);
+        }
+        result
+    };
+    if matches!(&car, Value::Symbol(head) if head == "menu-item") {
+        let mut cells = vec![car];
+        let mut rest = cdr;
+        if let Some((name, after_name)) = rest.cons_values() {
+            cells.push(name);
+            rest = after_name;
+            if let Some((binding, after_binding)) = rest.cons_values() {
+                let binding = if is_keymap_list(&binding) {
+                    copy_keymap_1(interp, &binding, depth, env)?
+                } else {
+                    binding
+                };
+                cells.push(binding);
+                rest = after_binding;
+            }
+        }
+        return Ok(rebuild(cells, rest));
+    }
+    if string_like(&car).is_some() {
+        let mut cells = vec![car];
+        let mut rest = cdr;
+        if let Some((help, after_help)) = rest.cons_values()
+            && string_like(&help).is_some()
+        {
+            cells.push(help);
+            rest = after_help;
+        }
+        let rest = if is_keymap_list(&rest) {
+            copy_keymap_1(interp, &rest, depth, env)?
+        } else {
+            rest
+        };
+        return Ok(rebuild(cells, rest));
+    }
+    if matches!(&car, Value::Symbol(head) if head == "keymap") {
+        return copy_keymap_1(interp, elt, depth, env);
+    }
+    Ok(elt.clone())
+}

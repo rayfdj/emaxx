@@ -89,6 +89,14 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 157 | `process-attributes` of the Emaxx process itself reports `state` "S" and `thcount` 2 where GNU reads "R" and 1: Lisp runs on a spawned thread while /proc/PID/stat describes the blocked main thread | OPEN (architectural, recorded 2026-09-04) |
 | 158 | `set-default-file-modes' only recorded a number: the process umask never changed, so `make-directory', `write-region' and subprocesses ignored `with-file-modes', and `make-temp-file' made 0644 files and 0755 directories where gen_tempname makes 0600/0700; server.el's server-ensure-safe-dir refused the 0755 temporary directory ("accessible by others"), failing all seven server-tests | FIXED 2026-09-05 (umask port; server-tests 4/7 matching, the rest are 159) |
 | 159 | `make-terminal-frame' is a stub that signals "Unknown terminal type": Emaxx has one terminal and one frame (a single window tree), so `emacsclient -c' cannot get the tty frame GNU's init_tty opens on the client's pty; server-tests/emacsclient/create-frame, server-force-stop/keeps-frames and server-start/stop-prompt-with-client fail (the client gets `-error Unknown terminal type' and exits) | OPEN (structural: multi-terminal tty frames, recorded 2026-09-05) |
+| 160 | `comp--install-trampoline' with a plain (non-native) subr as TRAMPOLINE signals `(wrong-type-argument subrp ...)'; comp.c's CHECK_SUBR accepts any subr and patches the link table with its C function pointer (a Rust primitive has no address to install) | OPEN (recorded 2026-09-05 at the native-comp merge) |
+| 161 | `comp--compile-ctxt-to-file0' called without a compilation context signals `(native-ice "comp-ctxt is nil")'; comp.c reaches `comp-ctxt-speed' on nil and signals `void-function' (comp.el unloaded) or `wrong-type-argument' | OPEN (recorded 2026-09-05; error path only) |
+| 162 | Batch startup takes about 20 s per process after the native-comp merge (about 9.5 s before it, GNU 0.03 s): the reconstructed image runs GNU's normal-top-level on every start because no portable dump exists | OPEN (structural, the branch's own handover names portable dumping as the missing milestone) |
+| 163 | `(featurep 'x)' is nil; the Linux oracle (HAVE_X_WINDOWS) provides `x' at startup.  Lisp that branches on the feature takes the non-X path in Emaxx | OPEN (recorded 2026-09-05; not flipped mid-verification because Emaxx has no X primitives behind the feature) |
+| 164 | An asynchronous pipe process without `:stderr' gets two pipes (stdout, stderr) whose bytes are appended per poll; process.c gives the child one descriptor (forkerr = forkout), so GNU delivers the two streams in the order written.  Synchronous `call-process' now shares one descriptor as callproc.c does | OPEN (recorded 2026-09-05; async path unchanged) |
+| 165 | Backtraces record unevaluated frames only for `cond', `let', `let*', `setq', `while' and in-progress calls; eval_sub records one for every special form (`condition-case', `unwind-protect', `catch', `save-excursion', ...).  A handler-bind handler or `debug-early' sees those frames in GNU and not in Emaxx | OPEN (recorded 2026-09-05; shape divergence, no corpus test pins it) |
+| 166 | After batch startup GNU's empty *Messages* buffer answers `(buffer-modified-p)' t (loadup's messages were logged and erased before the image was dumped); Emaxx's fresh *Messages* answers nil until the first message | OPEN (recorded 2026-09-06; the flag is a dump artefact, no corpus test pins it) |
+| 167 | `time-convert' with FORM t (or nil under a nil `current-time-list') answers `(TICKS . HZ)' with the HZ GNU decoded from the input (1000000000000 for a four-element list, 2^k for a float, the pair's own HZ); Emaxx reduces the fraction first, so `(time-convert 1.5 t)' is `(3 . 2)' where GNU has `(6755399441055744 . 4503599627370496)'.  `time-add'/`time-subtract' results are reduced the same way | OPEN (recorded 2026-09-06; `current-time' and the nil-FORM list answer are fixed, the rational HZ needs timefns.c's lisp_time carried unreduced through the module) |
 | 100 | GnuTLS digest catalogue was transcribed while cipher/mac lists were queried live | FIXED 2026-08-26 - dlopen'd gnutls_digest_list |
 | 101 | operating-system-release hardcoded this host's uname -r | FIXED 2026-08-26 - reads uname(2); the entry states what its test can and cannot show |
 | 102 | data-directory family derived from EMACS_TEST_DIRECTORY | FIXED 2026-08-28 - epaths-style sibling-checkout constants, oracle-matched |
@@ -6162,3 +6170,406 @@ timing pairs used 62.81/63.02s and 69.94/66.42s before/merged user CPU; GNU
 used 8.43s and 9.47s. All measured artifacts are byte-identical. This shows no
 material merge regression, not a defensible speedup; Emaxx remains about 7.2x
 GNU including startup. Detailed timings/hashes are in the parity ledger.
+
+## 2026-09-05 merging native-comp into main on the Linux oracle
+
+Base: main `84f342a` plus the coding and file-modes series (`c3aac3e`),
+merged with `origin/native-comp` at `9844664` ("Record GC checkpoint
+state and post-startup performance handover"; 18 commits, 94 files).
+The branch brings comp.c as Rust over libgccjit with the unchanged
+`comp.el' frontend, the native ABI loader and runtime, GC roots for
+native objects, and GNU's `normal-top-level' startup in place of the
+handwritten batch startup.  Its handover document
+(`docs/handover-2026-09-02-native-comp.md`) says plainly that the full
+gate and the frozen corpus were not run for its checkpoints, that
+portable dumping does not exist, and that the post-startup compiler is
+about 6x slower than GNU; nothing here contradicts that.  Textual
+conflicts were three: the ledger (both sections kept), `eval.rs' (the
+branch's compiler-state field next to the umask field), and `batch.rs'
+(the dump-boundary reset of Vcharset_non_preferred_head kept inside the
+reconstruction block the branch reshaped).
+
+**What the merge needed on this host, and why.**
+
+*Linux compile.*  The Linux-only `process-attributes' floats still
+wrote `Value::Float(f64)`; the branch's shared float constructor is used.
+The branch had only been built on Darwin.
+
+*The generated Linux subroutine table.*  The committed
+`generated_native_subrs_x86_64_unknown_linux_gnu.rs` described a
+gtk3/cairo/dbus AOT build (its own configuration string says so) and
+the anti-cheat regeneration gate refused the tree.  It is regenerated
+with `tools/generate_native_subrs.rs' from the pinned oracle
+(`--with-x --with-x-toolkit=no ...`): 1455 subroutines instead of 1467,
+byte-identical to the gate's own fresh copy, and `comp-native-version-dir'
+now equals the oracle's `30.2-1564b906'.  The layout constants in
+`abi.rs' (jmp_buf 200, handler 24/32/64/304, thread_state 96/520) were
+re-measured against the oracle's headers with its own compiler flags and
+did not change.
+
+*PURESIZE.*  Every Linux `.eln' with a PURE_P check differed from GNU's
+by one immediate: the branch hard-coded 6000000 (Darwin's
+BASE_PURESIZE 3400000 + SYSTEM_PURESIZE_EXTRA 200000, times 10/6), where
+this build's puresize.h gives 5666666.  It is now a per-target measured
+ABI constant beside the layout numbers.  With it, all nine whole-file
+identity fixtures are byte-identical to GNU's on Linux, `comp.el' (914,592
+bytes) included; before it the ladder failed at its fourth rung.
+
+*eval-buffer and the cookie.*  The branch routes `load' of a source file
+through GNU's `load-with-code-conversion' and therefore `eval-buffer'.
+Emaxx's `eval-buffer' chose lexical evaluation from the cookie but never
+specbound the Lisp variable `lexical-binding' as Feval_buffer does, so
+`named-let' (which reads the variable while expanding) signalled inside
+every lexical file loaded that way; erc-tests stopped loading.  The
+variable is now bound for the readevalloop, and the cookie scanner is
+lisp_file_lexical_cookie's: the first line only (the second after a
+`#!' line), which must begin with `;' -- the previous scanner read two
+lines and mistook a cookie inside a string literal on line two for the
+file's cookie.  The reader also gained `#!' as a line comment (read0).
+Contract: `eval_buffer_binds_lexical_binding_from_the_first_line_cookie`.
+
+*Linux-visible divergences found while probing, small enough to fix
+here.*  `comp--init-ctxt' returned nil where comp.c returns t.
+
+*Divergences recorded, not fixed.*  `comp--install-trampoline' with a
+plain subr as TRAMPOLINE: GNU's CHECK_SUBR accepts it and patches the
+link table with the C function pointer; Emaxx signals
+`(wrong-type-argument subrp ...)' because a Rust primitive has no
+address to install.  `comp--compile-ctxt-to-file0' without a context:
+GNU reaches `comp-ctxt-speed' on nil (`void-function' when comp.el is
+not loaded), Emaxx signals `(native-ice "comp-ctxt is nil")'.  The
+remaining `comp--register-*' entry points abort GNU when called without
+a context, so no contract covers them.
+
+**Rust unit-test fixtures.**  comp.el's `comp--final' compiles in a child
+started as `invocation-name -no-comp-spawn -Q --batch -l TEMP', and
+data.c's `fset' of a primitive asks comp-run.el for a trampoline the same
+way.  Inside a Rust test process `invocation-name' is the libtest binary,
+which rejects `-no-comp-spawn' ("Unrecognized option: 'n'"), so six
+existing tests that redefine primitives under `cl-letf' failed.  The
+fixtures now run under the configuration GNU's own child uses:
+`comp-no-spawn' t (compile in this process), with the implicit
+compilations off through GNU's options (`comp-enable-subr-trampolines'
+nil, `native-comp-jit-compilation' nil).  The CLI keeps GNU's defaults,
+and the harness replays and the identity ladder use the CLI.  The full
+gate found the same failure in tests that build their own batch
+interpreter (the Todo-mode ERT run under `cl-letf' of
+`read-from-minibuffer'), so the configuration now applies inside the
+batch and interactive constructors under `cfg(test)' rather than in
+three fixtures.  Five
+tests that used *scratch* as a work buffer now erase it first: GNU's
+command-line-1 inserts `initial-scratch-message' at the end of startup,
+which the fixture now runs to completion.  Tests that loaded GNU test
+files through cwd-relative names (`../emacs/test/...') now expand them
+against `source-directory': GNU's openp searches `load-path', not
+`default-directory', for a relative name with directory components (the
+oracle answers `file-missing' for the old form), and the branch's loader
+follows openp.  The `srecode/srecode-template' alias test is deleted:
+the oracle answers `file-missing' for that name, and the branch removed
+Emaxx's private alias rule.  Main's two tests that asserted the absence
+of a native backend are rewritten as oracle contracts over the
+introspection and loader entry points that GNU survives.
+
+**Startup cost.**  Batch startup on this host is about 20 s per
+invocation after the merge, against about 9.5 s before (GNU: 0.03 s):
+the branch's startup runs GNU's normal-top-level over the reconstructed
+image.  The harness setup phase reflects it (`setup_emaxx' ~21 s); the
+replays are correspondingly slower but within the frozen run's budget.
+
+**What the frozen corpus found on the merged tree, and the fixes.**  The
+first frozen run over the merge commit (`245ff40') regressed fourteen
+files that the previous run matched.  Each was traced to GNU and fixed on the
+merged tree; the fixes carry oracle contracts and were replayed
+file-by-file before the numbers below.
+
+*`next-read-file-uses-dialog-p'* (dired-tests, files-tests, tramp-tests).  Emaxx
+answered t whenever `use-dialog-box' and `use-file-dialog' were on, so
+`read-file-name' (now GNU's Lisp, reached through the branch's startup)
+called `x-file-dialog', which does not exist.  fileio.c answers t only in
+a toolkit build (USE_GTK, USE_MOTIF, HAVE_NS, HAVE_NTGUI, HAVE_HAIKU) and
+then only when `last-nonmenu-event' is nil or a list and the selected
+frame has a window system (the initial frame of a batch session counts).
+The Linux oracle is `--with-x-toolkit=no': always nil.  The Darwin oracle
+is `--with-ns': the NS logic is implemented for that target, and its
+contract expectation (`(t t nil t)') could not be run here.
+
+*`sqlite-execute'/`sqlite-select' VALUES* (multisession-tests).  The
+branch made `vector_items' vector-only; the parameter binder had leaned on
+its list fallback, so a list of parameters (multisession.el passes one)
+signalled `(wrong-type-argument vectorp ...)'.  bind_values walks a
+vector or a list; anything else is `(sqlite-error "VALUES must be a list
+or a vector")' -- Emaxx had signalled a plain `error' for that case.
+
+*`json-serialize'* (jsonrpc-tests, eglot-tests).  The serializer knew
+vectors only as the older `vector-literal' list; a `Value::Vector' fell
+through to `(wrong-type-argument json-value "vector")', so jsonrpc could
+not send a request.  json.c's json_out_something: a vector is an array.
+While the contract was written, the list-to-object path was found to
+answer its own errors: json_out_object_cons treats a list as an alist
+when its first element is a cons and as a plist otherwise, requires every
+key to be a symbol (`(wrong-type-argument symbolp KEY)'), skips a later
+occurrence of the same symbol, keeps an alist key's leading `:' and drops
+a plist key's, and signals `consp' for a pair-less plist key or a
+non-cons alist element and `listp' for a dotted list, and FOR_EACH_TAIL
+signals `circular-list' for a cycle; Emaxx answered `(wrong-type-argument
+json-object "cons")' for the lot and stripped `:' from alist keys.  Each
+value is written as its pair is reached, as json_out_object_cons does,
+so a bad value inside a cycle is reported before the cycle is (the
+first port collected the pairs first and looped on `'#1=(:a . #1#)'
+until the harness timeout).  Contract:
+`json_serialize_treats_a_vector_as_an_array`.
+
+*Symbol shorthands under `load'* (elisp-mode-tests).  load-with-code-
+conversion binds `read-symbol-shorthands' from the file's local
+variables (`hack-read-symbol-shorthands-function') around `eval-buffer',
+and lread.c's reader interns through it.  Emaxx's `eval-buffer' and
+`eval-region' built their readers without the binding, so a file whose
+local variables map `f-' to `elisp--foo-' defined `f-test3' and then
+called the void `elisp--foo-test3'.  Both readers now take the dynamic
+value.
+
+*`handler-bind' and the batch backtrace* (gv-tests, eval-tests).  The
+branch installs
+`debug-early--handler' around the `top-level' form the way top_level_2
+does, and the corpus showed what Emaxx's dispatch did with it: the
+handlers ran at every primitive frame the error unwound through (the
+backtrace printed once per frame, each shorter), an error the evaluator
+itself signalled inside interpreted lambdas -- void function, void
+variable, wrong arity -- reached no handler at all (`(handler-bind ((error
+...)) (funcall (lambda () (undefined-fn 1 2))))' ran the handler zero
+times), and the Rust toplevel printed a second backtrace.  signal_or_quit
+runs the handlers once, from `signal', with the signaling frames intact.
+Emaxx now dispatches at the innermost frame boundary that sees the error
+-- primitives, byte-code, native code, interpreted lambdas, the
+unevaluated frames of `cond'/`let'/`let*'/`setq'/`while' and of a call in
+progress -- and remembers the condition object, so the outer boundaries
+pass it on untouched; a fresh `signal' is a new object and runs them
+again.  eval_sub's ordering is kept: the frame for a call is recorded
+before the function cell is resolved, so a void function shows the
+attempted call, unevaluated, innermost; funcall_lambda's arity error is
+signalled after Ffuncall recorded the callee.  The toplevel now prints
+only cmd_error's message.  Contract:
+`handler_bind_handlers_run_once_with_the_signaling_frame_innermost`
+(frames as GNU lists them through `mapbacktrace' from the handler).
+
+*stdout is stdio* (gv-tests).  `debug-early' prints to `standard-output',
+which in batch is C stdio's stdout: block-buffered on a pipe or file,
+released by `flush-standard-output', the batch minibuffer prompt, or
+exit; stderr is unbuffered.  gv-tests captures a child's two streams on
+one descriptor and pins the order: the error message (stderr) before the
+backtrace (stdout, flushed at exit).  Rust's stdout flushes at every
+newline.  Batch stdout now goes through a buffer sized and drained the way
+glibc's `_IO_new_file_xsputn' does (st_blksize, whole blocks of a large
+write bypass it), flushed at the same points.  `message' also gained
+xdisp.c's `noninteractive_need_newline': a newline first when stdout was
+written since the previous message.  Test:
+`batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor`
+(tests/cli.rs) compares the merged bytes of GNU and Emaxx.
+
+*`call-process' STDERR-FILE t* (gv-tests).  Emaxx read stdout and stderr
+on two pipes and appended stderr after stdout; callproc.c gives the child
+one descriptor for both unless STDERR-FILE is nil or a file name, so the
+streams arrive in the order written.  Synchronous processes now share
+the descriptor the same way (row 164 records the asynchronous path).
+
+*`ash' with a bignum COUNT* (data-tests).  With the merged 62-bit fixnum
+range, `(* 2 most-positive-fixnum)' is a bignum, and `ash' rejected it
+as `number-or-marker-p' (data-tests-ash-lsh, which also drives `lsh').
+Fash's rule for a count outside the fixnum range: 0 stays 0, a negative
+count shifts anything else to -1 or 0 by its sign, a positive one is
+`overflow-error'.  Contract: `ash_with_a_bignum_count_follows_data_c`.
+
+*`copy-keymap'* (keymap-tests).  The primitive copied only Emaxx's
+record keymaps and returned a list keymap itself, so `(eq (copy-keymap
+m) m)' held.  keymap.c copy_keymap_1 and copy_keymap_item are ported:
+a fresh spine, copied char-tables (every entry through the item copier),
+vectors and nested keymaps, fresh `(EVENT . DEFINITION)' cells, fresh
+cells for a menu item's marker, name and binding with the rest shared,
+fresh cells for an old-style item's strings, the parent tail shared, a
+symbol resolved through `indirect-function', `keymapp' for anything
+else.  Contract: `copy_keymap_copies_a_list_keymap_like_keymap_c`.
+
+*Unescaped character literals under `load'* (lread-tests).  Fload binds
+`lread--unescaped-character-literals', the reader conses each unescaped
+`?)'-style literal onto it, and the load's unwind messages the warning.
+The eval-buffer path read with a reader that recorded nothing, so
+`(load FILE nil :nomessage)' of "?) ?(" said nothing.  `eval-buffer' and
+`eval-region' now add their reader's literals to the variable.  Contract:
+`load_warns_about_unescaped_character_literals_on_the_eval_buffer_path`.
+The sqlite VALUES fix above also closes sqlite-tests (six outcomes) and
+the JSON vector fix closes test/src/json-tests (eight).
+
+**Frozen corpus over the merge commit.**  Artifact
+`frozen-1788634460316794579-27715` (worktree at `245ff40', 2026-09-05
+18:50 to 23:48, 3600 s per file):
+
+| run | outcomes matching | mismatching | files mismatching |
+| --- | --- | --- | --- |
+| previous main (`frozen-1788596001721596265-1737`) | 7763 / 7883 | 120 | 10 |
+| merge commit `245ff40' | 7828 / 7883 | 55 | 21 |
+
+Native compilation: test/src/comp-tests.el 96 -> 0 and
+test/lisp/emacs-lisp/comp-tests.el 3 -> 0, all 99 closed; the flymake
+`ruby-backend' one-off (the oracle skipped it once in the previous run)
+did not recur, 1 -> 0.  The 55 that remain split into the 20 the
+previous run also had -- semantic-utest-ia 6, mml-sec 4, server 3, erc
+2, simple 1, thread-tests 2, test/src/thread-tests 2, every one with its
+cause on the list above this section -- and 35 across fourteen files
+that the merge regressed: gv-tests 3, jsonrpc 3, eglot 5, multisession
+2, dired 1, files 1, tramp 1, elisp-mode 1, data 1, eval 1, keymap 1,
+lread 1, sqlite 6, test/src/json-tests 8.  Those fourteen are the fixes
+described above; each file was replayed on the fixed tree with
+`compat-harness run --file' and matched the oracle outcome for outcome
+before the tree was committed (the replay lines are in the commit's
+verification notes below).
+
+*Gate tests that asserted the old fixtures.*  `exec-suffixes' is nil in
+callproc.c's DEFVAR and `("")' after startup, so the raw fixture's nil is
+GNU's and the batch fixture is the one to ask.  A batch session loads
+`last' from subr.elc as a byte-code function in GNU (no subr.eln is
+loaded there) and in the Emaxx CLI; the help-metadata test expected a
+native subr.  The early-Lisp fixture
+now records preloaded files in `load-history' the way the dumped image
+does, relative to the Lisp directory (startup.el's normal-top-level is
+what makes them absolute, and the fixture stops before startup); the
+test expected an absolute `byte-run' owner.  And the batch fixture's
+`package-directory-list' holds the two `site-lisp/elpa' directories a
+session without `-Q' has in GNU too (the CLI answers the same on both
+editors); the test expected nil and now checks package.el's derivation
+from `load-path' instead of a host-specific value.
+
+*Two CLI tests that asserted Emaxx rather than GNU.*  One expected
+`message' after `princ' to write "single-dash-stderr\n"; GNU writes
+"\nsingle-dash-stderr\n" (the need-newline above), and the test now says
+so.  The other expected a checkout's `lisp/' directory on the load path
+because EMACS_TEST_DIRECTORY named its `test/' sibling -- the recursive
+walk the branch removed in favour of lread.c, whose own unit test
+(`session_path_does_not_discover_the_gnu_test_tree`) asserts the
+opposite.  The oracle answers `file-missing' for that scenario and exits
+255; the test now compares Emaxx with it.
+
+*Gate tests on the fixed tree.*  The full grouped gate over the fixes
+above failed eight `eval_05' tests, five of them the fixture's and three
+real divergences that had been hidden by the old fixture:
+
+- Three `execute-kbd-macro' tests ran their macro in a fresh buffer and
+  found the *scratch* banner in front of the typed text.  The fixture
+  starts without `--batch', so startup.el inserts `initial-scratch-
+  message', and keyboard.c's command_loop_1 runs the macro's commands in
+  the selected window's buffer, which is *scratch*.  The oracle confirms
+  `("Sa" "*scratch*" "Sa" t)' for a macro typed into a fresh fixture; the
+  tests erase *scratch* first.
+- The custom-theme test now requires `cl-seq' before it runs, as the
+  oracle does when the test is run in isolation (custom-tests loads it
+  transitively through ert's ordering; a lone `(load "custom-tests")'
+  fails identically in GNU).
+- `upstream_save_policy_only_queries_buffers_that_offer_to_save' asserted
+  two prompts followed by a plain return.  Run through the oracle, the
+  program answers `((quit 0) (quit 0) nil)': `save-some-buffers' and
+  `save-buffers-kill-emacs' both quit in a batch session before any
+  `read-event' override is reached (`map-y-or-n-p' quits without a
+  prompt), and the exit path with `confirm-kill-processes' nil asks
+  nothing.  The test now expects the oracle's answer.
+- Two dired tests lost the match data across an autoload: dired-aux's
+  `dired-do-rename' runs `string-match' and then calls an autoloaded
+  function whose `load' clobbered `(match-data)'.  lread.c's Fload runs
+  under `save_match_data_load' (record_unwind_save_match_data); every
+  Emaxx autoload path -- `eval_call', `macroexpand', `call-interactively',
+  keymap autoloads, `autoload-do-load' and `interactive-form' -- now
+  loads through one helper that saves and restores the match data.
+- `upstream_files_lisp_owns_remote_file_policy' found a modified buffer
+  " *string-pixel-width*" in every Emaxx session after startup, which
+  GNU does not have (`(buffer-list)' after `--batch' startup is *scratch*,
+  " *Minibuf-0*", *Messages* on both).  The trace was
+  `command-line' -> `substitute-command-keys' -> `where-is-internal' ->
+  `tab-bar-make-keymap' (the `[tab-bar]' menu item's `:filter') ->
+  `tab-bar-auto-width' -> `string-pixel-width'.  keymap.c's
+  where_is_internal_1 reads each binding with `get_keyelt (binding, 0)':
+  a menu item's `:filter' does not run during the scan.  Only the
+  verification of a matched sequence (shadow_lookup, i.e. `lookup-key'
+  with autoload) runs it, and with FIRSTONLY the first all-ASCII match
+  returns before the remaining candidates are verified.  Emaxx ran every
+  filter while scanning.  The scan now uses the filter-less reading, the
+  candidates are sorted shortest-first before verification, verification
+  stops at the first preferred sequence under FIRSTONLY, and the
+  FIRSTONLY `:advertised-binding' check happens before the scan as
+  Fwhere_is_internal does.  Oracle probe and contract
+  (`where_is_internal_runs_menu_item_filters_only_for_verified_matches`):
+  `([6] 0 0 1 nil)' -- no filter call from `(where-is-internal
+  'forward-char nil t)' or `substitute-command-keys', one from the
+  verification of a menu item whose command is the one searched for, and
+  no " *string-pixel-width*" buffer.
+
+The buffer-list probe for that finding showed one more difference in
+*Messages*: after `(message "x")' GNU's buffer has `buffer-undo-list' t
+and `cache-long-scans' nil, Emaxx's recorded an undo entry for the line
+and kept `cache-long-scans' t.  xdisp.c message_dolog sets both on every
+log, so an undo list installed in *Messages* by hand is gone after the
+next message.  The log sink now does the same; contract:
+`message_log_disables_undo_in_the_messages_buffer`.  What remains is
+row 166: GNU's empty *Messages* is already flagged modified after batch
+startup (the dumped image logged and erased during loadup) and Emaxx's
+is not.
+
+The first full gate over this tree failed one more test, in the
+primitives group: `process_attributes_follows_sysdep_procfs' read the
+fresh `sh -c "sleep 5"' child's /proc state before the shell had reached
+its `sleep', on a machine whose worker had just been restarted, and the
+state was neither "R" nor "S" (the "D" of a process inside exec).  The
+test passed three times in isolation afterwards; the same read races on
+the oracle's side.  Its program now polls until the state is "S" (two
+seconds at most) before taking the attributes, on both editors alike,
+and the gate was rerun in full.  That rerun reached the groups the
+earlier failures had stopped short of and found four more tests of the
+banner class -- `insert_file_contents_preserves_embedded_cr_in_unix_files',
+two glyphless display tests and the isearch dispatch test insert into
+the current buffer and expected it empty; each erases the banner first
+now -- and the gate was run a third time.
+
+The third run reached the `batch' group and failed three tests there:
+
+- `batch_runtime_records_ordered_initialization_times' expected
+  `before-init-time' to be a four-element list and found a (TICKS . HZ)
+  pair.  The merged fixture runs startup.el's `normal-top-level', which
+  sets `before-init-time' from `(current-time)', and Emaxx's
+  `current-time' ignored `current-time-list': it always answered the
+  pair, reduced.  timefns.c make_lisp_time answers the old-style list
+  under `current-time-list' (t by default) and the nanosecond pair
+  otherwise; Ftime_convert treats a nil FORM as `list' under it and t
+  otherwise.  Both are ported; contract:
+  `current_time_and_a_nil_time_convert_form_follow_current_time_list`.
+  The pre-existing divergence was invisible on main because its fixture
+  never ran startup.el.  The rational HZ Emaxx reduces is row 167.
+- `batch_reconstruction_reaches_loadup_native_trampoline_transition'
+  asks whether loadup.el turned `native-comp-enable-subr-trampolines'
+  on; the test fixture this merge centralised turns it off again on
+  every fixture so tests never compile trampolines.  The test now reads
+  the image as started, before the fixture's settings.
+- `batch_runtime_rejects_a_broken_resolvable_preload' asserted main's
+  per-library preload message ("preload emacs-lisp/seq: ...").  The
+  branch reconstructs the image through GNU's loadup.el itself, so the
+  failure is loadup's, with `load("emacs-lisp/seq")' in its backtrace;
+  the test asserts that message.
+
+The fourth run passed every library group, the binaries, `cargo fmt'
+and clippy, and stopped at the integration stage: the branch's
+`tests/native_comp_identity.rs' carries one `#[ignore]' test and the
+publication gate refuses ignored integration tests.  Run by hand with
+`--ignored', the test compiled all nine unchanged GNU sources through
+both editors -- the comp-test resources, both comp-tests files,
+comp-cstr-tests and comp.el itself -- and every artifact was byte
+identical to GNU's (914592 bytes for comp.el), in 483 s.  The attribute
+is removed: the gate runs it now, and the fifth run is the one recorded
+below.
+
+**Verification of the fixed tree.**  Full grouped gate, run alone on
+the Linux machine, artifact
+`target/grouped-gate/run-1788681579808135768-18018` (2026-09-06 07:59
+to 09:16): eval_01 351, eval_02 283, eval_03 320, eval_04 251, eval_05
+351, primitives 410, compat_runtime 84, tty 56 (the two inventoried
+ignores), batch 46, lightweight 345, all passed with zero failures; the
+binaries 38 + 1 + 1; the integration targets 14 + 3 + 1 + 5, the 1 being
+the native artifact identity test (1028 s for the stage).  `cargo fmt
+--check' and `cargo clippy --profile gate --all-targets --all-features
+-- -D warnings' clean.  The four earlier runs of the gate on this tree
+and what each one found are described above.

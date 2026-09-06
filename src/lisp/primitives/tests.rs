@@ -1306,6 +1306,332 @@ fn native_comp_context_and_loader_entry_points_follow_comp_c() {
 }
 
 #[test]
+fn handler_bind_handlers_run_once_with_the_signaling_frame_innermost() {
+    // eval.c signal_or_quit runs `handler-bind' handlers once per signal,
+    // from `signal' itself, so `mapbacktrace' inside a handler sees the
+    // signaling frame innermost: the unevaluated call for a void function
+    // (eval_sub records it before resolving the function cell), the
+    // unevaluated `let' for a void variable, the callee frame for a wrong
+    // arity (Ffuncall records it before funcall_lambda checks), the
+    // in-progress `list' and `car' frames for an error inside an argument.
+    // Emaxx dispatches at the innermost frame boundary that sees the error
+    // and remembers the object, so the frames it unwinds through afterwards
+    // run no handler again; before that, an error the evaluator itself
+    // signaled inside interpreted lambdas reached no handler at all, and one
+    // raised in a primitive ran the handler again at every enclosing
+    // primitive frame (`debug-early--handler' printed the batch backtrace
+    // once per frame).
+    let program = r#"
+        (let* ((frames-of (lambda ()
+                            (let (acc)
+                              (mapbacktrace (lambda (evald f args _)
+                                              (push (list evald (if (symbolp f) f 'fn) (length args)) acc))
+                                            'emaxx-hb-handler)
+                              (nreverse acc))))
+               (upto (lambda (frames)
+                       (let ((end (seq-position frames 'handler-bind-1
+                                                (lambda (fr sym) (eq (nth 1 fr) sym)))))
+                         (and end (seq-subseq frames 1 (1+ end))))))
+               (n 0) frames
+               (probe (lambda (thunk)
+                        (setq n 0 frames nil)
+                        (condition-case nil
+                            (handler-bind ((error #'emaxx-hb-handler))
+                              (funcall thunk))
+                          (error (list n (funcall upto frames)))))))
+          (defalias 'emaxx-hb-handler
+            (lambda (_) (setq n (1+ n)) (setq frames (funcall frames-of))))
+          (defalias 'emaxx-hb-one-arg (lambda (a) a))
+          (list (funcall probe (lambda () (let ((x 1)) (car x))))
+                (funcall probe (lambda () (undefined-fn-xyz 1 2)))
+                (funcall probe (lambda () (let ((y 2)) undefined-var-xyz)))
+                (funcall probe (lambda () (emaxx-hb-one-arg)))
+                (funcall probe (lambda () (signal 'wrong-type-argument (list 'listp 1))))
+                (funcall probe (lambda () (car (list undefined-var-xyz))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 ((t car 1) (nil let 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((nil undefined-fn-xyz 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((nil let 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((t emaxx-hb-one-arg 0) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((t signal 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((nil list 1) (nil car 1) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))))",
+        "handler-bind dispatch",
+    );
+}
+
+#[test]
+fn json_serialize_treats_a_vector_as_an_array() {
+    // json.c lisp_to_json: a vector is a JSON array, a list an object
+    // (plist or alist) whose keys must be symbols.  The merged vector
+    // representation reached `json-serialize' as `Value::Vector' while the
+    // serializer only knew the older `vector-literal' list, so every
+    // vector was rejected as `(wrong-type-argument json-value "vector")'
+    // and jsonrpc could not send a request.
+    // (The JSON strings' double quotes become apostrophes so the expected
+    // text needs no escaping.)
+    let program = r#"
+        (let ((q (lambda (text) (string-replace "\"" "'" text))))
+          (require 'json)
+          (list (funcall q (json-serialize [1 2]))
+                (funcall q (json-serialize (list :a [1 "x"] :b [])))
+                (funcall q (json-serialize (vector)))
+                (funcall q (json-serialize [:null :false t]))
+                (funcall q (json-serialize (list :a (vector "x" 1.5 [nil]))))
+                (json-parse-string "[1,[2]]")
+                (json-parse-string "[1,[2]]" :array-type 'list)
+                (funcall q (json-encode [1 2]))
+                (condition-case e (json-serialize (list :a (list 1 2))) (error e))
+                (condition-case e (json-serialize [(1 2)]) (error e))
+                (funcall q (json-serialize (list (cons :a 1) (cons 'b 2))))
+                (funcall q (json-serialize (list :a 1 :a 2 'a 3)))
+                (condition-case e (json-serialize (list :a)) (error e))
+                (condition-case e (json-serialize (cons (cons 'a 1) 2)) (error e))
+                (funcall q (json-serialize (list (cons 'a nil) (cons 'b (list :c 1)))))
+                (condition-case e (json-serialize '#1=((a . 1) . #1#)) (error (car e)))
+                (condition-case e (json-serialize '#2=(:a 1 . #2#)) (error (car e)))
+                (condition-case e (json-serialize '(abc)) (error e))
+                (condition-case e (json-serialize '((a 1))) (error e))
+                (condition-case e (json-serialize '((a . 1) . b)) (error e))
+                (funcall q (json-serialize '((a . 1) (b . 2) (a . 3))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"("[1,2]" "{'a':[1,'x'],'b':[]}" "[]" "[null,false,true]" "{'a':['x',1.5,[{}]]}" [1 [2]] (1 (2)) "[1,2]" (wrong-type-argument symbolp 1) (wrong-type-argument symbolp 1) "{':a':1,'b':2}" "{'a':1,'a':3}" (wrong-type-argument consp nil) (wrong-type-argument listp ((a . 1) . 2)) "{'a':{},'b':{'c':1}}" circular-list circular-list (wrong-type-argument consp nil) (wrong-type-argument consp nil) (wrong-type-argument listp ((a . 1) . b)) "{'a':1,'b':2}")"#,
+        "json-serialize vectors and object keys",
+    );
+}
+
+#[test]
+fn ash_with_a_bignum_count_follows_data_c() {
+    // data.c Fash: a COUNT outside the fixnum range shifts 0 to 0, shifts
+    // any other value to -1 or 0 by its sign when negative, and signals
+    // `overflow-error' when positive; subr.el's `lsh' rides on that.  With
+    // the merged 62-bit fixnum range `(* 2 most-positive-fixnum)' is a
+    // bignum, and Emaxx rejected it as `number-or-marker-p'
+    // (data-tests-ash-lsh).
+    let program = r#"
+        (list (ash 0 (* 2 most-positive-fixnum))
+              (ash 1000 (* 2 most-negative-fixnum))
+              (ash -1000 (* 2 most-negative-fixnum))
+              (ash (* 2 most-negative-fixnum) (* 2 most-negative-fixnum))
+              (ash 0 (* 2 most-negative-fixnum))
+              (condition-case e (ash 1 (* 2 most-positive-fixnum)) (error e))
+              (condition-case e (ash -1 (* 2 most-positive-fixnum)) (error e))
+              (= (ash most-negative-fixnum 1) (* most-negative-fixnum 2))
+              (= (ash (* 2 most-negative-fixnum) -1) most-negative-fixnum)
+              (with-suppressed-warnings ((suspicious lsh))
+                (list (= (lsh most-negative-fixnum 1) (* most-negative-fixnum 2))
+                      (= (lsh -1 -1) most-positive-fixnum)
+                      (condition-case e (lsh (1- most-negative-fixnum) -1) (error e)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(0 0 -1 -1 0 (overflow-error) (overflow-error) t t (t t (args-out-of-range -2305843009213693953 -1)))",
+        "ash bignum count",
+    );
+}
+
+#[test]
+fn where_is_internal_runs_menu_item_filters_only_for_verified_matches() {
+    // keymap.c where_is_internal_1 reads bindings with get_keyelt
+    // (binding, 0): a menu-item's `:filter' never runs during the scan.
+    // Fwhere_is_internal then verifies candidates shortest first with
+    // shadow_lookup (which does run filters) and, with FIRSTONLY, returns
+    // the first all-ASCII sequence before touching the rest.  Emaxx ran
+    // every filter while scanning, so `substitute-command-keys' during
+    // startup evaluated tab-bar's filter and left a modified
+    // " *string-pixel-width*" buffer behind.
+    let program = r#"
+        (progn
+          (defvar emaxx-filter-calls 0)
+          (defun emaxx-filter (x) (setq emaxx-filter-calls (1+ emaxx-filter-calls)) x)
+          (define-key global-map [emaxx-probe] (list 'menu-item "p" 'ignore :filter #'emaxx-filter))
+          (define-key global-map [emaxx-probe-2] (list 'menu-item "q" 'forward-char :filter #'emaxx-filter))
+          (list (where-is-internal 'forward-char nil t)
+                emaxx-filter-calls
+                (progn (substitute-command-keys "\\[forward-char]") emaxx-filter-calls)
+                (progn (where-is-internal 'ignore (list global-map)) emaxx-filter-calls)
+                (get-buffer " *string-pixel-width*")))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "([6] 0 0 1 nil)",
+        "where-is-internal menu-item filters",
+    );
+}
+
+#[test]
+fn current_time_and_a_nil_time_convert_form_follow_current_time_list() {
+    // timefns.c make_lisp_time and Ftime_convert: under `current-time-list'
+    // (t by default) `current-time' and a nil FORM answer the old-style
+    // (HIGH LOW USEC PSEC) list; with it nil they answer (TICKS . HZ),
+    // `current-time' always at 1000000000 Hz.  Emaxx answered the pair
+    // regardless, so startup.el's `(setq before-init-time (current-time))'
+    // left a pair where GNU has a list.  What `time-convert' answers for a
+    // rational under a nil `current-time-list' is row 167 of the ledger
+    // (GNU keeps the input's HZ, Emaxx reduces the fraction).
+    let program = r#"
+        (list (type-of (current-time)) (length (current-time))
+              (time-convert 1.5 nil) (time-convert '(1 2 3 4) nil) (time-convert 100 nil)
+              (time-convert '(1 . 3) nil)
+              (let ((current-time-list nil))
+                (list (cdr (current-time)) (time-convert 100 nil) (time-convert 1 t)
+                      (consp (time-convert nil nil)) (cdr (time-convert nil nil)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(cons 4 (0 1 500000 0) (1 2 3 4) (0 100 0 0) (0 0 333333 333333) (1000000000 (100 . 1) (1 . 1) t 1000000000))",
+        "current-time-list forms",
+    );
+}
+
+#[test]
+fn message_log_disables_undo_in_the_messages_buffer() {
+    // xdisp.c message_dolog sets `buffer-undo-list' to t and
+    // `cache-long-scans' to nil in the log buffer every time it logs, so
+    // an undo list a user installs there is gone after the next message.
+    // Emaxx recorded undo entries for every logged line.
+    let program = r#"
+        (progn
+          (message "x")
+          (list (with-current-buffer "*Messages*" (list buffer-undo-list cache-long-scans))
+                (progn (with-current-buffer "*Messages*" (setq buffer-undo-list nil cache-long-scans t))
+                       (message "y")
+                       (with-current-buffer "*Messages*" (list buffer-undo-list cache-long-scans)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((t nil) (t nil))",
+        "message log undo list",
+    );
+}
+
+#[test]
+fn copy_keymap_copies_a_list_keymap_like_keymap_c() {
+    // keymap.c copy_keymap_1/copy_keymap_item: a fresh spine, copied
+    // char-tables, vectors and nested keymaps, fresh `(EVENT . DEFN)'
+    // cells, fresh cells for a menu-item's marker, name and binding with
+    // its tail shared, fresh cells for an old-style item's strings, the
+    // parent tail shared, a symbol resolved through its function cell,
+    // and `keymapp' for anything else.  Emaxx returned a list keymap
+    // itself (keymap-copy-keymap/is-not-eq).
+    let program = r#"
+        (list (let* ((sub (let ((m (make-sparse-keymap))) (define-key m "b" 'ignore) m))
+                     (m (make-sparse-keymap "Menu")))
+                (define-key m "a" 'ignore)
+                (define-key m "c" sub)
+                (define-key m [menu-bar foo] '(menu-item "Foo" ignore :help "h"))
+                (set-keymap-parent m (let ((p (make-sparse-keymap))) (define-key p "z" 'undo) p))
+                (let* ((c (copy-keymap m))
+                       (mi-c (assq 'foo (cdr (lookup-key c [menu-bar]))))
+                       (mi-m (assq 'foo (cdr (lookup-key m [menu-bar])))))
+                  (list (eq c m) (equal c m)
+                        (eq (keymap-parent c) (keymap-parent m))
+                        (eq (lookup-key c "c") (lookup-key m "c"))
+                        (equal (lookup-key c "c") sub)
+                        (eq mi-c mi-m) (equal mi-c mi-m)
+                        (eq (nthcdr 4 mi-c) (nthcdr 4 mi-m))
+                        (eq (nthcdr 3 mi-c) (nthcdr 3 mi-m))
+                        (condition-case e (copy-keymap 5) (error e))
+                        (condition-case e (copy-keymap 'emaxx-no-such-map) (error e)))))
+              (let ((f (make-keymap)))
+                (define-key f "x" 'ignore)
+                (define-key f [?y] (let ((s (make-sparse-keymap))) (define-key s "w" 'undo) s))
+                (let ((c (copy-keymap f)))
+                  (list (eq c f) (equal c f) (eq (cadr c) (cadr f))
+                        (eq (lookup-key c "x") 'ignore)
+                        (eq (lookup-key c "y") (lookup-key f "y"))
+                        (equal (lookup-key c "y") (lookup-key f "y")))))
+              (let ((k (make-sparse-keymap)))
+                (fset 'emaxx-copy-keymap-fn k)
+                (define-key k "q" 'ignore)
+                (let ((c (copy-keymap 'emaxx-copy-keymap-fn)))
+                  (list (eq c k) (equal c k))))
+              (let ((o (make-sparse-keymap)))
+                (define-key o "s" '("Old" "help" . ignore))
+                (let* ((c (copy-keymap o))
+                       (ec (assq ?s (cdr c)))
+                       (em (assq ?s (cdr o))))
+                  (list (eq ec em) (equal ec em) (eq (cddr ec) (cddr em)) (eq (cdddr ec) (cdddr em))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((nil t t nil t nil t t nil (wrong-type-argument keymapp 5) (wrong-type-argument keymapp emaxx-no-such-map)) (nil t nil t nil t) (nil t) (nil t nil t))",
+        "copy-keymap",
+    );
+}
+
+#[test]
+fn load_warns_about_unescaped_character_literals_on_the_eval_buffer_path() {
+    // lread.c: Fload binds `lread--unescaped-character-literals' to nil,
+    // the reader conses every unescaped `?)'-style literal onto it, and
+    // load_warn_unescaped_character_literals messages "Loading `FILE':
+    // ..." as the load unwinds -- also for a `load' with NOMESSAGE.  The
+    // merged `load' evaluates a source file through
+    // load-with-code-conversion and `eval-buffer', whose reader had not
+    // recorded the literals (lread-tests--unescaped-char-literals).  (The
+    // message's quotes and backslashes are substituted so the expected
+    // text needs no escaping.)
+    let program = r#"
+        (let* ((f (make-temp-file "emaxx-lit" nil ".el" "?) ?( ?; ?\" ?[ ?]"))
+               (r (load f nil :nomessage :nosuffix))
+               (m (with-current-buffer "*Messages*"
+                    (save-excursion
+                      (goto-char (point-max))
+                      (forward-line -1)
+                      (buffer-substring (point) (line-end-position))))))
+          (delete-file f)
+          (list r (string-replace "\\" "B" (string-replace "\"" "Q" (string-replace f "FILE" m)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t \"Loading `FILE': unescaped character literals `?Q', `?(', `?)', `?;', `?[', `?]' detected, `?BQ', `?B(', `?B)', `?B;', `?B[', `?B]' expected!\")",
+        "unescaped character literal warning",
+    );
+}
+
+#[test]
+fn sqlite_values_are_a_list_or_a_vector() {
+    // sqlite.c bind_values walks VALUES as a vector (AREF) or a list
+    // (XCAR/XCDR); Fsqlite_execute and Fsqlite_select signal `sqlite-error'
+    // for anything else.  The merged vector representation made
+    // `vector_items' vector-only, and a list of parameters (multisession.el
+    // passes one) signalled `(wrong-type-argument vectorp ...)'.
+    let program = r#"
+        (let ((db (sqlite-open)))
+          (sqlite-execute db "create table t (a, b)")
+          (sqlite-execute db "insert into t values (?, ?)" (list "x" "y"))
+          (sqlite-execute db "insert into t values (?, ?)" ["p" "q"])
+          (list (sqlite-select db "select * from t where a = ?" (list "x"))
+                (sqlite-select db "select * from t where a = ?" ["p"])
+                (sqlite-select db "select * from t order by a")
+                (condition-case e (sqlite-select db "select 1" 5) (error e))
+                (condition-case e (sqlite-execute db "select 1" "s") (error e))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((("x" "y")) (("p" "q")) (("p" "q") ("x" "y")) (sqlite-error "VALUES must be a list or a vector") (sqlite-error "VALUES must be a list or a vector"))"#,
+        "sqlite VALUES",
+    );
+}
+
+#[test]
+fn next_read_file_uses_dialog_p_follows_the_oracle_toolkit() {
+    // fileio.c: without USE_GTK, USE_MOTIF, HAVE_NS, HAVE_NTGUI or
+    // HAVE_HAIKU the predicate is nil, and `x-file-dialog' does not exist,
+    // so `read-file-name' takes the minibuffer path (dired-test-bug25609
+    // signalled `void-function x-file-dialog' when Emaxx answered t).  The
+    // Darwin oracle is an NS build: the batch session's initial frame
+    // counts as a window system, so the default `use-dialog-box' and
+    // `use-file-dialog' answer t until `last-nonmenu-event' is a key.
+    let program = r#"
+        (list (next-read-file-uses-dialog-p)
+              (let ((use-dialog-box t) (use-file-dialog t) (last-nonmenu-event nil))
+                (next-read-file-uses-dialog-p))
+              (let ((use-dialog-box nil)) (next-read-file-uses-dialog-p))
+              (fboundp 'x-file-dialog))"#;
+    let expected = if cfg!(target_os = "macos") {
+        "(t t nil t)"
+    } else {
+        "(nil nil nil nil)"
+    };
+    assert_oracle_contract_matches_interpreter(program, expected, "read-file-name dialog");
+}
+
+#[test]
 fn portable_dump_introspection_and_backend_boundary_are_honest() {
     let sort_program = r#"
         (list
@@ -9746,10 +10072,18 @@ fn process_attributes_follows_sysdep_procfs() {
     // arguments exits at once, and reading /proc then raced its death:
     // an empty cmdline and a zombie state), so the parent
     // linkage, the child-accounting fields and the argument escaping are
-    // exact; the live counters are pinned by type.
+    // exact; the live counters are pinned by type.  The attributes are
+    // read once the shell has reached its `sleep' (state "S"): a child
+    // still inside exec on a loaded machine reads "D" for an instant,
+    // and that transient failed one gate run on either editor's side.
     let program = r#"
         (let* ((p (start-process "s" nil "sh" "-c" "sleep 5" "a b" "c\\d"))
-               (a (process-attributes (process-id p)))
+               (a (let ((deadline (+ (float-time) 2.0)) a)
+                    (while (and (not (equal (cdr (assq 'state (setq a (process-attributes (process-id p)))))
+                                            "S"))
+                                (< (float-time) deadline))
+                      (sleep-for 0.01))
+                    a))
                (keys '(euid user egid group comm state ppid pgrp sess ttname tpgid
                        minflt majflt cminflt cmajflt utime stime time cutime cstime
                        ctime start etime pcpu pri nice thcount vsize rss pmem args)))

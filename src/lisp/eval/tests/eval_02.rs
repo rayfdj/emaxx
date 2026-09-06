@@ -7190,8 +7190,11 @@ fn null_device_matches_unix_batch_default() {
 
 #[test]
 fn exec_suffixes_matches_unix_batch_default() {
+    // callproc.c's DEFVAR leaves `exec-suffixes' nil; the running editor's
+    // `("")' is startup's doing, so the batch fixture is the one to ask
+    // (the CLI answers `("")' on both editors).
     assert_eq!(
-        eval_str("exec-suffixes"),
+        eval_str_with_upstream_batch("exec-suffixes"),
         Value::list([Value::String(String::new().into())])
     );
 }

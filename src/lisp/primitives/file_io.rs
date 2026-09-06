@@ -782,9 +782,11 @@ pub(crate) fn write_printer_output(
                 .lookup_var("noninteractive", env)
                 .is_some_and(|value| value.is_truthy())
             {
-                std::io::stdout()
-                    .write_all(text.as_bytes())
+                // print.c printchar/strout: stdio's buffered stdout, and
+                // `noninteractive_need_newline' for the next `message'.
+                crate::lisp::primitives::batch_stdout::write(text.as_bytes())
                     .map_err(|error| LispError::Signal(error.to_string()))?;
+                interp.batch_stdout_need_newline = true;
             } else {
                 // An interactive session's `t' stream is the echo area
                 // (print_string to Qt): eval-expression's result shows.

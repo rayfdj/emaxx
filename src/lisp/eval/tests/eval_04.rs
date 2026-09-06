@@ -5816,10 +5816,11 @@ fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
                 Value::String("Demo".into()),
                 Value::Symbol("ignore".into()),
                 Value::T,
-                // Both ordinary native-enabled runtimes load `last' as a
-                // native subr. The separate pinned GNU terminal oracle
-                // confirms this existing expression's complete result.
-                Value::Symbol("subr".into()),
+                // A batch session loads `last' from subr.elc: GNU answers
+                // `byte-code-function' with `subr-native-elisp-p' nil
+                // (no subr.eln is loaded there), and so does the Emaxx
+                // CLI; the fixture now matches both.
+                Value::Symbol("byte-code-function".into()),
                 Value::BuiltinFunc("re-search-forward".into()),
                 Value::String("subr.elc".into()),
                 Value::String("subr.elc".into()),

@@ -1938,6 +1938,14 @@ pub(crate) fn value_is_unspecified(value: Option<&Value>) -> bool {
     }
 }
 
+/// timefns.c's `current_time_list': the DEFVAR_BOOL that chooses the
+/// old-style list for `current-time' and a nil `time-convert' FORM.
+fn current_time_list_is_set(interp: &Interpreter) -> bool {
+    interp
+        .lookup_var("current-time-list", &Vec::new())
+        .is_none_or(|value| value.is_truthy())
+}
+
 pub(crate) fn time_convert_value(time: &ExactTimeValue, form: &Value) -> Result<Value, LispError> {
     match form {
         Value::Nil => Ok(exact_time_to_value(time)),
@@ -1988,7 +1996,14 @@ define_dispatch!(
             }
             "current-time" => {
                 need_arg_range(name, args, 0, 0)?;
-                Ok(exact_time_to_value(&now))
+                // timefns.c make_lisp_time: the old-style list under
+                // `current-time-list', else the nanosecond
+                // (TICKS . 1000000000) pair, never reduced.
+                if current_time_list_is_set(interp) {
+                    exact_time_to_old_style(&now)
+                } else {
+                    exact_time_to_scaled_pair(&now, &BigInt::from(1_000_000_000u64))
+                }
             }
             "current-time-string" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -2074,8 +2089,20 @@ define_dispatch!(
             "time-convert" => {
                 need_arg_range(name, args, 1, 2)?;
                 let time = exact_time_from_value(interp, &args[0], &now)?;
-                let form = args.get(1).unwrap_or(&Value::Nil);
-                time_convert_value(&time, form)
+                // Ftime_convert: a nil FORM is `list' under
+                // `current-time-list' and t otherwise.
+                let form = match args.get(1) {
+                    Some(form) if !form.is_nil() => form.clone(),
+                    _ if current_time_list_is_set(interp) => Value::Symbol("list".into()),
+                    _ => Value::T,
+                };
+                // A nil TIME is the current timespec, whose HZ is
+                // 1000000000 (TIMESPEC_HZ) in GNU's lisp_time, not the
+                // reduced fraction `now' carries here.
+                if args[0].is_nil() && matches!(form, Value::T) {
+                    return exact_time_to_scaled_pair(&time, &BigInt::from(1_000_000_000u64));
+                }
+                time_convert_value(&time, &form)
             }
             "decode-time" => {
                 need_arg_range(name, args, 0, 3)?;

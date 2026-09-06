@@ -96,6 +96,24 @@ impl Interpreter {
         self.load_target_with_env(target, &Env::new())
     }
 
+    /// lread.c save_match_data_load, the load Fautoload_do_load performs:
+    /// the file the autoload names is loaded with the match data saved
+    /// around it, so an autoload triggered between a `string-match' and
+    /// its `match-end' (dired-aux's `cl-member' inside
+    /// `dired--need-confirm-positions') leaves the caller's match data
+    /// intact.
+    pub(crate) fn load_autoload_target(
+        &mut self,
+        target: &str,
+        env: &Env,
+    ) -> Result<PathBuf, LispError> {
+        let mut call_env = env.clone();
+        let saved = crate::lisp::primitives::call(self, "match-data", &[], &mut call_env)?;
+        let result = self.load_target_with_env(target, env);
+        crate::lisp::primitives::call(self, "set-match-data", &[saved, Value::T], &mut call_env)?;
+        result
+    }
+
     pub(crate) fn load_target_with_env(
         &mut self,
         target: &str,
@@ -2185,6 +2203,26 @@ impl Interpreter {
     /// reported as values.
     pub(crate) fn char_table_effective_ranges(&self, id: u64) -> Option<Vec<CharTableEntry>> {
         Some(self.find_char_table(id)?.effective_ranges())
+    }
+
+    /// The raw write log of char-table ID, in order; `equal' compares two
+    /// tables entry by entry, so a copy that must stay `equal' to its
+    /// original rewrites values through `char_table_replace_entries'
+    /// rather than appending.
+    pub(crate) fn char_table_entries(&self, id: u64) -> Option<Vec<CharTableEntry>> {
+        Some(self.find_char_table(id)?.entries.clone())
+    }
+
+    pub(crate) fn char_table_replace_entries(
+        &mut self,
+        id: u64,
+        entries: Vec<CharTableEntry>,
+    ) -> Result<(), LispError> {
+        let table = self.find_char_table_mut(id).ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+        })?;
+        table.replace_entries(entries);
+        Ok(())
     }
 
     pub fn char_table_subtype(&self, id: u64) -> Option<Option<String>> {
