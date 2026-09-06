@@ -39,6 +39,12 @@ an invalid function, with the exact GNU error value and clean evaluator
 unwind; all eight native-Ffuncall tests pass. Autoload loading and the wider
 callable-class matrix remain open, so L06 stays partial.
 
+**L07 arity audit (2026-09-06):** GNU `eval.c:funcall_subr` now has focused
+coverage for the direct fixed-optional, MANY, and UNEVALLED branches: native
+Ffuncall preserves nil padding, forwards the complete MANY vector, and rejects
+special forms with the resolved subr object. The full 0..8 arity matrix and
+remaining subroutine edge cases remain open.
+
 ### Historical September 6 continuation — EQ/live-flag and reader work
 
 The live-flag dependency described below is now implemented, not just

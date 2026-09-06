@@ -7459,6 +7459,43 @@ mod tests {
     }
 
     #[test]
+    fn native_funcall_many_and_unevalled_follow_funcall_subr() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_two as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::symbol("list"), Value::Integer(1), Value::Integer(2)],
+                )
+                .expect("many-arity subr receives the complete argument vector"),
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_funcall_zero as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::symbol("if")],
+            )
+            .expect_err("unevalled subr is not callable through funcall");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([
+                Value::symbol("invalid-function"),
+                Value::BuiltinFunc("if".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn rust_primitive_observes_direct_native_cons_write_reached_through_a_record() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
