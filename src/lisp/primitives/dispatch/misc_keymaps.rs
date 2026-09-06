@@ -1672,13 +1672,11 @@ define_dispatch!(
                     percentage,
                 );
                 // GNU returns ((TYPE SIZE USED FREE) ...) in exactly this
-                // row order (alloc.c, oracle-confirmed).  USED counts come
-                // from the live reachability census (finding 110 -- these
-                // were fabricated zeros); SIZE columns are THIS binary's
-                // real per-object layout constants, so memory-report.el
-                // computes emaxx-true byte totals, not GNU's.  FREE columns
-                // are 0 truthfully: Rust ownership retains no free lists.
-                let cons_size = std::mem::size_of::<crate::lisp::types::ConsCell>() as i64;
+                // row order (alloc.c, oracle-confirmed).  SIZE is the GNU C
+                // layout reported by Fgarbage_collect, not Rust's host
+                // representation; FREE is 0 because Rust ownership retains
+                // no allocator free lists.
+                let cons_size = crate::lisp::eval::GNU_CONS_SIZE as i64;
                 let entry = |name: &str, rest: &[i64]| {
                     Value::list(
                         std::iter::once(Value::Symbol(name.into()))
@@ -1690,7 +1688,7 @@ define_dispatch!(
                     entry(
                         "symbols",
                         &[
-                            std::mem::size_of::<String>() as i64,
+                            crate::lisp::eval::GNU_SYMBOL_SIZE as i64,
                             census.symbols as i64,
                             0,
                         ],
@@ -1698,21 +1696,39 @@ define_dispatch!(
                     entry(
                         "strings",
                         &[
-                            std::mem::size_of::<crate::lisp::types::SharedStringState>() as i64,
+                            crate::lisp::eval::GNU_STRING_SIZE as i64,
                             census.strings as i64,
                             0,
                         ],
                     ),
                     entry("string-bytes", &[1, census.string_bytes as i64]),
-                    // Vectors ride on tagged cons chains internally, so a
-                    // vector header and each slot really cost one cons cell.
-                    entry("vectors", &[cons_size, census.vectors as i64]),
-                    entry("vector-slots", &[cons_size, census.vector_slots as i64, 0]),
-                    entry("floats", &[8, census.floats as i64, 0]),
+                    entry(
+                        "vectors",
+                        &[
+                            crate::lisp::eval::GNU_VECTOR_SIZE as i64,
+                            census.vectors as i64,
+                        ],
+                    ),
+                    entry(
+                        "vector-slots",
+                        &[
+                            crate::lisp::eval::GNU_VECTOR_SLOT_SIZE as i64,
+                            census.vector_slots as i64,
+                            0,
+                        ],
+                    ),
+                    entry(
+                        "floats",
+                        &[
+                            crate::lisp::eval::GNU_FLOAT_SIZE as i64,
+                            census.floats as i64,
+                            0,
+                        ],
+                    ),
                     entry(
                         "intervals",
                         &[
-                            std::mem::size_of::<crate::buffer::TextPropertySpan>() as i64,
+                            crate::lisp::eval::GNU_INTERVAL_SIZE as i64,
                             census.intervals as i64,
                             0,
                         ],
@@ -1720,7 +1736,7 @@ define_dispatch!(
                     entry(
                         "buffers",
                         &[
-                            std::mem::size_of::<crate::buffer::Buffer>() as i64,
+                            crate::lisp::eval::GNU_BUFFER_SIZE as i64,
                             census.buffers as i64,
                         ],
                     ),
