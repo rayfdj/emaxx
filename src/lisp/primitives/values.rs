@@ -564,7 +564,9 @@ pub(crate) fn values_eq_in_env(
     match (left, right) {
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
         (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
+        // lisp.h:EQ compares bignum object identities. Only Feql compares
+        // their numeric payloads, just as it does for allocated floats.
+        (Value::BigInteger(a), Value::BigInteger(b)) => a.ptr_eq(b),
         // data.c:Feq compares the Lisp_Object words.  Float words point to
         // allocated Lisp_Float objects, so only the same allocation is eq.
         (Value::Float(a), Value::Float(b)) => a.ptr_eq(b),
@@ -1014,11 +1016,9 @@ pub(crate) fn compare_symbol_values(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
-    env: &Env,
+    _env: &Env,
 ) -> Result<Option<ValueOrder>, LispError> {
-    let symbols_with_pos_enabled = interp
-        .lookup_var("symbols-with-pos-enabled", env)
-        .is_some_and(|value| value.is_truthy());
+    let symbols_with_pos_enabled = interp.symbols_with_positions_enabled();
     let left_with_pos = symbol_with_pos_parts(interp, left);
     let right_with_pos = symbol_with_pos_parts(interp, right);
 

@@ -972,7 +972,9 @@ impl Interpreter {
         match name {
             // lread.c:defvar_bool exposes only t or nil from the forwarded
             // C bool even when Lisp stores an arbitrary non-nil object.
-            "debug-on-next-call" if !self.detached_forwarded_variables.contains_key(name) => {
+            "debug-on-next-call" | "symbols-with-pos-enabled"
+                if !self.detached_forwarded_variables.contains_key(name) =>
+            {
                 if value.is_nil() {
                     Value::Nil
                 } else {
@@ -1007,6 +1009,9 @@ impl Interpreter {
                 }
             }
             "debug-on-next-call" => self.debug_on_next_call = value.is_truthy(),
+            "symbols-with-pos-enabled" => {
+                self.symbols_with_positions_enabled.set(value.is_truthy());
+            }
             _ => {}
         }
     }
@@ -1026,6 +1031,11 @@ impl Interpreter {
             } else {
                 Value::Nil
             }),
+            "symbols-with-pos-enabled" => Some(if self.symbols_with_positions_enabled() {
+                Value::T
+            } else {
+                Value::Nil
+            }),
             _ => None,
         }
     }
@@ -1039,6 +1049,7 @@ impl Interpreter {
             "load-path",
             "max-lisp-eval-depth",
             "debug-on-next-call",
+            "symbols-with-pos-enabled",
         ] {
             if let Some(value) = self
                 .buffer_local_value(self.current_buffer_id(), name)
@@ -1047,6 +1058,16 @@ impl Interpreter {
                 self.update_forwarded_eval_cell(name, &value);
             }
         }
+    }
+
+    pub(crate) fn symbols_with_positions_enabled(&self) -> bool {
+        self.symbols_with_positions_enabled.get()
+    }
+
+    /// comp.c connects loaded code directly to the same bool that
+    /// store_symval_forwarding changes. There is no per-native-call snapshot.
+    pub(crate) fn symbols_with_positions_relocation(&self) -> *mut bool {
+        self.symbols_with_positions_enabled.as_ptr()
     }
 
     pub(crate) fn quit_flag_is_nil(&self) -> bool {
@@ -1075,6 +1096,12 @@ impl Interpreter {
 
     pub(crate) fn debug_on_next_call(&self) -> bool {
         self.debug_on_next_call
+    }
+
+    /// eval.c:call_debugger clears the forwarded C flag before invoking the
+    /// debugger, so the debugger itself does not immediately re-enter.
+    pub(crate) fn clear_debug_on_next_call(&mut self) {
+        self.debug_on_next_call = false;
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
@@ -1773,6 +1800,14 @@ impl Interpreter {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.debug_on_exit = enabled;
         }
+    }
+
+    /// eval.c:backtrace_debug_on_exit reads the flag on the active
+    /// Ffuncall frame after the callee returns.
+    pub(crate) fn current_backtrace_debug_on_exit(&self) -> bool {
+        self.backtrace_frames
+            .last()
+            .is_some_and(|frame| frame.debug_on_exit)
     }
 
     pub fn current_backtrace_frame(&self) -> Option<(bool, Value, Vec<Value>, bool)> {

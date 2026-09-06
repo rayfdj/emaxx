@@ -576,6 +576,50 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
     })
 }
 
+/// eval.c:lisp.h:maybe_gc's active native boundary. The assembly trampoline
+/// spills callee-saved registers before the conservative collector scans the
+/// stack, exactly as the generated native call path does.
+pub(crate) fn maybe_gc_active() {
+    if ACTIVE_CALL.with(|active| active.get().is_null()) {
+        return;
+    }
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    unsafe {
+        emaxx_native_gc_trampoline();
+    }
+}
+
+/// alloc.c:Fgarbage_collect_maybe's threshold test for the active native
+/// heap. The same state is retained by the interpreter for ordinary calls.
+pub(crate) fn garbage_collection_maybe_due(
+    interpreter: &mut Interpreter,
+    environment: &Env,
+    factor: i64,
+) -> bool {
+    let threshold = interpreter
+        .lookup_var("gc-cons-threshold", environment)
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
+    let percentage = match interpreter.lookup_var("gc-cons-percentage", environment) {
+        Some(Value::Float(value)) => Some(value.get()),
+        _ => None,
+    };
+    if let Some(due) = with_current_runtime(|runtime| {
+        runtime
+            .heap
+            .collection_maybe_due(factor, threshold, percentage)
+    }) {
+        return due;
+    }
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    let due = state.garbage_collection_maybe_due(factor, threshold, percentage);
+    interpreter.native_compiler = state;
+    due
+}
+
 pub(crate) fn decode_active_backtrace_arguments(
     words: &[NativeWord],
 ) -> Option<Result<Vec<Value>, String>> {
@@ -708,7 +752,6 @@ pub(crate) struct NativeRuntime {
     heap: NativeHeap,
     thread: Box<NativeThreadState>,
     thread_pointer: Box<*mut NativeThreadState>,
-    symbols_with_positions_enabled: Box<bool>,
     link_table: Box<[*mut c_void]>,
     handlers: Vec<HandlerEntry>,
     unwind: Vec<UnwindAction>,
@@ -741,7 +784,6 @@ impl Default for NativeRuntime {
             heap: NativeHeap::default(),
             thread,
             thread_pointer,
-            symbols_with_positions_enabled: Box::new(false),
             link_table: runtime_link_table().into_boxed_slice(),
             handlers: Vec::new(),
             unwind: Vec::new(),
@@ -830,6 +872,16 @@ impl NativeRuntime {
         self.collect_native_heap_now(std::ptr::from_ref(&stack_marker), interpreter, environment)
     }
 
+    pub(crate) fn garbage_collection_maybe_due(
+        &mut self,
+        factor: i64,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> bool {
+        self.heap
+            .collection_maybe_due(factor, threshold, percentage)
+    }
+
     pub(crate) fn garbage_collection_finished(
         &mut self,
         live_bytes: usize,
@@ -864,10 +916,6 @@ impl NativeRuntime {
 
     pub(crate) fn current_thread_relocation(&mut self) -> *mut c_void {
         (&mut *self.thread_pointer as *mut *mut NativeThreadState).cast()
-    }
-
-    pub(crate) fn symbols_with_positions_relocation(&mut self) -> *mut bool {
-        &mut *self.symbols_with_positions_enabled
     }
 
     pub(crate) fn pure_relocation(&self) -> *mut c_void {
@@ -941,14 +989,6 @@ impl NativeRuntime {
         // function without crossing a C-subr wrapper, so reconcile the Rust
         // registrations before snapshotting the nested call's handler depth.
         self.sync_handlers(interpreter)?;
-
-        // data.c exposes this as a forwarded C bool.  Since the variable is
-        // intrinsically special, its value cell (including any buffer-local
-        // forwarding) is the authority; walking lexical frames here is both
-        // unlike GNU and needlessly charges every native call.
-        *self.symbols_with_positions_enabled = interpreter
-            .symbol_value_cell("symbols-with-pos-enabled")
-            .is_ok_and(|value| value.is_truthy());
 
         let mut invocation = NativeInvocation::new(target);
         self.begin_call(invocation.jump_buffer(), interpreter);
@@ -1364,7 +1404,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         match (subroutine.name, arguments) {
             ("eq", [left, right])
                 if left == right
-                    || !*unsafe { &*active.runtime }.symbols_with_positions_enabled =>
+                    || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(left == right);
             }
@@ -1376,7 +1416,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             }
             ("symbolp", [value])
                 if *value & TAG_MASK == TAG_SYMBOL
-                    || !*unsafe { &*active.runtime }.symbols_with_positions_enabled =>
+                    || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
             }
@@ -2015,6 +2055,27 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
     unsafe { emaxx_native_gc_trampoline() };
     let result = target.invoke(active, call_arguments);
     let result = match result {
+        Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
+            // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
+            // dropping its backtrace record when backtrace-debug marked the
+            // frame.  Keep the native word live until the debugger receives
+            // the same Lisp object, then encode the debugger's return value.
+            let value = runtime
+                .heap
+                .decode(word)
+                .map_err(|error| super::lisp::native_ice(&error));
+            value.and_then(|value| {
+                let argument = Value::list([Value::symbol("exit"), value]);
+                interpreter
+                    .call_debugger(argument, environment)
+                    .and_then(|value| {
+                        runtime
+                            .heap
+                            .encode(&value)
+                            .map_err(|error| super::lisp::native_ice(&error))
+                    })
+            })
+        }
         Ok(word) => Ok(word),
         Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
         Err(error) => match interpreter.dispatch_handler_bindings(error, environment) {
@@ -2360,7 +2421,7 @@ fn native_symbolp(active: &mut ActiveCall, word: NativeWord) -> Result<bool, Lis
     if word & TAG_MASK == TAG_SYMBOL {
         return Ok(true);
     }
-    if !*unsafe { &*active.runtime }.symbols_with_positions_enabled {
+    if !unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
         return Ok(false);
     }
     let value = decode_word(active, word)?;
@@ -2480,6 +2541,40 @@ unsafe fn native_cdr(value: NativeWord) -> NativeWord {
     unsafe { (*(value.wrapping_sub(TAG_CONS) as *const NativeCons)).cdr() }
 }
 
+/// lisp.h:maybe_remove_pos_from_symbol after the caller checked the C flag.
+/// PSEUDOVECTORP only reads the subtype; it never traverses an unrelated
+/// cons or vector. Only a positioned symbol needs its bare-symbol field.
+fn native_remove_symbol_position(
+    active: &mut ActiveCall,
+    word: NativeWord,
+) -> Result<NativeWord, LispError> {
+    if word & TAG_MASK != TAG_VECTORLIKE {
+        return Ok(word);
+    }
+    let runtime = unsafe { &*active.runtime };
+    // The active native arguments keep the complete pointed-to object live.
+    let handle = unsafe { runtime.heap.live_handle(word) }
+        .ok_or_else(|| super::lisp::native_ice("native EQ object has a mismatched tag"))?;
+    let Value::Record(id) = &handle.value else {
+        return Ok(word);
+    };
+    let symbol = unsafe { &*active.interpreter }
+        .find_record(*id)
+        .filter(|record| record.kind == crate::lisp::eval::RecordKind::SymbolWithPos)
+        .and_then(|record| record.slots.first())
+        .cloned();
+    let Some(symbol) = symbol else {
+        return Ok(word);
+    };
+    // The record currently owns a typed symbol reference, not an ABI word.
+    // Use the existing bridge only for that field; R02c/R03 still owns the
+    // work of storing these object references directly as native words.
+    unsafe { &mut *active.runtime }
+        .heap
+        .encode(&symbol)
+        .map_err(|error| super::lisp::native_ice(&error))
+}
+
 fn native_eq(
     active: &mut ActiveCall,
     left: NativeWord,
@@ -2488,20 +2583,15 @@ fn native_eq(
     if left == right {
         return Ok(true);
     }
-    if !*unsafe { &*active.runtime }.symbols_with_positions_enabled {
+    if !unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
         return Ok(false);
     }
     if left & TAG_MASK != TAG_VECTORLIKE && right & TAG_MASK != TAG_VECTORLIKE {
         return Ok(false);
     }
-    let left = decode_word(active, left)?;
-    let right = decode_word(active, right)?;
-    Ok(crate::lisp::primitives::values_eq_in_env(
-        unsafe { &*active.interpreter },
-        &left,
-        &right,
-        unsafe { &*active.environment },
-    ))
+    let left = native_remove_symbol_position(active, left)?;
+    let right = native_remove_symbol_position(active, right)?;
+    Ok(left == right)
 }
 
 /// fns.c:Feql only inspects float and bignum payloads; every other object
@@ -2534,7 +2624,7 @@ fn native_eql(
             &left_value,
             &right_value,
         ))
-    } else if *unsafe { &*active.runtime }.symbols_with_positions_enabled {
+    } else if unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
         Ok(crate::lisp::primitives::values_eq_in_env(
             unsafe { &*active.interpreter },
             &left_value,
@@ -2752,7 +2842,7 @@ fn native_get_symbol_name(
     if let Ok(name) = value.as_symbol() {
         return Ok(SymbolName::from(name));
     }
-    if *unsafe { &*active.runtime }.symbols_with_positions_enabled
+    if unsafe { &*active.interpreter }.symbols_with_positions_enabled()
         && let Some((bare, _)) = symbol_with_pos_parts(unsafe { &*active.interpreter }, &value)
         && let Ok(name) = bare.as_symbol()
     {
@@ -3509,6 +3599,8 @@ struct NativeGcState {
     /// Last point consumed from LISP_ALLOCATED_BYTES.  Keeping the source
     /// monotonic makes allocations outside native activation visible here.
     observed_allocated_bytes: u64,
+    /// Internal evidence for placement tests; not a Lisp-visible counter.
+    collections: usize,
 }
 
 impl NativeGcState {
@@ -3567,6 +3659,7 @@ impl NativeGcState {
 
     /// The post-sweep reset at the end of alloc.c:garbage_collect.
     fn collection_finished(&mut self, live_bytes: usize, threshold: i64, percentage: Option<f64>) {
+        self.collections += 1;
         self.observed_allocated_bytes = lisp_allocated_bytes();
         self.live_bytes = live_bytes;
         self.gc_threshold = self.consing_threshold(threshold, percentage, 0);
@@ -3644,6 +3737,24 @@ impl NativeConsArena {
     fn collection_might_be_due(&mut self) -> bool {
         self.gc.synchronize_allocations();
         self.gc.collection_might_be_due()
+    }
+
+    fn collection_maybe_due(
+        &mut self,
+        factor: i64,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> bool {
+        if factor < 1 {
+            return false;
+        }
+        self.gc.synchronize_allocations();
+        self.gc.bump_consing_until_gc(threshold, percentage);
+        let since_gc = self
+            .gc
+            .gc_threshold
+            .saturating_sub(self.gc.consing_until_gc);
+        since_gc > self.gc.gc_threshold / factor
     }
 
     fn mark_word(&mut self, word: NativeWord) -> ArenaMark {
@@ -3947,6 +4058,16 @@ impl NativeHeap {
 
     fn collection_might_be_due(&mut self) -> bool {
         self.native_conses.collection_might_be_due()
+    }
+
+    fn collection_maybe_due(
+        &mut self,
+        factor: i64,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> bool {
+        self.native_conses
+            .collection_maybe_due(factor, threshold, percentage)
     }
 
     fn collection_finished(
@@ -4770,6 +4891,50 @@ mod tests {
         0
     }
 
+    extern "C" fn eval_form_triggers_maybe_gc() -> NativeWord {
+        with_active(|active| {
+            let runtime = unsafe { &mut *active.runtime };
+            let interpreter = unsafe { &mut *active.interpreter };
+            runtime
+                .heap
+                .native_conses
+                .gc
+                .collection_finished(0, NATIVE_GC_DEFAULT_THRESHOLD, None);
+            for _ in 0..52_000 {
+                runtime.heap.cons(TAG_FIXNUM_LOW, 0);
+            }
+            let form = Value::list([Value::symbol("identity"), Value::Nil]);
+            let result = interpreter
+                .eval(&form, unsafe { &mut *active.environment })
+                .expect("the probe form evaluates");
+            runtime.heap.encode(&result).expect("probe result encodes")
+        })
+    }
+
+    extern "C" fn garbage_collect_maybe_uses_gnu_factor() -> NativeWord {
+        with_active(|active| {
+            let runtime = unsafe { &mut *active.runtime };
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment };
+            runtime
+                .heap
+                .native_conses
+                .gc
+                .collection_finished(0, NATIVE_GC_DEFAULT_THRESHOLD, None);
+            for _ in 0..52_000 {
+                runtime.heap.cons(TAG_FIXNUM_LOW, 0);
+            }
+            let result = crate::lisp::native_comp::call_c_primitive(
+                interpreter,
+                environment,
+                "garbage-collect-maybe",
+                &[Value::Integer(1)],
+            )
+            .expect("garbage-collect-maybe primitive succeeds");
+            runtime.heap.encode(&result).expect("GC result encodes")
+        })
+    }
+
     extern "C" fn raise_wrong_type(predicate: NativeWord, value: NativeWord) -> NativeWord {
         runtime_wrong_type_argument(predicate, value);
         0
@@ -5211,6 +5376,59 @@ mod tests {
 
     extern "C" fn call_type_of(value: NativeWord) -> NativeWord {
         direct_native_type_of(value)
+    }
+
+    extern "C" fn call_cl_type_of_by_subr(value: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "cl-type-of")
+            .expect("cl-type-of belongs to the native ABI");
+        invoke_subr(index, &[value])
+    }
+
+    extern "C" fn call_eq_by_subr(left: NativeWord, right: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "eq")
+            .expect("eq belongs to the native ABI");
+        invoke_subr(index, &[left, right])
+    }
+
+    extern "C" fn eq_native_cons_and_object(object: NativeWord, reverse: NativeWord) -> NativeWord {
+        let pair = invoke_cons(TAG_FIXNUM_LOW, 0);
+        if reverse == 0 {
+            direct_native_eq(pair, object)
+        } else {
+            direct_native_eq(object, pair)
+        }
+    }
+
+    extern "C" fn eq_across_position_flag_binding(
+        flag: NativeWord,
+        value: NativeWord,
+        bare: NativeWord,
+        positioned: NativeWord,
+    ) -> NativeWord {
+        let before = direct_native_eq(bare, positioned);
+        runtime_specbind(flag, value);
+        let during = direct_native_eq(bare, positioned);
+        runtime_unbind_n((1 << FIXNUM_BITS) + TAG_FIXNUM_LOW);
+        let after = direct_native_eq(bare, positioned);
+        invoke_cons(before, invoke_cons(during, invoke_cons(after, 0)))
+    }
+
+    extern "C" fn set_position_flag_then_eq(
+        flag: NativeWord,
+        value: NativeWord,
+        bare: NativeWord,
+        positioned: NativeWord,
+    ) -> NativeWord {
+        let set = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "set")
+            .expect("set belongs to the native ABI");
+        invoke_subr(set, &[flag, value]);
+        call_eq_by_subr(bare, positioned)
     }
 
     extern "C" fn cons_then_funcall_car(function: NativeWord, value: NativeWord) -> NativeWord {
@@ -6636,6 +6854,385 @@ mod tests {
     }
 
     #[test]
+    fn native_type_of_leaves_old_struct_policy_to_elisp_advice() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let tag = "cl-struct-type-boundary-probe";
+        interpreter.set_global_binding("cl-old-struct-compat-mode", Value::T);
+        interpreter.put_symbol_property("type-boundary-probe", "cl--class", Value::T);
+        interpreter.set_function_binding(tag, Some(Value::symbol(":quick-object-witness-check")));
+        let vector = Value::vector(vec![Value::symbol(tag)]);
+        // Setting a mode variable does not install its Lisp advice. Even
+        // when advised, the original C subr still answers from the type tag.
+        assert_eq!(
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "type-of",
+                std::slice::from_ref(&vector),
+                &mut environment,
+            )
+            .expect("ordinary original type-of subr"),
+            Value::symbol("vector")
+        );
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_type_of as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[vector],
+                )
+                .expect("native original type-of subr"),
+            Value::symbol("vector")
+        );
+    }
+
+    #[test]
+    fn native_cl_type_of_uses_object_tags_not_fixnum_variable_cells() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let record = interpreter.create_record("type-boundary-probe", vec![Value::Nil]);
+        // Internal negative control, not a claim that Lisp may set these
+        // constants. Fcl_type_of must not read their Lisp value cells at all.
+        interpreter.set_global_binding("most-positive-fixnum", Value::Nil);
+        interpreter.set_global_binding("most-negative-fixnum", Value::Nil);
+        for (value, expected) in [
+            (Value::Nil, "null"),
+            (Value::T, "boolean"),
+            (Value::symbol("type-boundary-probe"), "symbol"),
+            (Value::vector(vec![Value::Integer(1)]), "vector"),
+            (record, "type-boundary-probe"),
+            (Value::Integer(MOST_NEGATIVE_FIXNUM), "fixnum"),
+            (Value::Integer(MOST_POSITIVE_FIXNUM), "fixnum"),
+            (Value::Integer(MOST_NEGATIVE_FIXNUM - 1), "bignum"),
+            (Value::Integer(MOST_POSITIVE_FIXNUM + 1), "bignum"),
+            // An allocated bignum's subtype is not determined by its value.
+            (
+                Value::BigInteger(num_bigint::BigInt::from(1).into()),
+                "bignum",
+            ),
+        ] {
+            let expected = Value::symbol(expected);
+            assert_eq!(
+                crate::lisp::primitives::call(
+                    &mut interpreter,
+                    "cl-type-of",
+                    std::slice::from_ref(&value),
+                    &mut environment,
+                )
+                .expect("ordinary cl-type-of subr"),
+                expected
+            );
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_cl_type_of_by_subr as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[value],
+                    )
+                    .expect("native cl-type-of subr"),
+                expected
+            );
+        }
+    }
+
+    fn check_native_eq_position_flag_binding(initial: Value, bound: Value) {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let flag = Value::symbol("symbols-with-pos-enabled");
+        let bare = Value::symbol("eq-position-probe");
+        let positioned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "position-symbol",
+            &[bare.clone(), Value::Integer(19)],
+            &mut environment,
+        )
+        .expect("allocate a positioned symbol through the ordinary primitive");
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial.clone());
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                eq_across_position_flag_binding as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[flag, bound.clone(), bare, positioned],
+            )
+            .expect("bind and restore the flag inside one native call");
+        assert_eq!(
+            result,
+            Value::list([initial.clone(), bound, initial.clone()])
+        );
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("symbols-with-pos-enabled")
+                .expect("restored flag remains bound"),
+            initial
+        );
+    }
+
+    #[test]
+    fn native_eq_observes_position_flag_enabled_inside_native_call() {
+        check_native_eq_position_flag_binding(Value::Nil, Value::T);
+    }
+
+    #[test]
+    fn native_eq_observes_position_flag_disabled_inside_native_call() {
+        check_native_eq_position_flag_binding(Value::T, Value::Nil);
+    }
+
+    #[test]
+    fn native_eq_observes_position_flag_set_inside_native_call() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let flag = Value::symbol("symbols-with-pos-enabled");
+        let bare = Value::symbol("eq-position-probe");
+        let positioned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "position-symbol",
+            &[bare.clone(), Value::Integer(19)],
+            &mut environment,
+        )
+        .expect("allocate the positioned symbol for the Fset control");
+        for (initial, next) in [(Value::Nil, Value::T), (Value::T, Value::Nil)] {
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial);
+            let result = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    set_position_flag_then_eq as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[flag.clone(), next.clone(), bare.clone(), positioned.clone()],
+                )
+                .expect("Fset changes the live C flag without another native invocation");
+            assert_eq!(result, next);
+            assert_eq!(
+                interpreter
+                    .symbol_value_cell("symbols-with-pos-enabled")
+                    .expect("the native Fset leaves the flag bound"),
+                next
+            );
+        }
+    }
+
+    #[test]
+    fn native_and_ordinary_position_flag_readers_ignore_lexical_and_detached_cells() {
+        for (initial, opposite) in [(Value::Nil, Value::T), (Value::T, Value::Nil)] {
+            let mut interpreter = Interpreter::new();
+            // An explicit lexical alist is not GNU's C slot. Real dynamic
+            // bindings are exercised by the specbind controls above.
+            let mut environment =
+                vec![vec![("symbols-with-pos-enabled".into(), opposite.clone())].into()];
+            let mut runtime = NativeRuntime::default();
+            let bare = Value::symbol("eq-position-probe");
+            let positioned = crate::lisp::primitives::call(
+                &mut interpreter,
+                "position-symbol",
+                &[bare.clone(), Value::Integer(19)],
+                &mut environment,
+            )
+            .expect("allocate the positioned symbol for the detachment control");
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", initial.clone());
+            for detached in [false, true] {
+                if detached {
+                    crate::lisp::primitives::call(
+                        &mut interpreter,
+                        "makunbound",
+                        &[Value::symbol("symbols-with-pos-enabled")],
+                        &mut environment,
+                    )
+                    .expect("detach the symbol without changing its C boolean");
+                    interpreter.set_symbol_value_cell("symbols-with-pos-enabled", opposite.clone());
+                    assert_eq!(
+                        interpreter
+                            .symbol_value_cell("symbols-with-pos-enabled")
+                            .expect("the detached symbol now has a plain value"),
+                        opposite
+                    );
+                }
+                for name in ["eq", "eql"] {
+                    assert_eq!(
+                        crate::lisp::primitives::call(
+                            &mut interpreter,
+                            name,
+                            &[bare.clone(), positioned.clone()],
+                            &mut environment,
+                        )
+                        .expect("ordinary equality reads the live C flag"),
+                        initial,
+                        "{name} reads the C slot, detached={detached}",
+                    );
+                }
+                for function in [
+                    direct_native_eq as *const c_void,
+                    direct_native_eql as *const c_void,
+                    call_eq_by_subr as *const c_void,
+                ] {
+                    assert_eq!(
+                        runtime
+                            .invoke(
+                                &mut interpreter,
+                                &mut environment,
+                                function,
+                                NativeCallingConvention::Fixed,
+                                &[bare.clone(), positioned.clone()],
+                            )
+                            .expect("native equality reads the live C flag"),
+                        initial,
+                        "native predicate reads the C slot, detached={detached}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_eq_does_not_materialize_unrelated_cons_fields() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
+        let record = interpreter.create_record("eq-word-probe", vec![Value::Integer(7)]);
+        for object in [Value::vector(Vec::new()), record] {
+            for reverse in [Value::Nil, Value::T] {
+                let mut runtime = NativeRuntime::default();
+                assert_eq!(
+                    runtime
+                        .invoke(
+                            &mut interpreter,
+                            &mut environment,
+                            eq_native_cons_and_object as *const c_void,
+                            NativeCallingConvention::Fixed,
+                            &[object.clone(), reverse],
+                        )
+                        .expect("GNU EQ compares distinct object identities"),
+                    Value::Nil
+                );
+                assert!(
+                    runtime.heap.cons_values.is_empty(),
+                    "lisp.h:EQ never reads or materializes an unrelated cons's fields"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_and_ordinary_eq_preserve_allocated_bignum_identity() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let number: num_bigint::BigInt = num_bigint::BigInt::from(MOST_POSITIVE_FIXNUM) + 1;
+        let left = Value::BigInteger(number.clone().into());
+        let right = Value::BigInteger(number.into());
+        for positions_enabled in [Value::T, Value::Nil] {
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", positions_enabled);
+            let arguments = [left.clone(), right.clone()];
+            let ordinary =
+                crate::lisp::primitives::call(&mut interpreter, "eq", &arguments, &mut environment)
+                    .expect("ordinary eq on distinct bignums");
+            let native = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    direct_native_eq as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &arguments,
+                )
+                .expect("native eq on distinct bignums");
+            assert_eq!((ordinary, native), (Value::Nil, Value::Nil));
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        direct_native_eq as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[left.clone(), left.clone()],
+                    )
+                    .expect("copies retain the same bignum object"),
+                Value::T
+            );
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        direct_native_eql as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &arguments,
+                    )
+                    .expect("fns.c:Feql still compares bignum numeric values"),
+                Value::T
+            );
+        }
+    }
+
+    #[test]
+    fn native_eq_unwraps_only_positioned_symbols_and_preserves_identity() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let uninterned = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-symbol",
+            &[Value::string("eq-position-probe")],
+            &mut environment,
+        )
+        .expect("allocate an uninterned symbol");
+        for bare in [
+            Value::Nil,
+            Value::T,
+            Value::symbol("integer"),
+            Value::symbol("eq-position-probe"),
+            uninterned,
+        ] {
+            let positions = [0, 19].map(|position| {
+                crate::lisp::primitives::call(
+                    &mut interpreter,
+                    "position-symbol",
+                    &[bare.clone(), Value::Integer(position)],
+                    &mut environment,
+                )
+                .expect("data.c:Fposition_symbol")
+            });
+            let mut runtime = NativeRuntime::default();
+            for enabled in [Value::T, Value::Nil] {
+                interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled.clone());
+                for (left, right, expected) in [
+                    (positions[0].clone(), bare.clone(), enabled.clone()),
+                    (bare.clone(), positions[0].clone(), enabled.clone()),
+                    (positions[0].clone(), positions[1].clone(), enabled.clone()),
+                    (positions[0].clone(), positions[0].clone(), Value::T),
+                    (positions[0].clone(), Value::vector(Vec::new()), Value::Nil),
+                    (positions[0].clone(), Value::symbol("different"), Value::Nil),
+                ] {
+                    for function in [
+                        direct_native_eq as *const c_void,
+                        call_eq_by_subr as *const c_void,
+                    ] {
+                        assert_eq!(
+                            runtime
+                                .invoke(
+                                    &mut interpreter,
+                                    &mut environment,
+                                    function,
+                                    NativeCallingConvention::Fixed,
+                                    &[left.clone(), right.clone()],
+                                )
+                                .expect("native EQ follows lisp.h positioned-symbol identity"),
+                            expected,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn native_funcall_dispatches_builtin_on_the_word_abi() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
@@ -6657,6 +7254,32 @@ mod tests {
             runtime.heap.cons_values.is_empty(),
             "funcall_subr must not materialize a native-only cons as a Rust Value"
         );
+        assert_eq!(interpreter.backtrace_frames_len(), 0);
+        assert_eq!(interpreter.lisp_eval_depth, 0);
+    }
+
+    #[test]
+    fn native_funcall_honors_gnu_debug_on_exit_frame_flag() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let previous_debugger = interpreter
+            .symbol_value_cell("debugger")
+            .expect("the debugger variable has a default value");
+        interpreter.set_global_binding("debugger", Value::BuiltinFunc("identity".into()));
+
+        let result = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_funcall_two as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::symbol("backtrace-debug"), Value::Nil, Value::T],
+            )
+            .expect("backtrace-debug marks the active native Ffuncall frame");
+
+        interpreter.set_global_binding("debugger", previous_debugger);
+        assert_eq!(result, Value::list([Value::symbol("exit"), Value::Nil]));
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
     }
@@ -6693,6 +7316,61 @@ mod tests {
                 )
                 .expect("funcall of a byte-code closure"),
             Value::Integer(42)
+        );
+        assert_eq!(interpreter.backtrace_frames_len(), 0);
+        assert_eq!(interpreter.lisp_eval_depth, 0);
+    }
+
+    #[test]
+    fn native_funcall_falls_back_for_alias_lambda_and_invalid_function() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        interpreter.set_function_binding("native-funcall-alias", Some(Value::symbol("identity")));
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_one as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::symbol("native-funcall-alias"), Value::Integer(41)],
+                )
+                .expect("native funcall follows a symbol alias"),
+            Value::Integer(41)
+        );
+
+        let lambda = Value::lambda(
+            Rc::new(vec![SymbolName::from("value")]),
+            Rc::new(vec![Value::symbol("value")]),
+            Rc::new(std::cell::RefCell::new(Env::new())),
+        );
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_one as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[lambda, Value::Integer(42)],
+                )
+                .expect("native funcall falls back to an interpreted lambda"),
+            Value::Integer(42)
+        );
+
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_funcall_one as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::Integer(7), Value::Nil],
+            )
+            .expect_err("native funcall preserves invalid-function fallback");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([Value::symbol("invalid-function"), Value::Integer(7)])
         );
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
@@ -6868,6 +7546,43 @@ mod tests {
             assert_eq!(interpreter.lisp_eval_depth, 0);
             assert!(runtime.calls.is_empty());
         }
+    }
+
+    #[test]
+    fn native_funcall_many_and_unevalled_follow_funcall_subr() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_two as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::symbol("list"), Value::Integer(1), Value::Integer(2)],
+                )
+                .expect("many-arity subr receives the complete argument vector"),
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+
+        let error = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                call_funcall_zero as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::symbol("if")],
+            )
+            .expect_err("unevalled subr is not callable through funcall");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([
+                Value::symbol("invalid-function"),
+                Value::BuiltinFunc("if".into()),
+            ])
+        );
     }
 
     #[test]
@@ -7062,6 +7777,50 @@ mod tests {
         assert!(!gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
         gc.tally_consing(1);
         assert!(gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
+    }
+
+    #[test]
+    fn eval_sub_runs_maybe_gc_before_form_dispatch() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        assert_eq!(runtime.heap.native_conses.gc.collections, 0);
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    eval_form_triggers_maybe_gc as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[],
+                )
+                .expect("eval form with due native GC"),
+            Value::Nil
+        );
+        // One setup reset and one collection at the GNU eval_sub boundary.
+        assert_eq!(runtime.heap.native_conses.gc.collections, 2);
+    }
+
+    #[test]
+    fn garbage_collect_maybe_matches_gnu_factor_boundary() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        assert_eq!(
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    garbage_collect_maybe_uses_gnu_factor as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[],
+                )
+                .expect("garbage-collect-maybe probe completes"),
+            Value::T
+        );
+        assert_eq!(runtime.heap.native_conses.gc.collections, 2);
     }
 
     #[test]

@@ -316,6 +316,10 @@ impl Interpreter {
         // eval.c:eval_sub checks for a pending quit after the symbol/scalar
         // fast paths and before GC, depth accounting, or form dispatch.
         self.maybe_quit(env)?;
+        // eval.c:2502 calls maybe_gc after maybe_quit and before the depth
+        // increment. The active native boundary owns the conservative stack
+        // scan; outside native execution this is the corresponding fast no-op.
+        crate::lisp::native_comp::maybe_gc_active();
         self.lisp_eval_depth += 1;
         // eval.c:2504-2509.  GNU increments separately in `eval_sub' and
         // `Ffuncall'; this is the eval_sub half.  Public
@@ -668,6 +672,37 @@ impl Interpreter {
         let result =
             self.call_function_value_named(func, original_name.map(CallName::Text), args, env);
         self.end_funcall();
+        result
+    }
+
+    /// eval.c:call_debugger.  The C path specbinds the debugger control
+    /// variables around apply1(Vdebugger, arg); keep those bindings in the
+    /// same dynamic scope for native Ffuncall exits.
+    pub(crate) fn call_debugger(&mut self, arg: Value, env: &mut Env) -> Result<Value, LispError> {
+        self.clear_debug_on_next_call();
+        let mut restores = Vec::with_capacity(4);
+        for (name, value) in [
+            ("debugger-may-continue", Value::T),
+            ("inhibit-redisplay", Value::Nil),
+            ("inhibit-debugger", Value::T),
+            ("inhibit-changing-match-data", Value::Nil),
+        ] {
+            match self.bind_special_dynamic(name, value, env) {
+                Ok(restore) => restores.push(restore),
+                Err(error) => {
+                    for restore in restores.into_iter().rev() {
+                        let _ = self.restore_special_dynamic(restore, env);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        let debugger = self.lookup_var("debugger", env).unwrap_or(Value::Nil);
+        let result = self.call_function_value(debugger, None, &[arg], env);
+        for restore in restores.into_iter().rev() {
+            self.restore_special_dynamic(restore, env)?;
+        }
         result
     }
 
@@ -1770,6 +1805,117 @@ mod eval_value_buffer_tests {
     }
 
     #[test]
+    fn position_flag_relocation_tracks_alias_bindings_and_buffer_selection() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Env::new();
+        let flag = Value::symbol("symbols-with-pos-enabled");
+        let relocation = interpreter.symbols_with_positions_relocation();
+        // comp.c gives native code this address. The interpreter owns the
+        // boxed cell for the whole test; all reads are on this same thread.
+        let relocated_value = || unsafe { relocation.read() };
+        assert!(
+            !relocated_value(),
+            "data.c initializes the raw C flag false"
+        );
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", Value::Integer(17));
+        assert!(relocated_value());
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("symbols-with-pos-enabled")
+                .expect("a forwarded bool reads back its normalized value"),
+            Value::T
+        );
+        primitives::call(
+            &mut interpreter,
+            "set-default",
+            &[flag.clone(), Value::Nil],
+            &mut env,
+        )
+        .expect("store directly through the forwarded default");
+        assert!(!relocated_value());
+        let alias = Value::symbol("position-flag-alias");
+        primitives::call(
+            &mut interpreter,
+            "defvaralias",
+            &[alias.clone(), flag.clone()],
+            &mut env,
+        )
+        .expect("alias an ordinary symbol to the forwarded variable");
+        let restore = interpreter
+            .bind_special_dynamic("position-flag-alias", Value::Integer(19), &mut env)
+            .expect("specbind resolves the alias before binding the C cell");
+        assert!(relocated_value());
+        interpreter
+            .restore_special_dynamic(restore, &mut env)
+            .expect("unbind restores the original forwarded value");
+        assert!(!relocated_value());
+
+        let original = interpreter.current_buffer_id();
+        let (other, _) = interpreter.create_buffer(" *position-flag-local*");
+        primitives::call(
+            &mut interpreter,
+            "make-local-variable",
+            std::slice::from_ref(&flag),
+            &mut env,
+        )
+        .expect("localize the forwarded cell");
+        primitives::call(&mut interpreter, "set", &[alias, Value::T], &mut env)
+            .expect("set the selected local value through its alias");
+        assert!(relocated_value());
+        interpreter
+            .set_current_buffer_id(other)
+            .expect("select the buffer using the default cell");
+        assert!(!relocated_value(), "the other buffer selects the default");
+        interpreter.set_buffer_local_value(original, "symbols-with-pos-enabled", Value::Nil);
+        assert!(
+            !relocated_value(),
+            "an inactive local cell is not the C cell"
+        );
+        interpreter
+            .set_current_buffer_id(original)
+            .expect("select the buffer with a local cell");
+        assert!(!relocated_value());
+        primitives::call(
+            &mut interpreter,
+            "set-default",
+            &[flag.clone(), Value::T],
+            &mut env,
+        )
+        .expect("store the non-selected default without changing the local");
+        assert!(!relocated_value());
+        interpreter
+            .set_current_buffer_id(other)
+            .expect("select the changed default");
+        assert!(relocated_value());
+        interpreter
+            .set_current_buffer_id(original)
+            .expect("select the unchanged local value");
+        assert!(!relocated_value());
+        primitives::call(&mut interpreter, "kill-local-variable", &[flag], &mut env)
+            .expect("removing the local binding reloads the default into C");
+        assert!(relocated_value());
+        assert_eq!(relocation, interpreter.symbols_with_positions_relocation());
+    }
+
+    #[test]
+    fn position_flag_relocation_survives_moves_and_clones_independently() {
+        let mut interpreter = Interpreter::new();
+        interpreter.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
+        let original = interpreter.symbols_with_positions_relocation();
+        let moved = Box::new(interpreter);
+        assert_eq!(original, moved.symbols_with_positions_relocation());
+        let mut cloned = moved.as_ref().clone();
+        let copied = cloned.symbols_with_positions_relocation();
+        assert_ne!(original, copied);
+        // Both interpreters remain alive; cloning raw state without loaded
+        // libraries must not make their C slots share one allocation.
+        assert!(unsafe { original.read() && copied.read() });
+        cloned.set_symbol_value_cell("symbols-with-pos-enabled", Value::Nil);
+        assert!(unsafe { original.read() });
+        assert!(!unsafe { copied.read() });
+    }
+
+    #[test]
     fn makunbound_disconnects_all_direct_eval_fields() {
         for (name, initial, c_value) in [
             ("quit-flag", Value::Integer(17), Value::Integer(17)),
@@ -1786,6 +1932,7 @@ mod eval_value_buffer_tests {
                 Value::Integer(50),
             ),
             ("debug-on-next-call", Value::Integer(17), Value::T),
+            ("symbols-with-pos-enabled", Value::Integer(17), Value::T),
         ] {
             let mut interpreter = Interpreter::new();
             let mut env = Env::new();

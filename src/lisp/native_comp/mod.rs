@@ -24,7 +24,8 @@ mod state;
 
 pub(crate) use loader::{RegistrationKind, UnitLibrary, open_unit};
 pub(crate) use runtime::{
-    NativeMark, decode_active_backtrace_arguments, note_lisp_allocation, synchronize_cons_read,
+    NativeMark, decode_active_backtrace_arguments, garbage_collection_maybe_due, maybe_gc_active,
+    note_lisp_allocation, synchronize_cons_read,
 };
 pub(crate) use state::NativeCompilerState;
 

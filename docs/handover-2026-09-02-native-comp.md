@@ -5,7 +5,433 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed a94d410 (2026-09-05)
+## Resume here — pushed bc8402d and merged main (2026-09-06)
+
+Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
+**Latest implementation commit: `bc8402d` — Honor ordinary GC threshold
+bindings.** It extends GNU `alloc.c:Fgarbage_collect_maybe`'s exact
+`since_gc > gc_threshold / factor` boundary from active native calls to the
+ordinary interpreter state, including dynamically bound threshold and
+percentage values; the prior public layout-size and active factor fixes are
+also retained. Focused testing, anti-cheat (18/18), formatting, all-target
+checking, and strict all-feature Clippy pass. The prior checkpoint-specific
+full unchanged native execution and artifact identity gates passed; those two
+long-running gates are rerun for this ordinary-path correction below.
+
+The commit is ready to push; after pushing, fetch and merge `origin/main`,
+validate the clean state, and continue from the remaining L08 source
+obligation.
+
+The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
+This checkpoint closes only the public GNU C layout-size portion; the census
+classes, allocator accounting, free-list columns, and broader GC parity remain
+open. Continue from the ledger's exact C source obligation; do not infer that
+the passing focused gate closes L08.
+
+Checkpoint-specific validation for `042074a`/`57b0a71`: the nine-rung
+unchanged-source identity ladder passed, including byte-identical `comp.el`,
+and the normal upstream native selector passed 177/177 with zero mismatches.
+The Emaxx execution phase took 1,395.899 seconds versus GNU's 89.751 seconds;
+the performance gap remains open. The full `check-all` selector additionally
+includes the separately tagged bootstrap case and is not the normal 177-case
+gate.
+
+**L03 bounded placement correction (2026-09-06):** GNU `eval.c:eval_sub`
+performs `maybe_quit`, then `maybe_gc`, then increments the evaluation depth.
+Rust now invokes the active native GC trampoline in that same position before
+form dispatch; outside a native activation the helper is the corresponding
+fast no-op. A Rust-only control allocates past the configured native threshold
+inside an active native call and evaluates a cons form; the old placement
+would perform no collection, while the new path observes the collection at
+the eval boundary. The focused placement probe, 14 native-GC controls,
+formatting, all-target checking, and strict Clippy pass. The nine-rung
+unchanged-source identity ladder passes, including byte-identical `comp.el`,
+and the fresh isolated native execution gate passes 177/177 with zero
+unexpected results in 1,245.17 seconds. This accepts the placement half of
+L03; complete live-object census/accounting parity remains open under L08.
+
+**L06 target-resolution audit (2026-09-06):** GNU `eval.c:funcall_general`
+resolves symbol indirection before selecting `funcall_subr`,
+`funcall_lambda`, or the invalid-function/error paths. The native word path
+now has focused coverage for an aliased builtin, an interpreted lambda, and
+an invalid function, with the exact GNU error value and clean evaluator
+unwind; all eight native-Ffuncall tests pass. Autoload loading and the wider
+callable-class matrix remain open, so L06 stays partial.
+
+**L07 arity audit (2026-09-06):** GNU `eval.c:funcall_subr` now has focused
+coverage for the direct fixed-optional, MANY, and UNEVALLED branches: native
+Ffuncall preserves nil padding, forwards the complete MANY vector, and rejects
+special forms with the resolved subr object. The full 0..8 arity matrix and
+remaining subroutine edge cases remain open.
+
+**L08 bounded layout correction (2026-09-06):** GNU `alloc.c` reports the C
+allocator layouts, not the host implementation's struct sizes. The configured
+64-bit GNU build reports cons=16, symbol=48, string=32, vector=16,
+vector-slot=8, float=8, interval=56, and buffer=992 bytes. Rust now uses those
+constants both for `LiveObjectCensus::total_bytes_of_live_objects` and for the
+public `garbage-collect` rows; a focused regression pins every SIZE column.
+The live census model and GNU free-list/accounting parity remain incomplete.
+
+**L08 conditional collection correction (2026-09-06):** GNU
+`Fgarbage_collect_maybe` calls GC iff `since_gc > gc_threshold / factor` for a
+nonnegative factor, returning `Qt` only when it collects. Rust now mirrors
+that boundary for both the active native heap and ordinary interpreter state,
+including GNU's dynamic threshold/percentage retuning and wrong-type error
+for negative factors. The active native control, ordinary dynamically-bound
+threshold control, existing conditional-GC contract, anti-cheat, check, and
+Clippy gates pass; full native/artifact reruns for this final correction are
+still pending.
+
+### Historical September 6 continuation — EQ/live-flag and reader work
+
+The live-flag dependency described below is now implemented, not just
+planned. The interpreter owns a stable `Box<Cell<bool>>`; native relocation
+and ordinary/native readers use it. NativeRuntime's snapshot and per-call
+lookup are removed. Existing forwarding paths handle stores, binding and
+restoration, buffer selection and detachment. No backend/codegen, GNU source
+or Elisp changed. Five existing Rust fixtures now set the real flag cell
+instead of faking it with a lexical Env; their expectations are unchanged.
+
+Evidence in `/private/tmp/emaxx-native-eq-words.aEIw2H`:
+
+- `live-flag-red.log`: both directions of inner-native binding fail with
+  the old snapshot (2 failed, 0 passed). The earlier
+  `live-flag-red-build-error.log` executed no tests.
+- `forwarding-focused.log`: **128 passed, zero failed, one preexisting
+  manual timing probe ignored**, 87.06s after a 2m09s serial release build.
+  This includes all 18 adversarial checks, new relocation/alias/local/copy
+  tests, native binding/store controls, detached/lexical-shadow controls,
+  earlier GC controls and existing positioned-symbol integration tests.
+- `forwarding-check.log`: all-target check clean. `final-clippy.log`:
+  strict all-target/all-feature Clippy clean. The initial Clippy log found
+  12 test-only `unwrap()` calls; they now have explanatory `expect()`
+  messages, not lint suppressions. Formatting and diff whitespace checks
+  are clean.
+- Final rerun/identity pipeline **75946 is terminal, exit 0**. The same focused
+  selection passed again in `final-focused.log`: **128 passed, 0 failed,
+  1 manual timing probe ignored**, 86.97s. `identity.log` then passed all nine
+  fixtures in 213.11s: eight entire byte-identical `.eln` files through the
+  881,800-byte `comp.el`, and one correct no-artifact result. No candidate
+  timing exists yet.
+- `gnu-exec-negative-control.log`: a fresh run of the existing GNU-executable
+  fence rejects GNU with exit **71**. Native execution inputs are prepared
+  under `execution/source`; the test file and complete resource directory
+  compare unchanged with GNU. Subject/oracle homes and temporary directories
+  are separate. The fenced candidate run (`execution/subject.log`, session
+  **73568**, exit **255**) failed before reaching any tests: its child
+  rejected GNU comp.el's serialized context with `invalid-read-syntax` while
+  compiling the first helper. The queued GNU suite did not start.
+- The saved pushed `ae12db4` binary fails at the same stage with the same
+  input in separate fresh directories (`execution/before.log`, session
+  **46824**, exit **255**). Thus this failure predates the current correction;
+  do not infer which earlier commit introduced it without more evidence.
+- GNU successfully byte-compiled an unchanged copy of the candidate's
+  rejected context (`execution/gnu-reader.log`, exit 0; only the expected
+  missing lexical-binding header warning). `execution/gnu-reader/context.el`
+  is 750,498 bytes, SHA-256
+  `adb349f9bfe16b3d36b797e43bb427b00378d66888910f03389514ebac81a74d`;
+  GNU produced a 750,740-byte `context.elc`. This proves GNU accepts these
+  bytes, not full frontend/execution parity.
+- Candidate release editor SHA-256:
+  `374895def0afc4218c58e460cc802dea6964edbc3d9df6da8f86e62a5f34d24c`.
+
+**Reader interruption resolved (2026-09-06):** the preserved GNU-generated
+context is byte-identical on both sides and the ordinary `load_file_strict`
+path materializes it correctly. The actual failure was in
+`primitives/loading.rs:eval_buffer_forms`: its default `read` path parsed and
+evaluated forms without the reader-dependent materialization step. GNU creates
+`#s` records, hash tables, and circular `#[...]` objects before evaluation;
+Emaxx therefore reached native compilation with `ReaderForm` markers and
+reported `invalid-read-syntax`. The path now calls
+`materialize_read_object_literals` after interning each form. The focused
+loading suite passes **21/21**, and the exact previously failing generated
+context now reaches native compilation and exits **0**. The temporary absolute
+path diagnostic was removed.
+
+Next: restore genuine native execution in the full fenced suite and complete
+the EQ/live-flag acceptance gates; then repeated
+direct post-startup before/after/GNU measurements, final audit and checkpoint
+push. The recorded `ae12db4` before binary is still the baseline. After pushing,
+fetch/integrate main, then continue the finite dump prerequisites.
+
+**Checkpoint acceptance completed (2026-09-06):** the fresh fenced native
+execution run passed **177/177**, zero unexpected, exit 0, using unchanged GNU
+`comp-tests.el` and a fresh isolated HOME/TMPDIR under `LANG=C`. The nine-rung
+unchanged-source identity test passed all fixtures, including byte-identical
+artifacts for the full `comp.el`; the focused native runtime suite passed
+70/70 with one separate timing probe ignored. The final adversarial audit
+passed 18/18, loading tests passed 21/21, formatting was clean, all-target/all-
+feature checking was clean, and strict all-target/all-feature Clippy was clean.
+The reader-materialization correction and the EQ/live-flag work are ready for
+this checkpoint commit. No new timing claim is made by this bounded fix.
+
+The C review recorded an independent V05 bug: `set` and `set-default` could
+return/notify watchers with a normalized bool instead of GNU's original
+NEWVAL. The bounded correction below fixes and tests that contract. Full
+symbol storage/redirect ownership and native object representations remain
+open; this is not full forwarding parity or dump readiness.
+
+**Post-merge V05 correction (2026-09-06):** the bounded follow-up now
+preserves GNU's original NEWVAL for `set`/`set-default` return values and
+watcher callbacks, and canonicalizes the GNU `set-default` operation to
+`set` before callbacks. Focused
+watcher coverage, the 18-case adversarial audit, formatting, all-target
+checking, and strict Clippy are clean. The post-correction fresh native
+execution gate passed 177/177 with zero unexpected results, and the nine-rung
+identity ladder passed all fixtures, including byte-identical `comp.el`. This
+correction is ready for its checkpoint commit. The identity ladder completed
+in 249.06 seconds; the fresh native suite completed in 1,365.02 seconds.
+
+**L05 debugger-on-exit correction (2026-09-06):** GNU `eval.c:Ffuncall`
+checks `backtrace_debug_on_exit` after the callee returns and calls
+`call_debugger (list2 (Qexit, val))` before dropping that activation frame.
+The native Ffuncall path now retains the returned native word, decodes the
+same Lisp value, invokes an evaluator-level `call_debugger`, and re-encodes
+the debugger's return value. The helper follows GNU `eval.c:call_debugger` by
+clearing `debug-on-next-call` and dynamically binding
+`debugger-may-continue`, `inhibit-redisplay`, `inhibit-debugger`, and
+`inhibit-changing-match-data` around the callback. Focused L05 and surrounding
+native-Ffuncall tests pass 8/8, the adversarial audit passes 18/18, all-target
+checking and strict Clippy are clean, all nine unchanged-source identity
+fixtures pass including byte-identical `comp.el`, and the fresh isolated
+native execution gate passes 177/177 with zero unexpected results in
+1,253.37 seconds. This closes the bounded L05 contract; redisplay-specific
+top-level unwinding remains outside the headless native runtime scope.
+
+The full active goal and seven milestone states below remain unchanged:
+GNU-faithful runtime foundations, a real portable startup image as soon as
+its actual correctness prerequisites permit, then remaining native-comp
+correctness/performance. No dumper exists and no whole milestone is complete.
+Read the full objective attachment when resuming; keep every boundary and
+de-cheating requirement, not just this checkpoint's focused tests. The
+attachment is
+`/Users/nbmhqa186/.codex/attachments/cc60fc9a-8d38-462a-8cb1-10ea579d9827/pasted-text-1.txt`.
+The repository summary below and the non-negotiable rules later in this
+document preserve the working contract if that local attachment is absent.
+
+### Current goal and milestone states
+
+The immediate major outcome is a **separate ordinary Emaxx process restoring
+a real persistent image, with native functions, without replaying preload**.
+Reach it once concrete correctness prerequisites permit; do not wait for
+every runtime optimization. Then finish native-comp correctness/performance.
+
+| Milestone, in dependency order | State and next obligation |
+|---|---|
+| 1. GNU dump contracts and baseline | Partial. The existing finite inventory is D01–D20 (PRE/BUILD/ENABLE/LATER), not just D01–D15 as older summaries said. Ordinary startup is corrected and direct post-startup measurements exist. Complete the relevant contract verification. |
+| 2. Shared object and symbol foundations | Partial. Correct authoritative identity, storage and shared mutation (R02c/R03); plain value cells, aliases, buffer-local and forwarded fields (V02–V05); affected closure/symbol roots and lifetimes. The current EQ/live-flag finding belongs here. |
+| 3. Function restoration and GC readiness | Partial. GC graph/weak-entry/sweep ordering is corrected. Callable identity versus process addresses, complete roots, weak/finalizer/pure-object behavior and accounting remain obligations. |
+| 4. Portable writer and loader | Not implemented. Follow GNU traversal, sections, relocations, roots, fingerprints and rejection behavior; use unchanged GNU loadup and Rust round-trip tests. |
+| 5. Native restoration and ordinary dumped startup | Not implemented. Reopen libraries and reconnect functions in GNU order; separate restored persistent state from fresh-process initialization. Do not replay native top levels that GNU does not replay. |
+| 6. Validate restored startup and accelerate tests | Not reached. Genuine native suite, entire-artifact ladder, sharing/GC/startup/rejection checks, broader integration gate and representative startup/test measurements. Template cloning is not dumping. |
+| 7. Remaining native correctness/performance | Open. Finish deferred runtime contracts and achieve fairly measured GNU-comparable hot-path performance; neither selected artifact identity nor 177 passing tests closes the goal. |
+
+Use the [finite dump prerequisite inventory](pdump-c-parity-ledger.md)
+alongside the [native contract ledger](native-comp-c-parity-ledger.md).
+Only concrete identity, ownership, root, relocation or startup correctness
+dependencies may delay the image milestone. Argument-copy elimination and
+other performance-only work do not automatically belong before dumping.
+
+### What the last pushed commit changed and proved
+
+What changed:
+
+- GNU `data.c:Ftype_of` does not implement old-struct compatibility. Removed
+  Rust's partial policy and its per-query mode-variable lookup. GNU's
+  unchanged `cl-lib.el` advice remains the owner and works without it.
+- GNU `Fcl_type_of` inspects object tags, not public fixnum-limit variables.
+  Removed those two lookups from every query, reused the existing tagged
+  integer limits, and preserved the allocated bignum subtype.
+- Removed the two now-unused helpers. Added two Rust-only ordinary/native
+  subr controls and made the adversarial inventory require them. No Elisp,
+  GNU source, ABI, cache, GC threshold or ownership model changed.
+
+Verified evidence, `/private/tmp/emaxx-native-type-tags.E73e1Z`:
+
+- Both new controls fail on the previous code (`red-controls.log`). The
+  earlier short exact selector matched zero tests, not a pass.
+- Final focused selection: **95 passed, zero failed, one preexisting manual
+  timing probe ignored**, including all 18 adversarial checks and unchanged
+  old-struct advice integration. Formatting/check/strict Clippy are clean.
+- Ordinary loading of unchanged GNU `cl-lib-tests.el` matches GNU: **45
+  passes, the same one expected failure, zero unexpected failures/skips**.
+  Emaxx ran with GNU executable launches forbidden; the negative control
+  rejects GNU with exit 71. No authored Elisp or alternate runner was used.
+- All nine artifact fixtures pass: **eight entire byte-identical `.eln`
+  files through `comp.el`, one correctly absent artifact**. The 177-case
+  native execution suite was not rerun for this bounded correction.
+- Two post-startup rounds: corrected CPU **48.97 / 49.78s**, previous checkpoint
+  **52.06 / 52.26s**, GNU **8.37 / 8.33s**, including compiler children.
+  Paired reductions are **5.94% / 4.75%**; baseline variation is 0.39%.
+  The evidence supports roughly 5–6% less CPU for this input, not a precise
+  universal speedup. Rust is still about **5.9x GNU by CPU** (5.8x elapsed).
+  Preload reconstruction is outside every timing window. All six measured
+  artifacts are whole-byte identical, 881,800 bytes, SHA-256
+  `f2752387ccbf72e1f21def74a0e438e8890d06e86b36ab30229c39ec79821c83`.
+- Corrected editor SHA-256:
+  `d8f0d55a78719caa23ca07dd667641a440c8a212798f12afbca506f2d2517a3c`.
+  Saved baseline `before-emaxx` in the same directory has SHA-256
+  `15d1486fa62578847331fde3ea934726089f51d8266368d6ae0a51c7095adc10`.
+
+Next area: **native object conversion/synchronization, R02c/R03**, starting
+from the corrected editor's completed post-startup profile, not a fresh
+guess or another cache. `after.sample`, `profile.log`, and
+`after-attribution.txt` are in the type-tags directory. The worker is
+`Thread_24937884`, 40,691 samples; the main thread is blocked in join.
+All compiler/sampler jobs are terminal (profile session `10717`, PID `76435`;
+timing session `7914`; identity session `97404`). Do not restart them.
+
+The after-profile confirms that old-struct probing disappears and sampled
+`cl_type_value` work drops from 1,893 to 66 samples. Remaining nearest-owner
+regions are native object bridge **8,436**, bindings/variables **5,066**,
+other GC **1,246**, other work **25,943**; these regions do not overlap.
+Specific paths do overlap: `reconcile_mirror` 3,074, `native_eq` 2,459,
+`decode_program` 1,891. Read their actual callers before selecting the next
+bounded unit. `NativeHeap::decode_inner` is now the leading active leaf.
+
+The first R02c caller audit is complete: direct generated `funcall`, `apply`,
+and `mapcar` preserve native words already. Remaining round trips are at the
+Rust-owned typed boundaries for public arguments, direct byte-code calls,
+hash-table key/value extraction, and relocations. Do not add a side cache;
+select one boundary only after its runtime-owned word transport, GC roots, and
+mutation behavior are specified.
+
+The external analyzer at
+`/private/tmp/emaxx-native-poststartup.mXNHW4/attribute_sample.py` accepts a
+capture path and worker-thread name. It accounts for every worker sample
+and validates the leaf totals against the sampler's own summary (491
+collapsed leaves checked for the after-profile). The after-profile spans
+the 58.55-second instrumented operation; it is not another unprofiled timing
+sample. Its artifact also compares whole-byte identical with GNU.
+
+The selected bounded unit and its unfinished state follow. No optimization
+after `ae12db4` has been accepted or benchmarked.
+
+### Discovery history — EQ identity and the live positioned-symbol flag
+
+This records the September 5 starting point. The September 6 continuation
+above supersedes its implementation/test status and pending-file list.
+
+In plain language: GNU can answer “are these the same object?” by comparing
+object words. Rust sometimes reconstructs an unrelated list and reads its
+contents first. It also treats two separately allocated, equal-valued big
+integers as the same object on this path, although GNU `eq` does not.
+These are concrete C deviations, not a proposed new compiler algorithm.
+
+GNU owners already inspected:
+
+- `data.c:Feq` and `lisp.h:EQ`, `PSEUDOVECTORP`, `SYMBOL_WITH_POS_P`,
+  `XSYMBOL_WITH_POS_SYM`, `maybe_remove_pos_from_symbol`: unwrap only an
+  actual positioned symbol when the live C flag enables it, then compare
+  object words. Do not traverse unrelated cons/vector contents.
+- `alloc.c:build_symbol_with_pos`: stores bare symbol and position
+  separately; EQ needs only the bare-symbol field.
+- `fns.c:Fmemq`/`Fassq` use EQ; `Feql` separately owns numeric bignum/float
+  comparison. Do not change EQL into identity comparison.
+
+Pending files, all belonging to this unfinished unit:
+
+- `src/lisp/native_comp/runtime.rs`: candidate `native_remove_symbol_position`
+  and word-based EQ, plus three Rust controls. Positioned-symbol fields
+  still use the existing typed/native bridge; this does not finish R02c/R03.
+- `src/lisp/primitives/values.rs`: ordinary bignum EQ uses allocation identity.
+- `src/lisp/types.rs`: `SharedBigInt::ptr_eq` supports that identity check.
+- `src/anti_cheat.rs`: requires the three new regression controls.
+- `docs/native-comp-c-parity-ledger.md`: P13/R03 findings and unfinished status.
+
+Evidence is in `/private/tmp/emaxx-native-eq-words.aEIw2H`:
+
+- `red.log`: two controls ran against old production code and **both failed**
+  as intended: unwanted cons materialization, and ordinary/native EQ both
+  returning `t` for distinct bignums. This is failing-control evidence,
+  not two passing tests. `red-build-error.log` is an earlier compile failure,
+  corrected before that run; no tests executed in that first attempt.
+- `check.log`: the candidate passed all-target compiler checking, zero
+  warnings (9.09s). Formatting was applied. **No green test run, strict
+  Clippy acceptance, new artifact run or candidate timing exists yet.**
+- `native_eq_unwraps_only_positioned_symbols_and_preserves_identity` was
+  added after the red run and has not run. It covers both direct/native-subr
+  routes, enabled/disabled handling, interned/uninterned symbols and identity.
+- `before-emaxx` is the saved pushed `ae12db4` binary. It and the current
+  `target/release/emaxx` still have SHA-256
+  `d8f0d55a78719caa23ca07dd667641a440c8a212798f12afbca506f2d2517a3c`.
+  The release unit-test binary is from the red run, not the candidate.
+
+**The source-faithfulness audit found a dependency before acceptance:**
+`NativeRuntime::symbols_with_positions_enabled` is a separate `Box<bool>`
+copied from the Lisp variable only at `NativeRuntime::invoke` entry. Native
+`runtime_specbind`/ordinary writes do not update that box. The native loader
+also points generated code's relocation at this snapshot. A binding changed
+inside the native call can therefore leave both the helper and generated
+code reading stale state. The old EQ fallback's second Lisp lookup masked
+one direction of this problem; removing it can expose a regression.
+
+GNU instead initializes the actual forwarded C boolean to false in
+`data.c:syms_of_data`; `do_symval_forwarding` reads it and
+`store_symval_forwarding` writes it immediately (nil versus non-nil).
+`comp.c` connects `F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM` directly to
+`&symbols_with_pos_enabled`. Rust needs that same live state contract,
+not an entry-time snapshot or another refresh cache.
+
+### Original dependency checklist (steps 2–5 now implemented and focused-tested)
+
+Use the current continuation above for the next action. Keep the remaining
+acceptance requirements here; do not redo completed source review or red runs.
+
+1. Read this resume section, the objective and the current diff. Preserve
+   the unfinished edits. Confirm HEAD/origin and actual process state.
+   The recorded red-build/check jobs finished; do not restart old jobs or
+   mistake the pushed release executable for a build of the candidate.
+2. Finish the GNU forwarding review before changing the flag owner:
+   `data.c:set_internal` (including detachment on makunbound),
+   `eval.c:specbind`/unbinding, aliases and buffer-local forwarding. Compare
+   `src/lisp/eval/variables.rs`'s existing normalization, update, read,
+   refresh and detached-forwarding machinery, and `eval.rs` field ownership.
+3. Add Rust-only failing controls for changing the flag **inside** an active
+   native call in both directions and restoring it. Use existing
+   `runtime_specbind` and `runtime_unbind_n`; the latter takes a tagged Lisp
+   integer count, not an untagged machine integer. Check ordinary stores
+   and the pointer read by loaded code as well, not just the EQ helper.
+4. Implement one stable, live forwarded boolean owner and connect the
+   loader/runtime to it. A boxed `Cell<bool>` owned by the interpreter is
+   a proposed Rust representation, **not yet implemented or accepted**.
+   Verify lifetime and FFI access, normalization, binding/unbinding,
+   aliases, buffer switching and detachment against GNU. Do not retain a
+   second runtime snapshot, add per-subr refreshes, or alter generated
+   machine code to compensate. Keep raw initialization false; later GNU
+   Elisp changes remain separate.
+5. Re-review the entire EQ candidate against C, including bignum identity
+   and native argument lifetimes. The existing cheap “neither operand is
+   vector-like” guard was removed by the draft: check preserving it rather
+   than adding unnecessary helper work. EQL conversion overhead remains
+   open; do not claim it was fixed by EQ.
+6. Only after faithfulness review: focused red/green tests, adversarial
+   de-cheating checks, clean formatting/check/strict Clippy, relevant whole
+   artifact and execution tests. Expand coverage for ownership/relocation
+   transitions where needed. Do not label historical 177-case results fresh.
+7. Then measure serial, order-balanced before/after/GNU post-startup work.
+   Use the saved `ae12db4` baseline and the existing external observer
+   `/private/tmp/emaxx-native-poststartup.mXNHW4/native_phase.py`; validate
+   its entry/return/exit evidence and whole artifacts. Exclude preload
+   directly, account for compiler children and loaded-host variation.
+   Observer logs are diagnostics, not a new editor interface or Elisp runner.
+8. Update both ledgers and this handover with accepted evidence. At a
+   natural verified checkpoint, state the exact scope, commit and push
+   under the standing authorization, then fetch/integrate main. Resume the
+   finite dump prerequisites and real writer/loader, not an unbounded
+   optimization campaign.
+
+All boundaries below still apply: **C-to-Rust only; unchanged GNU Elisp;
+no authored Elisp even for tests; no GNU runtime delegation; no approved
+semantic deviations; entire `.eln` identity; adversarial audits; zero
+warnings.** Artifact identity does not prove arbitrary execution, GC or
+dump correctness. No portable image exists, and the overall goal is active.
+
+The sections below preserve historical checkpoints and standing rules.
+For conflicting uses of “current”, “pending” or “last pushed” in that history,
+the resume section above and the actual Git state take precedence.
+
+## Previous GC checkpoint — pushed a94d410 (2026-09-05)
 
 Repository: `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
 Last pushed implementation commit:

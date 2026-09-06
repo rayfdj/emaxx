@@ -686,6 +686,15 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let gnu_root = repo_root().join("../emacs/src");
     for test in [
         "native_symbol_value_errors_preserve_the_original_symbol",
+        "native_type_of_leaves_old_struct_policy_to_elisp_advice",
+        "native_cl_type_of_uses_object_tags_not_fixnum_variable_cells",
+        "native_eq_does_not_materialize_unrelated_cons_fields",
+        "native_and_ordinary_eq_preserve_allocated_bignum_identity",
+        "native_eq_unwraps_only_positioned_symbols_and_preserves_identity",
+        "native_eq_observes_position_flag_enabled_inside_native_call",
+        "native_eq_observes_position_flag_disabled_inside_native_call",
+        "native_eq_observes_position_flag_set_inside_native_call",
+        "native_and_ordinary_position_flag_readers_ignore_lexical_and_detached_cells",
         "native_assq_preserves_uninterned_lexical_binding_identity",
         "native_symbol_value_checks_symbol_before_reading_the_cell",
         "native_byte_code_function_p_checks_closure_and_code_tags",
@@ -749,6 +758,8 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
         (
             "src/lisp/eval/core.rs",
             &[
+                "position_flag_relocation_tracks_alias_bindings_and_buffer_selection",
+                "position_flag_relocation_survives_moves_and_clones_independently",
                 "load_path_forwarding_preserves_the_original_list",
                 "load_path_forwarding_exposes_spliced_directories",
                 "load_path_forwarding_tracks_binding_restore_and_buffer_selection",

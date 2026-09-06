@@ -278,15 +278,29 @@ pub(crate) fn run_external_process(
     let mixed_output = if stderr == ExternalStderr::Mixed {
         use std::os::unix::io::FromRawFd;
         let mut fds = [0 as libc::c_int; 2];
-        // SAFETY: pipe2 fills the two-element array with descriptors this
-        // frame owns from here on.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        // macOS does not expose pipe2 through libc.  GNU's callproc.c uses
+        // the equivalent close-on-exec fallback when pipe2 is unavailable.
+        // SAFETY: pipe fills the two-element array with descriptors this
+        // frame owns from here on; fcntl marks both before either is wrapped.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
             return Err(LispError::SignalValue(
                 file_operation_error_value_without_file(
                     "Creating process pipe",
                     &std::io::Error::last_os_error(),
                 ),
             ));
+        }
+        for &fd in &fds {
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+                let error = std::io::Error::last_os_error();
+                unsafe {
+                    libc::close(fds[0]);
+                    libc::close(fds[1]);
+                }
+                return Err(LispError::SignalValue(
+                    file_operation_error_value_without_file("Creating process pipe", &error),
+                ));
+            }
         }
         // SAFETY: fresh descriptors from pipe2, each owned by exactly one
         // File.

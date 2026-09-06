@@ -1694,13 +1694,11 @@ define_dispatch!(
                     percentage,
                 );
                 // GNU returns ((TYPE SIZE USED FREE) ...) in exactly this
-                // row order (alloc.c, oracle-confirmed).  USED counts come
-                // from the live reachability census (finding 110 -- these
-                // were fabricated zeros); SIZE columns are THIS binary's
-                // real per-object layout constants, so memory-report.el
-                // computes emaxx-true byte totals, not GNU's.  FREE columns
-                // are 0 truthfully: Rust ownership retains no free lists.
-                let cons_size = std::mem::size_of::<crate::lisp::types::ConsCell>() as i64;
+                // row order (alloc.c, oracle-confirmed).  SIZE is the GNU C
+                // layout reported by Fgarbage_collect, not Rust's host
+                // representation; FREE is 0 because Rust ownership retains
+                // no allocator free lists.
+                let cons_size = crate::lisp::eval::GNU_CONS_SIZE as i64;
                 let entry = |name: &str, rest: &[i64]| {
                     Value::list(
                         std::iter::once(Value::Symbol(name.into()))
@@ -1712,7 +1710,7 @@ define_dispatch!(
                     entry(
                         "symbols",
                         &[
-                            std::mem::size_of::<String>() as i64,
+                            crate::lisp::eval::GNU_SYMBOL_SIZE as i64,
                             census.symbols as i64,
                             0,
                         ],
@@ -1720,21 +1718,39 @@ define_dispatch!(
                     entry(
                         "strings",
                         &[
-                            std::mem::size_of::<crate::lisp::types::SharedStringState>() as i64,
+                            crate::lisp::eval::GNU_STRING_SIZE as i64,
                             census.strings as i64,
                             0,
                         ],
                     ),
                     entry("string-bytes", &[1, census.string_bytes as i64]),
-                    // Vectors ride on tagged cons chains internally, so a
-                    // vector header and each slot really cost one cons cell.
-                    entry("vectors", &[cons_size, census.vectors as i64]),
-                    entry("vector-slots", &[cons_size, census.vector_slots as i64, 0]),
-                    entry("floats", &[8, census.floats as i64, 0]),
+                    entry(
+                        "vectors",
+                        &[
+                            crate::lisp::eval::GNU_VECTOR_SIZE as i64,
+                            census.vectors as i64,
+                        ],
+                    ),
+                    entry(
+                        "vector-slots",
+                        &[
+                            crate::lisp::eval::GNU_VECTOR_SLOT_SIZE as i64,
+                            census.vector_slots as i64,
+                            0,
+                        ],
+                    ),
+                    entry(
+                        "floats",
+                        &[
+                            crate::lisp::eval::GNU_FLOAT_SIZE as i64,
+                            census.floats as i64,
+                            0,
+                        ],
+                    ),
                     entry(
                         "intervals",
                         &[
-                            std::mem::size_of::<crate::buffer::TextPropertySpan>() as i64,
+                            crate::lisp::eval::GNU_INTERVAL_SIZE as i64,
                             census.intervals as i64,
                             0,
                         ],
@@ -1742,7 +1758,7 @@ define_dispatch!(
                     entry(
                         "buffers",
                         &[
-                            std::mem::size_of::<crate::buffer::Buffer>() as i64,
+                            crate::lisp::eval::GNU_BUFFER_SIZE as i64,
                             census.buffers as i64,
                         ],
                     ),
@@ -1750,15 +1766,41 @@ define_dispatch!(
             }
             "garbage-collect-maybe" => {
                 need_args(name, args, 1)?;
-                if !matches!(args[0], Value::Integer(value) if value >= 0) {
+                let Value::Integer(factor) = args[0] else {
+                    return Err(LispError::WrongTypeArgument(
+                        "wholenump".into(),
+                        args[0].clone(),
+                    ));
+                };
+                if factor < 0 {
                     return Err(LispError::WrongTypeArgument(
                         "wholenump".into(),
                         args[0].clone(),
                     ));
                 }
-                // Emaxx uses Rust ownership rather than GNU's byte-allocation GC
-                // threshold, so no pending automatic collection can be due.
-                Ok(Value::Nil)
+                if !crate::lisp::native_comp::garbage_collection_maybe_due(interp, env, factor) {
+                    return Ok(Value::Nil);
+                }
+                // alloc.c:Fgarbage_collect_maybe calls garbage_collect when
+                // since_gc > gc_threshold / factor and returns Qt only then.
+                crate::lisp::native_comp::begin_garbage_collection(interp, env);
+                let census = interp.live_object_census();
+                let threshold = interp
+                    .symbol_value_cell("gc-cons-threshold")
+                    .ok()
+                    .and_then(|value| value.as_integer().ok())
+                    .unwrap_or(800_000);
+                let percentage = match interp.symbol_value_cell("gc-cons-percentage") {
+                    Ok(Value::Float(value)) => Some(value.get()),
+                    _ => None,
+                };
+                crate::lisp::native_comp::garbage_collection_finished(
+                    interp,
+                    census.total_bytes_of_live_objects(),
+                    threshold,
+                    percentage,
+                );
+                Ok(Value::T)
             }
             "memory-use-counts" => {
                 need_args(name, args, 0)?;
@@ -1791,9 +1833,9 @@ define_dispatch!(
             }
             "type-of" => {
                 need_args(name, args, 1)?;
-                if let Some(type_name) = legacy_struct_vector_type(interp, &args[0], env) {
-                    return Ok(Value::Symbol(type_name.into()));
-                }
+                // data.c:Ftype_of inspects object tags. Old vector-struct
+                // policy belongs to cl-lib.el's advice around this subr,
+                // not to the original primitive reached by that advice.
                 let name = match &args[0] {
                     Value::Nil => "symbol",
                     Value::T => "symbol",
@@ -2011,26 +2053,5 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
             }
             _ => return Err(plist_type_error(&plist)),
         }
-    }
-}
-
-fn legacy_struct_vector_type(interp: &Interpreter, value: &Value, env: &Env) -> Option<String> {
-    if !interp
-        .lookup_var("cl-old-struct-compat-mode", env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return None;
-    }
-    let items = vector_items(value).ok()?;
-    let Some(Value::Symbol(tag)) = items.first() else {
-        return None;
-    };
-    let type_name = tag.strip_prefix("cl-struct-")?;
-    interp.class_value(type_name)?;
-    let witness = interp.raw_function_binding(tag, env)?;
-    if witness == Value::Symbol(":quick-object-witness-check".into()) {
-        Some(type_name.to_string())
-    } else {
-        None
     }
 }

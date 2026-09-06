@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -2829,6 +2829,19 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) hash_table_bytes: usize,
 }
 
+// alloc.c:total_bytes_of_live_objects and Fgarbage_collect report GNU C
+// allocation layouts, not the host language's representation sizes. These
+// are the configured GNU Emacs layouts for the supported 64-bit targets;
+// `header_size + word_size' is the size of a one-slot vector row.
+pub(crate) const GNU_CONS_SIZE: usize = 16;
+pub(crate) const GNU_SYMBOL_SIZE: usize = 48;
+pub(crate) const GNU_STRING_SIZE: usize = 32;
+pub(crate) const GNU_VECTOR_SIZE: usize = 16;
+pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
+pub(crate) const GNU_FLOAT_SIZE: usize = 8;
+pub(crate) const GNU_INTERVAL_SIZE: usize = 56;
+pub(crate) const GNU_BUFFER_SIZE: usize = 992;
+
 #[derive(Default)]
 struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
@@ -3095,13 +3108,13 @@ impl LiveObjectCensus {
     /// Lisp_String=32, Lisp_Float=8, interval=56, and one vector word=8.
     pub(crate) fn total_bytes_of_live_objects(&self) -> usize {
         self.conses
-            .saturating_mul(16)
-            .saturating_add(self.symbols.saturating_mul(48))
+            .saturating_mul(GNU_CONS_SIZE)
+            .saturating_add(self.symbols.saturating_mul(GNU_SYMBOL_SIZE))
             .saturating_add(self.string_bytes)
-            .saturating_add(self.vector_slots.saturating_mul(8))
-            .saturating_add(self.floats.saturating_mul(8))
-            .saturating_add(self.intervals.saturating_mul(56))
-            .saturating_add(self.strings.saturating_mul(32))
+            .saturating_add(self.vector_slots.saturating_mul(GNU_VECTOR_SLOT_SIZE))
+            .saturating_add(self.floats.saturating_mul(GNU_FLOAT_SIZE))
+            .saturating_add(self.intervals.saturating_mul(GNU_INTERVAL_SIZE))
+            .saturating_add(self.strings.saturating_mul(GNU_STRING_SIZE))
             .saturating_add(self.hash_table_bytes)
     }
 }
@@ -3919,6 +3932,10 @@ pub struct Interpreter {
     overriding_plist_environment: Value,
     max_lisp_eval_depth: i64,
     debug_on_next_call: bool,
+    /// data.c's forwarded C boolean, also read through comp.c's native
+    /// relocation. The box keeps its address stable if the interpreter moves;
+    /// Cell permits same-thread FFI reads while Rust updates the live slot.
+    symbols_with_positions_enabled: Box<Cell<bool>>,
     /// data.c set_internal: storing void into a variable forwarded to a C
     /// slot (DEFVAR_LISP/BOOL/INT) detaches the symbol from that slot and
     /// leaves it void, so `boundp' reads nil and the built-in fallback no
@@ -4794,6 +4811,7 @@ impl Interpreter {
             overriding_plist_environment: Value::Nil,
             max_lisp_eval_depth: 1600,
             debug_on_next_call: false,
+            symbols_with_positions_enabled: Box::new(Cell::new(false)),
             variable_aliases: Vec::new(),
             variable_aliases_index: HashMap::new(),
             special_variables_index: HashSet::default(),
