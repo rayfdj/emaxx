@@ -15479,6 +15479,30 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
 }
 
 #[test]
+fn native_overlay_and_char_table_census_uses_gnu_layouts() {
+    // lisp.h:Lisp_Overlay is 32 bytes (three vector words), while the
+    // configured Lisp_Char_Table starts at 68 words and grows by one word per
+    // extra slot.  The Rust GC roots every registered char table and every
+    // non-dead overlay attached to a live buffer, so both deltas are exact.
+    let mut interp = Interpreter::new();
+    let before = interp.live_object_census();
+    interp.make_char_table(None, Value::Nil);
+    let overlay_id = interp.alloc_overlay_id();
+    let buffer_id = interp.current_buffer_id();
+    interp.buffer.overlays.push(crate::overlay::Overlay::new(
+        overlay_id, 1, 1, buffer_id, false, false,
+    ));
+    let after = interp.live_object_census();
+
+    assert_eq!(after.vectors - before.vectors, 2);
+    assert_eq!(
+        after.vector_slots - before.vector_slots,
+        crate::lisp::eval::GNU_CHAR_TABLE_VECTOR_SLOTS
+            + crate::lisp::eval::GNU_OVERLAY_VECTOR_SLOTS
+    );
+}
+
+#[test]
 fn native_condition_wait_releases_and_restores_recursive_mutex_ownership() {
     let validation = r#"(let* (;; thread.c:499,558 spell the apostrophe ASCII and `error'
                                ;; requotes it per the effective style, so pin the
