@@ -1756,7 +1756,7 @@ define_dispatch!(
                         args[0].clone(),
                     ));
                 }
-                if !crate::lisp::native_comp::garbage_collection_maybe_due(factor) {
+                if !crate::lisp::native_comp::garbage_collection_maybe_due(interp, env, factor) {
                     return Ok(Value::Nil);
                 }
                 // alloc.c:Fgarbage_collect_maybe calls garbage_collect when

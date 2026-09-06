@@ -593,10 +593,31 @@ pub(crate) fn maybe_gc_active() {
 }
 
 /// alloc.c:Fgarbage_collect_maybe's threshold test for the active native
-/// heap. The ordinary evaluator has no native arena to collect; its call
-/// remains the ownership backend's nil fast path.
-pub(crate) fn garbage_collection_maybe_due(factor: i64) -> bool {
-    with_current_runtime(|runtime| runtime.heap.collection_maybe_due(factor)).unwrap_or(false)
+/// heap. The same state is retained by the interpreter for ordinary calls.
+pub(crate) fn garbage_collection_maybe_due(
+    interpreter: &mut Interpreter,
+    environment: &Env,
+    factor: i64,
+) -> bool {
+    let threshold = interpreter
+        .lookup_var("gc-cons-threshold", environment)
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
+    let percentage = match interpreter.lookup_var("gc-cons-percentage", environment) {
+        Some(Value::Float(value)) => Some(value.get()),
+        _ => None,
+    };
+    if let Some(due) = with_current_runtime(|runtime| {
+        runtime
+            .heap
+            .collection_maybe_due(factor, threshold, percentage)
+    }) {
+        return due;
+    }
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    let due = state.garbage_collection_maybe_due(factor, threshold, percentage);
+    interpreter.native_compiler = state;
+    due
 }
 
 pub(crate) fn decode_active_backtrace_arguments(
@@ -849,6 +870,16 @@ impl NativeRuntime {
     ) {
         let stack_marker = 0_usize;
         self.collect_native_heap_now(std::ptr::from_ref(&stack_marker), interpreter, environment)
+    }
+
+    pub(crate) fn garbage_collection_maybe_due(
+        &mut self,
+        factor: i64,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> bool {
+        self.heap
+            .collection_maybe_due(factor, threshold, percentage)
     }
 
     pub(crate) fn garbage_collection_finished(
@@ -3708,11 +3739,17 @@ impl NativeConsArena {
         self.gc.collection_might_be_due()
     }
 
-    fn collection_maybe_due(&mut self, factor: i64) -> bool {
+    fn collection_maybe_due(
+        &mut self,
+        factor: i64,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> bool {
         if factor < 1 {
             return false;
         }
         self.gc.synchronize_allocations();
+        self.gc.bump_consing_until_gc(threshold, percentage);
         let since_gc = self
             .gc
             .gc_threshold
@@ -4023,8 +4060,14 @@ impl NativeHeap {
         self.native_conses.collection_might_be_due()
     }
 
-    fn collection_maybe_due(&mut self, factor: i64) -> bool {
-        self.native_conses.collection_maybe_due(factor)
+    fn collection_maybe_due(
+        &mut self,
+        factor: i64,
+        threshold: i64,
+        percentage: Option<f64>,
+    ) -> bool {
+        self.native_conses
+            .collection_maybe_due(factor, threshold, percentage)
     }
 
     fn collection_finished(
