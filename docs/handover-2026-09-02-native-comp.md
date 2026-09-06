@@ -5,11 +5,12 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 7bfce9b and merged main (2026-09-06)
+## Resume here — pushed 2e0b5cf and merged main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest pushed checkpoint: `7bfce9b` — match GNU's `Fgarbage_collect`
-symbol mode.** It retains the ordinary GC threshold correction from
+**Latest implementation checkpoint: `7bfce9b` — match GNU's
+`Fgarbage_collect` symbol mode; handover evidence is pushed in `2e0b5cf`.**
+It retains the ordinary GC threshold correction from
 `bc8402d`, the `origin/main` merge, and the `pipe`/`fcntl(FD_CLOEXEC)` fallback
 required because macOS has no `libc::pipe2`; it additionally temporarily
 binds `symbols-with-pos-enabled` to nil around public GC exactly as GNU
@@ -17,9 +18,9 @@ binds `symbols-with-pos-enabled` to nil around public GC exactly as GNU
 (18/18), formatting, all-target checking, and strict all-feature Clippy pass.
 The merged-tree identity and normal native gates also pass, as recorded below.
 
-The checkpoint is pushed; `origin/main` was fetched and merged before the
-push, and the worktree is clean. Continue from the remaining L08 source
-obligation.
+The implementation checkpoint is pushed; `origin/main` was fetched and merged
+before the documentation push, and the worktree is clean. Continue from the
+remaining L08 source obligation.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
 This checkpoint closes only the public GNU C layout-size portion; the census
@@ -44,6 +45,12 @@ Emaxx took 1,302.477 seconds versus GNU's 82.642 seconds. After
 `origin/main` advanced, the identity test became non-ignored, so the correct
 command is `cargo test --release -j1 --test native_comp_identity --
 --nocapture --test-threads=1` without `--ignored`.
+
+Post-correction validation for `2e0b5cf` (subject `7bfce9b`): the normal
+upstream native selector passed 177/177 with zero mismatches. Emaxx took
+1,266.137 seconds in the test phase versus GNU's 158.694 seconds; setup took
+68.597 versus 4.035 seconds. The harness also recorded the remaining
+performance regression, not a semantic mismatch.
 
 **L03 bounded placement correction (2026-09-06):** GNU `eval.c:eval_sub`
 performs `maybe_quit`, then `maybe_gc`, then increments the evaluation depth.
