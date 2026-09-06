@@ -5,11 +5,11 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 3a98eb3 after merging main (2026-09-07)
+## Resume here — pushed c517994 after merging main (2026-09-07)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest implementation checkpoint: `3a98eb3` — count owned frame, terminal,
-and buffer pseudovectors in the GNU census.**
+**Latest implementation checkpoint: `c517994` — count owned overlay and
+char-table vectors in the GNU census.**
 It retains the ordinary GC threshold correction from
 `bc8402d`, the `origin/main` merge, and the `pipe`/`fcntl(FD_CLOEXEC)` fallback
 required because macOS has no `libc::pipe2`; it additionally temporarily
@@ -47,11 +47,18 @@ and the Emaxx test phase took 1,298.906 seconds; setup took 2.868 versus
 40.796 seconds. The complete result is the harness summary for run
 `1788716210239467000-89735`.
 
+Post-overlay/table validation for `c517994`: the normal upstream native
+selector passed 177/177 with zero mismatches. The GNU test phase took 86.839
+seconds and the Emaxx test phase took 1,326.780 seconds; setup took 2.847
+versus 40.911 seconds. The complete result is the harness summary for run
+`1788718304902637000-93915`.
+
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
-This checkpoint closes only the public GNU C layout-size portion; the census
-classes, allocator accounting, free-list columns, and broader GC parity remain
-open. Continue from the ledger's exact C source obligation; do not infer that
-the passing focused gate closes L08.
+This checkpoint closes the currently modeled overlay and char-table census
+portion, but marker/finalizer liveness, sub-char-table modeling, allocator
+accounting, free-list columns, and broader GC parity remain open. Continue
+from the ledger's exact C source obligation; do not infer that the passing
+focused gate closes L08.
 
 Checkpoint-specific validation for `042074a`/`57b0a71`: the nine-rung
 unchanged-source identity ladder passed, including byte-identical `comp.el`,
