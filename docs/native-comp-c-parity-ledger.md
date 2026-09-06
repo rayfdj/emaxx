@@ -13,7 +13,8 @@ performance gap remains open. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the exact continuation point.
 The preceding merged-tree identity ladder passed all fixtures in 244.19
-seconds, including byte-identical `comp.el`; the post-merge native gate passed
+seconds, and the rerun on `8883607` passed all fixtures in 303.20 seconds,
+including byte-identical `comp.el`; the post-merge native gate passed
 177/177 with zero mismatches in 1,302.477 seconds versus GNU's 82.642 seconds.
 This unit comes from the completed post-startup profile and GNU C audit,
 not a speculative optimization. The chronology below is historical, not a claim that all its
