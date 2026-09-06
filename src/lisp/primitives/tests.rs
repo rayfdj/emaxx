@@ -1485,6 +1485,35 @@ fn current_time_and_a_nil_time_convert_form_follow_current_time_list() {
 }
 
 #[test]
+fn garbage_collect_maybe_reads_the_counters_the_last_collection_left() {
+    // alloc.c:Fgarbage_collect_maybe compares `since_gc' with the
+    // `gc_threshold' the last collection computed; only maybe_garbage_collect
+    // retunes that threshold from `gc-cons-threshold'.  A let-bound small
+    // threshold therefore changes nothing until the counter goes negative
+    // against the old threshold, and `(identity nil)' in between does not
+    // collect either.  garbage_collect runs `post-gc-hook' once.  The merged
+    // port retuned the threshold inside Fgarbage_collect_maybe, so factor 1
+    // answered t whenever consing since the last collection exceeded the
+    // let-bound value; and the ordinary interpreter never collected on its
+    // own, so `since_gc' grew without bound.  The large factor keeps the
+    // positive cases clear of the live-heap size, which differs between
+    // the editors and feeds the threshold through `gc-cons-percentage'.
+    let program = r#"
+        (list (let ((gc-cons-threshold 10000)) (make-list 2000 nil) (garbage-collect-maybe 100000))
+              (let ((gc-cons-threshold 10000)) (make-list 2000 nil) (garbage-collect-maybe 1))
+              (progn (garbage-collect) (garbage-collect-maybe 1))
+              (let ((gc-cons-threshold 10000)) (make-list 2000 nil) (identity nil)
+                   (garbage-collect-maybe 100000))
+              (let ((n 0))
+                (let ((post-gc-hook (list (lambda () (setq n (1+ n))))))
+                  (let ((gc-cons-threshold 10000))
+                    (make-list 2000 nil) (identity nil) (make-list 2000 nil) (identity nil)
+                    (garbage-collect)))
+                n))"#;
+    assert_oracle_contract_matches_interpreter(program, "(t nil nil t 1)", "garbage-collect-maybe");
+}
+
+#[test]
 fn message_log_disables_undo_in_the_messages_buffer() {
     // xdisp.c message_dolog sets `buffer-undo-list' to t and
     // `cache-long-scans' to nil in the log buffer every time it logs, so
@@ -9467,7 +9496,7 @@ fn native_conditional_gc_and_memory_info_match_the_host_contract() {
     );
 
     let due_form = Reader::new(
-        "(let ((gc-cons-threshold 10000)) (make-list 2000 nil) (garbage-collect-maybe 1000))",
+        "(let ((gc-cons-threshold 10000)) (make-list 2000 nil) (garbage-collect-maybe 100000))",
     )
     .read()
     .expect("ordinary conditional GC form should parse")

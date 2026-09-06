@@ -24,8 +24,8 @@ mod state;
 
 pub(crate) use loader::{RegistrationKind, UnitLibrary, open_unit};
 pub(crate) use runtime::{
-    NativeMark, decode_active_backtrace_arguments, garbage_collection_maybe_due, maybe_gc_active,
-    note_lisp_allocation, synchronize_cons_read,
+    NativeMark, decode_active_backtrace_arguments, garbage_collection_maybe_due, gc_tuning,
+    maybe_gc, note_lisp_allocation, synchronize_cons_read,
 };
 pub(crate) use state::NativeCompilerState;
 
@@ -287,6 +287,35 @@ pub(crate) fn garbage_collection_finished(
     let mut state = std::mem::take(&mut interpreter.native_compiler);
     state.garbage_collection_finished(live_bytes, threshold, percentage);
     interpreter.native_compiler = state;
+}
+
+/// alloc.c:garbage_collect for the ordinary interpreter: the native heap's
+/// collection, the live census that GNU's mark phase produces, the counter
+/// reset, then `post-gc-hook' (safe_run_hooks: an error there is not the
+/// caller's).  None of it happens while `garbage-collect' is inhibited.
+pub(crate) fn garbage_collect_now(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+) -> Option<crate::lisp::eval::LiveObjectCensus> {
+    if interpreter.garbage_collection_is_inhibited() {
+        return None;
+    }
+    begin_garbage_collection(interpreter, environment);
+    let census = interpreter.live_object_census();
+    let (threshold, percentage) = gc_tuning(interpreter, environment);
+    garbage_collection_finished(
+        interpreter,
+        census.total_bytes_of_live_objects(),
+        threshold,
+        percentage,
+    );
+    let _ = crate::lisp::primitives::call(
+        interpreter,
+        "run-hooks",
+        &[Value::symbol("post-gc-hook")],
+        environment,
+    );
+    Some(census)
 }
 
 pub(crate) fn begin_garbage_collection(interpreter: &mut Interpreter, environment: &Env) {
