@@ -212,6 +212,13 @@ Specific paths do overlap: `reconcile_mirror` 3,074, `native_eq` 2,459,
 `decode_program` 1,891. Read their actual callers before selecting the next
 bounded unit. `NativeHeap::decode_inner` is now the leading active leaf.
 
+The first R02c caller audit is complete: direct generated `funcall`, `apply`,
+and `mapcar` preserve native words already. Remaining round trips are at the
+Rust-owned typed boundaries for public arguments, direct byte-code calls,
+hash-table key/value extraction, and relocations. Do not add a side cache;
+select one boundary only after its runtime-owned word transport, GC roots, and
+mutation behavior are specified.
+
 The external analyzer at
 `/private/tmp/emaxx-native-poststartup.mXNHW4/attribute_sample.py` accepts a
 capture path and worker-thread name. It accounts for every worker sample
