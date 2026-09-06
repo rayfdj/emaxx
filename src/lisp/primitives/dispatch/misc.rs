@@ -821,7 +821,7 @@ define_dispatch!(
                     return Ok(fundef);
                 }
                 let ignore_errors = !loads_macro && macro_only.is_truthy();
-                match interp.load_target_with_env(&file, env) {
+                match interp.load_autoload_target(&file, env) {
                     Ok(_) => {}
                     Err(_) if ignore_errors => return Ok(Value::Nil),
                     Err(error) => return Err(error),
@@ -974,7 +974,7 @@ define_dispatch!(
                 if let (Some(symbol), Some((file, _, _))) =
                     (args[0].as_symbol().ok(), autoload_parts(&value))
                 {
-                    interp.load_target_with_env(&file, env)?;
+                    interp.load_autoload_target(&file, env)?;
                     value = interp.lookup_function(symbol, env)?;
                 }
                 Ok(callable_interactive_form_items(interp, &value)
@@ -1323,8 +1323,7 @@ define_dispatch!(
             }
             "flush-standard-output" => {
                 need_args(name, args, 0)?;
-                std::io::stdout()
-                    .flush()
+                crate::lisp::primitives::batch_stdout::flush()
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 Ok(Value::Nil)
             }

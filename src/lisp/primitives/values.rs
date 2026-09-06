@@ -4304,55 +4304,86 @@ pub(crate) fn where_is_internal(
         matches.retain(|parts| !first_event_is_mouse_prefix(parts));
     }
 
-    let active_maps = Value::list(keymaps.iter().cloned());
-    matches.retain(|parts| {
-        let Ok(value) = keymap_lookup_sequence_value(interp, &active_maps, parts, env) else {
-            return false;
-        };
-        command_name_for_remapping(&value).as_deref() == Some(target_command)
-            || (target_keymap_id.is_some() && keymap_record_id(interp, &value) == target_keymap_id)
-    });
-
     // keymap.c builds the candidate stream in "shortest to longest"
     // order (Faccessible_keymaps is breadth-first); runtime keymaps here
     // keep sparse and character storage separately and collect depth
-    // first, so restore the traversal order after the fact.
+    // first, so restore the traversal order before the verification
+    // scan: its early return depends on it.
     matches.sort_by_key(|parts| where_is_binding_rank(parts));
 
-    let mut advertised_preferred = false;
-    if remapped_command.is_none()
-        && let Some(advertised) = interp
+    let active_maps = Value::list(keymaps.iter().cloned());
+    let preferred_bits = preferred_modifier_name(interp, env)
+        .map(|name| solitary_event_modifier(&name))
+        .unwrap_or(0);
+    let advertised = if remapped_command.is_none() {
+        interp
             .get_symbol_property(command, ":advertised-binding")
             .or_else(|| interp.get_symbol_property(command, "advertised-binding"))
-        && let Ok(advertised_parts) = key_sequence_keymap_parts(&advertised)
-        && let Some(index) = matches.iter().position(|parts| parts == &advertised_parts)
+            .and_then(|advertised| key_sequence_keymap_parts(&advertised).ok())
+    } else {
+        None
+    };
+
+    // keymap.c's FIRSTONLY path consults `:advertised-binding' before the
+    // scan: a sequence that still looks DEFINITION up answers outright.
+    if first_only
+        && let Some(advertised_parts) = &advertised
+        && where_is_sequence_runs_target(
+            interp,
+            &active_maps,
+            advertised_parts,
+            target_command,
+            target_keymap_id,
+            env,
+        )?
+    {
+        return Ok(vec![key_parts_to_sequence_value(
+            &maybe_prefer_modifier_notation(interp, advertised_parts, env),
+        )]);
+    }
+
+    // Fwhere_is_internal verifies each candidate with shadow_lookup in
+    // order and, with FIRSTONLY, returns the first sequence whose
+    // preferred_sequence_p is 2 before looking at the rest.  The lookup
+    // is where a menu-item's `:filter' runs (access_keymap with
+    // autoload), so candidates after that return are never touched.
+    let mut found = Vec::<Vec<String>>::with_capacity(matches.len());
+    for parts in matches {
+        if !where_is_sequence_runs_target(
+            interp,
+            &active_maps,
+            &parts,
+            target_command,
+            target_keymap_id,
+            env,
+        )? {
+            continue;
+        }
+        if first_only && preferred_sequence_rank(&parts, preferred_bits) == 2 {
+            return Ok(vec![key_parts_to_sequence_value(
+                &maybe_prefer_modifier_notation(interp, &parts, env),
+            )]);
+        }
+        found.push(parts);
+    }
+    let mut matches = found;
+
+    if !first_only
+        && let Some(advertised_parts) = &advertised
+        && let Some(index) = matches.iter().position(|parts| parts == advertised_parts)
+        && index != 0
     {
         let preferred = matches.remove(index);
         matches.insert(0, preferred);
-        advertised_preferred = true;
     }
 
-    if first_only && !advertised_preferred {
-        // keymap.c's FIRSTONLY selection: the scan returns the first
-        // sequence whose preferred_sequence_p is 2 outright; after the
-        // scan, a nonzero `where-is-preferred-modifier' takes the first
-        // sequence with a nonzero rank; otherwise the car answers.
-        let preferred_bits = preferred_modifier_name(interp, env)
-            .map(|name| solitary_event_modifier(&name))
-            .unwrap_or(0);
-        let chosen = matches
-            .iter()
-            .position(|parts| preferred_sequence_rank(parts, preferred_bits) == 2)
-            .or_else(|| {
-                (preferred_bits != 0)
-                    .then(|| {
-                        matches
-                            .iter()
-                            .position(|parts| preferred_sequence_rank(parts, preferred_bits) != 0)
-                    })
-                    .flatten()
-            });
-        if let Some(index) = chosen
+    if first_only {
+        // After the scan, a nonzero `where-is-preferred-modifier' takes
+        // the first sequence with a nonzero rank; otherwise the car.
+        if preferred_bits != 0
+            && let Some(index) = matches
+                .iter()
+                .position(|parts| preferred_sequence_rank(parts, preferred_bits) != 0)
             && index != 0
         {
             let preferred = matches.remove(index);
@@ -4366,6 +4397,26 @@ pub(crate) fn where_is_internal(
             key_parts_to_sequence_value(&maybe_prefer_modifier_notation(interp, &parts, env))
         })
         .collect())
+}
+
+/// keymap.c's shadow_lookup check inside Fwhere_is_internal: the
+/// sequence, looked up through the searched maps, still resolves to the
+/// definition (a command by name, a prefix keymap by identity).
+fn where_is_sequence_runs_target(
+    interp: &mut Interpreter,
+    active_maps: &Value,
+    parts: &[String],
+    target_command: &str,
+    target_keymap_id: Option<u64>,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let Ok(value) = keymap_lookup_sequence_value(interp, active_maps, parts, env) else {
+        return Ok(false);
+    };
+    Ok(
+        command_name_for_remapping(&value).as_deref() == Some(target_command)
+            || (target_keymap_id.is_some() && keymap_record_id(interp, &value) == target_keymap_id),
+    )
 }
 
 pub(crate) fn key_part_is_non_key_event(interp: &Interpreter, part: &str) -> bool {
@@ -4449,7 +4500,10 @@ pub(crate) fn collect_where_is_matches(
             .cloned()
             .chain(parts.iter().cloned())
             .collect::<Vec<_>>();
-        let resolved = keymap_get_keyelt(interp, &binding.value, true, collector.env)?;
+        // keymap.c where_is_internal_1: get_keyelt (binding, 0) -- the
+        // menu-item's command without running its `:filter'; only the
+        // verification lookup of a matched sequence runs filters.
+        let resolved = keymap_get_keyelt(interp, &binding.value, false, collector.env)?;
         // A prefix command matches through symbol function indirection: the
         // binding may be the keymap that is the command's definition.
         let matches_target = command_name_for_remapping(&resolved).as_deref()

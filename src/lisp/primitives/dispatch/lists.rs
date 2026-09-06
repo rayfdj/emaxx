@@ -214,7 +214,7 @@ fn load_autoloaded_prefix_map(
     if let Some((file, _, Value::Symbol(kind))) = autoload_parts(&function)
         && kind == "keymap"
     {
-        interp.load_target_with_env(&file, env)?;
+        interp.load_autoload_target(&file, env)?;
     }
     Ok(())
 }
@@ -482,9 +482,9 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
 }
 
 fn read_minibuffer_text_from_batch_stdin(prompt: &Value) -> Result<String, LispError> {
-    print!("{}", string_text(prompt)?);
-    std::io::stdout()
-        .flush()
+    // minibuf.c read_minibuf_noninteractive: fputs the prompt, fflush stdout.
+    crate::lisp::primitives::batch_stdout::write(string_text(prompt)?.as_bytes())
+        .and_then(|()| crate::lisp::primitives::batch_stdout::flush())
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let mut line = String::new();
     if std::io::stdin()

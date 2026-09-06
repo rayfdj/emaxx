@@ -976,6 +976,9 @@ fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
 fn write_process_output_supports_stdout_buffer_and_stderr_file() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
+    // The fixture's *scratch* holds the banner command-line-1 inserts at
+    // the end of GNU's startup; this test uses the buffer as scratch space.
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
     let stderr_path = std::env::temp_dir()
         .join("emaxx-process-stderr-test")
         .display()
@@ -1048,6 +1051,9 @@ fn write_process_output_accepts_a_shared_string_buffer_name() {
 fn write_process_output_merges_stderr_for_t_cons_destination() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
+    // The fixture's *scratch* holds the banner command-line-1 inserts at
+    // the end of GNU's startup; this test uses the buffer as scratch space.
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(erase-buffer)").expect("erase scratch");
     let destination = Value::cons(Value::T, Value::T);
 
     write_process_output(

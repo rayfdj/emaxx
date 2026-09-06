@@ -104,16 +104,11 @@ define_dispatch!(
             }
             "copy-keymap" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::Keymap
-                        }) =>
-                    {
-                        interp.copy_record(*id)
-                    }
-                    _ => Ok(args[0].clone()),
-                }
+                // keymap.c Fcopy_keymap (copy_keymap_1): a runtime keymap
+                // gets a new owner record and public view, a plain
+                // `(keymap ...)' list is copied cell by cell.  Returning a
+                // list keymap unchanged left `(eq (copy-keymap m) m)' true.
+                crate::lisp::primitives::keys::copy_keymap_value(interp, &args[0], env)
             }
             "record" => {
                 need_args(name, args, 1)?;

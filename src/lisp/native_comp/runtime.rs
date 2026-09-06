@@ -7823,18 +7823,25 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn native_hot_path_probe() {
         type Many = unsafe extern "C" fn(isize, *const NativeWord) -> NativeWord;
         type FixedTwo = extern "C" fn(NativeWord, NativeWord) -> NativeWord;
+        // The relocation order is target-specific.  Resolve the GNU C
+        // primitive in the selected ABI table before using its call shape.
+        let subr_index = |name| {
+            super::super::abi::native_subrs()
+                .iter()
+                .position(|subr| subr.name == name)
+                .expect("the native ABI contains the exercised GNU primitive")
+        };
         let less: Many = unsafe {
             std::mem::transmute(super::super::generated_native_subrs::native_subr_address(
-                1274,
+                subr_index("<"),
             ))
         };
         let cons: FixedTwo = unsafe {
             std::mem::transmute(super::super::generated_native_subrs::native_subr_address(
-                1071,
+                subr_index("cons"),
             ))
         };
 
@@ -7845,7 +7852,9 @@ mod tests {
                 ((index & 1023) << FIXNUM_BITS) as NativeWord + TAG_FIXNUM_LOW,
                 (((index + 1) & 1023) << FIXNUM_BITS) as NativeWord + TAG_FIXNUM_LOW,
             ];
-            result ^= unsafe { less(2, std::hint::black_box(args.as_ptr())) };
+            let comparison = unsafe { less(2, std::hint::black_box(args.as_ptr())) };
+            assert_eq!(comparison != 0, (index & 1023) != 1023);
+            result ^= comparison;
         }
         eprintln!(
             "comparison {:?} result={}",
@@ -7870,5 +7879,13 @@ mod tests {
             started.elapsed(),
             std::hint::black_box(tail)
         );
+        let list = runtime
+            .heap
+            .decode(tail)
+            .expect("decode allocated cons chain");
+        let values = list.to_vec().expect("native conses form a proper list");
+        assert_eq!(values.len(), 250_000);
+        assert_eq!(values.first(), Some(&Value::Integer(249_999)));
+        assert_eq!(values.last(), Some(&Value::Integer(0)));
     }
 }

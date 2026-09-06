@@ -227,9 +227,14 @@ fn gnu_early_lisp_test_runtime_executes_the_upstream_defun_owner() {
     let items = value.to_vec().expect("early-owner probe list");
     assert_eq!(items[0], Value::T);
     assert_eq!(items[1], Value::Integer(42));
+    // The dumped image records the preloaded files the way loadup.el
+    // loaded them, relative to the Lisp directory; startup.el's
+    // normal-top-level is what later converts them to absolute names
+    // ("Convert preloaded file names in load-history to absolute"), and
+    // this fixture stops before startup.
     let owner = primitives::string_text(&items[2]).expect("defun source file");
     assert!(
-        owner.ends_with("/emacs-lisp/byte-run.el") || owner.ends_with("/emacs-lisp/byte-run.elc"),
+        owner == "emacs-lisp/byte-run.el" || owner == "emacs-lisp/byte-run.elc",
         "unexpected defun owner: {owner}"
     );
 }
@@ -6261,21 +6266,22 @@ fn batch_loaddefs_variable_defaults_match_gnu() {
                    (special-variable-p 'mail-personal-alias-file)
                    (equal package-user-dir
                           (locate-user-emacs-file "elpa"))
-                   package-directory-list
+                   ;; package.el: an `elpa' under every `site-lisp' on
+                   ;; load-path -- two in a session without -Q, none with
+                   ;; it; the fixture is the former, like the CLI.
+                   (equal package-directory-list
+                          (let (result)
+                            (dolist (f load-path)
+                              (and (stringp f)
+                                   (equal (file-name-nondirectory f) "site-lisp")
+                                   (push (expand-file-name "elpa" f) result)))
+                            (nreverse result)))
                    (equal package-quickstart-file
                           (locate-user-emacs-file "package-quickstart.el"))
                    rmail-spool-directory)"#
-        ),
-        Value::list([
-            Value::String("png".into()),
-            Value::list([Value::String("webp".into())]),
-            Value::Nil,
-            Value::T,
-            Value::T,
-            Value::Nil,
-            Value::T,
-            Value::String("/var/mail/".into()),
-        ])
+        )
+        .to_string(),
+        r#"("png" ("webp") nil t t t t "/var/mail/")"#
     );
 }
 

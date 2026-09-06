@@ -837,6 +837,10 @@ fn serialize_value(
         Value::Record(_) if is_hash_table(interp, value) => {
             serialize_hash_table(interp, value, options, depth)
         }
+        // json.c lisp_to_json: a vector is a JSON array.  (The merged vector
+        // representation is `Value::Vector'; the `vector-literal' list below
+        // is the older spelling that reader forms can still produce.)
+        Value::Vector(_) => serialize_array(interp, &vector_items(value)?, options, depth),
         Value::Cons(_) => {
             if let Some(rendered) = serialize_hash_table_literal(interp, value, options, depth)? {
                 return Ok(rendered);
@@ -972,56 +976,70 @@ fn serialize_list_object(
     options: &SerializeOptions<'_>,
     depth: usize,
 ) -> Result<String, LispError> {
+    // json.c json_out_object_cons: an alist when the first element is a
+    // cons, otherwise a plist.  Every key must be a symbol
+    // (`(wrong-type-argument symbolp KEY)'), a plist key's leading `:' is
+    // dropped unless it is the whole name while an alist key keeps it, a
+    // later occurrence of the same symbol is skipped, an alist element
+    // must be a cons and a plist key must have its value
+    // (`(wrong-type-argument consp ...)'), the list must be proper, and
+    // FOR_EACH_TAIL's cycle check signals `circular-list'.  Each value is
+    // written as its pair is reached, so a bad value inside a cycle is
+    // reported before the cycle is (json-tests pins the type order).
     let depth = json_nested_depth(depth)?;
-    let items = value.to_vec()?;
-    if items.is_empty() {
-        return Ok("{}".into());
-    }
-    if items.iter().all(is_alist_entry) {
-        let mut entries = Vec::new();
-        for entry in items {
-            let (key, entry_value) = alist_entry_parts(&entry)?;
-            let name = object_key_string(&key)?;
-            entries.push((name, entry_value));
+    let is_alist = matches!(value.car(), Ok(Value::Cons(_)));
+    let mut seen: Vec<String> = Vec::new();
+    let mut rendered: Vec<String> = Vec::new();
+    let mut tail = value.clone();
+    let mut tortoise = value.clone();
+    let mut steps = 0usize;
+    while let Some((head, rest)) = tail.cons_values() {
+        let (key, entry_value, next) = if is_alist {
+            let (key, entry_value) = head
+                .cons_values()
+                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), head.clone()))?;
+            (key, entry_value, rest)
+        } else {
+            let (entry_value, next) = rest
+                .cons_values()
+                .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), rest.clone()))?;
+            (head, entry_value, next)
+        };
+        let name = key
+            .as_symbol()
+            .map_err(|_| LispError::WrongTypeArgument("symbolp".into(), key.clone()))?
+            .to_string();
+        if !seen.contains(&name) {
+            seen.push(name.clone());
+            let visible = visible_symbol_name(&name);
+            let printed = match visible.strip_prefix(':') {
+                Some(rest) if !is_alist && !rest.is_empty() => rest.to_string(),
+                _ => visible.to_string(),
+            };
+            rendered.push(format!(
+                "{}:{}",
+                serialize_string(&Value::String(printed.into()))?,
+                serialize_value(interp, &entry_value, options, depth)?
+            ));
         }
-        return serialize_object_entries(
-            interp,
-            entries
-                .iter()
-                .map(|(name, value)| (name.clone(), value))
-                .collect(),
-            options,
-            true,
-            depth,
-        );
-    }
-    if items.len().is_multiple_of(2)
-        && items
-            .iter()
-            .step_by(2)
-            .all(|item| matches!(item, Value::Symbol(_)))
-    {
-        let mut entries = Vec::new();
-        let mut index = 0usize;
-        while index + 1 < items.len() {
-            entries.push((object_key_string(&items[index])?, items[index + 1].clone()));
-            index += 2;
+        tail = next;
+        steps += 1;
+        if steps.is_multiple_of(2) {
+            tortoise = tortoise.cdr().unwrap_or(Value::Nil);
         }
-        return serialize_object_entries(
-            interp,
-            entries
-                .iter()
-                .map(|(name, value)| (name.clone(), value))
-                .collect(),
-            options,
-            true,
-            depth,
-        );
+        if let (Value::Cons(current), Value::Cons(lagging)) = (&tail, &tortoise)
+            && std::rc::Rc::ptr_eq(current, lagging)
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("circular-list".into()),
+                value.clone(),
+            ])));
+        }
     }
-    Err(LispError::TypeError(
-        "json-object".into(),
-        value.type_name(),
-    ))
+    if !tail.is_nil() {
+        return Err(LispError::WrongTypeArgument("listp".into(), value.clone()));
+    }
+    Ok(format!("{{{}}}", rendered.join(",")))
 }
 
 fn serialize_object_entries(
@@ -1051,23 +1069,6 @@ fn json_nested_depth(depth: usize) -> Result<usize, LispError> {
     depth
         .checked_sub(1)
         .ok_or_else(|| LispError::Signal("Maximum JSON serialization depth exceeded".into()))
-}
-
-fn is_alist_entry(value: &Value) -> bool {
-    matches!(value.cons_values(), Some((Value::Symbol(_), _)))
-}
-
-fn alist_entry_parts(entry: &Value) -> Result<(Value, Value), LispError> {
-    entry
-        .cons_values()
-        .ok_or_else(|| LispError::WrongTypeArgument("consp".into(), entry.clone()))
-}
-
-fn object_key_string(value: &Value) -> Result<String, LispError> {
-    let symbol = value.as_symbol()?;
-    Ok(visible_symbol_name(symbol)
-        .trim_start_matches(':')
-        .to_string())
 }
 
 fn hash_table_key_string(value: &Value) -> Result<String, LispError> {

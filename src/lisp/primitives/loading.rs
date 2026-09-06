@@ -128,7 +128,7 @@ pub(crate) fn call_interactively_impl(
     }
     let mut func = resolve_callable(interp, &args[0], env)?;
     if let (Some(symbol), Some((file, _, _))) = (args[0].as_symbol().ok(), autoload_parts(&func)) {
-        interp.load_target_with_env(&file, env)?;
+        interp.load_autoload_target(&file, env)?;
         func = interp.lookup_function(symbol, env)?;
     }
     // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
@@ -413,7 +413,13 @@ pub(crate) fn eval_region_impl(
             .buffer
             .buffer_substring(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
+        // lread.c reads through `read-symbol-shorthands' (oblookup_
+        // considering_shorthand); load-with-code-conversion binds it from
+        // the file's local variables around the evaluation.
+        let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+        let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(&text, shorthands);
+        let forms = reader.read_all()?;
+        record_unescaped_character_literals(interp, &reader, env);
         let mut result = Value::Nil;
         for form in forms {
             // lread.c reads through the dynamically active `obarray', so a
@@ -557,7 +563,14 @@ fn eval_buffer_forms(
             )
         });
     }
-    let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
+    // lread.c reads through `read-symbol-shorthands' (oblookup_considering_
+    // shorthand); load-with-code-conversion binds it from the file's local
+    // variables around `eval-buffer', so `(defun f-test3 ...)' under
+    // `(("f-" . "elisp--foo-"))' defines `elisp--foo-test3'.
+    let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(&text, shorthands);
+    let forms = reader.read_all()?;
+    record_unescaped_character_literals(interp, &reader, env);
     with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
         let mut result = Value::Nil;
         for form in forms {
@@ -945,6 +958,38 @@ fn record_native_source(
         &mut put_env,
     )?;
     Ok(())
+}
+
+/// lread.c read_char_literal conses every unescaped `?)'-style literal
+/// onto `lread--unescaped-character-literals', which `load' binds to nil
+/// around a file and warns about as it unwinds
+/// (load_warn_unescaped_character_literals).  The eval-buffer path
+/// `load-with-code-conversion' takes reads with its own reader, so its
+/// literals are added here.
+fn record_unescaped_character_literals(
+    interp: &mut Interpreter,
+    reader: &crate::lisp::reader::Reader<'_>,
+    env: &mut Env,
+) {
+    let mut items = interp
+        .lookup_var("lread--unescaped-character-literals", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    let mut changed = false;
+    for literal in reader.unescaped_character_literals() {
+        let literal = Value::Integer(literal);
+        if !items.contains(&literal) {
+            items.insert(0, literal);
+            changed = true;
+        }
+    }
+    if changed {
+        interp.set_variable(
+            "lread--unescaped-character-literals",
+            Value::list(items),
+            env,
+        );
+    }
 }
 
 pub(crate) fn read_symbol_shorthands_in_env(

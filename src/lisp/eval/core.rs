@@ -486,6 +486,7 @@ impl Interpreter {
                             NativeForm::Cond => {
                                 self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_cond(&items, env);
+                                let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
@@ -494,18 +495,21 @@ impl Interpreter {
                             NativeForm::Let => {
                                 self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_let(&items, env);
+                                let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::LetStar => {
                                 self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_letstar(&items, env);
+                                let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
                             NativeForm::Setq => {
                                 self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_setq(&items, env);
+                                let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
@@ -538,6 +542,7 @@ impl Interpreter {
                             NativeForm::While => {
                                 self.push_unevaluated_backtrace_frame(expr);
                                 let result = self.sf_while(&items, env);
+                                let result = self.settle_frame_result(result, env);
                                 self.pop_backtrace_frame();
                                 return result;
                             }
@@ -595,18 +600,26 @@ impl Interpreter {
         // verdict instead of materializing `BuiltinFunc' and throwing away
         // the name-facts cache on every ordinary source call.
         let callable_name = self.callable_symbol_name(&items[0], env);
-        let prepared = if let Some(name) = callable_name.as_ref() {
-            self.resolve_source_symbol_call(name, env, source_resolution)?
-        } else {
-            FunctionResolution::Resolved(self.eval(&items[0], env)?)
-        };
-        // While the arguments evaluate, the call is visible in backtraces as
-        // an in-progress frame with its unevaluated argument forms, the way
-        // GNU records the eval of a list form.
+        // eval_sub records the call, with its unevaluated argument forms,
+        // before it resolves the function cell and while the arguments
+        // evaluate: a void function or an error inside an argument reaches
+        // `handler-bind' handlers and backtraces with this frame innermost.
         let unevald_frame = callable_name.is_some();
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
         }
+        let prepared = if let Some(name) = callable_name.as_ref() {
+            match self.resolve_source_symbol_call(name, env, source_resolution) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let result = self.settle_frame_result(Err(error), env);
+                    self.pop_backtrace_frame();
+                    return result;
+                }
+            }
+        } else {
+            FunctionResolution::Resolved(self.eval(&items[0], env)?)
+        };
         let mut args = EvalValueBuffer::take();
         let mut arg_error = None;
         for item in &items[1..] {
@@ -619,9 +632,13 @@ impl Interpreter {
             }
         }
         if unevald_frame {
+            if let Some(error) = arg_error {
+                let result = self.settle_frame_result(Err(error), env);
+                self.pop_backtrace_frame();
+                return result;
+            }
             self.pop_backtrace_frame();
-        }
-        if let Some(error) = arg_error {
+        } else if let Some(error) = arg_error {
             return Err(error);
         }
         match (callable_name.as_ref(), prepared) {
@@ -828,15 +845,35 @@ impl Interpreter {
             env,
             None,
         );
-        let result = match primitives::call_with_facts(self, name, facts, args, env) {
-            Ok(value) => Ok(value),
+        let result = primitives::call_with_facts(self, name, facts, args, env);
+        let result = self.settle_frame_result(result, env);
+        self.pop_backtrace_frame();
+        result
+    }
+
+    /// What every backtrace frame does with an error on its way out, while
+    /// the frame is still live.  GNU's signal_or_quit runs `handler-bind'
+    /// handlers from `signal' itself, with the signaling frames intact;
+    /// Emaxx runs them at the innermost frame boundary that sees the error
+    /// (the dispatch remembers the object, so the outer boundaries pass it
+    /// on), then records the batch backtrace snapshot.  Special forms,
+    /// interpreted lambdas, byte-code, native code and primitives all pass
+    /// through here, so an error the evaluator itself signals -- a void
+    /// function or variable, a wrong arity -- reaches the handlers with the
+    /// same innermost frame GNU shows.
+    fn settle_frame_result(
+        &mut self,
+        result: Result<Value, LispError>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let result = match result {
             Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
             Err(error) => self.dispatch_handler_bindings(error, env),
+            ok => ok,
         };
         if let Err(error) = &result {
             self.capture_batch_error_backtrace(error, env);
         }
-        self.pop_backtrace_frame();
         result
     }
 
@@ -855,9 +892,7 @@ impl Interpreter {
         self.push_backtrace_frame(backtrace_function, args);
         self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
         let result = self.execute_bytecode_funcall_body(record_id, args, env);
-        if let Err(error) = &result {
-            self.capture_batch_error_backtrace(error, env);
-        }
+        let result = self.settle_frame_result(result, env);
         self.pop_backtrace_frame();
         result
     }
@@ -931,9 +966,9 @@ impl Interpreter {
                             .map(|original| original.symbol_value(&name))
                             .unwrap_or_else(|| Value::Symbol(name.clone()));
                         self.push_backtrace_frame(function, args);
-                        self.capture_batch_error_backtrace(&error, env);
+                        let result = self.settle_frame_result(Err(error), env);
                         self.pop_backtrace_frame();
-                        return Err(error);
+                        return result;
                     }
                 };
                 if original_name.is_none() {
@@ -967,7 +1002,7 @@ impl Interpreter {
                             func,
                         ])));
                     };
-                    match self.load_target_with_env(&file, env) {
+                    match self.load_autoload_target(&file, env) {
                         Ok(_) => self.lookup_function(name, env)?,
                         // Only a genuinely file-less environment (unit tests
                         // with no resolvable Lisp tree) may fall back to a
@@ -1009,14 +1044,8 @@ impl Interpreter {
                     env,
                     None,
                 );
-                let result = match primitives::call(self, name, args, env) {
-                    Ok(value) => Ok(value),
-                    Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
-                    Err(error) => self.dispatch_handler_bindings(error, env),
-                };
-                if let Err(error) = &result {
-                    self.capture_batch_error_backtrace(error, env);
-                }
+                let result = primitives::call(self, name, args, env);
+                let result = self.settle_frame_result(result, env);
                 self.pop_backtrace_frame();
                 result
             }
@@ -1034,14 +1063,8 @@ impl Interpreter {
                     env,
                     None,
                 );
-                let result = match crate::lisp::native_comp::call_function(self, env, id, args) {
-                    Ok(value) => Ok(value),
-                    Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
-                    Err(error) => self.dispatch_handler_bindings(error, env),
-                };
-                if let Err(error) = &result {
-                    self.capture_batch_error_backtrace(error, env);
-                }
+                let result = crate::lisp::native_comp::call_function(self, env, id, args);
+                let result = self.settle_frame_result(result, env);
                 self.pop_backtrace_frame();
                 result
             }
@@ -1088,6 +1111,18 @@ impl Interpreter {
                         Value::Integer(args.len() as i64),
                     ]))
                 };
+                // funcall_lambda signals the arity error after Ffuncall has
+                // recorded the frame, so the offending call is the
+                // innermost frame the handlers and backtraces see.
+                let signal_arity = |this: &mut Self, env: &mut Env| -> LispError {
+                    let function = original_name
+                        .map(CallName::original_symbol_value)
+                        .unwrap_or_else(|| func.clone());
+                    this.push_backtrace_frame(function, args);
+                    let result = this.settle_frame_result(Err(wrong_arity()), env);
+                    this.pop_backtrace_frame();
+                    result.err().unwrap_or_else(wrong_arity)
+                };
                 self.register_captured_lexical_frames(closure_env);
                 if params.len() != args.len() {
                     let min_params = params
@@ -1101,7 +1136,7 @@ impl Interpreter {
                                 body.first()
                             );
                         }
-                        return Err(wrong_arity());
+                        return Err(signal_arity(self, env));
                     }
                     // GNU also signals on EXCESS arguments (no &rest and more
                     // args than fixed + optional parameters).
@@ -1113,7 +1148,7 @@ impl Interpreter {
                                     "EMAXX-DBG arity-excess: params={params:?} args={args:?} name={original_name:?}",
                                 );
                             }
-                            return Err(wrong_arity());
+                            return Err(signal_arity(self, env));
                         }
                     }
                 }
@@ -1147,7 +1182,7 @@ impl Interpreter {
                     } else if optional {
                         Value::Nil
                     } else {
-                        return Err(wrong_arity());
+                        return Err(signal_arity(self, env));
                     };
                     frame.push((param.clone(), Self::stored_value(val)));
                     if consumed_arg {
@@ -1292,9 +1327,7 @@ impl Interpreter {
                 if call_capture_override.is_some() {
                     self.pop_lambda_capture_override();
                 }
-                if let Err(error) = &result {
-                    self.capture_batch_error_backtrace(error, env);
-                }
+                let result = self.settle_frame_result(result, env);
                 self.pop_backtrace_frame();
                 result
             }

@@ -138,8 +138,12 @@ fn first_difference(left: &[u8], right: &[u8]) -> Option<usize> {
         .or_else(|| (left.len() != right.len()).then_some(left.len().min(right.len())))
 }
 
+/// Compiles nine unchanged GNU sources (comp.el itself included) through
+/// both editors and requires byte-identical artifacts.  About eight
+/// minutes on the Linux gate machine; the publication gate refuses
+/// ignored integration tests, and the sibling GNU build it needs is the
+/// oracle every other gate test needs too.
 #[test]
-#[ignore = "requires the sibling native-comp GNU build and intentionally compiles through two release-grade editors"]
 fn unchanged_gnu_sources_produce_identical_native_artifacts() {
     let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let gnu_root = project.join("../emacs");

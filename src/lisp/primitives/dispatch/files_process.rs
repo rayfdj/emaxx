@@ -1905,8 +1905,14 @@ define_dispatch!(
                     .iter()
                     .map(string_text)
                     .collect::<Result<Vec<_>, _>>()?;
-                let process_output =
-                    run_external_process(interp, &program, &argv, input.as_deref(), env)?;
+                let process_output = run_external_process(
+                    interp,
+                    &program,
+                    &argv,
+                    input.as_deref(),
+                    external_stderr_for_destination(destination),
+                    env,
+                )?;
                 write_process_output(
                     interp,
                     destination,
@@ -2640,8 +2646,14 @@ define_dispatch!(
                     .iter()
                     .map(string_text)
                     .collect::<Result<Vec<_>, _>>()?;
-                let process_output =
-                    run_external_process(interp, &program, &argv, Some(input.as_bytes()), env)?;
+                let process_output = run_external_process(
+                    interp,
+                    &program,
+                    &argv,
+                    Some(input.as_bytes()),
+                    external_stderr_for_destination(destination),
+                    env,
+                )?;
                 if delete_region {
                     interp
                         .buffer

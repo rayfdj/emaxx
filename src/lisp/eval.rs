@@ -4348,6 +4348,10 @@ pub struct Interpreter {
     /// interpreter-local because Rust tests run independent interpreters in
     /// parallel inside one host process.
     pub(crate) batch_standard_output_last_char: Option<char>,
+    /// xdisp.c `noninteractive_need_newline': set by every batch write to
+    /// stdout (print.c printchar/strout), cleared by `message', which
+    /// first emits a newline on stderr when it is set.
+    pub(crate) batch_stdout_need_newline: bool,
     /// Largest `#N=' label allocated by GNU's native printer.  print.c keeps
     /// this counter separately from the dynamically bound
     /// `print-number-table': `print--preprocess' resets it even when its
@@ -4454,6 +4458,11 @@ pub struct Interpreter {
     /// observe the error without intercepting throws bound for an outer catch.
     active_catch_tags: Vec<Value>,
     handler_dispatch_depth: usize,
+    /// The condition object the `handler-bind' handlers last ran for.  GNU
+    /// runs them once, from `signal' itself; Emaxx runs them at the
+    /// innermost frame boundary that sees the error and must not run them
+    /// again as the same error unwinds through the outer frames.
+    dispatched_signal: Option<Value>,
     suspend_condition_case_count: usize,
     window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
     /// Live terminal color count published by the tty frontend; batch
@@ -5197,6 +5206,7 @@ impl Interpreter {
             profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
             batch_standard_output_last_char: None,
+            batch_stdout_need_newline: false,
             print_number_index: 0,
             current_activation_id: 0,
             next_activation_id: 0,
@@ -5274,6 +5284,7 @@ impl Interpreter {
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),
             handler_dispatch_depth: 0,
+            dispatched_signal: None,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
             tty_display_color_cells: 0,

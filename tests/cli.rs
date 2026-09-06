@@ -145,7 +145,9 @@ fn batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, b"single-dash-stdout");
-    assert_eq!(output.stderr, b"single-dash-stderr\n");
+    // xdisp.c message_to_stderr: stdout was written since the last message
+    // (`noninteractive_need_newline'), so the message starts a new line.
+    assert_eq!(output.stderr, b"\nsingle-dash-stderr\n");
 
     // `-b' is not a GNU option: the oracle exits 255 with "Unknown option".
     let rejected = Command::new(env!("CARGO_BIN_EXE_emaxx"))
@@ -259,8 +261,13 @@ fn batch_accepts_gnu_quick_and_long_load_options() {
     );
 }
 
+/// lread.c:init_lread does not read EMACS_TEST_DIRECTORY: a checkout's
+/// `lisp/' directory is not on the load path because the harness names its
+/// `test/' sibling, so a library only that directory holds cannot be
+/// required.  (Emaxx once walked the checkout recursively; the merged
+/// startup follows GNU, and this test used to assert the walk.)
 #[test]
-fn batch_child_reconstructs_repo_load_path_from_test_directory() {
+fn batch_child_load_path_ignores_the_test_directory_like_lread() {
     let repo = unique_temp_path("emaxx-cli-repo");
     let test_directory = repo.join("test");
     let lisp_directory = repo.join("lisp");
@@ -276,21 +283,28 @@ fn batch_child_reconstructs_repo_load_path_from_test_directory() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
-        .env("EMACS_TEST_DIRECTORY", &test_directory)
-        .arg("--quick")
-        .arg("--batch")
-        .arg(format!("--load={}", consumer.display()))
-        .output()
-        .unwrap();
+    let run = |binary: &std::path::Path| {
+        Command::new(binary)
+            .env("EMACS_TEST_DIRECTORY", &test_directory)
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .arg("--quick")
+            .arg("--batch")
+            .arg(format!("--load={}", consumer.display()))
+            .output()
+            .unwrap()
+    };
+    let oracle = run(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs"));
+    let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
 
     std::fs::remove_dir_all(&repo).unwrap();
-    assert!(
-        output.status.success(),
-        "batch child did not recover its repo-local load path:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    assert_eq!(oracle.status.code(), Some(255));
+    assert_eq!(
+        String::from_utf8_lossy(&oracle.stderr),
+        "Cannot open load file: No such file or directory, emaxx-cli-provider\n"
     );
+    assert_eq!(subject.status.code(), oracle.status.code());
+    assert_eq!(subject.stderr, oracle.stderr);
 }
 
 #[test]
@@ -391,4 +405,59 @@ fn batch_eval_interns_the_symbols_it_reads_like_gnu() {
         "(zz-cli-plain :zz-cli-kw nil)",
         "--eval must intern what it reads, and must not invent what it never read"
     );
+}
+
+/// GNU's batch stdout is C stdio, block-buffered when it is a pipe or a
+/// file; stderr is unbuffered.  A child whose two streams feed one
+/// descriptor -- what `call-process' with a merged DESTINATION captures --
+/// shows every `message' before the `princ' text written earlier, a
+/// `flush-standard-output' releases the text written so far, and the
+/// `debug-early--handler' backtrace, printed to `standard-output', follows
+/// the error message that cmd_error printed to stderr.  `message' also
+/// starts with a newline of its own when stdout was written since the
+/// previous message (xdisp.c `noninteractive_need_newline').  The frames
+/// are GNU's: the unevaluated call for the void function, then each
+/// interpreted caller.
+#[test]
+fn batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor() {
+    let program = unique_temp_path("emaxx-cli-stdio").with_extension("el");
+    std::fs::write(
+        &program,
+        "(princ \"one\\n\")\n\
+         (message \"two\")\n\
+         (princ \"three\")\n\
+         (message \"four\")\n\
+         (flush-standard-output)\n\
+         (message \"five\")\n\
+         (defun cli-probe-g () (cli-probe-undefined 1 2))\n\
+         (defun cli-probe-f () (cli-probe-g))\n\
+         (cli-probe-f)\n",
+    )
+    .unwrap();
+    let run = |binary: &std::path::Path| {
+        let merged = unique_temp_path("emaxx-cli-stdio-merged");
+        let file = std::fs::File::create(&merged).unwrap();
+        let status = Command::new(binary)
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .args(["-Q", "--batch", "-l"])
+            .arg(&program)
+            .stdout(Stdio::from(file.try_clone().unwrap()))
+            .stderr(Stdio::from(file))
+            .status()
+            .unwrap();
+        let text = std::fs::read_to_string(&merged).unwrap();
+        let _ = std::fs::remove_file(&merged);
+        (status.code(), text)
+    };
+    let oracle = run(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs"));
+    let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
+    let _ = std::fs::remove_file(&program);
+    assert_eq!(oracle.0, Some(255), "GNU oracle exit status:\n{}", oracle.1);
+    assert!(
+        oracle.1.starts_with("\ntwo\n\nfour\none\nthreefive\nSymbol's function definition is void: cli-probe-undefined\n\nError: void-function (cli-probe-undefined)\n  (cli-probe-undefined 1 2)\n  cli-probe-g()\n  cli-probe-f()\n  eval-buffer("),
+        "unexpected GNU oracle output:\n{}",
+        oracle.1
+    );
+    assert_eq!(subject, oracle);
 }
