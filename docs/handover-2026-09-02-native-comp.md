@@ -5,25 +5,19 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed ae12db4 and unfinished EQ work (2026-09-06)
+## Resume here — pushed 7e20c57 and merged main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Last pushed commit: `ae12db495c3bc712760884e51636e83834fd8a1a` —
-Restore GNU type-query boundaries and remove redundant lookups.**
-Local HEAD and the recorded `origin/native-comp` both point to it. This is
-the type-query correction in the [P19 ledger](native-comp-c-parity-ledger.md),
-built on `9844664` (handover) and `a94d410` (GC). After that push, main was
-fetched; `84f342a132eb041286d98cf7afd6551996db1529` is already an ancestor.
-No empty merge was needed. Fetch/integrate main again after the next push,
-before beginning another checkpoint.
+**Last pushed commit: `7e20c57` — Match GNU native funcall debugger exit.**
+It contains the bounded L05 `eval.c:Ffuncall` debugger-on-exit correction,
+focused regression, and updated parity records. `origin/main` was fetched
+and merged after the push; it was already up to date. The worktree is clean.
 
-**The worktree is not the pushed checkpoint.** It contains the unfinished
-EQ/live-flag correction and documentation. Do not commit those runtime
-edits as already verified, discard them as unrelated work, or describe
-them as pushed. The September 5 handover request changed documentation only;
-implementation resumed under the active goal on September 6.
+The next open native contract is L03, GNU `eval.c:eval_sub` `maybe_gc`
+placement and live-object accounting. Continue from the ledger's exact C
+source obligation; do not infer that the passing native suite closes it.
 
-### September 6 continuation — pick up here first
+### Historical September 6 continuation — EQ/live-flag and reader work
 
 The live-flag dependency described below is now implemented, not just
 planned. The interpreter owns a stable `Box<Cell<bool>>`; native relocation
