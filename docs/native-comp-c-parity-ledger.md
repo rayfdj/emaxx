@@ -6,12 +6,15 @@ finishing performance-only items. See the linked
 Latest implementation checkpoint: `042074a`, the bounded L08 GNU
 `Fgarbage_collect_maybe` threshold correction after the layout-size fix and
 the L03/L05/L06/L07 audits. Focused testing, 18 anti-cheat gates, formatting,
-all-target checking, and strict all-feature Clippy are green. The prior
-checkpoint's nine-rung artifact identity ladder and normal 177-case native
-execution gate are green; they are rerun for this native GC change. The
-native execution performance gap remains open. See
+all-target checking, and strict all-feature Clippy are green. The
+checkpoint-specific nine-rung artifact identity ladder and normal 177-case
+native execution gate are also green. The native execution performance gap
+remains open. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the exact continuation point.
+For this checkpoint, the nine-rung identity ladder and normal 177-case native
+execution gate both passed with zero mismatches; Emaxx's native execution
+phase was 1,395.899 seconds versus GNU's 89.751 seconds.
 This unit comes from the completed post-startup profile and GNU C audit,
 not a speculative optimization. The chronology below is historical, not a claim that all its
 "worktree" changes remain uncommitted.
