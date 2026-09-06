@@ -13,19 +13,27 @@ threshold.** It implements GNU `alloc.c:Fgarbage_collect_maybe`'s exact
 `since_gc > gc_threshold / factor` boundary for an active native heap and
 returns `t` only when collection occurs; the prior public layout-size fix is
 also retained. Focused testing, anti-cheat (18/18), formatting, all-target
-checking, and strict all-feature Clippy pass. The previous checkpoint's full
-unchanged native execution and artifact identity gates passed; those two
-long-running gates are rerun for this native GC primitive below.
+checking, and strict all-feature Clippy pass. The checkpoint-specific full
+unchanged native execution and artifact identity gates also pass, as recorded
+below.
 
-The commit is ready to push; after pushing, fetch and merge `origin/main`,
-validate the clean state, and continue from the remaining L08 source
-obligation.
+The implementation commit is pushed; `origin/main` was fetched and merged
+after the push and was already up to date. The worktree is clean. Continue
+from the remaining L08 source obligation.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
 This checkpoint closes only the public GNU C layout-size portion; the census
 classes, allocator accounting, free-list columns, and broader GC parity remain
 open. Continue from the ledger's exact C source obligation; do not infer that
 the passing focused gate closes L08.
+
+Checkpoint-specific validation for `042074a`/`57b0a71`: the nine-rung
+unchanged-source identity ladder passed, including byte-identical `comp.el`,
+and the normal upstream native selector passed 177/177 with zero mismatches.
+The Emaxx execution phase took 1,395.899 seconds versus GNU's 89.751 seconds;
+the performance gap remains open. The full `check-all` selector additionally
+includes the separately tagged bootstrap case and is not the normal 177-case
+gate.
 
 **L03 bounded placement correction (2026-09-06):** GNU `eval.c:eval_sub`
 performs `maybe_quit`, then `maybe_gc`, then increments the evaluation depth.
