@@ -5,23 +5,21 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 52298d7 and merged main (2026-09-06)
+## Resume here — pushed 042074a and merged main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest implementation commit: `52298d7` — Match GNU garbage-collect layout
-sizes.** It corrects the public `garbage-collect` SIZE columns to use the
-configured GNU C layouts (`alloc.c:Fgarbage_collect`) instead of Rust host
-representation sizes, and adds an exact row-size regression. Focused testing,
-anti-cheat (18/18), formatting, all-target checking, and strict all-feature
-Clippy pass. The full unchanged native execution and artifact identity gates
-now pass: the nine-rung identity ladder is green, and the normal upstream
-native selector passes 177/177 with zero mismatches. The Emaxx execution
-phase took 1,218.105 seconds versus GNU's 103.786 seconds; that performance
-gap remains open and is not presented as a correctness failure.
+**Latest implementation commit: `042074a` — Match GNU garbage-collect-maybe
+threshold.** It implements GNU `alloc.c:Fgarbage_collect_maybe`'s exact
+`since_gc > gc_threshold / factor` boundary for an active native heap and
+returns `t` only when collection occurs; the prior public layout-size fix is
+also retained. Focused testing, anti-cheat (18/18), formatting, all-target
+checking, and strict all-feature Clippy pass. The previous checkpoint's full
+unchanged native execution and artifact identity gates passed; those two
+long-running gates are rerun for this native GC primitive below.
 
-The commit is pushed; `origin/main` was fetched and merged after the push and
-was already up to date. The worktree is clean. Continue from the remaining
-L08 source obligation.
+The commit is ready to push; after pushing, fetch and merge `origin/main`,
+validate the clean state, and continue from the remaining L08 source
+obligation.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
 This checkpoint closes only the public GNU C layout-size portion; the census
@@ -64,6 +62,13 @@ vector-slot=8, float=8, interval=56, and buffer=992 bytes. Rust now uses those
 constants both for `LiveObjectCensus::total_bytes_of_live_objects` and for the
 public `garbage-collect` rows; a focused regression pins every SIZE column.
 The live census model and GNU free-list/accounting parity remain incomplete.
+
+**L08 conditional collection correction (2026-09-06):** GNU
+`Fgarbage_collect_maybe` calls GC iff `since_gc > gc_threshold / factor` for a
+nonnegative factor, returning `Qt` only when it collects. Rust now mirrors
+that boundary for the active native heap and preserves GNU's wrong-type error
+for negative factors. The focused native primitive control and existing
+conditional-GC contract pass; full native/artifact reruns are still pending.
 
 ### Historical September 6 continuation — EQ/live-flag and reader work
 
