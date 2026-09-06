@@ -3,12 +3,11 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Last pushed checkpoint: `5244eac`, the verified P13/R03 ledger reconciliation
-after the reader-materialization and variable-watcher corrections. Main
-`84f342a` is included and the worktree is clean. The P13/R03 EQ and V05
-live-position-flag correction is committed and
-its focused controls, adversarial audit, artifact ladder, and full native
-execution gate are green. See
+Last pushed checkpoint: `7e20c57`, the verified L05 GNU
+`Ffuncall` debugger-on-exit correction after the EQ/live-flag,
+reader-materialization, and variable-watcher corrections. Main is included
+and the worktree is clean. L05's focused controls, adversarial audit,
+artifact ladder, and full native execution gate are green. See
 [the handover's resume section](handover-2026-09-02-native-comp.md) for exact
 current evidence, full-goal progress, and the exact continuation point.
 This unit comes from the completed post-startup profile and GNU C audit,
