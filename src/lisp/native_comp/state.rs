@@ -60,14 +60,20 @@ impl NativeCompilerState {
             .garbage_collection_finished(live_bytes, threshold, percentage);
     }
 
-    pub(crate) fn garbage_collection_maybe_due(
+    pub(crate) fn garbage_collection_maybe_due(&mut self, factor: i64) -> bool {
+        self.runtime.garbage_collection_maybe_due(factor)
+    }
+
+    pub(crate) fn garbage_collection_might_be_due(&mut self) -> bool {
+        self.runtime.garbage_collection_might_be_due()
+    }
+
+    pub(crate) fn garbage_collection_due(
         &mut self,
-        factor: i64,
         threshold: i64,
         percentage: Option<f64>,
     ) -> bool {
-        self.runtime
-            .garbage_collection_maybe_due(factor, threshold, percentage)
+        self.runtime.garbage_collection_due(threshold, percentage)
     }
 
     pub(crate) fn version() -> Option<(i32, i32, i32)> {
