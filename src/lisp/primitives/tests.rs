@@ -11504,6 +11504,21 @@ fn garbage_collect_reports_the_live_census() {
         "((conses 16) (symbols 48) (strings 32) (string-bytes 1) \
 (vectors 16) (vector-slots 8) (floats 8) (intervals 56) (buffers 992))"
     );
+
+    // alloc.c:Fgarbage_collect temporarily disables positioned-symbol
+    // marking, then restores the caller's dynamic value before returning.
+    interp.set_symbol_value_cell("symbols-with-pos-enabled", Value::T);
+    let positioned_gc = Reader::new("(garbage-collect)")
+        .read_all()
+        .expect("read positioned-symbol GC program")
+        .remove(0);
+    interp
+        .eval(&positioned_gc, &mut Vec::new())
+        .expect("evaluate positioned-symbol GC program");
+    assert!(
+        interp.symbols_with_positions_enabled(),
+        "garbage-collect must restore symbols-with-pos-enabled"
+    );
 }
 
 #[test]
