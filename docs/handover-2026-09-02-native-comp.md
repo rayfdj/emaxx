@@ -5,21 +5,19 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed bc8402d and merged main (2026-09-06)
+## Resume here — pushed 81d8052 and merged main (2026-09-06)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest implementation commit: `bc8402d` — Honor ordinary GC threshold
-bindings.** It extends GNU `alloc.c:Fgarbage_collect_maybe`'s exact
-`since_gc > gc_threshold / factor` boundary from active native calls to the
-ordinary interpreter state, including dynamically bound threshold and
-percentage values; the prior public layout-size and active factor fixes are
-also retained. Focused testing, anti-cheat (18/18), formatting, all-target
-checking, and strict all-feature Clippy pass. The prior checkpoint-specific
-full unchanged native execution and artifact identity gates passed; those two
-long-running gates are rerun for this ordinary-path correction below.
+**Latest pushed checkpoint: `81d8052` — merged `origin/main` and restored
+macOS process-pipe portability.** It contains the ordinary GC threshold
+binding correction from `bc8402d`, the nontrivial merge of `origin/main`, and
+the `pipe`/`fcntl(FD_CLOEXEC)` fallback required because macOS has no
+`libc::pipe2`. Focused testing, anti-cheat (18/18), formatting, all-target
+checking, and strict all-feature Clippy pass. The merged-tree identity and
+normal native gates also pass, as recorded below.
 
-The commit is ready to push; after pushing, fetch and merge `origin/main`,
-validate the clean state, and continue from the remaining L08 source
+The checkpoint is pushed; `origin/main` was fetched and merged before the
+push, and the worktree is clean. Continue from the remaining L08 source
 obligation.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
@@ -35,6 +33,14 @@ The Emaxx execution phase took 1,395.899 seconds versus GNU's 89.751 seconds;
 the performance gap remains open. The full `check-all` selector additionally
 includes the separately tagged bootstrap case and is not the normal 177-case
 gate.
+
+Merged-tree validation for `81d8052`: the nine-rung identity test passed all
+fixtures, including byte-identical `comp.el` (881,800 bytes), in 244.19
+seconds. The normal upstream native selector passed 177/177 with zero
+mismatches; Emaxx took 1,386.830 seconds versus GNU's 90.402 seconds. After
+`origin/main` advanced, the identity test became non-ignored, so the correct
+command is `cargo test --release -j1 --test native_comp_identity --
+--nocapture --test-threads=1` without `--ignored`.
 
 **L03 bounded placement correction (2026-09-06):** GNU `eval.c:eval_sub`
 performs `maybe_quit`, then `maybe_gc`, then increments the evaluation depth.
