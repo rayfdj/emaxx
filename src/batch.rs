@@ -273,7 +273,13 @@ fn run_batch_through_normal_top_level(
         Ok(_) => {}
         Err(LispError::Terminate(termination)) => return Ok(termination.into()),
         Err(error) => {
-            emit_unhandled_batch_error(interpreter, &error, &[]);
+            // keyboard.c top_level_1 -> cmd_error -> cmd_error_internal: in
+            // batch, print_error_message to stderr and kill-emacs -1.  The
+            // backtrace was already printed, to `standard-output', by the
+            // `debug-early--handler' that top_level_2 bound around the
+            // form (run_batch_toplevel_form), when
+            // `backtrace-on-error-noninteractive' asked for it.
+            emit_batch_error_message(interpreter, &error);
             return Ok(BatchRunOutcome::Exit(255));
         }
     }
@@ -324,11 +330,8 @@ fn command_line_bottom_frames(
     frames
 }
 
-fn emit_unhandled_batch_error(
-    interpreter: &mut Interpreter,
-    error: &LispError,
-    bottom_frames: &[(String, Vec<Value>)],
-) {
+/// cmd_error_internal's batch report: print_error_message to stderr.
+fn emit_batch_error_message(interpreter: &mut Interpreter, error: &LispError) {
     // print_error_message: the same rendering `error-message-string'
     // performs (error-message property through `substitute-command-keys',
     // condition-specific data quoting), falling back to the native text
@@ -343,6 +346,14 @@ fn emit_unhandled_batch_error(
     .and_then(|value| lisp::primitives::string_like(&value).map(|text| text.text))
     .unwrap_or_else(|| error.to_string());
     eprintln!("{message}");
+}
+
+fn emit_unhandled_batch_error(
+    interpreter: &mut Interpreter,
+    error: &LispError,
+    bottom_frames: &[(String, Vec<Value>)],
+) {
+    emit_batch_error_message(interpreter, error);
     let Some(backtrace) = interpreter.take_batch_error_backtrace() else {
         return;
     };
@@ -401,6 +412,23 @@ fn emit_unhandled_batch_error(
     eprintln!("  normal-top-level()");
 }
 
+/// In the test build every interpreter these constructors hand out is an
+/// in-process fixture: `invocation-name' is the libtest binary, which
+/// cannot serve as comp.el's compiler child or as the trampoline
+/// compiler `fset' of a primitive asks for (test_support explains the
+/// configuration).  The CLI keeps GNU's defaults.
+#[cfg(test)]
+fn finish_test_fixture(interpreter: Result<Interpreter, String>) -> Result<Interpreter, String> {
+    let mut interpreter = interpreter?;
+    crate::test_support::configure_embedded_native_compilation(&mut interpreter);
+    Ok(interpreter)
+}
+
+#[cfg(not(test))]
+fn finish_test_fixture(interpreter: Result<Interpreter, String>) -> Result<Interpreter, String> {
+    interpreter
+}
+
 /// Reconstruct persistent Lisp state and initialize C-owned interactive
 /// process state. The terminal must be ready before run_startup_top_level.
 pub(crate) fn initialize_interactive_interpreter(
@@ -411,10 +439,20 @@ pub(crate) fn initialize_interactive_interpreter(
         defer_delayed_custom_init: true,
         ..Default::default()
     };
-    initialize_interpreter(&options, false)
+    finish_test_fixture(initialize_interpreter(&options, false))
 }
 
 pub(crate) fn initialize_batch_interpreter(
+    options: &BatchRunOptions,
+) -> Result<Interpreter, String> {
+    finish_test_fixture(initialize_interpreter(options, true))
+}
+
+/// The batch image exactly as startup left it, before the test fixture's
+/// embedded native-compilation settings are applied: for tests that
+/// assert what the unchanged GNU Lisp owners themselves established.
+#[cfg(test)]
+pub(crate) fn initialize_batch_interpreter_as_started(
     options: &BatchRunOptions,
 ) -> Result<Interpreter, String> {
     initialize_interpreter(options, true)
@@ -490,6 +528,14 @@ fn initialize_interpreter(
     interpreter.set_variable("inhibit-message", Value::T, &mut Vec::new());
     let reconstruction = (|interpreter: &mut Interpreter| -> Result<(), String> {
         preload_batch_compat_libraries(interpreter)?;
+        // The dump boundary.  charset.c's Vcharset_non_preferred_head is
+        // not staticpro'd, so the value loadup left (english.el's
+        // `set-language-info-alist' re-runs `set-language-environment'
+        // for the default "English") does not survive into the dumped
+        // image: a fresh GNU session starts with it nil, and only a
+        // `set-charset-priority' of the session (a locale that selects a
+        // language environment) sets it again.
+        interpreter.forget_charset_non_preferred_head();
         // pdumper.c writes Vpurify_flag as nil into the saved image.
         interpreter.set_global_binding("purify-flag", Value::Nil);
         Ok(())
@@ -1450,8 +1496,11 @@ mod tests {
             Ok(_) => panic!("a resolvable dumped-library preload must not fail silently"),
             Err(error) => error,
         };
-        assert!(error.contains("preload emacs-lisp/seq"), "{error}");
+        // The image is reconstructed by GNU's loadup.el itself, so the
+        // failure is loadup's, with the broken library in its backtrace.
+        assert!(error.contains("preload GNU loadup.el"), "{error}");
         assert!(error.contains("broken seq preload"), "{error}");
+        assert!(error.contains("load(\"emacs-lisp/seq\")"), "{error}");
         fs::remove_dir_all(root).expect("remove temp root");
     }
 
@@ -2309,8 +2358,11 @@ mod tests {
                     .expect("upstream load path"),
                 ..Default::default()
             };
+            // The test fixture turns trampolines off after startup (tests
+            // must not compile them); loadup's own transition is asked for
+            // on the image as started.
             let interpreter =
-                initialize_batch_interpreter(&options).expect("init batch interpreter");
+                initialize_batch_interpreter_as_started(&options).expect("init batch interpreter");
             assert_eq!(
                 interpreter.lookup_var("native-comp-enable-subr-trampolines", &Env::new()),
                 Some(Value::T),

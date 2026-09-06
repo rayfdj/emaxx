@@ -1455,6 +1455,13 @@ fn upstream_nonessential_remote_probe_accepts_an_unknown_method_without_connecti
 
 #[test]
 fn upstream_save_policy_only_queries_buffers_that_offer_to_save() {
+    // What GNU answers in batch for the same program (the oracle was run
+    // on it): `save-some-buffers' and `save-buffers-kill-emacs' both quit
+    // before the `read-event' override is reached -- the batch session's
+    // `map-y-or-n-p' quits with no prompt -- and the exit path with
+    // `confirm-kill-processes' nil asks nothing.  The previous expectation
+    // (two prompts, then a plain return) was the old Emaxx fixture's, not
+    // GNU's; the merged fixture answers exactly what GNU does.
     let _permit = crate::test_support::acquire_host_test_permit();
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     eval_str_with(&mut interp, "(require 'cl-macs)");
@@ -1462,32 +1469,58 @@ fn upstream_save_policy_only_queries_buffers_that_offer_to_save() {
     assert_eq!(
         eval_str_with(
             &mut interp,
-            "(list
+            r#"(list
                (let (buffers prompts)
                  (unwind-protect
                      (progn
-                       (dolist (spec '((\"emaxx-offer-1\" t)
-                                       (\"emaxx-offer-2\" always)
-                                       (\"emaxx-offer-3\" nil)))
+                       (dolist (spec '(("emaxx-offer-1" t)
+                                       ("emaxx-offer-2" always)
+                                       ("emaxx-offer-3" nil)))
                          (let ((buffer (generate-new-buffer (car spec))))
                            (push buffer buffers)
                            (with-current-buffer buffer
                              (setq buffer-offer-save (cadr spec))
-                             (insert \"modified\"))))
+                             (insert "modified"))))
                        (with-current-buffer (car buffers)
-                         (cl-letf (((symbol-function 'read-event)
-                                    (lambda (&rest _)
-                                      (push t prompts)
-                                      ?n))
-                                   ((symbol-function 'kill-emacs) #'ignore))
-                           (save-buffers-kill-emacs)))
-                       (length prompts))
+                         (condition-case nil
+                             (cl-letf (((symbol-function 'read-event)
+                                        (lambda (&rest _)
+                                          (push t prompts)
+                                          ?n)))
+                               (save-some-buffers)
+                               (list 'returned (length prompts)))
+                           (quit (list 'quit (length prompts))))))
+                   (dolist (buffer buffers)
+                     (with-current-buffer buffer
+                       (set-buffer-modified-p nil))
+                     (kill-buffer buffer))))
+               (let (buffers prompts)
+                 (unwind-protect
+                     (progn
+                       (dolist (spec '(("emaxx-offer-1" t)
+                                       ("emaxx-offer-2" always)
+                                       ("emaxx-offer-3" nil)))
+                         (let ((buffer (generate-new-buffer (car spec))))
+                           (push buffer buffers)
+                           (with-current-buffer buffer
+                             (setq buffer-offer-save (cadr spec))
+                             (insert "modified"))))
+                       (with-current-buffer (car buffers)
+                         (condition-case nil
+                             (cl-letf (((symbol-function 'read-event)
+                                        (lambda (&rest _)
+                                          (push t prompts)
+                                          ?n))
+                                       ((symbol-function 'kill-emacs) #'ignore))
+                               (save-buffers-kill-emacs)
+                               (list 'returned (length prompts)))
+                           (quit (list 'quit (length prompts))))))
                    (dolist (buffer buffers)
                      (with-current-buffer buffer
                        (set-buffer-modified-p nil))
                      (kill-buffer buffer))))
                (let ((process
-                      (make-pipe-process :name \"emaxx-query-on-exit\"))
+                      (make-pipe-process :name "emaxx-query-on-exit"))
                      prompts)
                  (unwind-protect
                      (cl-letf (((symbol-function 'yes-or-no-p)
@@ -1498,9 +1531,10 @@ fn upstream_save_policy_only_queries_buffers_that_offer_to_save() {
                        (let ((confirm-kill-processes nil))
                          (save-buffers-kill-emacs))
                        prompts)
-                   (delete-process process))))",
-        ),
-        Value::list([Value::Integer(2), Value::Nil,])
+                   (delete-process process))))"#,
+        )
+        .to_string(),
+        "((quit 0) (quit 0) nil)"
     );
 }
 
@@ -2073,7 +2107,7 @@ fn backtrace_backward_frame_should_error_keeps_point() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"backward\")
                  (let ((results (concat backtrace-tests--header
                                         (backtrace-tests--result nil))))
@@ -2095,7 +2129,7 @@ fn backtrace_print_includes_unevaluated_setq_frame() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"backward\")
                  (backtrace-tests--make-backtrace nil)
                  (setq backtrace-insert-header-function
@@ -2115,7 +2149,7 @@ fn backtrace_locals_show_lambda_arguments_for_requested_frame() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"locals\")
                  (backtrace-tests--make-backtrace 'value)
                  (backtrace-print)
@@ -2177,7 +2211,7 @@ fn backtrace_expand_ellipses_reprints_current_frame_without_limit() {
     assert_eq!(
         eval_str_with_upstream_batch(
             "(progn
-               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (load (expand-file-name \"test/lisp/emacs-lisp/backtrace-tests.el\" source-directory))
                (ert-with-test-buffer (:name \"expand\")
                  (let* ((print-level nil)
                         (print-length nil)
@@ -2780,7 +2814,11 @@ fn line_beginning_position_crosses_an_unterminated_final_line_to_eob() {
 fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
     assert_eq!(
         eval_str_with_upstream_batch(
-            "(with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string))"
+            // The macro's command runs in the selected window's buffer
+            // (command_loop_1); clear the fixture's startup banner first.
+            "(progn
+               (with-current-buffer \"*scratch*\" (erase-buffer))
+               (with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string)))"
         ),
         Value::String(" ".into())
     );
@@ -2882,7 +2920,10 @@ fn preloaded_string_replace_preserves_gnu_string_identity_and_properties() {
 fn kmacro_frontier_num_input_keys_counts_prefix_events_and_macro_eof() {
     assert_eq!(
         eval_str_with_upstream_batch(
+            // The macro's commands run in the selected window's buffer
+            // (command_loop_1); clear the fixture's startup banner first.
             r#"(let ((num-input-keys 0))
+                 (with-current-buffer "*scratch*" (erase-buffer))
                  (with-temp-buffer
                    (execute-kbd-macro (kbd "a C-u 2 b"))
                    (list (buffer-string) num-input-keys)))"#
@@ -3264,10 +3305,15 @@ fn execute_kbd_macro_exposes_this_single_command_keys() {
 fn call_last_kbd_macro_replays_dynamic_last_kbd_macro() {
     assert_eq!(
         eval_str_with_upstream_batch(
-            "(with-temp-buffer
-               (let ((last-kbd-macro (kbd \"ab\")))
-                 (call-last-kbd-macro))
-               (buffer-string))"
+            // keyboard.c command_loop_1 runs each command in the selected
+            // window's buffer (*scratch* here; GNU answers the same), so
+            // the fixture's startup banner is cleared first.
+            "(progn
+               (with-current-buffer \"*scratch*\" (erase-buffer))
+               (with-temp-buffer
+                 (let ((last-kbd-macro (kbd \"ab\")))
+                   (call-last-kbd-macro))
+                 (buffer-string)))"
         ),
         Value::String("ab".into())
     );
@@ -6944,6 +6990,13 @@ fn upstream_custom_theme_uses_native_frame_parameter_updates() {
             ),
             Value::T
         );
+        // custom-tests-require-theme binds `load-path' to nil and then
+        // needs cl-seq; GNU's own run of the file passes only because an
+        // earlier test has loaded it (`ert-run-tests-batch-and-exit' of
+        // that test alone fails on the oracle with the same
+        // `file-missing').  The in-process runner does not reproduce that
+        // order-dependent state, so load it here.
+        eval_str_with(&mut interp, "(require 'cl-seq)");
 
         let summary = interp.run_ert_tests_with_selector(None);
         assert_eq!(summary.total, 9, "{:#?}", interp.test_results);

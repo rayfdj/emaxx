@@ -47,7 +47,6 @@ const LISP_VECTORLIKE_TAG: i64 = 5;
 const LISP_FLOAT_TAG: i64 = 7;
 const PVEC_BIGNUM: i32 = 2;
 const PVEC_SYMBOL_WITH_POS: i32 = 6;
-const PURE_SIZE: i64 = 6_000_000;
 
 pub(crate) const CURRENT_THREAD_RELOC_SYM: &str = "current_thread_reloc";
 pub(crate) const F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM: &str = "f_symbols_with_pos_enabled_reloc";
@@ -2427,7 +2426,7 @@ impl Compiler {
             offset,
             self.context.int(
                 self.types.uintptr,
-                i32::try_from(PURE_SIZE).expect("PURESIZE fits int"),
+                i32::try_from(super::abi::PURESIZE).expect("PURESIZE fits int"),
             ),
         );
         self.conditional_jump(impure_entry, is_pure, error_block, impure_ok);

@@ -4000,10 +4000,11 @@ pub struct Interpreter {
     /// in the reference implementation.  All compiler policy and LIMPLE
     /// remain in the unchanged `comp.el` frontend.
     pub(crate) native_compiler: crate::lisp::native_comp::NativeCompilerState,
-    /// Process-local creation permissions owned by GNU's C runtime.  Keep
-    /// this as typed interpreter state so isolated Rust interpreters neither
-    /// communicate through a private Lisp variable nor mutate the host
-    /// process umask behind concurrently running tests.
+    /// fileio.c `realmask': the complement of `default-file-modes', read
+    /// from the process umask at startup (init_fileio) and kept in step
+    /// with it by `set-default-file-modes', which sets the process umask
+    /// as GNU does so that every file and directory the runtime creates
+    /// (and every subprocess) sees it.
     pub(crate) default_file_modes: i64,
     /// GNU's process-local time-zone rule.  Keep it interpreter-local here:
     /// Rust tests run interpreters concurrently in one host process, so
@@ -4172,6 +4173,10 @@ pub struct Interpreter {
     /// byte, in definition order until `set-charset-priority' reorders
     /// them by priority.
     iso_2022_charset_list: Vec<String>,
+    /// charset.c Vcharset_non_preferred_head: the first charset of the
+    /// ordered list that `set-charset-priority' did not move to the front;
+    /// char_charset answers `unicode' for a Unicode character on reaching it.
+    charset_non_preferred_head: Option<String>,
     /// Coding systems keyed by canonical name.
     coding_systems: Vec<CodingSystemState>,
     /// GNU ccl.c's private registration table.  Lisp symbols refer to these
@@ -4360,6 +4365,10 @@ pub struct Interpreter {
     /// interpreter-local because Rust tests run independent interpreters in
     /// parallel inside one host process.
     pub(crate) batch_standard_output_last_char: Option<char>,
+    /// xdisp.c `noninteractive_need_newline': set by every batch write to
+    /// stdout (print.c printchar/strout), cleared by `message', which
+    /// first emits a newline on stderr when it is set.
+    pub(crate) batch_stdout_need_newline: bool,
     /// Largest `#N=' label allocated by GNU's native printer.  print.c keeps
     /// this counter separately from the dynamically bound
     /// `print-number-table': `print--preprocess' resets it even when its
@@ -4466,6 +4475,11 @@ pub struct Interpreter {
     /// observe the error without intercepting throws bound for an outer catch.
     active_catch_tags: Vec<Value>,
     handler_dispatch_depth: usize,
+    /// The condition object the `handler-bind' handlers last ran for.  GNU
+    /// runs them once, from `signal' itself; Emaxx runs them at the
+    /// innermost frame boundary that sees the error and must not run them
+    /// again as the same error unwinds through the outer frames.
+    dispatched_signal: Option<Value>,
     suspend_condition_case_count: usize,
     window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
     /// Live terminal color count published by the tty frontend; batch
@@ -4816,7 +4830,7 @@ impl Interpreter {
             minibuffer_activation_count: 0,
             external_debugging_output_target: None,
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
-            default_file_modes: 0o755,
+            default_file_modes: initial_default_file_modes(),
             local_time_zone_rule,
             special_variables: vec![
                 "case-fold-search".into(),
@@ -5114,6 +5128,7 @@ impl Interpreter {
             big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             iso_2022_charset_list: vec!["ascii".into()],
+            charset_non_preferred_head: None,
             coding_systems: builtin_coding_systems(),
             ccl_programs: vec![None; 32],
             coding_aliases: builtin_coding_aliases(),
@@ -5209,6 +5224,7 @@ impl Interpreter {
             profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
             batch_standard_output_last_char: None,
+            batch_stdout_need_newline: false,
             print_number_index: 0,
             current_activation_id: 0,
             next_activation_id: 0,
@@ -5286,6 +5302,7 @@ impl Interpreter {
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),
             handler_dispatch_depth: 0,
+            dispatched_signal: None,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
             tty_display_color_cells: 0,
@@ -7450,3 +7467,24 @@ fn build_signal_value(condition: Value, data: Value) -> Value {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests;
+
+/// fileio.c init_fileio: `realmask = umask (0); umask (realmask);' -- the
+/// process's creation mask at startup, reported through
+/// `default-file-modes' as its complement.
+fn initial_default_file_modes() -> i64 {
+    #[cfg(unix)]
+    {
+        // SAFETY: umask only exchanges the process's creation mask; the
+        // original value is restored at once.
+        let mask = unsafe {
+            let mask = libc::umask(0);
+            libc::umask(mask);
+            mask
+        };
+        i64::from(!mask & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        0o755
+    }
+}

@@ -4862,6 +4862,8 @@ mod tests {
     #[test]
     fn terminal_glyphless_expansion_tracks_coding_faces_and_point_columns() {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        crate::test_support::eval_lisp(&mut interpreter, &mut Vec::new(), "(erase-buffer)")
+            .expect("erase scratch");
         interpreter.set_terminal_coding_system(None);
         interpreter.buffer.insert("AöB€C😀D\n");
         let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
@@ -4903,6 +4905,9 @@ mod tests {
 
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
         interpreter.set_terminal_coding_system(None);
+        // Startup left the *scratch* banner in the current buffer.
+        crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut Vec::new())
+            .expect("erase the scratch banner");
         interpreter.buffer.insert("ö😀\n");
         let Value::CharTable(table_id) = interpreter
             .default_toplevel_value("glyphless-char-display")
@@ -4936,6 +4941,8 @@ mod tests {
     fn glyphless_wrap_restarts_a_split_display_element_like_gnu() {
         let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
         interpreter.set_terminal_coding_system(None);
+        crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut Vec::new())
+            .expect("erase the scratch banner");
         interpreter
             .buffer
             .insert(&format!("{}öZ\n", "x".repeat(76)));
@@ -6257,6 +6264,8 @@ mod tests {
         interpreter
             .load_target("isearch")
             .expect("isearch.el loads");
+        crate::lisp::primitives::call(&mut interpreter, "erase-buffer", &[], &mut env)
+            .expect("erase the scratch banner");
         interpreter.buffer.insert(
             "alpha one
 beta word two

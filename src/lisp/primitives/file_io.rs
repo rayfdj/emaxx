@@ -16,6 +16,9 @@ pub(crate) fn format_source_props(
             }
         }
     }
+    // The format string's own intervals reach the result through
+    // add_text_properties_from_list too: reversed pairs.
+    props.reverse();
     if props.is_empty() { None } else { Some(props) }
 }
 
@@ -392,11 +395,16 @@ pub(crate) fn make_temp_file_internal(
             return Ok(last);
         }
         if dir_flag.is_nil() {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
+            // gen_tempname opens with S_IRUSR | S_IWUSR (the umask still
+            // applies), and makes a directory with 0700.
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&candidate) {
                 Ok(mut file) => {
                     if let Some(text) = text.and_then(string_like) {
                         file.write_all(text.text.as_bytes())
@@ -408,7 +416,13 @@ pub(crate) fn make_temp_file_internal(
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
         }
-        match fs::create_dir(&candidate) {
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&candidate) {
             Ok(()) => return Ok(last),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(LispError::Signal(error.to_string())),
@@ -768,9 +782,11 @@ pub(crate) fn write_printer_output(
                 .lookup_var("noninteractive", env)
                 .is_some_and(|value| value.is_truthy())
             {
-                std::io::stdout()
-                    .write_all(text.as_bytes())
+                // print.c printchar/strout: stdio's buffered stdout, and
+                // `noninteractive_need_newline' for the next `message'.
+                crate::lisp::primitives::batch_stdout::write(text.as_bytes())
                     .map_err(|error| LispError::Signal(error.to_string()))?;
+                interp.batch_stdout_need_newline = true;
             } else {
                 // An interactive session's `t' stream is the echo area
                 // (print_string to Qt): eval-expression's result shows.

@@ -1555,6 +1555,9 @@ fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
 
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
+    // The fixture's startup leaves the *scratch* banner in the current
+    // buffer, as GNU's does; the test is about the inserted bytes.
+    call(&mut interp, "erase-buffer", &[], &mut env).expect("erase the scratch banner");
     call(
         &mut interp,
         "insert-file-contents",

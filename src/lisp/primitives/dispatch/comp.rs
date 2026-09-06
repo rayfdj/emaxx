@@ -467,7 +467,8 @@ define_dispatch!(
                         Value::String(message.into()),
                     ]))
                 })?;
-                Ok(Value::Nil)
+                // Fcomp__init_ctxt: "Return t on success."
+                Ok(Value::T)
             }
             "comp--compile-ctxt-to-file0" => {
                 need_args(name, args, 1)?;

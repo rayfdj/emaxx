@@ -799,7 +799,7 @@ impl Interpreter {
                 self.note_not_macro(name);
                 return Ok(None);
             }
-            self.load_target_with_env(&file, env)?;
+            self.load_autoload_target(&file, env)?;
             attempted_autoload = true;
         }
     }

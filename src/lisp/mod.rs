@@ -222,6 +222,12 @@ pub fn latch_trace_load_errors() {
     let _ = TRACE_LOAD_ERRORS.set(std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some());
 }
 
+/// `fflush (stdout)' for the batch process: the stdio-style buffer behind
+/// `standard-output' (primitives::batch_stdout) reaches the descriptor.
+pub fn flush_batch_stdout() {
+    let _ = primitives::batch_stdout::flush();
+}
+
 pub(crate) fn trace_load_errors_enabled() -> bool {
     *TRACE_LOAD_ERRORS.get_or_init(|| std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some())
 }

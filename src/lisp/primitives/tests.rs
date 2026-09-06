@@ -1184,60 +1184,23 @@ fn native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model() {
 
 #[test]
 fn native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary() {
-    let signature_program = r#"
-        (mapcar
-         (lambda (name)
-           (comp--subr-signature (symbol-function name)))
-         '(car + concat if let))"#;
-    let expected_signatures = r#"("car(1 . 1)" "+(0 . many)" "concat(0 . many)" "if(2 . unevalled)" "let(1 . unevalled)")"#;
-    assert_upstream_primitive_contract(
-        &format!("(prin1 {signature_program})"),
-        expected_signatures,
+    // comp.c: `comp--subr-signature' prints the primitive's arity, and the
+    // capability helpers report the libgccjit backend GNU was built with;
+    // this build carries the same backend (the oracle answers the same
+    // libgccjit version, since both link the host library).
+    let program = r#"
+        (list
+         (mapcar (lambda (name) (comp--subr-signature (symbol-function name)))
+                 '(car + concat if let))
+         (native-comp-available-p)
+         (comp-native-driver-options-effective-p)
+         (comp-native-compiler-options-effective-p)
+         (comp-libgccjit-version))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(("car(1 . 1)" "+(0 . many)" "concat(0 . many)" "if(2 . unevalled)" "let(1 . unevalled)") t t t (14 2 0))"#,
+        "native-comp introspection",
     );
-
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    let mut env = Vec::new();
-    let form = Reader::new(signature_program)
-        .read()
-        .expect("native-comp signature program should parse")
-        .expect("native-comp signature program should contain a form");
-    let actual = interp
-        .eval(&form, &mut env)
-        .expect("native-comp signatures should evaluate");
-    let expected = Reader::new(expected_signatures)
-        .read()
-        .expect("native-comp expected signatures should parse")
-        .expect("native-comp expected signatures should exist");
-    assert!(
-        values_equal(&interp, &actual, &expected),
-        "comp--subr-signature differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
-    );
-
-    let capability_form = Reader::new(
-        r#"(list (native-comp-available-p)
-                  (comp-native-driver-options-effective-p)
-                  (comp-native-compiler-options-effective-p)
-                  (comp-libgccjit-version))"#,
-    )
-    .read()
-    .expect("native-comp capability program should parse")
-    .expect("native-comp capability program should contain a form");
-    assert_eq!(
-        interp
-            .eval(&capability_form, &mut env)
-            .expect("native-comp capability queries should evaluate"),
-        Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil]),
-        "compiler capability helpers must agree that Emaxx has no native-comp backend"
-    );
-
-    let error = call(
-        &mut interp,
-        "comp--subr-signature",
-        &[Value::Integer(1)],
-        &mut env,
-    )
-    .expect_err("comp--subr-signature must reject non-subrs");
-    assert_eq!(error.condition_type(), "wrong-type-argument");
 }
 
 #[test]
@@ -1324,82 +1287,350 @@ fn native_comp_source_names_hash_canonical_paths_and_real_contents() {
 }
 
 #[test]
-fn native_comp_mutating_entry_points_report_the_unavailable_backend_honestly() {
-    let missing = "/definitely/missing/emaxx-native.eln";
-    let upstream_program = format!(
-        r#"
-        (list
-         (comp--release-ctxt)
-         (condition-case error-data
-             (comp--compile-ctxt-to-file0 42)
-           (error error-data))
-         (condition-case error-data
-             (native-elisp-load 42)
-           (error error-data))
-         (condition-case error-data
-             (native-elisp-load {missing:?})
-           (error error-data)))"#
+fn native_comp_context_and_loader_entry_points_follow_comp_c() {
+    // comp.c: `comp--init-ctxt' returns t and `comp--release-ctxt' t;
+    // `native-elisp-load' of a file that is not an ELF object fails with
+    // dlerror's text, and of a missing file with "file does not exists".
+    // (The remaining `comp--*' entry points abort GNU when called without
+    // a compilation context, so they are not contracted here.)
+    let program = r#"
+        (list (comp--release-ctxt)
+              (comp--init-ctxt)
+              (comp--release-ctxt)
+              (condition-case e (native-elisp-load (expand-file-name "lisp/subr.el" source-directory))
+                (error (list (car e) (file-name-nondirectory (cadr e)) (string-suffix-p "invalid ELF header" (caddr e)))))
+              (condition-case e (native-elisp-load "/nonexistent/emaxx-x.eln") (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t t t (native-lisp-load-failed "subr.el" t) (native-lisp-load-failed "file does not exists" "/nonexistent/emaxx-x.eln"))"#,
+        "native-comp context and loader",
     );
-    let upstream_expected = format!(
-        "(t (wrong-type-argument stringp 42) \
-         (wrong-type-argument stringp 42) \
-         (native-lisp-load-failed \"file does not exists\" {missing:?}))"
-    );
-    assert_upstream_primitive_contract(&format!("(prin1 {upstream_program})"), &upstream_expected);
+}
 
-    let source = fs::canonicalize("../emacs/lisp/subr.el")
-        .expect("canonicalize existing non-ELN fixture")
-        .display()
-        .to_string();
-    let program = format!(
-        r#"
-        (list
-         (native-comp-available-p)
-         (comp--release-ctxt)
-         (condition-case error-data (comp--init-ctxt) (error error-data))
-         (condition-case error-data
-             (comp--compile-ctxt-to-file0 "output.eln")
-           (error error-data))
-         (condition-case error-data
-             (comp--install-trampoline 'car (symbol-function 'cdr))
-           (error error-data))
-         (condition-case error-data
-             (comp--register-lambda nil nil nil nil nil nil nil)
-           (error error-data))
-         (condition-case error-data
-             (comp--register-subr nil nil nil nil nil nil nil)
-           (error error-data))
-         (condition-case error-data
-             (comp--late-register-subr nil nil nil nil nil nil nil)
-           (error error-data))
-         (condition-case error-data
-             (native-elisp-load {source:?})
-           (error error-data)))"#
+#[test]
+fn handler_bind_handlers_run_once_with_the_signaling_frame_innermost() {
+    // eval.c signal_or_quit runs `handler-bind' handlers once per signal,
+    // from `signal' itself, so `mapbacktrace' inside a handler sees the
+    // signaling frame innermost: the unevaluated call for a void function
+    // (eval_sub records it before resolving the function cell), the
+    // unevaluated `let' for a void variable, the callee frame for a wrong
+    // arity (Ffuncall records it before funcall_lambda checks), the
+    // in-progress `list' and `car' frames for an error inside an argument.
+    // Emaxx dispatches at the innermost frame boundary that sees the error
+    // and remembers the object, so the frames it unwinds through afterwards
+    // run no handler again; before that, an error the evaluator itself
+    // signaled inside interpreted lambdas reached no handler at all, and one
+    // raised in a primitive ran the handler again at every enclosing
+    // primitive frame (`debug-early--handler' printed the batch backtrace
+    // once per frame).
+    let program = r#"
+        (let* ((frames-of (lambda ()
+                            (let (acc)
+                              (mapbacktrace (lambda (evald f args _)
+                                              (push (list evald (if (symbolp f) f 'fn) (length args)) acc))
+                                            'emaxx-hb-handler)
+                              (nreverse acc))))
+               (upto (lambda (frames)
+                       (let ((end (seq-position frames 'handler-bind-1
+                                                (lambda (fr sym) (eq (nth 1 fr) sym)))))
+                         (and end (seq-subseq frames 1 (1+ end))))))
+               (n 0) frames
+               (probe (lambda (thunk)
+                        (setq n 0 frames nil)
+                        (condition-case nil
+                            (handler-bind ((error #'emaxx-hb-handler))
+                              (funcall thunk))
+                          (error (list n (funcall upto frames)))))))
+          (defalias 'emaxx-hb-handler
+            (lambda (_) (setq n (1+ n)) (setq frames (funcall frames-of))))
+          (defalias 'emaxx-hb-one-arg (lambda (a) a))
+          (list (funcall probe (lambda () (let ((x 1)) (car x))))
+                (funcall probe (lambda () (undefined-fn-xyz 1 2)))
+                (funcall probe (lambda () (let ((y 2)) undefined-var-xyz)))
+                (funcall probe (lambda () (emaxx-hb-one-arg)))
+                (funcall probe (lambda () (signal 'wrong-type-argument (list 'listp 1))))
+                (funcall probe (lambda () (car (list undefined-var-xyz))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 ((t car 1) (nil let 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((nil undefined-fn-xyz 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((nil let 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((t emaxx-hb-one-arg 0) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((t signal 2) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))) \
+         (1 ((nil list 1) (nil car 1) (t fn 0) (t funcall 1) (t fn 0) (t handler-bind-1 3))))",
+        "handler-bind dispatch",
     );
-    let unavailable = "(error \"Native compiler backend is unavailable\")";
-    let expected = format!(
-        "(nil t {unavailable} {unavailable} {unavailable} {unavailable} \
-         {unavailable} {unavailable} \
-         (native-lisp-load-failed {source:?} \
-          \"Native compiler backend is unavailable\"))"
+}
+
+#[test]
+fn json_serialize_treats_a_vector_as_an_array() {
+    // json.c lisp_to_json: a vector is a JSON array, a list an object
+    // (plist or alist) whose keys must be symbols.  The merged vector
+    // representation reached `json-serialize' as `Value::Vector' while the
+    // serializer only knew the older `vector-literal' list, so every
+    // vector was rejected as `(wrong-type-argument json-value "vector")'
+    // and jsonrpc could not send a request.
+    // (The JSON strings' double quotes become apostrophes so the expected
+    // text needs no escaping.)
+    let program = r#"
+        (let ((q (lambda (text) (string-replace "\"" "'" text))))
+          (require 'json)
+          (list (funcall q (json-serialize [1 2]))
+                (funcall q (json-serialize (list :a [1 "x"] :b [])))
+                (funcall q (json-serialize (vector)))
+                (funcall q (json-serialize [:null :false t]))
+                (funcall q (json-serialize (list :a (vector "x" 1.5 [nil]))))
+                (json-parse-string "[1,[2]]")
+                (json-parse-string "[1,[2]]" :array-type 'list)
+                (funcall q (json-encode [1 2]))
+                (condition-case e (json-serialize (list :a (list 1 2))) (error e))
+                (condition-case e (json-serialize [(1 2)]) (error e))
+                (funcall q (json-serialize (list (cons :a 1) (cons 'b 2))))
+                (funcall q (json-serialize (list :a 1 :a 2 'a 3)))
+                (condition-case e (json-serialize (list :a)) (error e))
+                (condition-case e (json-serialize (cons (cons 'a 1) 2)) (error e))
+                (funcall q (json-serialize (list (cons 'a nil) (cons 'b (list :c 1)))))
+                (condition-case e (json-serialize '#1=((a . 1) . #1#)) (error (car e)))
+                (condition-case e (json-serialize '#2=(:a 1 . #2#)) (error (car e)))
+                (condition-case e (json-serialize '(abc)) (error e))
+                (condition-case e (json-serialize '((a 1))) (error e))
+                (condition-case e (json-serialize '((a . 1) . b)) (error e))
+                (funcall q (json-serialize '((a . 1) (b . 2) (a . 3))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"("[1,2]" "{'a':[1,'x'],'b':[]}" "[]" "[null,false,true]" "{'a':['x',1.5,[{}]]}" [1 [2]] (1 (2)) "[1,2]" (wrong-type-argument symbolp 1) (wrong-type-argument symbolp 1) "{':a':1,'b':2}" "{'a':1,'a':3}" (wrong-type-argument consp nil) (wrong-type-argument listp ((a . 1) . 2)) "{'a':{},'b':{'c':1}}" circular-list circular-list (wrong-type-argument consp nil) (wrong-type-argument consp nil) (wrong-type-argument listp ((a . 1) . b)) "{'a':1,'b':2}")"#,
+        "json-serialize vectors and object keys",
     );
-    let mut interp = Interpreter::new();
-    let mut env = Vec::new();
-    let form = Reader::new(&program)
-        .read()
-        .expect("native-comp backend boundary should parse")
-        .expect("native-comp backend boundary should contain a form");
-    let actual = interp
-        .eval(&form, &mut env)
-        .expect("native-comp backend boundary should evaluate");
-    let expected = Reader::new(&expected)
-        .read()
-        .expect("native-comp backend expected result should parse")
-        .expect("native-comp backend expected result should exist");
-    assert!(
-        values_equal(&interp, &actual, &expected),
-        "native-comp backend boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+}
+
+#[test]
+fn ash_with_a_bignum_count_follows_data_c() {
+    // data.c Fash: a COUNT outside the fixnum range shifts 0 to 0, shifts
+    // any other value to -1 or 0 by its sign when negative, and signals
+    // `overflow-error' when positive; subr.el's `lsh' rides on that.  With
+    // the merged 62-bit fixnum range `(* 2 most-positive-fixnum)' is a
+    // bignum, and Emaxx rejected it as `number-or-marker-p'
+    // (data-tests-ash-lsh).
+    let program = r#"
+        (list (ash 0 (* 2 most-positive-fixnum))
+              (ash 1000 (* 2 most-negative-fixnum))
+              (ash -1000 (* 2 most-negative-fixnum))
+              (ash (* 2 most-negative-fixnum) (* 2 most-negative-fixnum))
+              (ash 0 (* 2 most-negative-fixnum))
+              (condition-case e (ash 1 (* 2 most-positive-fixnum)) (error e))
+              (condition-case e (ash -1 (* 2 most-positive-fixnum)) (error e))
+              (= (ash most-negative-fixnum 1) (* most-negative-fixnum 2))
+              (= (ash (* 2 most-negative-fixnum) -1) most-negative-fixnum)
+              (with-suppressed-warnings ((suspicious lsh))
+                (list (= (lsh most-negative-fixnum 1) (* most-negative-fixnum 2))
+                      (= (lsh -1 -1) most-positive-fixnum)
+                      (condition-case e (lsh (1- most-negative-fixnum) -1) (error e)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(0 0 -1 -1 0 (overflow-error) (overflow-error) t t (t t (args-out-of-range -2305843009213693953 -1)))",
+        "ash bignum count",
     );
+}
+
+#[test]
+fn where_is_internal_runs_menu_item_filters_only_for_verified_matches() {
+    // keymap.c where_is_internal_1 reads bindings with get_keyelt
+    // (binding, 0): a menu-item's `:filter' never runs during the scan.
+    // Fwhere_is_internal then verifies candidates shortest first with
+    // shadow_lookup (which does run filters) and, with FIRSTONLY, returns
+    // the first all-ASCII sequence before touching the rest.  Emaxx ran
+    // every filter while scanning, so `substitute-command-keys' during
+    // startup evaluated tab-bar's filter and left a modified
+    // " *string-pixel-width*" buffer behind.
+    let program = r#"
+        (progn
+          (defvar emaxx-filter-calls 0)
+          (defun emaxx-filter (x) (setq emaxx-filter-calls (1+ emaxx-filter-calls)) x)
+          (define-key global-map [emaxx-probe] (list 'menu-item "p" 'ignore :filter #'emaxx-filter))
+          (define-key global-map [emaxx-probe-2] (list 'menu-item "q" 'forward-char :filter #'emaxx-filter))
+          (list (where-is-internal 'forward-char nil t)
+                emaxx-filter-calls
+                (progn (substitute-command-keys "\\[forward-char]") emaxx-filter-calls)
+                (progn (where-is-internal 'ignore (list global-map)) emaxx-filter-calls)
+                (get-buffer " *string-pixel-width*")))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "([6] 0 0 1 nil)",
+        "where-is-internal menu-item filters",
+    );
+}
+
+#[test]
+fn current_time_and_a_nil_time_convert_form_follow_current_time_list() {
+    // timefns.c make_lisp_time and Ftime_convert: under `current-time-list'
+    // (t by default) `current-time' and a nil FORM answer the old-style
+    // (HIGH LOW USEC PSEC) list; with it nil they answer (TICKS . HZ),
+    // `current-time' always at 1000000000 Hz.  Emaxx answered the pair
+    // regardless, so startup.el's `(setq before-init-time (current-time))'
+    // left a pair where GNU has a list.  What `time-convert' answers for a
+    // rational under a nil `current-time-list' is row 167 of the ledger
+    // (GNU keeps the input's HZ, Emaxx reduces the fraction).
+    let program = r#"
+        (list (type-of (current-time)) (length (current-time))
+              (time-convert 1.5 nil) (time-convert '(1 2 3 4) nil) (time-convert 100 nil)
+              (time-convert '(1 . 3) nil)
+              (let ((current-time-list nil))
+                (list (cdr (current-time)) (time-convert 100 nil) (time-convert 1 t)
+                      (consp (time-convert nil nil)) (cdr (time-convert nil nil)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(cons 4 (0 1 500000 0) (1 2 3 4) (0 100 0 0) (0 0 333333 333333) (1000000000 (100 . 1) (1 . 1) t 1000000000))",
+        "current-time-list forms",
+    );
+}
+
+#[test]
+fn message_log_disables_undo_in_the_messages_buffer() {
+    // xdisp.c message_dolog sets `buffer-undo-list' to t and
+    // `cache-long-scans' to nil in the log buffer every time it logs, so
+    // an undo list a user installs there is gone after the next message.
+    // Emaxx recorded undo entries for every logged line.
+    let program = r#"
+        (progn
+          (message "x")
+          (list (with-current-buffer "*Messages*" (list buffer-undo-list cache-long-scans))
+                (progn (with-current-buffer "*Messages*" (setq buffer-undo-list nil cache-long-scans t))
+                       (message "y")
+                       (with-current-buffer "*Messages*" (list buffer-undo-list cache-long-scans)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((t nil) (t nil))",
+        "message log undo list",
+    );
+}
+
+#[test]
+fn copy_keymap_copies_a_list_keymap_like_keymap_c() {
+    // keymap.c copy_keymap_1/copy_keymap_item: a fresh spine, copied
+    // char-tables, vectors and nested keymaps, fresh `(EVENT . DEFN)'
+    // cells, fresh cells for a menu-item's marker, name and binding with
+    // its tail shared, fresh cells for an old-style item's strings, the
+    // parent tail shared, a symbol resolved through its function cell,
+    // and `keymapp' for anything else.  Emaxx returned a list keymap
+    // itself (keymap-copy-keymap/is-not-eq).
+    let program = r#"
+        (list (let* ((sub (let ((m (make-sparse-keymap))) (define-key m "b" 'ignore) m))
+                     (m (make-sparse-keymap "Menu")))
+                (define-key m "a" 'ignore)
+                (define-key m "c" sub)
+                (define-key m [menu-bar foo] '(menu-item "Foo" ignore :help "h"))
+                (set-keymap-parent m (let ((p (make-sparse-keymap))) (define-key p "z" 'undo) p))
+                (let* ((c (copy-keymap m))
+                       (mi-c (assq 'foo (cdr (lookup-key c [menu-bar]))))
+                       (mi-m (assq 'foo (cdr (lookup-key m [menu-bar])))))
+                  (list (eq c m) (equal c m)
+                        (eq (keymap-parent c) (keymap-parent m))
+                        (eq (lookup-key c "c") (lookup-key m "c"))
+                        (equal (lookup-key c "c") sub)
+                        (eq mi-c mi-m) (equal mi-c mi-m)
+                        (eq (nthcdr 4 mi-c) (nthcdr 4 mi-m))
+                        (eq (nthcdr 3 mi-c) (nthcdr 3 mi-m))
+                        (condition-case e (copy-keymap 5) (error e))
+                        (condition-case e (copy-keymap 'emaxx-no-such-map) (error e)))))
+              (let ((f (make-keymap)))
+                (define-key f "x" 'ignore)
+                (define-key f [?y] (let ((s (make-sparse-keymap))) (define-key s "w" 'undo) s))
+                (let ((c (copy-keymap f)))
+                  (list (eq c f) (equal c f) (eq (cadr c) (cadr f))
+                        (eq (lookup-key c "x") 'ignore)
+                        (eq (lookup-key c "y") (lookup-key f "y"))
+                        (equal (lookup-key c "y") (lookup-key f "y")))))
+              (let ((k (make-sparse-keymap)))
+                (fset 'emaxx-copy-keymap-fn k)
+                (define-key k "q" 'ignore)
+                (let ((c (copy-keymap 'emaxx-copy-keymap-fn)))
+                  (list (eq c k) (equal c k))))
+              (let ((o (make-sparse-keymap)))
+                (define-key o "s" '("Old" "help" . ignore))
+                (let* ((c (copy-keymap o))
+                       (ec (assq ?s (cdr c)))
+                       (em (assq ?s (cdr o))))
+                  (list (eq ec em) (equal ec em) (eq (cddr ec) (cddr em)) (eq (cdddr ec) (cdddr em))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((nil t t nil t nil t t nil (wrong-type-argument keymapp 5) (wrong-type-argument keymapp emaxx-no-such-map)) (nil t nil t nil t) (nil t) (nil t nil t))",
+        "copy-keymap",
+    );
+}
+
+#[test]
+fn load_warns_about_unescaped_character_literals_on_the_eval_buffer_path() {
+    // lread.c: Fload binds `lread--unescaped-character-literals' to nil,
+    // the reader conses every unescaped `?)'-style literal onto it, and
+    // load_warn_unescaped_character_literals messages "Loading `FILE':
+    // ..." as the load unwinds -- also for a `load' with NOMESSAGE.  The
+    // merged `load' evaluates a source file through
+    // load-with-code-conversion and `eval-buffer', whose reader had not
+    // recorded the literals (lread-tests--unescaped-char-literals).  (The
+    // message's quotes and backslashes are substituted so the expected
+    // text needs no escaping.)
+    let program = r#"
+        (let* ((f (make-temp-file "emaxx-lit" nil ".el" "?) ?( ?; ?\" ?[ ?]"))
+               (r (load f nil :nomessage :nosuffix))
+               (m (with-current-buffer "*Messages*"
+                    (save-excursion
+                      (goto-char (point-max))
+                      (forward-line -1)
+                      (buffer-substring (point) (line-end-position))))))
+          (delete-file f)
+          (list r (string-replace "\\" "B" (string-replace "\"" "Q" (string-replace f "FILE" m)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t \"Loading `FILE': unescaped character literals `?Q', `?(', `?)', `?;', `?[', `?]' detected, `?BQ', `?B(', `?B)', `?B;', `?B[', `?B]' expected!\")",
+        "unescaped character literal warning",
+    );
+}
+
+#[test]
+fn sqlite_values_are_a_list_or_a_vector() {
+    // sqlite.c bind_values walks VALUES as a vector (AREF) or a list
+    // (XCAR/XCDR); Fsqlite_execute and Fsqlite_select signal `sqlite-error'
+    // for anything else.  The merged vector representation made
+    // `vector_items' vector-only, and a list of parameters (multisession.el
+    // passes one) signalled `(wrong-type-argument vectorp ...)'.
+    let program = r#"
+        (let ((db (sqlite-open)))
+          (sqlite-execute db "create table t (a, b)")
+          (sqlite-execute db "insert into t values (?, ?)" (list "x" "y"))
+          (sqlite-execute db "insert into t values (?, ?)" ["p" "q"])
+          (list (sqlite-select db "select * from t where a = ?" (list "x"))
+                (sqlite-select db "select * from t where a = ?" ["p"])
+                (sqlite-select db "select * from t order by a")
+                (condition-case e (sqlite-select db "select 1" 5) (error e))
+                (condition-case e (sqlite-execute db "select 1" "s") (error e))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((("x" "y")) (("p" "q")) (("p" "q") ("x" "y")) (sqlite-error "VALUES must be a list or a vector") (sqlite-error "VALUES must be a list or a vector"))"#,
+        "sqlite VALUES",
+    );
+}
+
+#[test]
+fn next_read_file_uses_dialog_p_follows_the_oracle_toolkit() {
+    // fileio.c: without USE_GTK, USE_MOTIF, HAVE_NS, HAVE_NTGUI or
+    // HAVE_HAIKU the predicate is nil, and `x-file-dialog' does not exist,
+    // so `read-file-name' takes the minibuffer path (dired-test-bug25609
+    // signalled `void-function x-file-dialog' when Emaxx answered t).  The
+    // Darwin oracle is an NS build: the batch session's initial frame
+    // counts as a window system, so the default `use-dialog-box' and
+    // `use-file-dialog' answer t until `last-nonmenu-event' is a key.
+    let program = r#"
+        (list (next-read-file-uses-dialog-p)
+              (let ((use-dialog-box t) (use-file-dialog t) (last-nonmenu-event nil))
+                (next-read-file-uses-dialog-p))
+              (let ((use-dialog-box nil)) (next-read-file-uses-dialog-p))
+              (fboundp 'x-file-dialog))"#;
+    let expected = if cfg!(target_os = "macos") {
+        "(t t nil t)"
+    } else {
+        "(nil nil nil nil)"
+    };
+    assert_oracle_contract_matches_interpreter(program, expected, "read-file-name dialog");
 }
 
 #[test]
@@ -4168,8 +4399,8 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
     assert_eq!(interp.charset_id("unicode"), Some(2));
     assert_eq!(interp.charset_id("emacs"), Some(3));
     assert_eq!(interp.charset_id("eight-bit"), Some(4));
-    assert_eq!(charset_for_char('A' as u32), "ascii");
-    assert_eq!(charset_for_char('あ' as u32), "unicode");
+    assert_eq!(char_charset(&interp, 'A' as u32).0, "ascii");
+    assert_eq!(char_charset(&interp, 'あ' as u32).0, "unicode");
 
     interp
         .define_charset_alias("latin", "ascii")
@@ -9853,12 +10084,23 @@ fn process_attributes_follows_sysdep_procfs() {
     // sysdep.c system_process_attributes (GNU_LINUX) conses 31 attributes
     // from /proc/PID: owner ids and names, the `stat' fields, jiffies as
     // old-style times, /proc/uptime-derived start/etime/pcpu, and the
-    // escaped command line.  The child is a fresh `sleep', so the parent
+    // escaped command line.  The child is a fresh `sh -c "sleep 5"' that
+    // ignores its extra arguments and stays alive (a `sleep' handed those
+    // arguments exits at once, and reading /proc then raced its death:
+    // an empty cmdline and a zombie state), so the parent
     // linkage, the child-accounting fields and the argument escaping are
-    // exact; the live counters are pinned by type.
+    // exact; the live counters are pinned by type.  The attributes are
+    // read once the shell has reached its `sleep' (state "S"): a child
+    // still inside exec on a loaded machine reads "D" for an instant,
+    // and that transient failed one gate run on either editor's side.
     let program = r#"
-        (let* ((p (start-process "s" nil "sleep" "5" "a b" "c\\d"))
-               (a (process-attributes (process-id p)))
+        (let* ((p (start-process "s" nil "sh" "-c" "sleep 5" "a b" "c\\d"))
+               (a (let ((deadline (+ (float-time) 2.0)) a)
+                    (while (and (not (equal (cdr (assq 'state (setq a (process-attributes (process-id p)))))
+                                            "S"))
+                                (< (float-time) deadline))
+                      (sleep-for 0.01))
+                    a))
                (keys '(euid user egid group comm state ppid pgrp sess ttname tpgid
                        minflt majflt cminflt cmajflt utime stime time cutime cstime
                        ctime start etime pcpu pri nice thcount vsize rss pmem args)))
@@ -9876,7 +10118,7 @@ fn process_attributes_follows_sysdep_procfs() {
                     (cdr (assq 'thcount a))
                     (let ((args (cdr (assq 'args a))))
                       (list (file-name-absolute-p args)
-                            (string-suffix-p "/sleep 5 a\\ b c\\\\d" args)))
+                            (string-suffix-p "/sh -c sleep\\ 5 a\\ b c\\\\d" args)))
                     (process-attributes 0))
             (delete-process p)))"#;
     assert_oracle_contract_matches_interpreter(
@@ -9885,7 +10127,7 @@ fn process_attributes_follows_sysdep_procfs() {
          utime cmajflt cminflt majflt minflt tpgid ttname sess pgrp ppid state comm group egid \
          user euid) (integer string integer string string string integer integer integer string \
          integer integer integer integer integer cons cons cons cons cons cons cons cons float \
-         integer integer integer integer integer float string) \"sleep\" t t t t 0 0 (0 0 0 0) \
+         integer integer integer integer integer float string) \"sh\" t t t t 0 0 (0 0 0 0) \
          (0 0 0 0) (0 0 0 0) 4 4 1 (t t) nil)",
         "process-attributes",
     );
@@ -20443,5 +20685,294 @@ fn iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files()
         program,
         r#"((12371 12435 97) (charset japanese-jisx0208) nil iso-2022-7bit "$B$3$s(Ba" undecided ((227 129 147 227 130 147 97) (charset japanese-jisx0208) iso-2022-7bit) ((12371 12435 97 10) (charset japanese-jisx0208) iso-2022-7bit-unix iso-2022-7bit-unix) ((12354 10) (charset japanese-jisx0208) iso-2022-jp-dos) (12288 97) (12354 14 165) (65393 19970 12354))"#,
         "iso-2022 decoding",
+    );
+}
+
+#[test]
+fn charset_decoders_annotate_like_produce_charset_and_emacs_mule_encodes_like_coding_c() {
+    // coding.c decode_coding_sjis/_big5/_euc_jp/_emacs_mule/_charset all
+    // ADD_CHARSET_DATA, so produce_charset gives every decoded string,
+    // region (a multibyte source, its raw bytes as the decoder's input) and
+    // file its `charset' text properties, the single-byte charset codings
+    // (koi8-r, cp1252) included.  encode_coding_emacs_mule writes
+    // EMACS_MULE_LEADING_CODES of the first Vemacs_mule_charset_list
+    // charset that encodes the character, never steered by a `charset'
+    // property (no CODING_ANNOTATE_CHARSET_MASK outside ISO-2022), and
+    // the default char (a space) for the unencodable.
+    let program = r##"
+(let ((f (make-temp-file "emaxx-charset"))
+	    (dec (lambda (bytes cs)
+		   (let ((s (decode-coding-string bytes cs)) (r nil) (i 0))
+		     (while (< i (length s))
+		       (push (get-text-property i 'charset s) r)
+		       (setq i (1+ i)))
+		     (list (append s nil) (nreverse r))))))
+	(unwind-protect
+	    (list (funcall dec (unibyte-string ?a #x82 #xa0 ?b #xb1 ?c) 'sjis)
+		  (funcall dec (unibyte-string #x82) 'sjis)
+		  (funcall dec (unibyte-string ?x #xa4 #xa4 ?y) 'big5)
+		  (funcall dec (unibyte-string ?a #xa4 #xa2 #x8e #xb1 #x8f #xb0 #xa1) 'euc-jp)
+		  (funcall dec (unibyte-string #xc4 #xe3) 'chinese-iso-8bit)
+		  (funcall dec (unibyte-string ?a #x81 #xa9 ?b #x81 #xaa) 'emacs-mule)
+		  (funcall dec (unibyte-string #x92 #xa4 #xa2) 'emacs-mule)
+		  (funcall dec (unibyte-string ?a #xe9) 'iso-latin-1)
+		  (funcall dec (unibyte-string ?a #xe9) 'iso-latin-2)
+		  (funcall dec (unibyte-string ?a #xc1 #xff #x80) 'koi8-r)
+		  (funcall dec (unibyte-string ?a #x81 #x8d #x9d) 'cp1252)
+		  (funcall dec (unibyte-string #xe9) 'undecided)
+		  (with-temp-buffer
+		    (insert (unibyte-string ?a #x82 #xa0 ?b))
+		    (decode-coding-region (point-min) (point-max) 'sjis)
+		    (list (append (buffer-string) nil)
+			  (mapcar (lambda (i) (get-text-property i 'charset)) '(1 2 3))))
+		  (with-temp-buffer
+		    (insert (unibyte-string ?a #xe9))
+		    (decode-coding-region (point-min) (point-max) 'iso-latin-2)
+		    (list (append (buffer-string) nil)
+			  (mapcar (lambda (i) (get-text-property i 'charset)) '(1 2))))
+		  (progn (with-temp-file f (set-buffer-multibyte nil)
+					 (insert (unibyte-string ?a #x82 #xa0 ?b #xa4 #xa4)))
+			 (mapcar (lambda (cs)
+				   (with-temp-buffer
+				     (let ((coding-system-for-read cs)) (insert-file-contents f))
+				     (list (append (buffer-string) nil)
+					   (mapcar (lambda (i) (get-text-property i 'charset)) '(1 2 3 4 5 6)))))
+				 '(sjis big5 euc-jp iso-latin-1)))
+		  (append (encode-coding-string (string ?a #xe9 #x3042 #x20ac #xac00 #xff61 #x1f600) 'emacs-mule) nil)
+		  (append (encode-coding-string (decode-coding-string (unibyte-string #x81 #xa9 #x92 #xa4 #xa2) 'emacs-mule) 'emacs-mule) nil)
+		  (append (encode-coding-string (string #x3fffe9) 'emacs-mule) nil)
+		  (append (encode-coding-string (decode-coding-string (unibyte-string #x82 #xa0) 'sjis) 'emacs-mule) nil)
+		  (append (decode-coding-string (encode-coding-string (string ?a #xe9 #x3042 #x20ac #xac00 #xff61) 'emacs-mule) 'emacs-mule) nil)
+		  (append (encode-coding-string (decode-coding-string (unibyte-string #x8e #xb1) 'euc-jp) 'iso-2022-jp) nil))
+	  (delete-file f)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"(((97 12354 98 65393 99) (nil japanese-jisx0208 japanese-jisx0208 katakana-jisx0201 katakana-jisx0201)) ((4194178) (nil)) ((120 20013 121) (nil big5 big5)) ((97 12354 65393 19970) (nil japanese-jisx0208 katakana-jisx0201 japanese-jisx0212)) ((20320) (chinese-gb2312)) ((97 169 98 170) (nil latin-iso8859-1 nil latin-iso8859-1)) ((12354) (japanese-jisx0208)) ((97 233) (iso-8859-1 iso-8859-1)) ((97 233) (iso-8859-2 iso-8859-2)) ((97 1072 1066 9472) (koi8-r koi8-r koi8-r koi8-r)) ((97 4194177 4194189 4194205) (windows-1252 windows-1252 windows-1252 windows-1252)) ((233) (iso-8859-1)) ((97 12354 98) (nil japanese-jisx0208 japanese-jisx0208)) ((97 233) (iso-8859-2 iso-8859-2)) (((97 12354 98 65380 65380) (nil japanese-jisx0208 japanese-jisx0208 katakana-jisx0201 katakana-jisx0201 nil)) ((97 4194178 4194208 98 20013) (nil nil nil nil big5 nil)) ((97 4194178 4194208 98 12356) (nil nil nil nil japanese-jisx0208 nil)) ((97 130 160 98 164 164) (iso-8859-1 iso-8859-1 iso-8859-1 iso-8859-1 iso-8859-1 iso-8859-1))) (97 129 233 145 164 162 134 164 147 176 161 137 161 32) (129 169 145 164 162) (233) (145 164 162) (97 233 12354 8364 44032 65377) (32))"##,
+        "charset decoders and emacs-mule encoder",
+    );
+}
+
+#[test]
+fn print_prunes_charset_properties_like_print_prune_string_charset() {
+    // print.c print_prune_string_charset: `print-charset-text-property'
+    // t prints the `charset' properties as they are, nil never, and
+    // `default' only when some charset span holds a non-ASCII character
+    // whose CHAR_CHARSET is not the span's charset (a unibyte string's
+    // bytes count as Latin-1 characters there, per
+    // fetch_string_char_advance); the decision is per string, and the
+    // other properties survive the pruning.
+    let program = r##"
+(let ((sj (decode-coding-string (unibyte-string #x82 #xa0) 'sjis))
+	    (l1 (decode-coding-string (unibyte-string ?a #xe9) 'iso-latin-1))
+	    (l2 (decode-coding-string (unibyte-string ?a #xe9) 'iso-latin-2))
+	    (ascii (propertize "abc" 'charset 'japanese-jisx0208 'face 'bold))
+	    (two (concat (propertize (string #xe9) 'charset 'iso-8859-2) "x"
+			 (propertize (string #xe9) 'charset 'iso-8859-1 'face 'bold)))
+	    (ub (propertize (unibyte-string 233) 'charset 'eight-bit))
+	    (mb (propertize (string #x3fffe9) 'charset 'eight-bit))
+	    (mb2 (propertize (string #x3fffe9) 'charset 'iso-8859-1)))
+	(mapcar (lambda (v)
+		  (let ((print-charset-text-property v))
+		    (mapcar (lambda (s) (append (prin1-to-string s) nil))
+			    (list sj l1 l2 ascii two ub mb mb2 (list sj) (format "%S" sj)))))
+		'(t nil default)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"(((35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 41) (35 40 34 97 98 99 34 32 48 32 51 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 32 102 97 99 101 32 98 111 108 100 41 41) (35 40 34 233 120 233 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 32 50 32 51 32 40 102 97 99 101 32 98 111 108 100 32 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 101 105 103 104 116 45 98 105 116 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 101 105 103 104 116 45 98 105 116 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (40 35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 41) (34 35 40 92 34 12354 92 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 34)) ((34 12354 34) (34 97 233 34) (34 97 233 34) (35 40 34 97 98 99 34 32 48 32 51 32 40 102 97 99 101 32 98 111 108 100 41 41) (35 40 34 233 120 233 34 32 50 32 51 32 40 102 97 99 101 32 98 111 108 100 41 41) (34 92 51 53 49 34) (34 92 51 53 49 34) (34 92 51 53 49 34) (40 34 12354 34 41) (34 92 34 12354 92 34 34)) ((35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 97 233 34 32 48 32 50 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 41) (35 40 34 97 98 99 34 32 48 32 51 32 40 102 97 99 101 32 98 111 108 100 41 41) (35 40 34 233 120 233 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 50 41 32 50 32 51 32 40 102 97 99 101 32 98 111 108 100 32 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 101 105 103 104 116 45 98 105 116 41 41) (34 92 51 53 49 34) (35 40 34 92 51 53 49 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 105 115 111 45 56 56 53 57 45 49 41 41) (40 35 40 34 12354 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 41) (34 35 40 92 34 12354 92 34 32 48 32 49 32 40 99 104 97 114 115 101 116 32 106 97 112 97 110 101 115 101 45 106 105 115 120 48 50 48 56 41 41 34)))"##,
+        "charset property printing",
+    );
+}
+
+#[test]
+fn char_charset_family_follows_charset_c() {
+    // charset.c: char_charset walks the priority order and answers
+    // `unicode' once Vcharset_non_preferred_head (the part of the order
+    // `set-charset-priority' did not move) is reached for a Unicode
+    // character, `eight-bit' for a raw byte; a coding-system RESTRICTION
+    // reads coding_system_charset_list (Vemacs_mule_charset_list for
+    // emacs-mule); `split-char' is the code's bytes per dimension;
+    // `charset-after' and `find-charset-string'/`-region' report raw bytes
+    // as `eight-bit'.  ENCODE_CHAR/DECODE_CHAR honour a charset's
+    // `:min-code'/`:max-code' and the code-space index of an offset
+    // charset, a map file's `FROM-TO C' lines advance by index, the
+    // `unicode' and `emacs' code spaces end at MAX_UNICODE_CHAR and
+    // MAX_5_BYTE_CHAR, and CHECK_CHARSET_GET_CHARSET signals for an
+    // unknown charset.
+    let program = r##"
+(list (mapcar #'char-charset (list ?a #xe9 #x3042 #x20ac #x110000 #x3fffe9 #x3fff7f #x200000 #x1f600))
+	    (char-charset #x3042 '(japanese-jisx0208 ascii))
+	    (char-charset #xe9 '(japanese-jisx0208 ascii))
+	    (char-charset ?a '(japanese-jisx0208))
+	    (char-charset #x3042 'iso-2022-jp) (char-charset #xe9 'iso-2022-jp)
+	    (char-charset #x3042 'utf-8) (char-charset #xe9 'iso-latin-2)
+	    (mapcar #'split-char (list ?a #xe9 #x3042 #x110000 #x3fffe9 #x3fff7f #xac00))
+	    (with-temp-buffer (insert (string #x3fffe9 #x3042 ?\s ?a))
+			      (mapcar #'charset-after '(1 2 3 4 10)))
+	    (find-charset-string (string ?a #x3fffe9 #x20ac #x3042))
+	    (find-charset-string (unibyte-string ?a 233))
+	    (find-charset-string "")
+	    (find-charset-string (string ?a #xe9 #x3042) '(japanese-jisx0208 ascii iso-8859-1))
+	    (with-temp-buffer (insert (string ?a #x3fffe9 #x3042)) (find-charset-region (point-min) (point-max)))
+	    (with-temp-buffer (set-buffer-multibyte nil) (insert (unibyte-string ?a 233)) (find-charset-region (point-min) (point-max)))
+	    (progn (set-charset-priority 'japanese-jisx0208)
+		   (list (seq-take (charset-priority-list) 3)
+			 (mapcar #'char-charset (list ?a #xe9 #x3042 #x20ac #x110000 #x3fffe9))
+			 (mapcar #'split-char (list #xe9 #x3042 #x20ac))
+			 (find-charset-string (string ?a #x3fffe9 #x20ac #x3042))))
+	    (progn (set-charset-priority 'ascii)
+		   (list (seq-take (charset-priority-list) 3) (char-charset #xe9) (char-charset #x3042)))
+	    (progn (set-charset-priority 'ascii 'iso-8859-1)
+		   (list (char-charset #xe9) (char-charset #x3042)))
+	    (progn (set-charset-priority 'iso-8859-2)
+		   (list (seq-take (charset-priority-list) 3) (char-charset #xe9) (char-charset #x3042) (char-charset #x20ac)))
+	    (progn (set-charset-priority 'unicode)
+		   (list (char-charset #xe9) (char-charset #x3042) (char-charset #x110000) (split-char #x3042)))
+	    (list (decode-char 'unicode #x3fff7f) (decode-char 'emacs #x3fff7f) (decode-char 'emacs #x3fff80)
+		  (decode-char 'eight-bit #xe9) (decode-char 'eight-bit #x7f)
+		  (encode-char #x3fffe9 'unicode) (encode-char #x3fffe9 'emacs) (encode-char #x3fff7f 'emacs)
+		  (encode-char #x3fff7f 'unicode) (encode-char #x3fffe9 'eight-bit) (encode-char #x3fffe9 'iso-8859-1)
+		  (encode-char #x3fffe9 'japanese-jisx0208) (encode-char #x3fffe9 'latin-iso8859-1))
+	    (list (encode-char #x3fff7f 'gb18030) (encode-char #x10ffff 'gb18030) (encode-char #x110000 'gb18030)
+		  (encode-char #x80 'gb18030-4-byte-bmp)
+		  (decode-char 'gb18030-4-byte-bmp #x81308130) (decode-char 'gb18030-4-byte-bmp #x81308435)
+		  (decode-char 'gb18030-4-byte-bmp #x81308436)
+		  (decode-char 'gb18030-4-byte-smp #x90308130) (decode-char 'gb18030-4-byte-smp #xE3329A35)
+		  (decode-char 'gb18030-4-byte-smp #xE3329A36)
+		  (decode-char 'gb18030-4-byte-ext-1 #x8431A530) (encode-char #x200000 'gb18030-4-byte-ext-1)
+		  (decode-char 'gb18030 #x8431A530) (encode-char #x200000 'gb18030)
+		  (decode-char 'gb18030-2-byte #x8140) (encode-char #x4E02 'gb18030-2-byte)
+		  (decode-char 'japanese-jisx0208 #x3021) (encode-char #x4E9C 'japanese-jisx0208)
+		  (decode-char 'big5 #xA440) (encode-char #x4E00 'big5)
+		  (decode-char 'chinese-gb2312 #x3021) (decode-char 'korean-ksc5601 #x3021)
+		  (decode-char 'cp932-2-byte #x8140) (decode-char 'japanese-jisx0213-1 #x2121)
+		  (condition-case e (decode-char 'jisx0213-1 #x2121) (error e))
+		  (condition-case e (encode-char ?a 'jisx0213-1) (error e))))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"((ascii unicode unicode unicode chinese-gb2312 eight-bit emacs gb18030 unicode) japanese-jisx0208 nil nil japanese-jisx0208 nil unicode iso-8859-2 ((ascii 97) (unicode 0 0 233) (unicode 0 48 66) (chinese-gb2312 33 33) (eight-bit 233) (emacs 63 255 127) (unicode 0 172 0)) (eight-bit unicode ascii ascii nil) (ascii unicode eight-bit) (ascii eight-bit) nil (ascii unicode) (ascii unicode eight-bit) (ascii eight-bit) ((japanese-jisx0208 ascii iso-8859-1) (ascii unicode japanese-jisx0208 unicode chinese-gb2312 eight-bit) ((unicode 0 0 233) (japanese-jisx0208 36 34) (unicode 0 32 172)) (ascii unicode eight-bit japanese-jisx0208)) ((ascii japanese-jisx0208 iso-8859-1) unicode unicode) (iso-8859-1 unicode) ((iso-8859-2 ascii iso-8859-1) iso-8859-2 unicode unicode) (unicode unicode chinese-gb2312 (unicode 0 48 66)) (nil 4194175 nil 4194281 nil nil nil 4194175 nil 233 nil nil nil) (nil 3811744309 nil 2167439664 128 163 165 65536 1114111 nil 2097152 2217846064 65530 2217846064 19970 33088 20124 12321 19968 42048 21834 44032 12288 12288 (wrong-type-argument charsetp jisx0213-1) (wrong-type-argument charsetp jisx0213-1)))"##,
+        "char-charset family",
+    );
+}
+
+#[test]
+fn text_property_copies_follow_add_text_properties_order() {
+    // textprop.c add_properties conses each new property onto the head
+    // of the interval's plist, so every copy that goes through
+    // add_text_properties (Fsubstring's copy_text_properties, `concat' and
+    // `mapconcat' via concat_to_string, styled_format's argument and
+    // format-string intervals) reverses a span's pairs, where
+    // copy_intervals (`copy-sequence', buffer insertion) keeps them;
+    // editfns.c styled_format returns a string argument itself for a
+    // property-less "%s" format.  The printed forms swap their quotes
+    // for apostrophes so the contract's own rendering stays unambiguous.
+    let program = r##"
+(let ((s (propertize "x" 'a 1 'b 2))
+	    (p (lambda (x) (string-replace "\"" "'" (prin1-to-string x)))))
+	(list (funcall p (concat s))
+	      (funcall p (substring (propertize "xy" 'a 1 'b 2) 1))
+	      (funcall p (mapconcat #'identity (list s (propertize "y" 'c 3 'd 4)) (propertize "-" 'e 5 'f 6)))
+	      (funcall p (copy-sequence (propertize "xy" 'a 1 'b 2)))
+	      (funcall p (string-trim (propertize " x " 'a 1 'b 2)))
+	      (funcall p (concat (propertize "x" 'a 1) (propertize "y" 'a 1 'b 2)))
+	      (funcall p (substring (concat (propertize "xy" 'a 1 'b 2 'c 3)) 1))
+	      (with-temp-buffer (insert s) (funcall p (buffer-string)))
+	      (let ((c (copy-sequence "x"))) (put-text-property 0 1 'a 1 c) (put-text-property 0 1 'b 2 c) (funcall p c))
+	      (let ((c (copy-sequence "x"))) (add-text-properties 0 1 '(a 1 b 2) c) (funcall p c))
+	      (let ((c (copy-sequence "x"))) (set-text-properties 0 1 '(a 1 b 2) c) (funcall p c))
+	      (eq s (format "%s" s)) (eq s (format "%s" s 2))
+	      (funcall p (format "%s" s))
+	      (funcall p (format "%s " s))
+	      (funcall p (format "%5s" s))
+	      (funcall p (format "%d%s" 1 s))
+	      (funcall p (format (propertize "%s" 'q 9 'r 8) "x"))
+	      (funcall p (format (propertize "%s" 'q 9) s))
+	      (funcall p (format "%s-%s" s (propertize "y" 'c 3 'd 4)))
+	      (funcall p (format "%s" (concat s (propertize "y" 'c 3))))))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"("#('x' 0 1 (b 2 a 1))" "#('y' 0 1 (b 2 a 1))" "#('x-y' 0 1 (b 2 a 1) 1 2 (f 6 e 5) 2 3 (d 4 c 3))" "#('xy' 0 2 (a 1 b 2))" "#('x' 0 1 (a 1 b 2))" "#('xy' 0 1 (a 1) 1 2 (b 2 a 1))" "#('y' 0 1 (a 1 b 2 c 3))" "#('x' 0 1 (a 1 b 2))" "#('x' 0 1 (b 2 a 1))" "#('x' 0 1 (b 2 a 1))" "#('x' 0 1 (a 1 b 2))" t t "#('x' 0 1 (a 1 b 2))" "#('x ' 0 1 (b 2 a 1))" "#('    x' 4 5 (b 2 a 1))" "#('1x' 1 2 (b 2 a 1))" "#('x' 0 1 (r 8 q 9))" "#('x' 0 1 (b 2 a 1 q 9))" "#('x-y' 0 1 (b 2 a 1) 2 3 (d 4 c 3))" "#('xy' 0 1 (b 2 a 1) 1 2 (c 3))")"##,
+        "text property copy order",
+    );
+}
+
+#[test]
+fn default_file_modes_is_the_process_umask_and_temp_files_are_private() {
+    // fileio.c: `set-default-file-modes' sets the process's creation mask
+    // (~MODE & 0777), so `make-directory' (mkdir 0777), `write-region'
+    // (0666) and every subprocess see it, and `default-file-modes' is
+    // its complement; gen_tempname makes `make-temp-file' entries 0600
+    // and directories 0700 regardless of the mask's generosity.  A
+    // temporary directory that came out 0755 made server.el's
+    // server-ensure-safe-dir refuse it ("accessible by others").  The
+    // startup value is the inherited umask's complement, so it is
+    // checked against `sh -c umask' rather than a literal.
+    let program = r##"
+(let* ((d (make-temp-file "emaxx-modes" t))
+       (f (make-temp-file "emaxx-modes"))
+       (sub (expand-file-name "sub" d))
+       (f2 (expand-file-name "f2" d))
+       (u (expand-file-name "u" d))
+       (orig (default-file-modes)))
+  (unwind-protect
+      (list (format "%o" (file-modes d)) (format "%o" (file-modes f))
+            (progn (with-file-modes #o700 (make-directory sub)) (format "%o" (file-modes sub)))
+            (progn (with-file-modes #o640 (write-region "" nil f2)) (format "%o" (file-modes f2)))
+            (progn (with-file-modes #o600 (call-process "sh" nil nil nil "-c" (concat "umask > " u)))
+                   (with-temp-buffer (insert-file-contents u) (string-trim (buffer-string))))
+            (progn (with-file-modes #o777 (make-directory (expand-file-name "sub2" d)))
+                   (format "%o" (file-modes (expand-file-name "sub2" d))))
+            (progn (call-process "sh" nil nil nil "-c" (concat "umask > " u))
+                   (with-temp-buffer (insert-file-contents u)
+                                     (= (default-file-modes)
+                                        (logand (lognot (string-to-number (string-trim (buffer-string)) 8)) #o777))))
+            (progn (set-default-file-modes #o600) (prog1 (format "%o" (default-file-modes)) (set-default-file-modes orig)))
+            (= (default-file-modes) orig))
+    (delete-directory d t) (delete-file f)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"("700" "600" "700" "640" "0177" "777" t "600" t)"##,
+        "default file modes",
+    );
+}
+
+#[test]
+fn eval_buffer_binds_lexical_binding_from_the_first_line_cookie() {
+    // lread.c Feval_buffer specbinds `lexical-binding' to
+    // lisp_file_lexical_cookie's answer for the whole readevalloop -- the
+    // caller's buffer keeps its own value afterwards -- and that scanner
+    // reads only the first line (the second after a `#!' line), which
+    // must start with `;': a cookie inside a string on line two is text.
+    // `load' of a source file goes through load-with-code-conversion and
+    // therefore through the same binding, so `named-let' (which signals
+    // without the variable) expands inside a lexical file loaded while a
+    // dynamic buffer is being evaluated.  The caller's own
+    // `lexical-binding' is left out: it differs between GNU's `--eval'
+    // (t) and `-l' (nil) entry points and says nothing about eval-buffer.
+    let program = r##"
+(let ((lb (lambda () (list lexical-binding (default-value 'lexical-binding) (local-variable-p 'lexical-binding))))
+      (f (make-temp-file "emaxx-lex" nil ".el"
+                         (concat ";;; -*- lexical-binding: t -*-\n(require 'subr-x)\n"
+                                 "(defun emaxx-lex-f () (named-let loop ((i 0)) (if (< i 3) (loop (1+ i)) i)))\n"
+                                 "(setq emaxx-lex-seen lexical-binding)\n"))))
+  (unwind-protect
+      (list (progn (load f nil t) (list (emaxx-lex-f) emaxx-lex-seen))
+            (with-temp-buffer (insert-file-contents f) (eval-buffer)
+                              (list lexical-binding emaxx-lex-seen (emaxx-lex-f)))
+            (with-temp-buffer (insert "(setq emaxx-lex-seen lexical-binding)") (eval-buffer) emaxx-lex-seen)
+            (with-temp-buffer (insert ";; -*- lexical-binding: nil -*-\n(setq emaxx-lex-seen lexical-binding)")
+                              (eval-buffer) emaxx-lex-seen)
+            (with-temp-buffer (insert "#!/bin/sh\n;; -*- lexical-binding: t -*-\n(setq emaxx-lex-seen lexical-binding)")
+                              (eval-buffer) emaxx-lex-seen)
+            (with-temp-buffer (insert "(setq emaxx-lex-str \";;; -*- lexical-binding: t -*-\")\n(setq emaxx-lex-seen lexical-binding)")
+                              (eval-buffer) emaxx-lex-seen)
+            (progn (setq emaxx-lex-file f)
+                   (with-temp-buffer
+                     (insert ";;; -*- lexical-binding: t -*-\n(eval-and-compile (load emaxx-lex-file nil t))\n(setq emaxx-lex-outer lexical-binding)")
+                     (eval-buffer) (list (emaxx-lex-f) emaxx-lex-outer (funcall lb)))))
+    (delete-file f)))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"((3 t) (nil t 3) nil nil t nil (3 t (nil nil nil)))"##,
+        "eval-buffer lexical-binding cookie",
     );
 }

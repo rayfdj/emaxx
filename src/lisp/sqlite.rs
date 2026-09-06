@@ -434,18 +434,22 @@ fn database_connection(interp: &mut Interpreter, id: u64) -> Result<&Connection,
 }
 
 fn bind_parameters(values: &Value) -> Result<Vec<SqlValue>, LispError> {
-    if values.is_nil() {
-        return Ok(Vec::new());
-    }
-    if !matches!(values, Value::Cons(_)) {
-        return Err(LispError::Signal(
-            "VALUES must be a list or a vector".into(),
-        ));
-    }
-    vector_items(values)?
-        .into_iter()
-        .map(bind_parameter)
-        .collect()
+    // sqlite.c: Fsqlite_execute/Fsqlite_select accept nil, a list, or a
+    // vector and signal `sqlite-error' for anything else; bind_values then
+    // walks AREF or XCAR/XCDR.  `vector_items' is vector-only, so a list is
+    // walked here.
+    let items = match values {
+        Value::Nil => return Ok(Vec::new()),
+        Value::Vector(_) => vector_items(values)?,
+        Value::Cons(_) => values.to_vec()?,
+        _ => {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("sqlite-error"),
+                Value::string("VALUES must be a list or a vector"),
+            ])));
+        }
+    };
+    items.into_iter().map(bind_parameter).collect()
 }
 
 fn bind_parameter(value: Value) -> Result<SqlValue, LispError> {

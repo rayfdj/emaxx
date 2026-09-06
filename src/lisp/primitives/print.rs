@@ -794,12 +794,17 @@ pub(crate) fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String
     rendered
 }
 
-pub(crate) fn should_render_charset_text_property(
+/// print.c print_prune_string_charset: a string's `charset' properties
+/// print only when `print-charset-text-property' is t, or when it is
+/// `default' and some property is "unsafe" -- a non-ASCII character in
+/// its span belongs (by CHAR_CHARSET) to a different charset.  The
+/// decision is made once for the whole string.
+pub(crate) fn charset_text_properties_print(
     interp: &Interpreter,
     env: &Env,
     text: &str,
-    span: &StringPropertySpan,
-    value: &Value,
+    multibyte: bool,
+    props: &[StringPropertySpan],
 ) -> bool {
     let setting = interp
         .lookup_var("print-charset-text-property", env)
@@ -807,21 +812,43 @@ pub(crate) fn should_render_charset_text_property(
     if setting.is_nil() {
         return false;
     }
-    if !matches!(&setting, Value::Symbol(symbol) if symbol == "default") {
+    if matches!(&setting, Value::T) {
         return true;
     }
-
-    let Ok(charset) = value.as_symbol() else {
-        return true;
-    };
-    let expected = interp
-        .charset_canonical_name(charset)
-        .unwrap_or_else(|| charset.to_string());
-
-    text.chars()
-        .skip(span.start)
-        .take(span.end.saturating_sub(span.start))
-        .any(|ch| !ch.is_ascii() && charset_for_char(ch as u32) != expected)
+    let ordered = interp.charset_priority_list();
+    let head = interp.charset_non_preferred_head();
+    let chars: Vec<char> = text.chars().collect();
+    props.iter().any(|span| {
+        span.props.iter().any(|(name, value)| {
+            if name != "charset" {
+                return false;
+            }
+            let Ok(charset) = value.as_symbol() else {
+                return true;
+            };
+            let expected = interp
+                .charset_canonical_name(charset)
+                .unwrap_or_else(|| charset.to_string());
+            chars
+                .iter()
+                .skip(span.start)
+                .take(span.end.saturating_sub(span.start))
+                .any(|ch| {
+                    if ch.is_ascii() {
+                        return false;
+                    }
+                    // fetch_string_char_advance: a unibyte string yields
+                    // its bytes as characters (0xE9 is U+00E9 there), a
+                    // multibyte one its characters, raw bytes included.
+                    let code = match raw_byte_from_regex_char(*ch) {
+                        Some(byte) if !multibyte => u32::from(byte),
+                        Some(byte) => RAW_BYTE_REGEX_BASE + u32::from(byte),
+                        None => *ch as u32,
+                    };
+                    char_charset_ordered(interp, &ordered, head.as_deref(), code).0 != expected
+                })
+        })
+    })
 }
 
 pub(crate) fn render_hash_table_prin1(
@@ -1035,23 +1062,21 @@ pub(crate) fn render_prin1_body(
         Value::String(text) => Ok(render_prin1_string(interp, text, env)),
         Value::StringObject(state) if !context.options.escape => Ok(state.borrow().text.clone()),
         Value::StringObject(state) => {
-            let (text, props) = {
+            let (text, props, multibyte) = {
                 let state = state.borrow();
-                (state.text.clone(), state.props.clone())
+                (state.text.clone(), state.props.clone(), state.multibyte)
             };
             if props.is_empty() {
                 return Ok(render_prin1_string(interp, &text, env));
             }
             let mut rendered = vec![render_prin1_string(interp, &text, env)];
             let mut field_values = Vec::new();
+            let keep_charset = charset_text_properties_print(interp, env, &text, multibyte, &props);
             for span in props {
                 let filtered_props = span
                     .props
                     .iter()
-                    .filter(|(name, value)| {
-                        name != "charset"
-                            || should_render_charset_text_property(interp, env, &text, &span, value)
-                    })
+                    .filter(|(name, _)| name != "charset" || keep_charset)
                     .cloned()
                     .collect::<Vec<_>>();
                 if filtered_props.is_empty() {

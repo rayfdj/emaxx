@@ -99,6 +99,9 @@ fn try_main() -> Result<u8, String> {
             },
             actions,
         )?;
+        // exit() and shut_down_emacs's reset_sys_modes flush stdio's stdout
+        // before the process goes away or re-executes itself.
+        emaxx::lisp::flush_batch_stdout();
         return match outcome {
             BatchRunOutcome::Exit(code) => Ok(code as u8),
             BatchRunOutcome::Restart => restart_current_process(),

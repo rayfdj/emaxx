@@ -227,11 +227,35 @@ impl ExecImage {
     }
 }
 
+/// callproc.c's treatment of the child's stderr.  STDERR-FILE t -- the
+/// default for every DESTINATION shape but `(REAL-BUFFER nil)' and
+/// `(REAL-BUFFER FILE)' -- sets `fd_error = fd_output': one descriptor,
+/// so the two streams reach the caller in the order the child wrote
+/// them.  A separate stream is read on its own pipe and routed by the
+/// caller afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExternalStderr {
+    Mixed,
+    Separate,
+}
+
+pub(crate) fn external_stderr_for_destination(destination: &Value) -> ExternalStderr {
+    if let Ok(items) = destination.to_vec()
+        && items.len() == 2
+        && items[0] != Value::Symbol(":file".into())
+        && items[1] != Value::T
+    {
+        return ExternalStderr::Separate;
+    }
+    ExternalStderr::Mixed
+}
+
 pub(crate) fn run_external_process(
     interp: &mut Interpreter,
     program: &str,
     argv: &[String],
     input: Option<&[u8]>,
+    stderr: ExternalStderr,
     env: &mut Env,
 ) -> Result<std::process::Output, LispError> {
     #[cfg(test)]
@@ -250,9 +274,50 @@ pub(crate) fn run_external_process(
     } else {
         Stdio::null()
     });
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
+    #[cfg(unix)]
+    let mixed_output = if stderr == ExternalStderr::Mixed {
+        use std::os::unix::io::FromRawFd;
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: pipe2 fills the two-element array with descriptors this
+        // frame owns from here on.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(LispError::SignalValue(
+                file_operation_error_value_without_file(
+                    "Creating process pipe",
+                    &std::io::Error::last_os_error(),
+                ),
+            ));
+        }
+        // SAFETY: fresh descriptors from pipe2, each owned by exactly one
+        // File.
+        let (reader, writer) = unsafe {
+            (
+                std::fs::File::from_raw_fd(fds[0]),
+                std::fs::File::from_raw_fd(fds[1]),
+            )
+        };
+        let stderr_end = writer
+            .try_clone()
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        command.stdout(Stdio::from(writer));
+        command.stderr(Stdio::from(stderr_end));
+        Some(reader)
+    } else {
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        None
+    };
+    #[cfg(not(unix))]
+    let mixed_output: Option<std::fs::File> = {
+        let _ = stderr;
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        None
+    };
     let mut child = command.spawn().map_err(|error| vfork_error(&error))?;
+    // The Command still holds the child's ends of the pipe; only the child
+    // may keep them open, or the reader below never sees end of file.
+    drop(command);
     if let Some(stdin_data) = input
         && let Some(mut stdin) = child.stdin.take()
         && let Err(error) = stdin.write_all(stdin_data)
@@ -263,6 +328,20 @@ pub(crate) fn run_external_process(
         let _ = child.kill();
         let _ = child.wait();
         return Err(LispError::Signal(error.to_string()));
+    }
+    if let Some(mut reader) = mixed_output {
+        use std::io::Read;
+        let mut stdout = Vec::new();
+        let read = reader.read_to_end(&mut stdout);
+        let status = child
+            .wait()
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        read.map_err(|error| LispError::Signal(error.to_string()))?;
+        return Ok(std::process::Output {
+            status,
+            stdout,
+            stderr: Vec::new(),
+        });
     }
     child
         .wait_with_output()

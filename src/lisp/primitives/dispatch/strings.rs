@@ -104,16 +104,11 @@ define_dispatch!(
             }
             "copy-keymap" => {
                 need_args(name, args, 1)?;
-                match &args[0] {
-                    Value::Record(id)
-                        if interp.find_record(*id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::Keymap
-                        }) =>
-                    {
-                        interp.copy_record(*id)
-                    }
-                    _ => Ok(args[0].clone()),
-                }
+                // keymap.c Fcopy_keymap (copy_keymap_1): a runtime keymap
+                // gets a new owner record and public view, a plain
+                // `(keymap ...)' list is copied cell by cell.  Returning a
+                // list keymap unchanged left `(eq (copy-keymap m) m)' true.
+                crate::lisp::primitives::keys::copy_keymap_value(interp, &args[0], env)
             }
             "record" => {
                 need_args(name, args, 1)?;
@@ -175,7 +170,7 @@ define_dispatch!(
                     if let Some(string) = string_like(a) {
                         let offset = result.chars().count();
                         result.push_str(&string.text);
-                        props.extend(shift_string_props(&string.props, offset));
+                        props.extend(copied_string_props(&string.props, offset));
                         multibyte |= string.multibyte;
                     } else if a.is_nil() {
                     } else if matches!(a, Value::Cons(_))
@@ -300,7 +295,8 @@ define_dispatch!(
                 let props = if name == "substring-no-properties" {
                     Vec::new()
                 } else {
-                    slice_string_props(&string.props, from, to)
+                    // Fsubstring copies through copy_text_properties.
+                    copied_string_props(&slice_string_props(&string.props, from, to), 0)
                 };
                 let text = chars[from..to].iter().collect();
                 if matches!(args[0], Value::StringObject(_)) {
@@ -497,6 +493,17 @@ define_dispatch!(
                 }
                 let fmt_value = &args[0];
                 let fmt = string_text(fmt_value)?;
+                // editfns.c styled_format: a format string that is exactly
+                // "%s" without text properties returns a string argument
+                // itself (`(eq s (format "%s" s))' is t in the oracle), so
+                // the argument's properties come through untouched.
+                if fmt == "%s"
+                    && string_like(fmt_value).is_some_and(|string| string.props.is_empty())
+                    && let Some(arg) = args.get(1)
+                    && string_like(arg).is_some()
+                {
+                    return Ok(arg.clone());
+                }
                 let mut result = String::new();
                 let mut result_props = Vec::new();
                 let mut result_multibyte = string_like(fmt_value).is_some_and(|s| s.multibyte);

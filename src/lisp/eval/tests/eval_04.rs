@@ -524,14 +524,13 @@ fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
         md5::compute(canonical_source.display().to_string().as_bytes())
     );
     let source_content_hash = format!("{:x}", md5::compute(b"source contents\n"));
-    // comp.el places eln files under `comp-native-version-dir'
-    // (VERSION-ABIHASH) when that variable is bound.  This build models a
-    // GNU without HAVE_NATIVE_COMP: the variable is void (the oracle's own
-    // "30.2-adba4e3f" is that binary's per-build identity, not portable
-    // state -- audit finding 77), so the eln name has no version
-    // subdirectory.  The hash components still match the oracle's.
+    // comp.c places eln files under `comp-native-version-dir'
+    // (VERSION-ABIHASH, this build's own ABI identity -- audit finding
+    // 77) inside BASE-DIR; the hash components match the oracle's.
+    let version_dir = crate::lisp::primitives::string_text(&eval_str("comp-native-version-dir"))
+        .expect("comp-native-version-dir is a string");
     let eln_name = format!(
-        "source-{}-{}.eln",
+        "{version_dir}/source-{}-{}.eln",
         &source_path_hash[..8],
         &source_content_hash[..8]
     );
@@ -5817,10 +5816,11 @@ fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
                 Value::String("Demo".into()),
                 Value::Symbol("ignore".into()),
                 Value::T,
-                // Both ordinary native-enabled runtimes load `last' as a
-                // native subr. The separate pinned GNU terminal oracle
-                // confirms this existing expression's complete result.
-                Value::Symbol("subr".into()),
+                // A batch session loads `last' from subr.elc: GNU answers
+                // `byte-code-function' with `subr-native-elisp-p' nil
+                // (no subr.eln is loaded there), and so does the Emaxx
+                // CLI; the fixture now matches both.
+                Value::Symbol("byte-code-function".into()),
                 Value::BuiltinFunc("re-search-forward".into()),
                 Value::String("subr.elc".into()),
                 Value::String("subr.elc".into()),
