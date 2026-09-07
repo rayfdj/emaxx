@@ -16,11 +16,13 @@ eval.c:Fdefvaralias in full (seven divergences found by the oracle contract,
 all fixed, one platform residual: the forwarded-variable manifest exists for
 the Linux oracle only — regenerate it on macOS with the anti-cheat gate's
 probe before relying on the "built-in variable" refusal there), and makes
-`eval_sub`/`Fsymbol_value` signal `void-variable` with the symbol given. The
-dump-prerequisite program continues with V02's native word in the cell and
-the epoch's removal, V04 (buffer-local objects), V05 (forwarding kinds), L11,
-R03 and the D06/L08 census; the Linux records are in
-`docs/honesty-audit-2026-08-18.md`.
+`eval_sub`/`Fsymbol_value` signal `void-variable` with the symbol given.
+Checkpoint 4 moved the plain value's native word into the cell and retired
+the process-wide epoch; checkpoint 5 keyed a buffer's local bindings by
+symbol with a void local as a binding (V04 stage 1) and ported the
+buffer-local primitives' data.c semantics. The dump-prerequisite program
+continues with V05 (forwarding kinds), L11, R03 and the D06/L08 census; the
+Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
 

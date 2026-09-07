@@ -26,10 +26,12 @@ mod control_forms;
 mod core;
 mod definitions;
 mod faces;
+mod local_cells;
 mod loops;
 mod macros;
 mod resource_forms;
 pub(crate) mod runtime;
+pub(crate) use local_cells::LocalCells;
 mod symbol_cells;
 pub(crate) use symbol_cells::SymbolCells;
 mod threads;
@@ -2499,14 +2501,6 @@ fn tty_default_lisp_face_vector() -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(attributes))
 }
 
-type OrderedBindings = LinkedHashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>;
-
-fn ordered_bindings(entries: impl IntoIterator<Item = (String, Value)>) -> OrderedBindings {
-    let mut bindings = OrderedBindings::with_hasher(Default::default());
-    bindings.extend(entries);
-    bindings
-}
-
 type OrderedHooks = LinkedHashMap<String, Vec<Value>, crate::lisp::primitives::FnvBuildHasher>;
 
 fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> OrderedHooks {
@@ -2515,7 +2509,7 @@ fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> Ord
     hooks
 }
 
-type BufferLocalBindings = HashMap<u64, OrderedBindings, crate::lisp::primitives::FnvBuildHasher>;
+type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::FnvBuildHasher>;
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 type OrderedNameIndex = HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>;
@@ -3193,7 +3187,7 @@ impl Interpreter {
             mark(event);
         }
         for bindings in self.buffer_locals.values() {
-            for (_, value) in bindings {
+            for (_, value) in bindings.iter() {
                 mark(value);
             }
         }
@@ -3626,7 +3620,7 @@ impl Interpreter {
                 *event = c.copy(event);
             }
             for bindings in clone.buffer_locals.values_mut() {
-                for (_, value) in bindings.iter_mut() {
+                for value in bindings.values_mut() {
                     *value = c.copy(value);
                 }
             }
@@ -4309,14 +4303,6 @@ pub struct Interpreter {
     buffer_locals: BufferLocalBindings,
     /// Buffer-local syntax tables keyed by buffer id.
     buffer_syntax_tables: Vec<(u64, u64)>,
-    /// Variables that automatically become buffer-local when set.
-    auto_buffer_locals: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
-    /// Native DEFVAR_PER_BUFFER variables, kept as host metadata rather than
-    /// exposed through private Lisp symbol properties.
-    per_buffer_specials: HashSet<String>,
-    /// The DEFVAR_PER_BUFFER subset whose GNU slot index is -1 and therefore
-    /// remains local in every buffer.
-    always_buffer_local_specials: HashSet<String>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -5226,9 +5212,6 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
-            auto_buffer_locals: HashSet::default(),
-            per_buffer_specials: HashSet::new(),
-            always_buffer_local_specials: HashSet::new(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             thread_swap_boundaries: Vec::new(),

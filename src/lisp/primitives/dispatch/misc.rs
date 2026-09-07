@@ -1067,23 +1067,25 @@ define_dispatch!(
                 // GNU 30.2 data.c:Fmakunbound uses CHECK_SYMBOL/XSYMBOL and
                 // returns the original symbol argument.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
-                if symbol == "initial-window-system"
-                    || matches!(
-                        symbol.as_str(),
-                        "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
-                    )
-                    || symbol.starts_with(':')
-                {
+                if interp.is_constant_symbol(&checked) || checked == "initial-window-system" {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
                         args[0].clone(),
                     ])));
                 }
-                if interp
-                    .buffer_local_value(interp.current_buffer_id(), &symbol)
-                    .is_some()
-                {
+                let symbol = interp.resolve_variable_name(&checked)?;
+                let buffer_id = interp.current_buffer_id();
+                // Fset (symbol, Qunbound) through data.c:set_internal's
+                // SYMBOL_LOCALIZED case: an existing alist cell (bound or
+                // void) becomes void and stays a local binding; a
+                // local_if_set symbol without a cell, outside a let made for
+                // this buffer, gets a new void cell.  The default is
+                // untouched either way.
+                let localized_store = interp.has_buffer_local_binding(buffer_id, &symbol)
+                    || (interp.is_auto_buffer_local(&symbol)
+                        && !interp.is_per_buffer_special(&symbol)
+                        && !interp.let_shadows_buffer_binding(&symbol));
+                if localized_store {
                     interp.notify_variable_watchers(
                         &symbol,
                         Value::Nil,
@@ -1091,11 +1093,11 @@ define_dispatch!(
                         if interp.is_auto_buffer_local(&symbol) {
                             None
                         } else {
-                            Some(interp.current_buffer_id())
+                            Some(buffer_id)
                         },
                         env,
                     )?;
-                    interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+                    interp.set_buffer_local_value(buffer_id, &symbol, Value::Unbound);
                 } else {
                     interp.notify_variable_watchers(
                         &symbol,
