@@ -16,6 +16,7 @@
 
 use super::super::types::{SymbolName, UNINTERNED_SYMBOL_ID_BIT, Value};
 use crate::lisp::primitives::FnvBuildHasher;
+use std::cell::Cell;
 use std::collections::HashMap;
 
 /// data.c: `SYMBOL_LOCALIZED' -- the value cell can forward through a
@@ -35,6 +36,11 @@ struct SymbolCell {
     flags: u8,
     /// Position in `order' while the value is bound.
     position: Option<u32>,
+    /// `SYMBOL_VAL' as generated code sees it: the value's native word,
+    /// stamped with the heap and collection generation that produced it
+    /// (stamp 0 = none).  Every value, alias or flag write clears it, so the
+    /// word is only ever the current plain value's.
+    native: Cell<(u64, usize)>,
 }
 
 #[derive(Clone, Default)]
@@ -108,8 +114,38 @@ impl SymbolCells {
 
     pub(crate) fn value_by_name_mut(&mut self, name: &str) -> Option<&mut Value> {
         let id = SymbolName::id_of(name)?;
-        self.existing_cell_mut(id)
-            .and_then(|cell| cell.value.as_mut())
+        let cell = self.existing_cell_mut(id)?;
+        cell.native.set((0, 0));
+        cell.value.as_mut()
+    }
+
+    // --- the value's native word ------------------------------------------
+
+    /// The cached native word of SYMBOL's plain value, if it was produced
+    /// under STAMP (a heap id and collection generation).
+    pub(crate) fn native_word(&self, symbol: &SymbolName, stamp: u64) -> Option<usize> {
+        let (cached_stamp, word) = self.cell(symbol.id())?.native.get();
+        (cached_stamp == stamp && stamp != 0).then_some(word)
+    }
+
+    /// Record WORD as the native word of SYMBOL's current value under STAMP.
+    /// A symbol without a cell has no value to cache for.
+    pub(crate) fn set_native_word(&self, symbol: &SymbolName, stamp: u64, word: usize) {
+        if let Some(cell) = self.cell(symbol.id())
+            && cell.value.is_some()
+        {
+            cell.native.set((stamp, word));
+        }
+    }
+
+    /// Number of cells holding a word produced under STAMP.
+    #[cfg(test)]
+    pub(crate) fn native_words_under(&self, stamp: u64) -> usize {
+        self.cells
+            .iter()
+            .chain(self.uninterned.values())
+            .filter(|cell| cell.native.get().0 == stamp)
+            .count()
     }
 
     pub(crate) fn is_bound_name(&self, name: &str) -> bool {
@@ -120,6 +156,7 @@ impl SymbolCells {
     pub(crate) fn insert(&mut self, symbol: &SymbolName, value: Value) -> Option<Value> {
         let next_position = u32::try_from(self.order.len()).expect("symbol order index");
         let cell = self.cell_mut(symbol);
+        cell.native.set((0, 0));
         let previous = cell.value.replace(value);
         if previous.is_none() {
             cell.position = Some(next_position);
@@ -137,6 +174,7 @@ impl SymbolCells {
     pub(crate) fn remove_by_name(&mut self, name: &str) -> Option<Value> {
         let id = SymbolName::id_of(name)?;
         let cell = self.existing_cell_mut(id)?;
+        cell.native.set((0, 0));
         let previous = cell.value.take();
         if previous.is_some() {
             cell.position = None;
@@ -196,7 +234,9 @@ impl SymbolCells {
     }
 
     pub(crate) fn set_alias(&mut self, symbol: &SymbolName, target: SymbolName) {
-        if self.cell_mut(symbol).alias.replace(target).is_none() {
+        let cell = self.cell_mut(symbol);
+        cell.native.set((0, 0));
+        if cell.alias.replace(target).is_none() {
             self.aliases += 1;
         }
     }
@@ -208,6 +248,7 @@ impl SymbolCells {
         let Some(cell) = self.existing_cell_mut(id) else {
             return false;
         };
+        cell.native.set((0, 0));
         let cleared = cell.alias.take().is_some();
         if cleared {
             self.aliases -= 1;
@@ -235,6 +276,7 @@ impl SymbolCells {
     /// Set FLAG; true when it was not set before.
     pub(crate) fn set_flag_by_name(&mut self, name: &str, flag: u8) -> bool {
         let cell = self.cell_mut(&SymbolName::intern_str(name));
+        cell.native.set((0, 0));
         let was_clear = cell.flags & flag == 0;
         cell.flags |= flag;
         was_clear
@@ -244,6 +286,7 @@ impl SymbolCells {
         if let Some(id) = SymbolName::id_of(name)
             && let Some(cell) = self.existing_cell_mut(id)
         {
+            cell.native.set((0, 0));
             cell.flags &= !flag;
         }
     }
@@ -347,6 +390,57 @@ mod tests {
             ]
         );
         assert!(cells.order.len() <= 1024);
+    }
+
+    #[test]
+    fn a_cells_native_word_is_cleared_by_every_data_c_write_transition() {
+        let mut cells = SymbolCells::default();
+        let symbol = SymbolName::intern_str("symbol-cells-word");
+        let stamp = (5u64 << 32) | 1;
+        // No cell, no value: nothing to cache for.
+        cells.set_native_word(&symbol, stamp, 0x10);
+        assert_eq!(cells.native_word(&symbol, stamp), None);
+        cells.insert(&symbol, Value::Integer(1));
+        cells.set_native_word(&symbol, stamp, 0x10);
+        assert_eq!(cells.native_word(&symbol, stamp), Some(0x10));
+        assert_eq!(
+            cells.native_word(&symbol, stamp + 1),
+            None,
+            "another generation"
+        );
+        assert_eq!(cells.native_word(&symbol, 0), None, "stamp 0 never matches");
+        // set_internal: the word belongs to the previous value.
+        cells.insert(&symbol, Value::Integer(2));
+        assert_eq!(cells.native_word(&symbol, stamp), None);
+        cells.set_native_word(&symbol, stamp, 0x20);
+        *cells.value_by_name_mut("symbol-cells-word").expect("bound") = Value::Integer(3);
+        assert_eq!(cells.native_word(&symbol, stamp), None);
+        // A redirect or localization changes what a read means.
+        for transition in [0u8, 1, 2, 3] {
+            cells.set_native_word(&symbol, stamp, 0x30);
+            assert_eq!(cells.native_word(&symbol, stamp), Some(0x30));
+            match transition {
+                0 => cells.set_alias(&symbol, SymbolName::intern_str("symbol-cells-word-base")),
+                1 => {
+                    cells.clear_alias_by_name("symbol-cells-word");
+                }
+                2 => {
+                    cells.set_flag_by_name("symbol-cells-word", LOCALIZED);
+                }
+                _ => cells.clear_flag_by_name("symbol-cells-word", LOCALIZED),
+            }
+            assert_eq!(
+                cells.native_word(&symbol, stamp),
+                None,
+                "transition {transition}"
+            );
+        }
+        assert_eq!(cells.native_words_under(stamp), 0);
+        cells.set_native_word(&symbol, stamp, 0x40);
+        assert_eq!(cells.native_words_under(stamp), 1);
+        // makunbound.
+        cells.remove_by_name("symbol-cells-word");
+        assert_eq!(cells.native_words_under(stamp), 0);
     }
 
     #[test]

@@ -127,9 +127,7 @@ impl Interpreter {
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
-        if self.globals.set_flag_by_name(name, LOCALIZED) {
-            self.bump_symbol_value_cell_epoch();
-        }
+        self.globals.set_flag_by_name(name, LOCALIZED);
         let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
         if buffer_id == self.current_buffer_id() {
             self.update_forwarded_eval_cell(name, &value);
@@ -267,9 +265,7 @@ impl Interpreter {
 
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
         self.auto_buffer_locals.insert(name.to_string());
-        if self.globals.set_flag_by_name(name, LOCALIZED) {
-            self.bump_symbol_value_cell_epoch();
-        }
+        self.globals.set_flag_by_name(name, LOCALIZED);
     }
 
     pub fn is_auto_buffer_local(&self, name: &str) -> bool {
@@ -938,7 +934,6 @@ impl Interpreter {
             self.variable_aliases
                 .push((alias.to_string(), target.to_owned()));
         }
-        self.bump_symbol_value_cell_epoch();
         Ok(())
     }
 
@@ -999,7 +994,6 @@ impl Interpreter {
         {
             self.variable_aliases.remove(index);
             self.globals.clear_alias_by_name(name);
-            self.bump_symbol_value_cell_epoch();
             true
         } else {
             false
@@ -1030,17 +1024,26 @@ impl Interpreter {
     }
 
     pub fn remove_global_binding(&mut self, name: &str) {
-        if self.globals.remove_by_name(name).is_some() {
-            self.bump_symbol_value_cell_epoch();
-        }
+        if self.globals.remove_by_name(name).is_some() {}
     }
 
-    pub(crate) fn symbol_value_cell_epoch(&self) -> u64 {
-        self.symbol_value_cell_epoch
+    /// The native word of SYMBOL's plain value, if the cell still holds
+    /// one produced under STAMP (see `SymbolCells::native_word').
+    pub(crate) fn cached_native_symbol_word(
+        &self,
+        symbol: &SymbolName,
+        stamp: u64,
+    ) -> Option<usize> {
+        self.globals.native_word(symbol, stamp)
     }
 
-    fn bump_symbol_value_cell_epoch(&mut self) {
-        self.symbol_value_cell_epoch = self.symbol_value_cell_epoch.wrapping_add(1);
+    pub(crate) fn cache_native_symbol_word(&self, symbol: &SymbolName, stamp: u64, word: usize) {
+        self.globals.set_native_word(symbol, stamp, word);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_symbol_words_under(&self, stamp: u64) -> usize {
+        self.globals.native_words_under(stamp)
     }
 
     fn normalize_forwarded_eval_cell(&self, name: &str, value: Value) -> Value {
@@ -1211,7 +1214,6 @@ impl Interpreter {
         {
             self.update_forwarded_eval_cell(&name, &value);
         }
-        self.bump_symbol_value_cell_epoch();
         if let Some(existing) = self.globals.value_by_name_mut(&name) {
             *existing = value;
         } else {
