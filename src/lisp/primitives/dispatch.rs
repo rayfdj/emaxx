@@ -16,6 +16,7 @@ pub(crate) mod gnutls;
 mod gui_actions;
 mod lists;
 pub(super) mod misc;
+pub(crate) use misc::set_internal;
 mod misc_keymaps;
 mod numeric;
 

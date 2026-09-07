@@ -4051,8 +4051,12 @@ impl NativeMark<'_> {
 /// Stable objects retained for native machine code.  GNU's GC provides the
 /// same stability in C; this Rust owner also supplies the reverse lookup
 /// needed by primitive-call wrappers.
-#[derive(Default)]
+static NATIVE_HEAP_IDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 pub(crate) struct NativeHeap {
+    /// Distinguishes this heap's handle slots stored in objects (a symbol's
+    /// `native_slot') from those another heap on this thread assigned.
+    id: u32,
     native_conses: NativeConsArena,
     cons_values: IdentityMap<ConsMirror>,
     /// Mirrors whose reconciliation is in progress, so cyclic structures do
@@ -4075,15 +4079,97 @@ pub(crate) struct NativeHeap {
     native_stack_bottom: *const NativeWord,
 }
 
+impl Default for NativeHeap {
+    fn default() -> Self {
+        Self {
+            id: NATIVE_HEAP_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            native_conses: NativeConsArena::default(),
+            cons_values: IdentityMap::default(),
+            reconciling: IdentitySet::default(),
+            interpreter_dirty: Rc::default(),
+            handles: Vec::new(),
+            free_handles: Vec::new(),
+            handle_by_value: HashMap::default(),
+            handle_by_address: IdentityMap::default(),
+            symbol_with_position_views: HashMap::default(),
+            touched: TouchedConses::default(),
+            native_call_depth: 0,
+            native_stack_bottom: std::ptr::null(),
+        }
+    }
+}
+
 impl Drop for NativeHeap {
     fn drop(&mut self) {
         for (&address, mirror) in &self.cons_values {
             unsafe { mirror.value.detach_native_words(address as *mut NativeCons) };
         }
+        for (index, entry) in self.handles.iter().enumerate() {
+            if let Some(native) = entry {
+                Self::forget_symbol_slot(native, Self::pack_slot_for(self.id, index));
+            }
+        }
     }
 }
 
 impl NativeHeap {
+    fn pack_slot_for(id: u32, index: usize) -> u64 {
+        (u64::from(id) << 32) | (index as u64 + 1)
+    }
+
+    fn pack_slot(&self, index: usize) -> u64 {
+        Self::pack_slot_for(self.id, index)
+    }
+
+    /// Clear a symbol's stored handle slot when it names this handle.
+    fn forget_symbol_slot(native: &NativeHandle, slot: u64) {
+        if let (NativeIdentity::Symbol(_), Value::Symbol(name)) = (&native.identity, &native.value)
+            && name.native_slot() == slot
+        {
+            name.set_native_slot(0);
+        }
+    }
+
+    /// lisp.h:XSYMBOL in reverse: the word a symbol already has in this
+    /// heap, read from the symbol itself.  None when the symbol has no
+    /// handle here, when its slot belongs to another heap, or when the
+    /// slot's handle no longer holds this symbol.
+    fn symbol_word_from_slot(&self, name: &SymbolName) -> Option<NativeWord> {
+        let slot = name.native_slot();
+        if slot == 0 || (slot >> 32) as u32 != self.id {
+            return None;
+        }
+        let index = (slot & 0xffff_ffff) as usize - 1;
+        let entry = self.handles.get(index)?.as_ref()?;
+        if entry.tag != TAG_SYMBOL {
+            return None;
+        }
+        match entry.identity {
+            NativeIdentity::Symbol(pointer) if pointer == name.identity_ptr() => {
+                Some((&**entry as *const NativeHandle) as usize + TAG_SYMBOL)
+            }
+            _ => None,
+        }
+    }
+
+    /// alloc.c's sweep of one unmarked bridge handle: the object it named
+    /// forgets the word, the reverse maps forget the handle, and the box
+    /// (its address once exposed as a Lisp_Object) waits for reuse.
+    fn free_dead_handle(&mut self, index: usize) {
+        let mut native = self.handles[index]
+            .take()
+            .expect("dead handle index was occupied");
+        Self::forget_symbol_slot(&native, Self::pack_slot_for(self.id, index));
+        let address = (&*native as *const NativeHandle) as usize;
+        self.handle_by_value.remove(&native.identity);
+        self.handle_by_address.remove(&address);
+        native.value = Value::Nil;
+        native.identity = NativeIdentity::Unbound;
+        native.tag = TAG_SYMBOL;
+        native.plain_symbol_value_cache = None;
+        self.free_handles.push((index, native));
+    }
+
     fn is_empty(&self) -> bool {
         self.native_conses.is_empty()
             && self.cons_values.is_empty()
@@ -4270,17 +4356,7 @@ impl NativeHeap {
             })
             .collect::<Vec<_>>();
         for index in dead_handles {
-            let mut native = self.handles[index]
-                .take()
-                .expect("dead handle index was occupied");
-            let address = (&*native as *const NativeHandle) as usize;
-            self.handle_by_value.remove(&native.identity);
-            self.handle_by_address.remove(&address);
-            native.value = Value::Nil;
-            native.identity = NativeIdentity::Unbound;
-            native.tag = TAG_SYMBOL;
-            native.plain_symbol_value_cache = None;
-            self.free_handles.push((index, native));
+            self.free_dead_handle(index);
         }
         // Cached words are intentionally not GC roots: the matching Rust
         // global remains authoritative, and its bridge handle can be rebuilt
@@ -4535,11 +4611,18 @@ impl NativeHeap {
             Value::Symbol(name) if name == "t" => Ok(native_boolean(true)),
             Value::Symbol(name) => match native_type_symbol_index(name) {
                 Some(index) => Ok(native_type_symbol_word(index)),
-                None => self.encode_handle(
-                    NativeIdentity::Symbol(name.identity_ptr()),
-                    value,
-                    TAG_SYMBOL,
-                ),
+                None => {
+                    if let Some(word) = self.symbol_word_from_slot(name) {
+                        return Ok(word);
+                    }
+                    let (index, word) = self.encode_handle_index(
+                        NativeIdentity::Symbol(name.identity_ptr()),
+                        value,
+                        TAG_SYMBOL,
+                    )?;
+                    name.set_native_slot(self.pack_slot(index));
+                    Ok(word)
+                }
             },
             Value::Integer(integer)
                 if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(integer) =>
@@ -4619,6 +4702,16 @@ impl NativeHeap {
         value: &Value,
         tag: usize,
     ) -> Result<NativeWord, String> {
+        self.encode_handle_index(identity, value, tag)
+            .map(|(_, word)| word)
+    }
+
+    fn encode_handle_index(
+        &mut self,
+        identity: NativeIdentity,
+        value: &Value,
+        tag: usize,
+    ) -> Result<(usize, NativeWord), String> {
         let index = if let Some(index) = self.handle_by_value.get(&identity).copied() {
             index
         } else {
@@ -4660,7 +4753,7 @@ impl NativeHeap {
         if entry.tag != tag {
             return Err("native object identity changed Lisp tag".to_string());
         }
-        Ok((&**entry as *const NativeHandle) as usize + tag)
+        Ok((index, (&**entry as *const NativeHandle) as usize + tag))
     }
 
     pub(crate) fn decode(&mut self, word: NativeWord) -> Result<Value, String> {
@@ -7961,6 +8054,89 @@ mod tests {
             );
             assert_eq!(marking.heap.handles.len(), handle_count);
         }
+    }
+
+    #[test]
+    fn symbol_carries_its_native_word_and_a_swept_handle_clears_it() {
+        // comp.c hands generated code a symbol as the object's own address;
+        // the word therefore lives in the symbol (R02c), not in a lookup
+        // keyed by the symbol.  A second encode reads it from the symbol; a
+        // collection that sweeps the handle clears the slot; a new handle
+        // afterwards is a new word.
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::default();
+        let symbol = Value::symbol("r02c-slot-probe");
+        let Value::Symbol(name) = &symbol else {
+            unreachable!()
+        };
+        assert_eq!(name.native_slot(), 0);
+        let first = heap.encode(&symbol).expect("encode symbol");
+        assert_eq!(first & TAG_MASK, TAG_SYMBOL);
+        let slot = name.native_slot();
+        assert_ne!(slot, 0);
+        assert_eq!((slot >> 32) as u32, heap.id);
+        assert_eq!(heap.symbol_word_from_slot(name), Some(first));
+        assert_eq!(heap.encode(&symbol).expect("encode again"), first);
+        assert_eq!(
+            heap.handle_by_value.len(),
+            1,
+            "the second encode created no second handle"
+        );
+
+        // The collector's conservative stack scan would keep `first' alive
+        // through this frame; sweep its handle the way the collector does.
+        let index = ((slot & 0xffff_ffff) - 1) as usize;
+        heap.free_dead_handle(index);
+        assert!(heap.handle_by_value.is_empty());
+        let _ = (&mut interpreter, &environment);
+        assert_eq!(
+            name.native_slot(),
+            0,
+            "a swept handle leaves no slot behind"
+        );
+        assert_eq!(heap.symbol_word_from_slot(name), None);
+        let second = heap.encode(&symbol).expect("encode after the sweep");
+        assert_eq!(second & TAG_MASK, TAG_SYMBOL);
+        assert_ne!(name.native_slot(), 0);
+        assert_eq!(heap.symbol_word_from_slot(name), Some(second));
+    }
+
+    #[test]
+    fn symbol_native_word_slot_is_per_heap_and_verified_against_the_handle() {
+        // Two heaps on one thread give the same symbol two words; a slot
+        // that belongs to the other heap is not this heap's answer, and a
+        // slot whose handle now holds something else is ignored.
+        let symbol = Value::symbol("r02c-two-heaps");
+        let Value::Symbol(name) = &symbol else {
+            unreachable!()
+        };
+        let mut first_heap = NativeHeap::default();
+        let mut second_heap = NativeHeap::default();
+        let first = first_heap.encode(&symbol).expect("first heap");
+        assert_eq!(first_heap.symbol_word_from_slot(name), Some(first));
+        assert_eq!(second_heap.symbol_word_from_slot(name), None);
+        let second = second_heap.encode(&symbol).expect("second heap");
+        assert_ne!(first, second);
+        assert_eq!(second_heap.symbol_word_from_slot(name), Some(second));
+        // The slot now names the second heap; the first heap falls back to
+        // its own table and still answers its own word.
+        assert_eq!(first_heap.symbol_word_from_slot(name), None);
+        assert_eq!(first_heap.encode(&symbol).expect("first heap again"), first);
+        assert_eq!(first_heap.handle_by_value.len(), 1);
+
+        // Dropping a heap clears the slots it owned.
+        let owner = if (name.native_slot() >> 32) as u32 == first_heap.id {
+            1
+        } else {
+            2
+        };
+        if owner == 1 {
+            drop(first_heap);
+        } else {
+            drop(second_heap);
+        }
+        assert_eq!(name.native_slot(), 0);
     }
 
     #[test]

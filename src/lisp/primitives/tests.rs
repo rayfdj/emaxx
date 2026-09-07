@@ -1543,6 +1543,43 @@ fn interning_after_unintern_makes_a_fresh_symbol_in_a_private_obarray() {
 }
 
 #[test]
+fn compiled_variable_references_and_sets_follow_bytecode_c() {
+    // bytecode.c: Bvarref is find_symbol_value on the constant (a void
+    // variable signals with that very symbol), Bvarset is set_internal
+    // (constants, aliases, watchers with the original value, the current
+    // buffer's local cell), Bvarbind is specbind.  Emaxx dispatched each
+    // through the named `symbol-value'/`set' primitives with a fresh name
+    // string per reference; the same cells are now reached directly, and
+    // this pins that nothing observable changed.
+    let program = r#"
+        (progn
+          (require 'bytecomp)
+          (let ((byte-compile-warnings nil))
+            (list (condition-case e (funcall (byte-compile (lambda () zz-unbound-var))) (error e))
+                  (condition-case e (funcall (byte-compile (lambda () (set 'nil 1)))) (error e))
+                  (condition-case e (funcall (byte-compile (lambda () (setq zz-unbound-var2 1) zz-unbound-var2)))
+                    (error e))
+                  (progn (defvar zz-target 1) (defvaralias 'zz-alias 'zz-target)
+                         (funcall (byte-compile (lambda () (setq zz-alias 2))))
+                         (list zz-target (funcall (byte-compile (lambda () zz-alias)))))
+                  (let ((log nil))
+                    (defvar zz-w 0)
+                    (add-variable-watcher 'zz-w (lambda (s n op w) (push (list s n op w) log)))
+                    (funcall (byte-compile (lambda () (setq zz-w 5) (let ((zz-w 7)) zz-w))))
+                    log)
+                  (progn (defvar zz-loc 9)
+                         (with-temp-buffer
+                           (setq-local zz-loc 3)
+                           (funcall (byte-compile (lambda () (setq zz-loc 4))))
+                           (list zz-loc (default-value 'zz-loc)))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((void-variable zz-unbound-var) (setting-constant nil) 1 (2 2) ((zz-w 5 set nil)) (4 9))",
+        "compiled variable operations",
+    );
+}
+
+#[test]
 fn message_log_disables_undo_in_the_messages_buffer() {
     // xdisp.c message_dolog sets `buffer-undo-list' to t and
     // `cache-long-scans' to nil in the log buffer every time it logs, so
