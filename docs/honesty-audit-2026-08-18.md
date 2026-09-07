@@ -6700,5 +6700,119 @@ primitives 411, compat_runtime 84, tty 56 (two inventoried ignores),
 batch 46, lightweight 361 (the eighteen anti-cheat checks among them),
 the binaries 38 + 1 + 1, the integration targets 14 + 3 + 1 + 5 with the
 native artifact identity test (1208 s for the stage); zero failures,
-`cargo fmt --check' and strict clippy clean.  The frozen corpus over the
-commit is recorded below when it completes.
+`cargo fmt --check' and strict clippy clean.
+
+Frozen corpus over the audit commit `ecb9ab3', artifact
+`frozen-1788703772792632259-19742` (worktree at that commit plus the
+local pin, 2026-09-06 14:06 to 19:29, 3600 s per file):
+
+| run | outcomes matching | mismatching | files mismatching |
+| --- | --- | --- | --- |
+| merge commit `245ff40' (first run above) | 7828 / 7883 | 55 | 21 |
+| audit commit `ecb9ab3' | 7863 / 7883 | 20 | 7 |
+
+The fourteen files the first run had regressed all match now; test/src/
+comp-tests.el and test/lisp/emacs-lisp/comp-tests.el match 177/177 and
+3/3 with Emaxx's own compiler (its execution phase took 2086 s against
+the oracle's 14 s).  The 20 that remain are exactly the list above this
+section: semantic-utest-ia 6, mml-sec 4, server 3, erc 2, simple 1,
+thread-tests 2, test/src/thread-tests 2.  Nothing in the second merge or
+the GC ports changed a corpus outcome.
+
+## 2026-09-06 the nine undiagnosed corpus outcomes
+
+*semantic-utest-ia (6 outcomes): fixed.*  Every failing completion
+subtest was a member lookup through a local variable declared by a
+macro with arguments (`FOO(Test)' expanding to `Test *foo = ...').  The
+probes: the top-level tags parse identically on both editors, but
+Emaxx's analyzer context has the bare string "foo" where GNU has the
+local variable tag, because Emaxx's lexer classifies `foo' as a
+`semantic-list' token: `(semantic-lex-spp-symbol-p "foo")' is t.  Its
+system macro table (`semantic-lex-spp-macro-symbol-obarray', built from
+the parsed system headers) holds seven names GNU's does not -- alias,
+cname, foo, name, prefix, proto, x -- all macro *parameter* names from
+sys/cdefs.h and c++config.h.  lex-spp.el binds a parameter for one
+expansion with `semantic-lex-spp-symbol-push' (`intern' into the
+buffer's dynamic obarray, `set') and drops it with `-pop' (`unintern'),
+and the next expansion pushes it again.  lread.c:intern_driver
+allocates a new symbol on every obarray miss; Emaxx keyed a private
+obarray's symbol by its name, so the re-interned name was the old
+symbol, still bound.  The second push therefore saw a bound symbol and
+stacked its value as an outer binding, the matching pop restored that
+value instead of uninterning, and the parameter stayed in the table the
+header's semanticdb entry saves.  Minimal reproduction, GNU then Emaxx:
+
+    (let* ((ob (obarray-make 13)) (s1 (intern "alias" ob)))
+      (set s1 5) (unintern "alias" ob)
+      (let ((s2 (intern "alias" ob))) (list (eq s1 s2) (boundp s2))))
+    => (nil nil)        ; GNU
+    => (t t)            ; Emaxx before the fix
+
+A private obarray's symbol now gets a fresh identity on every miss (the
+uninterned symbol keeps its cells, as GNU's does).  Contract:
+`interning_after_unintern_makes_a_fresh_symbol_in_a_private_obarray`.
+With the fix, `(semantic-lex-spp-symbol-p "foo")' is nil, the
+completion at the `foo->' test point is ("test") on both editors, and
+the harness replay of test/lisp/cedet/semantic-utest-ia.el on the
+release build matches 17/17 (`run-1788723512933282357-2005`).
+Full grouped gate over the fix, alone on the machine, artifact
+`target/grouped-gate/run-1788723917117973390-2305` (2026-09-06 19:45 to
+21:11): eval_01 351, eval_02 284, eval_03 320, eval_04 251, eval_05
+351, primitives 412, compat_runtime 84, tty 56 (two inventoried
+ignores), batch 46, lightweight 361, the binaries and the integration
+targets with the artifact identity test; zero failures, `cargo fmt
+--check' and strict clippy clean.
+
+Frozen corpus over the fix (`1b76c5a', the commit before its rebase onto
+PR #53; artifact `frozen-1788729315968771008-15311`, 2026-09-06 21:13 to
+2026-09-07 02:29, 3600 s per file):
+
+| run | outcomes matching | mismatching | files mismatching |
+| --- | --- | --- | --- |
+| audit commit `ecb9ab3' | 7863 / 7883 | 20 | 7 |
+| obarray fix `1b76c5a' | 7869 / 7883 | 14 | 6 |
+
+test/lisp/cedet/semantic-utest-ia.el 17/17.  The 14 that remain: mml-sec
+4 (ciphertext nondeterminism), thread-tests 2 and test/src/thread-tests
+2 (the thread model), server-tests 3 (multi-terminal frames), and the
+three startup-bound outcomes above (erc 2, simple-tests 1).  No other
+file changed.
+
+*Rebase onto PR #53.*  While that run was in progress main received PR
+#53 (`c3f2abf': alloc.c's `symbols-with-pos-enabled' binding around the
+mark phase, on top of the `garbage_collect_now' path above, and
+funcall_subr's aMANY dispatch for subrs whose finite max_args exceeds
+eight).  The obarray fix is rebased onto it as `e78332d' without
+conflict.  Full grouped gate over the rebased tree, alone on the
+machine, artifact `target/grouped-gate/run-1788748224030710472-27502`
+(2026-09-07 02:30 to 03:59): eval_01 351, eval_02 284, eval_03 320,
+eval_04 251, eval_05 351, primitives 412, compat_runtime 84, tty
+56 (two inventoried ignores), batch 46, lightweight 362, the binaries and
+the integration targets with the artifact identity test; zero failures,
+`cargo fmt --check' and strict clippy clean.
+
+Frozen corpus over the delivered tree (`cea5101', the rebased fix plus
+its record; artifact `frozen-1788753809317920348-8882`, 2026-09-07
+04:00 to 09:41, 3600 s per file): 7869 / 7883 matching, 14 mismatching
+in six files, the same fourteen outcomes as the run over `1b76c5a'
+above and no per-file change.  test/src/comp-tests.el and
+test/lisp/emacs-lisp/comp-tests.el match 177/177 and 3/3 with Emaxx's
+own compiler.  This is the number for main at `cea5101'.
+
+*erc-tests (2) and simple-tests (1): startup time, not semantics.*
+`erc--find-mode' and `erc--essential-hook-ordering' start an inferior
+`emaxx -batch', wait with `(while (accept-process-output proc 10))' and
+`read' the output; `simple-tests-async-shell-command-30280' starts
+`emaxx -Q -batch -eval' and requires `(accept-process-output process 4
+nil t)' to return non-nil.  On this machine `emaxx -Q -batch -eval
+'(message "")'' takes 22.3 s and the erc child 22.7 s, against 0.03 s
+for GNU: no output arrives inside the tests' 10 s and 4 s windows, the
+erc parent reads an empty buffer (`end-of-file') and the simple-tests
+`should' sees nil.  Verified the other way round: the two erc tests
+pass on Emaxx (`Ran 2 tests, 2 results as expected') when the helper
+waits 90 s per `accept-process-output' instead of 10, and the
+simple-tests body on Emaxx answers nil for the 4 s wait and t for a 60
+s wait on the same process, with every other `should' true.  These three outcomes close only when Emaxx
+starts from a persistent image instead of replaying loadup.el; that is
+the native-comp branch's dump milestone, recorded as open in its own
+ledgers, and this document does not claim them.
