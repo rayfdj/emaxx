@@ -3974,10 +3974,6 @@ pub struct Interpreter {
     /// `Lisp_Symbol' fields, per interpreter).  Bound values enumerate in
     /// first-binding order.
     globals: SymbolCells,
-    /// Version of the C-owned symbol value-cell state.  Native symbol handles
-    /// use it to retain GNU's direct value-word reads without keeping stale
-    /// words across a set, alias, or localization transition.
-    symbol_value_cell_epoch: u64,
     /// Directly forwarded Lisp_Object cells read by the C implementation.
     /// GNU reads these globals without doing symbol-table work; keep the same
     /// direct state while ordinary Lisp access remains visible through the
@@ -4851,7 +4847,6 @@ impl Interpreter {
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
             ]),
-            symbol_value_cell_epoch: 0,
             quit_flag: Value::Nil,
             inhibit_quit: Value::Nil,
             throw_on_input: Value::Nil,

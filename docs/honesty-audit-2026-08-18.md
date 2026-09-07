@@ -7087,3 +7087,39 @@ attach to.
 run-1788800966130003373-15561, GROUPED GATE PASSED (every group 0
 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
 committed.
+
+## 2026-09-07 V02 stage 2: the native word lives in the cell, the epoch is gone
+
+*What changed.*  Generated code reads `SYMBOL_VAL' as a word.  The
+bridge kept that word in the symbol's native handle, tagged with a
+process-wide epoch that every `set', alias and localization anywhere
+bumped, so one write to any variable retired every cached word in the
+process.  The word now lives in the symbol's own cell beside the value
+it belongs to, stamped with the heap id and the heap's collection
+generation; the cell's own write transitions (`set_internal',
+`makunbound', `defvaralias', the first buffer-local binding, the
+special flag) clear it, and a sweep advances the generation so a word
+whose bridge allocation may have been reclaimed is never returned.
+The epoch field, its six bump sites and the per-handle cache are
+removed; the native `symbol-value' fast path asks the interpreter's
+cell.  Rust-only control
+`a_cells_native_word_is_cleared_by_every_data_c_write_transition'
+(registered with the anti-cheat audit) walks every transition and the
+stamp discipline; the two native GC tests that proved a collection
+discards cached words now prove it through the generation.  90 bridge,
+cell and variable-contract tests pass.
+
+*Measured on native execution.*  A native-compiled loop of three
+million iterations reading two global variables and adding
+(`$S/bench-native.el', `native-comp-speed' 2, `benchmark-run', best of
+three, alternating binaries): this tree 5.01, 5.17 s; the checkpoint-3
+binary 5.30, 5.30 s; GNU 0.178 s.  About 4 % on this micro-benchmark,
+and GNU is 28x away: the per-call bridge cost around each helper
+(`symbol-value', `+') dominates, not the value-word lookup this stage
+removed.  That gap is R02c's remaining boundaries and R03, measured
+here from now on.
+
+*Checkpoint 4 gate.*  Alone on the machine: grouped gate
+run-1788807756929107362-1200, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.
