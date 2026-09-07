@@ -6789,8 +6789,15 @@ machine, artifact `target/grouped-gate/run-1788748224030710472-27502`
 eval_04 251, eval_05 351, primitives 412, compat_runtime 84, tty
 56 (two inventoried ignores), batch 46, lightweight 362, the binaries and
 the integration targets with the artifact identity test; zero failures,
-`cargo fmt --check' and strict clippy clean.  The frozen corpus over
-`e78332d' follows in the next record.
+`cargo fmt --check' and strict clippy clean.
+
+Frozen corpus over the delivered tree (`cea5101', the rebased fix plus
+its record; artifact `frozen-1788753809317920348-8882`, 2026-09-07
+04:00 to 09:41, 3600 s per file): 7869 / 7883 matching, 14 mismatching
+in six files, the same fourteen outcomes as the run over `1b76c5a'
+above and no per-file change.  test/src/comp-tests.el and
+test/lisp/emacs-lisp/comp-tests.el match 177/177 and 3/3 with Emaxx's
+own compiler.  This is the number for main at `cea5101'.
 
 *erc-tests (2) and simple-tests (1): startup time, not semantics.*
 `erc--find-mode' and `erc--essential-hook-ordering' start an inferior
