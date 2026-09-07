@@ -1543,6 +1543,183 @@ fn interning_after_unintern_makes_a_fresh_symbol_in_a_private_obarray() {
 }
 
 #[test]
+fn variable_cells_follow_data_c() {
+    // data.c: find_symbol_value dispatches on the symbol's redirect
+    // (PLAINVAL, VARALIAS, LOCALIZED) and set_internal writes through the
+    // same redirect; Fsymbol_value and eval_sub signal void-variable with
+    // the symbol they were handed, not with the end of an alias chain;
+    // two `make-symbol's of one name are two variables; a non-special
+    // uninterned symbol binds lexically under lexical-binding.  Emaxx now
+    // keeps value, redirect and flags in one per-symbol cell, and this
+    // pins the observable contract of that storage against the oracle.
+    let program = r#"
+        (let ((results nil))
+          (push (progn (defvar zz-cell-target 1)
+                       (defvaralias 'zz-cell-alias 'zz-cell-target)
+                       (list (symbol-value 'zz-cell-alias)
+                             (progn (set 'zz-cell-alias 2) zz-cell-target)
+                             (indirect-variable 'zz-cell-alias)
+                             (special-variable-p 'zz-cell-alias)
+                             (boundp 'zz-cell-alias)
+                             (default-boundp 'zz-cell-alias)))
+                results)
+          (push (list (progn (defvaralias 'zz-cell-alias2 'zz-cell-unbound) (boundp 'zz-cell-alias2))
+                      (condition-case err (symbol-value 'zz-cell-alias2) (void-variable (cadr err)))
+                      (progn (set 'zz-cell-unbound 5) (symbol-value 'zz-cell-alias2))
+                      (progn (makunbound 'zz-cell-alias2) (boundp 'zz-cell-unbound)))
+                results)
+          (push (condition-case err
+                    (progn (defvaralias 'zz-cyc-a 'zz-cyc-b) (defvaralias 'zz-cyc-b 'zz-cyc-a))
+                  (error err))
+                results)
+          (push (let ((s1 (make-symbol "zz-u")) (s2 (make-symbol "zz-u")))
+                  (set s1 10)
+                  (list (symbol-value s1)
+                        (boundp s2)
+                        (eval `(let ((,s1 20)) (symbol-value ',s1)) t)
+                        (eval `(let ((,s1 20)) (symbol-value ',s1)) nil)
+                        (symbol-value s1)
+                        (default-value s1)
+                        (special-variable-p s1)
+                        (progn (makunbound s1) (boundp s1))))
+                results)
+          (push (with-temp-buffer
+                  (defvar zz-cell-local 'global)
+                  (make-local-variable 'zz-cell-local)
+                  (setq zz-cell-local 'local)
+                  (list zz-cell-local
+                        (default-value 'zz-cell-local)
+                        (with-temp-buffer zz-cell-local)
+                        (local-variable-p 'zz-cell-local)
+                        (progn (kill-local-variable 'zz-cell-local) zz-cell-local)
+                        (local-variable-p 'zz-cell-local)))
+                results)
+          (push (progn (makunbound 'zz-cell-target)
+                       (list (boundp 'zz-cell-target)
+                             (boundp 'zz-cell-alias)
+                             (special-variable-p 'zz-cell-target)
+                             (condition-case err zz-cell-alias (void-variable (cadr err)))))
+                results)
+          (push (let ((f (byte-compile (lambda () (setq zz-cell-target 7)
+                                         (list zz-cell-target (symbol-value 'zz-cell-alias))))))
+                  (funcall f))
+                results)
+          (nreverse results))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 2 zz-cell-target t t t) (nil zz-cell-alias2 5 nil) \
+         (cyclic-variable-indirection zz-cyc-a) (10 nil 10 20 10 10 nil nil) \
+         (local global global t global nil) (nil nil t zz-cell-alias) (7 7))",
+        "variable cells",
+    );
+}
+
+#[test]
+fn defvaralias_records_the_alias_in_load_history() {
+    // eval.c:Fdefvaralias: LOADHIST_ATTACH (new_alias) -- the bare symbol,
+    // exactly as Fdefvar records a variable.
+    let program = r#"
+        (let ((file (make-temp-file "zz-lh" nil ".el")))
+          (with-temp-file file
+            (insert "(defvaralias 'zz-lh-a 'zz-lh-b)\n(defvar zz-lh-c 1)\n"))
+          (load file nil t)
+          (prog1 (cdr (assoc file load-history)) (delete-file file)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(zz-lh-a zz-lh-c)",
+        "defvaralias load-history",
+    );
+}
+
+#[test]
+fn defvaralias_follows_eval_c() {
+    // eval.c:Fdefvaralias, in order: CHECK_SYMBOL, "Cannot make a
+    // constant an alias", the non-circularity walk from BASE (signalling
+    // with BASE), "Cannot make a built-in variable an alias" for a
+    // SYMBOL_FORWARDED new-alias and "Don't know how to make a
+    // buffer-local variable an alias" for a SYMBOL_LOCALIZED one, the
+    // 2008 hand-over of the alias's value to an unbound base or the
+    // `losing-value' warning with its formatted message, "Don't know how
+    // to make a let-bound variable an alias", watchers, then the
+    // redirect to BASE itself (so re-pointing BASE re-points its aliases),
+    // `variable-documentation' put even when nil, and BASE returned.
+    let program = r#"
+        (progn
+          (require 'cl-lib)
+          (list
+           (condition-case err (defvaralias :zz-kw 'zz-x) (error err))
+           (condition-case err (defvaralias 'nil 'zz-x) (error err))
+           (condition-case err (defvaralias 'zz-self 'zz-self) (error err))
+           (condition-case err
+               (progn (defvar zz-bl 1) (with-temp-buffer (make-local-variable 'zz-bl))
+                      (defvaralias 'zz-bl 'zz-x))
+             (error err))
+           (condition-case err (defvaralias 'fill-column 'zz-x) (error err))
+           (condition-case err (defvaralias 'load-path 'zz-x) (error err))
+           (condition-case err (defvaralias 'case-fold-search 'zz-x) (error err))
+           (condition-case err (defvaralias 'deactivate-mark 'zz-x) (error err))
+           (condition-case err (defvaralias 'gc-cons-threshold 'zz-x) (error err))
+           (condition-case err (defvaralias 'zz-x 'load-path) (error err))
+           (condition-case err (defvaralias 'byte-code-meter 'zz-x) (error err))
+           (condition-case err (let ((zz-lb 1)) (defvar zz-lb) (defvaralias 'zz-lb 'zz-x)) (error err))
+           (condition-case err
+               (progn (defvar zz-lb2 0) (let ((zz-lb2 1)) (defvaralias 'zz-lb2 'zz-x)))
+             (error err))
+           (let ((log nil))
+             (defvar zz-w1 1)
+             (add-variable-watcher 'zz-w1 (lambda (&rest a) (push a log)))
+             (list (condition-case err
+                       (progn (defvaralias 'zz-cy1 'zz-w1) (defvaralias 'zz-w1 'zz-cy1))
+                     (error err))
+                   log))
+           (condition-case err
+               (progn (defvaralias 'zz-d1 'zz-d2 "doc")
+                      (list (get 'zz-d1 'variable-documentation) (special-variable-p 'zz-d2)
+                            (special-variable-p 'zz-d1) (boundp 'zz-d1) (symbol-plist 'zz-d1)))
+             (error err))
+           (condition-case err (progn (defvaralias 'zz-d3 'zz-d4) (symbol-plist 'zz-d3)) (error err))
+           (condition-case err
+               (progn (set 'zz-na 3) (defvaralias 'zz-na 'zz-nb) (list zz-nb (indirect-variable 'zz-na)))
+             (error err))
+           (condition-case err
+               (progn (defvaralias 'zz-ch-a 'zz-ch-b) (defvaralias 'zz-ch-b 'zz-ch-c) (set 'zz-ch-c 1)
+                      (defvaralias 'zz-ch-b 'zz-ch-d) (set 'zz-ch-d 2)
+                      (list zz-ch-a (indirect-variable 'zz-ch-a)
+                            (condition-case e2 (defvaralias 'zz-ch-d 'zz-ch-a) (error e2))))
+             (error err))
+           (condition-case err
+               (progn (defvar zz-warn-a 1) (defvar zz-warn-b 2)
+                      (let ((warnings nil))
+                        (cl-letf (((symbol-function 'display-warning) (lambda (&rest a) (push a warnings))))
+                          (defvaralias 'zz-warn-a 'zz-warn-b))
+                        (list zz-warn-a warnings)))
+             (error err))
+           (condition-case err (defvaralias 'zz-nonsym 3) (error err))
+           (condition-case err (defvaralias 3 'zz-nonsym) (error err))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((error \"Cannot make a constant an alias: :zz-kw\") \
+         (error \"Cannot make a constant an alias: nil\") \
+         (cyclic-variable-indirection zz-self) \
+         (error \"Don't know how to make a buffer-local variable an alias: zz-bl\") \
+         (error \"Cannot make a built-in variable an alias: fill-column\") \
+         (error \"Cannot make a built-in variable an alias: load-path\") \
+         (error \"Don't know how to make a buffer-local variable an alias: case-fold-search\") \
+         (error \"Don't know how to make a buffer-local variable an alias: deactivate-mark\") \
+         (error \"Cannot make a built-in variable an alias: gc-cons-threshold\") \
+         load-path zz-x zz-x \
+         (error \"Don't know how to make a let-bound variable an alias: zz-lb2\") \
+         ((cyclic-variable-indirection zz-cy1) nil) \
+         (\"doc\" t t nil (variable-documentation \"doc\")) (variable-documentation nil) \
+         (3 zz-nb) (2 zz-ch-d (cyclic-variable-indirection zz-ch-a)) \
+         (2 (((defvaralias losing-value zz-warn-a) \
+         \"Overwriting value of `zz-warn-a' by aliasing to `zz-warn-b'\"))) \
+         (wrong-type-argument symbolp 3) (wrong-type-argument symbolp 3))",
+        "defvaralias",
+    );
+}
+
+#[test]
 fn compiled_variable_references_and_sets_follow_bytecode_c() {
     // bytecode.c: Bvarref is find_symbol_value on the constant (a void
     // variable signals with that very symbol), Bvarset is set_internal
@@ -10167,7 +10344,7 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
     assert_eq!(
         interp
             .eval(&form, &mut Vec::new())
-            .unwrap_or_else(|_| panic!("evaluate {label} program"))
+            .unwrap_or_else(|error| panic!("evaluate {label} program: {error:?}"))
             .to_string(),
         expected
     );

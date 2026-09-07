@@ -5,6 +5,23 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
+## Resume here — symbol cells (V02/V03 stage 1) after checkpoint 2 (2026-09-07)
+
+Checkpoint 2 (`732f48b`) carried R02c's first boundary (a symbol carries its
+native word) and made bytecode.c's variable opcodes reach the value cell
+directly. The next checkpoint moves a symbol's value cell, alias redirect and
+`declared_special`/`SYMBOL_LOCALIZED` flags into one per-interpreter cell
+indexed by a process-wide symbol id (`src/lisp/eval/symbol_cells.rs`), ports
+eval.c:Fdefvaralias in full (seven divergences found by the oracle contract,
+all fixed, one platform residual: the forwarded-variable manifest exists for
+the Linux oracle only — regenerate it on macOS with the anti-cheat gate's
+probe before relying on the "built-in variable" refusal there), and makes
+`eval_sub`/`Fsymbol_value` signal `void-variable` with the symbol given. The
+dump-prerequisite program continues with V02's native word in the cell and
+the epoch's removal, V04 (buffer-local objects), V05 (forwarding kinds), L11,
+R03 and the D06/L08 census; the Linux records are in
+`docs/honesty-audit-2026-08-18.md`.
+
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
 
 Main `c7e4753` (PR #53 plus the obarray fix and its frozen records) is merged

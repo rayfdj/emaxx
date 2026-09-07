@@ -7,7 +7,7 @@ use std::{
     borrow::Borrow,
     cell::{Cell, Ref, RefCell, RefMut, UnsafeCell},
     collections::{HashMap, HashSet},
-    hash::{BuildHasher, BuildHasherDefault, Hasher},
+    hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
     ops::{Deref, DerefMut},
     path::Path,
@@ -535,13 +535,20 @@ impl PartialEq<SharedText> for SymbolName {
 struct SymbolNameState {
     internal: SharedText,
     lisp_name: Value,
-    ordered_binding_hash: u64,
     /// The native handle this symbol currently has, packed as the owning
     /// native heap's id in the high 32 bits and the handle index plus one
     /// in the low 32 bits; 0 when it has none.  comp.c passes a symbol to
     /// generated code as the object's own address, so the word lives with
     /// the symbol rather than in a lookup keyed by it (R02c).
     native_word: Cell<u64>,
+    /// The symbol's index into an interpreter's `SymbolCells' (V02).  GNU
+    /// reads a symbol's value, redirect and `declared_special' from the
+    /// `Lisp_Symbol' object itself; Emaxx keeps those per interpreter, so
+    /// the object carries a dense id and each interpreter owns the cells.
+    /// Process-wide (see `symbol_id_for'): an interned name's id is
+    /// permanent, an uninterned text's id lives as long as a state with
+    /// that text does.
+    id: u32,
 }
 
 #[repr(transparent)]
@@ -550,8 +557,87 @@ pub struct SymbolName(Rc<SymbolNameState>);
 
 thread_local! {
     static INTERNED_SYMBOL_NAMES: RefCell<HashSet<SymbolName>> = RefCell::new(HashSet::new());
-    static UNINTERNED_SYMBOL_BOOK: RefCell<Vec<Weak<SymbolNameState>>> = const { RefCell::new(Vec::new()) };
+    /// Live uninterned states by their private internal text.  Two
+    /// `SymbolName's with equal internal text compare equal, so a text
+    /// that names a live uninterned symbol must resolve to that very
+    /// state: otherwise a name-keyed caller (`set' through `&str') and the
+    /// symbol object would disagree about which cell they address.
+    static UNINTERNED_SYMBOL_BOOK: RefCell<HashMap<String, Weak<SymbolNameState>>> = RefCell::new(HashMap::new());
     static UNINTERNED_SYMBOL_BOOK_LIMIT: Cell<usize> = const { Cell::new(1 << 16) };
+}
+
+/// Symbol ids are process-wide: the same internal text carries the same id
+/// on every thread, so an interpreter built on one thread (the test image
+/// template) addresses the same cells when it is used on another.  An
+/// interned text keeps its id forever; an uninterned text keeps it while
+/// any state with that text is alive (the count), so a private name that
+/// dies and is minted again gets a fresh id.
+static SYMBOL_IDS: std::sync::Mutex<Option<HashMap<String, (u32, usize)>>> =
+    std::sync::Mutex::new(None);
+static NEXT_SYMBOL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static NEXT_UNINTERNED_SYMBOL_ID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// Uninterned symbols draw ids from their own counter, marked by this bit,
+/// so the dense per-interpreter cell table is sized by the number of
+/// interned names rather than by every `make-symbol' ever evaluated.
+pub(crate) const UNINTERNED_SYMBOL_ID_BIT: u32 = 1 << 31;
+
+fn symbol_id_for(text: &str, uninterned: bool) -> u32 {
+    let mut registry = SYMBOL_IDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let registry = registry.get_or_insert_with(HashMap::new);
+    if let Some((id, states)) = registry.get_mut(text) {
+        if uninterned {
+            *states += 1;
+        }
+        return *id;
+    }
+    let id = if uninterned {
+        let serial = NEXT_UNINTERNED_SYMBOL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            serial < UNINTERNED_SYMBOL_ID_BIT,
+            "uninterned symbol id space exhausted"
+        );
+        serial | UNINTERNED_SYMBOL_ID_BIT
+    } else {
+        let id = NEXT_SYMBOL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(id < UNINTERNED_SYMBOL_ID_BIT, "symbol id space exhausted");
+        id
+    };
+    registry.insert(text.to_owned(), (id, usize::from(uninterned)));
+    id
+}
+
+fn registered_symbol_id(text: &str) -> Option<u32> {
+    let registry = SYMBOL_IDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.as_ref()?.get(text).map(|(id, _)| *id)
+}
+
+impl Drop for SymbolNameState {
+    fn drop(&mut self) {
+        // Only uninterned states ever drop (the interned table owns its
+        // entries for the thread's lifetime); release the text's id when the
+        // last state with that text is gone.
+        if !self.internal.as_str().contains(UNINTERNED_SYMBOL_MARKER) {
+            return;
+        }
+        let mut registry = SYMBOL_IDS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(registry) = registry.as_mut() else {
+            return;
+        };
+        if let Some((_, states)) = registry.get_mut(self.internal.as_str()) {
+            *states = states.saturating_sub(1);
+            if *states == 0 {
+                registry.remove(self.internal.as_str());
+            }
+        }
+    }
 }
 
 impl SymbolName {
@@ -564,6 +650,9 @@ impl SymbolName {
     /// only when the symbol is first allocated.
     pub(crate) fn intern_with_lisp_name(text: String, lisp_name: Option<Value>) -> Self {
         if text.contains(UNINTERNED_SYMBOL_MARKER) {
+            if let Some(existing) = Self::live_uninterned(text.as_str()) {
+                return existing;
+            }
             let visible = visible_symbol_name(&text).to_owned();
             return Self::new_uninterned(
                 lisp_name.unwrap_or_else(|| Value::String(SharedText::from(visible))),
@@ -575,8 +664,6 @@ impl SymbolName {
                 return name.clone();
             }
             crate::lisp::native_comp::note_lisp_allocation(48);
-            let ordered_binding_hash =
-                crate::lisp::primitives::FnvBuildHasher::default().hash_one(text.as_str());
             let private = text.contains(OBARRAY_SYMBOL_MARKER);
             let text = if private || lisp_name.is_some() {
                 SharedText::new_untracked(text)
@@ -590,15 +677,48 @@ impl SymbolName {
                     text.clone()
                 })
             });
+            let id = symbol_id_for(text.as_str(), false);
             let name = Self(Rc::new(SymbolNameState {
                 internal: text,
                 lisp_name,
-                ordered_binding_hash,
                 native_word: Cell::new(0),
+                id,
             }));
             names.insert(name.clone());
             name
         })
+    }
+
+    /// The interned state for TEXT, without allocating when it exists.
+    pub(crate) fn intern_str(text: &str) -> Self {
+        if !text.contains(UNINTERNED_SYMBOL_MARKER)
+            && let Some(name) = INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).cloned())
+        {
+            return name;
+        }
+        Self::intern(text.to_owned())
+    }
+
+    /// The id of the state TEXT currently names, if any state does: an
+    /// interned name that was never mentioned, or an uninterned symbol that
+    /// died, has no cell anywhere.  This thread's tables answer first; the
+    /// process registry covers a name another thread interned.
+    pub(crate) fn id_of(text: &str) -> Option<u32> {
+        if text.contains(UNINTERNED_SYMBOL_MARKER)
+            && let Some(name) = Self::live_uninterned(text)
+        {
+            return Some(name.id());
+        }
+        if let Some(id) =
+            INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|name| name.0.id))
+        {
+            return Some(id);
+        }
+        registered_symbol_id(text)
+    }
+
+    fn live_uninterned(text: &str) -> Option<Self> {
+        UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.get(text).and_then(Weak::upgrade).map(Self))
     }
 
     pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
@@ -610,17 +730,17 @@ impl SymbolName {
 
     fn new_uninterned(lisp_name: Value, internal: SharedText) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(48);
-        let ordered_binding_hash =
-            crate::lisp::primitives::FnvBuildHasher::default().hash_one(internal.as_str());
+        let id = symbol_id_for(internal.as_str(), true);
         let state = Rc::new(SymbolNameState {
             internal,
             lisp_name,
-            ordered_binding_hash,
             native_word: Cell::new(0),
+            id,
         });
         UNINTERNED_SYMBOL_BOOK.with(|book| {
-            book.borrow_mut().push(Rc::downgrade(&state));
-            UNINTERNED_SYMBOL_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+            book.borrow_mut()
+                .insert(state.internal.as_str().to_owned(), Rc::downgrade(&state));
+            UNINTERNED_SYMBOL_BOOK_LIMIT.with(|limit| prune_uninterned_book(book, limit));
         });
         Self(state)
     }
@@ -633,8 +753,10 @@ impl SymbolName {
         Rc::as_ptr(&self.0) as usize
     }
 
-    pub(crate) fn ordered_binding_hash(&self) -> u64 {
-        self.0.ordered_binding_hash
+    /// The process-wide symbol id (see `SymbolNameState::id'); an
+    /// uninterned symbol's id carries `UNINTERNED_SYMBOL_ID_BIT'.
+    pub(crate) fn id(&self) -> u32 {
+        self.0.id
     }
 
     /// The packed native handle slot (see `SymbolNameState::native_word').
@@ -658,10 +780,22 @@ impl SymbolName {
 pub(crate) fn census_live_uninterned_symbols() -> usize {
     UNINTERNED_SYMBOL_BOOK.with(|book| {
         let mut book = book.borrow_mut();
-        book.retain(|symbol| symbol.strong_count() != 0);
+        book.retain(|_, symbol| symbol.strong_count() != 0);
         UNINTERNED_SYMBOL_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
         book.len()
     })
+}
+
+fn prune_uninterned_book(
+    book: &RefCell<HashMap<String, Weak<SymbolNameState>>>,
+    limit: &Cell<usize>,
+) {
+    let mut book = book.borrow_mut();
+    if book.len() < limit.get() {
+        return;
+    }
+    book.retain(|_, weak| weak.strong_count() > 0);
+    limit.set((book.len() * 2).max(1 << 16));
 }
 
 impl PartialEq for SymbolName {
