@@ -6761,8 +6761,36 @@ Full grouped gate over the fix, alone on the machine, artifact
 351, primitives 412, compat_runtime 84, tty 56 (two inventoried
 ignores), batch 46, lightweight 361, the binaries and the integration
 targets with the artifact identity test; zero failures, `cargo fmt
---check' and strict clippy clean.  The frozen corpus over this commit
-is recorded below when it completes.
+--check' and strict clippy clean.
+
+Frozen corpus over the fix (`1b76c5a', the commit before its rebase onto
+PR #53; artifact `frozen-1788729315968771008-15311`, 2026-09-06 21:13 to
+2026-09-07 02:29, 3600 s per file):
+
+| run | outcomes matching | mismatching | files mismatching |
+| --- | --- | --- | --- |
+| audit commit `ecb9ab3' | 7863 / 7883 | 20 | 7 |
+| obarray fix `1b76c5a' | 7869 / 7883 | 14 | 6 |
+
+test/lisp/cedet/semantic-utest-ia.el 17/17.  The 14 that remain: mml-sec
+4 (ciphertext nondeterminism), thread-tests 2 and test/src/thread-tests
+2 (the thread model), server-tests 3 (multi-terminal frames), and the
+three startup-bound outcomes above (erc 2, simple-tests 1).  No other
+file changed.
+
+*Rebase onto PR #53.*  While that run was in progress main received PR
+#53 (`c3f2abf': alloc.c's `symbols-with-pos-enabled' binding around the
+mark phase, on top of the `garbage_collect_now' path above, and
+funcall_subr's aMANY dispatch for subrs whose finite max_args exceeds
+eight).  The obarray fix is rebased onto it as `e78332d' without
+conflict.  Full grouped gate over the rebased tree, alone on the
+machine, artifact `target/grouped-gate/run-1788748224030710472-27502`
+(2026-09-07 02:30 to 03:59): eval_01 351, eval_02 284, eval_03 320,
+eval_04 251, eval_05 351, primitives 412, compat_runtime 84, tty
+56 (two inventoried ignores), batch 46, lightweight 362, the binaries and
+the integration targets with the artifact identity test; zero failures,
+`cargo fmt --check' and strict clippy clean.  The frozen corpus over
+`e78332d' follows in the next record.
 
 *erc-tests (2) and simple-tests (1): startup time, not semantics.*
 `erc--find-mode' and `erc--essential-hook-ordering' start an inferior
