@@ -108,6 +108,21 @@ pub(crate) struct DirectNativeFunction {
     pub(crate) max_args: Option<usize>,
 }
 
+fn native_function_signature(
+    dynamic: bool,
+    maximum: usize,
+) -> (NativeCallingConvention, Option<usize>) {
+    // eval.c:funcall_subr's fixed switch covers only a0..a8.  A non-dynamic
+    // native function with a finite max_args above eight is the aMANY case,
+    // so the finite value is not an upper-bound check.  Dynamic functions
+    // use funcall_lambda's lambda-list arity rules and retain their bound.
+    if dynamic || maximum <= 8 {
+        (NativeCallingConvention::Fixed, Some(maximum))
+    } else {
+        (NativeCallingConvention::Many, None)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct NativeRegistry {
     units: Vec<LoadedUnit>,
@@ -890,14 +905,7 @@ pub(super) fn register_with_state(
         Value::Integer(maximum) => {
             let maximum = usize::try_from(maximum)
                 .map_err(|_| super::lisp::native_ice("negative native maximum arity"))?;
-            (
-                if dynamic || maximum <= 8 {
-                    NativeCallingConvention::Fixed
-                } else {
-                    NativeCallingConvention::Many
-                },
-                Some(maximum),
-            )
+            native_function_signature(dynamic, maximum)
         }
         Value::Symbol(ref name) if name == "many" => (
             if dynamic {
@@ -1374,4 +1382,24 @@ pub(crate) fn active_direct_function(record_id: u64) -> Option<DirectNativeFunct
         })
     })
     .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finite_native_nadic_signature_matches_funcall_subr() {
+        let (convention, maximum) = native_function_signature(false, 8);
+        assert!(matches!(convention, NativeCallingConvention::Fixed));
+        assert_eq!(maximum, Some(8));
+
+        let (convention, maximum) = native_function_signature(false, 9);
+        assert!(matches!(convention, NativeCallingConvention::Many));
+        assert_eq!(maximum, None);
+
+        let (convention, maximum) = native_function_signature(true, 9);
+        assert!(matches!(convention, NativeCallingConvention::Fixed));
+        assert_eq!(maximum, Some(9));
+    }
 }

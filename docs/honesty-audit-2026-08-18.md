@@ -6789,8 +6789,15 @@ machine, artifact `target/grouped-gate/run-1788748224030710472-27502`
 eval_04 251, eval_05 351, primitives 412, compat_runtime 84, tty
 56 (two inventoried ignores), batch 46, lightweight 362, the binaries and
 the integration targets with the artifact identity test; zero failures,
-`cargo fmt --check' and strict clippy clean.  The frozen corpus over
-`e78332d' follows in the next record.
+`cargo fmt --check' and strict clippy clean.
+
+Frozen corpus over the delivered tree (`cea5101', the rebased fix plus
+its record; artifact `frozen-1788753809317920348-8882`, 2026-09-07
+04:00 to 09:41, 3600 s per file): 7869 / 7883 matching, 14 mismatching
+in six files, the same fourteen outcomes as the run over `1b76c5a'
+above and no per-file change.  test/src/comp-tests.el and
+test/lisp/emacs-lisp/comp-tests.el match 177/177 and 3/3 with Emaxx's
+own compiler.  This is the number for main at `cea5101'.
 
 *erc-tests (2) and simple-tests (1): startup time, not semantics.*
 `erc--find-mode' and `erc--essential-hook-ordering' start an inferior
@@ -6809,3 +6816,69 @@ s wait on the same process, with every other `should' true.  These three outcome
 starts from a persistent image instead of replaying loadup.el; that is
 the native-comp branch's dump milestone, recorded as open in its own
 ledgers, and this document does not claim them.
+
+## 2026-09-07 native-comp: main merged in, first checkpoint
+
+Work moves to the `native-comp' branch for the dump prerequisites.
+Main at `c7e4753' (the pushed PR #53 merge plus the obarray fix and its
+records) is merged into the branch as `6166a12'; the branch's own eleven
+commits since its last merge of main are the L08 census footprints for
+GNU pseudovectors (process, window, window-configuration, thread, mutex,
+condition-variable, frame, terminal, buffer, overlay, char-table), the
+loader's n-ary arity split, and a harness change that redirects the
+oracle's native-comp cache.  Full grouped gate over the merge, alone on
+the machine, artifact `target/grouped-gate/run-1788775320151300929-22785`
+(10:02 to 11:39): every group, the binaries, the integration targets
+with the artifact identity test, `cargo fmt --check' and strict clippy
+clean.
+
+*sort_args, a CLI divergence found while placing a harness argument.*
+emacs.c:main calls `sort_args' before anything reads argv: options are
+reordered by the priority in `standard_args' (stable within a priority,
+an option kept with its argument, a repeated argument-less option kept
+once, "--" and what follows left at the end, an unambiguous prefix of a
+long option recognised, an option missing its argument `fatal').
+startup.el's option loop stops at the first argument it does not own,
+so without the sort `emacs --eval FORM -Q' would leave `-Q' to
+`command-line-1', which rejects it as an unknown option -- which is
+exactly what Emaxx did ("Unknown option `-Q'"; GNU answers with `-Q'
+honoured).  The table and the sort are ported for the configured Linux
+build (HAVE_PDUMPER, HAVE_MODULES and SECCOMP_USABLE entries, no HAVE_NS
+ones), applied before Clap and before `command-line-args' is built, and
+an unambiguous long-option prefix is expanded to the spelling Clap
+knows.  Oracle-compared CLI test
+`startup_options_after_an_eval_are_sorted_ahead_of_it_like_emacs_c`:
+`(nil nil ("--eval" ...))' for `--eval FORM --no-init-fil -Q --batch'
+and "emacs: Option '--eval' requires an argument" with exit 1 for a
+missing argument, both editors.
+
+*Hardening: each runner's native-comp cache is its own.*  The branch had
+redirected the oracle's `eln-cache' into the oracle run's temporary
+directory (`startup-redirect-eln-cache' before `-l FILE', because
+comp-tests.el compiles at load time); the subject still wrote into
+HOME=/nonexistent.  The subject now receives the same redirect, so the
+two editors' artifacts never share a directory and the earlier note
+about path hashes keeping them apart is moot.
+
+*Row 168 revisited.*  The plan had been to put this process's own sizes
+back into `garbage-collect''s SIZE columns.  The branch's census commits
+make that inconsistent: the *counts* in those rows are now GNU-modelled
+too (a buffer contributes 123 vector slots, a frame 73, an overlay 3,
+as alloc.c's sweep_vectors would count them), and Emaxx has no "real"
+vector slot for a frame to report.  The rows therefore describe the GNU
+heap this session would have, consistently, and the threshold model
+reads the same figures.  Row 168 stays as the disclosure of that
+choice; it is no longer marked for reversal.
+
+*Gate for this checkpoint.*  Full grouped gate over the merge plus the
+two items, alone on the machine, artifact
+`target/grouped-gate/run-1788782244875590229-9765` (11:57 to 13:28):
+eval_01 351, eval_02 284, eval_03 320, eval_04 251, eval_05 351,
+primitives 415, compat_runtime 84, tty 56 (two inventoried ignores),
+batch 46, lightweight 363, the binaries and the integration targets with
+the artifact identity test; `cargo fmt --check' clean.  Strict clippy
+then flagged the new `sort_args' test helpers (five `unwrap' calls under
+the crate's `unwrap_used' denial and one indexed loop); those are test-
+and loop-shape fixes with no behaviour change, after which strict clippy
+is clean and the `sort_args' unit test and CLI contract pass again.  The
+next checkpoint's gate covers the tree as committed.

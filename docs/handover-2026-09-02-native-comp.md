@@ -5,11 +5,23 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Resume here — pushed 2e0b5cf and merged main (2026-09-06)
+## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
+
+Main `c7e4753` (PR #53 plus the obarray fix and its frozen records) is merged
+into this branch; the full Linux grouped gate over the merge passed. Two
+bounded items follow it: emacs.c's `sort_args`/`standard_args` are ported
+(startup options after `--eval` reach startup.el first, as in GNU; oracle-
+compared CLI test), and the compatibility harness now redirects the subject's
+native-comp cache exactly as it redirects the oracle's. The dump-prerequisite
+program continues from R02c (native words carried in the object
+representation), then R03, V02–V05/L11, and the D06/L08 census; see
+`docs/honesty-audit-2026-08-18.md` for the Linux records.
+
+## Resume here — pushed c517994 after merging main (2026-09-07)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
-**Latest implementation checkpoint: `7bfce9b` — match GNU's
-`Fgarbage_collect` symbol mode; handover evidence is pushed in `2e0b5cf`.**
+**Latest implementation checkpoint: `c517994` — count owned overlay and
+char-table vectors in the GNU census.**
 It retains the ordinary GC threshold correction from
 `bc8402d`, the `origin/main` merge, and the `pipe`/`fcntl(FD_CLOEXEC)` fallback
 required because macOS has no `libc::pipe2`; it additionally temporarily
@@ -18,15 +30,47 @@ binds `symbols-with-pos-enabled` to nil around public GC exactly as GNU
 (18/18), formatting, all-target checking, and strict all-feature Clippy pass.
 The merged-tree identity and normal native gates also pass, as recorded below.
 
-The implementation checkpoint is pushed; `origin/main` was fetched and merged
-before the documentation push, and the worktree is clean. Continue from the
-remaining L08 source obligation.
+The implementation and merge checkpoints are pushed, and the worktree is
+clean. The compatibility harness now redirects GNU's native-comp cache before
+loading a file, because `comp-tests.el` native-compiles support code at load
+time. Continue from the remaining L08 source obligation.
+
+Post-merge validation for `0d06050`: the normal upstream native selector
+passed 177/177 with zero mismatches. The GNU test phase took 90.710 seconds
+and the Emaxx test phase took 1,352.154 seconds; setup took 3.096 versus
+46.535 seconds. The complete result is the harness summary for run
+`1788707918100126000-73169`.
+
+Post-loader validation for `af7f01b`: the normal upstream native selector
+passed 177/177 with zero mismatches. The GNU test phase took 88.108 seconds
+and the Emaxx test phase took 1,241.694 seconds; setup took 2.891 versus
+41.752 seconds. The complete result is the harness summary for run
+`1788709909540756000-77602`.
+
+Post-footprint validation for `5694cfb`: after the oracle cache-ordering fix,
+the normal upstream native selector passed 177/177 with zero mismatches. The
+GNU test phase took 86.405 seconds and the Emaxx test phase took 1,274.360
+seconds; setup took 2.785 versus 40.716 seconds. The complete result is the
+harness summary for run `1788714256563788000-85584`.
+
+Post-owner validation for `3a98eb3`: the normal upstream native selector
+passed 177/177 with zero mismatches. The GNU test phase took 86.992 seconds
+and the Emaxx test phase took 1,298.906 seconds; setup took 2.868 versus
+40.796 seconds. The complete result is the harness summary for run
+`1788716210239467000-89735`.
+
+Post-overlay/table validation for `c517994`: the normal upstream native
+selector passed 177/177 with zero mismatches. The GNU test phase took 86.839
+seconds and the Emaxx test phase took 1,326.780 seconds; setup took 2.847
+versus 40.911 seconds. The complete result is the harness summary for run
+`1788718304902637000-93915`.
 
 The next open native contract remains L08, GNU `alloc.c` live-byte accounting.
-This checkpoint closes only the public GNU C layout-size portion; the census
-classes, allocator accounting, free-list columns, and broader GC parity remain
-open. Continue from the ledger's exact C source obligation; do not infer that
-the passing focused gate closes L08.
+This checkpoint closes the currently modeled overlay and char-table census
+portion, but marker/finalizer liveness, sub-char-table modeling, allocator
+accounting, free-list columns, and broader GC parity remain open. Continue
+from the ledger's exact C source obligation; do not infer that the passing
+focused gate closes L08.
 
 Checkpoint-specific validation for `042074a`/`57b0a71`: the nine-rung
 unchanged-source identity ladder passed, including byte-identical `comp.el`,
@@ -79,6 +123,21 @@ coverage for the direct fixed-optional, MANY, and UNEVALLED branches: native
 Ffuncall preserves nil padding, forwards the complete MANY vector, and rejects
 special forms with the resolved subr object. The full 0..8 arity matrix and
 remaining subroutine edge cases remain open.
+
+**L07 finite n-ary correction (2026-09-06):** GNU's `funcall_subr` enters its
+fixed-arity switch only when `max_args <= 8`; a finite `max_args > 8` is sent
+through `aMANY` without an upper-bound rejection or Fapply padding. Rust now
+matches both rules, with a focused regression for the dispatcher and spread
+path. The complete native-Ffuncall group passes 10/10; the broader callable
+class and full 0..8 matrix remain open.
+
+**L07 native-loader arity correction (2026-09-06):** The same GNU split also
+applies to non-dynamic native-compiled subroutines registered through the
+loader. Rust now records finite `max_args > 8` as MANY with no upper-bound
+check, while dynamic lambda-list functions retain their finite bound. The
+loader boundary regression, all 10 native-Ffuncall tests, strict gates, and
+the post-merge 177/177 native selector pass; broader native callable-class
+coverage remains open.
 
 **L08 bounded layout correction (2026-09-06):** GNU `alloc.c` reports the C
 allocator layouts, not the host implementation's struct sizes. The configured

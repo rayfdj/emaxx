@@ -1376,17 +1376,28 @@ impl RecordKind {
             // Both configured structs are 88 bytes on the supported GNU
             // 64-bit ABI (comp.h and lisp.h:Lisp_Subr).
             Self::NativeCompUnit | Self::NativeCompiledFunction => 11,
+            // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
+            // which is 42 words on the configured GNU 64-bit ABI.
+            Self::Process => 42,
+            // window.c allocates struct window as a full pseudovector.  Its
+            // configured VECSIZE is 66 words, including the header word.
+            Self::Window => 66,
+            // window.c:struct save_window_data has eight Lisp fields and ten
+            // trailing ints; VECSIZE is 13 words on the configured ABI.
+            Self::WindowConfiguration => 13,
+            // thread.c allocates the complete struct thread_state, while the
+            // GC only traces its leading Lisp fields.  sweep_vectors still
+            // accounts the complete VECSIZE: 63 words here.
+            Self::Thread => 63,
+            // thread.c allocates these fixed-layout pseudovectors with their
+            // complete C structs: 9 and 8 words respectively.
+            Self::Mutex => 9,
+            Self::ConditionVariable => 8,
             // Keymaps are Lisp cons structures in GNU, not pseudovectors.
             Self::Keymap => 0,
             // These fixed-layout host objects are added as their C allocation
             // sites are mapped; never substitute the Rust struct size.
             Self::Font
-            | Self::Process
-            | Self::Window
-            | Self::WindowConfiguration
-            | Self::Thread
-            | Self::Mutex
-            | Self::ConditionVariable
             | Self::TreeSitterParser
             | Self::TreeSitterNode
             | Self::TreeSitterCompiledQuery
@@ -2806,15 +2817,17 @@ impl ImageGraphCopier {
 ///
 /// - `conses' counts every live cons cell, vector-literal spines
 ///   included: vectors ride on conses internally, so cons cells are where
-///   their storage truthfully is.  `vectors'/`vector_slots' are 0 -- no
-///   vector heap objects exist in this implementation.
+///   their storage truthfully is.  `vectors'/`vector_slots' use GNU's
+///   configured C layout for ordinary vectors and fixed-layout
+///   pseudovectors represented by records.
 /// - `floats' is 0: emaxx floats are immediate f64s, not heap cells.
 /// - `intervals' counts text-property spans (buffer spans plus string
 ///   spans), the closest live analogue of GNU's interval tree nodes.
-/// - Markers, overlays, char-tables, frames and records are id-indexed
-///   host state rather than Lisp heap objects and have no row of their
-///   own.  Records are never reclaimed, so values they reference remain
-///   live allocations and stay counted.
+/// - Markers and finalizers are id-indexed host state whose reachability
+///   filtering remains under audit.  Overlays owned by live buffers and
+///   rooted char-tables are included with their measured C footprint. Frames,
+///   terminals, buffers, and fixed-layout records with a direct GNU
+///   pseudovector counterpart are included as well.
 #[derive(Default)]
 pub(crate) struct LiveObjectCensus {
     pub(crate) conses: usize,
@@ -2841,6 +2854,15 @@ pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
 pub(crate) const GNU_FLOAT_SIZE: usize = 8;
 pub(crate) const GNU_INTERVAL_SIZE: usize = 56;
 pub(crate) const GNU_BUFFER_SIZE: usize = 992;
+// alloc.c:sweep_vectors counts these fixed-layout objects in the vector
+// totals as well as in their more specific public rows.  These are the
+// configured GNU 64-bit VECSIZE values from frame.h, termhooks.h, and
+// buffer.h respectively.
+pub(crate) const GNU_FRAME_VECTOR_SLOTS: usize = 73;
+pub(crate) const GNU_TERMINAL_VECTOR_SLOTS: usize = 66;
+pub(crate) const GNU_BUFFER_VECTOR_SLOTS: usize = 123;
+pub(crate) const GNU_OVERLAY_VECTOR_SLOTS: usize = 3;
+pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 
 #[derive(Default)]
 struct LispReachability<'mark, 'heap> {
@@ -3475,6 +3497,37 @@ impl Interpreter {
             .saturating_add(crate::lisp::types::census_live_uninterned_symbols());
         let mut vector_count = vectors.count;
         let mut vector_slots = vectors.slots;
+        let live_buffers = 1 + self.inactive_buffers.len();
+        let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
+        let live_terminals = usize::from(self.terminal_live);
+        let live_overlays = self
+            .buffer
+            .overlays
+            .iter()
+            .chain(
+                self.inactive_buffers
+                    .iter()
+                    .flat_map(|(_, buffer)| &buffer.overlays),
+            )
+            .filter(|overlay| !overlay.is_dead())
+            .count();
+        let char_table_slots = self
+            .char_tables
+            .iter()
+            .map(|table| GNU_CHAR_TABLE_VECTOR_SLOTS.saturating_add(table.extra_slots.len()))
+            .sum::<usize>();
+        vector_count = vector_count
+            .saturating_add(live_buffers)
+            .saturating_add(live_frames)
+            .saturating_add(live_terminals)
+            .saturating_add(live_overlays)
+            .saturating_add(self.char_tables.len());
+        vector_slots = vector_slots
+            .saturating_add(live_buffers.saturating_mul(GNU_BUFFER_VECTOR_SLOTS))
+            .saturating_add(live_frames.saturating_mul(GNU_FRAME_VECTOR_SLOTS))
+            .saturating_add(live_terminals.saturating_mul(GNU_TERMINAL_VECTOR_SLOTS))
+            .saturating_add(live_overlays.saturating_mul(GNU_OVERLAY_VECTOR_SLOTS))
+            .saturating_add(char_table_slots);
         for record in self.records.iter().filter(|record| {
             !self.gc_has_record_census
                 || record.id >= self.gc_record_high_water
@@ -3496,7 +3549,7 @@ impl Interpreter {
             vector_slots,
             floats: crate::lisp::types::census_live_floats(),
             intervals: strings.property_spans,
-            buffers: 1 + self.inactive_buffers.len(),
+            buffers: live_buffers,
             hash_table_bytes: self.gnu_hash_storage_bytes(symbols),
         };
         census.intervals += self.buffer.text_property_span_count();
