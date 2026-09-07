@@ -2836,7 +2836,10 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     // isolated copy, so pass the equivalent observable provenance separately
     // from those physical runtime paths.
     command.env(compat::DUMP_SOURCE_DIRECTORY_ENV, request.load_path_repo);
-    let _temp_directory = configure_isolated_temp_directory(&mut command, "emaxx")?;
+    let temp_directory = configure_isolated_temp_directory(&mut command, "emaxx")?;
+    // The same redirect the oracle receives: each runner's native-comp
+    // cache is its own run's temporary directory, never the shared HOME.
+    configure_isolated_native_comp_cache(&mut command, &temp_directory.path)?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
     // Emaxx's Lisp condition is the compatibility result, while this
     // host-side trace preserves the nested file/form that produced opaque

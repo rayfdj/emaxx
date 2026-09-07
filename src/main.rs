@@ -82,7 +82,16 @@ fn try_main() -> Result<u8, String> {
         // SAFETY: single-threaded startup, before Lisp or any subprocess.
         unsafe { std::env::remove_var("EMAXX_TRACE_LOAD_ERRORS") };
     }
-    let original_args = std::env::args_os().collect::<Vec<_>>();
+    // emacs.c:main sorts argv by option priority before anything reads it,
+    // so `-Q' after `--eval' still reaches startup.el's option loop first.
+    let original_args = match sort_args(std::env::args_os().collect::<Vec<_>>()) {
+        Ok(args) => args,
+        Err(message) => {
+            // emacs.c:fatal.
+            eprintln!("emacs: {message}");
+            return Ok(1);
+        }
+    };
     let args = normalize_gnu_single_dash_long_options(original_args.iter().cloned());
     let matches = Cli::command().get_matches_from(args.clone());
     let startup_args = startup_command_line_args(&original_args)?;
@@ -220,10 +229,213 @@ mod seccomp {
     }
 }
 
+/// emacs.c's standard_args for this configuration: the old-fashioned
+/// spelling, the long spelling, the priority and the argument count.
+/// HAVE_PDUMPER, HAVE_MODULES and SECCOMP_USABLE entries are present as in
+/// the configured Linux build; the HAVE_NS entries are not.
+const STANDARD_ARGS: &[(&str, Option<&str>, i32, usize)] = &[
+    ("-version", Some("--version"), 150, 0),
+    ("-fingerprint", Some("--fingerprint"), 140, 0),
+    ("-chdir", Some("--chdir"), 130, 1),
+    ("-t", Some("--terminal"), 120, 1),
+    ("-nw", Some("--no-window-system"), 110, 0),
+    ("-nw", Some("--no-windows"), 110, 0),
+    ("-batch", Some("--batch"), 100, 0),
+    ("-script", Some("--script"), 100, 1),
+    ("-daemon", Some("--daemon"), 99, 0),
+    ("-bg-daemon", Some("--bg-daemon"), 99, 0),
+    ("-fg-daemon", Some("--fg-daemon"), 99, 0),
+    ("-help", Some("--help"), 90, 0),
+    ("-nl", Some("--no-loadup"), 70, 0),
+    ("-nsl", Some("--no-site-lisp"), 65, 0),
+    ("-no-build-details", Some("--no-build-details"), 63, 0),
+    ("-module-assertions", Some("--module-assertions"), 62, 0),
+    ("-d", Some("--display"), 60, 1),
+    ("-display", None, 60, 1),
+    ("-Q", Some("--quick"), 55, 0),
+    ("-quick", None, 55, 0),
+    ("-x", None, 55, 0),
+    ("-q", Some("--no-init-file"), 50, 0),
+    ("-no-init-file", None, 50, 0),
+    ("-init-directory", Some("--init-directory"), 30, 1),
+    ("-no-x-resources", Some("--no-x-resources"), 40, 0),
+    ("-no-site-file", Some("--no-site-file"), 40, 0),
+    ("-no-comp-spawn", Some("--no-comp-spawn"), 60, 0),
+    ("-u", Some("--user"), 30, 1),
+    ("-user", None, 30, 1),
+    ("-debug-init", Some("--debug-init"), 20, 0),
+    ("-iconic", Some("--iconic"), 15, 0),
+    ("-D", Some("--basic-display"), 12, 0),
+    ("-basic-display", None, 12, 0),
+    ("-nbc", Some("--no-blinking-cursor"), 12, 0),
+    ("-nbi", Some("--no-bitmap-icon"), 10, 0),
+    ("-bg", Some("--background-color"), 10, 1),
+    ("-background", None, 10, 1),
+    ("-fg", Some("--foreground-color"), 10, 1),
+    ("-foreground", None, 10, 1),
+    ("-bd", Some("--border-color"), 10, 1),
+    ("-bw", Some("--border-width"), 10, 1),
+    ("-ib", Some("--internal-border"), 10, 1),
+    ("-ms", Some("--mouse-color"), 10, 1),
+    ("-cr", Some("--cursor-color"), 10, 1),
+    ("-fn", Some("--font"), 10, 1),
+    ("-font", None, 10, 1),
+    ("-fs", Some("--fullscreen"), 10, 0),
+    ("-fw", Some("--fullwidth"), 10, 0),
+    ("-fh", Some("--fullheight"), 10, 0),
+    ("-mm", Some("--maximized"), 10, 0),
+    ("-g", Some("--geometry"), 10, 1),
+    ("-geometry", None, 10, 1),
+    ("-T", Some("--title"), 10, 1),
+    ("-title", None, 10, 1),
+    ("-name", Some("--name"), 10, 1),
+    ("-xrm", Some("--xrm"), 10, 1),
+    ("-parent-id", Some("--parent-id"), 10, 1),
+    ("-r", Some("--reverse-video"), 5, 0),
+    ("-rv", None, 5, 0),
+    ("-reverse", None, 5, 0),
+    ("-hb", Some("--horizontal-scroll-bars"), 5, 0),
+    ("-vb", Some("--vertical-scroll-bars"), 5, 0),
+    ("-color", Some("--color"), 5, 0),
+    ("-no-splash", Some("--no-splash"), 3, 0),
+    ("-no-desktop", Some("--no-desktop"), 3, 0),
+    ("-temacs", Some("--temacs"), 1, 1),
+    ("-dump-file", Some("--dump-file"), 1, 1),
+    ("-seccomp", Some("--seccomp"), 1, 1),
+    ("-L", Some("--directory"), 0, 1),
+    ("-directory", None, 0, 1),
+    ("-l", Some("--load"), 0, 1),
+    ("-load", None, 0, 1),
+    ("-scriptload", None, 0, 1),
+    ("-f", Some("--funcall"), 0, 1),
+    ("-funcall", None, 0, 1),
+    ("-eval", Some("--eval"), 0, 1),
+    ("-execute", Some("--execute"), 0, 1),
+    ("-find-file", Some("--find-file"), 0, 1),
+    ("-visit", Some("--visit"), 0, 1),
+    ("-file", Some("--file"), 0, 1),
+    ("-insert", Some("--insert"), 0, 1),
+    ("-kill", Some("--kill"), -10, 0),
+];
+
+/// emacs.c:sort_args.  Reorder ARGV so that the highest-priority options
+/// come first, keeping the order of equal priorities, keeping an option
+/// with its argument, dropping repeated copies of an argument-less option,
+/// and leaving "--" and everything after it at the end.  An option missing
+/// its argument is emacs.c's `fatal'.
+fn sort_args(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
+    let argc = argv.len();
+    // options[i]: 0 for an option without arguments, n for one taking n,
+    // -1 for an ordinary argument.
+    let mut options = vec![-1i64; argc];
+    let mut priority = vec![0i32; argc];
+    let mut from = 1;
+    while from < argc {
+        let arg = argv[from].to_string_lossy().into_owned();
+        if arg.starts_with('-') {
+            if arg == "--" {
+                for slot in from..argc {
+                    priority[slot] = -100;
+                    options[slot] = -1;
+                }
+                break;
+            }
+            if let Some(&(_, _, prio, nargs)) =
+                STANDARD_ARGS.iter().find(|(name, _, _, _)| *name == arg)
+            {
+                options[from] = nargs as i64;
+                priority[from] = prio;
+                if from + nargs >= argc {
+                    return Err(format!("Option '{arg}' requires an argument"));
+                }
+                from += nargs;
+            } else if arg.starts_with("--") {
+                let equals = arg.find('=');
+                let this = &arg[..equals.unwrap_or(arg.len())];
+                let mut matched = STANDARD_ARGS
+                    .iter()
+                    .filter(|(_, long, _, _)| long.is_some_and(|long| long.starts_with(this)));
+                match (matched.next(), matched.next()) {
+                    (Some(&(_, _, prio, nargs)), None) => {
+                        let nargs = if equals.is_some() { 0 } else { nargs };
+                        options[from] = nargs as i64;
+                        priority[from] = prio;
+                        if from + nargs >= argc {
+                            return Err(format!("Option '{arg}' requires an argument"));
+                        }
+                        from += nargs;
+                    }
+                    (Some(_), Some(_)) => {
+                        eprintln!("Option '{arg}' matched multiple standard arguments");
+                    }
+                    (None, _) => {}
+                }
+            }
+        }
+        from += 1;
+    }
+
+    let mut taken = vec![false; argc];
+    let mut sorted = Vec::with_capacity(argc);
+    sorted.push(argv[0].clone());
+    let mut incoming_used = 1;
+    while incoming_used < argc {
+        let mut best = None;
+        let mut best_priority = -9999;
+        let mut index = 1;
+        while index < argc {
+            if !taken[index] && priority[index] > best_priority {
+                best_priority = priority[index];
+                best = Some(index);
+            }
+            if options[index] > 0 {
+                index += options[index] as usize;
+            }
+            index += 1;
+        }
+        let best = best.expect("an untaken argument remains");
+        let count = options[best].max(0) as usize;
+        let duplicate = options[best] == 0
+            && sorted
+                .last()
+                .is_some_and(|previous: &OsString| previous == &argv[best]);
+        if !duplicate {
+            sorted.extend(argv[best..=best + count].iter().cloned());
+        }
+        incoming_used += 1 + count;
+        for slot in taken.iter_mut().skip(best).take(count + 1) {
+            *slot = true;
+        }
+    }
+    Ok(sorted)
+}
+
 fn normalize_gnu_single_dash_long_options(
     args: impl IntoIterator<Item = OsString>,
 ) -> Vec<OsString> {
     args.into_iter()
+        .map(|arg| {
+            // emacs.c:sort_args and startup.el both accept an unambiguous
+            // prefix of a long option (`--no-init-fil'); expand it to the
+            // spelling Clap knows, keeping any `=VALUE'.
+            let Some(text) = arg.to_str() else {
+                return arg;
+            };
+            if !text.starts_with("--") || text == "--" {
+                return arg;
+            }
+            let (prefix, rest) = match text.find('=') {
+                Some(index) => (&text[..index], &text[index..]),
+                None => (text, ""),
+            };
+            let mut matched = STANDARD_ARGS
+                .iter()
+                .filter_map(|(_, long, _, _)| long.filter(|long| long.starts_with(prefix)));
+            match (matched.next(), matched.next()) {
+                (Some(long), None) if long != prefix => OsString::from(format!("{long}{rest}")),
+                _ => arg,
+            }
+        })
         .map(|arg| match arg.to_str() {
             // GNU accepts the full spelling of long options with one dash.
             // Normalize the subset Emaxx implements before Clap interprets
@@ -357,6 +569,75 @@ fn run_interactive(args: &[String], no_site_lisp: bool) -> Result<u8, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sorted(args: &[&str]) -> Vec<String> {
+        sort_args(args.iter().map(OsString::from).collect())
+            .expect("the arguments are complete")
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn sort_error(args: &[&str]) -> String {
+        sort_args(args.iter().map(OsString::from).collect())
+            .expect_err("an option is missing its argument")
+    }
+
+    #[test]
+    fn sort_args_orders_by_emacs_c_priority_and_keeps_option_arguments() {
+        // -Q (55) and -batch (100) move ahead of --eval (0); --eval keeps
+        // its argument; equal priorities keep their order.
+        assert_eq!(
+            sorted(&["emaxx", "--eval", "(a)", "-Q", "--eval", "(b)", "--batch"]),
+            ["emaxx", "--batch", "-Q", "--eval", "(a)", "--eval", "(b)"]
+        );
+        // A repeated argument-less option is kept once; an --OPTION=VALUE
+        // spelling takes no separate argument; an unambiguous long-option
+        // prefix is the option; "--" and what follows stay at the end.
+        assert_eq!(
+            sorted(&[
+                "emaxx",
+                "--",
+                "-Q",
+                "-Q",
+                "--no-init-fil",
+                "--load=x.el",
+                "-Q",
+                "file"
+            ]),
+            [
+                "emaxx",
+                "--",
+                "-Q",
+                "-Q",
+                "--no-init-fil",
+                "--load=x.el",
+                "-Q",
+                "file"
+            ]
+        );
+        assert_eq!(
+            sorted(&[
+                "emaxx",
+                "-Q",
+                "--load=x.el",
+                "-Q",
+                "--no-init-fil",
+                "file",
+                "-Q"
+            ]),
+            ["emaxx", "-Q", "--no-init-fil", "--load=x.el", "file"]
+        );
+        // emacs.c:fatal for an option missing its argument.
+        assert_eq!(
+            sort_error(&["emaxx", "--batch", "--eval"]),
+            "Option '--eval' requires an argument"
+        );
+        assert_eq!(
+            sort_error(&["emaxx", "-l"]),
+            "Option '-l' requires an argument"
+        );
+    }
 
     #[test]
     fn startup_receives_gnu_no_comp_spawn_spelling_unchanged() {
