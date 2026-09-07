@@ -1615,6 +1615,98 @@ fn variable_cells_follow_data_c() {
 }
 
 #[test]
+fn buffer_local_cells_follow_data_c() {
+    // data.c: a buffer's local bindings are its `local_var_alist', searched
+    // by the symbol object; a cell whose value is Qunbound is still a
+    // binding (`local-variable-p' t, `buffer-local-variables' lists the
+    // bare symbol, a read is void, the default is untouched);
+    // `make-local-variable' copies the default cell (void stays void) and
+    // refuses a constant with VARIABLE as given; `make-variable-buffer-local'
+    // turns a void plain value into nil, refuses a constant, and returns
+    // VARIABLE as given; `set' through the alist cell, `let' as
+    // SPECPDL_LET_LOCAL over a cell, `kill-local-variable', `set-default',
+    // and `buffer-local-value' (void-variable with VARIABLE as given).
+    let program = r#"
+        (let ((results nil))
+          (defvar zz-bl-a 'default)
+          (push (with-temp-buffer
+                  (list (local-variable-p 'zz-bl-a) (local-variable-if-set-p 'zz-bl-a)
+                        (progn (make-local-variable 'zz-bl-a) (list (local-variable-p 'zz-bl-a) zz-bl-a))
+                        (progn (setq zz-bl-a 'local) (list zz-bl-a (default-value 'zz-bl-a)))
+                        (with-temp-buffer (list zz-bl-a (local-variable-p 'zz-bl-a)))
+                        (progn (setq-default zz-bl-a 'new-default) (list zz-bl-a (default-value 'zz-bl-a)))
+                        (let ((zz-bl-a 'let-bound))
+                          (list zz-bl-a (default-value 'zz-bl-a) (with-temp-buffer zz-bl-a)))
+                        (progn (kill-local-variable 'zz-bl-a) (list zz-bl-a (local-variable-p 'zz-bl-a)))))
+                results)
+          (defvar zz-bl-b 1)
+          (make-variable-buffer-local 'zz-bl-b)
+          (push (with-temp-buffer
+                  (list (local-variable-if-set-p 'zz-bl-b) (local-variable-p 'zz-bl-b)
+                        (progn (setq zz-bl-b 2) (list zz-bl-b (default-value 'zz-bl-b) (local-variable-p 'zz-bl-b)))
+                        (let ((zz-bl-b 3)) (list zz-bl-b (default-value 'zz-bl-b) (with-temp-buffer zz-bl-b)))
+                        (progn (set-default 'zz-bl-b 4) (list zz-bl-b (with-temp-buffer zz-bl-b)))
+                        (progn (makunbound 'zz-bl-b)
+                               (list (boundp 'zz-bl-b) (local-variable-p 'zz-bl-b) (default-boundp 'zz-bl-b)
+                                     (condition-case e zz-bl-b (void-variable (cadr e)))
+                                     (condition-case e (buffer-local-value 'zz-bl-b (current-buffer))
+                                       (void-variable (cadr e)))
+                                     (with-temp-buffer zz-bl-b)))
+                        (mapcar (lambda (e) (if (consp e) (car e) e))
+                                (seq-filter (lambda (e) (memq (if (consp e) (car e) e) '(zz-bl-a zz-bl-b zz-bl-c)))
+                                            (buffer-local-variables)))
+                        (progn (setq zz-bl-b 5) (list zz-bl-b (boundp 'zz-bl-b) (default-value 'zz-bl-b)))))
+                results)
+          (push (with-temp-buffer
+                  (setq-local zz-bl-c 1) (setq-local zz-bl-a 2)
+                  (list (mapcar #'car (seq-filter (lambda (e) (memq (car-safe e) '(zz-bl-a zz-bl-c)))
+                                                  (buffer-local-variables)))
+                        (progn (kill-all-local-variables)
+                               (list (local-variable-p 'zz-bl-c) (boundp 'zz-bl-c) (default-boundp 'zz-bl-c)))
+                        (progn (put 'zz-bl-d 'permanent-local t) (setq-local zz-bl-d 9)
+                               (kill-all-local-variables) (local-variable-p 'zz-bl-d))
+                        (condition-case e (make-local-variable :kw) (error e))
+                        (condition-case e (make-variable-buffer-local 'nil) (error e))
+                        (condition-case e (make-local-variable 3) (error e))
+                        (progn (defvaralias 'zz-bl-alias 'zz-bl-a) (setq-local zz-bl-alias 7)
+                               (list zz-bl-a (local-variable-p 'zz-bl-a) (local-variable-p 'zz-bl-alias)
+                                     (buffer-local-value 'zz-bl-alias (current-buffer))
+                                     (make-variable-buffer-local 'zz-bl-alias)
+                                     (make-local-variable 'zz-bl-alias)
+                                     (kill-local-variable 'zz-bl-alias)))
+                        (with-temp-buffer
+                          (list (buffer-local-value 'zz-bl-a (current-buffer))
+                                (condition-case e (buffer-local-value 'zz-bl-unbound (current-buffer)) (error e))))
+                        (progn (make-variable-buffer-local 'zz-bl-e)
+                               (list (boundp 'zz-bl-e) zz-bl-e (default-value 'zz-bl-e) (local-variable-p 'zz-bl-e)))
+                        (progn (make-local-variable 'zz-bl-f)
+                               (list (boundp 'zz-bl-f) (local-variable-p 'zz-bl-f) (default-boundp 'zz-bl-f)
+                                     (progn (setq zz-bl-f 1)
+                                            (list zz-bl-f (default-boundp 'zz-bl-f)
+                                                  (with-temp-buffer (boundp 'zz-bl-f))))))
+                        (progn (defvar zz-bl-g 0)
+                               (let ((zz-bl-g 1))
+                                 (list (make-local-variable 'zz-bl-g) zz-bl-g (local-variable-p 'zz-bl-g)
+                                       (default-value 'zz-bl-g))))
+                        (progn (make-variable-buffer-local 'zz-bl-h)
+                               (let ((zz-bl-h 1)) (setq zz-bl-h 2)
+                                    (list zz-bl-h (local-variable-p 'zz-bl-h) (default-value 'zz-bl-h))))))
+                results)
+          (nreverse results))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((nil nil (t default) (local default) (default nil) (local new-default) \
+         (let-bound new-default new-default) (new-default nil)) \
+         (t nil (2 1 t) (3 1 1) (2 4) (nil t t zz-bl-b zz-bl-b 4) (zz-bl-b) (5 t 4)) \
+         ((zz-bl-c zz-bl-a) (nil nil nil) t (setting-constant :kw) (setting-constant nil) \
+         (wrong-type-argument symbolp 3) (7 t t 7 zz-bl-alias zz-bl-a zz-bl-a) \
+         (new-default (void-variable zz-bl-unbound)) (t nil nil nil) (nil t nil (1 nil nil)) \
+         (zz-bl-g 1 t 1) (2 nil nil)))",
+        "buffer-local cells",
+    );
+}
+
+#[test]
 fn defvaralias_records_the_alias_in_load_history() {
     // eval.c:Fdefvaralias: LOADHIST_ATTACH (new_alias) -- the bare symbol,
     // exactly as Fdefvar records a variable.

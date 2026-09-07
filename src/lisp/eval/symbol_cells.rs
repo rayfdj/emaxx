@@ -24,6 +24,14 @@ use std::collections::HashMap;
 pub(crate) const LOCALIZED: u8 = 1;
 /// `declared_special'.
 pub(crate) const SPECIAL: u8 = 2;
+/// `blv->local_if_set': setting the variable makes it local
+/// (`make-variable-buffer-local').
+pub(crate) const LOCAL_IF_SET: u8 = 4;
+/// A DEFVAR_PER_BUFFER slot (`BUFFER_OBJFWDP') with a positive
+/// buffer_local_flags index: inherits the default until assigned locally.
+pub(crate) const PER_BUFFER: u8 = 8;
+/// A DEFVAR_PER_BUFFER slot whose index is -1: local in every buffer.
+pub(crate) const ALWAYS_LOCAL: u8 = 16;
 
 #[derive(Clone, Default)]
 struct SymbolCell {

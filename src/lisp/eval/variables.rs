@@ -1,4 +1,4 @@
-use super::symbol_cells::{LOCALIZED, SPECIAL};
+use super::symbol_cells::{ALWAYS_LOCAL, LOCAL_IF_SET, LOCALIZED, PER_BUFFER, SPECIAL};
 use super::*;
 use crate::lisp::types::SymbolName;
 
@@ -119,28 +119,57 @@ impl Interpreter {
         }
     }
 
+    /// The bound local value of NAME in BUFFER_ID; a void local (data.c's
+    /// `Qunbound' in the alist cell) answers None like no local at all.
+    /// Callers that must tell the two apart use `buffer_local_binding'.
     pub fn buffer_local_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
         self.buffer_locals
             .get(&buffer_id)
-            .and_then(|locals| locals.get(name))
+            .and_then(|locals| locals.binding_by_name(name))
+            .flatten()
             .cloned()
+    }
+
+    /// `assq_no_quit (symbol, BVAR (buffer, local_var_alist))': `Some(None)'
+    /// is a binding whose value is void.
+    pub(crate) fn buffer_local_binding(&self, buffer_id: u64, name: &str) -> Option<Option<Value>> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.binding_by_name(name))
+            .map(|value| value.cloned())
+    }
+
+    pub(crate) fn buffer_local_binding_symbol(
+        &self,
+        buffer_id: u64,
+        symbol: &SymbolName,
+    ) -> Option<Option<Value>> {
+        self.buffer_locals
+            .get(&buffer_id)
+            .and_then(|locals| locals.binding(symbol))
+            .map(|value| value.cloned())
+    }
+
+    pub(crate) fn has_buffer_local_binding(&self, buffer_id: u64, name: &str) -> bool {
+        self.buffer_local_binding(buffer_id, name).is_some()
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
         self.globals.set_flag_by_name(name, LOCALIZED);
-        let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
-        if buffer_id == self.current_buffer_id() {
-            self.update_forwarded_eval_cell(name, &value);
-        }
-        let locals = self
-            .buffer_locals
-            .entry(buffer_id)
-            .or_insert_with(|| super::ordered_bindings([]));
-        if let Some(existing) = locals.get_mut(name) {
-            *existing = value;
+        let value = if matches!(value, Value::Unbound) {
+            value
         } else {
-            locals.insert(name.to_string(), value);
-        }
+            let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
+            if buffer_id == self.current_buffer_id() {
+                self.update_forwarded_eval_cell(name, &value);
+            }
+            value
+        };
+        let symbol = SymbolName::intern_str(name);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(&symbol, value);
     }
 
     pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
@@ -201,7 +230,7 @@ impl Interpreter {
             .get(&from_buffer_id)
             .into_iter()
             .flat_map(|locals| locals.iter())
-            .map(|(name, value)| (name.clone(), value.clone()))
+            .map(|(name, value)| (name.as_str().to_owned(), value.clone()))
             .collect::<Vec<_>>();
         for (name, value) in locals {
             self.set_buffer_local_value(to_buffer_id, &name, value);
@@ -251,25 +280,28 @@ impl Interpreter {
         }
     }
 
+    /// Every local binding of BUFFER_ID in first-binding order; a void
+    /// local carries `Value::Unbound'.
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
         self.buffer_locals
             .get(&buffer_id)
             .map(|locals| {
                 locals
                     .iter()
-                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .map(|(name, value)| (name.as_str().to_owned(), value.clone()))
                     .collect()
             })
             .unwrap_or_default()
     }
 
+    /// `blv->local_if_set = 1' (data.c:Fmake_variable_buffer_local).
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
-        self.auto_buffer_locals.insert(name.to_string());
-        self.globals.set_flag_by_name(name, LOCALIZED);
+        self.globals
+            .set_flag_by_name(name, LOCAL_IF_SET | LOCALIZED);
     }
 
     pub fn is_auto_buffer_local(&self, name: &str) -> bool {
-        self.auto_buffer_locals.contains(name)
+        self.globals.has_flag_by_name(name, LOCAL_IF_SET)
     }
 
     /// Define a global value cell and its dynamic-binding contract together.
@@ -297,7 +329,7 @@ impl Interpreter {
     pub fn mark_per_buffer_special(&mut self, name: &str) {
         self.mark_auto_buffer_local(name);
         self.mark_special_variable(name);
-        self.per_buffer_specials.insert(name.to_string());
+        self.globals.set_flag_by_name(name, PER_BUFFER);
     }
 
     /// Mark a native DEFVAR_PER_BUFFER variable whose GNU buffer slot has
@@ -305,15 +337,28 @@ impl Interpreter {
     /// buffer must not forward into another buffer for this subset.
     pub fn mark_always_buffer_local_special(&mut self, name: &str) {
         self.mark_per_buffer_special(name);
-        self.always_buffer_local_specials.insert(name.to_string());
+        self.globals.set_flag_by_name(name, ALWAYS_LOCAL);
     }
 
     pub fn is_per_buffer_special(&self, name: &str) -> bool {
-        self.per_buffer_specials.contains(name)
+        self.globals.has_flag_by_name(name, PER_BUFFER)
     }
 
     pub fn is_always_buffer_local_special(&self, name: &str) -> bool {
-        self.always_buffer_local_specials.contains(name)
+        self.globals.has_flag_by_name(name, ALWAYS_LOCAL)
+    }
+
+    /// data.c:let_shadows_buffer_binding_p: a `SPECPDL_LET_LOCAL' or
+    /// `SPECPDL_LET_DEFAULT' record for NAME made in the current buffer.
+    pub(crate) fn let_shadows_buffer_binding(&self, name: &str) -> bool {
+        let current = self.current_buffer_id();
+        self.active_special_restores.iter().any(|restore| {
+            restore.name == name
+                && match restore.scope {
+                    SpecialBindingScope::BufferLocal(buffer_id) => buffer_id == current,
+                    SpecialBindingScope::Global => restore.binding_buffer_id == Some(current),
+                }
+        })
     }
 
     pub fn mark_special_variable(&mut self, name: &str) {
@@ -1403,10 +1448,10 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        if self
-            .buffer_local_value(self.current_buffer_id(), &resolved)
-            .is_some()
-        {
+        // data.c:set_internal SYMBOL_LOCALIZED: an existing alist cell (bound
+        // or void) receives the store; otherwise a let made for this buffer
+        // keeps the default, and only then does local_if_set create a cell.
+        if self.has_buffer_local_binding(self.current_buffer_id(), &resolved) {
             return Some(SpecialBindingScope::BufferLocal(self.current_buffer_id()));
         }
         if let Some(scope) = self.active_special_assignment_scope(&resolved) {
@@ -1527,8 +1572,10 @@ impl Interpreter {
             self.active_special_restores.push(restore.clone());
             return Ok(restore);
         }
-        let restore = if self.buffer_local_value(buffer_id, &name).is_some() {
-            let previous = self.buffer_local_value(buffer_id, &name);
+        // eval.c:specbind SYMBOL_LOCALIZED: a binding cell in this buffer,
+        // bound or void, makes the let SPECPDL_LET_LOCAL.
+        let restore = if let Some(local) = self.buffer_local_binding(buffer_id, &name) {
+            let previous = Some(local.unwrap_or(Value::Unbound));
             self.notify_variable_watchers(&name, value.clone(), "let", Some(buffer_id), env)?;
             self.set_buffer_local_value(buffer_id, &name, value);
             SpecialBindingRestore {

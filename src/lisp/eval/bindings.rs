@@ -215,9 +215,16 @@ impl Interpreter {
         // This also covers a plain special that becomes buffer-local while
         // its global `let' is active: GNU then reads the newly created local
         // cell, while the specbind layer continues to own/restores only the
-        // default value.
-        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved) {
-            return Ok(Some(value));
+        // default value.  A void local (data.c stores Qunbound in the alist
+        // cell) shadows the default too: the variable is void here.
+        let local = match resolved_symbol {
+            Some(symbol) => self.buffer_local_binding_symbol(self.current_buffer_id(), symbol),
+            None => self.buffer_local_binding(self.current_buffer_id(), resolved),
+        };
+        match local {
+            Some(Some(value)) => return Ok(Some(value)),
+            Some(None) => return Ok(None),
+            None => {}
         }
         if let Some(value) = self.active_global_special_value(resolved) {
             return Ok(value.or_else(|| self.builtin_var_value(resolved)));

@@ -7123,3 +7123,60 @@ here from now on.
 run-1788807756929107362-1200, GROUPED GATE PASSED (every group 0
 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
 committed.
+
+## 2026-09-07 V04 stage 1: a buffer's local bindings by symbol, and a void local is still a binding
+
+*What GNU does.*  A buffer's local bindings are its `local_var_alist',
+`(symbol . value)' cells found with `assq_no_quit' on the symbol
+object; the symbol's blv carries `local_if_set'.  A cell whose value is
+`Qunbound' remains a binding: `local-variable-p' answers t, a read is
+void, `buffer-local-variables' lists the bare symbol, and the default
+is untouched.  `Fmakunbound' is `Fset (symbol, Qunbound)', so in a
+buffer with a cell it voids the cell, and for a `local_if_set' symbol
+without one (outside a let made for this buffer) it creates a void
+cell.  `Fmake_local_variable' copies the default cell's value (void
+stays void) and refuses a constant with VARIABLE as given;
+`Fmake_variable_buffer_local' turns a void plain value into nil,
+refuses a constant, and returns VARIABLE as given.
+
+*What Emaxx did.*  The per-buffer table was keyed by name (three
+name-keyed sets held `local_if_set', the per-buffer kind and the
+always-local kind), and a local was either bound or absent: the probe
+against the checkpoint-4 binary showed `(makunbound 'v)' on a local
+deleting the cell (`boundp' t through the default, `local-variable-p'
+nil, the symbol gone from `buffer-local-variables'),
+`(make-local-variable 'void-var)' binding the local to nil,
+`(make-variable-buffer-local 'zz-new)' leaving the symbol void (GNU:
+nil) -- the extended contract program died on that read --
+`(make-local-variable :kw)' and `(make-variable-buffer-local 'nil)'
+succeeding, and `make-variable-buffer-local' of an alias returning the
+base instead of the argument.
+
+*What changed.*  `src/lisp/eval/local_cells.rs': one buffer's
+bindings keyed by symbol id in first-binding order, `Value::Unbound'
+for a void local; the three name-keyed sets are the LOCAL_IF_SET,
+PER_BUFFER and ALWAYS_LOCAL flags in the symbol cell.  The read path
+distinguishes "no cell" from "void cell" (`buffer_local_binding'),
+and `set', `specbind', `makunbound', `local-variable-p',
+`local-variable-if-set-p', `variable-binding-locus',
+`buffer-local-value' and `buffer-local-variables' use that
+distinction; `let_shadows_buffer_binding' is data.c's predicate over
+the restore stack (a LET_LOCAL record for this buffer, or a
+LET_DEFAULT one made here).  Oracle contract
+`buffer_local_cells_follow_data_c' (three `with-temp-buffer' programs,
+about forty observations including the alias cases and the lexical
+`let' of a non-special `local_if_set' symbol) passes with the 173
+buffer-local, special-binding, watcher, alias and bridge tests.  No
+timing: the buffer-local branch is not on the compiler's path, and
+none is claimed.
+
+*Disclosed residual.*  The blv's `where'/`valcell' swap (GNU loads the
+current buffer's binding into the symbol so a read is one cell
+dereference) is not represented: every read of a LOCALIZED symbol
+probes the current buffer's table.  DEFVAR_PER_BUFFER slots keep
+Emaxx's model (`makunbound' of one still takes the previous path).
+
+*Checkpoint 5 gate.*  Alone on the machine: grouped gate
+run-1788814256001850440-16741, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.
