@@ -5,6 +5,18 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
+## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
+
+Main `c7e4753` (PR #53 plus the obarray fix and its frozen records) is merged
+into this branch; the full Linux grouped gate over the merge passed. Two
+bounded items follow it: emacs.c's `sort_args`/`standard_args` are ported
+(startup options after `--eval` reach startup.el first, as in GNU; oracle-
+compared CLI test), and the compatibility harness now redirects the subject's
+native-comp cache exactly as it redirects the oracle's. The dump-prerequisite
+program continues from R02c (native words carried in the object
+representation), then R03, V02–V05/L11, and the D06/L08 census; see
+`docs/honesty-audit-2026-08-18.md` for the Linux records.
+
 ## Resume here — pushed c517994 after merging main (2026-09-07)
 
 Repository `/Users/nbmhqa186/native/emaxx`, branch `native-comp`.
