@@ -688,23 +688,52 @@ fn run_with_stack(
                     stack.push(object.constant(index));
                 }
                 Op::VarRef(index) => {
+                    // bytecode.c:Bvarref is find_symbol_value on the constant,
+                    // signalling void-variable with that very object; a bare
+                    // symbol reaches the cell directly, anything else takes
+                    // Fsymbol_value's CHECK_SYMBOL path.
                     let name = object.constant(index);
-                    let value = prim(interp, "symbol-value", &[name], env)?;
+                    let value = match &name {
+                        Value::Symbol(symbol) => match interp.symbol_value_cell_symbol(symbol) {
+                            Ok(value) => value,
+                            Err(LispError::Void(_)) => {
+                                return Err(LispError::SignalValue(Value::list([
+                                    Value::symbol("void-variable"),
+                                    name,
+                                ])));
+                            }
+                            Err(error) => return Err(error),
+                        },
+                        _ => prim(interp, "symbol-value", &[name], env)?,
+                    };
                     stack.push(value);
                 }
                 Op::VarSet(index) => {
+                    // bytecode.c:Bvarset is set_internal on the constant.
                     let name = object.constant(index);
                     let value = pop!();
-                    prim(interp, "set", &[name, value], env)?;
+                    match &name {
+                        Value::Symbol(symbol) => {
+                            crate::lisp::primitives::set_internal(
+                                interp,
+                                symbol.as_str(),
+                                value,
+                                env,
+                            )?;
+                        }
+                        _ => {
+                            prim(interp, "set", &[name, value], env)?;
+                        }
+                    }
                 }
                 Op::VarBind(index) => {
-                    let name = object
-                        .constant(index)
-                        .as_symbol()
-                        .map_err(|_| LispError::Signal("varbind constant must be a symbol".into()))?
-                        .to_string();
+                    // bytecode.c:Bvarbind is specbind on the constant.
+                    let name = object.constant(index);
+                    let name = name.as_symbol().map_err(|_| {
+                        LispError::Signal("varbind constant must be a symbol".into())
+                    })?;
                     let value = pop!();
-                    let restore = interp.bind_special_variable(&name, value, env)?;
+                    let restore = interp.bind_special_variable(name, value, env)?;
                     unwinds.push(UnwindEntry::Binding(restore));
                 }
                 Op::Unbind(count) => {

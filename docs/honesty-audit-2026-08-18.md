@@ -6882,3 +6882,95 @@ the crate's `unwrap_used' denial and one indexed loop); those are test-
 and loop-shape fixes with no behaviour change, after which strict clippy
 is clean and the `sort_args' unit test and CLI contract pass again.  The
 next checkpoint's gate covers the tree as committed.
+
+## 2026-09-07 R02c, first boundary: a symbol carries its native word
+
+*What changed.*  comp.c hands generated code a symbol as the object's
+own address.  Emaxx's bridge assigned every non-cons object a boxed
+`NativeHandle' and found it again through `handle_by_value', a hash map
+keyed by the object's identity, on every crossing.  A symbol's
+`SymbolNameState' now carries its handle as a packed slot (the owning
+heap's id in the high half, the handle index plus one in the low half);
+`encode' reads the word from the symbol when the slot names this heap
+and the handle still holds this symbol, and falls back to the table
+otherwise (a second heap on the same thread, or a stale slot).  The
+sweep that frees an unmarked handle clears the slot through the handle's
+own value, and a dropped heap clears every slot it owned.  Two Rust-only
+controls, registered with the anti-cheat audit:
+`symbol_carries_its_native_word_and_a_swept_handle_clears_it` and
+`symbol_native_word_slot_is_per_heap_and_verified_against_the_handle`.
+The native runtime module's 80 tests pass.
+
+*Measured, and honestly no change.*  `emaxx -Q --batch -f
+batch-native-compile comp.el' (fresh HOME and TMPDIR each run, `env
+-i', user CPU): before 145.3, 139.3, 140.4 s; after 139.4, 142.8 s.  GNU
+compiles the same file in 22.7 s user.  The artifact is byte-identical
+to GNU's after the change.  The symbol lookup was therefore not where
+the bridge's time goes for this workload; the slot stays because it is
+the representation R02c asks for (the word lives in the object) and it
+removes a map entry per symbol crossing, but no performance claim is
+made for it.  The next boundary is chosen from a sampled profile of
+this workload rather than from the contract list's order.
+
+*Where the time goes when Emaxx compiles comp.el.*  A gdb sampler (100
+backtraces of the worker thread at 0.7 s intervals, starting 30 s into
+the run to skip startup, symbolised release build) over the same
+`batch-native-compile comp.el' shows every sample inside the bytecode
+VM executing comp.elc: `execute_record'/`run_with_stack' on 72 of 100
+stacks, `call_function_value_inner' on 78, `dispatch_named_builtin' on
+38.  The native bridge (`native_comp/runtime.rs') is on none.  Both
+editors run the compiler as byte-code: the oracle's
+`comp--native-compile' is not `subr-native-elisp-p' either, its
+`load-history' names comp.elc, and its `../native-lisp/30.2-15987bd4'
+was built for another ABI hash than the running binary (30.2-1564b906),
+so it is never loaded.  The 5.3x for this workload (about 120 s of work
+against GNU's 22.7 s, both interpreting the same comp.elc) is therefore
+the Rust VM and its primitives against GNU's C VM, not native code
+generation and not the bridge.  Leaf costs in the samples: allocator
+calls 22 (realloc 15, alloc 6), variable access 18
+(`direct_variable_alias' 5 -- the alias table is consulted on every
+variable read -- `global_binding_value', `push_backtrace_frame_with_
+locals' 3, `bind_special_variable'), bytecode `decode_program' 5,
+`equal'-hash lookups 4, plist `get' through `overriding_plist_property'
+5.  Those are the name-keyed storage contracts V02/V03 name (a symbol-
+owned value cell and an alias stored in the symbol), so that work
+serves the dump prerequisites and the compiler's speed at once, and
+comes next.  R02c's remaining boundaries matter where native code
+runs: test/src/comp-tests.el's execution phase (2086 s against 14 s) is
+the bridge's workload, and it is measured separately when those
+boundaries are touched.
+
+*Bytecode variable access reaches the cell directly.*  bytecode.c's
+`Bvarref', `Bvarset' and `Bvarbind' read and write a symbol's value
+through `Fsymbol_value'/`set_internal'/`specbind' on the symbol object;
+they never spell the symbol's name.  Emaxx's VM built a `String' per
+`VarRef' and dispatched `symbol-value' and `set' by name through the
+primitive table.  `Op::VarRef' now calls `symbol_value_cell_symbol' on
+the constant symbol (a void cell signals `void-variable' with the
+constant, as `Fsymbol_value' does), `Op::VarSet' calls a shared
+`set_internal' (alias resolution, constant and read-only checks, the
+buffer-local assignment target, watchers, then the cell write -- the
+same path the `set' primitive takes, factored out so the two cannot
+drift), and `Op::VarBind' binds through the symbol's name slice without
+copying.  The fallbacks for non-symbol operands are unchanged.  Oracle
+contract `compiled_variable_references_and_sets_follow_bytecode_c'
+byte-compiles closures that reference an unbound variable, set a
+constant, read and set a dynamic variable under a compiled `let',
+trigger a `set' watcher, and `set' through an alias, and compares the
+printed result with GNU; the 37 bytecode tests pass with it.
+
+Measured as above, paired with the checkpoint-1 binary on the same
+machine in the same hour: after 125.7, 128.5 s user; the checkpoint-1
+binary 146.5 s in the paired run.  That is 13-14 % of the compile of
+comp.el, artifact still byte-identical to GNU's, and it agrees with the
+sampled profile (variable access was 18 of 100 leaves).  GNU's 22.7 s
+is still 5.6x away, and the remaining leaves (allocator, alias table on
+every read, `decode_program', plist `get') are the V02/V03 work.
+
+*Checkpoint 2 gate.*  A first full gate over this tree (run 11, started
+14:18) was invalidated by me: I built and edited sources while it ran,
+which rewrites the binaries the later groups execute, so its result is
+not evidence and is not cited.  The clean run, alone on the machine:
+grouped gate run-1788792028897488641-26721, GROUPED GATE PASSED (every
+group 0 failed, 0 ignored), then `cargo fmt --check' and strict clippy
+both exit 0 on the tree as committed.

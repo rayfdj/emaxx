@@ -536,6 +536,12 @@ struct SymbolNameState {
     internal: SharedText,
     lisp_name: Value,
     ordered_binding_hash: u64,
+    /// The native handle this symbol currently has, packed as the owning
+    /// native heap's id in the high 32 bits and the handle index plus one
+    /// in the low 32 bits; 0 when it has none.  comp.c passes a symbol to
+    /// generated code as the object's own address, so the word lives with
+    /// the symbol rather than in a lookup keyed by it (R02c).
+    native_word: Cell<u64>,
 }
 
 #[repr(transparent)]
@@ -588,6 +594,7 @@ impl SymbolName {
                 internal: text,
                 lisp_name,
                 ordered_binding_hash,
+                native_word: Cell::new(0),
             }));
             names.insert(name.clone());
             name
@@ -609,6 +616,7 @@ impl SymbolName {
             internal,
             lisp_name,
             ordered_binding_hash,
+            native_word: Cell::new(0),
         });
         UNINTERNED_SYMBOL_BOOK.with(|book| {
             book.borrow_mut().push(Rc::downgrade(&state));
@@ -627,6 +635,15 @@ impl SymbolName {
 
     pub(crate) fn ordered_binding_hash(&self) -> u64 {
         self.0.ordered_binding_hash
+    }
+
+    /// The packed native handle slot (see `SymbolNameState::native_word').
+    pub(crate) fn native_slot(&self) -> u64 {
+        self.0.native_word.get()
+    }
+
+    pub(crate) fn set_native_slot(&self, slot: u64) {
+        self.0.native_word.set(slot);
     }
 
     pub fn into_string(self) -> String {

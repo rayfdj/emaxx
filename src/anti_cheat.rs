@@ -686,6 +686,8 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let gnu_root = repo_root().join("../emacs/src");
     for test in [
         "native_symbol_value_errors_preserve_the_original_symbol",
+        "symbol_carries_its_native_word_and_a_swept_handle_clears_it",
+        "symbol_native_word_slot_is_per_heap_and_verified_against_the_handle",
         "native_type_of_leaves_old_struct_policy_to_elisp_advice",
         "native_cl_type_of_uses_object_tags_not_fixnum_variable_cells",
         "native_eq_does_not_materialize_unrelated_cons_fields",
