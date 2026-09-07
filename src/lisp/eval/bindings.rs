@@ -1,3 +1,4 @@
+use super::symbol_cells::LOCALIZED;
 use super::*;
 use crate::lisp::types::SymbolName;
 
@@ -197,7 +198,11 @@ impl Interpreter {
         // current buffer or the dynamic-binding stack.  Names enter this set
         // at the same transition where Emaxx creates localized symbol state,
         // and remain there just as GNU's SYMBOL_LOCALIZED redirect does.
-        if !self.buffer_local_capable_variables.contains(resolved) {
+        let localized = match resolved_symbol {
+            Some(symbol) => self.globals.has_flag(symbol, LOCALIZED),
+            None => self.globals.has_flag_by_name(resolved, LOCALIZED),
+        };
+        if !localized {
             let global = if let Some(symbol) = resolved_symbol {
                 debug_assert_eq!(symbol.as_str(), resolved);
                 self.global_binding_value_symbol(symbol)
@@ -241,9 +246,7 @@ impl Interpreter {
             self.resolve_variable_name(name)?.into()
         };
         if resolved != "buffer-undo-list"
-            && !self
-                .buffer_local_capable_variables
-                .contains(resolved.as_ref())
+            && !self.globals.has_flag_by_name(resolved.as_ref(), LOCALIZED)
         {
             return self
                 .global_value(resolved.as_ref())
@@ -259,18 +262,16 @@ impl Interpreter {
     /// changes.  Redirected, localized, synthesized, and void cells stay on
     /// the complete lookup path above.
     pub(crate) fn plain_global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
-        if self.direct_variable_alias(name.as_str()).is_some()
-            || self.buffer_local_capable_variables.contains(name.as_str())
-        {
+        if self.globals.alias(name).is_some() || self.globals.has_flag(name, LOCALIZED) {
             return None;
         }
         self.global_binding_value_symbol(name)
     }
 
     pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
-        if self.direct_variable_alias(name.as_str()).is_some()
+        if self.globals.alias(name).is_some()
+            || self.globals.has_flag(name, LOCALIZED)
             || name.as_str() == "buffer-undo-list"
-            || self.buffer_local_capable_variables.contains(name.as_str())
         {
             return self.symbol_value_cell(name.as_str());
         }
@@ -744,9 +745,12 @@ impl Interpreter {
 
     /// Look up a variable in the given local env, then globals.
     pub(crate) fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+        // eval.c:eval_sub ends in Fsymbol_value (form): a void cell behind
+        // an alias signals with the symbol that was evaluated, not with
+        // the end of its redirect chain.
         let resolved = self.resolve_variable_name(name)?;
         self.lookup_var_with_resolved_name(name, &resolved, env, None)?
-            .ok_or(LispError::Void(resolved))
+            .ok_or_else(|| LispError::Void(name.to_owned()))
     }
 
     /// Evaluate an already-interned symbol without rebuilding and rehashing
@@ -755,15 +759,14 @@ impl Interpreter {
     /// stable identity in Emaxx.  Redirected symbols still take the complete
     /// alias path above.
     pub(crate) fn lookup_symbol(&self, name: &SymbolName, env: &Env) -> Result<Value, LispError> {
-        let resolved: std::borrow::Cow<'_, str> =
-            if self.direct_variable_alias(name.as_str()).is_none() {
-                name.as_str().into()
-            } else {
-                self.resolve_variable_name(name.as_str())?.into()
-            };
+        let resolved: std::borrow::Cow<'_, str> = if self.globals.alias(name).is_none() {
+            name.as_str().into()
+        } else {
+            self.resolve_variable_name(name.as_str())?.into()
+        };
         let resolved_symbol = matches!(resolved, std::borrow::Cow::Borrowed(_)).then_some(name);
         self.lookup_var_with_resolved_name(name.as_str(), resolved.as_ref(), env, resolved_symbol)?
-            .ok_or_else(|| LispError::Void(resolved.into_owned()))
+            .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
     }
 
     /// Whether NAME has a user-level function definition (defun/fset).
@@ -997,8 +1000,8 @@ impl Interpreter {
         }
         matches!(name, "nil" | "t")
             || self.interned_symbol_names.contains(name)
-            || self.globals.contains_key(name)
-            || self.variable_aliases_index.contains_key(name)
+            || self.globals.is_bound_name(name)
+            || self.globals.alias_by_name(name).is_some()
             || self.functions_index.contains_key(name)
             || self.symbol_property_index(name).is_some()
     }

@@ -6396,15 +6396,20 @@ mod tests {
                 assert!(Rc::ptr_eq(&result, expected_entry));
                 assert_eq!(*result.cdr.borrow(), Value::Integer(expected));
             }
-            // Adversarial control: recreate the old faulty name-to-symbol
-            // boundary. Native assq must NOT hide that bug by comparing
-            // internal name bytes instead of the original Lisp objects.
+            // A name that reaches the Rust boundary resolves to the live
+            // symbol object with that private name (V02: a symbol and its
+            // name address one cell), so the old faulty name-to-symbol
+            // boundary can no longer mint a second object for it.
             let reconstructed = SymbolName::from(symbol.as_str());
-            assert_ne!(symbol.identity_ptr(), reconstructed.identity_ptr());
-            let wrong_alist = Value::list([Value::cons(
-                Value::Symbol(reconstructed),
-                Value::Integer(expected),
-            )]);
+            assert_eq!(symbol.identity_ptr(), reconstructed.identity_ptr());
+            // Adversarial control: a different `make-symbol' of the same
+            // visible name is a different object, and native assq must not
+            // find it by comparing visible names.
+            let other = SymbolName::make_uninterned(Value::string("temporary"), "temporary", 3);
+            assert_ne!(symbol.identity_ptr(), other.identity_ptr());
+            assert_eq!(other.lisp_name(), symbol.lisp_name());
+            let wrong_alist =
+                Value::list([Value::cons(Value::Symbol(other), Value::Integer(expected))]);
             assert_eq!(
                 runtime
                     .invoke(

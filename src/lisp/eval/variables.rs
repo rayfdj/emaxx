@@ -1,3 +1,4 @@
+use super::symbol_cells::{LOCALIZED, SPECIAL};
 use super::*;
 use crate::lisp::types::SymbolName;
 
@@ -126,7 +127,7 @@ impl Interpreter {
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
-        if self.buffer_local_capable_variables.insert(name.to_string()) {
+        if self.globals.set_flag_by_name(name, LOCALIZED) {
             self.bump_symbol_value_cell_epoch();
         }
         let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
@@ -266,7 +267,7 @@ impl Interpreter {
 
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
         self.auto_buffer_locals.insert(name.to_string());
-        if self.buffer_local_capable_variables.insert(name.to_string()) {
+        if self.globals.set_flag_by_name(name, LOCALIZED) {
             self.bump_symbol_value_cell_epoch();
         }
     }
@@ -320,7 +321,7 @@ impl Interpreter {
     }
 
     pub fn mark_special_variable(&mut self, name: &str) {
-        if self.special_variables_index.insert(name.to_string()) {
+        if self.globals.set_flag_by_name(name, SPECIAL) {
             self.special_variables.push(name.to_string());
         }
     }
@@ -332,7 +333,7 @@ impl Interpreter {
             .rposition(|existing| existing == name)
         {
             self.special_variables.remove(index);
-            self.special_variables_index.remove(name);
+            self.globals.clear_flag_by_name(name, SPECIAL);
         }
     }
 
@@ -418,16 +419,16 @@ impl Interpreter {
         // dynamically scoped under lexical binding.  Derive that property
         // from the value registry itself so adding a startup default cannot
         // silently omit its binding semantics.
-        if self.special_variables_index.contains(name) || self.builtin_var_value(name).is_some() {
+        if self.globals.has_flag_by_name(name, SPECIAL) || self.builtin_var_value(name).is_some() {
             return true;
         }
-        if self.variable_aliases_index.is_empty() {
+        if !self.globals.has_aliases() {
             return false;
         }
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        self.special_variables_index.contains(&resolved)
+        self.globals.has_flag_by_name(&resolved, SPECIAL)
             || self.builtin_var_value(&resolved).is_some()
     }
 
@@ -869,7 +870,9 @@ impl Interpreter {
     }
 
     pub(super) fn direct_variable_alias(&self, name: &str) -> Option<String> {
-        self.variable_aliases_index.get(name).cloned()
+        self.globals
+            .alias_by_name(name)
+            .map(|target| target.as_str().to_owned())
     }
 
     pub fn resolve_variable_name(&self, name: &str) -> Result<String, LispError> {
@@ -893,27 +896,99 @@ impl Interpreter {
         Ok(current)
     }
 
-    pub fn set_variable_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
-        let target = self.resolve_variable_name(target)?;
-        if target == alias {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("cyclic-variable-indirection".into()),
-                Value::Symbol(alias.to_string().into()),
-            ])));
+    /// eval.c:Fdefvaralias's non-circularity loop: walk BASE's redirect
+    /// chain, and signal with BASE if it reaches ALIAS.
+    pub(crate) fn check_variable_alias_cycle(
+        &self,
+        alias: &str,
+        base: &str,
+    ) -> Result<(), LispError> {
+        let mut current = base.to_owned();
+        loop {
+            if current == alias {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("cyclic-variable-indirection".into()),
+                    Value::Symbol(base.to_string().into()),
+                ])));
+            }
+            match self.direct_variable_alias(&current) {
+                Some(next) => current = next,
+                None => return Ok(()),
+            }
         }
-        self.variable_aliases_index
-            .insert(alias.to_string(), target.clone());
+    }
+
+    /// `SET_SYMBOL_ALIAS (sym, XSYMBOL (base_variable))': the redirect
+    /// names BASE itself, not the end of BASE's chain, so re-pointing BASE
+    /// later re-points every alias of it (data.c:indirect_variable walks
+    /// the chain on each read).
+    pub fn set_variable_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
+        self.check_variable_alias_cycle(alias, target)?;
+        self.globals.set_alias(
+            &SymbolName::intern_str(alias),
+            SymbolName::intern_str(target),
+        );
         if let Some(index) = self
             .variable_aliases
             .iter()
             .rposition(|(existing, _)| existing == alias)
         {
-            self.variable_aliases[index].1 = target;
+            self.variable_aliases[index].1 = target.to_owned();
         } else {
-            self.variable_aliases.push((alias.to_string(), target));
+            self.variable_aliases
+                .push((alias.to_string(), target.to_owned()));
         }
         self.bump_symbol_value_cell_epoch();
         Ok(())
+    }
+
+    /// `SYMBOL_CONSTANT_P': `trapped_write == SYMBOL_NOWRITE'.  nil, t and
+    /// keywords are made constant at intern; every other C-made constant is
+    /// a `make_symbol_constant' call in the pinned sources (data.c's fixnum
+    /// bounds, buffer.c's `enable-multibyte-characters', font.c's three
+    /// tables).
+    pub(crate) fn is_constant_symbol(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "nil"
+                | "t"
+                | "most-positive-fixnum"
+                | "most-negative-fixnum"
+                | "enable-multibyte-characters"
+                | "font-weight-table"
+                | "font-slant-table"
+                | "font-width-table"
+        ) || name.starts_with(':')
+    }
+
+    /// `SYMBOL_LOCALIZED': the symbol has ever acquired a buffer-local
+    /// binding (data.c never clears the redirect).
+    pub(crate) fn is_localized_variable(&self, name: &str) -> bool {
+        self.globals.has_flag_by_name(name, LOCALIZED)
+    }
+
+    /// `SYMBOL_FORWARDED': a DEFVAR_* the pinned oracle build carries, and
+    /// that `makunbound' has not detached from its C slot.
+    pub(crate) fn is_forwarded_variable(&self, name: &str) -> bool {
+        !self.detached_forwarded_variables.contains_key(name)
+            && crate::lisp::primitives::gnu_c_forwarded_variables()
+                .binary_search(&name)
+                .is_ok()
+    }
+
+    /// A forwarded name the oracle build already reports `SYMBOL_LOCALIZED'
+    /// at `-Q --batch' (buffer.c/keyboard.c localize it at initialization).
+    pub(crate) fn is_localized_at_startup_in_gnu(&self, name: &str) -> bool {
+        crate::lisp::primitives::gnu_c_localized_forwarded_variables()
+            .binary_search(&name)
+            .is_ok()
+    }
+
+    /// Whether a `SPECPDL_LET*' record for NAME is on the binding stack.
+    pub(crate) fn is_let_bound_special(&self, name: &str) -> bool {
+        self.active_special_restores
+            .iter()
+            .any(|restore| restore.name == name)
     }
 
     pub fn remove_variable_alias(&mut self, name: &str) -> bool {
@@ -923,7 +998,7 @@ impl Interpreter {
             .rposition(|(alias, _)| alias == name)
         {
             self.variable_aliases.remove(index);
-            self.variable_aliases_index.remove(name);
+            self.globals.clear_alias_by_name(name);
             self.bump_symbol_value_cell_epoch();
             true
         } else {
@@ -951,11 +1026,11 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        self.globals.contains_key(&resolved)
+        self.globals.is_bound_name(&resolved)
     }
 
     pub fn remove_global_binding(&mut self, name: &str) {
-        if self.globals.remove(name).is_some() {
+        if self.globals.remove_by_name(name).is_some() {
             self.bump_symbol_value_cell_epoch();
         }
     }
@@ -1105,14 +1180,11 @@ impl Interpreter {
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
-        self.globals.get(name).cloned()
+        self.globals.value_by_name(name).cloned()
     }
 
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
-        self.globals
-            .raw_entry()
-            .from_key_hashed_nocheck(name.ordered_binding_hash(), name.as_str())
-            .map(|(_, value)| value.clone())
+        self.globals.value(name).cloned()
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
@@ -1140,10 +1212,10 @@ impl Interpreter {
             self.update_forwarded_eval_cell(&name, &value);
         }
         self.bump_symbol_value_cell_epoch();
-        if let Some(existing) = self.globals.get_mut(&name) {
+        if let Some(existing) = self.globals.value_by_name_mut(&name) {
             *existing = value;
         } else {
-            self.globals.insert(name, value);
+            self.globals.insert_by_name(&name, value);
         }
     }
 
@@ -1748,7 +1820,7 @@ impl Interpreter {
         // `edebug-entered' can only carry a binding once edebug's defvar
         // has marked it special, so this single set probe is the whole
         // cost until edebug is actually loaded.
-        self.special_variables_index.contains("edebug-entered")
+        self.globals.has_flag_by_name("edebug-entered", SPECIAL)
             && self
                 .lookup_var("edebug-entered", env)
                 .is_some_and(|value| value.is_truthy())
