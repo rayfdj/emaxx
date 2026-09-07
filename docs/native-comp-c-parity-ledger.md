@@ -3,8 +3,10 @@
 The active goal now prioritizes a faithful persistent startup image before
 finishing performance-only items. See the linked
 [portable-dump contract/prerequisite ledger](pdump-c-parity-ledger.md).
-Latest pushed checkpoint: `2e0b5cf`, including implementation `7bfce9b`'s
-bounded L08 GNU
+Latest pushed checkpoint: `c517994`, including the fixed-layout
+overlay/char-table census extension after implementation `3a98eb3`'s
+frame/terminal/buffer census extension and `234dcbb`'s
+bounded L07 GNU native finite-n-ary dispatch correction, the earlier bounded L08
 `Fgarbage_collect_maybe` ordinary-state threshold correction, the merge of
 `origin/main`, the macOS process-pipe portability follow-up, and the public
 GC `symbols-with-pos-enabled` scope correction. Focused
@@ -20,6 +22,26 @@ including byte-identical `comp.el`; the post-merge native gate passed
 177/177 with zero mismatches in 1,302.477 seconds versus GNU's 82.642 seconds.
 The post-GC-mode-correction rerun also passed 177/177 with zero mismatches;
 its test phase was 1,266.137 seconds versus GNU's 158.694 seconds.
+The post-merge `0d06050` rerun passed 177/177 with zero mismatches; its test
+phase was 1,352.154 seconds versus GNU's 90.710 seconds (run
+`1788707918100126000-73169`).
+The post-loader merge `af7f01b` rerun passed 177/177 with zero mismatches; its
+test phase was 1,241.694 seconds versus GNU's 88.108 seconds (run
+`1788709909540756000-77602`).
+The fixed-pseudovector-footprint checkpoint `5694cfb` rerun passed 177/177
+with zero mismatches; its test phase was 1,274.360 seconds versus GNU's
+86.405 seconds and setup was 40.716 versus 2.785 seconds (run
+`1788714256563788000-85584`). The compatibility harness now redirects GNU's
+native-comp cache before loading each file so load-time native compilation has
+a writable isolated target.
+The frame/terminal/buffer-owner checkpoint `3a98eb3` rerun also passed
+177/177 with zero mismatches; its test phase was 1,298.906 seconds versus
+ GNU's 86.992 seconds and setup was 40.796 versus 2.868 seconds (run
+`1788716210239467000-89735`).
+The overlay/char-table checkpoint `c517994` rerun also passed 177/177 with
+zero mismatches; its test phase was 1,326.780 seconds versus GNU's 86.839
+seconds and setup was 40.911 versus 2.847 seconds (run
+`1788718304902637000-93915`).
 This unit comes from the completed post-startup profile and GNU C audit,
 not a speculative optimization. The chronology below is historical, not a claim that all its
 "worktree" changes remain uncommitted.

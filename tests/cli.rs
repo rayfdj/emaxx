@@ -221,6 +221,57 @@ fn batch_funcall_receives_remaining_file_arguments() {
 }
 
 #[test]
+fn startup_options_after_an_eval_are_sorted_ahead_of_it_like_emacs_c() {
+    // emacs.c:main sorts argv by option priority before Lisp sees it, so
+    // `-Q' placed after `--eval' still reaches startup.el's option loop,
+    // and an option missing its argument is emacs.c:fatal.  Emaxx handed
+    // the arguments over unsorted; startup.el's `command-line-1' then
+    // rejected the trailing `-Q' as an unknown option.
+    let run = |binary: &std::path::Path, args: &[&str]| {
+        Command::new(binary)
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    let subject = std::path::Path::new(env!("CARGO_BIN_EXE_emaxx"));
+    let sorted = [
+        "--eval",
+        "(prin1 (list init-file-user site-run-file (cdr command-line-args)))",
+        "--no-init-fil",
+        "-Q",
+        "--batch",
+    ];
+    let expected = run(&oracle, &sorted);
+    let actual = run(subject, &sorted);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(
+        String::from_utf8_lossy(&actual.stdout),
+        String::from_utf8_lossy(&expected.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&expected.stdout),
+        "(nil nil (\"--eval\" \"(prin1 (list init-file-user site-run-file (cdr command-line-args)))\"))"
+    );
+
+    let missing = ["--batch", "--eval"];
+    let expected = run(&oracle, &missing);
+    let actual = run(subject, &missing);
+    assert_eq!(actual.status.code(), expected.status.code());
+    assert_eq!(actual.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&actual.stderr),
+        String::from_utf8_lossy(&expected.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&expected.stderr),
+        "emacs: Option '--eval' requires an argument\n"
+    );
+}
+
+#[test]
 fn batch_eval_error_uses_gnu_stderr_and_exit_status() {
     let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .args([
