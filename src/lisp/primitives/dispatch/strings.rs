@@ -127,7 +127,15 @@ define_dispatch!(
             }
             "make-finalizer" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Finalizer(interp.alloc_finalizer_id()))
+                // alloc.c:Fmake_finalizer: CHECK_TYPE (FUNCTIONP (function),
+                // Qfunctionp, function), then the object joins `finalizers'.
+                if !function_value_p(interp, &args[0], env) {
+                    return Err(LispError::WrongTypeArgument(
+                        "functionp".into(),
+                        args[0].clone(),
+                    ));
+                }
+                Ok(interp.make_finalizer(args[0].clone()))
             }
 
             // ── String operations ──

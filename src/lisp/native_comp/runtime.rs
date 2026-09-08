@@ -4248,6 +4248,9 @@ impl NativeHeap {
     ) {
         if self.native_stack_bottom.is_null() {
             let reachability = interpreter.weak_hash_reachability(environment, &[]);
+            // alloc.c:garbage_collect queues doomed finalizers after the
+            // mark phase and before the weak-table sweep.
+            interpreter.queue_doomed_finalizers(&reachability.live_finalizers);
             crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
             return;
         }
@@ -4287,8 +4290,10 @@ impl NativeHeap {
             Some(&mut marking),
         );
         let NativeMark { marked_handles, .. } = marking;
-        // alloc.c:garbage_collect removes weak entries after the marking
-        // fixed point and before gc_sweep can reclaim their object storage.
+        // alloc.c:garbage_collect queues doomed finalizers after the marking
+        // fixed point, then removes weak entries before gc_sweep can reclaim
+        // their object storage.
+        interpreter.queue_doomed_finalizers(&reachability.live_finalizers);
         crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
 
         let mut unreachable = Vec::new();
