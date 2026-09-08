@@ -191,6 +191,9 @@ pub(crate) enum DumpType {
     BuiltinSymbolCells = 19,
     /// The main thread: an object of the running process (copied record).
     MainThread = 20,
+    /// A hash table, frozen: its record, count, weakness, test and
+    /// mutability, then the compact key/value contents.
+    HashTable = 21,
 }
 
 impl DumpType {
@@ -217,6 +220,7 @@ impl DumpType {
             18 => Self::BoolVector,
             19 => Self::BuiltinSymbolCells,
             20 => Self::MainThread,
+            21 => Self::HashTable,
             _ => return None,
         })
     }

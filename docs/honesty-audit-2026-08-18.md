@@ -7564,3 +7564,55 @@ group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
 tree as committed.  Main was fetched after the gate and still carries
 only merge commits of this branch (its tree is checkpoint 8's), so the
 merge asked for waits for the next checkpoint.
+
+## 2026-09-08 D10: hash tables frozen and thawed as fns.c and pdumper.c do
+
+*The writer.*  `dump_object' now defers a hash table exactly as
+`dump_hash_table' does under `defer_hash_tables': the first reference
+scans the table (its keys and values are enqueued, nothing is written)
+and puts it on the deferred list; the drain loop writes the deferred
+tables before each normal drain, so the tables sit together in the
+image.  A table's record is followed by what `hash_table_freeze'
+keeps: the count, the weakness, the standard test and the mutability,
+then the compact key/value contents in slot order.  The test is
+`hash_table_std_test''s: `eq', `eql' or `equal', and a user-defined
+test signals "cannot dump hash tables with user-defined tests" (GNU's
+message, Bug#36769) as a Lisp error, not as an unsupported object.
+`dump_hash_table_list' writes the vector of every table written at
+`header.hash_list'.
+
+*The loader.*  Each table on the hash list is thawed as
+`hash_table_thaw' does: the runtime index is rebuilt from the compact
+contents, the allocation is minimal (`count' entries, no room for
+growth), and a table dumped immutable comes back immutable.  A table
+missing from the list is an error.
+
+*Control.*  An `eq' table, an `equal' table with a key removed and
+another added, a key-weak table and an empty table go through an image
+into a second interpreter, where `gethash' finds the keys through the
+thawed index (and not the removed one), a value that was a shared
+object is the same object as the graph's, `hash-table-weakness' and
+`hash-table-test' answer as before, the thawed table accepts a
+`puthash', and the entry order is GNU's: `remhash' freed slot 0 and
+the next `puthash' reused it, so the compact contents walk that key
+first.  I had written the opposite order as the expectation; the code
+was right and the expectation was corrected.  The user-defined test
+refusal is its own control.
+
+*Not GNU, in the row.*  The contents follow the record inline rather
+than through a separate packed array, and the hash list names each
+table once where GNU's scan pass can list a table twice.  Weak tables
+are written with their current contents; nothing is swept at load
+until the restore (D13).
+
+*Where a real dump stops now.*  Past every hash table: the first
+refused object is an overlay (show-paren's context overlay), which is
+D11's, where GNU itself signals "dumping overlays is not yet
+implemented" for a buffer that has any.
+
+*Checkpoint 12 gate.*  Alone on the machine: grouped gate
+run-1788886573678285508-17120, GROUPED GATE PASSED (2620 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.  Main was fetched after the gate and still carries
+only merge commits of this branch (its tree is checkpoint 8's); the
+merge waits for the next checkpoint.

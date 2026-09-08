@@ -252,15 +252,21 @@ pub(crate) fn write_image(
     // and dump_metadata_for_pdumper join the image with their object
     // kinds (D11, D13).
 
-    // "Dump until while we keep finding objects to dump."  Deferred hash
-    // tables are D10; there is nothing else to drain in between.
+    // "Dump until while we keep finding objects to dump.  We add new
+    // objects to the queue by side effect during dumping.  We accumulate
+    // some types of objects in special lists to get more locality for
+    // these object types at runtime."
     loop {
+        ctx.drain_deferred_hash_tables(interp)?;
         ctx.drain_normal_queue(interp)?;
-        if ctx.queue_is_empty() {
+        if ctx.queue_is_empty() && ctx.deferred_hash_tables_is_empty() {
             break;
         }
     }
-    ctx.header.hash_list = 0;
+    ctx.header.hash_list = ctx.dump_hash_table_list(interp)?;
+    // "dump_hash_table_list just adds a new vector to the dump but all its
+    // content should already have been in the dump."
+    assert!(ctx.queue_is_empty() && ctx.deferred_hash_tables_is_empty());
 
     ctx.sort_copied_objects();
     // dump_hot_parts_of_discardable_objects: the built-in symbols' hot

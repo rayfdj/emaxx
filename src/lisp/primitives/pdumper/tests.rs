@@ -550,3 +550,200 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     assert_eq!(image.builtin_cells[0].symbol.as_str(), "nil");
     assert_eq!(image.builtin_cells[1].symbol.as_str(), "t");
 }
+
+#[test]
+fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
+    fn call_in(target: &mut Interpreter, name: &str, args: &[Value]) -> Value {
+        crate::lisp::native_comp::call_c_primitive(target, &mut Vec::new(), name, args)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+    }
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (let ((eq-table (make-hash-table :test 'eq))
+              (equal-table (make-hash-table :test 'equal :size 100))
+              (weak (make-hash-table :weakness 'key))
+              (empty (make-hash-table))
+              (shared (list 1 2)))
+          (puthash 'a 1 eq-table)
+          (puthash 'b shared eq-table)
+          (puthash "k1" "v1" equal-table)
+          (puthash "k2" 2 equal-table)
+          (remhash "k1" equal-table)
+          (puthash "k3" 3 equal-table)
+          (puthash 'w 'x weak)
+          (vector eq-table equal-table weak empty shared))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph.clone())]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    assert_ne!(image.header.hash_list, 0, "the hash list is written");
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| value.clone())
+        .expect("root");
+    let Value::Vector(vector) = &loaded else {
+        panic!("root vector")
+    };
+    let slots = vector.slots().clone();
+    let eq_table = slots[0].clone();
+    let equal_table = slots[1].clone();
+    let weak = slots[2].clone();
+    let empty = slots[3].clone();
+    let shared = slots[4].clone();
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-count",
+            std::slice::from_ref(&eq_table)
+        ),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-test",
+            std::slice::from_ref(&eq_table)
+        ),
+        Value::symbol("eq")
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::symbol("a"), eq_table.clone()]
+        ),
+        Value::Integer(1)
+    );
+    // The value is the shared list object, not a copy.
+    assert_eq!(
+        object_key(&call_in(
+            &mut target,
+            "gethash",
+            &[Value::symbol("b"), eq_table.clone()]
+        )),
+        object_key(&shared)
+    );
+    // `equal' lookups work through the thawed index; the removed key is
+    // gone and the compacted order is the slot order.
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-test",
+            std::slice::from_ref(&equal_table)
+        ),
+        Value::symbol("equal")
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::string("k2"), equal_table.clone()]
+        ),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::string("k3"), equal_table.clone()]
+        ),
+        Value::Integer(3)
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::string("k1"), equal_table.clone()]
+        ),
+        Value::Nil
+    );
+    // Weakness and an empty table survive.
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-weakness",
+            std::slice::from_ref(&weak)
+        ),
+        Value::symbol("key")
+    );
+    assert_eq!(
+        call_in(&mut target, "gethash", &[Value::symbol("w"), weak.clone()]),
+        Value::symbol("x")
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-count",
+            std::slice::from_ref(&empty)
+        ),
+        Value::Integer(0)
+    );
+    assert_eq!(
+        call_in(&mut target, "hash-table-test", std::slice::from_ref(&empty)),
+        Value::symbol("eql")
+    );
+    // The thawed table is mutable.
+    call_in(
+        &mut target,
+        "puthash",
+        &[Value::symbol("c"), Value::Integer(3), eq_table.clone()],
+    );
+    assert_eq!(
+        call_in(&mut target, "hash-table-count", &[eq_table]),
+        Value::Integer(3)
+    );
+    let Value::Record(equal_id) = equal_table else {
+        panic!("hash table")
+    };
+    let keys = target
+        .hash_table_runtime_entries(equal_id)
+        .expect("thawed runtime entries")
+        .iter()
+        .map(|(key, _)| string_like(key).map(|s| s.text).unwrap_or_default())
+        .collect::<Vec<_>>();
+    // fns.c reuses the slot `remhash' freed: k3 sits in k1's slot 0, so
+    // the compact contents (hash_table_contents) walk k3 before k2.
+    assert_eq!(keys, vec!["k3".to_owned(), "k2".to_owned()]);
+    // hash_table_thaw: the allocation is minimal, count entries.
+    assert_eq!(target.gnu_hash_table_capacity(equal_id), Some(2));
+}
+
+#[test]
+fn image_refuses_hash_tables_with_user_defined_tests_as_gnu_does() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (progn
+          (define-hash-table-test 'zz-test 'equal 'sxhash-equal)
+          (let ((table (make-hash-table :test 'zz-test)))
+            (puthash "k" 1 table)
+            table))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let table = interp.eval(&form, &mut env).expect("setup evaluates");
+    let mut ctx = DumpContext::new(false, interp.main_thread_record_id());
+    let result = write_image(
+        &mut ctx,
+        &interp,
+        RootSource::Explicit(vec![(RootSlot::LoadPath, table)]),
+    );
+    match result {
+        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+            assert_eq!(message, "cannot dump hash tables with user-defined tests");
+        }
+        Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            panic!("unsupported: {}", unsupported.message)
+        }
+        Ok(_) => panic!("a user-defined test was dumped"),
+    }
+}

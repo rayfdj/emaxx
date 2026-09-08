@@ -44,9 +44,13 @@ and pseudovectors kept as slots with their ids preserved, bool-vectors, the
 obarray records, the main thread, nilled windows and processes, and the
 cells of `nil` and `t`; the loader materializes closures on demand and
 installs records and char-tables under the image's ids. A real dump now
-stops at the first hash table. Next: merge main into this branch (asked
-for after checkpoint 11), then D10 (hash tables), D11 (buffers, markers,
-overlays, finalizers, the remaining root groups), then the loader D12/D13.
+stops at the first hash table. Checkpoint 12 (D10) freezes and thaws hash
+tables as pdumper.c and fns.c do, with the deferred drain, the hash list and
+GNU's refusal of user-defined tests. Main is checked at every checkpoint and
+merged as soon as it carries content (it held only merge commits of this
+branch at checkpoints 11 and 12). Next: D11 (buffers, markers, overlays,
+finalizers, frames, terminals, the remaining root groups), then the loader
+D12/D13.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
