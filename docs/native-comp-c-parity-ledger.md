@@ -555,7 +555,7 @@ Lisp object model.
 | R02a | `lisp.h:XSYMBOL` and `XSETSYMBOL` object identity | verified | Symbol and builtin handles use stable object identity, never symbol-name bytes; focused identity/symbol tests, anti-cheating gates, and exact unchanged `comp.el` output pass. |
 | R02b | `lisp.h:make_lisp_ptr` pointer tagging | verified | The private bridge cache indexes one pre-mixed identity word with exact equality and GC reuse. The rejected clustering mix was removed; lookup fell from 2,847 to 9 leaves in equal five-second samples, with no measured CPU regression. |
 | R02c | Native words remain native words across C-owned calls | open | Eliminate repeated encode-cache lookup by carrying the assigned native word in the object representation itself. A separate 64-entry Rust cache was rejected after two exact-output runs regressed to 88.87s and 94.87s user CPU. |
-| R03 | GNU's single object storage across generated code and primitives | partial | Conses expose their two ABI words directly and vectors share one slot array; remove the remaining mirror/reconciliation work only where both mutation directions and GC visibility are proven. |
+| R03 | GNU's single object storage across generated code and primitives | storage verified (2026-09-08); typed-field reconciliation open | A cons generated code allocates is the same `ConsCell` the Rust evaluator uses, owned by the native heap until a collection finds it unreachable; the block arena, its free list, block map and mark bitmaps are gone, so no cons has two storages and `alloc.c:sweep_conses` is one owner drop.  Vectors already share one slot array (S01-S03).  Open as R03b: the typed `Value` view of a cons's two words is still attached and reconciled inside that one cell when Rust reads or writes it (`ConsMirror`, `reconcile_mirror`, `publish_interpreter_writes`); positioned-symbol views are per-record boxes rooted by the heap and never freed.  Measured paired on one machine: 300k-cons build 1.43-2.85 s against 1.47-2.59 s, walk 0.68-0.75 s against 0.77-0.88 s, the two-global native loop 7.58-7.67 s against 7.87-8.13 s, `comp.el` 173.5 s user against 176.0 s, artifact byte-identical to GNU's. |
 
 R02c caller audit (2026-09-06): generated `funcall`, `apply`, and `mapcar`
 already keep their arguments as native words through the direct C-shaped path.
@@ -849,7 +849,7 @@ C contracts and added to the inventory.
 | 1 | Native-handle encoding | 477 / 5s | Complete R02c: retain an already assigned native word where GNU simply keeps its `Lisp_Object`. |
 | 2 | Remaining SipHash routing | 143 / 5s | Attribute callers and map Lisp hash behavior to GNU's exact `fns.c` functions before changing them. |
 | 3 | Rust `Value` clone/drop traffic | 111 drop, 94 clone / 5s | Attribute the traffic to exact object classes before adding a representation unit. |
-| 4 | Native-word decoding | 84 / 5s | R01a-R01b are verified; attribute the remaining cons-mirror branch to R03. |
+| 4 | Native-word decoding | 84 / 5s | R01a-R01b are verified; the cons branch now attaches the typed view to the generated cons's own cell (R03 storage); the remaining reconciliation cost is R03b. |
 | 5 | Global symbol binding lookup | 72 / 5s | Complete V02 first, then V03-V06 in `find_symbol_value` source order. |
 
 The same profile recorded only 12 leaf samples in the general vector helper,
