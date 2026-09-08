@@ -20,9 +20,12 @@ probe before relying on the "built-in variable" refusal there), and makes
 Checkpoint 4 moved the plain value's native word into the cell and retired
 the process-wide epoch; checkpoint 5 keyed a buffer's local bindings by
 symbol with a void local as a binding (V04 stage 1) and ported the
-buffer-local primitives' data.c semantics. The dump-prerequisite program
-continues with V05 (forwarding kinds), L11, R03 and the D06/L08 census; the
-Linux records are in `docs/honesty-audit-2026-08-18.md`.
+buffer-local primitives' data.c semantics. Checkpoint 6 put the forwarding
+kinds in the cell (FORWARDED/FWD_BOOL/FWD_INT from the manifests), added the
+DEFVAR_INT store check, and bound the 73 oracle-only forwarded variables to the
+oracle's defaults (V05 stage 1). The dump-prerequisite program continues with
+L11, R03 and the D06/L08 census; the Linux records are in
+`docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
 

@@ -1,4 +1,6 @@
-use super::symbol_cells::{ALWAYS_LOCAL, LOCAL_IF_SET, LOCALIZED, PER_BUFFER, SPECIAL};
+use super::symbol_cells::{
+    ALWAYS_LOCAL, FORWARDED, FWD_BOOL, FWD_INT, LOCAL_IF_SET, LOCALIZED, PER_BUFFER, SPECIAL,
+};
 use super::*;
 use crate::lisp::types::SymbolName;
 
@@ -1010,10 +1012,35 @@ impl Interpreter {
     /// `SYMBOL_FORWARDED': a DEFVAR_* the pinned oracle build carries, and
     /// that `makunbound' has not detached from its C slot.
     pub(crate) fn is_forwarded_variable(&self, name: &str) -> bool {
-        !self.detached_forwarded_variables.contains_key(name)
-            && crate::lisp::primitives::gnu_c_forwarded_variables()
-                .binary_search(&name)
-                .is_ok()
+        self.globals.has_flag_by_name(name, FORWARDED)
+    }
+
+    /// lread.c:defvar_lisp/defvar_bool/defvar_int at interpreter
+    /// construction: every name the contracted oracle build forwards gets
+    /// its redirect kind in the symbol cell, so stores coerce or check as
+    /// data.c:store_symval_forwarding does for that kind.
+    pub(crate) fn mark_forwarded_variables(&mut self) {
+        for name in crate::lisp::primitives::gnu_c_forwarded_variables() {
+            let mut flags = FORWARDED;
+            if crate::lisp::primitives::generated_gnu_c_bool_variables::is_gnu_c_bool_variable(name)
+            {
+                flags |= FWD_BOOL;
+            }
+            if crate::lisp::primitives::generated_gnu_c_int_variables::is_gnu_c_int_variable(name) {
+                flags |= FWD_INT;
+            }
+            self.globals.set_flag_by_name(name, flags);
+        }
+    }
+
+    /// data.c:set_internal storing Qunbound into a forwarded symbol:
+    /// `sym->u.s.redirect = SYMBOL_PLAINVAL' -- later stores cannot
+    /// reconnect it to the C variable.
+    pub(crate) fn detach_forwarded_variable(&mut self, name: &str, slot_value: Value) {
+        self.globals
+            .clear_flag_by_name(name, FORWARDED | FWD_BOOL | FWD_INT);
+        self.detached_forwarded_variables
+            .insert(name.to_owned(), slot_value);
     }
 
     /// A forwarded name the oracle build already reports `SYMBOL_LOCALIZED'
@@ -1499,20 +1526,25 @@ impl Interpreter {
         if self.detached_forwarded_variables.contains_key(name) {
             return Ok(value);
         }
-        match name {
-            "max-lisp-eval-depth" => match value.as_integer() {
+        // data.c:store_symval_forwarding by the slot's kind.  Lisp_Fwd_Int:
+        // CHECK_INTEGER, then integer_to_intmax or `overflow-error'.
+        if self.globals.has_flag_by_name(name, FWD_INT) {
+            return match value.as_integer() {
                 Ok(_) => Ok(value),
                 Err(_) if value.is_integer() => Err(LispError::SignalValue(Value::list([
                     Value::Symbol("overflow-error".into()),
                     value,
                 ]))),
-                Err(error) => Err(error),
-            },
+                Err(_) => Err(wrong_type_argument("integerp", value)),
+            };
+        }
+        // Lisp_Fwd_Bool: `!NILP (newval)', so every store path (setq, set,
+        // set-default, let) reads back t or nil.
+        if self.globals.has_flag_by_name(name, FWD_BOOL) {
+            return Ok(if value.is_nil() { Value::Nil } else { Value::T });
+        }
+        match name {
             "display-hourglass" => Ok(if value.is_nil() { Value::Nil } else { Value::T }),
-            "gc-cons-threshold" => match value {
-                Value::Integer(_) | Value::BigInteger(_) => Ok(value),
-                other => Err(wrong_type_argument("integerp", other)),
-            },
             "scroll-up-aggressively" => match value {
                 Value::Nil => Ok(Value::Nil),
                 Value::Integer(number) if (0..=1).contains(&number) => Ok(Value::Integer(number)),
@@ -1529,18 +1561,7 @@ impl Interpreter {
                 other => Err(wrong_type_argument("symbolp", other)),
             },
             "overwrite-mode" => Ok(value),
-            _ => {
-                // data.c store_symval_forwarding: a DEFVAR_BOOL slot stores
-                // `!NILP (newval)', so every store path (setq, set,
-                // set-default, let) reads back t or nil -- unless
-                // `makunbound' has detached the symbol from its slot.
-                if crate::lisp::primitives::generated_gnu_c_bool_variables::is_gnu_c_bool_variable(
-                    name,
-                ) {
-                    return Ok(if value.is_nil() { Value::Nil } else { Value::T });
-                }
-                Ok(value)
-            }
+            _ => Ok(value),
         }
     }
 
