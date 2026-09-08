@@ -171,7 +171,7 @@ fn write_dump(
             filename,
         ))
     })?;
-    let mut ctx = DumpContext::new(track_referrers);
+    let mut ctx = DumpContext::new(track_referrers, interp.main_thread_record_id());
     let summary = match write_image(&mut ctx, interp, RootSource::Interpreter) {
         Ok(summary) => summary,
         Err(DumpError::Unsupported(unsupported)) => {
@@ -246,7 +246,7 @@ pub(crate) fn write_image(
     match roots {
         RootSource::Interpreter => ctx.dump_roots(interp)?,
         #[cfg(test)]
-        RootSource::Explicit(list) => ctx.dump_explicit_roots(&list),
+        RootSource::Explicit(list) => ctx.dump_explicit_roots(interp, &list)?,
     }
     // dump_charset_table, the finalizer list heads, the remembered data
     // and dump_metadata_for_pdumper join the image with their object
@@ -263,9 +263,10 @@ pub(crate) fn write_image(
     ctx.header.hash_list = 0;
 
     ctx.sort_copied_objects();
-    // dump_hot_parts_of_discardable_objects: a built-in symbol's hot parts
-    // are dumped here in GNU; Emaxx's symbols are heap objects already
-    // written above.
+    // dump_hot_parts_of_discardable_objects: the built-in symbols' hot
+    // parts.  Emaxx's symbols are heap objects already written above,
+    // except `nil' and `t', whose cells are written here.
+    ctx.dump_builtin_symbol_roots(interp)?;
 
     let hot_end = ctx.offset();
     ctx.header.discardable_start = hot_end;

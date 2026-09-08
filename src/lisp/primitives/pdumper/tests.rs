@@ -11,12 +11,14 @@ use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::strings::{make_shared_string_value_with_extended_chars, string_like};
 use crate::lisp::types::{SymbolName, Value};
 use std::collections::HashMap;
+use std::rc::Rc;
 
-fn dump(interp: &Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
-    let mut ctx = DumpContext::new(true);
+fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
+    let mut ctx = DumpContext::new(true, interp.main_thread_record_id());
     let summary = match write_image(&mut ctx, interp, RootSource::Explicit(roots)) {
         Ok(summary) => summary,
         Err(super::context::DumpError::Unsupported(unsupported)) => {
+            ctx.print_paths_to_root(interp, &mut Vec::new(), &unsupported.object);
             panic!("unsupported object: {}", unsupported.message)
         }
         Err(super::context::DumpError::Lisp(error)) => panic!("dump failed: {error:?}"),
@@ -101,6 +103,11 @@ fn graph_matches(
             Ok(())
         }
         (Value::BuiltinFunc(x), Value::BuiltinFunc(y)) if x.as_str() == y.as_str() => Ok(()),
+        // Identity-bearing kinds compared by the tests through the
+        // interpreters that own them.
+        (Value::Lambda(_), Value::Lambda(_))
+        | (Value::CharTable(_), Value::CharTable(_))
+        | (Value::Record(_), Value::Record(_)) => Ok(()),
         (Value::Cons(_), Value::Cons(_)) => {
             graph_matches(&a.car().expect("car"), &b.car().expect("car"), seen)?;
             graph_matches(&a.cdr().expect("cdr"), &b.cdr().expect("cdr"), seen)
@@ -122,7 +129,7 @@ fn graph_matches(
 
 #[test]
 fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
-    let interp = Interpreter::new();
+    let mut interp = Interpreter::new();
     // A shared sublist, a self-referential cons, a vector holding the
     // list twice, immutable and mutable strings (multibyte, unibyte with
     // raw bytes, text properties, an out-of-Unicode character), floats
@@ -222,9 +229,10 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
         (RootSlot::CurrentGlobalMap, Value::Unbound),
         (RootSlot::ThrowOnInput, Value::BuiltinFunc("cdr".into())),
     ];
-    let bytes = dump(&interp, roots);
+    let bytes = dump(&mut interp, roots);
 
-    let image = load_image(&bytes).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     assert_eq!(image.header.magic, DUMP_MAGIC);
     assert_eq!(image.header.cold_start % (64 * 1024), 0);
     assert!(image.header.discardable_start <= image.header.cold_start);
@@ -289,8 +297,9 @@ fn image_records_symbol_cells_from_the_interpreter() {
             Value::symbol("zz-dump-void"),
         ]),
     )];
-    let bytes = dump(&interp, roots);
-    let image = load_image(&bytes).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let bytes = dump(&mut interp, roots);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     let record = |name: &str| {
         image
             .symbols
@@ -337,8 +346,8 @@ fn image_records_symbol_cells_from_the_interpreter() {
 
 #[test]
 fn load_refuses_what_pdumper_load_refuses() {
-    let interp = Interpreter::new();
-    let bytes = dump(&interp, vec![(RootSlot::QuitFlag, Value::Nil)]);
+    let mut interp = Interpreter::new();
+    let bytes = dump(&mut interp, vec![(RootSlot::QuitFlag, Value::Nil)]);
     assert!(validate_header(&bytes).is_ok());
     // Too short to hold a header: PDUMPER_LOAD_BAD_FILE_TYPE.
     assert_eq!(
@@ -367,11 +376,12 @@ fn load_refuses_what_pdumper_load_refuses() {
 
 #[test]
 fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
-    let interp = Interpreter::new();
+    let mut interp = Interpreter::new();
     let inner = Value::list([Value::string("a"), Value::string("b")]);
     let outer = Value::vector([inner.clone(), inner.clone(), Value::string("c")]);
-    let bytes = dump(&interp, vec![(RootSlot::LoadPath, outer.clone())]);
-    let image = load_image(&bytes).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, outer.clone())]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     // Object starts are unique and ascending.
     let header = &image.header;
     let mut previous = 0;
@@ -405,4 +415,138 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
     );
     // The root vector is the first heap object after the header.
     assert_eq!(kinds[0], DumpType::Vector);
+}
+
+#[test]
+fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (progn
+          (put 'zz-purpose 'char-table-extra-slots 1)
+          (let ((shared (eval '(let ((x 1))
+                                 (list (function (lambda () x))
+                                       (function (lambda (y) (setq x (+ x y))))))
+                              t))
+                (table (make-char-table 'zz-purpose 'dflt))
+                (bits (make-bool-vector 70 nil)))
+            (set-char-table-range table '(?a . ?z) 'lower)
+            (set-char-table-range table ?A 'upper)
+            (set-char-table-extra-slot table 0 "extra")
+            (aset bits 0 t)
+            (aset bits 65 t)
+            (aset bits 69 t)
+            (vector shared table bits (record 'zz-rec 1 "two" shared)
+                    main-thread)))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph.clone())]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| value.clone())
+        .expect("root");
+    let mut seen = HashMap::new();
+    graph_matches(&graph, &loaded, &mut seen).unwrap_or_else(|error| panic!("{error}"));
+    let Value::Vector(vector) = &loaded else {
+        panic!("root vector")
+    };
+    let slots = vector.slots().clone();
+
+    // Two closures over one environment: the frame is shared, and calling
+    // them in the restored interpreter mutates the shared binding.
+    let closures = slots[0].to_vec().expect("closure list");
+    let (Value::Lambda(first), Value::Lambda(second)) = (&closures[0], &closures[1]) else {
+        panic!("closures")
+    };
+    assert!(
+        Rc::ptr_eq(&first.env, &second.env),
+        "one environment object"
+    );
+    assert_eq!(second.params.as_slice().len(), 1);
+    assert_eq!(second.params[0].as_str(), "y");
+    let call = |target: &mut Interpreter, function: &Value, args: &[Value]| {
+        target
+            .call_function_value(function.clone(), None, args, &mut Vec::new())
+            .expect("closure call")
+    };
+    assert_eq!(call(&mut target, &closures[0], &[]), Value::Integer(1));
+    assert_eq!(
+        call(&mut target, &closures[1], &[Value::Integer(5)]),
+        Value::Integer(6)
+    );
+    assert_eq!(call(&mut target, &closures[0], &[]), Value::Integer(6));
+
+    // The char-table with its ranges, subtype, default and extra slot.
+    let Value::CharTable(table_id) = slots[1] else {
+        panic!("char-table")
+    };
+    let table = target
+        .find_char_table(table_id)
+        .expect("installed char-table");
+    assert_eq!(table.subtype.as_deref(), Some("zz-purpose"));
+    assert_eq!(table.default, Value::symbol("dflt"));
+    assert_eq!(
+        table
+            .entries
+            .iter()
+            .map(|entry| (entry.start, entry.end, entry.value.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (97, 122, Value::symbol("lower")),
+            (65, 65, Value::symbol("upper"))
+        ]
+    );
+    assert_eq!(
+        table
+            .extra_slots
+            .iter()
+            .map(|slot| string_like(slot).map(|s| s.text))
+            .collect::<Vec<_>>(),
+        vec![Some("extra".to_owned())]
+    );
+
+    // The bool-vector's bits came through the cold section.
+    let Value::Record(bits_id) = slots[2] else {
+        panic!("bool-vector")
+    };
+    let bits = target.find_record(bits_id).expect("installed bool-vector");
+    assert_eq!(bits.kind, crate::lisp::eval::RecordKind::BoolVector);
+    assert_eq!(bits.slots.len(), 70);
+    let set = bits
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.is_truthy())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(set, vec![0, 65, 69]);
+
+    // The record's slots, with the shared list being the same object.
+    let Value::Record(record_id) = slots[3] else {
+        panic!("record")
+    };
+    let record = target.find_record(record_id).expect("installed record");
+    assert_eq!(record.type_tag, Value::symbol("zz-rec"));
+    assert_eq!(record.slots[0], Value::Integer(1));
+    assert_eq!(
+        string_like(&record.slots[1]).map(|s| s.text),
+        Some("two".to_owned())
+    );
+    assert_eq!(object_key(&record.slots[2]), object_key(&slots[0]));
+
+    // The main thread is the restoring process's own.  (The standard
+    // obarray reaches every symbol's value, hash tables included: it joins
+    // the controls with D10.)
+    assert_eq!(slots[4], Value::Record(target.main_thread_record_id()));
+    assert!(image.obarray.is_empty());
+    assert_eq!(image.builtin_cells.len(), 2);
+    assert_eq!(image.builtin_cells[0].symbol.as_str(), "nil");
+    assert_eq!(image.builtin_cells[1].symbol.as_str(), "t");
 }

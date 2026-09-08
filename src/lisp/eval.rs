@@ -3205,6 +3205,48 @@ impl Interpreter {
         self.globals.snapshot(symbol)
     }
 
+    /// Vobarray: the initial obarray object.
+    pub(crate) fn standard_obarray_value(&self) -> Value {
+        Value::Record(self.standard_obarray_id)
+    }
+
+    /// The running process's main thread object (thread.c:main_thread).
+    pub(crate) fn main_thread_record_id(&self) -> u64 {
+        self.main_thread_id
+    }
+
+    /// Install a record with the id the image gave it (the image is the
+    /// authority; an existing record with that id is replaced), keeping
+    /// the type index and the id allocator ahead of it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_record(&mut self, state: RecordState) {
+        if let Some(existing) = self.records.iter().position(|record| record.id == state.id) {
+            let previous = self.records.remove(existing);
+            if let Some(type_name) = previous.symbol_type_name()
+                && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
+            {
+                ids.remove(&previous.id);
+            }
+        }
+        if let Some(type_name) = state.symbol_type_name() {
+            self.record_ids_by_type_index
+                .entry(type_name.to_owned())
+                .or_default()
+                .insert(state.id);
+        }
+        self.next_record_id = self.next_record_id.max(state.id + 1);
+        self.records.push(state);
+    }
+
+    /// Install a char-table with the id the image gave it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_char_table(&mut self, state: CharTableState) {
+        self.char_tables.retain(|table| table.id != state.id);
+        self.next_char_table_id = self.next_char_table_id.max(state.id + 1);
+        self.char_table_mutation_generation += 1;
+        self.char_tables.push(state);
+    }
+
     pub(crate) fn weak_hash_reachability_with_native(
         &self,
         env: &Env,

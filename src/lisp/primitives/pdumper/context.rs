@@ -10,7 +10,8 @@
 
 use super::super::*;
 use super::image::*;
-use crate::lisp::types::{ConsCell, SymbolName};
+use crate::lisp::eval::{CharTableState, RecordKind, RecordState};
+use crate::lisp::types::{ConsCell, EnvFrame, SharedEnv, SymbolName};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -35,7 +36,6 @@ pub(crate) enum ObjectKey {
     /// values are one bignum record.
     WideInteger(i64),
     Subr(u32),
-    Obarray,
     Lambda(usize),
     Buffer(usize),
     Marker(u64),
@@ -69,7 +69,6 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
             ObjectKey::WideInteger(*integer)
         }
         Value::BuiltinFunc(name) => ObjectKey::Subr(name.id()),
-        Value::Record(_) if is_obarray_value(value) => ObjectKey::Obarray,
         Value::Nil | Value::T | Value::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
@@ -100,11 +99,58 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
     }
 }
 
-/// dump_object_emacs_ptr: objects that live in the Emacs image rather
-/// than the Lisp heap.  A built-in function is one; a symbol is not (all
-/// of Emaxx's symbols are heap objects addressed by name).
-fn object_in_emacs_image(value: &Value) -> bool {
-    matches!(value, Value::BuiltinFunc(_))
+/// The record kinds the image distinguishes (eval.rs:RecordKind), as
+/// stable codes.
+pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
+    match kind {
+        RecordKind::Record => 1,
+        RecordKind::BoolVector => 2,
+        RecordKind::Closure => 3,
+        RecordKind::Font => 4,
+        RecordKind::SymbolWithPos => 5,
+        RecordKind::Process => 6,
+        RecordKind::HashTable => 7,
+        RecordKind::Obarray => 8,
+        RecordKind::Window => 9,
+        RecordKind::WindowConfiguration => 10,
+        RecordKind::Thread => 11,
+        RecordKind::Mutex => 12,
+        RecordKind::ConditionVariable => 13,
+        RecordKind::NativeCompUnit => 14,
+        RecordKind::NativeCompiledFunction => 15,
+        RecordKind::TreeSitterParser => 16,
+        RecordKind::TreeSitterNode => 17,
+        RecordKind::TreeSitterCompiledQuery => 18,
+        RecordKind::Sqlite => 19,
+        RecordKind::Keymap => 20,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
+    Some(match code {
+        1 => RecordKind::Record,
+        2 => RecordKind::BoolVector,
+        3 => RecordKind::Closure,
+        4 => RecordKind::Font,
+        5 => RecordKind::SymbolWithPos,
+        6 => RecordKind::Process,
+        7 => RecordKind::HashTable,
+        8 => RecordKind::Obarray,
+        9 => RecordKind::Window,
+        10 => RecordKind::WindowConfiguration,
+        11 => RecordKind::Thread,
+        12 => RecordKind::Mutex,
+        13 => RecordKind::ConditionVariable,
+        14 => RecordKind::NativeCompUnit,
+        15 => RecordKind::NativeCompiledFunction,
+        16 => RecordKind::TreeSitterParser,
+        17 => RecordKind::TreeSitterNode,
+        18 => RecordKind::TreeSitterCompiledQuery,
+        19 => RecordKind::Sqlite,
+        20 => RecordKind::Keymap,
+        _ => return None,
+    })
 }
 
 /// pdumper.c's DUMP_OBJECT_* states for an object `objects_dumped' knows.
@@ -151,6 +197,9 @@ enum ColdOp {
 enum EmacsRelocPayload {
     Immediate(u64),
     Object(Value),
+    /// A record dumped outside the object queue (the built-in symbols'
+    /// cells), by offset.
+    Offset(u32, DumpType),
 }
 
 struct EmacsReloc {
@@ -408,10 +457,21 @@ pub(crate) struct DumpContext {
     pub(crate) number_discardable_relocations: u32,
     referrers: Option<HashMap<ObjectKey, Vec<Value>>>,
     current_referrer: Option<Value>,
+    /// The running process's main thread (dump_object_emacs_ptr's
+    /// main_thread_p): an object of the Emacs image, not the heap.
+    main_thread_id: u64,
+    /// Objects dumped outside the queue by their Rust pointer: closure
+    /// parameter and body vectors, lexical environments and frames
+    /// (GNU's interval trees, blvs and fwds are dumped the same way,
+    /// through raw-pointer fixups).
+    aux_dumped: HashMap<usize, u32>,
+    /// The dump type each dumped object got, for the relocations that
+    /// name it later (a record's type depends on its kind).
+    object_types: HashMap<ObjectKey, DumpType>,
 }
 
 impl DumpContext {
-    pub(crate) fn new(track_referrers: bool) -> Self {
+    pub(crate) fn new(track_referrers: bool, main_thread_id: u64) -> Self {
         Self {
             header: DumpHeader::incomplete(),
             buf: Vec::new(),
@@ -441,6 +501,42 @@ impl DumpContext {
             number_discardable_relocations: 0,
             referrers: track_referrers.then(HashMap::new),
             current_referrer: None,
+            main_thread_id,
+            aux_dumped: HashMap::new(),
+            object_types: HashMap::new(),
+        }
+    }
+
+    /// dump_object_emacs_ptr: objects that live in the Emacs image rather
+    /// than the Lisp heap: a built-in function and the main thread.  A
+    /// symbol is not one (all of Emaxx's symbols are heap objects
+    /// addressed by name).
+    fn in_emacs_image(&self, value: &Value) -> bool {
+        match value {
+            Value::BuiltinFunc(_) => true,
+            Value::Record(id) => *id == self.main_thread_id,
+            _ => false,
+        }
+    }
+
+    /// The dump type an object's record got, for a relocation naming it.
+    fn dump_type_of(&self, value: &Value) -> DumpType {
+        if let Some(kind) = object_key(value).and_then(|key| self.object_types.get(&key)) {
+            return *kind;
+        }
+        match value {
+            Value::Cons(_) => DumpType::Cons,
+            Value::String(_) => DumpType::String,
+            Value::StringObject(_) => DumpType::StringObject,
+            Value::Symbol(_) => DumpType::Symbol,
+            Value::Vector(_) => DumpType::Vector,
+            Value::Float(_) => DumpType::Float,
+            Value::BigInteger(_) | Value::Integer(_) => DumpType::Bignum,
+            Value::BuiltinFunc(_) => DumpType::Subr,
+            Value::Lambda(_) => DumpType::Closure,
+            Value::CharTable(_) => DumpType::CharTable,
+            Value::Record(id) if *id == self.main_thread_id => DumpType::MainThread,
+            _ => panic!("no dump type recorded for {value:?}"),
         }
     }
 
@@ -577,17 +673,26 @@ impl DumpContext {
         env: &mut crate::lisp::types::Env,
         object: &Value,
     ) {
+        // print_paths_to_root_1 recurses without a guard; a referrer cycle
+        // would never end here, so each object's paths are printed once.
         fn walk(
             ctx: &DumpContext,
             interp: &mut Interpreter,
             env: &mut crate::lisp::types::Env,
             object: &Value,
             level: usize,
+            visited: &mut std::collections::HashSet<ObjectKey>,
         ) {
             let Some(referrers) = ctx.referrers.as_ref() else {
                 return;
             };
-            let Some(list) = object_key(object).and_then(|key| referrers.get(&key)) else {
+            let Some(key) = object_key(object) else {
+                return;
+            };
+            if !visited.insert(key) {
+                return;
+            }
+            let Some(list) = referrers.get(&key) else {
                 return;
             };
             for referrer in list {
@@ -601,10 +706,17 @@ impl DumpContext {
                 .and_then(|value| string_like(&value).map(|string| string.text))
                 .unwrap_or_default();
                 eprintln!("{}{printed}", " ".repeat(level));
-                walk(ctx, interp, env, referrer, level + 1);
+                walk(ctx, interp, env, referrer, level + 1, visited);
             }
         }
-        walk(self, interp, env, object, 0);
+        walk(
+            self,
+            interp,
+            env,
+            object,
+            0,
+            &mut std::collections::HashSet::new(),
+        );
     }
 
     fn unsupported(&self, object: &Value, message: &str) -> DumpError {
@@ -728,19 +840,95 @@ impl DumpContext {
             self.emacs_reloc_to_lv(slot, &value);
         }
         self.set_referrer(Value::string("built-in symbol list"));
-        self.emacs_reloc_to_lv(RootSlot::Obarray, &obarray_value());
+        self.emacs_reloc_to_lv(RootSlot::Obarray, &interp.standard_obarray_value());
+        self.scan_builtin_symbol_cells(interp)?;
         self.clear_referrer();
         Ok(())
     }
 
-    /// dump_roots for an explicit root list (the round-trip controls).
+    /// The function cell, plist and watchers of `nil' or `t'.
+    fn dump_builtin_symbol_cells(
+        &mut self,
+        interp: &Interpreter,
+        name: &str,
+    ) -> Result<u32, DumpError> {
+        let symbol = SymbolName::intern_str(name);
+        let cell = interp.dump_symbol_cell(&symbol);
+        let function = interp
+            .raw_function_binding(name, &crate::lisp::types::Env::new())
+            .unwrap_or(Value::Nil);
+        let plist = interp.symbol_plist(name);
+        let watchers = interp.variable_watchers(name);
+        let start = self.object_start()?;
+        let mut words = vec![
+            symbol_flags_word(&symbol, &cell, !watchers.is_empty()),
+            0,
+            0,
+            watchers.len() as u64,
+        ];
+        self.field_lv(start, &mut words, 1, &function, WEIGHT_NORMAL);
+        self.field_lv(start, &mut words, 2, &plist, WEIGHT_NORMAL);
+        for watcher in &watchers {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
+        }
+        let offset = self.object_finish(&words)?;
+        if self.flags.dump_object_contents && self.flags.record_object_starts {
+            self.object_starts
+                .push((offset, DumpType::BuiltinSymbolCells));
+        }
+        Ok(offset)
+    }
+
+    /// dump_roots for an explicit root list (the round-trip controls): the
+    /// given slots, plus the built-in symbols' cells as always.
     #[cfg(test)]
-    pub(crate) fn dump_explicit_roots(&mut self, roots: &[(RootSlot, Value)]) {
+    pub(crate) fn dump_explicit_roots(
+        &mut self,
+        interp: &Interpreter,
+        roots: &[(RootSlot, Value)],
+    ) -> Result<(), DumpError> {
         self.set_referrer(Value::string("emacs root"));
         for (slot, value) in roots {
             self.emacs_reloc_to_lv(*slot, value);
         }
+        self.scan_builtin_symbol_cells(interp)?;
         self.clear_referrer();
+        Ok(())
+    }
+
+    /// The built-in symbols are copied objects in GNU: dump_roots scans
+    /// them (enqueuing what they refer to) and their hot parts are written
+    /// after the queue drains.  Scan the cells of `nil' and `t' here.
+    fn scan_builtin_symbol_cells(&mut self, interp: &Interpreter) -> Result<(), DumpError> {
+        let old_flags = self.flags;
+        self.flags.dump_object_contents = false;
+        for name in ["nil", "t"] {
+            self.dump_builtin_symbol_cells(interp, name)?;
+        }
+        self.flags = old_flags;
+        Ok(())
+    }
+
+    /// dump_hot_parts_of_discardable_objects: the cells of `nil' and `t'
+    /// (dump_pre_dump_symbol for the copied lispsym entries), written once
+    /// everything they refer to has been dumped; their references are
+    /// self-representing words.
+    pub(crate) fn dump_builtin_symbol_roots(
+        &mut self,
+        interp: &Interpreter,
+    ) -> Result<(), DumpError> {
+        for (slot, name) in [(RootSlot::NilCells, "nil"), (RootSlot::TCells, "t")] {
+            let offset = self.dump_builtin_symbol_cells(interp, name)?;
+            if self.flags.dump_object_contents {
+                self.emacs_relocs.push(EmacsReloc {
+                    slot,
+                    payload: EmacsRelocPayload::Offset(offset, DumpType::BuiltinSymbolCells),
+                });
+            }
+        }
+        Ok(())
     }
 
     // ----- dump_object and the per-type writers -----
@@ -756,7 +944,7 @@ impl DumpContext {
         }
         let state = self.recall_object(object);
 
-        let cold = matches!(object, Value::Float(_));
+        let cold = matches!(object, Value::Float(_)) || is_bool_vector(interp, object);
         if cold && self.flags.defer_cold_objects {
             if state != Some(ObjectState::OnColdQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
@@ -766,7 +954,7 @@ impl DumpContext {
             return Ok(ObjectState::OnColdQueue);
         }
 
-        if object_in_emacs_image(object) && self.flags.defer_copied_objects {
+        if self.in_emacs_image(object) && self.flags.defer_copied_objects {
             if state != Some(ObjectState::OnCopiedQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
                 // Scan and enqueue the referents now, dump the object later.
@@ -793,21 +981,20 @@ impl DumpContext {
                 (self.dump_bignum(object)?, DumpType::Bignum)
             }
             Value::BuiltinFunc(name) => (self.dump_subr(name)?, DumpType::Subr),
-            Value::Record(id) if is_obarray_value(object) => {
-                let _ = id;
-                (self.dump_obarray(interp)?, DumpType::Obarray)
-            }
+            Value::Lambda(lambda) => (self.dump_closure(lambda)?, DumpType::Closure),
+            Value::CharTable(id) => (
+                self.dump_char_table(interp, *id, object)?,
+                DumpType::CharTable,
+            ),
+            Value::Record(id) => self.dump_record(interp, *id, object)?,
             Value::Nil | Value::T | Value::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
-            Value::Lambda(_) => return Err(self.unsupported(object, "closure")),
             Value::Buffer(_) => return Err(self.unsupported(object, "buffer")),
             Value::Marker(_) => return Err(self.unsupported(object, "marker")),
             Value::Overlay(_) => return Err(self.unsupported(object, "overlay")),
-            Value::CharTable(_) => return Err(self.unsupported(object, "char-table")),
             Value::Frame(_) => return Err(self.unsupported(object, "frame")),
             Value::Terminal(_) => return Err(self.unsupported(object, "terminal")),
-            Value::Record(_) => return Err(self.unsupported(object, "record")),
             Value::Finalizer(_) => return Err(self.unsupported(object, "finalizer")),
             Value::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
@@ -816,6 +1003,9 @@ impl DumpContext {
         if self.flags.dump_object_contents {
             assert_eq!(offset as usize % DUMP_ALIGNMENT, 0);
             self.remember_object(object, ObjectState::Dumped(offset));
+            if let Some(key) = object_key(object) {
+                self.object_types.insert(key, kind);
+            }
             if self.flags.record_object_starts {
                 assert!(!self.flags.pack_objects);
                 self.object_starts.push((offset, kind));
@@ -992,15 +1182,366 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// dump_obarray: the interned symbols, in the order Emaxx keeps them.
-    fn dump_obarray(&mut self, interp: &Interpreter) -> Result<u32, DumpError> {
-        let names = interp.known_symbol_names();
+    /// dump_vectorlike for a record: the kinds that are plain slots are
+    /// written with their id (the identity every `Value::Record' carries),
+    /// PVEC_FRAME/WINDOW/PROCESS/TERMINAL are nilled as
+    /// dump_nilled_pseudovec does, the obarray gets its symbol list, and
+    /// the rest is refused as GNU refuses it.
+    fn dump_record(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<(u32, DumpType), DumpError> {
+        let Some(record) = interp.find_record(id) else {
+            return Err(self.unsupported(object, "record without an object"));
+        };
+        let kind = record.kind;
+        let type_tag = record.type_tag.clone();
+        let slots = record.slots.clone();
+        match kind {
+            RecordKind::Record
+            | RecordKind::Closure
+            | RecordKind::Font
+            | RecordKind::SymbolWithPos
+            | RecordKind::Keymap => {
+                let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
+                Ok((offset, DumpType::Record))
+            }
+            RecordKind::Window | RecordKind::Process => {
+                let offset = self.dump_record_slots(id, kind, &type_tag, &slots, true)?;
+                Ok((offset, DumpType::Record))
+            }
+            RecordKind::Obarray => {
+                let offset = self.dump_obarray(interp, id, &type_tag, &slots)?;
+                Ok((offset, DumpType::Obarray))
+            }
+            RecordKind::BoolVector => {
+                let offset = self.dump_bool_vector(id, &slots)?;
+                Ok((offset, DumpType::BoolVector))
+            }
+            RecordKind::Thread => {
+                if id == self.main_thread_id {
+                    let offset = self.dump_main_thread(id)?;
+                    Ok((offset, DumpType::MainThread))
+                } else {
+                    Err(self.unsupported(object, "thread"))
+                }
+            }
+            RecordKind::HashTable => Err(self.unsupported(object, "hash table")),
+            RecordKind::WindowConfiguration => {
+                Err(self.unsupported(object, "window configuration"))
+            }
+            RecordKind::Mutex => Err(self.unsupported(object, "mutex")),
+            RecordKind::ConditionVariable => Err(self.unsupported(object, "condition variable")),
+            RecordKind::NativeCompUnit => Err(self.unsupported(object, "native compilation unit")),
+            RecordKind::NativeCompiledFunction => {
+                Err(self.unsupported(object, "native compiled function"))
+            }
+            RecordKind::TreeSitterParser => Err(self.unsupported(object, "tree-sitter parser")),
+            RecordKind::TreeSitterNode => Err(self.unsupported(object, "tree-sitter node")),
+            RecordKind::TreeSitterCompiledQuery => {
+                Err(self.unsupported(object, "tree-sitter compiled query"))
+            }
+            RecordKind::Sqlite => Err(self.unsupported(object, "sqlite")),
+        }
+    }
+
+    /// A record's id, kind, type tag and slots (nil for a nilled
+    /// pseudovector).
+    fn dump_record_slots(
+        &mut self,
+        id: u64,
+        kind: RecordKind,
+        type_tag: &Value,
+        slots: &[Value],
+        nilled: bool,
+    ) -> Result<u32, DumpError> {
         let start = self.object_start()?;
-        let mut words = vec![names.len() as u64];
-        words.resize(names.len() + 1, 0);
-        for (index, name) in names.iter().enumerate() {
+        let mut words = vec![id, u64::from(record_kind_code(kind)), 0, slots.len() as u64];
+        words.resize(slots.len() + 4, WORD_NIL);
+        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        if !nilled {
+            for (index, slot) in slots.iter().enumerate() {
+                self.field_lv(start, &mut words, index + 4, slot, WEIGHT_STRONG);
+            }
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_obarray: the record, then the symbols it holds -- the initial
+    /// obarray's are the interpreter's interned names in the order it
+    /// keeps them, a private obarray's live in its slot.
+    fn dump_obarray(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        type_tag: &Value,
+        slots: &[Value],
+    ) -> Result<u32, DumpError> {
+        let names = if interp.is_standard_obarray_id(id) {
+            interp.known_symbol_names()
+        } else {
+            Vec::new()
+        };
+        let start = self.object_start()?;
+        let mut words = vec![
+            id,
+            u64::from(record_kind_code(RecordKind::Obarray)),
+            0,
+            slots.len() as u64,
+        ];
+        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        for slot in slots {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, slot, WEIGHT_STRONG);
+        }
+        words.push(names.len() as u64);
+        for name in &names {
+            let index = words.len();
+            words.push(0);
             let symbol = Value::Symbol(SymbolName::intern_str(name));
-            self.field_lv(start, &mut words, index + 1, &symbol, WEIGHT_STRONG);
+            self.field_lv(start, &mut words, index, &symbol, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_bool_vector: the bits, in the cold section, with the record's
+    /// id; a cold object refers to nothing.
+    fn dump_bool_vector(&mut self, id: u64, slots: &[Value]) -> Result<u32, DumpError> {
+        assert!(self.header.cold_start != 0);
+        self.object_start()?;
+        let mut words = vec![id, slots.len() as u64];
+        words.resize(2 + slots.len().div_ceil(64), 0);
+        for (index, slot) in slots.iter().enumerate() {
+            if slot.is_truthy() {
+                words[2 + index / 64] |= 1 << (index % 64);
+            }
+        }
+        self.object_finish(&words)
+    }
+
+    /// The main thread's copied record: DUMP_OBJECT_IS_RUNTIME_MAGIC in
+    /// GNU, the running process's own thread on load.
+    fn dump_main_thread(&mut self, id: u64) -> Result<u32, DumpError> {
+        self.object_start()?;
+        self.object_finish(&[id])
+    }
+
+    /// An interpreted closure: the GNU closure slots (parameters, body,
+    /// environment, documentation, interactive) and the Emaxx fields that
+    /// carry their exact Lisp objects; the parameter and body vectors and
+    /// the environment are shared objects dumped through raw-pointer
+    /// fixups, as intervals are.
+    fn dump_closure(
+        &mut self,
+        lambda: &Rc<crate::lisp::types::LambdaValue>,
+    ) -> Result<u32, DumpError> {
+        let start = self.object_start()?;
+        let mut words = [
+            FIXUP_PLACEHOLDER,
+            WORD_UNBOUND,
+            FIXUP_PLACEHOLDER,
+            FIXUP_PLACEHOLDER,
+            WORD_UNBOUND,
+            WORD_UNBOUND,
+            WORD_UNBOUND,
+        ];
+        for (index, value) in [
+            (1, lambda.public_parameters.as_ref()),
+            (4, lambda.documentation.as_ref()),
+            (5, lambda.interactive.as_ref()),
+            (6, lambda.public_environment.as_ref()),
+        ] {
+            if let Some(value) = value {
+                self.field_lv(start, &mut words, index, value, WEIGHT_NORMAL);
+            }
+        }
+        let offset = self.object_finish(&words)?;
+        let params = self.dump_lambda_params(&lambda.params)?;
+        self.remember_fixup_ptr_raw(offset, params);
+        let body = self.dump_lambda_body(&lambda.body)?;
+        self.remember_fixup_ptr_raw(offset + 16, body);
+        let env = self.dump_lexical_environment(&lambda.env)?;
+        self.remember_fixup_ptr_raw(offset + 24, env);
+        Ok(offset)
+    }
+
+    fn aux_start(&mut self, pointer: usize) -> Option<u32> {
+        self.aux_dumped.get(&pointer).copied()
+    }
+
+    fn aux_finish(
+        &mut self,
+        pointer: usize,
+        words: &[u64],
+        kind: DumpType,
+    ) -> Result<u32, DumpError> {
+        let offset = self.object_finish(words)?;
+        if self.flags.dump_object_contents {
+            self.aux_dumped.insert(pointer, offset);
+            if self.flags.record_object_starts {
+                self.object_starts.push((offset, kind));
+            }
+        }
+        Ok(offset)
+    }
+
+    fn dump_lambda_params(&mut self, params: &Rc<Vec<SymbolName>>) -> Result<u32, DumpError> {
+        let pointer = Rc::as_ptr(params) as usize;
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let start = self.object_start()?;
+        let mut words = vec![params.len() as u64];
+        words.resize(params.len() + 1, 0);
+        for (index, symbol) in params.iter().enumerate() {
+            self.field_lv(
+                start,
+                &mut words,
+                index + 1,
+                &Value::Symbol(symbol.clone()),
+                WEIGHT_STRONG,
+            );
+        }
+        self.aux_finish(pointer, &words, DumpType::LambdaParams)
+    }
+
+    fn dump_lambda_body(&mut self, body: &Rc<Vec<Value>>) -> Result<u32, DumpError> {
+        let pointer = Rc::as_ptr(body) as usize;
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let start = self.object_start()?;
+        let mut words = vec![body.len() as u64];
+        words.resize(body.len() + 1, 0);
+        for (index, form) in body.iter().enumerate() {
+            self.field_lv(start, &mut words, index + 1, form, WEIGHT_STRONG);
+        }
+        self.aux_finish(pointer, &words, DumpType::LambdaBody)
+    }
+
+    /// A captured environment: its frames, dumped after it through
+    /// raw-pointer fixups so two closures over one environment share it.
+    fn dump_lexical_environment(&mut self, env: &SharedEnv) -> Result<u32, DumpError> {
+        let pointer = Rc::as_ptr(env) as usize;
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let frames = env.borrow().clone();
+        self.object_start()?;
+        let mut words = vec![frames.len() as u64];
+        words.resize(frames.len() + 1, FIXUP_PLACEHOLDER);
+        let offset = self.aux_finish(pointer, &words, DumpType::LexicalEnvironment)?;
+        for (index, frame) in frames.iter().enumerate() {
+            let frame_offset = self.dump_lexical_frame(frame)?;
+            self.remember_fixup_ptr_raw(offset + 8 * (index as u32 + 1), frame_offset);
+        }
+        Ok(offset)
+    }
+
+    /// One frame: its flags and identity, the (symbol . value) bindings,
+    /// the locally-special declarations by position, and the Lisp
+    /// environment alist that is authoritative for it, if any.
+    fn dump_lexical_frame(&mut self, frame: &EnvFrame) -> Result<u32, DumpError> {
+        let pointer = frame.identity_ptr();
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let start = self.object_start()?;
+        let mut flags = 0_u64;
+        if frame.has_function_bindings() {
+            flags |= FRAME_FUNCTION_BINDINGS;
+        }
+        if frame.identity().is_some() {
+            flags |= FRAME_HAS_IDENTITY;
+        }
+        if frame.is_captured() {
+            flags |= FRAME_CAPTURED;
+        }
+        let mut words = vec![
+            flags,
+            frame.identity().unwrap_or(0) as u64,
+            frame.len() as u64,
+        ];
+        let mut fields = Vec::new();
+        for (symbol, value) in frame.iter() {
+            fields.push((words.len(), Value::Symbol(symbol.clone())));
+            words.push(0);
+            fields.push((words.len(), value.clone()));
+            words.push(0);
+        }
+        let declarations = frame.local_special_declarations();
+        words.push(declarations.len() as u64);
+        for (position, name) in declarations {
+            words.push(*position as u64);
+            fields.push((words.len(), Value::symbol(name)));
+            words.push(0);
+        }
+        match frame.lisp_environment() {
+            Some(environment) => {
+                fields.push((words.len(), environment.clone()));
+                words.push(0);
+            }
+            None => words.push(WORD_UNBOUND),
+        }
+        for (index, value) in fields {
+            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
+        }
+        self.aux_finish(pointer, &words, DumpType::LexicalFrame)
+    }
+
+    /// A char-table as Emaxx keeps it: id, subtype, default, parent,
+    /// extra slots, the range entries in their log order, and the
+    /// category docstrings.  GNU's is a tree of sub-char-tables; the
+    /// observable table is the same.
+    fn dump_char_table(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(table) = interp.find_char_table(id) else {
+            return Err(self.unsupported(object, "char-table without an object"));
+        };
+        let subtype = table.subtype.clone();
+        let default = table.default.clone();
+        let parent = table.parent;
+        let extra_slots = table.extra_slots.clone();
+        let entries = table
+            .entries
+            .iter()
+            .map(|entry| (entry.start, entry.end, entry.value.clone()))
+            .collect::<Vec<_>>();
+        let category_docs = table.category_docs.clone();
+        let start = self.object_start()?;
+        let mut words = vec![id, WORD_UNBOUND, 0, parent.unwrap_or(u64::MAX)];
+        let mut fields = Vec::new();
+        if let Some(subtype) = subtype {
+            fields.push((1, Value::symbol(&subtype)));
+        }
+        fields.push((2, default));
+        words.push(extra_slots.len() as u64);
+        for slot in extra_slots {
+            fields.push((words.len(), slot));
+            words.push(0);
+        }
+        words.push(entries.len() as u64);
+        for (range_start, range_end, value) in entries {
+            words.push(u64::from(range_start));
+            words.push(u64::from(range_end));
+            fields.push((words.len(), value));
+            words.push(0);
+        }
+        words.push(category_docs.len() as u64);
+        for (character, doc) in category_docs {
+            words.push(u64::from(character));
+            fields.push((words.len(), Value::string(&doc)));
+            words.push(0);
+        }
+        for (index, value) in fields {
+            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
         }
         self.object_finish(&words)
     }
@@ -1126,8 +1667,8 @@ impl DumpContext {
                     let Some(ObjectState::Dumped(target)) = self.recall_object(&value) else {
                         panic!("fixup target was dumped");
                     };
-                    let kind = object_dump_type(&value);
-                    let reloc = if object_in_emacs_image(&value) {
+                    let kind = self.dump_type_of(&value);
+                    let reloc = if self.in_emacs_image(&value) {
                         DumpRelocKind::DumpToEmacsLv(kind)
                     } else {
                         DumpRelocKind::DumpToDumpLv(kind)
@@ -1209,13 +1750,16 @@ impl DumpContext {
                     let Some(ObjectState::Dumped(target)) = self.recall_object(value) else {
                         panic!("root object was dumped");
                     };
-                    let kind = object_dump_type(value);
-                    let kind = if object_in_emacs_image(value) {
+                    let kind = self.dump_type_of(value);
+                    let kind = if self.in_emacs_image(value) {
                         EmacsRelocKind::EmacsLv(kind)
                     } else {
                         EmacsRelocKind::DumpLv(kind)
                     };
                     (kind, u64::from(target))
+                }
+                EmacsRelocPayload::Offset(offset, kind) => {
+                    (EmacsRelocKind::DumpLv(*kind), u64::from(*offset))
                 }
             };
             self.write(&kind.to_u32().to_le_bytes())?;
@@ -1255,40 +1799,62 @@ impl DumpContext {
     }
 }
 
-/// The dump type an object's record carries.
-pub(crate) fn object_dump_type(value: &Value) -> DumpType {
-    match value {
-        Value::Cons(_) => DumpType::Cons,
-        Value::String(_) => DumpType::String,
-        Value::StringObject(_) => DumpType::StringObject,
-        Value::Symbol(_) => DumpType::Symbol,
-        Value::Vector(_) => DumpType::Vector,
-        Value::Float(_) => DumpType::Float,
-        Value::BigInteger(_) | Value::Integer(_) => DumpType::Bignum,
-        Value::BuiltinFunc(_) => DumpType::Subr,
-        Value::Record(_) if is_obarray_value(value) => DumpType::Obarray,
-        _ => panic!("no dump type for {value:?}"),
-    }
-}
-
-/// The initial obarray as a root object.  Emaxx keeps the standard
-/// obarray's symbols in interpreter tables; the image gives it one
-/// record, reached through a record value that stands for it.
-const OBARRAY_ROOT_RECORD_ID: u64 = u64::MAX;
-
-pub(crate) fn obarray_value() -> Value {
-    Value::Record(OBARRAY_ROOT_RECORD_ID)
-}
-
-fn is_obarray_value(value: &Value) -> bool {
-    matches!(value, Value::Record(id) if *id == OBARRAY_ROOT_RECORD_ID)
-}
-
+/// `Fmemq' on the referrer list: identity.
 fn values_eq(a: &Value, b: &Value) -> bool {
     match (object_key(a), object_key(b)) {
         (Some(a), Some(b)) => a == b,
-        _ => matches!((a, b), (Value::String(x), Value::String(y)) if x == y),
+        _ => false,
     }
+}
+
+fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {
+    matches!(value, Value::Record(id)
+        if interp.find_record(*id).is_some_and(|record| record.kind == RecordKind::BoolVector))
+}
+
+// The flag bits of a lexical frame record.
+pub(crate) const FRAME_FUNCTION_BINDINGS: u64 = 1;
+pub(crate) const FRAME_HAS_IDENTITY: u64 = 2;
+pub(crate) const FRAME_CAPTURED: u64 = 4;
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn record_state_for_load(
+    id: u64,
+    kind: RecordKind,
+    type_tag: Value,
+    slots: Vec<Value>,
+) -> RecordState {
+    RecordState {
+        id,
+        type_tag,
+        slots,
+        kind,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn char_table_state_for_load(
+    id: u64,
+    subtype: Option<String>,
+    default: Value,
+    parent: Option<u64>,
+    entries: Vec<(u32, u32, Value)>,
+    extra_slots: Vec<Value>,
+    category_docs: Vec<(u32, String)>,
+) -> CharTableState {
+    let mut table = CharTableState::with_entries(
+        id,
+        subtype,
+        default,
+        parent,
+        entries
+            .into_iter()
+            .map(|(start, end, value)| crate::lisp::eval::CharTableEntry { start, end, value })
+            .collect(),
+    );
+    table.extra_slots = extra_slots;
+    table.category_docs = category_docs;
+    table
 }
 
 /// The string's bytes as GNU stores them: the internal multibyte form for

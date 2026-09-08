@@ -37,12 +37,17 @@ weights, fixups, the hot/discardable/cold sections, the relocation and
 object-start tables, and the pdumper_load validation plus object
 reconstruction used by the round-trip controls. A real
 `dump-emacs-portable` now opens the file and stops at the first uncovered
-object (a record) with pdumper.c's "unsupported object type in dump" error; the startup
-reconstruction hands off before the open. Next: D09 (closures, lexical
-environments, char-tables, records, bool-vectors), D10 (hash tables), D11
-(buffers, markers, overlays, finalizers, the remaining root groups), then
-the loader D12/D13. The Linux records are in
-`docs/honesty-audit-2026-08-18.md`.
+object with pdumper.c's "unsupported object type in dump" error; the startup
+reconstruction hands off before the open. Checkpoint 11 (D09) added
+interpreted closures with their shared environments, char-tables, records
+and pseudovectors kept as slots with their ids preserved, bool-vectors, the
+obarray records, the main thread, nilled windows and processes, and the
+cells of `nil` and `t`; the loader materializes closures on demand and
+installs records and char-tables under the image's ids. A real dump now
+stops at the first hash table. Next: merge main into this branch (asked
+for after checkpoint 11), then D10 (hash tables), D11 (buffers, markers,
+overlays, finalizers, the remaining root groups), then the loader D12/D13.
+The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
 

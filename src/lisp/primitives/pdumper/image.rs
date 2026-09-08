@@ -170,6 +170,27 @@ pub(crate) enum DumpType {
     Obarray = 9,
     /// A string's text-property spans (GNU: the interval tree).
     TextProperties = 10,
+    /// An interpreted closure (`Value::Lambda').
+    Closure = 11,
+    /// A closure's parameter vector, shared between closures made from
+    /// one lambda form.
+    LambdaParams = 12,
+    /// A closure's body forms, shared likewise.
+    LambdaBody = 13,
+    /// A closure's captured lexical environment (`SharedEnv').
+    LexicalEnvironment = 14,
+    /// One frame of a lexical environment (`EnvFrame').
+    LexicalFrame = 15,
+    CharTable = 16,
+    /// A record or pseudovector kept as its slots (`Value::Record').
+    Record = 17,
+    /// A bool-vector: bits in the cold section.
+    BoolVector = 18,
+    /// The value cells of `nil' and `t', whose references are
+    /// self-representing words.
+    BuiltinSymbolCells = 19,
+    /// The main thread: an object of the running process (copied record).
+    MainThread = 20,
 }
 
 impl DumpType {
@@ -186,6 +207,16 @@ impl DumpType {
             8 => Self::Subr,
             9 => Self::Obarray,
             10 => Self::TextProperties,
+            11 => Self::Closure,
+            12 => Self::LambdaParams,
+            13 => Self::LambdaBody,
+            14 => Self::LexicalEnvironment,
+            15 => Self::LexicalFrame,
+            16 => Self::CharTable,
+            17 => Self::Record,
+            18 => Self::BoolVector,
+            19 => Self::BuiltinSymbolCells,
+            20 => Self::MainThread,
             _ => return None,
         })
     }
@@ -290,6 +321,10 @@ pub(crate) enum RootSlot {
     LocalTimeZoneRule = 8,
     FrameAndBufferState = 9,
     CurrentGlobalMap = 10,
+    /// The value cells of the built-in symbol `nil' (GNU: the copied
+    /// lispsym entry).
+    NilCells = 11,
+    TCells = 12,
 }
 
 impl RootSlot {
@@ -306,6 +341,8 @@ impl RootSlot {
             8 => Self::LocalTimeZoneRule,
             9 => Self::FrameAndBufferState,
             10 => Self::CurrentGlobalMap,
+            11 => Self::NilCells,
+            12 => Self::TCells,
             _ => return None,
         })
     }
