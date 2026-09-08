@@ -1300,6 +1300,86 @@ fn probe_oracle_forwarded_variables(
     )
 }
 
+/// pdumper.c:dump_roots / alloc.c:garbage_collect: every Lisp object the
+/// interpreter holds directly is either a marked root or documented as
+/// not one.  A `Value'-typed field of `Interpreter' that the mark phase
+/// never visits would be a hidden root: alive in Rust, invisible to weak
+/// tables, finalizers and a future image writer.  This scans the struct
+/// definition and requires each such field to appear in the root-marking
+/// function or in the explicit list below with its GNU reason.
+pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
+    let source =
+        fs::read_to_string(repo_root().join("src/lisp/eval.rs")).expect("read src/lisp/eval.rs");
+    let struct_start = source
+        .find("pub struct Interpreter {")
+        .expect("Interpreter struct definition");
+    let struct_end = source[struct_start..]
+        .find("\n}\n")
+        .map(|offset| struct_start + offset)
+        .expect("end of Interpreter struct");
+    let field_pattern = regex::Regex::new(r"(?m)^    (?:pub(?:\(crate\))? )?([a-z_0-9]+): (.+),$")
+        .expect("compile field pattern");
+    let roots_start = source
+        .find("pub(crate) fn weak_hash_reachability_with_native")
+        .expect("root-marking function");
+    let roots_end = source[roots_start..]
+        .find("\n    }\n")
+        .map(|offset| roots_start + offset)
+        .expect("end of root-marking function");
+    let roots = &source[roots_start..roots_end];
+    // Fields that hold Lisp objects but are not GNU roots, each with the
+    // C reason.
+    let documented: &[(&str, &str)] = &[
+        (
+            "vm_stack_pool",
+            "released bytecode stacks, cleared before pooling",
+        ),
+        (
+            "backtrace_args_pool",
+            "released backtrace argument vectors, cleared before pooling",
+        ),
+        (
+            "finalizer_functions",
+            "alloc.c marks a live finalizer's function only through the reached object; an unreached one is doomed and then rooted",
+        ),
+        (
+            "functions_index",
+            "an index over `functions', which is marked",
+        ),
+        (
+            "dispatched_signal",
+            "identity memo of the last dispatched signal; thread.c marks handler->val only while its handler runs",
+        ),
+    ];
+    let mut undocumented = Vec::new();
+    for capture in field_pattern.captures_iter(&source[struct_start..struct_end]) {
+        let (name, kind) = (&capture[1], &capture[2]);
+        let holds_objects = [
+            "Value",
+            "SymbolCells",
+            "LocalCells",
+            "BufferLocalBindings",
+            "BufferLocalHooks",
+        ]
+        .iter()
+        .any(|marker| kind.contains(marker));
+        if !holds_objects {
+            continue;
+        }
+        let marked = roots.contains(&format!("self.{name}"));
+        let listed = documented.iter().any(|(listed, _)| *listed == name);
+        if marked && listed {
+            undocumented.push(format!("{name}: both marked and listed as not a root"));
+        } else if !marked && !listed {
+            undocumented.push(format!("{name}: {kind}"));
+        }
+    }
+    assert!(
+        undocumented.is_empty(),
+        "interpreter fields holding Lisp objects that the mark phase neither visits nor documents: {undocumented:?}"
+    );
+}
+
 pub(crate) fn gnu_c_int_variable_manifest_matches_fresh_regeneration() {
     // This inventory makes a store into a DEFVAR_INT slot CHECK_INTEGER and
     // range-check as data.c:store_symval_forwarding does; regenerate it from
@@ -1558,6 +1638,10 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             gnu_c_int_variable_manifest_matches_fresh_regeneration as fn(),
         ),
         (
+            "interpreter_value_fields_are_gc_roots_or_documented",
+            interpreter_value_fields_are_gc_roots_or_documented as fn(),
+        ),
+        (
             "gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration",
             gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration as fn(),
         ),
@@ -1684,6 +1768,11 @@ mod gate_tests {
     #[test]
     fn gnu_c_int_variable_manifest_matches_fresh_regeneration() {
         super::gnu_c_int_variable_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn interpreter_value_fields_are_gc_roots_or_documented() {
+        super::interpreter_value_fields_are_gc_roots_or_documented();
     }
 
     #[test]

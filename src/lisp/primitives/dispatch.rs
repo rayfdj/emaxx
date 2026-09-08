@@ -6,7 +6,7 @@ mod collections;
 mod comp;
 pub(crate) use comp::{comp_el_to_eln_rel_filename, native_elisp_load};
 mod composition;
-mod display;
+pub(crate) mod display;
 mod emacs_module;
 mod faces;
 mod files_process;

@@ -333,6 +333,9 @@ fn garbage_collect_now_impl(
     if let Some(restore) = symbols_with_pos_restore {
         interpreter.restore_special_dynamic(restore, environment)?;
     }
+    // "GC is complete: now we can run our finalizer callbacks."  Before
+    // Fgarbage_collect's post-gc-hook, after the specpdl is restored.
+    interpreter.run_doomed_finalizers(environment)?;
     let (threshold, percentage) = gc_tuning(interpreter, environment);
     garbage_collection_finished(
         interpreter,
