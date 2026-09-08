@@ -7412,3 +7412,86 @@ earlier.
 run-1788851939988389086-22849, GROUPED GATE PASSED (2609 tests, every
 group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
 tree as committed.
+
+## 2026-09-08 D08: the image writer, and a unibyte string GNU could not hold
+
+*What exists now (`primitives/pdumper/').*  `image.rs' is the file
+layout: pdumper.c's 100-byte `dump_header' (magic with the `!' marker
+until completion, the executable's SHA-256 as the fingerprint, table
+locators, section starts), the object types and relocation kinds, and
+the self-representing words (fixnums tagged as lisp.h tags them; nil,
+t and the unbound marker as the symbol words Emaxx represents
+specially).  `context.rs' is `dump_context': the in-memory buffer with
+`dump_write', `dump_seek' and `dump_align_output'; `dump_object_start'
+and `dump_object_finish'; `objects_dumped' with the normal, cold and
+copied states; the `dump_queue' with its four tail queues, link
+weights, sequence numbers and the distance score, ported clause by
+clause from `dump_queue_enqueue' and `dump_queue_dequeue'; the fixup
+list applied by `dump_do_fixups' in offset order; the cold queue
+(strings' bytes in GNU's internal encoding, floats, bignum limbs) and
+the copied queue (built-in functions, the discardable section); the
+three relocation phases, the object-start table and the Emacs
+relocations, whose targets are the interpreter's root slots rather
+than C addresses.  `mod.rs' runs Fdump_emacs_portable's body from the
+open to the completed header in the C order, with the same section
+boundaries and the same stderr report.  `load.rs' (test builds) is the
+validation half of `pdumper_load' -- size, magic, the incomplete
+marker, the fingerprint -- and the object reconstruction that the
+round-trip controls need; the process-level restore is D12/D13.
+
+*What the controls prove.*  From explicit roots, an image holding a
+shared sublist, a self-referential cons, a vector naming the list
+twice, immutable and mutable strings (multibyte, unibyte with raw
+bytes, text properties whose values are shared with the graph, a
+character outside Unicode), one float object referenced twice next to
+a second equal float, two bignums, an integer beyond the fixnum range,
+the fixnum bounds, nil, t, the unbound marker, an interned and an
+uninterned symbol, and a built-in function reads back as an isomorphic
+graph at different addresses, sharing and cycle intact.  Symbol cells
+read from a live interpreter (special flag, alias redirect, watcher
+list with the trapped-write flag, plist, function, an unbound value)
+come back as written.  A short file, the `!' marker, another magic and
+another fingerprint are refused with pdumper_load's outcomes.  Object
+starts are unique and ascending, and each object is written once.
+
+*What a real dump does today.*  `(dump-emacs-portable FILE)' in a
+batch session opens FILE as GNU does and stops at the first object the
+writer does not cover with pdumper.c's "unsupported object type in
+dump: KIND" (a record first in the current image, reached from the
+`gud' custom-group plist; closures, char-tables, buffers, markers,
+overlays, finalizers and reader forms are the others -- D09 to D11;
+with TRACK-REFERRERS the referrer path is printed to stderr as
+print_paths_to_root does), leaving
+the truncated empty file GNU leaves when it fails before its single
+write.  The startup reconstruction, which reaches the primitive from
+loadup.el, hands off with the unavailable error where the open would
+be: `image_reconstruction_handoff' marks that phase, since this
+process has no temacs and loadup's dump call is where it stops.  No
+image is loadable yet and none is claimed.
+
+*Not GNU, disclosed in the D08 row.*  The records are Emaxx's objects
+(a symbol record carries the cells GNU keeps in Lisp_Symbol plus the
+watcher list and the Emaxx-only cell flags); table entries are two
+32-bit words, not GNU's packed word; every symbol other than nil, t
+and unbound is a heap record addressed by name; a built-in function's
+copied record names it where GNU relocates to the subr's address.
+
+*A string GNU could not hold.*  The first real dump stopped inside the
+writer with a unibyte string holding characters above 255: the Burmese
+composition regexp from burmese.el, which `replace-regexp-in-string'
+builds by replacing ASCII keys in an ASCII pattern with multibyte
+pieces.  search.c's Freplace_match with a STRING returns `concat3
+(before, newtext, after)', so the result is multibyte when either is;
+Emaxx's string branch kept STRING's flag.  `(string-bytes ...)' on that
+entry signaled "Character cannot be encoded" where GNU returns 228.
+Fixed at the site; contract
+`replace_match_on_a_string_returns_concat3_multibyteness' pins the
+flag for both argument orders and the two Burmese entries.  The writer
+now refuses such a string with its own message ("unibyte string holds
+character ..."), since GNU has no such state and the fault is at a
+construction site, never in the image.
+
+*Checkpoint 10 gate.*  Alone on the machine: grouped gate
+run-1788863908506282633-10836, GROUPED GATE PASSED (2617 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.

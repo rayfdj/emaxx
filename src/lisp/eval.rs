@@ -33,7 +33,12 @@ mod resource_forms;
 pub(crate) mod runtime;
 pub(crate) use local_cells::LocalCells;
 mod symbol_cells;
-pub(crate) use symbol_cells::SymbolCells;
+pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
+pub(crate) mod symbol_cell_flags {
+    pub(crate) use super::symbol_cells::{
+        ALWAYS_LOCAL, FORWARDED, FWD_BOOL, FWD_INT, LOCAL_IF_SET, LOCALIZED, PER_BUFFER, SPECIAL,
+    };
+}
 mod threads;
 mod treesit;
 mod variables;
@@ -3162,6 +3167,44 @@ impl Interpreter {
         self.weak_hash_reachability_with_native(env, native_roots, None)
     }
 
+    /// pdumper.c:dump_roots for the interpreter's staticpro'd slots: the
+    /// single-value fields the mark phase above starts from.  The obarray
+    /// is dumped separately; the remaining root groups (buffer locals,
+    /// frames, coding systems, ...) join the image with their object kinds.
+    pub(crate) fn dump_root_values(
+        &self,
+    ) -> Vec<(crate::lisp::primitives::pdumper::image::RootSlot, Value)> {
+        use crate::lisp::primitives::pdumper::image::RootSlot;
+        vec![
+            (RootSlot::QuitFlag, self.quit_flag.clone()),
+            (RootSlot::InhibitQuit, self.inhibit_quit.clone()),
+            (RootSlot::ThrowOnInput, self.throw_on_input.clone()),
+            (
+                RootSlot::OverridingPlistEnvironment,
+                self.overriding_plist_environment.clone(),
+            ),
+            (RootSlot::LoadPath, self.load_path.clone()),
+            (RootSlot::LoadsInProgress, self.loads_in_progress.clone()),
+            (
+                RootSlot::LocalTimeZoneRule,
+                self.local_time_zone_rule.clone(),
+            ),
+            (
+                RootSlot::FrameAndBufferState,
+                self.frame_and_buffer_state.clone(),
+            ),
+            (
+                RootSlot::CurrentGlobalMap,
+                self.current_global_map.clone().unwrap_or(Value::Unbound),
+            ),
+        ]
+    }
+
+    /// pdumper.c:dump_symbol reads the Lisp_Symbol's value cell.
+    pub(crate) fn dump_symbol_cell(&self, symbol: &SymbolName) -> SymbolCellSnapshot {
+        self.globals.snapshot(symbol)
+    }
+
     pub(crate) fn weak_hash_reachability_with_native(
         &self,
         env: &Env,
@@ -4325,6 +4368,10 @@ pub struct Interpreter {
     doomed_finalizers: Vec<Value>,
     /// alloc.c:number_finalizers_run.
     pub(crate) finalizers_run: u64,
+    /// Set while startup reconstructs the image by running loadup.el: the
+    /// dump call there is the point where temacs would write the file,
+    /// and this process hands off instead of writing one.
+    pub(crate) image_reconstruction_handoff: bool,
     /// Next generated symbol ID used by built-in macro expansion helpers.
     /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
     /// order.  This is the sole backing store for local hook metadata.
@@ -5244,6 +5291,7 @@ impl Interpreter {
             finalizer_functions: Vec::new(),
             doomed_finalizers: Vec::new(),
             finalizers_run: 0,
+            image_reconstruction_handoff: false,
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
