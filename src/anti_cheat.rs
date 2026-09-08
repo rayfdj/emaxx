@@ -686,6 +686,8 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     let gnu_root = repo_root().join("../emacs/src");
     for test in [
         "native_symbol_value_errors_preserve_the_original_symbol",
+        "symbol_carries_its_native_word_and_a_swept_handle_clears_it",
+        "symbol_native_word_slot_is_per_heap_and_verified_against_the_handle",
         "native_type_of_leaves_old_struct_policy_to_elisp_advice",
         "native_cl_type_of_uses_object_tags_not_fixnum_variable_cells",
         "native_eq_does_not_materialize_unrelated_cons_fields",
@@ -716,6 +718,16 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
     }
     let mut declared = BTreeSet::new();
     for (file, tests) in [
+        (
+            "src/lisp/eval/symbol_cells.rs",
+            &[
+                "a_symbol_and_its_name_address_one_cell",
+                "a_live_uninterned_symbol_is_reached_through_its_private_name",
+                "bound_values_enumerate_in_first_binding_order_and_a_rebinding_moves_last",
+                "a_cloned_table_does_not_share_cells_and_flags_follow_the_symbol",
+                "a_cells_native_word_is_cleared_by_every_data_c_write_transition",
+            ][..],
+        ),
         (
             "src/lisp/primitives/regexp.rs",
             &[
@@ -1226,6 +1238,113 @@ pub(crate) fn gnu_c_bool_variable_manifest_matches_fresh_regeneration() {
     );
 }
 
+/// The oracle's own answer to "is this symbol forwarded?", for every
+/// DEFVAR_* name in the pinned sources: eval.c:Fdefvaralias refuses a
+/// `SYMBOL_FORWARDED' new-alias ("Cannot make a built-in variable an
+/// alias") and a forwarded symbol Lisp has localized ("Don't know how to
+/// make a buffer-local variable an alias").  A constant candidate
+/// (`enable-multibyte-characters', DEFVAR_PER_BUFFER then
+/// make_symbol_constant) is refused before either check and is kept on the
+/// source's word.  Names it aliases without complaint are plain in this
+/// build.
+fn probe_oracle_forwarded_variables(
+    oracle: &Path,
+    candidates: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let listing = std::env::temp_dir().join(format!(
+        "emaxx-forwarded-candidates-{}.txt",
+        std::process::id()
+    ));
+    fs::write(&listing, candidates.join("\n")).expect("write DEFVAR candidate listing");
+    let program = format!(
+        "(with-temp-buffer (insert-file-contents {:?}) \
+         (dolist (name (split-string (buffer-string) \"\\n\" t)) \
+           (condition-case e (progn (defvaralias (intern name) 'emaxx--forwarded-probe) \
+                                    (princ (format \"PLAIN %s\\n\" name))) \
+             (error (princ (format \"%s %s\\n\" \
+                (cond ((string-prefix-p \"Cannot make a built-in\" (format \"%s\" (cadr e))) \
+                       \"FORWARDED\") \
+                      ((string-prefix-p \"Don't know how to make a buffer-local\" \
+                                        (format \"%s\" (cadr e))) \
+                       \"LOCALIZED\") \
+                      ((string-prefix-p \"Cannot make a constant\" (format \"%s\" (cadr e))) \
+                       \"CONSTANT\") \
+                      (t \"OTHER\")) \
+                name))))))",
+        listing.display().to_string()
+    );
+    let output = std::process::Command::new(oracle)
+        .args(["-Q", "--batch", "--eval", &program])
+        .output()
+        .expect("run the forwarded-variable probe with the oracle binary");
+    let _ = fs::remove_file(&listing);
+    assert!(output.status.success(), "forwarded-variable probe failed");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut forwarded = std::collections::BTreeSet::new();
+    let mut localized = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        let Some((kind, name)) = line.split_once(' ') else {
+            continue;
+        };
+        assert_ne!(kind, "OTHER", "unexpected defvaralias outcome for `{name}'");
+        if kind != "PLAIN" {
+            forwarded.insert(name.to_owned());
+        }
+        if kind == "LOCALIZED" {
+            localized.insert(name.to_owned());
+        }
+    }
+    (
+        forwarded.into_iter().collect(),
+        localized.into_iter().collect(),
+    )
+}
+
+pub(crate) fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
+    // eval.c:Fdefvaralias refuses a built-in variable; the manifest that
+    // decides "built-in" in Emaxx is regenerated from the pinned sources
+    // (every DEFVAR_* name) filtered by the pinned oracle binary (only the
+    // names this build actually forwards), and must match byte for byte.
+    let root = repo_root();
+    let oracle = root.join("../emacs/src/emacs");
+    assert!(
+        oracle.exists(),
+        "pinned GNU sibling checkout required for the forwarded-variable manifest gate"
+    );
+    let reported_configuration = oracle_reported_configuration(&oracle);
+    if !reported_configuration.contains("linux-gnu") {
+        // Only the Linux manifest exists; other platforms carry an empty
+        // manifest by construction (see primitives::gnu_c_forwarded_variables).
+        return;
+    }
+    let source_root = root.join("../emacs/src");
+    let pattern =
+        regex::Regex::new(r#"DEFVAR_[A-Z_]+ \("([^"]+)""#).expect("compile DEFVAR source pattern");
+    let mut candidates = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&source_root).expect("read pinned GNU src directory") {
+        let path = entry.expect("read pinned GNU src entry").path();
+        if path.extension().is_some_and(|extension| extension == "c") {
+            let bytes = fs::read(&path).expect("read pinned GNU C source");
+            let text = String::from_utf8_lossy(&bytes);
+            for capture in pattern.captures_iter(&text) {
+                candidates.insert(capture[1].to_string());
+            }
+        }
+    }
+    let candidates = candidates.into_iter().collect::<Vec<_>>();
+    let (fresh_forwarded, fresh_localized) = probe_oracle_forwarded_variables(&oracle, &candidates);
+    assert_eq!(
+        crate::lisp::primitives::gnu_c_forwarded_variables(),
+        fresh_forwarded.as_slice(),
+        "committed GNU C forwarded-variable manifest does not match fresh regeneration from the pinned oracle"
+    );
+    assert_eq!(
+        crate::lisp::primitives::gnu_c_localized_forwarded_variables(),
+        fresh_localized.as_slice(),
+        "committed GNU C localized-forwarded manifest does not match fresh regeneration from the pinned oracle"
+    );
+}
+
 pub(crate) fn builtin_arities_match_fresh_regeneration() {
     // The arities manifest feeds native dispatch arity checks and
     // interactive forms.  A hand edit could widen an arity or forge an
@@ -1356,6 +1475,10 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             gnu_c_bool_variable_manifest_matches_fresh_regeneration as fn(),
         ),
         (
+            "gnu_c_forwarded_variable_manifest_matches_fresh_regeneration",
+            gnu_c_forwarded_variable_manifest_matches_fresh_regeneration as fn(),
+        ),
+        (
             "builtin_arities_match_fresh_regeneration",
             builtin_arities_match_fresh_regeneration as fn(),
         ),
@@ -1468,6 +1591,11 @@ mod gate_tests {
     #[test]
     fn gnu_c_bool_variable_manifest_matches_fresh_regeneration() {
         super::gnu_c_bool_variable_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
+        super::gnu_c_forwarded_variable_manifest_matches_fresh_regeneration();
     }
 
     #[test]

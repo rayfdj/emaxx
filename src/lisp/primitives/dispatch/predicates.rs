@@ -513,9 +513,24 @@ define_dispatch!(
             }
             "make-variable-buffer-local" => {
                 need_args(name, args, 1)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // data.c:Fmake_variable_buffer_local: CHECK_SYMBOL, follow the
+                // alias, a void plain value becomes nil, SYMBOL_CONSTANT_P on
+                // VARIABLE signals, then `blv->local_if_set = 1'; VARIABLE is
+                // returned as given (no XSETSYMBOL here).
+                let checked = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_name(&checked)?;
+                if interp.is_constant_symbol(&checked) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("setting-constant"),
+                        args[0].clone(),
+                    ])));
+                }
+                if !interp.is_per_buffer_special(&symbol) && interp.default_value(&symbol).is_none()
+                {
+                    interp.set_global_binding(&symbol, Value::Nil);
+                }
                 interp.mark_auto_buffer_local(&symbol);
-                Ok(Value::Symbol(symbol.into()))
+                Ok(args[0].clone())
             }
             "local-variable-p" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -525,8 +540,10 @@ define_dispatch!(
                 } else {
                     interp.current_buffer_id()
                 };
+                // data.c:Flocal_variable_p: an alist cell, bound or void,
+                // or a per-buffer slot that is local in every buffer.
                 Ok(
-                    if interp.buffer_local_value(buffer_id, &symbol).is_some()
+                    if interp.has_buffer_local_binding(buffer_id, &symbol)
                         || interp.is_always_buffer_local_special(&symbol)
                     {
                         Value::T
@@ -544,7 +561,7 @@ define_dispatch!(
                     interp.current_buffer_id()
                 };
                 Ok(
-                    if interp.buffer_local_value(buffer_id, &symbol).is_some()
+                    if interp.has_buffer_local_binding(buffer_id, &symbol)
                         || interp.is_auto_buffer_local(&symbol)
                     {
                         Value::T
@@ -556,9 +573,12 @@ define_dispatch!(
             "variable-binding-locus" => {
                 need_args(name, args, 1)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // data.c:Fvariable_binding_locus asks Flocal_variable_p: a
+                // binding cell, bound or void, names the buffer.
                 Ok(interp
-                    .buffer_local_value(interp.current_buffer_id(), &symbol)
-                    .and_then(|_| interp.buffer_identity_value(interp.current_buffer_id()))
+                    .has_buffer_local_binding(interp.current_buffer_id(), &symbol)
+                    .then(|| interp.buffer_identity_value(interp.current_buffer_id()))
+                    .flatten()
                     .unwrap_or(Value::Nil))
             }
             "bare-symbol-p" => {

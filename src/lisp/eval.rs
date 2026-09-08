@@ -26,10 +26,14 @@ mod control_forms;
 mod core;
 mod definitions;
 mod faces;
+mod local_cells;
 mod loops;
 mod macros;
 mod resource_forms;
 pub(crate) mod runtime;
+pub(crate) use local_cells::LocalCells;
+mod symbol_cells;
+pub(crate) use symbol_cells::SymbolCells;
 mod threads;
 mod treesit;
 mod variables;
@@ -2497,14 +2501,6 @@ fn tty_default_lisp_face_vector() -> Value {
     Value::list(std::iter::once(Value::symbol("vector-literal")).chain(attributes))
 }
 
-type OrderedBindings = LinkedHashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>;
-
-fn ordered_bindings(entries: impl IntoIterator<Item = (String, Value)>) -> OrderedBindings {
-    let mut bindings = OrderedBindings::with_hasher(Default::default());
-    bindings.extend(entries);
-    bindings
-}
-
 type OrderedHooks = LinkedHashMap<String, Vec<Value>, crate::lisp::primitives::FnvBuildHasher>;
 
 fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> OrderedHooks {
@@ -2513,7 +2509,7 @@ fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> Ord
     hooks
 }
 
-type BufferLocalBindings = HashMap<u64, OrderedBindings, crate::lisp::primitives::FnvBuildHasher>;
+type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::FnvBuildHasher>;
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 type OrderedNameIndex = HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>;
@@ -3191,7 +3187,7 @@ impl Interpreter {
             mark(event);
         }
         for bindings in self.buffer_locals.values() {
-            for (_, value) in bindings {
+            for (_, value) in bindings.iter() {
                 mark(value);
             }
         }
@@ -3605,7 +3601,7 @@ impl Interpreter {
         let mut copier = ImageGraphCopier::new();
         {
             let c = &mut copier;
-            for (_, value) in clone.globals.iter_mut() {
+            for value in clone.globals.values_mut() {
                 *value = c.copy(value);
             }
             // Copy the actual C-side fields. The graph copier preserves
@@ -3624,7 +3620,7 @@ impl Interpreter {
                 *event = c.copy(event);
             }
             for bindings in clone.buffer_locals.values_mut() {
-                for (_, value) in bindings.iter_mut() {
+                for value in bindings.values_mut() {
                     *value = c.copy(value);
                 }
             }
@@ -3967,14 +3963,11 @@ pub struct Interpreter {
     /// counter that keeps template use single-threaded.
     #[allow(dead_code)]
     pub(crate) image_template_token: Option<std::sync::Arc<ImageTemplateToken>>,
-    /// Global variable bindings (defvar, setq at top level).  GNU exposes
-    /// deterministic symbol enumeration while value-cell access and removal
-    /// are hash operations, so keep both properties in one canonical store.
-    globals: OrderedBindings,
-    /// Version of the C-owned symbol value-cell state.  Native symbol handles
-    /// use it to retain GNU's direct value-word reads without keeping stale
-    /// words across a set, alias, or localization transition.
-    symbol_value_cell_epoch: u64,
+    /// The symbols' value cells, alias redirects and `declared_special' /
+    /// `SYMBOL_LOCALIZED' flags, indexed by symbol id (data.c's
+    /// `Lisp_Symbol' fields, per interpreter).  Bound values enumerate in
+    /// first-binding order.
+    globals: SymbolCells,
     /// Directly forwarded Lisp_Object cells read by the C implementation.
     /// GNU reads these globals without doing symbol-table work; keep the same
     /// direct state while ordinary Lisp access remains visible through the
@@ -4003,14 +3996,9 @@ pub struct Interpreter {
     pub(crate) pending_thread_events: Vec<Value>,
     /// Variable aliases keyed by alias name.
     variable_aliases: Vec<(String, String)>,
-    /// Alias → target index mirroring `variable_aliases` (at most one entry
-    /// per alias) so name resolution on the hot lookup path is O(1).
-    variable_aliases_index: HashMap<String, String>,
-    /// Variables with dynamic binding semantics.
+    /// Variables with dynamic binding semantics, in declaration order; the
+    /// membership test is the SPECIAL flag in `globals'.
     special_variables: Vec<String>,
-    /// Membership index over `special_variables` so hot binding paths can
-    /// test specialness in O(1).
-    special_variables_index: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Names ever declared locally special via a non-top-level one-arg
     /// `defvar`; lets of other names skip the env marker scan entirely.
     local_special_names: HashSet<String>,
@@ -4315,18 +4303,6 @@ pub struct Interpreter {
     buffer_locals: BufferLocalBindings,
     /// Buffer-local syntax tables keyed by buffer id.
     buffer_syntax_tables: Vec<(u64, u64)>,
-    /// Variables that automatically become buffer-local when set.
-    auto_buffer_locals: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
-    /// Symbols whose value cells can forward through a buffer-local binding.
-    /// GNU records this on the symbol itself, so ordinary value-cell reads
-    /// skip the current buffer's local table entirely for every other name.
-    buffer_local_capable_variables: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
-    /// Native DEFVAR_PER_BUFFER variables, kept as host metadata rather than
-    /// exposed through private Lisp symbol properties.
-    per_buffer_specials: HashSet<String>,
-    /// The DEFVAR_PER_BUFFER subset whose GNU slot index is -1 and therefore
-    /// remains local in every buffer.
-    always_buffer_local_specials: HashSet<String>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
@@ -4697,7 +4673,7 @@ impl Interpreter {
             image_template_token: None,
             detached_forwarded_variables: HashMap::new(),
             pending_thread_events: Vec::new(),
-            globals: ordered_bindings(vec![
+            globals: SymbolCells::from_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("obarray".into(), Value::Record(standard_obarray_id)),
                 ("cl--proclaims-deferred".into(), Value::Nil),
@@ -4857,7 +4833,6 @@ impl Interpreter {
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
             ]),
-            symbol_value_cell_epoch: 0,
             quit_flag: Value::Nil,
             inhibit_quit: Value::Nil,
             throw_on_input: Value::Nil,
@@ -4866,8 +4841,6 @@ impl Interpreter {
             debug_on_next_call: false,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
             variable_aliases: Vec::new(),
-            variable_aliases_index: HashMap::new(),
-            special_variables_index: HashSet::default(),
             local_special_names: HashSet::new(),
             dlet_active_names: HashMap::new(),
             special_scan_floor: 0,
@@ -5239,10 +5212,6 @@ impl Interpreter {
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),
-            auto_buffer_locals: HashSet::default(),
-            buffer_local_capable_variables: HashSet::default(),
-            per_buffer_specials: HashSet::new(),
-            always_buffer_local_specials: HashSet::new(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             thread_swap_boundaries: Vec::new(),
@@ -5372,7 +5341,7 @@ impl Interpreter {
         let startup_globals = interp
             .globals
             .iter()
-            .map(|(name, _)| name.clone())
+            .map(|(name, _)| name.as_str().to_owned())
             .collect::<Vec<_>>();
         for name in declared_specials.into_iter().chain(startup_globals) {
             interp.mark_special_variable(&name);
@@ -6549,7 +6518,7 @@ impl Interpreter {
         let completed_startup_globals = interp
             .globals
             .iter()
-            .map(|(name, _)| name.clone())
+            .map(|(name, _)| name.as_str().to_owned())
             .collect::<Vec<_>>();
         for name in completed_startup_globals {
             interp.mark_special_variable(&name);
