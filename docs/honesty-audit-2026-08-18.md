@@ -6882,3 +6882,301 @@ the crate's `unwrap_used' denial and one indexed loop); those are test-
 and loop-shape fixes with no behaviour change, after which strict clippy
 is clean and the `sort_args' unit test and CLI contract pass again.  The
 next checkpoint's gate covers the tree as committed.
+
+## 2026-09-07 R02c, first boundary: a symbol carries its native word
+
+*What changed.*  comp.c hands generated code a symbol as the object's
+own address.  Emaxx's bridge assigned every non-cons object a boxed
+`NativeHandle' and found it again through `handle_by_value', a hash map
+keyed by the object's identity, on every crossing.  A symbol's
+`SymbolNameState' now carries its handle as a packed slot (the owning
+heap's id in the high half, the handle index plus one in the low half);
+`encode' reads the word from the symbol when the slot names this heap
+and the handle still holds this symbol, and falls back to the table
+otherwise (a second heap on the same thread, or a stale slot).  The
+sweep that frees an unmarked handle clears the slot through the handle's
+own value, and a dropped heap clears every slot it owned.  Two Rust-only
+controls, registered with the anti-cheat audit:
+`symbol_carries_its_native_word_and_a_swept_handle_clears_it` and
+`symbol_native_word_slot_is_per_heap_and_verified_against_the_handle`.
+The native runtime module's 80 tests pass.
+
+*Measured, and honestly no change.*  `emaxx -Q --batch -f
+batch-native-compile comp.el' (fresh HOME and TMPDIR each run, `env
+-i', user CPU): before 145.3, 139.3, 140.4 s; after 139.4, 142.8 s.  GNU
+compiles the same file in 22.7 s user.  The artifact is byte-identical
+to GNU's after the change.  The symbol lookup was therefore not where
+the bridge's time goes for this workload; the slot stays because it is
+the representation R02c asks for (the word lives in the object) and it
+removes a map entry per symbol crossing, but no performance claim is
+made for it.  The next boundary is chosen from a sampled profile of
+this workload rather than from the contract list's order.
+
+*Where the time goes when Emaxx compiles comp.el.*  A gdb sampler (100
+backtraces of the worker thread at 0.7 s intervals, starting 30 s into
+the run to skip startup, symbolised release build) over the same
+`batch-native-compile comp.el' shows every sample inside the bytecode
+VM executing comp.elc: `execute_record'/`run_with_stack' on 72 of 100
+stacks, `call_function_value_inner' on 78, `dispatch_named_builtin' on
+38.  The native bridge (`native_comp/runtime.rs') is on none.  Both
+editors run the compiler as byte-code: the oracle's
+`comp--native-compile' is not `subr-native-elisp-p' either, its
+`load-history' names comp.elc, and its `../native-lisp/30.2-15987bd4'
+was built for another ABI hash than the running binary (30.2-1564b906),
+so it is never loaded.  The 5.3x for this workload (about 120 s of work
+against GNU's 22.7 s, both interpreting the same comp.elc) is therefore
+the Rust VM and its primitives against GNU's C VM, not native code
+generation and not the bridge.  Leaf costs in the samples: allocator
+calls 22 (realloc 15, alloc 6), variable access 18
+(`direct_variable_alias' 5 -- the alias table is consulted on every
+variable read -- `global_binding_value', `push_backtrace_frame_with_
+locals' 3, `bind_special_variable'), bytecode `decode_program' 5,
+`equal'-hash lookups 4, plist `get' through `overriding_plist_property'
+5.  Those are the name-keyed storage contracts V02/V03 name (a symbol-
+owned value cell and an alias stored in the symbol), so that work
+serves the dump prerequisites and the compiler's speed at once, and
+comes next.  R02c's remaining boundaries matter where native code
+runs: test/src/comp-tests.el's execution phase (2086 s against 14 s) is
+the bridge's workload, and it is measured separately when those
+boundaries are touched.
+
+*Bytecode variable access reaches the cell directly.*  bytecode.c's
+`Bvarref', `Bvarset' and `Bvarbind' read and write a symbol's value
+through `Fsymbol_value'/`set_internal'/`specbind' on the symbol object;
+they never spell the symbol's name.  Emaxx's VM built a `String' per
+`VarRef' and dispatched `symbol-value' and `set' by name through the
+primitive table.  `Op::VarRef' now calls `symbol_value_cell_symbol' on
+the constant symbol (a void cell signals `void-variable' with the
+constant, as `Fsymbol_value' does), `Op::VarSet' calls a shared
+`set_internal' (alias resolution, constant and read-only checks, the
+buffer-local assignment target, watchers, then the cell write -- the
+same path the `set' primitive takes, factored out so the two cannot
+drift), and `Op::VarBind' binds through the symbol's name slice without
+copying.  The fallbacks for non-symbol operands are unchanged.  Oracle
+contract `compiled_variable_references_and_sets_follow_bytecode_c'
+byte-compiles closures that reference an unbound variable, set a
+constant, read and set a dynamic variable under a compiled `let',
+trigger a `set' watcher, and `set' through an alias, and compares the
+printed result with GNU; the 37 bytecode tests pass with it.
+
+Measured as above, paired with the checkpoint-1 binary on the same
+machine in the same hour: after 125.7, 128.5 s user; the checkpoint-1
+binary 146.5 s in the paired run.  That is 13-14 % of the compile of
+comp.el, artifact still byte-identical to GNU's, and it agrees with the
+sampled profile (variable access was 18 of 100 leaves).  GNU's 22.7 s
+is still 5.6x away, and the remaining leaves (allocator, alias table on
+every read, `decode_program', plist `get') are the V02/V03 work.
+
+*Checkpoint 2 gate.*  A first full gate over this tree (run 11, started
+14:18) was invalidated by me: I built and edited sources while it ran,
+which rewrites the binaries the later groups execute, so its result is
+not evidence and is not cited.  The clean run, alone on the machine:
+grouped gate run-1788792028897488641-26721, GROUPED GATE PASSED (every
+group 0 failed, 0 ignored), then `cargo fmt --check' and strict clippy
+both exit 0 on the tree as committed.
+
+## 2026-09-07 V02/V03 stage 1: one cell per symbol, and Fdefvaralias as written
+
+*What GNU does.*  data.c reads a variable through the `Lisp_Symbol'
+object: `find_symbol_value' switches on `redirect' (PLAINVAL, VARALIAS,
+LOCALIZED, FORWARDED) and returns `SYMBOL_VAL', follows `SYMBOL_ALIAS',
+or swaps in the buffer-local cell; `declared_special' sits in the same
+object.  The name is never consulted.
+
+*What Emaxx did.*  Values lived in a name-keyed insertion-ordered map,
+the alias redirect in a second name-keyed map (SipHash), the LOCALIZED
+and special flags in two more name-keyed sets, so every symbol read paid
+an alias probe, a localized probe and a value probe, each hashing the
+name.
+
+*What changed.*  `src/lisp/eval/symbol_cells.rs': one `SymbolCell'
+(value, alias target, flags) per symbol, indexed by an id the
+`SymbolName' now carries.  The four maps are gone; the ordered
+enumeration the old map provided (GC roots, image cloning, the startup
+special-marking passes, `known_symbol_names') is kept exactly, first-
+binding order with a re-bound name moving last, through an order vector
+with stale-position skipping and compaction.  Name-keyed callers (the
+several hundred `&str' sites) reach the same cell through the interned
+table, so a name and its symbol can never address different cells.  Ids
+are process-wide (a mutex-guarded text-to-id registry consulted only
+when a symbol state is created, never on a read): the test image
+template is built on one thread and cloned into other test threads, and
+a per-thread id would have addressed the wrong cells there -- the first
+run signalled `void-variable noninteractive' from `display-warning'
+inside a test, which is how that was found.  Uninterned symbols draw
+ids from a separate counter with the high bit set and keep their cells
+in a side table, so the dense vector is sized by the number of interned
+names, not by every `make-symbol' ever evaluated; an uninterned text's
+id is released when its last state drops, and a live uninterned text
+re-entering through the `&str' boundary resolves to the live object
+(the native-assq test's old control, which minted a second object for
+the same private name, is rewritten to use a different `make-symbol').
+The precomputed per-name FNV hash that the old map lookups needed is
+removed from the symbol state.
+
+*Fdefvaralias, seven divergences.*  The oracle contract for V03 was
+written first and run against the checkpoint-2 binary; it found, in
+eval.c's order: (1) no "Cannot make a constant an alias" (`(defvaralias
+:kw ...)' succeeded); (2) the cycle error carried the new alias, GNU
+carries BASE; (3) no "Cannot make a built-in variable an alias":
+`(defvaralias 'load-path 'x)' destroyed `load-path' and Emaxx then died
+at exit with `void-variable load-path'; (4) no "Don't know how to make
+a buffer-local variable an alias" and no let-bound refusal; (5) an
+unbound base did not receive the alias's value (the 2008 emacs-devel
+hand-over) and both symbols were not declared special; (6) the
+`losing-value' warning was called with one argument, GNU passes the
+`format-message' text as well, and watchers were notified before the
+checks that can still signal; (7) the return value was the alias, GNU
+returns BASE, `variable-documentation' was not put when nil, and the
+redirect was stored as the end of the base's chain, so re-pointing the
+base later did not re-point the alias (GNU stores BASE itself and walks
+the chain per read).  All seven are ported; `eval_sub'/`Fsymbol_value'
+now also signal `void-variable' with the symbol they were given rather
+than the end of the chain.  LOADHIST_ATTACH of the alias symbol is
+recorded as for `defvar'.
+
+*The forwarded-variable manifest.*  "Built-in" is `SYMBOL_FORWARDED',
+which no source grep can decide alone (android, w32, haiku, pgtk, dbus
+files are not compiled into this build, and `byte-code-meter' sits
+under an ifdef), so
+`src/lisp/primitives/generated_gnu_c_forwarded_variables_linux.rs' is
+generated by taking every DEFVAR_* name in the pinned sources (876) and
+asking the pinned oracle, through Fdefvaralias itself, which of them it
+refuses: 749 forwarded, of which 29 already `SYMBOL_LOCALIZED' at `-Q
+--batch' (buffer.c and keyboard.c call Fmake_variable_buffer_local on
+them, e.g. `case-fold-search', `deactivate-mark') and six constants
+(`enable-multibyte-characters', the three font tables, the fixnum
+bounds -- now also in `is_constant_symbol'); 127 plain.  The anti-cheat
+gate `gnu_c_forwarded_variable_manifest_matches_fresh_regeneration'
+regenerates both lists against the oracle and requires byte identity.
+Disclosed residuals: the manifest exists for the Linux oracle only, so
+on macOS `gnu_c_forwarded_variables()' is empty and the built-in
+refusal is not reproduced until the same probe is run against the
+Darwin oracle; `trapped_write' is not modelled (an alias's own watchers
+are cleared instead of trapped to the base's).  A suspected residual
+did not survive its probe: `make-local-variable' or
+`make-variable-buffer-local' on a DEFVAR_PER_BUFFER slot leaves it
+"built-in" in GNU (data.c returns early for a BUFFER_OBJFWDP), while a
+DEFVAR_LISP or a Lisp `defvar' made buffer-local becomes "buffer-
+local"; both editors print the same four answers for `fill-column' (twice),
+`load-path' and a Lisp variable.
+
+*Contracts.*  `variable_cells_follow_data_c' (alias read/write/
+indirect/boundp/default-boundp, alias to an unbound base and
+`makunbound' through it, cycle payload, two `make-symbol's of one name,
+lexical vs dynamic `let' of an uninterned symbol, buffer-local read/
+default/other-buffer/kill, void payload through an alias, compiled
+access), `defvaralias_follows_eval_c' (the twenty cases above),
+`defvaralias_records_the_alias_in_load_history'; four Rust-only
+`SymbolCells' tests registered with the anti-cheat audit; the manifest
+gate.  Focused subset: 263 of the alias/special/buffer-local/watcher/
+bytecode/native-runtime/anti-cheat tests passed and the one failure was
+the native-assq control described above, fixed and re-run.
+
+*Measured, and no change.*  `batch-native-compile comp.el' as before,
+paired on the same machine in the same hour: this tree 125.4, 126.3 s
+user; the checkpoint-2 binary 125.3 s.  The artifact is byte-identical
+to GNU's.  The sampled profile had put the alias table on 5 of 100
+leaves; replacing three hash probes with one index did not move the
+total for this workload, and no performance claim is made.  The value
+of the change is representational (V02/V03 rows moved to partial): the
+cell is now the object the native word and the epoch's replacement will
+attach to.
+
+*Checkpoint 3 gate.*  Alone on the machine: grouped gate
+run-1788800966130003373-15561, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.
+
+## 2026-09-07 V02 stage 2: the native word lives in the cell, the epoch is gone
+
+*What changed.*  Generated code reads `SYMBOL_VAL' as a word.  The
+bridge kept that word in the symbol's native handle, tagged with a
+process-wide epoch that every `set', alias and localization anywhere
+bumped, so one write to any variable retired every cached word in the
+process.  The word now lives in the symbol's own cell beside the value
+it belongs to, stamped with the heap id and the heap's collection
+generation; the cell's own write transitions (`set_internal',
+`makunbound', `defvaralias', the first buffer-local binding, the
+special flag) clear it, and a sweep advances the generation so a word
+whose bridge allocation may have been reclaimed is never returned.
+The epoch field, its six bump sites and the per-handle cache are
+removed; the native `symbol-value' fast path asks the interpreter's
+cell.  Rust-only control
+`a_cells_native_word_is_cleared_by_every_data_c_write_transition'
+(registered with the anti-cheat audit) walks every transition and the
+stamp discipline; the two native GC tests that proved a collection
+discards cached words now prove it through the generation.  90 bridge,
+cell and variable-contract tests pass.
+
+*Measured on native execution.*  A native-compiled loop of three
+million iterations reading two global variables and adding
+(`$S/bench-native.el', `native-comp-speed' 2, `benchmark-run', best of
+three, alternating binaries): this tree 5.01, 5.17 s; the checkpoint-3
+binary 5.30, 5.30 s; GNU 0.178 s.  About 4 % on this micro-benchmark,
+and GNU is 28x away: the per-call bridge cost around each helper
+(`symbol-value', `+') dominates, not the value-word lookup this stage
+removed.  That gap is R02c's remaining boundaries and R03, measured
+here from now on.
+
+*Checkpoint 4 gate.*  Alone on the machine: grouped gate
+run-1788807756929107362-1200, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.
+
+## 2026-09-07 V04 stage 1: a buffer's local bindings by symbol, and a void local is still a binding
+
+*What GNU does.*  A buffer's local bindings are its `local_var_alist',
+`(symbol . value)' cells found with `assq_no_quit' on the symbol
+object; the symbol's blv carries `local_if_set'.  A cell whose value is
+`Qunbound' remains a binding: `local-variable-p' answers t, a read is
+void, `buffer-local-variables' lists the bare symbol, and the default
+is untouched.  `Fmakunbound' is `Fset (symbol, Qunbound)', so in a
+buffer with a cell it voids the cell, and for a `local_if_set' symbol
+without one (outside a let made for this buffer) it creates a void
+cell.  `Fmake_local_variable' copies the default cell's value (void
+stays void) and refuses a constant with VARIABLE as given;
+`Fmake_variable_buffer_local' turns a void plain value into nil,
+refuses a constant, and returns VARIABLE as given.
+
+*What Emaxx did.*  The per-buffer table was keyed by name (three
+name-keyed sets held `local_if_set', the per-buffer kind and the
+always-local kind), and a local was either bound or absent: the probe
+against the checkpoint-4 binary showed `(makunbound 'v)' on a local
+deleting the cell (`boundp' t through the default, `local-variable-p'
+nil, the symbol gone from `buffer-local-variables'),
+`(make-local-variable 'void-var)' binding the local to nil,
+`(make-variable-buffer-local 'zz-new)' leaving the symbol void (GNU:
+nil) -- the extended contract program died on that read --
+`(make-local-variable :kw)' and `(make-variable-buffer-local 'nil)'
+succeeding, and `make-variable-buffer-local' of an alias returning the
+base instead of the argument.
+
+*What changed.*  `src/lisp/eval/local_cells.rs': one buffer's
+bindings keyed by symbol id in first-binding order, `Value::Unbound'
+for a void local; the three name-keyed sets are the LOCAL_IF_SET,
+PER_BUFFER and ALWAYS_LOCAL flags in the symbol cell.  The read path
+distinguishes "no cell" from "void cell" (`buffer_local_binding'),
+and `set', `specbind', `makunbound', `local-variable-p',
+`local-variable-if-set-p', `variable-binding-locus',
+`buffer-local-value' and `buffer-local-variables' use that
+distinction; `let_shadows_buffer_binding' is data.c's predicate over
+the restore stack (a LET_LOCAL record for this buffer, or a
+LET_DEFAULT one made here).  Oracle contract
+`buffer_local_cells_follow_data_c' (three `with-temp-buffer' programs,
+about forty observations including the alias cases and the lexical
+`let' of a non-special `local_if_set' symbol) passes with the 173
+buffer-local, special-binding, watcher, alias and bridge tests.  No
+timing: the buffer-local branch is not on the compiler's path, and
+none is claimed.
+
+*Disclosed residual.*  The blv's `where'/`valcell' swap (GNU loads the
+current buffer's binding into the symbol so a read is one cell
+dereference) is not represented: every read of a LOCALIZED symbol
+probes the current buffer's table.  DEFVAR_PER_BUFFER slots keep
+Emaxx's model (`makunbound' of one still takes the previous path).
+
+*Checkpoint 5 gate.*  Alone on the machine: grouped gate
+run-1788814256001850440-16741, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.

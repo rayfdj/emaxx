@@ -322,6 +322,27 @@ fn run_hooks_dispatch(
     Ok(Value::Nil)
 }
 
+/// data.c:set_internal with SET_INTERNAL_SET, after CHECK_SYMBOL: follow
+/// the alias, normalize for a forwarded slot, notify watchers with the
+/// caller's original NEWVAL, then store.  `set' and bytecode.c's Bvarset
+/// share it.
+pub(crate) fn set_internal(
+    interp: &mut Interpreter,
+    name: &str,
+    value: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let symbol = interp.resolve_variable_name(name)?;
+    // data.c:set_internal notifies with NEWVAL before the forwarded C slot
+    // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
+    // the watcher must receive the caller's original object.
+    let stored = interp.prepare_variable_assignment(&symbol, value.clone())?;
+    let buffer_id = interp.assignment_buffer_id(&symbol);
+    interp.notify_variable_watchers(&symbol, value, "set", buffer_id, env)?;
+    interp.set_symbol_value_cell(&symbol, stored);
+    Ok(())
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -847,16 +868,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Fset reaches set_internal's CHECK_SYMBOL.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
-                // data.c:set_internal notifies with NEWVAL before the
-                // forwarded C slot normalizes it.  The stored value may be
-                // t/nil for a DEFVAR_BOOL, but the watcher must receive the
-                // caller's original object.
-                let watcher_value = args[1].clone();
-                let value = interp.prepare_variable_assignment(&symbol, watcher_value.clone())?;
-                let buffer_id = interp.assignment_buffer_id(&symbol);
-                interp.notify_variable_watchers(&symbol, watcher_value, "set", buffer_id, env)?;
-                interp.set_symbol_value_cell(&symbol, value.clone());
+                set_internal(interp, &checked, args[1].clone(), env)?;
                 Ok(args[1].clone())
             }
             "set-default" => {
@@ -1055,23 +1067,25 @@ define_dispatch!(
                 // GNU 30.2 data.c:Fmakunbound uses CHECK_SYMBOL/XSYMBOL and
                 // returns the original symbol argument.
                 let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
-                if symbol == "initial-window-system"
-                    || matches!(
-                        symbol.as_str(),
-                        "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
-                    )
-                    || symbol.starts_with(':')
-                {
+                if interp.is_constant_symbol(&checked) || checked == "initial-window-system" {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
                         args[0].clone(),
                     ])));
                 }
-                if interp
-                    .buffer_local_value(interp.current_buffer_id(), &symbol)
-                    .is_some()
-                {
+                let symbol = interp.resolve_variable_name(&checked)?;
+                let buffer_id = interp.current_buffer_id();
+                // Fset (symbol, Qunbound) through data.c:set_internal's
+                // SYMBOL_LOCALIZED case: an existing alist cell (bound or
+                // void) becomes void and stays a local binding; a
+                // local_if_set symbol without a cell, outside a let made for
+                // this buffer, gets a new void cell.  The default is
+                // untouched either way.
+                let localized_store = interp.has_buffer_local_binding(buffer_id, &symbol)
+                    || (interp.is_auto_buffer_local(&symbol)
+                        && !interp.is_per_buffer_special(&symbol)
+                        && !interp.let_shadows_buffer_binding(&symbol));
+                if localized_store {
                     interp.notify_variable_watchers(
                         &symbol,
                         Value::Nil,
@@ -1079,11 +1093,11 @@ define_dispatch!(
                         if interp.is_auto_buffer_local(&symbol) {
                             None
                         } else {
-                            Some(interp.current_buffer_id())
+                            Some(buffer_id)
                         },
                         env,
                     )?;
-                    interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+                    interp.set_buffer_local_value(buffer_id, &symbol, Value::Unbound);
                 } else {
                     interp.notify_variable_watchers(
                         &symbol,
@@ -1119,42 +1133,124 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "defvaralias" => {
+                // GNU 30.2 eval.c:Fdefvaralias, in its order: CHECK_SYMBOL
+                // both, constant, non-circularity from BASE, the alias's
+                // redirect kind, the 2008 value hand-over or the
+                // losing-value warning, the let-bound check, watchers, then
+                // the redirect itself.  Returns BASE.
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let alias = args[0].as_symbol()?.to_string();
-                let target = args[1].as_symbol()?.to_string();
-                let alias_value = interp.lookup_var(&alias, env);
-                let target_value = interp.lookup_var(&target, env);
+                let base = args[1].as_symbol()?.to_string();
+                let visible =
+                    |symbol: &str| crate::lisp::types::visible_symbol_name(symbol).to_owned();
+                if interp.is_constant_symbol(&alias) {
+                    return Err(LispError::Signal(format!(
+                        "Cannot make a constant an alias: {}",
+                        visible(&alias)
+                    )));
+                }
+                interp.check_variable_alias_cycle(&alias, &base)?;
+                // A DEFVAR_PER_BUFFER slot is SYMBOL_FORWARDED until
+                // something localizes it; Emaxx marks those auto-buffer-local
+                // from the start, so for them the oracle's own startup
+                // classification decides, and the forwarded manifest is
+                // consulted before Emaxx's flag.
+                if (interp.is_localized_variable(&alias) && !interp.is_per_buffer_special(&alias))
+                    || interp.is_localized_at_startup_in_gnu(&alias)
+                {
+                    return Err(LispError::Signal(format!(
+                        "Don't know how to make a buffer-local variable an alias: {}",
+                        visible(&alias)
+                    )));
+                }
+                if interp.is_forwarded_variable(&alias) {
+                    return Err(LispError::Signal(format!(
+                        "Cannot make a built-in variable an alias: {}",
+                        visible(&alias)
+                    )));
+                }
+                if interp.is_localized_variable(&alias) {
+                    return Err(LispError::Signal(format!(
+                        "Don't know how to make a buffer-local variable an alias: {}",
+                        visible(&alias)
+                    )));
+                }
+                // https://lists.gnu.org/r/emacs-devel/2008-04/msg00834.html
+                let alias_value = interp.symbol_value_cell(&alias).ok();
+                match interp.symbol_value_cell(&base) {
+                    Err(LispError::Void(_)) => {
+                        if let Some(value) = alias_value.clone() {
+                            // set_internal (base, value, Qnil, SET_INTERNAL_BIND)
+                            if !interp.variable_watchers(&base).is_empty() {
+                                interp.notify_variable_watchers(
+                                    &base,
+                                    value.clone(),
+                                    "let",
+                                    None,
+                                    env,
+                                )?;
+                            }
+                            interp.set_symbol_value_cell(&base, value);
+                        }
+                    }
+                    Err(error) => return Err(error),
+                    Ok(base_value) => {
+                        if let Some(alias_value) = alias_value.as_ref()
+                            && !values_eq_in_env(interp, alias_value, &base_value, env)
+                        {
+                            let formatted = call_named_function(
+                                interp,
+                                "format-message",
+                                &[
+                                    Value::string("Overwriting value of `%s' by aliasing to `%s'"),
+                                    Value::Symbol(alias.clone().into()),
+                                    Value::Symbol(base.clone().into()),
+                                ],
+                                env,
+                            )?;
+                            let warning = Value::list([
+                                Value::Symbol("defvaralias".into()),
+                                Value::Symbol("losing-value".into()),
+                                Value::Symbol(alias.clone().into()),
+                            ]);
+                            call_named_function(
+                                interp,
+                                "display-warning",
+                                &[warning, formatted],
+                                env,
+                            )?;
+                        }
+                    }
+                }
+                if interp.is_let_bound_special(&alias) {
+                    return Err(LispError::Signal(format!(
+                        "Don't know how to make a let-bound variable an alias: {}",
+                        visible(&alias)
+                    )));
+                }
                 if !interp.variable_watchers(&alias).is_empty() {
                     interp.notify_variable_watchers(
                         &alias,
-                        Value::Symbol(target.clone().into()),
+                        Value::Symbol(base.clone().into()),
                         "defvaralias",
                         None,
                         env,
                     )?;
                     interp.clear_variable_watchers(&alias);
                 }
-                interp.set_variable_alias(&alias, &target)?;
+                interp.mark_special_variable(&alias);
+                interp.mark_special_variable(&base);
+                interp.set_variable_alias(&alias, &base)?;
                 interp.remove_global_binding(&alias);
                 interp.remove_buffer_local_value(interp.current_buffer_id(), &alias);
-                if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
-                    interp.put_symbol_property(&alias, "variable-documentation", doc.clone());
-                }
-                if alias_value
-                    .as_ref()
-                    .zip(target_value.as_ref())
-                    .is_some_and(|(left, right)| left != right)
-                {
-                    let warning = Value::list([
-                        Value::Symbol("defvaralias".into()),
-                        Value::Symbol("losing-value".into()),
-                        Value::Symbol(alias.clone().into()),
-                    ]);
-                    call_named_function(interp, "display-warning", &[warning], env)?;
-                }
-                Ok(Value::Symbol(alias.into()))
+                // LOADHIST_ATTACH (new_alias): the bare symbol, as for defvar.
+                interp.record_definition_in_load_history("defvar", &alias);
+                // "Even if docstring is nil: remove old docstring."
+                let doc = args.get(2).cloned().unwrap_or(Value::Nil);
+                interp.put_symbol_property(&alias, "variable-documentation", doc);
+                Ok(Value::Symbol(base.into()))
             }
             "indirect-variable" => {
                 need_args(name, args, 1)?;

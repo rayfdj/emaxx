@@ -2516,18 +2516,21 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
         Some(unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?)
     };
     let name = match &symbol_state {
-        Some((symbol, _)) => symbol.as_str(),
+        Some(symbol) => symbol.as_str(),
         None if word == 0 => "nil",
         None => "t",
     };
-    if let Some((_, cached)) = &symbol_state {
-        let epoch = unsafe { &*active.interpreter }.symbol_value_cell_epoch();
-        if let Some((cached_epoch, cached_word)) = cached
-            && *cached_epoch == epoch
+    if let Some(symbol) = &symbol_state {
+        // SYMBOL_VAL of a plain cell is the word itself: the cell keeps the
+        // native word of its current value, stamped with this heap's
+        // collection generation, and every value/alias/flag write clears
+        // it (data.c's set_internal transitions).
+        let stamp = unsafe { &*active.runtime }.heap.value_word_stamp();
+        if let Some(cached_word) =
+            unsafe { &*active.interpreter }.cached_native_symbol_word(symbol, stamp)
         {
-            return Some(*cached_word);
+            return Some(cached_word);
         }
-        let symbol = &symbol_state.as_ref().expect("symbol state was checked").0;
         if let Some(value) =
             unsafe { &*active.interpreter }.plain_global_binding_value_symbol(symbol)
         {
@@ -2538,16 +2541,12 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
                     return Some(0);
                 }
             };
-            unsafe {
-                (&mut *active.runtime)
-                    .heap
-                    .cache_plain_symbol_value(word, epoch, encoded);
-            }
+            unsafe { &*active.interpreter }.cache_native_symbol_word(symbol, stamp, encoded);
             return Some(encoded);
         }
     }
     let value = match &symbol_state {
-        Some((symbol, _)) => unsafe { &*active.interpreter }.symbol_value_cell_symbol(symbol),
+        Some(symbol) => unsafe { &*active.interpreter }.symbol_value_cell_symbol(symbol),
         None => unsafe { &*active.interpreter }.symbol_value_cell(name),
     };
     let value = value.map_err(|error| match error {
@@ -2556,7 +2555,7 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
         LispError::Void(_) => LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
             match &symbol_state {
-                Some((symbol, _)) => Value::Symbol(symbol.clone()),
+                Some(symbol) => Value::Symbol(symbol.clone()),
                 None if word == 0 => Value::Nil,
                 None => Value::T,
             },
@@ -2888,7 +2887,7 @@ fn native_get_symbol_name(
         return Ok(SymbolName::from(name));
     }
     if symbol & TAG_MASK == TAG_SYMBOL
-        && let Some((name, _)) = unsafe { (&*active.runtime).heap.bare_symbol_value_state(symbol) }
+        && let Some(name) = unsafe { (&*active.runtime).heap.bare_symbol_value_state(symbol) }
     {
         return Ok(name);
     }
@@ -3892,7 +3891,6 @@ struct NativeHandle {
     value: Value,
     tag: usize,
     identity: NativeIdentity,
-    plain_symbol_value_cache: Option<(u64, NativeWord)>,
 }
 
 #[repr(C, align(8))]
@@ -4051,8 +4049,17 @@ impl NativeMark<'_> {
 /// Stable objects retained for native machine code.  GNU's GC provides the
 /// same stability in C; this Rust owner also supplies the reverse lookup
 /// needed by primitive-call wrappers.
-#[derive(Default)]
+static NATIVE_HEAP_IDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 pub(crate) struct NativeHeap {
+    /// Distinguishes this heap's handle slots stored in objects (a symbol's
+    /// `native_slot') from those another heap on this thread assigned.
+    id: u32,
+    /// Advanced by every sweep.  A value word a symbol cell caches is
+    /// stamped with the heap id and this generation, so a word whose
+    /// bridge allocation the sweep may have reclaimed is never returned
+    /// again (the cells are not GC roots for their cached words).
+    word_generation: u32,
     native_conses: NativeConsArena,
     cons_values: IdentityMap<ConsMirror>,
     /// Mirrors whose reconciliation is in progress, so cyclic structures do
@@ -4075,15 +4082,102 @@ pub(crate) struct NativeHeap {
     native_stack_bottom: *const NativeWord,
 }
 
+impl Default for NativeHeap {
+    fn default() -> Self {
+        Self {
+            id: NATIVE_HEAP_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            word_generation: 1,
+            native_conses: NativeConsArena::default(),
+            cons_values: IdentityMap::default(),
+            reconciling: IdentitySet::default(),
+            interpreter_dirty: Rc::default(),
+            handles: Vec::new(),
+            free_handles: Vec::new(),
+            handle_by_value: HashMap::default(),
+            handle_by_address: IdentityMap::default(),
+            symbol_with_position_views: HashMap::default(),
+            touched: TouchedConses::default(),
+            native_call_depth: 0,
+            native_stack_bottom: std::ptr::null(),
+        }
+    }
+}
+
 impl Drop for NativeHeap {
     fn drop(&mut self) {
         for (&address, mirror) in &self.cons_values {
             unsafe { mirror.value.detach_native_words(address as *mut NativeCons) };
         }
+        for (index, entry) in self.handles.iter().enumerate() {
+            if let Some(native) = entry {
+                Self::forget_symbol_slot(native, Self::pack_slot_for(self.id, index));
+            }
+        }
     }
 }
 
 impl NativeHeap {
+    /// The stamp under which value words cached in symbol cells are valid.
+    pub(crate) fn value_word_stamp(&self) -> u64 {
+        (u64::from(self.id) << 32) | u64::from(self.word_generation)
+    }
+
+    fn pack_slot_for(id: u32, index: usize) -> u64 {
+        (u64::from(id) << 32) | (index as u64 + 1)
+    }
+
+    fn pack_slot(&self, index: usize) -> u64 {
+        Self::pack_slot_for(self.id, index)
+    }
+
+    /// Clear a symbol's stored handle slot when it names this handle.
+    fn forget_symbol_slot(native: &NativeHandle, slot: u64) {
+        if let (NativeIdentity::Symbol(_), Value::Symbol(name)) = (&native.identity, &native.value)
+            && name.native_slot() == slot
+        {
+            name.set_native_slot(0);
+        }
+    }
+
+    /// lisp.h:XSYMBOL in reverse: the word a symbol already has in this
+    /// heap, read from the symbol itself.  None when the symbol has no
+    /// handle here, when its slot belongs to another heap, or when the
+    /// slot's handle no longer holds this symbol.
+    fn symbol_word_from_slot(&self, name: &SymbolName) -> Option<NativeWord> {
+        let slot = name.native_slot();
+        if slot == 0 || (slot >> 32) as u32 != self.id {
+            return None;
+        }
+        let index = (slot & 0xffff_ffff) as usize - 1;
+        let entry = self.handles.get(index)?.as_ref()?;
+        if entry.tag != TAG_SYMBOL {
+            return None;
+        }
+        match entry.identity {
+            NativeIdentity::Symbol(pointer) if pointer == name.identity_ptr() => {
+                Some((&**entry as *const NativeHandle) as usize + TAG_SYMBOL)
+            }
+            _ => None,
+        }
+    }
+
+    /// alloc.c's sweep of one unmarked bridge handle: the object it named
+    /// forgets the word, the reverse maps forget the handle, and the box
+    /// (its address once exposed as a Lisp_Object) waits for reuse.
+    fn free_dead_handle(&mut self, index: usize) {
+        let mut native = self.handles[index]
+            .take()
+            .expect("dead handle index was occupied");
+        Self::forget_symbol_slot(&native, Self::pack_slot_for(self.id, index));
+        let address = (&*native as *const NativeHandle) as usize;
+        self.handle_by_value.remove(&native.identity);
+        self.handle_by_address.remove(&address);
+        native.value = Value::Nil;
+        native.identity = NativeIdentity::Unbound;
+        native.tag = TAG_SYMBOL;
+        self.free_handles.push((index, native));
+    }
+
     fn is_empty(&self) -> bool {
         self.native_conses.is_empty()
             && self.cons_values.is_empty()
@@ -4270,25 +4364,14 @@ impl NativeHeap {
             })
             .collect::<Vec<_>>();
         for index in dead_handles {
-            let mut native = self.handles[index]
-                .take()
-                .expect("dead handle index was occupied");
-            let address = (&*native as *const NativeHandle) as usize;
-            self.handle_by_value.remove(&native.identity);
-            self.handle_by_address.remove(&address);
-            native.value = Value::Nil;
-            native.identity = NativeIdentity::Unbound;
-            native.tag = TAG_SYMBOL;
-            native.plain_symbol_value_cache = None;
-            self.free_handles.push((index, native));
+            self.free_dead_handle(index);
         }
-        // Cached words are intentionally not GC roots: the matching Rust
-        // global remains authoritative, and its bridge handle can be rebuilt
-        // on the next read.  Discard every cache before a reclaimed address
-        // could be returned to generated code.
-        for entry in self.handles.iter_mut().flatten() {
-            entry.plain_symbol_value_cache = None;
-        }
+        // Cached value words are intentionally not GC roots: the cell's
+        // Rust value remains authoritative, and its bridge handle can be
+        // rebuilt on the next read.  Retire every word produced under this
+        // generation before a reclaimed address could be returned to
+        // generated code.
+        self.word_generation = self.word_generation.wrapping_add(1).max(1);
         self.native_conses.sweep();
     }
 
@@ -4318,33 +4401,14 @@ impl NativeHeap {
         (native.tag == tag).then_some(native)
     }
 
-    /// Mutable form of `live_handle` for C-owned object-field updates.
-    ///
-    /// # Safety
-    ///
-    /// `word` must satisfy `live_handle`'s live-object precondition and the
-    /// caller must hold the native heap exclusively.
-    unsafe fn live_handle_mut(&mut self, word: NativeWord) -> Option<&mut NativeHandle> {
-        if word == 0 || word == native_boolean(true) {
-            return None;
-        }
-        let tag = word & TAG_MASK;
-        let address = word.wrapping_sub(tag);
-        let native = unsafe { &mut *(address as *mut NativeHandle) };
-        (native.tag == tag).then_some(native)
-    }
-
     /// Read the symbol object reached directly by `lisp.h:XSYMBOL`.
     ///
     /// # Safety
     ///
     /// `word` must satisfy `live_handle`'s live-object precondition.
-    unsafe fn bare_symbol_value_state(
-        &self,
-        word: NativeWord,
-    ) -> Option<(SymbolName, Option<(u64, NativeWord)>)> {
+    unsafe fn bare_symbol_value_state(&self, word: NativeWord) -> Option<SymbolName> {
         if let Some(name) = native_type_symbol_name(word) {
-            return Some((SymbolName::from(name), None));
+            return Some(SymbolName::from(name));
         }
         if word & TAG_MASK != TAG_SYMBOL {
             return None;
@@ -4352,28 +4416,10 @@ impl NativeHeap {
         let native = unsafe { self.live_handle(word)? };
         match &native.identity {
             NativeIdentity::Symbol(_) => match &native.value {
-                Value::Symbol(name) => Some((name.clone(), native.plain_symbol_value_cache)),
+                Value::Symbol(name) => Some(name.clone()),
                 _ => None,
             },
             _ => None,
-        }
-    }
-
-    /// Update the plain-value cache through the same directly addressed
-    /// symbol object selected by `lisp.h:XSYMBOL`.
-    ///
-    /// # Safety
-    ///
-    /// `word` must satisfy `live_handle_mut`'s live-object precondition.
-    unsafe fn cache_plain_symbol_value(&mut self, word: NativeWord, epoch: u64, value: NativeWord) {
-        if word & TAG_MASK != TAG_SYMBOL {
-            return;
-        }
-        let Some(native) = (unsafe { self.live_handle_mut(word) }) else {
-            return;
-        };
-        if matches!(native.identity, NativeIdentity::Symbol(_)) {
-            native.plain_symbol_value_cache = Some((epoch, value));
         }
     }
 
@@ -4535,11 +4581,18 @@ impl NativeHeap {
             Value::Symbol(name) if name == "t" => Ok(native_boolean(true)),
             Value::Symbol(name) => match native_type_symbol_index(name) {
                 Some(index) => Ok(native_type_symbol_word(index)),
-                None => self.encode_handle(
-                    NativeIdentity::Symbol(name.identity_ptr()),
-                    value,
-                    TAG_SYMBOL,
-                ),
+                None => {
+                    if let Some(word) = self.symbol_word_from_slot(name) {
+                        return Ok(word);
+                    }
+                    let (index, word) = self.encode_handle_index(
+                        NativeIdentity::Symbol(name.identity_ptr()),
+                        value,
+                        TAG_SYMBOL,
+                    )?;
+                    name.set_native_slot(self.pack_slot(index));
+                    Ok(word)
+                }
             },
             Value::Integer(integer)
                 if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(integer) =>
@@ -4619,6 +4672,16 @@ impl NativeHeap {
         value: &Value,
         tag: usize,
     ) -> Result<NativeWord, String> {
+        self.encode_handle_index(identity, value, tag)
+            .map(|(_, word)| word)
+    }
+
+    fn encode_handle_index(
+        &mut self,
+        identity: NativeIdentity,
+        value: &Value,
+        tag: usize,
+    ) -> Result<(usize, NativeWord), String> {
         let index = if let Some(index) = self.handle_by_value.get(&identity).copied() {
             index
         } else {
@@ -4634,13 +4697,11 @@ impl NativeHeap {
                         value: value.clone(),
                         tag,
                         identity: identity.clone(),
-                        plain_symbol_value_cache: None,
                     }),
                 )
             };
             native.tag = tag;
             native.identity = identity.clone();
-            native.plain_symbol_value_cache = None;
             let address = (&*native as *const NativeHandle) as usize;
             if address & TAG_MASK != 0 {
                 return Err("native object allocation is not tag-aligned".to_string());
@@ -4660,7 +4721,7 @@ impl NativeHeap {
         if entry.tag != tag {
             return Err("native object identity changed Lisp tag".to_string());
         }
-        Ok((&**entry as *const NativeHandle) as usize + tag)
+        Ok((index, (&**entry as *const NativeHandle) as usize + tag))
     }
 
     pub(crate) fn decode(&mut self, word: NativeWord) -> Result<Value, String> {
@@ -6303,15 +6364,20 @@ mod tests {
                 assert!(Rc::ptr_eq(&result, expected_entry));
                 assert_eq!(*result.cdr.borrow(), Value::Integer(expected));
             }
-            // Adversarial control: recreate the old faulty name-to-symbol
-            // boundary. Native assq must NOT hide that bug by comparing
-            // internal name bytes instead of the original Lisp objects.
+            // A name that reaches the Rust boundary resolves to the live
+            // symbol object with that private name (V02: a symbol and its
+            // name address one cell), so the old faulty name-to-symbol
+            // boundary can no longer mint a second object for it.
             let reconstructed = SymbolName::from(symbol.as_str());
-            assert_ne!(symbol.identity_ptr(), reconstructed.identity_ptr());
-            let wrong_alist = Value::list([Value::cons(
-                Value::Symbol(reconstructed),
-                Value::Integer(expected),
-            )]);
+            assert_eq!(symbol.identity_ptr(), reconstructed.identity_ptr());
+            // Adversarial control: a different `make-symbol' of the same
+            // visible name is a different object, and native assq must not
+            // find it by comparing visible names.
+            let other = SymbolName::make_uninterned(Value::string("temporary"), "temporary", 3);
+            assert_ne!(symbol.identity_ptr(), other.identity_ptr());
+            assert_eq!(other.lisp_name(), symbol.lisp_name());
+            let wrong_alist =
+                Value::list([Value::cons(Value::Symbol(other), Value::Integer(expected))]);
             assert_eq!(
                 runtime
                     .invoke(
@@ -6779,6 +6845,11 @@ mod tests {
         // The collector is inactive between native calls.  Give it a real
         // call/stack boundary and prove it swept an unreachable allocation;
         // simply calling begin_garbage_collection here was a no-op.
+        let stamp_before_collection = runtime.heap.value_word_stamp();
+        assert!(
+            interpreter.native_symbol_words_under(stamp_before_collection) > 0,
+            "the native read cached the plain value's word in its cell"
+        );
         runtime.heap.begin_call();
         let stack_marker = 0;
         runtime
@@ -6794,14 +6865,14 @@ mod tests {
             &environment,
         );
         assert!(!runtime.heap.native_conses.contains(unreachable_pointer));
-        assert!(
-            runtime
-                .heap
-                .handles
-                .iter()
-                .flatten()
-                .all(|handle| { handle.plain_symbol_value_cache.is_none() }),
-            "collection must discard words whose bridge allocations it can reclaim"
+        assert_ne!(
+            runtime.heap.value_word_stamp(),
+            stamp_before_collection,
+            "collection must retire words whose bridge allocations it can reclaim"
+        );
+        assert_eq!(
+            interpreter.native_symbol_words_under(runtime.heap.value_word_stamp()),
+            0
         );
         runtime
             .heap
@@ -7964,6 +8035,89 @@ mod tests {
     }
 
     #[test]
+    fn symbol_carries_its_native_word_and_a_swept_handle_clears_it() {
+        // comp.c hands generated code a symbol as the object's own address;
+        // the word therefore lives in the symbol (R02c), not in a lookup
+        // keyed by the symbol.  A second encode reads it from the symbol; a
+        // collection that sweeps the handle clears the slot; a new handle
+        // afterwards is a new word.
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::default();
+        let symbol = Value::symbol("r02c-slot-probe");
+        let Value::Symbol(name) = &symbol else {
+            unreachable!()
+        };
+        assert_eq!(name.native_slot(), 0);
+        let first = heap.encode(&symbol).expect("encode symbol");
+        assert_eq!(first & TAG_MASK, TAG_SYMBOL);
+        let slot = name.native_slot();
+        assert_ne!(slot, 0);
+        assert_eq!((slot >> 32) as u32, heap.id);
+        assert_eq!(heap.symbol_word_from_slot(name), Some(first));
+        assert_eq!(heap.encode(&symbol).expect("encode again"), first);
+        assert_eq!(
+            heap.handle_by_value.len(),
+            1,
+            "the second encode created no second handle"
+        );
+
+        // The collector's conservative stack scan would keep `first' alive
+        // through this frame; sweep its handle the way the collector does.
+        let index = ((slot & 0xffff_ffff) - 1) as usize;
+        heap.free_dead_handle(index);
+        assert!(heap.handle_by_value.is_empty());
+        let _ = (&mut interpreter, &environment);
+        assert_eq!(
+            name.native_slot(),
+            0,
+            "a swept handle leaves no slot behind"
+        );
+        assert_eq!(heap.symbol_word_from_slot(name), None);
+        let second = heap.encode(&symbol).expect("encode after the sweep");
+        assert_eq!(second & TAG_MASK, TAG_SYMBOL);
+        assert_ne!(name.native_slot(), 0);
+        assert_eq!(heap.symbol_word_from_slot(name), Some(second));
+    }
+
+    #[test]
+    fn symbol_native_word_slot_is_per_heap_and_verified_against_the_handle() {
+        // Two heaps on one thread give the same symbol two words; a slot
+        // that belongs to the other heap is not this heap's answer, and a
+        // slot whose handle now holds something else is ignored.
+        let symbol = Value::symbol("r02c-two-heaps");
+        let Value::Symbol(name) = &symbol else {
+            unreachable!()
+        };
+        let mut first_heap = NativeHeap::default();
+        let mut second_heap = NativeHeap::default();
+        let first = first_heap.encode(&symbol).expect("first heap");
+        assert_eq!(first_heap.symbol_word_from_slot(name), Some(first));
+        assert_eq!(second_heap.symbol_word_from_slot(name), None);
+        let second = second_heap.encode(&symbol).expect("second heap");
+        assert_ne!(first, second);
+        assert_eq!(second_heap.symbol_word_from_slot(name), Some(second));
+        // The slot now names the second heap; the first heap falls back to
+        // its own table and still answers its own word.
+        assert_eq!(first_heap.symbol_word_from_slot(name), None);
+        assert_eq!(first_heap.encode(&symbol).expect("first heap again"), first);
+        assert_eq!(first_heap.handle_by_value.len(), 1);
+
+        // Dropping a heap clears the slots it owned.
+        let owner = if (name.native_slot() >> 32) as u32 == first_heap.id {
+            1
+        } else {
+            2
+        };
+        if owner == 1 {
+            drop(first_heap);
+        } else {
+            drop(second_heap);
+        }
+        assert_eq!(name.native_slot(), 0);
+    }
+
+    #[test]
     fn native_gc_traces_vector_contents_before_sweeping_cons_storage() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
@@ -8023,15 +8177,17 @@ mod tests {
         let mut runtime = NativeRuntime::default();
         let child = runtime.heap.cons((7 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
         let vector = Value::vector([runtime.heap.decode(child).expect("native child")]);
-        let witness = runtime
-            .heap
-            .encode(&Value::symbol("gc-cache-witness"))
-            .expect("collection witness");
-        unsafe {
-            runtime
-                .heap
-                .cache_plain_symbol_value(witness, 1, TAG_FIXNUM_LOW)
-        };
+        interpreter.set_global_binding("gc-cache-witness", Value::Integer(7));
+        let stamp_before_collection = runtime.heap.value_word_stamp();
+        interpreter.cache_native_symbol_word(
+            &SymbolName::from("gc-cache-witness"),
+            stamp_before_collection,
+            TAG_FIXNUM_LOW,
+        );
+        assert_eq!(
+            interpreter.native_symbol_words_under(stamp_before_collection),
+            1
+        );
 
         let result = runtime
             .invoke(
@@ -8059,14 +8215,14 @@ mod tests {
                 .expect("surviving child"),
             child
         );
-        assert!(
-            runtime
-                .heap
-                .handles
-                .iter()
-                .flatten()
-                .all(|handle| handle.plain_symbol_value_cache.is_none()),
+        assert_ne!(
+            runtime.heap.value_word_stamp(),
+            stamp_before_collection,
             "collection must actually run, not silently bypass the native heap"
+        );
+        assert_eq!(
+            interpreter.native_symbol_words_under(runtime.heap.value_word_stamp()),
+            0
         );
     }
 
@@ -8482,16 +8638,8 @@ mod tests {
         assert!(heap.decode(word).is_err());
         assert_eq!(
             unsafe { heap.bare_symbol_value_state(word) },
-            Some((symbol.clone(), None)),
+            Some(symbol),
             "XSYMBOL follows the tagged address without the diagnostic map"
-        );
-
-        let cached_word = (42 << FIXNUM_BITS) + TAG_FIXNUM_LOW;
-        unsafe { heap.cache_plain_symbol_value(word, 7, cached_word) };
-        assert_eq!(
-            unsafe { heap.bare_symbol_value_state(word) },
-            Some((symbol, Some((7, cached_word)))),
-            "the addressed symbol object receives the cache update directly"
         );
 
         heap.handle_by_address.insert(address, index);

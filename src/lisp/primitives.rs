@@ -70,8 +70,38 @@ pub(crate) use generated_gnu_c_primitives::{
 // ownership must select the host inventory: advertising the Linux `inotify'
 // feature while retaining Darwin's kqueue-owned function cells makes the
 // actual backend unreachable through ordinary Lisp.
+#[cfg(target_os = "linux")]
+pub(crate) mod generated_gnu_c_forwarded_variables_linux;
 #[allow(dead_code)]
 mod generated_gnu_c_primitives_linux;
+/// The names the contracted oracle build forwards to a C slot
+/// (`SYMBOL_FORWARDED'), sorted.  Only the Linux oracle has been probed;
+/// on any other platform the manifest is empty and eval.c:Fdefvaralias's
+/// "built-in variable" refusal is not reproduced (disclosed in the ledger).
+pub(crate) fn gnu_c_forwarded_variables() -> &'static [&'static str] {
+    #[cfg(target_os = "linux")]
+    {
+        generated_gnu_c_forwarded_variables_linux::GNU_C_FORWARDED_VARIABLES
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        &[]
+    }
+}
+
+/// The forwarded names the contracted oracle already reports as
+/// `SYMBOL_LOCALIZED' at `-Q --batch' (buffer.c/keyboard.c make them
+/// buffer-local during initialization), sorted.
+pub(crate) fn gnu_c_localized_forwarded_variables() -> &'static [&'static str] {
+    #[cfg(target_os = "linux")]
+    {
+        generated_gnu_c_forwarded_variables_linux::GNU_C_LOCALIZED_FORWARDED_VARIABLES
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        &[]
+    }
+}
 #[cfg(target_os = "linux")]
 pub(crate) use generated_gnu_c_primitives_linux::{
     GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
@@ -221,6 +251,7 @@ pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
+pub(crate) use dispatch::set_internal;
 pub(crate) use dispatch::{
     EchoSpans, echo_area_message_tick, echo_area_print, echo_display_message,
     expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,

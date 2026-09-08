@@ -622,24 +622,41 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
                 let buffer_id = interp.resolve_buffer_id(&args[1])?;
-                // GNU falls back to the DEFAULT value when BUFFER has no local
-                // binding; another buffer's local value must not leak through
-                // (erc-open's prior-session detection reads `erc--target').
-                interp
-                    .buffer_local_value(buffer_id, &symbol)
-                    .or_else(|| interp.default_value(&symbol))
-                    .or_else(|| interp.symbol_value_cell(&symbol).ok())
-                    .ok_or(LispError::Void(symbol))
+                // data.c:buffer_local_value: BUFFER's own alist cell if it
+                // has one (a void cell is void), else the default; another
+                // buffer's local value must not leak through (erc-open's
+                // prior-session detection reads `erc--target').  Fbuffer_local_value
+                // signals void-variable with VARIABLE as given.
+                let value = match interp.buffer_local_binding(buffer_id, &symbol) {
+                    Some(local) => local,
+                    None => interp
+                        .default_value(&symbol)
+                        .or_else(|| interp.symbol_value_cell(&symbol).ok()),
+                };
+                value.ok_or_else(|| {
+                    LispError::SignalValue(Value::list([
+                        Value::symbol("void-variable"),
+                        args[0].clone(),
+                    ]))
+                })
             }
             "buffer-local-variables" => {
                 let buffer_id = match args.first().filter(|value| !value.is_nil()) {
                     Some(value) => interp.resolve_buffer_id(value)?,
                     None => interp.current_buffer_id(),
                 };
+                // buffer.c:buffer_lisp_local_variables: a void local is the
+                // bare symbol, a bound one `(symbol . value)'.
                 let mut vars = interp
                     .buffer_local_variables(buffer_id)
                     .into_iter()
-                    .map(|(name, value)| Value::cons(Value::Symbol(name.into()), value))
+                    .map(|(name, value)| {
+                        if matches!(value, Value::Unbound) {
+                            Value::Symbol(name.into())
+                        } else {
+                            Value::cons(Value::Symbol(name.into()), value)
+                        }
+                    })
                     .collect::<Vec<_>>();
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
@@ -665,16 +682,39 @@ define_dispatch!(
             }
             "make-local-variable" => {
                 need_args(name, args, 1)?;
-                let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+                // data.c:Fmake_local_variable: CHECK_SYMBOL, follow the alias,
+                // refuse a constant (SYMBOL_NOWRITE) with VARIABLE as given,
+                // then give this buffer its own cell holding the default
+                // cell's value -- void stays void -- unless it has one
+                // already; a let made for this buffer draws a message.
+                let checked = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_name(&checked)?;
+                if interp.is_constant_symbol(&symbol) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("setting-constant"),
+                        args[0].clone(),
+                    ])));
+                }
+                let buffer_id = interp.current_buffer_id();
                 // A native always-local slot (buffer-file-name, mode-name,
-                // default-directory, ...) is already local by construction.
-                // Adding a second entry to the generic buffer-local table
-                // would shadow the native slot with its old value, so the
-                // immediately following `(set (make-local-variable ...) V)'
-                // could write V while reads still returned that stale entry.
-                if !interp.is_always_buffer_local_special(&symbol) {
-                    let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Nil);
-                    interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, value);
+                // default-directory, ...) is already local by construction
+                // (a buffer_local_flags index of -1 returns at once).
+                if !interp.is_always_buffer_local_special(&symbol)
+                    && !interp.has_buffer_local_binding(buffer_id, &symbol)
+                {
+                    if interp.let_shadows_buffer_binding(&symbol) {
+                        call_named_function(
+                            interp,
+                            "message",
+                            &[
+                                Value::string("Making %s buffer-local while locally let-bound!"),
+                                Value::string(crate::lisp::types::visible_symbol_name(&symbol)),
+                            ],
+                            env,
+                        )?;
+                    }
+                    let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Unbound);
+                    interp.set_buffer_local_value(buffer_id, &symbol, value);
                 }
                 Ok(Value::Symbol(symbol.into()))
             }
