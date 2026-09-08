@@ -7234,3 +7234,65 @@ there and the kind checks do not run, disclosed here and in the row.
 run-1788820575098554763-32733, GROUPED GATE PASSED (every group 0
 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
 committed.
+
+## 2026-09-08 D06: finalizers run, the root set is audited, and the prerequisite rows close
+
+*Finalizers never ran.*  `(make-finalizer F)' allocated an id and
+dropped F; nothing ever called it, and `(make-finalizer 3)' succeeded
+(GNU: `wrong-type-argument functionp').  alloc.c keeps every finalizer
+object's function on the `finalizers' list, and `garbage_collect'
+moves each unreached object with a non-nil function to
+`doomed_finalizers' after the mark phase and before the weak-table
+sweep (marking the doomed functions so they survive), then runs them
+once the collection is complete -- before Fgarbage_collect's
+`post-gc-hook' -- each under `inhibit-quit' with a signal caught and
+logged as "finalizer failed: %S".  Emaxx now does exactly that: the
+reachability walk marks a reached finalizer's function, both
+collection paths queue the doomed ones before the weak sweep, and
+`garbage_collect_now' runs them after the census and the specpdl
+restore.  print.c's `#<finalizer>' replaces the id form.
+
+*What the oracle can and cannot pin.*  GNU's conservative stack scan
+keeps a just-created finalizer object alive through the next
+collection: `(let ((ran nil)) (make-finalizer (lambda () (setq ran
+t))) (garbage-collect) ran)' is nil in GNU and t in Emaxx, and which
+later collection dooms it moved between two probe runs.  The contract
+`finalizers_follow_alloc_c' therefore observes a finalizer only
+through collections two `garbage-collect' calls after the release,
+where three GNU runs agree, and covers the type check, the printed
+form, creation order, a kept object not running, and one reachable only
+from another finalizer's function running; the error-logging path is a
+Rust-only test.  Emaxx's precise reachability is the documented
+semantics ("after garbage collection when the returned finalizer
+object becomes unreachable"), and the earlier collection is a
+disclosed difference, not a fabrication.
+
+*The contract helper printed with Display.*  The comparison helper for
+oracle contracts rendered the Rust result with `Display', which marks a
+shared sublist as `#<circular-list>' and does not escape embedded
+quotes; it now prints through the interpreter's `prin1-to-string', as
+the oracle side is compared through GNU's printer.  All 424
+primitives-module tests pass under the stricter comparison.
+
+*Root census.*  `interpreter_value_fields_are_gc_roots_or_documented'
+(anti-cheat gate) parses the `Interpreter' struct, and for every field
+whose type holds Lisp objects requires the reachability walk to mark
+it or the field to be listed with its C reason: the two cleared stack
+pools, the live-finalizer list (marked through the objects), the
+function index (an index over the marked `functions'), and the
+dispatched-signal identity memo (thread.c marks `handler->val' only
+while a handler runs).  35 fields hold objects; 30 are marked.
+
+*Prerequisite rows.*  With this checkpoint the pdump ledger's D03,
+D04 and D06 rows are closed for image construction and D05's owner
+decision is recorded (see the rows for the exact statements and what
+each leaves open under other rows).  Not closed and not claimed: L08
+census parity (the numbers `garbage-collect' prints), obarray bucket
+order (L11), R03 mirror removal and the remaining R02c boundaries
+(bridge cost), and the macOS manifests -- none of which the ledger's
+own definition counts as a dumping blocker.
+
+*Checkpoint 7 gate.*  Alone on the machine: grouped gate
+run-1788827584304667786-18386, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.

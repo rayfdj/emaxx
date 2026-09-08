@@ -1256,6 +1256,71 @@ impl Interpreter {
         id
     }
 
+    /// alloc.c:Fmake_finalizer after CHECK_TYPE: allocate the object and
+    /// chain it onto `finalizers' with FUNCTION.
+    pub(crate) fn make_finalizer(&mut self, function: Value) -> Value {
+        let id = self.alloc_finalizer_id();
+        self.finalizer_functions.push((id, function));
+        Value::Finalizer(id)
+    }
+
+    pub(crate) fn finalizer_function(&self, id: u64) -> Option<Value> {
+        self.finalizer_functions
+            .iter()
+            .find(|(candidate, _)| *candidate == id)
+            .map(|(_, function)| function.clone())
+    }
+
+    /// alloc.c:queue_doomed_finalizers, run after the mark phase and
+    /// before the weak-table sweep: an unreached finalizer object with a
+    /// non-nil function leaves `finalizers' for `doomed_finalizers'.
+    pub(crate) fn queue_doomed_finalizers(&mut self, live: &std::collections::HashSet<u64>) {
+        let mut doomed = Vec::new();
+        self.finalizer_functions.retain(|(id, function)| {
+            if live.contains(id) || function.is_nil() {
+                true
+            } else {
+                doomed.push(function.clone());
+                false
+            }
+        });
+        self.doomed_finalizers.extend(doomed);
+    }
+
+    /// alloc.c:run_finalizers once the collection is complete: each
+    /// doomed function runs once, under `inhibit-quit' bound to t, with a
+    /// signal caught and logged as "finalizer failed: %S"
+    /// (run_finalizer_function's internal_condition_case_1 with Qt).
+    pub(crate) fn run_doomed_finalizers(&mut self, env: &mut Env) -> Result<(), LispError> {
+        while !self.doomed_finalizers.is_empty() {
+            let function = self.doomed_finalizers.remove(0);
+            self.finalizers_run += 1;
+            let restore = self.bind_special_dynamic("inhibit-quit", Value::T, env)?;
+            let result = self.call_function_value(function.clone(), None, &[], env);
+            match result {
+                Ok(_) => {}
+                Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => {
+                    self.restore_special_dynamic(restore, env)?;
+                    return Err(error);
+                }
+                Err(error) => {
+                    let condition = crate::lisp::eval::error_condition_value(&error);
+                    if let Ok(message) = crate::lisp::primitives::call(
+                        self,
+                        "format-message",
+                        &[Value::string("finalizer failed: %S"), condition],
+                        env,
+                    ) && let Some(text) = crate::lisp::primitives::string_like(&message)
+                    {
+                        crate::lisp::primitives::log_message_text(self, &text.text, env);
+                    }
+                }
+            }
+            self.restore_special_dynamic(restore, env)?;
+        }
+        Ok(())
+    }
+
     /// Allocate a new marker.
     pub fn make_marker(&mut self) -> Value {
         let id = self.next_marker_id;

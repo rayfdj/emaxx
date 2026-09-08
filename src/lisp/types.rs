@@ -2868,7 +2868,8 @@ fn format_value(
         Value::Frame(id) => write!(f, "#<frame id:{}>", id),
         Value::Terminal(id) => write!(f, "#<terminal id:{}>", id),
         Value::Record(id) => write!(f, "#<record id:{}>", id),
-        Value::Finalizer(id) => write!(f, "#<finalizer id:{}>", id),
+        // print.c prints a finalizer as `#<finalizer>' with no identity.
+        Value::Finalizer(_) => write!(f, "#<finalizer>"),
         Value::ReaderForm(_) => write!(f, "#<reader-form>"),
         Value::Unbound => write!(f, "#<unbound>"),
     }

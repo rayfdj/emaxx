@@ -1660,6 +1660,71 @@ fn oracle_only_forwarded_c_variables_are_bound_as_the_oracle_binds_them() {
 }
 
 #[test]
+fn finalizers_follow_alloc_c() {
+    // alloc.c: Fmake_finalizer checks FUNCTIONP; print.c prints
+    // `#<finalizer>'; garbage_collect queues every unreached finalizer
+    // with a non-nil function before the weak-table sweep and runs them
+    // once the collection is complete, in creation order, under
+    // `inhibit-quit'; a finalizer still referenced does not run; one
+    // reachable only from another finalizer's function still runs.  The
+    // oracle's conservative stack scan decides WHICH later collection
+    // dooms a released object, so the program only observes a finalizer
+    // through collections that follow the release by two `garbage-collect'
+    // calls, and the kept one's function writes a log no later group reads.
+    let program = r#"
+        (let ((log nil))
+          (list (condition-case e (make-finalizer 3) (error e))
+                (type-of (make-finalizer #'ignore))
+                (prin1-to-string (make-finalizer #'ignore))
+                (progn (make-finalizer (lambda () (push 'a log)))
+                       (make-finalizer (lambda () (push 'b log)))
+                       (garbage-collect) (garbage-collect) log)
+                (let ((kept-log nil))
+                  (let ((keep (make-finalizer (lambda () (push 'kept kept-log)))))
+                    (garbage-collect) (list kept-log (type-of keep))))
+                (let ((f2 nil))
+                  (setq f2 (make-finalizer (lambda () (push 'inner log))))
+                  (make-finalizer (lambda () (push (list 'outer (type-of f2)) log)))
+                  (setq f2 nil)
+                  (garbage-collect) (garbage-collect) log)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((wrong-type-argument functionp 3) finalizer \"#<finalizer>\" (b a) (nil finalizer) \
+         ((outer symbol) inner b a))",
+        "finalizers",
+    );
+}
+
+#[test]
+fn a_failing_finalizer_is_logged_not_signalled() {
+    // alloc.c:run_finalizer_function: internal_condition_case_1 with Qt and
+    // run_finalizer_handler, which add_to_log's "finalizer failed: %S".
+    // The oracle cannot pin this: its conservative stack scan keeps a
+    // just-created finalizer object alive through the next collection
+    // (probed: `(let ((ran nil)) (make-finalizer (lambda () (setq ran t)))
+    // (garbage-collect) ran)' is nil in GNU), so which collection dooms it
+    // is not deterministic there; Emaxx's precise reachability dooms it at
+    // once.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let program = r#"
+        (progn (make-finalizer (lambda () (error "boom")))
+               (garbage-collect)
+               (with-current-buffer "*Messages*" (buffer-string)))"#;
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read finalizer program")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("a failing finalizer does not signal to the collector's caller");
+    let text = string_like(&result).expect("*Messages* text").text;
+    assert!(
+        text.contains("finalizer failed: (error \"boom\")"),
+        "expected the add_to_log line, got {text:?}"
+    );
+}
+
+#[test]
 fn buffer_local_cells_follow_data_c() {
     // data.c: a buffer's local bindings are its `local_var_alist', searched
     // by the symbol object; a cell whose value is Qunbound is still a
@@ -10478,13 +10543,18 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
         .read_all()
         .unwrap_or_else(|_| panic!("read {label} program"))
         .remove(0);
-    assert_eq!(
-        interp
-            .eval(&form, &mut Vec::new())
-            .unwrap_or_else(|error| panic!("evaluate {label} program: {error:?}"))
-            .to_string(),
-        expected
-    );
+    // Compare through the interpreter's own printer, as the oracle side is
+    // compared through GNU's: the Rust Display form is not print.c (it
+    // renders a shared sublist as circular and does not escape quotes).
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .unwrap_or_else(|error| panic!("evaluate {label} program: {error:?}"));
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut Vec::new())
+        .unwrap_or_else(|error| panic!("print {label} result: {error:?}"));
+    let printed = string_like(&printed)
+        .unwrap_or_else(|| panic!("{label} result printed as a string"))
+        .text;
+    assert_eq!(printed, expected);
 }
 
 #[cfg(target_os = "linux")]
