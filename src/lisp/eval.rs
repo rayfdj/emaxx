@@ -3247,6 +3247,246 @@ impl Interpreter {
         self.char_tables.push(state);
     }
 
+    // ----- pdumper.c:dump_buffer and its neighbours: what the writer reads
+    // of a buffer, a marker, an overlay and the finalizer list, and what
+    // the loader installs.
+
+    /// The Lisp object naming buffer ID, if it is live.
+    pub(crate) fn buffer_value(&self, id: u64) -> Option<Value> {
+        self.get_buffer_by_id(id)
+            .map(|buffer| Value::buffer(id, buffer.name.clone()))
+    }
+
+    /// `own_text.markers': the markers pointing into buffer ID, by id.
+    pub(crate) fn buffer_marker_ids(&self, id: u64) -> Vec<u64> {
+        self.markers_by_buffer
+            .get(&id)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// BVAR (b, mark): the buffer's persistent mark marker, once made.
+    pub(crate) fn buffer_mark_marker_id(&self, id: u64) -> Option<u64> {
+        self.buffer_mark_marker_ids.get(&id).copied()
+    }
+
+    /// `local_var_alist_': the buffer's local bindings in first-binding
+    /// order, a void local as `Value::Unbound'.
+    pub(crate) fn buffer_local_cells(&self, id: u64) -> Vec<(SymbolName, Value)> {
+        self.buffer_locals
+            .get(&id)
+            .map(|cells| {
+                cells
+                    .iter()
+                    .map(|(symbol, value)| (symbol.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The buffer's local hook lists (GNU: the local bindings of the
+    /// hook variables), in first-binding order.
+    pub(crate) fn buffer_local_hook_lists(&self, id: u64) -> Vec<(String, Vec<Value>)> {
+        self.buffer_local_hooks
+            .get(&id)
+            .map(|hooks| {
+                hooks
+                    .iter()
+                    .map(|(name, functions)| (name.clone(), functions.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// BVAR (b, syntax_table) when the buffer has set one.
+    pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<u64> {
+        self.buffer_syntax_tables
+            .iter()
+            .rev()
+            .find(|(buffer_id, _)| *buffer_id == id)
+            .map(|(_, table)| *table)
+    }
+
+    /// BVAR (b, case_table) when the buffer has set one.
+    pub(crate) fn buffer_case_table_id(&self, id: u64) -> Option<u64> {
+        self.buffer_case_tables
+            .iter()
+            .rev()
+            .find(|(buffer_id, _)| *buffer_id == id)
+            .map(|(_, table)| *table)
+    }
+
+    /// alloc.c's `finalizers' list in order (head.next first).
+    pub(crate) fn finalizer_ids(&self) -> Vec<u64> {
+        self.finalizer_functions.iter().map(|(id, _)| *id).collect()
+    }
+
+    /// Whether `doomed_finalizers' holds functions still to run.
+    pub(crate) fn doomed_finalizers_pending(&self) -> bool {
+        !self.doomed_finalizers.is_empty()
+    }
+
+    /// The overlay's holding buffer: the buffer whose overlay list has it
+    /// (a deleted overlay stays on the list of its last buffer).
+    pub(crate) fn overlay_holder_id(&self, id: u64) -> Option<u64> {
+        if self.buffer.overlays.iter().any(|ov| ov.id == id) {
+            return Some(self.current_buffer_id);
+        }
+        self.inactive_buffers
+            .iter()
+            .find(|(_, buffer)| buffer.overlays.iter().any(|ov| ov.id == id))
+            .map(|(id, _)| *id)
+    }
+
+    /// Install a buffer with the id the image gave it, replacing a buffer
+    /// with that id.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_buffer(&mut self, id: u64, buffer: crate::buffer::Buffer) {
+        let name = buffer.name.clone();
+        if id == self.current_buffer_id {
+            self.buffer = buffer;
+        } else {
+            self.inactive_buffers
+                .retain(|(buffer_id, _)| *buffer_id != id);
+            self.inactive_buffers.push((id, buffer));
+        }
+        match self
+            .buffer_list
+            .iter_mut()
+            .find(|(buffer_id, _)| *buffer_id == id)
+        {
+            Some(entry) => entry.1 = name,
+            None => self.buffer_list.push((id, name)),
+        }
+        self.next_buffer_id = self.next_buffer_id.max(id + 1);
+    }
+
+    /// Install a marker with the id the image gave it.  The marker table
+    /// is indexed by id; the ids between the table's end and this one
+    /// become detached markers nothing refers to.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_marker(&mut self, state: MarkerState) {
+        let Some(index) = Self::marker_index(state.id) else {
+            return;
+        };
+        while self.markers.len() <= index {
+            let id = self.markers.len() as u64 + 1;
+            self.markers.push(MarkerState {
+                id,
+                buffer_id: None,
+                position: None,
+                last_position: None,
+                insertion_type: false,
+                mark_buffer_id: None,
+            });
+        }
+        let previous_buffer_id = self.markers[index].buffer_id;
+        if let Some(previous) = previous_buffer_id {
+            let remove = self
+                .markers_by_buffer
+                .get_mut(&previous)
+                .is_some_and(|ids| {
+                    ids.remove(&state.id);
+                    ids.is_empty()
+                });
+            if remove {
+                self.markers_by_buffer.remove(&previous);
+            }
+        }
+        if let Some(buffer_id) = state.buffer_id {
+            self.markers_by_buffer
+                .entry(buffer_id)
+                .or_default()
+                .insert(state.id);
+        }
+        if let Some(mark_buffer_id) = state.mark_buffer_id {
+            self.buffer_mark_marker_ids.insert(mark_buffer_id, state.id);
+        }
+        self.next_marker_id = self.next_marker_id.max(state.id + 1);
+        self.markers[index] = state;
+    }
+
+    /// Install an overlay on the list of buffer HOLDER (the current
+    /// buffer's when that buffer is not live).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_overlay(&mut self, holder: u64, overlay: crate::overlay::Overlay) {
+        self.next_overlay_id = self.next_overlay_id.max(overlay.id + 1);
+        let holder = if self.get_buffer_by_id(holder).is_some() {
+            holder
+        } else {
+            self.current_buffer_id
+        };
+        let buffer = self
+            .get_buffer_by_id_mut(holder)
+            .expect("the current buffer is live");
+        buffer.overlays.retain(|ov| ov.id != overlay.id);
+        buffer.overlays.push(overlay);
+    }
+
+    /// Install a finalizer at the end of the `finalizers' list.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_finalizer(&mut self, id: u64, function: Value) {
+        self.finalizer_functions
+            .retain(|(candidate, _)| *candidate != id);
+        self.finalizer_functions.push((id, function));
+        self.next_finalizer_id = self.next_finalizer_id.max(id + 1);
+    }
+
+    /// Install the dead frame a nilled frame pseudovector loads as: no
+    /// name, not live, nothing else.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_dead_frame(&mut self, id: u64) {
+        self.frame_states.retain(|frame| frame.id != id);
+        self.frame_states.push(FrameState {
+            id,
+            name: Value::Nil,
+            live: false,
+            width: 0,
+            height: 0,
+            text_height: 0,
+            parameter_width: 0,
+            parameter_height: 0,
+            parameter_overrides: Vec::new(),
+            focus_frame_id: None,
+            left: 0,
+            top: 0,
+            window_state_change: false,
+            after_make_frame: false,
+            pointer_invisible: false,
+            was_invisible: false,
+        });
+    }
+
+    /// Install a buffer's local bindings as its `local_var_alist_'.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_buffer_local_cells(&mut self, id: u64, cells: Vec<(SymbolName, Value)>) {
+        let mut locals = LocalCells::default();
+        for (symbol, value) in cells {
+            self.globals
+                .set_flag_by_name(symbol.as_str(), symbol_cell_flags::LOCALIZED);
+            locals.insert(&symbol, value);
+        }
+        if locals.is_empty() {
+            self.buffer_locals.remove(&id);
+        } else {
+            self.buffer_locals.insert(id, locals);
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: u64) {
+        self.buffer_syntax_tables
+            .retain(|(buffer_id, _)| *buffer_id != id);
+        self.buffer_syntax_tables.push((id, table));
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn install_buffer_case_table(&mut self, id: u64, table: u64) {
+        self.buffer_case_tables
+            .retain(|(buffer_id, _)| *buffer_id != id);
+        self.buffer_case_tables.push((id, table));
+    }
+
     pub(crate) fn weak_hash_reachability_with_native(
         &self,
         env: &Env,

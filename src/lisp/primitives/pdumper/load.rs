@@ -189,6 +189,10 @@ impl Loader<'_> {
         let mut obarray_records = Vec::new();
         let mut hash_table_records = Vec::new();
         let mut char_tables = Vec::new();
+        let mut buffers = Vec::new();
+        let mut markers = Vec::new();
+        let mut overlays = Vec::new();
+        let mut finalizers = Vec::new();
         for &(offset, kind) in &object_starts {
             match kind {
                 DumpType::Symbol => {
@@ -241,6 +245,47 @@ impl Loader<'_> {
                     let id = self.reader.word(offset)?;
                     self.objects.insert(offset, Value::CharTable(id));
                     char_tables.push((offset, id));
+                }
+                DumpType::Buffer => {
+                    let id = self.reader.word(offset)?;
+                    let flags = self.reader.word(offset + 8 * BUFFER_FLAGS)?;
+                    if flags & BUFFER_FLAG_DEAD != 0 {
+                        // A killed buffer: the object, and nothing to
+                        // install.
+                        self.objects
+                            .insert(offset, Value::buffer(id, String::new()));
+                        continue;
+                    }
+                    let name = self.value_at(offset + 8 * BUFFER_NAME)?;
+                    let name = string_like(&name)
+                        .map(|string| string.text)
+                        .ok_or_else(|| LoadError::Error("buffer name is not a string".into()))?;
+                    self.objects.insert(offset, Value::buffer(id, name));
+                    buffers.push((offset, id));
+                }
+                DumpType::Marker => {
+                    let id = self.reader.word(offset)?;
+                    self.objects.insert(offset, Value::Marker(id));
+                    markers.push((offset, id));
+                }
+                DumpType::Overlay => {
+                    let id = self.reader.word(offset)?;
+                    self.objects.insert(offset, Value::Overlay(id));
+                    overlays.push((offset, id));
+                }
+                DumpType::Finalizer => {
+                    let id = self.reader.word(offset)?;
+                    self.objects.insert(offset, Value::Finalizer(id));
+                    finalizers.push((offset, id));
+                }
+                DumpType::Frame => {
+                    let id = self.reader.word(offset)?;
+                    self.interp.install_dead_frame(id);
+                    self.objects.insert(offset, Value::Frame(id));
+                }
+                DumpType::Terminal => {
+                    let id = self.reader.word(offset)?;
+                    self.objects.insert(offset, Value::Terminal(id));
                 }
                 _ => {}
             }
@@ -363,6 +408,35 @@ impl Loader<'_> {
                 }
             }
         }
+        // The buffers with their text, then the markers into them, the
+        // deleted overlays on their lists, and the finalizers in list
+        // order (the `finalizers.next' root leads the chain; a finalizer
+        // off the chain follows in image order).
+        for (offset, id) in buffers {
+            self.load_buffer(offset, id)?;
+        }
+        for (offset, id) in markers {
+            let state = self.load_marker(offset, id)?;
+            self.interp.install_marker(state);
+        }
+        for (offset, id) in overlays {
+            let (holder, overlay) = self.load_overlay(offset, id)?;
+            self.interp.install_overlay(holder, overlay);
+        }
+        let mut finalizer_records = Vec::new();
+        for (offset, id) in finalizers {
+            let function = self.value_at(offset + 8)?;
+            let next = match self.value_at(offset + 24)? {
+                Value::Finalizer(next) => Some(next),
+                Value::Nil => None,
+                other => {
+                    return Err(LoadError::Error(format!(
+                        "finalizer {id}'s next is not a finalizer: {other:?}"
+                    )));
+                }
+            };
+            finalizer_records.push((id, function, next));
+        }
 
         // Phase 5: the symbol records.
         let mut symbols = Vec::new();
@@ -424,6 +498,37 @@ impl Loader<'_> {
                 EmacsRelocKind::EmacsLv(kind) => self.emacs_image_object(payload as u32, kind)?,
             };
             roots.push((slot, value));
+        }
+        let mut chain = Vec::new();
+        let mut cursor = roots.iter().find_map(|(slot, value)| match (slot, value) {
+            (RootSlot::FinalizersNext, Value::Finalizer(id)) => Some(*id),
+            _ => None,
+        });
+        while let Some(id) = cursor {
+            if chain.contains(&id) {
+                return Err(LoadError::Error(format!("finalizer chain loops at {id}")));
+            }
+            chain.push(id);
+            cursor = finalizer_records
+                .iter()
+                .find(|(candidate, _, _)| *candidate == id)
+                .and_then(|(_, _, next)| *next);
+        }
+        for id in &chain {
+            let Some((_, function, _)) = finalizer_records
+                .iter()
+                .find(|(candidate, _, _)| candidate == id)
+            else {
+                return Err(LoadError::Error(format!(
+                    "finalizer {id} is on the chain but not in the image"
+                )));
+            };
+            self.interp.install_finalizer(*id, function.clone());
+        }
+        for (id, function, _) in finalizer_records {
+            if !chain.contains(&id) {
+                self.interp.install_finalizer(id, function);
+            }
         }
 
         Ok(LoadedImage {
@@ -839,6 +944,360 @@ impl Loader<'_> {
             spans.push(crate::lisp::types::StringPropertySpan { start, end, props });
         }
         Ok(spans)
+    }
+
+    /// A buffer record: the fields `dump_buffer' wrote, the text and the
+    /// saved snapshot from the cold section, the property spans, the
+    /// local bindings, the syntax and case tables and the undo entries;
+    /// the buffer is installed with its id.
+    fn load_buffer(&mut self, offset: u32, id: u64) -> Result<(), LoadError> {
+        let word = |loader: &Self, index: u32| loader.reader.word(offset + 8 * index);
+        let flags = word(self, BUFFER_FLAGS)?;
+        let multibyte = flags & BUFFER_FLAG_MULTIBYTE != 0;
+        let name = string_like(&self.value_at(offset + 8 * BUFFER_NAME)?)
+            .map(|string| string.text)
+            .ok_or_else(|| LoadError::Error("buffer name is not a string".into()))?;
+        let file = self.optional_string_at(offset + 8 * BUFFER_FILE)?;
+        let file_truename = self.optional_string_at(offset + 8 * BUFFER_FILE_TRUENAME)?;
+        let size = word(self, BUFFER_Z)? as usize;
+        let (text, extended_chars) = self.cold_text_at(
+            word(self, BUFFER_TEXT)? as u32,
+            word(self, BUFFER_Z_BYTE)? as usize,
+            multibyte,
+        )?;
+        if text.chars().count() != size {
+            return Err(LoadError::Error(format!(
+                "buffer {id} decodes to {} characters, record says {size}",
+                text.chars().count()
+            )));
+        }
+        let (saved_text, _) = self.cold_text_at(
+            word(self, BUFFER_SAVED_TEXT)? as u32,
+            word(self, BUFFER_SAVED_BYTES)? as usize,
+            multibyte,
+        )?;
+        let position = |word: u64| (word != NO_POSITION).then_some(word as usize);
+        let visited_file_modtime = (flags & BUFFER_FLAG_HAS_MODTIME != 0).then(|| {
+            let secs = word(self, BUFFER_MODTIME_SECS).unwrap_or(0) as i64;
+            let nanos = word(self, BUFFER_MODTIME_NANOS).unwrap_or(0) as u32;
+            let duration = std::time::Duration::new(secs.unsigned_abs(), nanos);
+            let modified = if secs < 0 {
+                std::time::UNIX_EPOCH - duration
+            } else {
+                std::time::UNIX_EPOCH + duration
+            };
+            crate::buffer::FileModTime { modified }
+        });
+        let base = match self.value_at(offset + 8 * BUFFER_BASE)? {
+            Value::Buffer(base) => Some(base.id),
+            Value::Nil => None,
+            other => {
+                return Err(LoadError::Error(format!(
+                    "buffer {id}'s base is not a buffer: {other:?}"
+                )));
+            }
+        };
+        let intervals = word(self, BUFFER_INTERVALS)? as u32;
+        let text_properties = if intervals == 0 {
+            Vec::new()
+        } else {
+            self.load_text_properties(intervals)?
+                .into_iter()
+                .map(|span| crate::buffer::TextPropertySpan {
+                    start: span.start,
+                    end: span.end,
+                    props: span.props,
+                })
+                .collect()
+        };
+        // The mark marker installs its own relation; the field is checked.
+        match self.value_at(offset + 8 * BUFFER_MARK_MARKER)? {
+            Value::Marker(_) | Value::Nil => {}
+            other => {
+                return Err(LoadError::Error(format!(
+                    "buffer {id}'s mark is not a marker: {other:?}"
+                )));
+            }
+        }
+        let syntax_table = self.optional_char_table_at(offset + 8 * BUFFER_SYNTAX_TABLE)?;
+        let case_table = self.optional_char_table_at(offset + 8 * BUFFER_CASE_TABLE)?;
+        let mut at = offset + 8 * BUFFER_VARIABLE_PART;
+        let nlocals = self.reader.word(at)? as usize;
+        at += 8;
+        let mut locals = Vec::with_capacity(nlocals);
+        for _ in 0..nlocals {
+            let symbol = symbol_of(self.value_at(at)?, "buffer-local variable")?;
+            let value = self.value_at(at + 8)?;
+            locals.push((symbol, value));
+            at += 16;
+        }
+        let nhooks = self.reader.word(at)? as usize;
+        at += 8;
+        let mut hooks = Vec::with_capacity(nhooks);
+        for _ in 0..nhooks {
+            let name = symbol_of(self.value_at(at)?, "buffer-local hook")?;
+            let nfunctions = self.reader.word(at + 8)? as usize;
+            at += 16;
+            let mut functions = Vec::with_capacity(nfunctions);
+            for _ in 0..nfunctions {
+                functions.push(self.value_at(at)?);
+                at += 8;
+            }
+            hooks.push((name.as_str().to_owned(), functions));
+        }
+        let nmarkers = self.reader.word(at)? as usize;
+        at += 8;
+        for _ in 0..nmarkers {
+            if !matches!(self.value_at(at)?, Value::Marker(_)) {
+                return Err(LoadError::Error(format!(
+                    "buffer {id}'s marker chain holds a non-marker"
+                )));
+            }
+            at += 8;
+        }
+        let nundo = self.reader.word(at)? as usize;
+        at += 8;
+        let mut undo_list = Vec::with_capacity(nundo);
+        for _ in 0..nundo {
+            let (entry, next) = self.undo_entry_at(at)?;
+            undo_list.push(entry);
+            at = next;
+        }
+        let buffer = crate::buffer::Buffer::from_image_parts(crate::buffer::BufferImage {
+            name,
+            text,
+            pt: word(self, BUFFER_PT)? as usize,
+            mark: position(word(self, BUFFER_MARK)?),
+            mark_active: flags & BUFFER_FLAG_MARK_ACTIVE != 0,
+            modiff: word(self, BUFFER_MODIFF)? as i64,
+            chars_modiff: word(self, BUFFER_CHARS_MODIFF)? as i64,
+            save_modiff: word(self, BUFFER_SAVE_MODIFF)? as i64,
+            saved_text,
+            forced_modified: flags & BUFFER_FLAG_FORCED_MODIFIED != 0,
+            autosaved: flags & BUFFER_FLAG_AUTOSAVED != 0,
+            begv: word(self, BUFFER_BEGV)? as usize,
+            zv: word(self, BUFFER_ZV)? as usize,
+            file,
+            file_truename,
+            visited_file_modtime,
+            undo_list,
+            undo_disabled: flags & BUFFER_FLAG_UNDO_DISABLED != 0,
+            point_before_last_boundary: position(word(self, BUFFER_POINT_BEFORE_BOUNDARY)?),
+            text_properties,
+            extended_chars: extended_chars
+                .into_iter()
+                .map(|(position, code)| (position + 1, code))
+                .collect(),
+            inhibit_hooks: flags & BUFFER_FLAG_INHIBIT_HOOKS != 0,
+            multibyte,
+        });
+        self.interp.install_buffer(id, buffer);
+        if let Some(base) = base {
+            self.interp.register_indirect_buffer(id, base);
+        }
+        self.interp.install_buffer_local_cells(id, locals);
+        for (name, functions) in hooks {
+            self.interp.set_buffer_local_hook(id, &name, functions);
+        }
+        if let Some(table) = syntax_table {
+            self.interp.install_buffer_syntax_table(id, table);
+        }
+        if let Some(table) = case_table {
+            self.interp.install_buffer_case_table(id, table);
+        }
+        Ok(())
+    }
+
+    /// One undo entry at AT: the entry and the offset after it.
+    fn undo_entry_at(&mut self, at: u32) -> Result<(crate::buffer::UndoEntry, u32), LoadError> {
+        use crate::buffer::UndoEntry;
+        let kind = self.reader.word(at)?;
+        Ok(match kind {
+            UNDO_INSERT => (
+                UndoEntry::Insert {
+                    pos: self.reader.word(at + 8)? as usize,
+                    len: self.reader.word(at + 16)? as usize,
+                },
+                at + 24,
+            ),
+            UNDO_DELETE => {
+                let pos = self.reader.word(at + 8)? as usize;
+                let point_after = self.reader.word(at + 16)? != 0;
+                let text = string_like(&self.value_at(at + 24)?)
+                    .map(|string| string.text)
+                    .ok_or_else(|| LoadError::Error("deleted text is not a string".into()))?;
+                let props_offset = self.reader.word(at + 32)? as u32;
+                let props = if props_offset == 0 {
+                    Vec::new()
+                } else {
+                    self.load_text_properties(props_offset)?
+                        .into_iter()
+                        .map(|span| crate::buffer::TextPropertySpan {
+                            start: span.start,
+                            end: span.end,
+                            props: span.props,
+                        })
+                        .collect()
+                };
+                let mut next = at + 40;
+                let nextended = self.reader.word(next)? as usize;
+                next += 8;
+                let mut extended_chars = Vec::with_capacity(nextended);
+                for _ in 0..nextended {
+                    extended_chars.push((
+                        self.reader.word(next)? as usize,
+                        self.reader.word(next + 8)? as u32,
+                    ));
+                    next += 16;
+                }
+                let nmarkers = self.reader.word(next)? as usize;
+                next += 8;
+                let mut markers = Vec::with_capacity(nmarkers);
+                for _ in 0..nmarkers {
+                    markers.push(crate::buffer::UndoMarker {
+                        id: self.reader.word(next)?,
+                        original_pos: self.reader.word(next + 8)? as usize,
+                        collapsed_pos: self.reader.word(next + 16)? as usize,
+                    });
+                    next += 24;
+                }
+                (
+                    UndoEntry::Delete {
+                        pos,
+                        point_after,
+                        text,
+                        props,
+                        extended_chars,
+                        markers,
+                    },
+                    next,
+                )
+            }
+            UNDO_COMBINED => {
+                let display = self.value_at(at + 8)?;
+                let count = self.reader.word(at + 16)? as usize;
+                let mut next = at + 24;
+                let mut entries = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let (entry, after) = self.undo_entry_at(next)?;
+                    entries.push(entry);
+                    next = after;
+                }
+                (UndoEntry::Combined { display, entries }, next)
+            }
+            UNDO_OPAQUE => (UndoEntry::Opaque(self.value_at(at + 8)?), at + 16),
+            UNDO_BOUNDARY => (UndoEntry::Boundary, at + 8),
+            other => {
+                return Err(LoadError::Error(format!(
+                    "unknown undo entry kind {other} at {at}"
+                )));
+            }
+        })
+    }
+
+    /// A marker record: buffer, positions, insertion type, mark buffer.
+    fn load_marker(
+        &mut self,
+        offset: u32,
+        id: u64,
+    ) -> Result<crate::lisp::eval::MarkerState, LoadError> {
+        let buffer_id = self.optional_buffer_id_at(offset + 8)?;
+        let position = |word: u64| (word != NO_POSITION).then_some(word as usize);
+        let position_word = self.reader.word(offset + 16)?;
+        let last_position_word = self.reader.word(offset + 24)?;
+        let insertion_type = self.reader.word(offset + 32)? != 0;
+        let mark_buffer_id = self.optional_buffer_id_at(offset + 40)?;
+        Ok(crate::lisp::eval::MarkerState {
+            id,
+            buffer_id,
+            position: position(position_word),
+            last_position: position(last_position_word),
+            insertion_type,
+            mark_buffer_id,
+        })
+    }
+
+    /// An overlay record: flags, bounds, the holding buffer's id, the
+    /// buffer field (nil for the deleted overlays that can be written),
+    /// and the property list.
+    fn load_overlay(
+        &mut self,
+        offset: u32,
+        id: u64,
+    ) -> Result<(u64, crate::overlay::Overlay), LoadError> {
+        let flags = self.reader.word(offset + 8)?;
+        let beg = self.reader.word(offset + 16)? as usize;
+        let end = self.reader.word(offset + 24)? as usize;
+        let holder = self.reader.word(offset + 32)?;
+        let buffer_id = self.optional_buffer_id_at(offset + 40)?;
+        let nprops = self.reader.word(offset + 48)? as usize;
+        let mut at = offset + 56;
+        let mut plist = Vec::with_capacity(nprops);
+        for _ in 0..nprops {
+            let key = self.value_at(at)?;
+            let value = self.value_at(at + 8)?;
+            plist.push((key, value));
+            at += 16;
+        }
+        Ok((
+            holder,
+            crate::overlay::Overlay {
+                id,
+                beg,
+                end,
+                front_advance: flags & OVERLAY_FRONT_ADVANCE != 0,
+                rear_advance: flags & OVERLAY_REAR_ADVANCE != 0,
+                buffer_id,
+                plist,
+            },
+        ))
+    }
+
+    /// A cold text run: NBYTES of GNU's internal representation at DATA.
+    fn cold_text_at(
+        &mut self,
+        data: u32,
+        nbytes: usize,
+        multibyte: bool,
+    ) -> Result<(String, Vec<(usize, u32)>), LoadError> {
+        let bytes = self
+            .reader
+            .bytes
+            .get(data as usize..data as usize + nbytes)
+            .ok_or_else(|| LoadError::Error(format!("text at {data} is outside the image")))?;
+        decode_internal_bytes(bytes, multibyte)
+    }
+
+    /// A field that is a string or nil.
+    fn optional_string_at(&mut self, field: u32) -> Result<Option<String>, LoadError> {
+        match self.value_at(field)? {
+            Value::Nil => Ok(None),
+            value => string_like(&value)
+                .map(|string| Some(string.text))
+                .ok_or_else(|| LoadError::Error(format!("field at {field} is not a string"))),
+        }
+    }
+
+    /// A field that is a buffer or nil.
+    fn optional_buffer_id_at(&mut self, field: u32) -> Result<Option<u64>, LoadError> {
+        match self.value_at(field)? {
+            Value::Nil => Ok(None),
+            Value::Buffer(buffer) => Ok(Some(buffer.id)),
+            other => Err(LoadError::Error(format!(
+                "field at {field} is not a buffer: {other:?}"
+            ))),
+        }
+    }
+
+    /// A field that is a char-table or nil.
+    fn optional_char_table_at(&mut self, field: u32) -> Result<Option<u64>, LoadError> {
+        match self.value_at(field)? {
+            Value::Nil => Ok(None),
+            Value::CharTable(id) => Ok(Some(id)),
+            other => Err(LoadError::Error(format!(
+                "field at {field} is not a char-table: {other:?}"
+            ))),
+        }
     }
 
     /// The cells record of `nil' or `t': flags, function, plist, watchers.

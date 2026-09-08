@@ -2251,17 +2251,18 @@ fn dump_emacs_portable_prelude_follows_pdumper_c() {
 
 #[test]
 fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
-    // Rust-only: the writer opens the file as GNU does and, until every
-    // object kind of the image is covered, stops at the first unsupported
-    // one with pdumper.c's error.  dump_unwind_cleanup's variables
-    // (purify-flag, post-gc-hook, process-environment) and the
-    // command-line-processed binding are back as GNU's unwind leaves them,
-    // and the file is the truncated, never-written one GNU leaves after a
-    // failure before its single write.
+    // Rust-only: the writer opens the file as GNU does and writes the
+    // whole image of an initialized batch process in one write.
+    // dump_unwind_cleanup's variables (purify-flag, post-gc-hook,
+    // process-environment) and the command-line-processed binding are
+    // back as GNU's unwind leaves them, the file carries the completed
+    // magic, and pdumper_load's validation and reconstruction read it
+    // back into a second interpreter with the obarray intact.
+    use super::pdumper::image::{DUMP_MAGIC, RootSlot};
+    use super::pdumper::load::{load_image, validate_header};
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
-    let path =
-        std::env::temp_dir().join(format!("emaxx-d08-incomplete-{}.pdmp", std::process::id()));
+    let path = std::env::temp_dir().join(format!("emaxx-d11-complete-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let program = format!(
         r#"(progn
@@ -2271,9 +2272,7 @@ fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
                    process-environment '("ZZ=1"))
              (let ((processed command-line-processed))
                (list (condition-case error-data (dump-emacs-portable {path:?})
-                       (error (list (car error-data)
-                                    (string-prefix-p "unsupported object type in dump: "
-                                                     (cadr error-data)))))
+                       (error (list (car error-data) (cadr error-data))))
                      purify-flag post-gc-hook process-environment
                      (eq processed command-line-processed))))"#,
         path = path.display()
@@ -2284,20 +2283,30 @@ fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
         .expect("context program has a form");
     let result = interp
         .eval(&form, &mut env)
-        .expect("the writer boundary is a catchable error");
+        .expect("the dump returns or signals");
     let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
         .expect("print the context result");
     assert_eq!(
         string_like(&printed).expect("printed string").text,
-        "((error t) zz-pure (zz-post-gc) (\"ZZ=1\") t)"
+        "(nil zz-pure (zz-post-gc) (\"ZZ=1\") t)"
     );
-    let metadata = std::fs::metadata(&path).expect("the output file was opened and truncated");
-    assert_eq!(
-        metadata.len(),
-        0,
-        "nothing is written before the dump completes"
-    );
+    let bytes = std::fs::read(&path).expect("the completed image");
     let _ = std::fs::remove_file(&path);
+    assert_eq!(&bytes[..DUMP_MAGIC.len()], &DUMP_MAGIC);
+    let header = validate_header(&bytes).unwrap_or_else(|error| panic!("validate: {error:?}"));
+    assert_eq!(header.cold_start % (64 * 1024), 0);
+    assert!(header.discardable_start < header.cold_start);
+    assert!(header.cold_start < bytes.len() as u32);
+    let mut target = crate::lisp::eval::Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    assert_eq!(image.obarray.len(), interp.known_symbol_names().len());
+    assert!(
+        image
+            .roots
+            .iter()
+            .any(|(slot, _)| *slot == RootSlot::Obarray)
+    );
+    assert!(image.symbols.len() >= image.obarray.len());
 }
 
 #[test]

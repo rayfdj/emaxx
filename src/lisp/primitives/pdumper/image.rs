@@ -194,6 +194,18 @@ pub(crate) enum DumpType {
     /// A hash table, frozen: its record, count, weakness, test and
     /// mutability, then the compact key/value contents.
     HashTable = 21,
+    /// A buffer: `dump_buffer's copy of the struct, its text in the
+    /// cold section.
+    Buffer = 22,
+    Marker = 23,
+    /// An overlay (only a deleted one can be written: a live one's
+    /// buffer refuses).
+    Overlay = 24,
+    Finalizer = 25,
+    /// A frame, nilled as `dump_nilled_pseudovec' writes it.
+    Frame = 26,
+    /// A terminal, nilled likewise.
+    Terminal = 27,
 }
 
 impl DumpType {
@@ -221,6 +233,12 @@ impl DumpType {
             19 => Self::BuiltinSymbolCells,
             20 => Self::MainThread,
             21 => Self::HashTable,
+            22 => Self::Buffer,
+            23 => Self::Marker,
+            24 => Self::Overlay,
+            25 => Self::Finalizer,
+            26 => Self::Frame,
+            27 => Self::Terminal,
             _ => return None,
         })
     }
@@ -329,6 +347,14 @@ pub(crate) enum RootSlot {
     /// lispsym entry).
     NilCells = 11,
     TCells = 12,
+    /// alloc.c's `finalizers' list head: its `prev' (the last finalizer)
+    /// and `next' (the first) pointers, as dump_finalizer_list_head_ptr
+    /// writes them.
+    FinalizersPrev = 13,
+    FinalizersNext = 14,
+    /// `doomed_finalizers' likewise.
+    DoomedFinalizersPrev = 15,
+    DoomedFinalizersNext = 16,
 }
 
 impl RootSlot {
@@ -347,6 +373,10 @@ impl RootSlot {
             10 => Self::CurrentGlobalMap,
             11 => Self::NilCells,
             12 => Self::TCells,
+            13 => Self::FinalizersPrev,
+            14 => Self::FinalizersNext,
+            15 => Self::DoomedFinalizersPrev,
+            16 => Self::DoomedFinalizersNext,
             _ => return None,
         })
     }

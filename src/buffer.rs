@@ -230,6 +230,38 @@ pub struct UndoState {
     view: Option<UndoListView>,
 }
 
+/// A buffer's fields as pdumper.c's `dump_buffer' copies them from the
+/// `struct buffer': the text and the positions, counters, file
+/// metadata, undo entries and property spans that are the buffer's own
+/// state.  The overlays are not here (GNU refuses to dump a buffer that
+/// has any; the writer checks `overlays' itself), and neither are the
+/// derived caches, which a restored buffer rebuilds.
+pub(crate) struct BufferImage {
+    pub(crate) name: String,
+    pub(crate) text: String,
+    pub(crate) pt: usize,
+    pub(crate) mark: Option<usize>,
+    pub(crate) mark_active: bool,
+    pub(crate) modiff: ModCount,
+    pub(crate) chars_modiff: ModCount,
+    pub(crate) save_modiff: ModCount,
+    pub(crate) saved_text: String,
+    pub(crate) forced_modified: bool,
+    pub(crate) autosaved: bool,
+    pub(crate) begv: usize,
+    pub(crate) zv: usize,
+    pub(crate) file: Option<String>,
+    pub(crate) file_truename: Option<String>,
+    pub(crate) visited_file_modtime: Option<FileModTime>,
+    pub(crate) undo_list: Vec<UndoEntry>,
+    pub(crate) undo_disabled: bool,
+    pub(crate) point_before_last_boundary: Option<usize>,
+    pub(crate) text_properties: Vec<TextPropertySpan>,
+    pub(crate) extended_chars: Vec<(usize, u32)>,
+    pub(crate) inhibit_hooks: bool,
+    pub(crate) multibyte: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct UndoMarker {
     pub id: u64,
@@ -1580,6 +1612,70 @@ impl Buffer {
         self.undo_list = state.entries;
         self.undo_disabled = state.disabled;
         *self.undo_list_view.0.borrow_mut() = state.view;
+    }
+
+    /// The fields `dump_buffer' writes, copied out of this buffer.
+    pub(crate) fn image_parts(&self) -> BufferImage {
+        BufferImage {
+            name: self.name.clone(),
+            text: self.text.to_string(),
+            pt: self.pt,
+            mark: self.mark,
+            mark_active: self.mark_active,
+            modiff: self.modiff,
+            chars_modiff: self.chars_modiff,
+            save_modiff: self.save_modiff,
+            saved_text: self.saved_text.clone(),
+            forced_modified: self.forced_modified,
+            autosaved: self.autosaved,
+            begv: self.begv,
+            zv: self.zv,
+            file: self.file.clone(),
+            file_truename: self.file_truename.clone(),
+            visited_file_modtime: self.visited_file_modtime,
+            undo_list: self.undo_list.clone(),
+            undo_disabled: self.undo_disabled,
+            point_before_last_boundary: self.point_before_last_boundary,
+            text_properties: self.text_properties.clone(),
+            extended_chars: self.extended_chars.clone(),
+            inhibit_hooks: self.inhibit_hooks,
+            multibyte: self.multibyte,
+        }
+    }
+
+    /// A buffer from the fields an image holds: `dump_buffer' cleared
+    /// `last_name' before writing, the overlays were refused, and the
+    /// character cache and undo-list view are rebuilt on demand.
+    pub(crate) fn from_image_parts(parts: BufferImage) -> Self {
+        Buffer {
+            name: parts.name,
+            last_name: None,
+            text: Rope::from_str(&parts.text),
+            char_cache: RefCell::new(RopeCharCache::default()),
+            pt: parts.pt,
+            mark: parts.mark,
+            mark_active: parts.mark_active,
+            modiff: parts.modiff,
+            chars_modiff: parts.chars_modiff,
+            save_modiff: parts.save_modiff,
+            saved_text: parts.saved_text,
+            forced_modified: parts.forced_modified,
+            autosaved: parts.autosaved,
+            begv: parts.begv,
+            zv: parts.zv,
+            file: parts.file,
+            file_truename: parts.file_truename,
+            visited_file_modtime: parts.visited_file_modtime,
+            undo_list: parts.undo_list,
+            undo_list_view: UndoListViewCache::default(),
+            undo_disabled: parts.undo_disabled,
+            point_before_last_boundary: parts.point_before_last_boundary,
+            overlays: Vec::new(),
+            text_properties: parts.text_properties,
+            extended_chars: parts.extended_chars,
+            inhibit_hooks: parts.inhibit_hooks,
+            multibyte: parts.multibyte,
+        }
     }
 
     pub fn modified_tick(&self) -> ModCount {

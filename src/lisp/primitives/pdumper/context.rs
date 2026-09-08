@@ -37,7 +37,9 @@ pub(crate) enum ObjectKey {
     WideInteger(i64),
     Subr(u32),
     Lambda(usize),
-    Buffer(usize),
+    /// A buffer's identity is its id (`eq' compares ids): every
+    /// `Value::Buffer' naming one buffer is one object.
+    Buffer(u64),
     Marker(u64),
     Overlay(u64),
     CharTable(u64),
@@ -73,7 +75,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
         Value::Lambda(lambda) => ObjectKey::Lambda(Rc::as_ptr(lambda) as usize),
-        Value::Buffer(buffer) => ObjectKey::Buffer(Rc::as_ptr(buffer) as usize),
+        Value::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Value::Marker(id) => ObjectKey::Marker(*id),
         Value::Overlay(id) => ObjectKey::Overlay(*id),
         Value::CharTable(id) => ObjectKey::CharTable(*id),
@@ -196,6 +198,8 @@ enum ColdOp {
     Object(Value),
     String(Value),
     Bignum(Value),
+    /// COLD_OP_BUFFER: a buffer's text.
+    Buffer(Value),
 }
 
 enum EmacsRelocPayload {
@@ -546,6 +550,12 @@ impl DumpContext {
             Value::Lambda(_) => DumpType::Closure,
             Value::CharTable(_) => DumpType::CharTable,
             Value::Record(id) if *id == self.main_thread_id => DumpType::MainThread,
+            Value::Buffer(_) => DumpType::Buffer,
+            Value::Marker(_) => DumpType::Marker,
+            Value::Overlay(_) => DumpType::Overlay,
+            Value::Finalizer(_) => DumpType::Finalizer,
+            Value::Frame(_) => DumpType::Frame,
+            Value::Terminal(_) => DumpType::Terminal,
             _ => panic!("no dump type recorded for {value:?}"),
         }
     }
@@ -853,6 +863,29 @@ impl DumpContext {
         self.emacs_reloc_to_lv(RootSlot::Obarray, &interp.standard_obarray_value());
         self.scan_builtin_symbol_cells(interp)?;
         self.clear_referrer();
+        self.dump_finalizer_list_heads(interp)
+    }
+
+    /// dump_finalizer_list_head_ptr for `finalizers.prev', `.next' and
+    /// the doomed list's: a head that points at a finalizer object gets a
+    /// root relocation to that object's record; a head that points back
+    /// at its own sentinel gets none.  `doomed_finalizers' is empty here:
+    /// Fdump_emacs_portable collected until no finalizer ran.
+    fn dump_finalizer_list_heads(&mut self, interp: &Interpreter) -> Result<(), DumpError> {
+        if interp.doomed_finalizers_pending() {
+            return Err(
+                LispError::Signal("doomed finalizers are pending at dump time".into()).into(),
+            );
+        }
+        let ids = interp.finalizer_ids();
+        self.set_referrer(Value::string("emacs root"));
+        if let Some(last) = ids.last() {
+            self.emacs_reloc_to_lv(RootSlot::FinalizersPrev, &Value::Finalizer(*last));
+        }
+        if let Some(first) = ids.first() {
+            self.emacs_reloc_to_lv(RootSlot::FinalizersNext, &Value::Finalizer(*first));
+        }
+        self.clear_referrer();
         Ok(())
     }
 
@@ -905,7 +938,7 @@ impl DumpContext {
         }
         self.scan_builtin_symbol_cells(interp)?;
         self.clear_referrer();
-        Ok(())
+        self.dump_finalizer_list_heads(interp)
     }
 
     /// The built-in symbols are copied objects in GNU: dump_roots scans
@@ -1017,12 +1050,19 @@ impl DumpContext {
             Value::Nil | Value::T | Value::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
-            Value::Buffer(_) => return Err(self.unsupported(object, "buffer")),
-            Value::Marker(_) => return Err(self.unsupported(object, "marker")),
-            Value::Overlay(_) => return Err(self.unsupported(object, "overlay")),
-            Value::Frame(_) => return Err(self.unsupported(object, "frame")),
-            Value::Terminal(_) => return Err(self.unsupported(object, "terminal")),
-            Value::Finalizer(_) => return Err(self.unsupported(object, "finalizer")),
+            Value::Buffer(buffer) => (
+                self.dump_buffer(interp, buffer.id, object)?,
+                DumpType::Buffer,
+            ),
+            Value::Marker(id) => (self.dump_marker(interp, *id, object)?, DumpType::Marker),
+            Value::Overlay(id) => (self.dump_overlay(interp, *id, object)?, DumpType::Overlay),
+            Value::Finalizer(id) => (
+                self.dump_finalizer(interp, *id, object)?,
+                DumpType::Finalizer,
+            ),
+            // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
+            Value::Frame(id) => (self.dump_nilled_pseudovec(*id)?, DumpType::Frame),
+            Value::Terminal(id) => (self.dump_nilled_pseudovec(*id)?, DumpType::Terminal),
             Value::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();
@@ -1576,6 +1616,342 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
+    /// dump_buffer: the buffer's own fields with `last_name' and the
+    /// display state cleared, the text as a cold op, the property spans
+    /// after the record as the interval tree is, the markers pointing
+    /// into it (`own_text.markers'), the local bindings
+    /// (`local_var_alist_'), the syntax and case tables (BVARs), the
+    /// base buffer of an indirect one, and the undo entries the
+    /// `undo_list_' renders from.  A buffer with live overlays is refused
+    /// with GNU's error.
+    fn dump_buffer(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(buffer) = interp.get_buffer_by_id(id) else {
+            // A killed buffer: no text (BUFFER_LIVE_P is false), its name
+            // nil since kill-buffer, nothing on its lists.
+            let start = self.object_start()?;
+            let mut words = vec![0_u64; BUFFER_VARIABLE_PART as usize];
+            words[BUFFER_ID as usize] = id;
+            words[BUFFER_FLAGS as usize] = BUFFER_FLAG_DEAD;
+            words[BUFFER_MARK as usize] = NO_POSITION;
+            words[BUFFER_POINT_BEFORE_BOUNDARY as usize] = NO_POSITION;
+            for index in [
+                BUFFER_NAME,
+                BUFFER_FILE,
+                BUFFER_FILE_TRUENAME,
+                BUFFER_BASE,
+                BUFFER_MARK_MARKER,
+                BUFFER_SYNTAX_TABLE,
+                BUFFER_CASE_TABLE,
+            ] {
+                self.field_lv(
+                    start,
+                    &mut words,
+                    index as usize,
+                    &Value::Nil,
+                    WEIGHT_STRONG,
+                );
+            }
+            // No locals, hooks, markers or undo entries.
+            words.extend([0, 0, 0, 0]);
+            return self.object_finish(&words);
+        };
+        if buffer.overlays.iter().any(|overlay| !overlay.is_dead()) {
+            // "We haven't implemented the code to dump overlays."
+            return Err(LispError::Signal("dumping overlays is not yet implemented".into()).into());
+        }
+        let parts = buffer.image_parts();
+        let extended = parts
+            .extended_chars
+            .iter()
+            .map(|(position, code)| (position - 1, *code))
+            .collect::<Vec<_>>();
+        let z_byte = internal_text_bytes(&parts.text, &extended, parts.multibyte)?.len();
+        let saved_bytes = internal_text_bytes(&parts.saved_text, &[], parts.multibyte)?.len();
+        let base = interp
+            .buffer_base_id(id)
+            .and_then(|base| interp.buffer_value(base));
+        let mark_marker = interp.buffer_mark_marker_id(id).map(Value::Marker);
+        let syntax_table = interp.buffer_syntax_table_id(id).map(Value::CharTable);
+        let case_table = interp.buffer_case_table_id(id).map(Value::CharTable);
+        let locals = interp.buffer_local_cells(id);
+        let hooks = interp.buffer_local_hook_lists(id);
+        let markers = interp.buffer_marker_ids(id);
+
+        let mut flags = 0;
+        for (set, bit) in [
+            (parts.multibyte, BUFFER_FLAG_MULTIBYTE),
+            (parts.mark_active, BUFFER_FLAG_MARK_ACTIVE),
+            (parts.forced_modified, BUFFER_FLAG_FORCED_MODIFIED),
+            (parts.autosaved, BUFFER_FLAG_AUTOSAVED),
+            (parts.undo_disabled, BUFFER_FLAG_UNDO_DISABLED),
+            (parts.inhibit_hooks, BUFFER_FLAG_INHIBIT_HOOKS),
+            (
+                parts.visited_file_modtime.is_some(),
+                BUFFER_FLAG_HAS_MODTIME,
+            ),
+        ] {
+            if set {
+                flags |= bit;
+            }
+        }
+        let (modtime_secs, modtime_nanos) = match parts.visited_file_modtime {
+            Some(modtime) => match modtime.modified.duration_since(std::time::UNIX_EPOCH) {
+                Ok(duration) => (duration.as_secs() as i64, duration.subsec_nanos()),
+                Err(before) => {
+                    let duration = before.duration();
+                    (-(duration.as_secs() as i64), duration.subsec_nanos())
+                }
+            },
+            None => (0, 0),
+        };
+        let position_word = |position: Option<usize>| position.map_or(NO_POSITION, |p| p as u64);
+
+        let start = self.object_start()?;
+        let mut words = vec![0_u64; BUFFER_VARIABLE_PART as usize];
+        words[BUFFER_ID as usize] = id;
+        words[BUFFER_FLAGS as usize] = flags;
+        words[BUFFER_Z as usize] = parts.text.chars().count() as u64;
+        words[BUFFER_Z_BYTE as usize] = z_byte as u64;
+        words[BUFFER_TEXT as usize] = FIXUP_PLACEHOLDER;
+        words[BUFFER_SAVED_BYTES as usize] = saved_bytes as u64;
+        words[BUFFER_SAVED_TEXT as usize] = FIXUP_PLACEHOLDER;
+        words[BUFFER_PT as usize] = parts.pt as u64;
+        words[BUFFER_MARK as usize] = position_word(parts.mark);
+        words[BUFFER_BEGV as usize] = parts.begv as u64;
+        words[BUFFER_ZV as usize] = parts.zv as u64;
+        words[BUFFER_MODIFF as usize] = parts.modiff as u64;
+        words[BUFFER_CHARS_MODIFF as usize] = parts.chars_modiff as u64;
+        words[BUFFER_SAVE_MODIFF as usize] = parts.save_modiff as u64;
+        words[BUFFER_POINT_BEFORE_BOUNDARY as usize] =
+            position_word(parts.point_before_last_boundary);
+        words[BUFFER_MODTIME_SECS as usize] = modtime_secs as u64;
+        words[BUFFER_MODTIME_NANOS as usize] = u64::from(modtime_nanos);
+        words[BUFFER_INTERVALS as usize] = if parts.text_properties.is_empty() {
+            0
+        } else {
+            FIXUP_PLACEHOLDER
+        };
+        // The Lisp fields: dump_pseudovector_lisp_fields writes them
+        // WEIGHT_STRONG; the marker chain is WEIGHT_NORMAL.
+        let mut fields: Vec<(usize, Value, LinkWeight)> = vec![
+            (
+                BUFFER_NAME as usize,
+                Value::string(&parts.name),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_FILE as usize,
+                parts.file.as_deref().map_or(Value::Nil, Value::string),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_FILE_TRUENAME as usize,
+                parts
+                    .file_truename
+                    .as_deref()
+                    .map_or(Value::Nil, Value::string),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_BASE as usize,
+                base.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_MARK_MARKER as usize,
+                mark_marker.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_SYNTAX_TABLE as usize,
+                syntax_table.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_CASE_TABLE as usize,
+                case_table.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+        ];
+        let mut props_fixups: Vec<(usize, Vec<TextPropertySpan>)> = Vec::new();
+        if !parts.text_properties.is_empty() {
+            props_fixups.push((BUFFER_INTERVALS as usize, parts.text_properties.clone()));
+        }
+        words.push(locals.len() as u64);
+        for (symbol, value) in &locals {
+            fields.push((words.len(), Value::Symbol(symbol.clone()), WEIGHT_STRONG));
+            words.push(0);
+            fields.push((words.len(), value.clone(), WEIGHT_STRONG));
+            words.push(0);
+        }
+        // The buffer-local hook lists are local bindings of the hook
+        // variables in GNU; Emaxx keeps them beside the cells.
+        words.push(hooks.len() as u64);
+        for (name, functions) in &hooks {
+            fields.push((words.len(), Value::symbol(name), WEIGHT_STRONG));
+            words.push(0);
+            words.push(functions.len() as u64);
+            for function in functions {
+                fields.push((words.len(), function.clone(), WEIGHT_STRONG));
+                words.push(0);
+            }
+        }
+        words.push(markers.len() as u64);
+        for marker in &markers {
+            fields.push((words.len(), Value::Marker(*marker), WEIGHT_NORMAL));
+            words.push(0);
+        }
+        words.push(parts.undo_list.len() as u64);
+        for entry in &parts.undo_list {
+            push_undo_entry(&mut words, &mut fields, &mut props_fixups, entry);
+        }
+        for (index, value, weight) in fields {
+            self.field_lv(start, &mut words, index, &value, weight);
+        }
+        self.remember_cold_op(ColdOp::Buffer(object.clone()));
+        let offset = self.object_finish(&words)?;
+        for (index, spans) in props_fixups {
+            let properties = self.dump_text_properties(interp, &spans)?;
+            self.remember_fixup_ptr_raw(offset + 8 * index as u32, properties);
+        }
+        Ok(offset)
+    }
+
+    /// dump_marker: the buffer (WEIGHT_NORMAL), the positions, the
+    /// insertion type, and the buffer whose mark this marker is.
+    fn dump_marker(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(marker) = interp.find_marker(id) else {
+            return Err(self.unsupported(object, "marker without an object"));
+        };
+        let marker = marker.clone();
+        let buffer = marker.buffer_id.and_then(|id| interp.buffer_value(id));
+        let mark_buffer = marker.mark_buffer_id.and_then(|id| interp.buffer_value(id));
+        let start = self.object_start()?;
+        let mut words = [
+            id,
+            0,
+            marker.position.map_or(NO_POSITION, |p| p as u64),
+            marker.last_position.map_or(NO_POSITION, |p| p as u64),
+            u64::from(marker.insertion_type),
+            0,
+        ];
+        self.field_lv(
+            start,
+            &mut words,
+            1,
+            &buffer.unwrap_or(Value::Nil),
+            WEIGHT_NORMAL,
+        );
+        self.field_lv(
+            start,
+            &mut words,
+            5,
+            &mark_buffer.unwrap_or(Value::Nil),
+            WEIGHT_STRONG,
+        );
+        self.object_finish(&words)
+    }
+
+    /// dump_overlay: the Lisp fields (buffer, plist) and the interval
+    /// node's bounds and advance flags.  A live overlay's buffer is a
+    /// field, so the buffer is dumped too, and refuses; only a deleted
+    /// overlay gets through, with the buffer whose list still holds it.
+    fn dump_overlay(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(overlay) = interp.find_overlay(id) else {
+            return Err(self.unsupported(object, "overlay without an object"));
+        };
+        let overlay = overlay.clone();
+        let holder = interp.overlay_holder_id(id);
+        let buffer = overlay.buffer_id.and_then(|id| interp.buffer_value(id));
+        let mut flags = 0;
+        if overlay.front_advance {
+            flags |= OVERLAY_FRONT_ADVANCE;
+        }
+        if overlay.rear_advance {
+            flags |= OVERLAY_REAR_ADVANCE;
+        }
+        let start = self.object_start()?;
+        let mut words = vec![
+            id,
+            flags,
+            overlay.beg as u64,
+            overlay.end as u64,
+            holder.unwrap_or(NO_POSITION),
+            0,
+            overlay.plist.len() as u64,
+        ];
+        let mut fields = vec![(5, buffer.unwrap_or(Value::Nil))];
+        for (key, value) in &overlay.plist {
+            fields.push((words.len(), key.clone()));
+            words.push(0);
+            fields.push((words.len(), value.clone()));
+            words.push(0);
+        }
+        for (index, value) in fields {
+            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_finalizer: the function with WEIGHT_NONE ("so we can give it
+    /// a low weight"), then the `prev' and `next' list neighbours
+    /// (dump_field_finalizer_ref: a neighbour that is the list's sentinel
+    /// is an Emacs pointer, written as nil here).
+    fn dump_finalizer(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let ids = interp.finalizer_ids();
+        let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
+            return Err(self.unsupported(object, "finalizer without an object"));
+        };
+        let function = interp.finalizer_function(id).unwrap_or(Value::Nil);
+        let prev = index.checked_sub(1).map(|i| Value::Finalizer(ids[i]));
+        let next = ids.get(index + 1).map(|id| Value::Finalizer(*id));
+        let start = self.object_start()?;
+        let mut words = [id, 0, 0, 0];
+        self.field_lv(start, &mut words, 1, &function, WEIGHT_NONE);
+        self.field_lv(
+            start,
+            &mut words,
+            2,
+            &prev.unwrap_or(Value::Nil),
+            WEIGHT_NORMAL,
+        );
+        self.field_lv(
+            start,
+            &mut words,
+            3,
+            &next.unwrap_or(Value::Nil),
+            WEIGHT_NORMAL,
+        );
+        self.object_finish(&words)
+    }
+
+    /// dump_nilled_pseudovec: every Lisp field nil, nothing else kept;
+    /// the record is the object's id alone.
+    fn dump_nilled_pseudovec(&mut self, id: u64) -> Result<u32, DumpError> {
+        self.object_start()?;
+        self.object_finish(&[id])
+    }
+
     // ----- Queues -----
 
     /// dump_drain_normal_queue.
@@ -1734,10 +2110,44 @@ impl DumpContext {
                     assert!(self.dump_queue.is_empty());
                 }
                 ColdOp::Bignum(object) => self.dump_cold_bignum(&object)?,
+                ColdOp::Buffer(object) => self.dump_cold_buffer(interp, &object)?,
             }
         }
         self.flags = old_flags;
         Ok(())
+    }
+
+    /// dump_cold_buffer: the text bytes in GNU's internal representation
+    /// plus the terminating NUL (GNU also writes the zeroed gap; Emaxx's
+    /// rope has none), then the saved-text snapshot Emaxx compares
+    /// against, each with the fixup that points the record at it.
+    fn dump_cold_buffer(&mut self, interp: &Interpreter, object: &Value) -> Result<(), DumpError> {
+        let Some(ObjectState::Dumped(buffer_offset)) = self.recall_object(object) else {
+            panic!("cold buffer was dumped");
+        };
+        let Value::Buffer(buffer) = object else {
+            unreachable!()
+        };
+        let Some(buffer) = interp.get_buffer_by_id(buffer.id) else {
+            panic!("a dumped buffer is live");
+        };
+        let parts = buffer.image_parts();
+        let extended = parts
+            .extended_chars
+            .iter()
+            .map(|(position, code)| (position - 1, *code))
+            .collect::<Vec<_>>();
+        let bytes = internal_text_bytes(&parts.text, &extended, parts.multibyte)?;
+        if bytes.len() > DUMP_OFF_MAX - 1 {
+            return Err(LispError::Signal("buffer too large".into()).into());
+        }
+        self.remember_fixup_ptr_raw(buffer_offset + 8 * BUFFER_TEXT, self.offset);
+        self.write(&bytes)?;
+        self.write(&[0])?;
+        let saved = internal_text_bytes(&parts.saved_text, &[], parts.multibyte)?;
+        self.remember_fixup_ptr_raw(buffer_offset + 8 * BUFFER_SAVED_TEXT, self.offset);
+        self.write(&saved)?;
+        self.write(&[0])
     }
 
     /// dump_cold_string: the bytes in GNU's internal representation plus
@@ -1930,6 +2340,74 @@ impl DumpContext {
     }
 }
 
+/// One undo entry of a buffer record: its kind word, then the payload
+/// (an insertion's bounds; a deletion's position, direction, text as a
+/// string object, property spans through a raw-pointer fixup, side list
+/// and marker adjustments; a combined entry's display value and nested
+/// entries; an opaque entry's value; a boundary).
+fn push_undo_entry(
+    words: &mut Vec<u64>,
+    fields: &mut Vec<(usize, Value, LinkWeight)>,
+    props_fixups: &mut Vec<(usize, Vec<TextPropertySpan>)>,
+    entry: &crate::buffer::UndoEntry,
+) {
+    use crate::buffer::UndoEntry;
+    match entry {
+        UndoEntry::Insert { pos, len } => {
+            words.extend([UNDO_INSERT, *pos as u64, *len as u64]);
+        }
+        UndoEntry::Delete {
+            pos,
+            point_after,
+            text,
+            props,
+            extended_chars,
+            markers,
+        } => {
+            words.extend([UNDO_DELETE, *pos as u64, u64::from(*point_after)]);
+            fields.push((
+                words.len(),
+                Value::String(text.clone().into()),
+                WEIGHT_STRONG,
+            ));
+            words.push(0);
+            if props.is_empty() {
+                words.push(0);
+            } else {
+                props_fixups.push((words.len(), props.clone()));
+                words.push(FIXUP_PLACEHOLDER);
+            }
+            words.push(extended_chars.len() as u64);
+            for (position, code) in extended_chars {
+                words.extend([*position as u64, u64::from(*code)]);
+            }
+            words.push(markers.len() as u64);
+            for marker in markers {
+                words.extend([
+                    marker.id,
+                    marker.original_pos as u64,
+                    marker.collapsed_pos as u64,
+                ]);
+            }
+        }
+        UndoEntry::Combined { display, entries } => {
+            words.push(UNDO_COMBINED);
+            fields.push((words.len(), display.clone(), WEIGHT_STRONG));
+            words.push(0);
+            words.push(entries.len() as u64);
+            for entry in entries {
+                push_undo_entry(words, fields, props_fixups, entry);
+            }
+        }
+        UndoEntry::Opaque(value) => {
+            words.push(UNDO_OPAQUE);
+            fields.push((words.len(), value.clone(), WEIGHT_STRONG));
+            words.push(0);
+        }
+        UndoEntry::Boundary => words.push(UNDO_BOUNDARY),
+    }
+}
+
 /// `Fmemq' on the referrer list: identity.
 fn values_eq(a: &Value, b: &Value) -> bool {
     match (object_key(a), object_key(b)) {
@@ -2002,20 +2480,46 @@ pub(crate) fn char_table_state_for_load(
 /// a multibyte string, the raw octets for a unibyte one.
 pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError> {
     let string = string_like(object).expect("a string");
+    internal_codes_bytes(string.character_codes(), string.multibyte, &string.text)
+}
+
+/// Text with its out-of-Unicode side list (0-based positions) as GNU
+/// stores it: buffer text and strings share the representation.
+pub(crate) fn internal_text_bytes(
+    text: &str,
+    extended_chars: &[(usize, u32)],
+    multibyte: bool,
+) -> Result<Vec<u8>, DumpError> {
+    let codes = text.chars().enumerate().map(|(index, ch)| {
+        extended_chars
+            .binary_search_by_key(&index, |(position, _)| *position)
+            .ok()
+            .map(|found| i64::from(extended_chars[found].1))
+            .unwrap_or_else(|| {
+                crate::lisp::primitives::strings::string_character_code(multibyte, ch)
+            })
+    });
+    internal_codes_bytes(codes, multibyte, text)
+}
+
+fn internal_codes_bytes(
+    codes: impl IntoIterator<Item = i64>,
+    multibyte: bool,
+    text: &str,
+) -> Result<Vec<u8>, DumpError> {
     let mut bytes = Vec::new();
-    if string.multibyte {
-        for code in string.character_codes() {
+    if multibyte {
+        for code in codes {
             crate::lisp::primitives::strings::push_emacs_multibyte_char(&mut bytes, code as u32)?;
         }
     } else {
-        for code in string.character_codes() {
+        for code in codes {
             if !(0..=0xFF).contains(&code) {
                 // GNU cannot hold this state: a unibyte string's bytes are
                 // its characters.  A string built this way is an Emaxx
                 // representation error at its construction site.
                 return Err(LispError::Signal(format!(
-                    "unibyte string holds character {code:#x}, not a byte: {:?}",
-                    string.text
+                    "unibyte string holds character {code:#x}, not a byte: {text:?}"
                 ))
                 .into());
             }
@@ -2024,6 +2528,60 @@ pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError
     }
     Ok(bytes)
 }
+
+// The words of a buffer record before its variable part.
+pub(crate) const BUFFER_ID: u32 = 0;
+pub(crate) const BUFFER_FLAGS: u32 = 1;
+pub(crate) const BUFFER_NAME: u32 = 2;
+pub(crate) const BUFFER_FILE: u32 = 3;
+pub(crate) const BUFFER_FILE_TRUENAME: u32 = 4;
+/// `own_text.z': the character count.
+pub(crate) const BUFFER_Z: u32 = 5;
+/// `own_text.z_byte': the byte count in the internal representation.
+pub(crate) const BUFFER_Z_BYTE: u32 = 6;
+/// `own_text.beg': the cold text (a raw-pointer fixup).
+pub(crate) const BUFFER_TEXT: u32 = 7;
+pub(crate) const BUFFER_SAVED_BYTES: u32 = 8;
+pub(crate) const BUFFER_SAVED_TEXT: u32 = 9;
+pub(crate) const BUFFER_PT: u32 = 10;
+pub(crate) const BUFFER_MARK: u32 = 11;
+pub(crate) const BUFFER_BEGV: u32 = 12;
+pub(crate) const BUFFER_ZV: u32 = 13;
+pub(crate) const BUFFER_MODIFF: u32 = 14;
+pub(crate) const BUFFER_CHARS_MODIFF: u32 = 15;
+pub(crate) const BUFFER_SAVE_MODIFF: u32 = 16;
+pub(crate) const BUFFER_POINT_BEFORE_BOUNDARY: u32 = 17;
+pub(crate) const BUFFER_MODTIME_SECS: u32 = 18;
+pub(crate) const BUFFER_MODTIME_NANOS: u32 = 19;
+pub(crate) const BUFFER_BASE: u32 = 20;
+/// `own_text.intervals': the property spans (a raw-pointer fixup, or 0).
+pub(crate) const BUFFER_INTERVALS: u32 = 21;
+pub(crate) const BUFFER_MARK_MARKER: u32 = 22;
+pub(crate) const BUFFER_SYNTAX_TABLE: u32 = 23;
+pub(crate) const BUFFER_CASE_TABLE: u32 = 24;
+/// The variable part: the local bindings, the markers, the undo entries.
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 25;
+// The flag bits of BUFFER_FLAGS.
+pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
+pub(crate) const BUFFER_FLAG_MARK_ACTIVE: u64 = 2;
+pub(crate) const BUFFER_FLAG_FORCED_MODIFIED: u64 = 4;
+pub(crate) const BUFFER_FLAG_AUTOSAVED: u64 = 8;
+pub(crate) const BUFFER_FLAG_UNDO_DISABLED: u64 = 16;
+pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
+pub(crate) const BUFFER_FLAG_HAS_MODTIME: u64 = 64;
+/// A killed buffer (BUFFER_LIVE_P false): no text, name nil.
+pub(crate) const BUFFER_FLAG_DEAD: u64 = 128;
+/// An absent position.
+pub(crate) const NO_POSITION: u64 = u64::MAX;
+// The kinds of an undo entry.
+pub(crate) const UNDO_INSERT: u64 = 1;
+pub(crate) const UNDO_DELETE: u64 = 2;
+pub(crate) const UNDO_COMBINED: u64 = 3;
+pub(crate) const UNDO_OPAQUE: u64 = 4;
+pub(crate) const UNDO_BOUNDARY: u64 = 5;
+// The flag bits of an overlay record.
+pub(crate) const OVERLAY_FRONT_ADVANCE: u64 = 1;
+pub(crate) const OVERLAY_REAR_ADVANCE: u64 = 2;
 
 /// mpz_export: sign and little-endian 64-bit limbs.
 pub(crate) fn bignum_limbs(object: &Value) -> (bool, Vec<u64>) {
