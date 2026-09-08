@@ -130,7 +130,7 @@ mod invisibility;
 mod keys;
 mod loading;
 mod numeric_time;
-mod pdumper;
+pub(crate) mod pdumper;
 pub(crate) mod print;
 mod processes;
 mod purecopy;
@@ -203,6 +203,12 @@ const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The next id `make-symbol' would give an uninterned symbol.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn next_make_symbol_id() -> u64 {
+    MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
+}
 static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);

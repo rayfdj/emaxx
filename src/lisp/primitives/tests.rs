@@ -2171,15 +2171,15 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
              (dump-emacs-portable 42)
            (error error-data))
          (condition-case error-data
-             (dump-emacs-portable "must-not-be-created.pdmp" t)
-           (error error-data))
+             (dump-emacs-portable "/nonexistent-dir/must-not-be-created.pdmp" t)
+           (error (car error-data)))
          (condition-case error-data
              (dump-emacs-portable--sort-predicate-copied nil nil)
            (error error-data)))"#;
     let unavailable = "(error \"Portable dumper backend is unavailable\")";
     let boundary_expected = format!(
         "((1 . 2) (2 . 2) (wrong-type-argument stringp 42) \
-         {unavailable} {unavailable})"
+         file-missing {unavailable})"
     );
     let form = Reader::new(boundary_program)
         .read()
@@ -2221,6 +2221,9 @@ fn dump_emacs_portable_prelude_follows_pdumper_c() {
            (condition-case error-data (dump-emacs-portable 42) (error error-data))
            (reverse zz-order)
            command-line-processed
+           (condition-case error-data
+               (dump-emacs-portable "/nonexistent-dir/zz-dump.pdmp")
+             (error error-data))
            (let ((thread (make-thread (lambda () (thread-yield) (sleep-for 1)))))
              (setq zz-order nil)
              (prog1 (list (condition-case error-data (dump-emacs-portable 42)
@@ -2237,6 +2240,8 @@ fn dump_emacs_portable_prelude_follows_pdumper_c() {
              (error error-data))))"#;
     let expected = "((wrong-type-argument stringp 42) \
          (fixup gc (watch let nil) (watch unlet t)) t \
+         (file-missing \"Opening dump output\" \"No such file or directory\" \
+         \"/nonexistent-dir/zz-dump.pdmp\") \
          ((error \"No other Lisp threads can be running when this function is called\") nil) \
          (error \"This function can be called only in the main thread\") \
          (wrong-number-of-arguments dump-emacs-portable 0) \
@@ -2246,17 +2251,18 @@ fn dump_emacs_portable_prelude_follows_pdumper_c() {
 
 #[test]
 fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
-    // Rust-only: GNU would open the file here.  Until the writer exists the
-    // unavailable error is signaled at that point, and dump_unwind_cleanup's
-    // variables (purify-flag, post-gc-hook, process-environment) and the
+    // Rust-only: the writer opens the file as GNU does and, until every
+    // object kind of the image is covered, stops at the first unsupported
+    // one with pdumper.c's error.  dump_unwind_cleanup's variables
+    // (purify-flag, post-gc-hook, process-environment) and the
     // command-line-processed binding are back as GNU's unwind leaves them,
-    // with no file created.
+    // and the file is the truncated, never-written one GNU leaves after a
+    // failure before its single write.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-d07-must-not-exist-{}.pdmp",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("emaxx-d08-incomplete-{}.pdmp", std::process::id()));
+    let _ = std::fs::remove_file(&path);
     let program = format!(
         r#"(progn
              (defun zz-post-gc () nil)
@@ -2264,8 +2270,10 @@ fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
                    post-gc-hook '(zz-post-gc)
                    process-environment '("ZZ=1"))
              (let ((processed command-line-processed))
-               (list (condition-case error-data (dump-emacs-portable {path:?} t)
-                       (error error-data))
+               (list (condition-case error-data (dump-emacs-portable {path:?})
+                       (error (list (car error-data)
+                                    (string-prefix-p "unsupported object type in dump: "
+                                                     (cadr error-data)))))
                      purify-flag post-gc-hook process-environment
                      (eq processed command-line-processed))))"#,
         path = path.display()
@@ -2281,11 +2289,42 @@ fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
         .expect("print the context result");
     assert_eq!(
         string_like(&printed).expect("printed string").text,
-        "((error \"Portable dumper backend is unavailable\") zz-pure (zz-post-gc) (\"ZZ=1\") t)"
+        "((error t) zz-pure (zz-post-gc) (\"ZZ=1\") t)"
     );
-    assert!(
-        !path.exists(),
-        "no lookalike image may be created: {path:?}"
+    let metadata = std::fs::metadata(&path).expect("the output file was opened and truncated");
+    assert_eq!(
+        metadata.len(),
+        0,
+        "nothing is written before the dump completes"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn replace_match_on_a_string_returns_concat3_multibyteness() {
+    // search.c:Freplace_match with STRING returns concat3 (before, newtext,
+    // after): multibyte when STRING or NEWTEXT is.  burmese.el builds its
+    // composition regexp by replacing ASCII keys in an ASCII pattern with
+    // multibyte pieces; the result was left unibyte with characters above
+    // 255, a string GNU cannot hold (the image writer found it).
+    let program = r#"
+        (list
+         (multibyte-string-p (replace-regexp-in-string "V" "္" "aVb" t t))
+         (progn (string-match "V" "aVb")
+                (multibyte-string-p (replace-match "္" t t "aVb")))
+         (progn (string-match "V" "aVb")
+                (multibyte-string-p (replace-match "x" t t "aVb")))
+         (progn (string-match "V" "a္Vb")
+                (multibyte-string-p (replace-match "x" t t "a္Vb")))
+         (let ((case-fold-search nil))
+           (string-bytes (replace-regexp-in-string "K" "[ငၚ]်္"
+                                                   "\\(K\\)?C" t t)))
+         (multibyte-string-p (aref (car (aref composition-function-table #x1000)) 0))
+         (string-bytes (aref (car (aref composition-function-table #x1000)) 0)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t nil t 20 t 228)",
+        "replace-match multibyteness",
     );
 }
 

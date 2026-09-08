@@ -682,26 +682,12 @@ impl Interpreter {
             // pdumper.c: "unique to each build of Emacs".  Computed from
             // the running executable, cached for the process lifetime --
             // never a copy of another binary's fingerprint.
-            "pdumper-fingerprint" => {
-                static FINGERPRINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-                Some(Value::String(
-                    FINGERPRINT
-                        .get_or_init(|| {
-                            std::env::current_exe()
-                                .ok()
-                                .and_then(|path| std::fs::read(path).ok())
-                                .map(|bytes| {
-                                    use sha2::Digest;
-                                    let mut hasher = sha2::Sha256::new();
-                                    hasher.update(&bytes);
-                                    format!("{:x}", hasher.finalize())
-                                })
-                                .unwrap_or_default()
-                        })
-                        .clone()
-                        .into(),
-                ))
-            }
+            "pdumper-fingerprint" => Some(Value::String(
+                crate::lisp::primitives::pdumper::image::hex(
+                    crate::lisp::primitives::pdumper::image::executable_fingerprint(),
+                )
+                .into(),
+            )),
             "load-file-name" => Some(
                 self.current_load_file
                     .clone()

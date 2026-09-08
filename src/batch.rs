@@ -746,7 +746,11 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         .resolve_load_target("loadup")
         .map_err(|error| format!("preload GNU loadup.el: {error}"))?
         .ok_or_else(|| "preload GNU loadup.el: cannot resolve loadup".to_string())?;
-    let stopped = match crate::lisp::load_file_strict_until_or_error(
+    // temacs writes the image where loadup.el calls dump-emacs-portable;
+    // this process, which has no image to load, reconstructs the state by
+    // running the same file and hands off at that call instead.
+    interpreter.image_reconstruction_handoff = true;
+    let loaded = crate::lisp::load_file_strict_until_or_error(
         interpreter,
         &path,
         |_| false,
@@ -757,7 +761,9 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
                     if message == crate::lisp::primitives::PORTABLE_DUMPER_UNAVAILABLE
             )
         },
-    ) {
+    );
+    interpreter.image_reconstruction_handoff = false;
+    let stopped = match loaded {
         Ok(stopped) => stopped,
         Err(error) => {
             let backtrace = interpreter
