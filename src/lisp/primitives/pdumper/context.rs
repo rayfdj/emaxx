@@ -159,6 +159,7 @@ pub(crate) enum ObjectState {
     OnNormalQueue,
     OnColdQueue,
     OnCopiedQueue,
+    OnHashTableQueue,
     Dumped(u32),
 }
 
@@ -170,6 +171,9 @@ pub(crate) struct DumpFlags {
     pub(crate) defer_copied_objects: bool,
     pub(crate) assert_already_seen: bool,
     pub(crate) pack_objects: bool,
+    /// "We want to consolidate certain object types that we know are
+    /// very likely to be modified": hash tables are written together.
+    pub(crate) defer_hash_tables: bool,
 }
 
 enum Fixup {
@@ -449,6 +453,9 @@ pub(crate) struct DumpContext {
     object_starts: Vec<(u32, DumpType)>,
     emacs_relocs: Vec<EmacsReloc>,
     bignum_data: HashMap<ObjectKey, (u32, i64)>,
+    deferred_hash_tables: Vec<Value>,
+    /// Every hash table written, for the list `thaw_hash_tables' walks.
+    hash_tables: Vec<Value>,
     pub(crate) flags: DumpFlags,
     /// The object being dumped (dump_object_start .. dump_object_finish).
     obj_offset: u32,
@@ -486,12 +493,15 @@ impl DumpContext {
             object_starts: Vec::new(),
             emacs_relocs: Vec::new(),
             bignum_data: HashMap::new(),
+            deferred_hash_tables: Vec::new(),
+            hash_tables: Vec::new(),
             // Fdump_emacs_portable's initial flags.
             flags: DumpFlags {
                 dump_object_contents: true,
                 record_object_starts: true,
                 defer_cold_objects: true,
                 defer_copied_objects: true,
+                defer_hash_tables: true,
                 assert_already_seen: false,
                 pack_objects: false,
             },
@@ -969,6 +979,23 @@ impl DumpContext {
             return Ok(ObjectState::OnCopiedQueue);
         }
 
+        // dump_hash_table's deferral: scan the table's referents now, write
+        // the table with the others once the normal queue is drained.
+        if is_hash_table(interp, object) && self.flags.defer_hash_tables {
+            if state != Some(ObjectState::OnHashTableQueue) {
+                assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
+                self.clear_referrer();
+                let old_flags = self.flags;
+                self.flags.dump_object_contents = false;
+                self.flags.defer_hash_tables = false;
+                self.dump_object(interp, object)?;
+                self.flags = old_flags;
+                self.remember_object(object, ObjectState::OnHashTableQueue);
+                self.deferred_hash_tables.push(object.clone());
+            }
+            return Ok(ObjectState::OnHashTableQueue);
+        }
+
         // Object needs to be dumped.
         self.set_referrer(object.clone());
         let (offset, kind) = match object {
@@ -1228,7 +1255,10 @@ impl DumpContext {
                     Err(self.unsupported(object, "thread"))
                 }
             }
-            RecordKind::HashTable => Err(self.unsupported(object, "hash table")),
+            RecordKind::HashTable => {
+                let offset = self.dump_hash_table(interp, id, object, &type_tag, &slots)?;
+                Ok((offset, DumpType::HashTable))
+            }
             RecordKind::WindowConfiguration => {
                 Err(self.unsupported(object, "window configuration"))
             }
@@ -1557,6 +1587,107 @@ impl DumpContext {
         Ok(())
     }
 
+    /// dump_hash_table: the table frozen (hash_table_freeze: the compact
+    /// key/value contents, the standard test or GNU's refusal of a
+    /// user-defined one), with its record, count, weakness and
+    /// mutability; thawed on load.
+    fn dump_hash_table(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+        type_tag: &Value,
+        slots: &[Value],
+    ) -> Result<u32, DumpError> {
+        let test_name = slots
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .unwrap_or("eql")
+            .to_owned();
+        let test_code = match test_name.as_str() {
+            "eq" => HASH_TEST_EQ,
+            "eql" => HASH_TEST_EQL,
+            "equal" => HASH_TEST_EQUAL,
+            _ => {
+                // hash_table_std_test (Bug#36769).
+                return Err(LispError::Signal(
+                    "cannot dump hash tables with user-defined tests".into(),
+                )
+                .into());
+            }
+        };
+        let entries = crate::lisp::json::hash_table_entries(interp, object)
+            .map(|(_, entries)| entries)
+            .unwrap_or_default();
+        let weakness = slots.get(5).cloned().unwrap_or(Value::Nil);
+        let mutable = interp.hash_table_is_mutable(id);
+        if self.flags.dump_object_contents {
+            self.hash_tables.push(object.clone());
+        }
+        let start = self.object_start()?;
+        let mut words = vec![
+            id,
+            u64::from(record_kind_code(RecordKind::HashTable)),
+            0,
+            slots.len() as u64,
+        ];
+        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        for slot in slots {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, slot, WEIGHT_STRONG);
+        }
+        words.push(entries.len() as u64);
+        let weakness_index = words.len();
+        words.push(0);
+        self.field_lv(start, &mut words, weakness_index, &weakness, WEIGHT_STRONG);
+        words.push(test_code);
+        words.push(u64::from(mutable));
+        for (key, value) in &entries {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, key, WEIGHT_STRONG);
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, value, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_drain_deferred_hash_tables.
+    pub(crate) fn drain_deferred_hash_tables(
+        &mut self,
+        interp: &Interpreter,
+    ) -> Result<(), DumpError> {
+        let old_flags = self.flags;
+        self.flags.defer_hash_tables = false;
+        let deferred = std::mem::take(&mut self.deferred_hash_tables);
+        for table in deferred {
+            self.dump_object(interp, &table)?;
+        }
+        self.flags = old_flags;
+        Ok(())
+    }
+
+    pub(crate) fn deferred_hash_tables_is_empty(&self) -> bool {
+        self.deferred_hash_tables.is_empty()
+    }
+
+    /// dump_hash_table_list: a vector of every table written, at
+    /// `header.hash_list', for thaw_hash_tables.  Each table is listed
+    /// once (GNU's list can repeat a table its scan pass reached; thawing
+    /// twice is harmless there).
+    pub(crate) fn dump_hash_table_list(&mut self, interp: &Interpreter) -> Result<u32, DumpError> {
+        if self.hash_tables.is_empty() {
+            return Ok(0);
+        }
+        let list = Value::vector(std::mem::take(&mut self.hash_tables));
+        match self.dump_object(interp, &list)? {
+            ObjectState::Dumped(offset) => Ok(offset),
+            _ => panic!("the hash table list is an ordinary vector"),
+        }
+    }
+
     pub(crate) fn queue_is_empty(&self) -> bool {
         self.dump_queue.is_empty()
     }
@@ -1805,6 +1936,16 @@ fn values_eq(a: &Value, b: &Value) -> bool {
         (Some(a), Some(b)) => a == b,
         _ => false,
     }
+}
+
+// lisp.h:hash_table_std_test: Test_eq, Test_eql, Test_equal.
+pub(crate) const HASH_TEST_EQ: u64 = 0;
+pub(crate) const HASH_TEST_EQL: u64 = 1;
+pub(crate) const HASH_TEST_EQUAL: u64 = 2;
+
+fn is_hash_table(interp: &Interpreter, value: &Value) -> bool {
+    matches!(value, Value::Record(id)
+        if interp.find_record(*id).is_some_and(|record| record.kind == RecordKind::HashTable))
 }
 
 fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {
