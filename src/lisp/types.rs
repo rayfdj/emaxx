@@ -22,12 +22,24 @@ pub(crate) struct ConsMutationEpoch(u64);
 
 const CONS_MUTATION_WATCH_MINIMUM_KEY_LIMIT: usize = 1 << 20;
 
+/// Hashes an object address or identity word for the bridge's index maps.
+///
+/// The key is already unique, but hashbrown takes its bucket from the low
+/// bits and its control tag from the top seven: aligned heap addresses share
+/// their low bits and every user-space address shares its high bits, so the
+/// raw word made every entry probe the same few buckets under one tag.  The
+/// finalizer mixes the word (splitmix64's) before hashbrown sees it.  This
+/// is bridge indexing only; Lisp hash semantics live in the fns.c-compatible
+/// primitives.
 #[derive(Default)]
 pub(crate) struct IdentityHasher(u64);
 
 impl Hasher for IdentityHasher {
     fn finish(&self) -> u64 {
-        self.0
+        let mut mixed = self.0;
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        mixed ^ (mixed >> 31)
     }
 
     fn write(&mut self, bytes: &[u8]) {
@@ -1561,10 +1573,8 @@ impl ConsCell {
         std::ptr::from_ref(&cell.words).cast_mut()
     }
 
-    /// Attach the Rust value cache to the two words generated code accesses.
-    /// Rust-created conses point at their own prefix; conses allocated by
-    /// generated code point at the owning native arena until that bridge is
-    /// detached.
+    /// Attach the Rust value cache to the two words generated code accesses:
+    /// this cell's own prefix, whether Rust or generated code allocated it.
     pub(crate) unsafe fn attach_native_words(&self, native: *mut ConsWords, agreed: [usize; 2]) {
         self.car
             .attach_native_word(unsafe { (*native).car.get() }, agreed[0], false);

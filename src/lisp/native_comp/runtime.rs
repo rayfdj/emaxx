@@ -21,7 +21,7 @@ use crate::lisp::{
     types::{Env, LispError},
 };
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
@@ -1611,12 +1611,12 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             unsafe { &mut *active.environment },
         );
         // GNU's generated code and primitives see the same Lisp object
-        // storage.  Emaxx mirrors cons cells at the machine-code ABI so the
-        // generated C layout remains exact; a primitive such as `aset' or
-        // `setcar' can mutate the Rust-owned object while it is decoded.
-        // Push those mutations back into the mirror before generated code
-        // consumes the argument again.  Non-cons objects use arena/shared
-        // identities directly and need no copy-back.
+        // storage.  A cons is one ConsCell whose ABI prefix generated code
+        // reads, but its typed fields are still a view of those two words;
+        // a primitive such as `setcar' mutates the typed field while it is
+        // decoded.  Publish those mutations into the words before generated
+        // code consumes the argument again (R03b).  Other objects use their
+        // shared identities directly and need no copy-back.
         if crate::lisp::types::cons_mutation_epoch() != mutation_epoch
             && let Err(error) = unsafe { &mut *active.runtime }
                 .heap
@@ -3554,9 +3554,10 @@ impl NativeIdentity {
         };
         // Hashbrown consumes both low bucket bits and high control bits.  A
         // simple rotation leaves aligned GNU-style pointers clustered, so
-        // avalanche the one-word identity before the no-op IdentityHasher
-        // receives it.  This is bridge indexing only; Lisp hash semantics
-        // remain in fns.c-compatible primitive code.
+        // avalanche the one-word identity here; IdentityHasher mixes its
+        // key once more for the address-keyed maps, which is harmless for
+        // this already-mixed word.  This is bridge indexing only; Lisp hash
+        // semantics remain in fns.c-compatible primitive code.
         let mut mixed = payload ^ (kind as usize).wrapping_mul(0x9e37_79b9_7f4a_7c15_usize);
         mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9_usize);
         mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb_usize);
@@ -3572,72 +3573,9 @@ impl Hash for NativeIdentity {
 
 type NativeCons = ConsWords;
 
-const NATIVE_CONS_BLOCK_LEN: usize = 16 * 1024;
 const NATIVE_GC_DEFAULT_THRESHOLD: i64 = 800_000;
 const NATIVE_GC_MINIMUM_THRESHOLD: i64 = 80_000;
 const NATIVE_GC_HIGH_THRESHOLD: i64 = i64::MAX / 2;
-const NATIVE_CONS_MARK_WORDS: usize = NATIVE_CONS_BLOCK_LEN.div_ceil(u64::BITS as usize);
-
-struct NativeConsBlock {
-    cells: Box<[MaybeUninit<NativeCons>]>,
-    marks: Box<[u64]>,
-    occupied: Box<[u64]>,
-    allocated: usize,
-}
-
-enum ArenaMark {
-    NotArena,
-    AlreadyMarked,
-    NewlyMarked([NativeWord; 2]),
-}
-
-impl NativeConsBlock {
-    fn new() -> Self {
-        Self {
-            cells: Box::<[NativeCons]>::new_uninit_slice(NATIVE_CONS_BLOCK_LEN),
-            marks: vec![0; NATIVE_CONS_MARK_WORDS].into_boxed_slice(),
-            occupied: vec![0; NATIVE_CONS_MARK_WORDS].into_boxed_slice(),
-            allocated: 0,
-        }
-    }
-
-    fn start(&self) -> usize {
-        self.cells.as_ptr() as usize
-    }
-
-    fn bit(bits: &[u64], slot: usize) -> bool {
-        bits[slot / u64::BITS as usize] & (1 << (slot % u64::BITS as usize)) != 0
-    }
-
-    fn set_bit(bits: &mut [u64], slot: usize) {
-        bits[slot / u64::BITS as usize] |= 1 << (slot % u64::BITS as usize);
-    }
-
-    fn clear_bit(bits: &mut [u64], slot: usize) {
-        bits[slot / u64::BITS as usize] &= !(1 << (slot % u64::BITS as usize));
-    }
-
-    fn is_live(&self, slot: usize) -> bool {
-        Self::bit(&self.occupied, slot)
-    }
-
-    fn mark(&mut self, slot: usize) -> bool {
-        if Self::bit(&self.marks, slot) {
-            false
-        } else {
-            Self::set_bit(&mut self.marks, slot);
-            true
-        }
-    }
-}
-
-/// Bump storage for conses allocated by generated code.
-///
-/// GNU's Fcons takes the next cell from an allocator block and writes two
-/// Lisp words.  Do the same here.  A native-created cell gets a richer
-/// Rust `Value` owner only if execution crosses back into a Rust primitive
-/// or returns that cell to the evaluator; transient compiler lists never pay
-/// for Rc allocation, hash-table registration, or mirror tracking.
 #[derive(Default)]
 struct NativeGcState {
     /// alloc.c's `consing_until_gc'.  Lisp allocation subtracts bytes; GNU
@@ -3721,158 +3659,15 @@ impl NativeGcState {
     }
 }
 
-#[derive(Default)]
-struct NativeConsArena {
-    blocks: Vec<NativeConsBlock>,
-    block_starts: BTreeMap<usize, usize>,
-    free_list: Vec<*mut NativeCons>,
-    live: usize,
-    gc: NativeGcState,
-}
-
-impl NativeConsArena {
-    #[inline(always)]
-    fn allocate(&mut self, car: NativeWord, cdr: NativeWord) -> *mut NativeCons {
-        let native: *mut NativeCons = if let Some(native) = self.free_list.pop() {
-            let (block_index, slot) = self
-                .locate(native as usize, false)
-                .expect("native cons free-list pointer belongs to its arena");
-            NativeConsBlock::set_bit(&mut self.blocks[block_index].occupied, slot);
-            self.blocks[block_index].cells[slot].write(NativeCons::new(car, cdr))
-        } else {
-            if self
-                .blocks
-                .last()
-                .is_none_or(|block| block.allocated == NATIVE_CONS_BLOCK_LEN)
-            {
-                let block = NativeConsBlock::new();
-                let start = block.start();
-                let index = self.blocks.len();
-                self.blocks.push(block);
-                self.block_starts.insert(start, index);
-            }
-            let block = self.blocks.last_mut().expect("block inserted above");
-            let slot = block.allocated;
-            block.allocated += 1;
-            NativeConsBlock::set_bit(&mut block.occupied, slot);
-            block.cells[slot].write(NativeCons::new(car, cdr))
-        };
-        self.live += 1;
-        note_lisp_allocation(std::mem::size_of::<NativeCons>());
-        native
-    }
-
-    fn locate(&self, pointer: usize, require_live: bool) -> Option<(usize, usize)> {
-        let (&start, &block_index) = self.block_starts.range(..=pointer).next_back()?;
-        let block = &self.blocks[block_index];
-        let offset = pointer.checked_sub(start)?;
-        let cell_size = std::mem::size_of::<NativeCons>();
-        let slot = offset / cell_size;
-        let field_offset = offset % cell_size;
-        if slot >= block.allocated
-            || !matches!(field_offset, 0 | TAG_CONS)
-                && field_offset != std::mem::size_of::<NativeWord>()
-            || require_live && !block.is_live(slot)
-        {
-            return None;
-        }
-        Some((block_index, slot))
-    }
-
-    fn contains(&self, native: *const NativeCons) -> bool {
-        self.locate(native as usize, true).is_some()
-    }
-
-    fn collection_due(&mut self, threshold: i64, percentage: Option<f64>) -> bool {
-        self.gc.synchronize_allocations();
-        self.gc.collection_due(threshold, percentage)
-    }
-
-    fn collection_might_be_due(&mut self) -> bool {
-        self.gc.synchronize_allocations();
-        self.gc.collection_might_be_due()
-    }
-
-    /// alloc.c:Fgarbage_collect_maybe reads `gc_threshold' and
-    /// `consing_until_gc' as the last collection left them; only
-    /// maybe_garbage_collect retunes them from the Lisp variables.
-    fn collection_maybe_due(&mut self, factor: i64) -> bool {
-        if factor < 1 {
-            return false;
-        }
-        self.gc.synchronize_allocations();
-        let since_gc = self
-            .gc
-            .gc_threshold
-            .saturating_sub(self.gc.consing_until_gc);
-        since_gc > self.gc.gc_threshold / factor
-    }
-
-    fn mark_word(&mut self, word: NativeWord) -> ArenaMark {
-        let Some((block_index, slot)) = self.locate(word, true) else {
-            return ArenaMark::NotArena;
-        };
-        if !self.blocks[block_index].mark(slot) {
-            return ArenaMark::AlreadyMarked;
-        }
-        let native = self.blocks[block_index].cells[slot].as_ptr();
-        ArenaMark::NewlyMarked(unsafe { [(*native).car(), (*native).cdr()] })
-    }
-
-    fn is_marked(&self, native: *const NativeCons) -> bool {
-        self.locate(native as usize, true)
-            .is_some_and(|(block_index, slot)| {
-                NativeConsBlock::bit(&self.blocks[block_index].marks, slot)
-            })
-    }
-
-    fn sweep(&mut self) {
-        self.live = 0;
-        let mut free_before_block = 0;
-        let mut keep = vec![true; self.blocks.len()];
-        for (index, block) in self.blocks.iter_mut().enumerate().rev() {
-            let mut block_live = 0;
-            for slot in 0..block.allocated {
-                if NativeConsBlock::bit(&block.marks, slot) {
-                    NativeConsBlock::clear_bit(&mut block.marks, slot);
-                    block_live += 1;
-                } else {
-                    NativeConsBlock::clear_bit(&mut block.occupied, slot);
-                }
-            }
-            self.live += block_live;
-            let block_free = block.allocated - block_live;
-            if block.allocated == NATIVE_CONS_BLOCK_LEN
-                && block_live == 0
-                && free_before_block > NATIVE_CONS_BLOCK_LEN
-            {
-                keep[index] = false;
-            } else {
-                free_before_block += block_free;
-            }
-        }
-
-        let mut index = 0;
-        self.blocks.retain(|_| {
-            let retain = keep[index];
-            index += 1;
-            retain
-        });
-        self.block_starts.clear();
-        self.free_list.clear();
-        for (block_index, block) in self.blocks.iter().enumerate() {
-            self.block_starts.insert(block.start(), block_index);
-            for slot in 0..block.allocated {
-                if !block.is_live(slot) {
-                    self.free_list.push(block.cells[slot].as_ptr().cast_mut());
-                }
-            }
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.live == 0
-    }
+/// A cons allocated by generated code.  GNU's Fcons takes the next
+/// `Lisp_Cons' from an allocator block; here it is the same `ConsCell' the
+/// Rust evaluator uses, so generated code and primitives address one object
+/// (R03).  The heap owns it until a collection finds it unreachable; a Rust
+/// typed view of its two words (the mirror) is attached only when Rust reads
+/// or writes it.
+struct NativeOwnedCons {
+    value: SharedCons,
+    gc_marked: bool,
 }
 
 struct TouchedCons {
@@ -3937,55 +3732,43 @@ impl NativeMark<'_> {
     fn trace_words(&mut self) -> Vec<Value> {
         let mut values = Vec::new();
         while let Some(word) = self.pending.pop() {
-            match self.heap.native_conses.mark_word(word) {
-                ArenaMark::AlreadyMarked => continue,
-                ArenaMark::NewlyMarked(fields) => {
-                    // mark_word also accepts interior stack pointers. Use
-                    // the same candidates as the Rust-owned cons branch.
-                    for address in [
-                        Some(word),
-                        word.checked_sub(TAG_CONS),
-                        word.checked_sub(std::mem::size_of::<NativeWord>()),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
-                        if let Some(value) = self.cons_value(address) {
-                            values.push(value);
-                            break;
-                        }
-                    }
-                    // alloc.c explicitly expands car before cdr. This is
-                    // a LIFO work stack, and nil cdr needs no stack entry.
-                    if fields[1] != 0 {
-                        self.pending.push(fields[1]);
-                    }
-                    self.pending.push(fields[0]);
-                    continue;
-                }
-                ArenaMark::NotArena => {}
-            }
+            // The conservative stack scan also offers interior pointers:
+            // a tagged word, the cell address, or its cdr field.
             let candidates = [
                 Some(word),
                 word.checked_sub(TAG_CONS),
                 word.checked_sub(std::mem::size_of::<NativeWord>()),
             ];
-            if let Some(address) = candidates
-                .into_iter()
-                .flatten()
-                .find(|address| self.heap.cons_values.contains_key(address))
-            {
-                let mirror = self
-                    .heap
-                    .cons_values
-                    .get_mut(&address)
-                    .expect("candidate was found in the cons mirror map");
-                if !mirror.gc_marked {
+            if let Some(address) = candidates.into_iter().flatten().find(|address| {
+                self.heap.cons_values.contains_key(address)
+                    || self.heap.native_owned.contains_key(address)
+            }) {
+                let newly_marked = if let Some(mirror) = self.heap.cons_values.get_mut(&address) {
+                    let newly = !mirror.gc_marked;
                     mirror.gc_marked = true;
-                    values.push(self.cons_value(address).expect("marked cons has a mirror"));
+                    if let Some(owned) = self.heap.native_owned.get_mut(&address) {
+                        owned.gc_marked = true;
+                    }
+                    newly
+                } else {
+                    let owned = self
+                        .heap
+                        .native_owned
+                        .get_mut(&address)
+                        .expect("candidate was found in the native-owned cons map");
+                    let newly = !owned.gc_marked;
+                    owned.gc_marked = true;
+                    newly
+                };
+                if newly_marked {
+                    if let Some(value) = self.cons_value(address) {
+                        values.push(value);
+                    }
                     let native = address as *const NativeCons;
-                    // The owning arena/mirror map validates this address
-                    // and holds its storage throughout the mark pass.
+                    // The owning maps validate this address and hold its
+                    // storage throughout the mark pass.  alloc.c explicitly
+                    // expands car before cdr: this is a LIFO work stack, and
+                    // a nil cdr needs no stack entry.
                     let [car, cdr] = unsafe { [(*native).car(), (*native).cdr()] };
                     if cdr != 0 {
                         self.pending.push(cdr);
@@ -4060,7 +3843,11 @@ pub(crate) struct NativeHeap {
     /// bridge allocation the sweep may have reclaimed is never returned
     /// again (the cells are not GC roots for their cached words).
     word_generation: u32,
-    native_conses: NativeConsArena,
+    /// alloc.c's consing counters for this heap.
+    gc: NativeGcState,
+    /// Every cons generated code allocated that a collection has not yet
+    /// reclaimed, by its address.
+    native_owned: IdentityMap<NativeOwnedCons>,
     cons_values: IdentityMap<ConsMirror>,
     /// Mirrors whose reconciliation is in progress, so cyclic structures do
     /// not recurse into themselves.
@@ -4087,7 +3874,8 @@ impl Default for NativeHeap {
         Self {
             id: NATIVE_HEAP_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             word_generation: 1,
-            native_conses: NativeConsArena::default(),
+            gc: NativeGcState::default(),
+            native_owned: IdentityMap::default(),
             cons_values: IdentityMap::default(),
             reconciling: IdentitySet::default(),
             interpreter_dirty: Rc::default(),
@@ -4179,7 +3967,7 @@ impl NativeHeap {
     }
 
     fn is_empty(&self) -> bool {
-        self.native_conses.is_empty()
+        self.native_owned.is_empty()
             && self.cons_values.is_empty()
             && self.handles.iter().all(Option::is_none)
             && self.symbol_with_position_views.is_empty()
@@ -4199,15 +3987,28 @@ impl NativeHeap {
     }
 
     fn collection_due(&mut self, threshold: i64, percentage: Option<f64>) -> bool {
-        self.native_conses.collection_due(threshold, percentage)
+        self.gc.synchronize_allocations();
+        self.gc.collection_due(threshold, percentage)
     }
 
     fn collection_might_be_due(&mut self) -> bool {
-        self.native_conses.collection_might_be_due()
+        self.gc.synchronize_allocations();
+        self.gc.collection_might_be_due()
     }
 
+    /// alloc.c:Fgarbage_collect_maybe reads `gc_threshold' and
+    /// `consing_until_gc' as the last collection left them; only
+    /// maybe_garbage_collect retunes them from the Lisp variables.
     fn collection_maybe_due(&mut self, factor: i64) -> bool {
-        self.native_conses.collection_maybe_due(factor)
+        if factor < 1 {
+            return false;
+        }
+        self.gc.synchronize_allocations();
+        let since_gc = self
+            .gc
+            .gc_threshold
+            .saturating_sub(self.gc.consing_until_gc);
+        since_gc > self.gc.gc_threshold / factor
     }
 
     fn collection_finished(
@@ -4216,27 +4017,10 @@ impl NativeHeap {
         threshold: i64,
         percentage: Option<f64>,
     ) {
-        // A generated cons gets a Rust ConsCell only when it crosses the ABI.
-        // Such a cell is already present in the Rust census; only arena cells
-        // without that materialized owner must be added here.
-        let materialized_arena_conses = self
-            .cons_values
-            .keys()
-            .filter(|address| {
-                self.native_conses
-                    .contains((**address) as *const NativeCons)
-            })
-            .count();
-        let arena_only_bytes = self
-            .native_conses
-            .live
-            .saturating_sub(materialized_arena_conses)
-            .saturating_mul(std::mem::size_of::<NativeCons>());
-        self.native_conses.gc.collection_finished(
-            rust_live_bytes.saturating_add(arena_only_bytes),
-            threshold,
-            percentage,
-        );
+        // Every cons, generated or evaluator-allocated, is one ConsCell in
+        // the Rust census, so the live bytes need no separate arena term.
+        self.gc
+            .collection_finished(rust_live_bytes, threshold, percentage);
     }
 
     fn collect(
@@ -4298,13 +4082,7 @@ impl NativeHeap {
 
         let mut unreachable = Vec::new();
         for (&address, mirror) in &self.cons_values {
-            let native = address as *mut NativeCons;
-            let marked = if self.native_conses.contains(native) {
-                self.native_conses.is_marked(native)
-            } else {
-                mirror.gc_marked
-            };
-            if !marked {
+            if !mirror.gc_marked {
                 unreachable.push(address);
             }
         }
@@ -4332,14 +4110,7 @@ impl NativeHeap {
         let unreachable = self
             .cons_values
             .iter()
-            .filter_map(|(&address, mirror)| {
-                let native = address as *mut NativeCons;
-                if self.native_conses.contains(native) {
-                    (!self.native_conses.is_marked(native)).then_some(address)
-                } else {
-                    (!mirror.gc_marked).then_some(address)
-                }
-            })
+            .filter_map(|(&address, mirror)| (!mirror.gc_marked).then_some(address))
             .collect::<Vec<_>>();
         if !unreachable.is_empty() {
             for address in unreachable {
@@ -4356,6 +4127,14 @@ impl NativeHeap {
         for mirror in self.cons_values.values_mut() {
             mirror.gc_marked = false;
         }
+        // alloc.c:sweep_conses: a generated cons no mark reached is freed;
+        // dropping the heap's owning reference is that free unless a Rust
+        // value still holds the same cell.
+        self.native_owned.retain(|_, owned| {
+            let keep = owned.gc_marked;
+            owned.gc_marked = false;
+            keep
+        });
 
         let dead_handles = self
             .handles
@@ -4377,7 +4156,6 @@ impl NativeHeap {
         // generation before a reclaimed address could be returned to
         // generated code.
         self.word_generation = self.word_generation.wrapping_add(1).max(1);
-        self.native_conses.sweep();
     }
 
     fn finish_nested_call(&mut self) {
@@ -4430,11 +4208,36 @@ impl NativeHeap {
 
     #[inline(always)]
     fn cons(&mut self, car_word: NativeWord, cdr_word: NativeWord) -> NativeWord {
-        // alloc.c:Fcons is a bump allocation followed by two word stores.
-        let native = self.native_conses.allocate(car_word, cdr_word);
-        let address = native as usize;
+        // alloc.c:Fcons allocates one Lisp_Cons and stores two words.  The
+        // cell is the same ConsCell the Rust evaluator uses (its ABI words
+        // are the prefix), owned by this heap until unreachable; its typed
+        // view is attached only when Rust reads it.
+        let cell = ConsCell::from_native_words(car_word, cdr_word);
+        note_lisp_allocation(std::mem::size_of::<NativeCons>());
+        let address = ConsCell::native_words(&cell) as usize;
         debug_assert_eq!(address & TAG_MASK, 0);
+        self.native_owned.insert(
+            address,
+            NativeOwnedCons {
+                value: cell,
+                gc_marked: false,
+            },
+        );
         address + TAG_CONS
+    }
+
+    /// Whether NATIVE names a cons this heap still knows: one generated code
+    /// allocated and no collection has reclaimed, or one Rust allocated that
+    /// crossed the boundary.
+    #[cfg(test)]
+    fn native_cons_is_live(&self, native: *const NativeCons) -> bool {
+        let address = native as usize;
+        self.native_owned.contains_key(&address) || self.cons_values.contains_key(&address)
+    }
+
+    #[cfg(test)]
+    fn native_owned_len(&self) -> usize {
+        self.native_owned.len()
     }
 
     fn track_cons(&mut self, native: *mut NativeCons, value: &SharedCons) {
@@ -4787,11 +4590,15 @@ impl NativeHeap {
                 return Ok(Value::Cons(value));
             }
             let native = address as *mut NativeCons;
-            if !self.native_conses.contains(native) {
+            let Some(value) = self
+                .native_owned
+                .get(&address)
+                .map(|owned| owned.value.clone())
+            else {
                 return Err(format!("unknown native cons address 0x{address:x}"));
-            }
-            let current = unsafe { [(*native).car(), (*native).cdr()] };
-            let value = ConsCell::from_native_words(current[0], current[1]);
+            };
+            // Attach the typed view to the generated cons's own cell: no
+            // second object, and its words decode on this first read.
             self.register_cons_value(native, &value);
             value.set_native_words_agreed([0, 0]);
             self.reconcile_mirror(native, &value, decoding_conses)?;
@@ -5009,7 +4816,6 @@ mod tests {
             let interpreter = unsafe { &mut *active.interpreter };
             runtime
                 .heap
-                .native_conses
                 .gc
                 .collection_finished(0, NATIVE_GC_DEFAULT_THRESHOLD, None);
             for _ in 0..52_000 {
@@ -5030,7 +4836,6 @@ mod tests {
             let environment = unsafe { &mut *active.environment };
             runtime
                 .heap
-                .native_conses
                 .gc
                 .collection_finished(0, NATIVE_GC_DEFAULT_THRESHOLD, None);
             for _ in 0..52_000 {
@@ -6862,14 +6667,14 @@ mod tests {
             .set_stack_bottom(std::ptr::from_ref(&stack_marker));
         let unreachable = runtime.heap.cons(TAG_FIXNUM_LOW, 0);
         let unreachable_pointer = unreachable.wrapping_sub(TAG_CONS) as *const NativeCons;
-        assert!(runtime.heap.native_conses.contains(unreachable_pointer));
+        assert!(runtime.heap.native_cons_is_live(unreachable_pointer));
         runtime.heap.collect(
             std::ptr::from_ref(&stack_marker),
             &[],
             &mut interpreter,
             &environment,
         );
-        assert!(!runtime.heap.native_conses.contains(unreachable_pointer));
+        assert!(!runtime.heap.native_cons_is_live(unreachable_pointer));
         assert_ne!(
             runtime.heap.value_word_stamp(),
             stamp_before_collection,
@@ -7926,7 +7731,7 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
 
-        assert_eq!(runtime.heap.native_conses.gc.collections, 0);
+        assert_eq!(runtime.heap.gc.collections, 0);
         assert_eq!(
             runtime
                 .invoke(
@@ -7940,7 +7745,7 @@ mod tests {
             Value::Nil
         );
         // One setup reset and one collection at the GNU eval_sub boundary.
-        assert_eq!(runtime.heap.native_conses.gc.collections, 2);
+        assert_eq!(runtime.heap.gc.collections, 2);
     }
 
     #[test]
@@ -7961,7 +7766,7 @@ mod tests {
                 .expect("garbage-collect-maybe probe completes"),
             Value::T
         );
-        assert_eq!(runtime.heap.native_conses.gc.collections, 2);
+        assert_eq!(runtime.heap.gc.collections, 2);
     }
 
     #[test]
@@ -7993,14 +7798,14 @@ mod tests {
     fn native_gc_marks_current_cons_fields_car_first() {
         // alloc.c:process_mark_stack expands car first for both conses
         // allocated by generated code and conses passed in by primitives.
-        for arena_owned in [true, false] {
+        for generated in [true, false] {
             let mut heap = NativeHeap::default();
             heap.begin_call();
             let car = Value::vector([Value::Integer(1)]);
             let cdr = Value::vector([Value::Integer(2)]);
             let car_word = heap.encode(&car).expect("car object");
             let cdr_word = heap.encode(&cdr).expect("cdr object");
-            let root = if arena_owned {
+            let root = if generated {
                 heap.cons(0, cdr_word)
             } else {
                 heap.encode(&Value::cons(Value::Nil, cdr.clone()))
@@ -8144,14 +7949,11 @@ mod tests {
         );
 
         assert!(
-            heap.native_conses
-                .contains(child.wrapping_sub(TAG_CONS) as *const NativeCons),
+            heap.native_cons_is_live(child.wrapping_sub(TAG_CONS) as *const NativeCons),
             "alloc.c:process_mark_stack follows vector contents before sweeping conses"
         );
         assert!(
-            !heap
-                .native_conses
-                .contains(unreachable.wrapping_sub(TAG_CONS) as *const NativeCons),
+            !heap.native_cons_is_live(unreachable.wrapping_sub(TAG_CONS) as *const NativeCons),
             "the control cons must actually be swept"
         );
         let vector = heap.decode(root).expect("root vector survives collection");
@@ -8207,8 +8009,7 @@ mod tests {
         assert!(
             runtime
                 .heap
-                .native_conses
-                .contains(child.wrapping_sub(TAG_CONS) as *const NativeCons)
+                .native_cons_is_live(child.wrapping_sub(TAG_CONS) as *const NativeCons)
         );
         let Value::Vector(vector) = result else {
             panic!("returned vector");
@@ -8255,18 +8056,14 @@ mod tests {
             &environment,
         );
 
-        assert!(heap.native_conses.contains(native));
+        assert!(heap.native_cons_is_live(native));
         assert_eq!(
             unsafe { (*native).cdr() },
             root,
             "the cycle keeps its original word"
         );
-        assert!(
-            !heap
-                .native_conses
-                .contains(unreachable.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
-        assert_eq!(heap.native_conses.live, 1);
+        assert!(!heap.native_cons_is_live(unreachable.wrapping_sub(TAG_CONS) as *const NativeCons));
+        assert_eq!(heap.native_owned_len(), 1);
         // Break the test graph through the same shared word before dropping
         // its owners; this does not weaken the preceding cycle assertions.
         unsafe { (*native).set_cdr(0) };
@@ -8298,21 +8095,12 @@ mod tests {
             &environment,
         );
 
-        assert!(
-            heap.native_conses
-                .contains(parent.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
-        assert!(
-            heap.native_conses
-                .contains(new_child.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
-        assert!(
-            !heap
-                .native_conses
-                .contains(old_child.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
+        assert!(heap.native_cons_is_live(parent.wrapping_sub(TAG_CONS) as *const NativeCons));
+        assert!(heap.native_cons_is_live(new_child.wrapping_sub(TAG_CONS) as *const NativeCons));
+        assert!(!heap.native_cons_is_live(old_child.wrapping_sub(TAG_CONS) as *const NativeCons));
         assert_eq!(
-            heap.native_conses.live, 2,
+            heap.native_owned_len(),
+            2,
             "a stale typed field must not keep the replaced child"
         );
         assert!(
@@ -8349,14 +8137,8 @@ mod tests {
             &mut interpreter,
             &environment,
         );
-        assert!(
-            heap.native_conses
-                .contains(key_word.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
-        assert!(
-            heap.native_conses
-                .contains(value_word.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
+        assert!(heap.native_cons_is_live(key_word.wrapping_sub(TAG_CONS) as *const NativeCons));
+        assert!(heap.native_cons_is_live(value_word.wrapping_sub(TAG_CONS) as *const NativeCons));
         assert_eq!(
             interpreter
                 .hash_table_runtime_entries(id)
@@ -8376,7 +8158,8 @@ mod tests {
             &environment,
         );
         assert_eq!(
-            heap.native_conses.live, 0,
+            heap.native_owned_len(),
+            0,
             "weak entries are not independent roots"
         );
         assert!(
@@ -8425,10 +8208,7 @@ mod tests {
         );
 
         for word in [x_word, y_word, z_word] {
-            assert!(
-                heap.native_conses
-                    .contains(word.wrapping_sub(TAG_CONS) as *const NativeCons)
-            );
+            assert!(heap.native_cons_is_live(word.wrapping_sub(TAG_CONS) as *const NativeCons));
         }
         for id in &tables {
             assert_eq!(
@@ -8451,7 +8231,7 @@ mod tests {
             &environment,
         );
 
-        assert_eq!(heap.native_conses.live, 0);
+        assert_eq!(heap.native_owned_len(), 0);
         for id in tables {
             assert!(
                 interpreter
@@ -8463,7 +8243,7 @@ mod tests {
     }
 
     #[test]
-    fn native_gc_marks_reachable_arena_conses_and_reuses_the_rest() {
+    fn native_gc_marks_reachable_generated_conses_and_frees_the_rest() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
         let mut heap = NativeHeap::default();
@@ -8484,18 +8264,13 @@ mod tests {
             &environment,
         );
 
-        assert_eq!(heap.native_conses.live, 2);
-        assert!(
-            heap.native_conses
-                .contains(head.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
-        assert!(
-            heap.native_conses
-                .contains(tail.wrapping_sub(TAG_CONS) as *const NativeCons)
-        );
-        let blocks_before_reuse = heap.native_conses.blocks.len();
+        assert_eq!(heap.native_owned_len(), 2);
+        assert!(heap.native_cons_is_live(head.wrapping_sub(TAG_CONS) as *const NativeCons));
+        assert!(heap.native_cons_is_live(tail.wrapping_sub(TAG_CONS) as *const NativeCons));
+        // The 5,000 unreached cells left the heap's ownership; a fresh
+        // allocation is one more owned cell, not one of them revived.
         std::hint::black_box(heap.cons(TAG_FIXNUM_LOW, 0));
-        assert_eq!(heap.native_conses.blocks.len(), blocks_before_reuse);
+        assert_eq!(heap.native_owned_len(), 3);
     }
 
     #[test]
