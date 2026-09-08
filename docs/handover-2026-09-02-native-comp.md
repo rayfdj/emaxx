@@ -30,8 +30,11 @@ recorded. Checkpoint 8 closed R03's storage clause: a cons generated code
 allocates is the evaluator's own `ConsCell`, owned by the native heap until
 unreachable, and the block arena is gone; the typed-field reconciliation
 inside that one cell stays open as R03b (bridge cost, not a second
-authority). The writer (D07 onward) starts next. The Linux records are in
-`docs/honesty-audit-2026-08-18.md`.
+authority). Checkpoint 9 started the writer: D07's entry prelude runs in
+pdumper.c's order up to the file open (`src/lisp/primitives/pdumper.rs`);
+D08 (header, sections, relocations) is next, and the startup reconstruction
+still hands off at the unavailable error where the open would be. The Linux
+records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
 

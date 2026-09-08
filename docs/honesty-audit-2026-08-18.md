@@ -7352,3 +7352,63 @@ and it is within run-to-run noise: no speedup is claimed, and the
 run-1788840508912446236-6692, GROUPED GATE PASSED (every group 0
 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
 committed.
+
+## 2026-09-08 D07: the dumper's entry runs as pdumper.c writes it, up to the open
+
+*What the entry did.*  `dump-emacs-portable' checked that its
+argument was a string and signaled "Portable dumper backend is
+unavailable".  Nothing of Fdump_emacs_portable's prelude ran: no
+batch-mode refusal, no thread checks, no `load--fixup-all-elns', no
+collection, no `command-line-processed' binding.
+
+*What it does now (`primitives/pdumper.rs').*  In pdumper.c's order:
+the batch-mode refusal with GNU's message; the main-thread refusal;
+the other-threads refusal (`(cdr (all-threads))'); Ffuncall of the
+Lisp `load--fixup-all-elns'; `garbage_collect' repeated while
+`number_finalizers_run' is non-zero; specbind of
+`command-line-processed' to nil, unbound on every exit; CHECK_STRING;
+Fexpand_file_name; then the three variables `dump_unwind_cleanup'
+restores -- purify-flag, post-gc-hook, process-environment -- cleared
+around the writer and put back by direct cell writes (no watcher, as
+`Vpurify_flag = Qnil' has none).  The oracle pinned every observable
+of this order: the wrong-type error on 42 arrives after one
+collection (post-gc-hook ran once), after the fixup, and after the
+binding's `let' watcher event, with the `unlet' event on the way out;
+the thread errors carry GNU's strings; a process with another live
+thread is refused before the fixup runs.  Contract
+`dump_emacs_portable_prelude_follows_pdumper_c' holds all of it.
+
+*Where the boundary is now, and what that is not.*  GNU opens the
+output file (`O_RDWR | O_TRUNC | O_CREAT', 0666) and writes a header
+whose first magic byte is `!' until the dump completes; a failure
+after that point leaves the incomplete file behind.  Emaxx signals
+the unavailable error where the open would be, so no file is created
+(Rust-only control
+`dump_emacs_portable_restores_its_context_at_the_writer_boundary':
+the three variables and the binding are back, no file exists).  A
+missing directory therefore reports the unavailable error where GNU
+reports `(file-missing "Opening dump output" "No such file or
+directory" PATH)'; that case joins the contract with D08, when there
+is a header to write.  Also not GNU and disclosed in the D07 row:
+`will_dump_with_unexec_p' is false by configuration, `check_pure_size'
+has no pure space, `block_input' has nothing to block, ENCODE_FILE is
+the UTF-8 identity every file primitive uses.
+
+*Startup.*  The image reconstruction at startup reaches this
+primitive from loadup.el (dump-mode "pdump"), so the prelude now runs
+there too: the fixup (a no-op without `--bin-dest'/`--eln-dest'), one
+collection of the preloaded heap, the binding, and the unwind.  GNU's
+temacs does the same at that point.  The boundary test that used a
+bare interpreter now runs in the initialized batch image: a bare
+interpreter has `noninteractive' nil and is refused as GNU refuses an
+interactive session.  Startup cost of the added collection, paired and
+alternating against the checkpoint-8 binary on one machine (`-Q --batch
+--eval (kill-emacs)', fresh HOME): 30.96, 34.86, 32.24 s user against
+35.19, 33.15, 31.46 s; within the run-to-run spread, and the absolute
+numbers are this machine's today, not the 18 s baseline recorded
+earlier.
+
+*Checkpoint 9 gate.*  Alone on the machine: grouped gate
+run-1788851939988389086-22849, GROUPED GATE PASSED (2609 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.

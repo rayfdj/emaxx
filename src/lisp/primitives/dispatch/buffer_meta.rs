@@ -965,18 +965,12 @@ define_dispatch!(
             }
             "dump-emacs-portable" => {
                 need_arg_range(name, args, 1, 2)?;
-                if string_like(&args[0]).is_none() {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("wrong-type-argument"),
-                        Value::symbol("stringp"),
-                        args[0].clone(),
-                    ])));
-                }
-                // GNU's implementation serializes the entire live C heap and
-                // later restores it with matching relocations.  Emaxx has no
-                // image writer/loader, so creating a lookalike file would be
-                // corrupt rather than compatible.
-                Err(LispError::Signal(PORTABLE_DUMPER_UNAVAILABLE.into()))
+                crate::lisp::primitives::pdumper::dump_emacs_portable(
+                    interp,
+                    env,
+                    &args[0],
+                    args.get(1),
+                )
             }
             "dump-emacs-portable--sort-predicate-copied" => {
                 need_args(name, args, 2)?;

@@ -130,6 +130,7 @@ mod invisibility;
 mod keys;
 mod loading;
 mod numeric_time;
+mod pdumper;
 pub(crate) mod print;
 mod processes;
 mod purecopy;
