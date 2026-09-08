@@ -2185,6 +2185,10 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
         .read()
         .expect("portable-dumper boundary program should parse")
         .expect("portable-dumper boundary program should contain a form");
+    // The writer boundary sits past pdumper.c's batch-mode check, so the
+    // program runs in an initialized batch image (a bare interpreter is
+    // refused as GNU refuses an interactive one).
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let actual = interp
         .eval(&form, &mut env)
         .expect("portable-dumper boundary should be catchable");
@@ -2194,7 +2198,94 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
         .expect("portable-dumper boundary expectation should contain a form");
     assert!(
         values_equal(&interp, &actual, &expected),
-        "portable-dumper boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+        "portable-dumper boundary was not explicit:\nactual: {actual}\nexpected: {expected}"
+    );
+}
+
+#[test]
+fn dump_emacs_portable_prelude_follows_pdumper_c() {
+    // pdumper.c:Fdump_emacs_portable in source order: the main-thread and
+    // other-thread refusals, `load--fixup-all-elns' called as a Lisp
+    // function, one collection (post-gc-hook runs) before the filename is
+    // checked, the `command-line-processed' binding made and unbound
+    // around the failure, and the arity errors.
+    let program = r#"
+        (progn
+          (setq zz-order nil)
+          (fset 'load--fixup-all-elns (lambda () (push 'fixup zz-order)))
+          (add-hook 'post-gc-hook (lambda () (push 'gc zz-order)))
+          (add-variable-watcher 'command-line-processed
+                                (lambda (_symbol value operation _where)
+                                  (push (list 'watch operation value) zz-order)))
+          (list
+           (condition-case error-data (dump-emacs-portable 42) (error error-data))
+           (reverse zz-order)
+           command-line-processed
+           (let ((thread (make-thread (lambda () (thread-yield) (sleep-for 1)))))
+             (setq zz-order nil)
+             (prog1 (list (condition-case error-data (dump-emacs-portable 42)
+                            (error error-data))
+                          (reverse zz-order))
+               (thread-join thread)))
+           (let ((thread (make-thread
+                          (lambda ()
+                            (condition-case error-data (dump-emacs-portable 42)
+                              (error error-data))))))
+             (thread-join thread))
+           (condition-case error-data (dump-emacs-portable) (error error-data))
+           (condition-case error-data (dump-emacs-portable "a" "b" "c")
+             (error error-data))))"#;
+    let expected = "((wrong-type-argument stringp 42) \
+         (fixup gc (watch let nil) (watch unlet t)) t \
+         ((error \"No other Lisp threads can be running when this function is called\") nil) \
+         (error \"This function can be called only in the main thread\") \
+         (wrong-number-of-arguments dump-emacs-portable 0) \
+         (wrong-number-of-arguments dump-emacs-portable 3))";
+    assert_oracle_contract_matches_interpreter(program, expected, "dump-emacs-portable prelude");
+}
+
+#[test]
+fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
+    // Rust-only: GNU would open the file here.  Until the writer exists the
+    // unavailable error is signaled at that point, and dump_unwind_cleanup's
+    // variables (purify-flag, post-gc-hook, process-environment) and the
+    // command-line-processed binding are back as GNU's unwind leaves them,
+    // with no file created.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-d07-must-not-exist-{}.pdmp",
+        std::process::id()
+    ));
+    let program = format!(
+        r#"(progn
+             (defun zz-post-gc () nil)
+             (setq purify-flag 'zz-pure
+                   post-gc-hook '(zz-post-gc)
+                   process-environment '("ZZ=1"))
+             (let ((processed command-line-processed))
+               (list (condition-case error-data (dump-emacs-portable {path:?} t)
+                       (error error-data))
+                     purify-flag post-gc-hook process-environment
+                     (eq processed command-line-processed))))"#,
+        path = path.display()
+    );
+    let form = Reader::new(&program)
+        .read()
+        .expect("context program parses")
+        .expect("context program has a form");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("the writer boundary is a catchable error");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print the context result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        "((error \"Portable dumper backend is unavailable\") zz-pure (zz-post-gc) (\"ZZ=1\") t)"
+    );
+    assert!(
+        !path.exists(),
+        "no lookalike image may be created: {path:?}"
     );
 }
 
