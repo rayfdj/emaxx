@@ -1300,6 +1300,81 @@ fn probe_oracle_forwarded_variables(
     )
 }
 
+pub(crate) fn gnu_c_int_variable_manifest_matches_fresh_regeneration() {
+    // This inventory makes a store into a DEFVAR_INT slot CHECK_INTEGER and
+    // range-check as data.c:store_symval_forwarding does; regenerate it from
+    // the pinned GNU sources exactly like the DEFVAR_BOOL manifest.
+    let source_root = repo_root().join("../emacs/src");
+    assert!(
+        source_root.is_dir(),
+        "pinned GNU sibling checkout required for the DEFVAR_INT manifest regeneration gate"
+    );
+    let pattern =
+        regex::Regex::new(r#"DEFVAR_INT \("([^"]+)""#).expect("compile DEFVAR_INT source pattern");
+    let mut names = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&source_root).expect("read pinned GNU src directory") {
+        let path = entry.expect("read pinned GNU src entry").path();
+        if path.extension().is_some_and(|extension| extension == "c") {
+            let bytes = fs::read(&path).expect("read pinned GNU C source");
+            let text = String::from_utf8_lossy(&bytes);
+            for capture in pattern.captures_iter(&text) {
+                names.insert(capture[1].to_string());
+            }
+        }
+    }
+    let fresh = names.into_iter().collect::<Vec<_>>();
+    assert_eq!(
+        crate::lisp::primitives::generated_gnu_c_int_variables::GNU_C_INT_VARIABLES,
+        fresh.as_slice(),
+        "committed GNU C DEFVAR_INT manifest does not match fresh regeneration from the pinned checkout"
+    );
+}
+
+pub(crate) fn gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration() {
+    // The values Emaxx binds the oracle-only forwarded variables to are the
+    // oracle's own printed `-Q --batch' values; re-print every listed name
+    // from the pinned oracle and require byte identity.
+    let root = repo_root();
+    let oracle = root.join("../emacs/src/emacs");
+    assert!(
+        oracle.exists(),
+        "pinned GNU sibling checkout required for the forwarded-defaults manifest gate"
+    );
+    let defaults = crate::lisp::primitives::gnu_c_forwarded_defaults();
+    if defaults.is_empty() {
+        return;
+    }
+    let names = defaults
+        .iter()
+        .map(|(name, _)| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let program = format!(
+        "(let ((print-length nil) (print-level nil) (print-circle nil) (print-escape-newlines t)) \
+           (dolist (n (list {names})) \
+             (princ (format \"%s %s\\n\" n (prin1-to-string (default-value (intern n)))))))"
+    );
+    let output = std::process::Command::new(&oracle)
+        .args(["-Q", "--batch", "--eval", &program])
+        .output()
+        .expect("run the forwarded-defaults probe with the oracle binary");
+    assert!(output.status.success(), "forwarded-defaults probe failed");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let fresh = text
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .map(|(name, printed)| (name.to_owned(), printed.to_owned()))
+        .collect::<Vec<_>>();
+    let committed = defaults
+        .iter()
+        .map(|(name, printed)| ((*name).to_owned(), (*printed).to_owned()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        committed, fresh,
+        "committed GNU C forwarded-defaults manifest does not match fresh regeneration from the pinned oracle"
+    );
+}
+
 pub(crate) fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
     // eval.c:Fdefvaralias refuses a built-in variable; the manifest that
     // decides "built-in" in Emaxx is regenerated from the pinned sources
@@ -1479,6 +1554,14 @@ pub fn enforce_all() -> Result<(), Vec<String>> {
             gnu_c_forwarded_variable_manifest_matches_fresh_regeneration as fn(),
         ),
         (
+            "gnu_c_int_variable_manifest_matches_fresh_regeneration",
+            gnu_c_int_variable_manifest_matches_fresh_regeneration as fn(),
+        ),
+        (
+            "gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration",
+            gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration as fn(),
+        ),
+        (
             "builtin_arities_match_fresh_regeneration",
             builtin_arities_match_fresh_regeneration as fn(),
         ),
@@ -1596,6 +1679,16 @@ mod gate_tests {
     #[test]
     fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
         super::gnu_c_forwarded_variable_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn gnu_c_int_variable_manifest_matches_fresh_regeneration() {
+        super::gnu_c_int_variable_manifest_matches_fresh_regeneration();
+    }
+
+    #[test]
+    fn gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration() {
+        super::gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration();
     }
 
     #[test]

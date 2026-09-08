@@ -1121,9 +1121,7 @@ define_dispatch!(
                         interp.forwarded_c_value(&symbol, env).unwrap_or(Value::Nil)
                     };
                     interp.remove_global_binding(&symbol);
-                    interp
-                        .detached_forwarded_variables
-                        .insert(symbol.clone(), slot_value);
+                    interp.detach_forwarded_variable(&symbol, slot_value);
                 }
                 Ok(args[0].clone())
             }
