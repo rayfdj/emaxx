@@ -2885,6 +2885,9 @@ struct LispReachability<'mark, 'heap> {
 pub(crate) struct WeakHashReachability {
     pub(crate) tables: Vec<WeakHashTableReachability>,
     pub(crate) live_records: HashSet<u64>,
+    /// Finalizer objects the mark phase reached (alloc.c marks a reached
+    /// `Lisp_Finalizer' as any pseudovector, and its function with it).
+    pub(crate) live_finalizers: HashSet<u64>,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
@@ -2983,6 +2986,15 @@ impl LispReachability<'_, '_> {
             Value::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals.
                 self.mark(interp, &symbol.lisp_name());
+            }
+            Value::Finalizer(id) => {
+                // A reached Lisp_Finalizer is a pseudovector whose one Lisp
+                // slot is `function'; an unreached one is doomed after this
+                // pass and its function marked separately
+                // (alloc.c:mark_finalizer_list).
+                if let Some(function) = interp.finalizer_function(*id) {
+                    self.mark(interp, &function);
+                }
             }
             Value::StringObject(value) => {
                 let children = value
@@ -3113,7 +3125,6 @@ impl LispReachability<'_, '_> {
             | Value::Marker(_)
             | Value::Overlay(_)
             | Value::Terminal(_)
-            | Value::Finalizer(_)
             | Value::Unbound => {}
         }
         true
@@ -3182,6 +3193,11 @@ impl Interpreter {
         mark(&self.loads_in_progress);
         for value in self.detached_forwarded_variables.values() {
             mark(value);
+        }
+        // alloc.c:mark_finalizer_list (&doomed_finalizers): a doomed
+        // finalizer's function survives until it has run.
+        for function in &self.doomed_finalizers {
+            mark(function);
         }
         for event in &self.pending_thread_events {
             mark(event);
@@ -3471,6 +3487,7 @@ impl Interpreter {
         WeakHashReachability {
             tables,
             live_records: marked.records,
+            live_finalizers: marked.finalizers,
         }
     }
 
@@ -3603,6 +3620,12 @@ impl Interpreter {
             let c = &mut copier;
             for value in clone.globals.values_mut() {
                 *value = c.copy(value);
+            }
+            for (_, function) in &mut clone.finalizer_functions {
+                *function = c.copy(function);
+            }
+            for function in &mut clone.doomed_finalizers {
+                *function = c.copy(function);
             }
             // Copy the actual C-side fields. The graph copier preserves
             // aliasing with Lisp cells while forwarded, but makunbound may
@@ -4293,6 +4316,15 @@ pub struct Interpreter {
     next_record_id: u64,
     /// Next finalizer ID for identity tracking.
     next_finalizer_id: u64,
+    /// alloc.c's `finalizers' list: every extant finalizer object's
+    /// function, in creation order (finalizer_insert appends before the
+    /// head).  A function set to nil has run or was created nil.
+    finalizer_functions: Vec<(u64, Value)>,
+    /// alloc.c's `doomed_finalizers': functions of finalizer objects the
+    /// last mark phase did not reach, run once the collection completes.
+    doomed_finalizers: Vec<Value>,
+    /// alloc.c:number_finalizers_run.
+    pub(crate) finalizers_run: u64,
     /// Next generated symbol ID used by built-in macro expansion helpers.
     /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
     /// order.  This is the sole backing store for local hook metadata.
@@ -5209,6 +5241,9 @@ impl Interpreter {
             treesit_nodes: Vec::new(),
             next_record_id: 3,
             next_finalizer_id: 1,
+            finalizer_functions: Vec::new(),
+            doomed_finalizers: Vec::new(),
+            finalizers_run: 0,
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),

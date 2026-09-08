@@ -205,7 +205,7 @@ fn redisplay_safe_call(
 // message's echo/capture/stderr path, as xdisp.c:add_to_log requires.
 // Full message_dolog duplicate coalescing and marker restoration remain
 // separate contracts; factoring this sink does not claim to implement them.
-fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
+pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
     let buffer_name = interp
         .lookup_var("messages-buffer-name", env)
         .and_then(|value| string_like(&value).map(|string| string.text))

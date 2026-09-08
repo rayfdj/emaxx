@@ -23,8 +23,10 @@ symbol with a void local as a binding (V04 stage 1) and ported the
 buffer-local primitives' data.c semantics. Checkpoint 6 put the forwarding
 kinds in the cell (FORWARDED/FWD_BOOL/FWD_INT from the manifests), added the
 DEFVAR_INT store check, and bound the 73 oracle-only forwarded variables to the
-oracle's defaults (V05 stage 1). The dump-prerequisite program continues with
-L11, R03 and the D06/L08 census; the Linux records are in
+oracle's defaults (V05 stage 1). Checkpoint 7 made finalizers run as
+alloc.c does, added the mechanical root-set audit, and closed the pdump
+ledger's D03/D04/D06 rows for image construction with D05's owner decision
+recorded; the writer (D07 onward) can start. The Linux records are in
 `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
