@@ -7495,3 +7495,72 @@ construction site, never in the image.
 run-1788863908506282633-10836, GROUPED GATE PASSED (2617 tests, every
 group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
 tree as committed.
+
+## 2026-09-08 D09: closures, environments, char-tables, records and bool-vectors in the image
+
+*What the writer covers now.*  Interpreted closures are written as
+their GNU closure slots (parameters, body, environment, documentation,
+interactive) plus the Emaxx fields that hold the exact Lisp objects
+(`public_parameters', `public_environment'); the parameter vector, the
+body vector and the captured environment are shared Rust objects, so
+they are written once each through raw-pointer fixups -- as GNU writes
+interval trees, blvs and fwds -- and a lexical frame carries its
+bindings, identity, function-namespace flag, locally-special
+declarations and the authoritative Lisp alist.  Char-tables are
+written as Emaxx keeps them (subtype, default, parent, extra slots,
+the range log, category docstrings), not as GNU's sub-char-table tree;
+the observable table is the same and the row says so.  Records and
+pseudovectors whose state is their slots (records, byte-code closures,
+fonts, symbols with position, keymap facades) are written with their
+ids, because the id is the identity every `Value::Record' carries and
+the loader installs them under the same ids.  Bool-vectors go to the
+cold section as bits.  Obarrays are records: the initial one with its
+symbol list, a private one with its slot.  The main thread is an
+object of the running process (GNU's DUMP_OBJECT_IS_RUNTIME_MAGIC).
+Windows and processes are nilled as `dump_nilled_pseudovec' does.
+The cells of `nil' and `t' -- self-representing words until now, so
+their function cell and plist were lost -- are scanned with the roots
+and written after the queue drains, where GNU writes the copied
+symbols' hot parts.
+
+*The loader.*  Records and char-tables are installed with the image's
+ids (`install_record', `install_char_table' replace an existing id:
+the image is the authority).  A closure is materialized on demand
+when a field names it, with its environment created as an empty shell
+first so a closure reachable through its own frame terminates, the
+way the test template's graph copier already handles the same cycle;
+a closure that names itself through its body or parameters is an
+error.  `nil' and `t' arriving as immediate words are accepted
+wherever a symbol is expected (obarray entries, parameters, property
+names); the previous loader would have refused them.
+
+*Control.*  Two closures over one `let' binding, a char-table with
+ranges, a subtype, a default and an extra slot, a bool-vector with
+three bits set, a record whose slot shares the closure list, and the
+main thread go through an image into a second interpreter: the two
+closures share one environment object there, calling the first
+returns 1, the second adds 5 and the first then returns 6; the
+char-table's fields, the bits, the record's slots and the shared
+identity are as written; the main thread is the second interpreter's
+own.  The referrer paths (TRACK-REFERRERS) named the object that
+stopped the first attempt -- the standard obarray reaches every
+symbol's value, and `comp-subr-arities-h' is a hash table -- so the
+control does not include the obarray until D10.  print_paths_to_root
+recurses without a guard in GNU; a referrer cycle made the printer
+loop here, and each object's paths are now printed once.
+
+*Still refused, with pdumper.c's error.*  Hash tables (D10); buffers,
+markers, overlays, finalizers, frames, terminals (D11); native
+compilation units and native functions (D14/D15); and what GNU
+refuses too: threads other than the main one, window configurations,
+mutexes, condition variables, tree-sitter objects, sqlite handles.
+Reader forms are refused as well; none has been seen reachable from a
+root after loading.  Not recorded: the interned-in-another-obarray
+state (D09 row).
+
+*Checkpoint 11 gate.*  Alone on the machine: grouped gate
+run-1788876131748816838-30654, GROUPED GATE PASSED (2618 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.  Main was fetched after the gate and still carries
+only merge commits of this branch (its tree is checkpoint 8's), so the
+merge asked for waits for the next checkpoint.
