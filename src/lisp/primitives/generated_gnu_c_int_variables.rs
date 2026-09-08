@@ -1,0 +1,90 @@
+// @generated from the GNU Emacs 30.2 C sources: every `DEFVAR_INT ("name"
+// ...)` across src/*.c, sorted and deduplicated.  data.c
+// store_symval_forwarding stores such a variable through CHECK_INTEGER and
+// an intmax_t range check (`overflow-error'), and do_symval_forwarding
+// reads it back as a fixnum or bignum, so a store of any other object
+// signals instead of being kept.  The mandatory anti-cheat gate
+// regenerates this list from the pinned GNU checkout and requires byte
+// identity.
+
+#[rustfmt::skip]
+pub(crate) const GNU_C_INT_VARIABLES: &[&str] = &[
+    "android-display-planes",
+    "android-keyboard-bell-duration",
+    "android-quit-keycode",
+    "auto-save-interval",
+    "baud-rate",
+    "cons-cells-consed",
+    "debug-end-pos",
+    "display-line-numbers-major-tick",
+    "display-line-numbers-minor-tick",
+    "display-line-numbers-offset",
+    "dos-codepage",
+    "dos-country-code",
+    "dos-decimal-point",
+    "dos-hyper-key",
+    "dos-keyboard-layout",
+    "dos-keypad-mode",
+    "dos-super-key",
+    "dos-timezone-offset",
+    "double-click-fuzz",
+    "executing-kbd-macro-index",
+    "extra-keyboard-modifiers",
+    "face-near-same-color-threshold",
+    "floats-consed",
+    "gc-cons-threshold",
+    "gcs-done",
+    "gnutls-log-level",
+    "hscroll-margin",
+    "imagemagick-render-type",
+    "integer-width",
+    "internal-when-entered-debugger",
+    "intervals-consed",
+    "large-hscroll-threshold",
+    "line-number-display-limit-width",
+    "lisp-eval-depth-reserve",
+    "long-line-optimizations-bol-search-limit",
+    "long-line-optimizations-region-size",
+    "max-lisp-eval-depth",
+    "max-redisplay-ticks",
+    "next-screen-context-lines",
+    "num-input-keys",
+    "num-nonmacro-input-events",
+    "overline-margin",
+    "pgtk-selection-timeout",
+    "process-error-pause-time",
+    "profiler-log-size",
+    "profiler-max-stack-depth",
+    "pure-bytes-used",
+    "read-process-output-max",
+    "scroll-conservatively",
+    "scroll-margin",
+    "scroll-step",
+    "string-chars-consed",
+    "strings-consed",
+    "symbols-consed",
+    "syntax-propertize--done",
+    "tab-bar-button-relief",
+    "tool-bar-button-relief",
+    "tool-bar-max-label-size",
+    "underline-minimum-offset",
+    "undo-limit",
+    "undo-strong-limit",
+    "vector-cells-consed",
+    "w32-ansi-code-page",
+    "w32-mouse-button-tolerance",
+    "w32-mouse-move-interval",
+    "w32-multibyte-code-page",
+    "w32-num-mouse-buttons",
+    "w32-pipe-buffer-size",
+    "w32-pipe-read-delay",
+    "w32-quit-key",
+    "x-color-cache-bucket-size",
+    "x-mouse-click-focus-ignore-time",
+    "x-selection-timeout",
+];
+
+/// Whether NAME is a GNU `DEFVAR_INT` variable.
+pub(crate) fn is_gnu_c_int_variable(name: &str) -> bool {
+    GNU_C_INT_VARIABLES.binary_search(&name).is_ok()
+}

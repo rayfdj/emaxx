@@ -59,6 +59,7 @@ mod file_io;
 mod generated_builtin_arities;
 pub(crate) mod generated_gnu_c_bool_variables;
 mod generated_gnu_c_defsyms;
+pub(crate) mod generated_gnu_c_int_variables;
 pub(crate) use generated_gnu_c_defsyms::GNU_C_DEFSYMS;
 #[allow(dead_code)]
 mod generated_gnu_c_primitives;
@@ -82,6 +83,22 @@ pub(crate) fn gnu_c_forwarded_variables() -> &'static [&'static str] {
     #[cfg(target_os = "linux")]
     {
         generated_gnu_c_forwarded_variables_linux::GNU_C_FORWARDED_VARIABLES
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        &[]
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) mod generated_gnu_c_forwarded_defaults_linux;
+/// The `-Q --batch' values the contracted oracle gives the C-forwarded
+/// variables Emaxx has no C owner for, as `(name, printed value)'; empty
+/// off Linux (disclosed in the ledger).
+pub(crate) fn gnu_c_forwarded_defaults() -> &'static [(&'static str, &'static str)] {
+    #[cfg(target_os = "linux")]
+    {
+        generated_gnu_c_forwarded_defaults_linux::GNU_C_FORWARDED_DEFAULTS
     }
     #[cfg(not(target_os = "linux"))]
     {

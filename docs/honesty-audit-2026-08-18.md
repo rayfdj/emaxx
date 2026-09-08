@@ -7180,3 +7180,57 @@ Emaxx's model (`makunbound' of one still takes the previous path).
 run-1788814256001850440-16741, GROUPED GATE PASSED (every group 0
 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
 committed.
+
+## 2026-09-07 V05 stage 1: forwarding kinds in the cell, and the oracle's own DEFVARs
+
+*What GNU does.*  A DEFVAR_* symbol is `SYMBOL_FORWARDED'; a store goes
+through `store_symval_forwarding' by the slot's kind (`Lisp_Fwd_Bool'
+keeps `!NILP (newval)', `Lisp_Fwd_Int' is CHECK_INTEGER then
+`integer_to_intmax' or `overflow-error'), and storing Qunbound makes
+the symbol plain.  lread.c binds every DEFVAR of the build before any
+Lisp runs.
+
+*What the probes found.*  Emaxx coerced DEFVAR_BOOL stores by a name
+lookup over all 178 source names (so an android-only name, plain in the
+Linux oracle, was coerced too), had no DEFVAR_INT check except two
+hand-written arms (`(setq undo-limit 1.5)' was kept, GNU signals
+`wrong-type-argument integerp'; `(setq undo-limit (expt 2 70))' was
+kept, GNU signals `overflow-error'; `gc-cons-threshold' accepted any
+bignum), and left 73 of the oracle's 749 forwarded names void at `-Q
+--batch': the X11, Cairo, font-table and text-conversion DEFVARs whose
+C owners have no Emaxx counterpart (`(boundp 'x-selection-timeout)',
+`font-weight-table', `cairo-version-string', `x-keysym-table', ...).
+
+*What changed.*  Three flags in the symbol cell -- FORWARDED, FWD_BOOL,
+FWD_INT -- set at interpreter construction for every name in the Linux
+forwarded manifest, with the kind from the DEFVAR_BOOL manifest and a
+new DEFVAR_INT manifest (`generated_gnu_c_int_variables.rs', 73 source
+names, regeneration gate like the bool one).  `prepare_variable_
+assignment' coerces or checks by flag, `is_forwarded_variable' is the
+flag, and `makunbound' clears all three as set_internal does.  The 73
+missing names are bound from
+`generated_gnu_c_forwarded_defaults_linux.rs': the oracle's printed
+`default-value' of each (the current buffer's value was wrong for
+`multibyte-syntax-as-symbol', which lisp-interaction-mode sets locally
+in *scratch* -- the first manifest recorded nil from a temp buffer and
+the gate's top-level probe read t, which is how the `default-value'
+rule was found), read back with `read-from-string' at construction and
+declared special; the anti-cheat gate
+`gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration'
+re-prints every listed name from the oracle and requires byte
+identity.  Nothing about the C code behind those names is claimed: the
+cells exist and hold what the oracle's do at `-Q --batch'.
+
+*Contracts.*  `forwarded_c_variables_follow_store_symval_forwarding'
+(bool coercion on set and let, int type and overflow errors, a plain
+symbol after makunbound accepting any object, boundp of a forwarded
+slot) and `oracle_only_forwarded_c_variables_are_bound_as_the_oracle_
+binds_them' (all 73 names: bound, default-bound, special, not
+local-if-set, and the default value itself, a hash table by count and
+test).  Off Linux both manifests are empty: the 73 names stay void
+there and the kind checks do not run, disclosed here and in the row.
+
+*Checkpoint 6 gate.*  Alone on the machine: grouped gate
+run-1788820575098554763-32733, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.
