@@ -46,11 +46,17 @@ cells of `nil` and `t`; the loader materializes closures on demand and
 installs records and char-tables under the image's ids. A real dump now
 stops at the first hash table. Checkpoint 12 (D10) freezes and thaws hash
 tables as pdumper.c and fns.c do, with the deferred drain, the hash list and
-GNU's refusal of user-defined tests. Main is checked at every checkpoint and
-merged as soon as it carries content (it held only merge commits of this
-branch at checkpoints 11 and 12). Next: D11 (buffers, markers, overlays,
-finalizers, frames, terminals, the remaining root groups), then the loader
-D12/D13.
+GNU's refusal of user-defined tests. Checkpoint 13 (D11, the object kinds)
+writes buffers with their text, spans, markers, locals, hooks, tables and
+undo entries, markers, deleted overlays, finalizers with their chain and
+list heads, and nilled frames and terminals, with GNU's refusal of a buffer
+that has a live overlay; the loader installs them under the image's ids.
+A real `dump-emacs-portable` now completes (a 14 MB image of the loadup
+state) and the loader reads it back into a second interpreter; nothing
+starts from it until D12/D13. Main is checked at every checkpoint and merged as soon as it carries
+content (it held only merge commits of this branch at checkpoints 11, 12
+and 13). Next: D11b (the remaining `Interpreter` root groups, each tabled
+against its GNU counterpart), then the loader D12/D13.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

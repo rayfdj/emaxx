@@ -7616,3 +7616,96 @@ group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
 tree as committed.  Main was fetched after the gate and still carries
 only merge commits of this branch (its tree is checkpoint 8's); the
 merge waits for the next checkpoint.
+
+## 2026-09-08 D11 (object kinds): buffers, markers, overlays, finalizers, frames and terminals in the image
+
+*The writer.*  `dump_object' dispatches the six remaining heap kinds
+that were refused.  `dump_buffer' writes a live buffer's own fields as
+pdumper.c copies the `struct buffer': name, file and truename, point,
+mark and its activation, the narrowing, the modification counters,
+the visited-file modtime, the multibyte flag and the hook inhibition;
+`last_name' is cleared as `dump_buffer' clears `last_name_'.  The text
+goes to the cold section as COLD_OP_BUFFER does, in GNU's internal
+representation with the out-of-Unicode side list and a terminating
+NUL (GNU also writes the zeroed gap; the rope has none), through a
+raw-pointer fixup to `own_text.beg'.  The property spans follow the
+record as the interval tree does; the markers pointing into the
+buffer are written as the `own_text.markers' chain with WEIGHT_NORMAL;
+the local bindings (`local_var_alist_', a void local as the unbound
+word) and the local hook lists, the syntax and case tables (the
+BVARs), the base buffer of an indirect buffer and the persistent mark
+marker are Lisp fields with WEIGHT_STRONG; the undo entries are
+written as Emaxx's typed entries (`undo_list_' is WEIGHT_STRONG in
+GNU).  A buffer with a live overlay signals GNU's "dumping overlays is
+not yet implemented" as a Lisp error; a killed buffer is written with
+no text and a nil name, as BUFFER_LIVE_P false dumps.  `dump_marker'
+writes the buffer with WEIGHT_NORMAL, the positions and the insertion
+type.  `dump_overlay' writes the buffer field, the bounds, the advance
+flags and the plist; only a deleted overlay can get through, because
+a live one's buffer is a field, is dumped, and refuses -- which is how
+GNU's writer behaves too.  `dump_finalizer' writes the function with
+WEIGHT_NONE ("so we can give it a low weight") and the `prev'/`next'
+neighbours with WEIGHT_NORMAL (a sentinel neighbour, an Emacs pointer
+in GNU, is nil here), and `dump_roots' ends with
+`dump_finalizer_list_head_ptr''s relocations for the list's last and
+first finalizer, none for an empty list.  Frames and terminals are
+nilled as `dump_nilled_pseudovec' writes them: the record is the id.
+
+*The loader.*  Buffers are installed with their ids from the record
+and the cold text; markers with the marker-buffer index and the mark
+relation; deleted overlays on the list of the buffer that held them;
+finalizers in chain order from the `finalizers.next' root (a
+finalizer off the chain follows in image order); a frame as a dead
+`FrameState'; a terminal as its object alone.
+
+*Control.*  A buffer with text (an out-of-Unicode character in it), a
+property span, a local variable, a local hook, its own syntax table,
+a mark, a narrowing, insertion/deletion/boundary undo entries and a
+modtime goes through an image into a second interpreter with every
+field checked, the undo list printing identically, the marker index
+the same size; a marker into it keeps its insertion type and a
+detached marker stays detached; two finalizers come back in list
+order with their functions; the frame is dead after the round trip
+and the terminal's object is the same; a deleted overlay keeps its
+properties and its holding buffer; a killed buffer is an object with
+no buffer behind it.  The refusal of a buffer with a live overlay is
+its own control.  Two expectations of mine were wrong and were
+corrected against the code: the deletion at 1 had moved the mark and
+the marker back one position, and `text_property_at' answers within
+the narrowing only, so the spans are compared directly.
+
+*Not GNU, in the row.*  The saved-text snapshot Emaxx compares for
+`buffer-modified-p' is written beside the text (GNU compares
+counters); the undo entries are typed entries rather than the
+`buffer-undo-list' conses, so a list tail Lisp retained is not the
+same object after a round trip; a marker's last position and
+mark-buffer relation and a deleted overlay's holding buffer are Emaxx
+fields written with the record; a killed buffer loads with an empty
+name behind the object; a terminal's nilled record leaves the running
+process's terminal state alone; the doomed-finalizer list, empty
+after `Fdump_emacs_portable''s collection loop, is an error on the
+explicit-root path rather than dumped, since Emaxx keeps only the
+doomed functions.  The remaining `Interpreter' root groups are open as
+D11b.
+
+*A real dump completes.*  With the object kinds covered,
+`dump-emacs-portable' in an initialized batch process no longer stops
+at an unsupported object: the release binary wrote a complete image of
+the loadup state (Dump complete; header=100 hot=5827884
+discardable=11648 cold=8131360; relocs hot=363152 discardable=1455;
+14029600 bytes), and the D07 boundary contract now asserts the
+completing path instead of the refusal: `nil' returned, the three
+variables and `command-line-processed' restored, the completed magic
+in the file, and pdumper_load's validation and reconstruction reading
+that whole image back into a second interpreter with an obarray of
+the same size as the writer's.  That is an image of every object the
+current roots reach; the root groups D11b tables are not in it yet,
+and no process starts from it until D12/D13.
+
+*Checkpoint 13 gate.*  Alone on the machine: grouped gate
+run-1788899931881043684-12635, GROUPED GATE PASSED (2556 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.  Main was fetched before the gate and still carries
+only merge commits of this branch (its tree is checkpoint 8's); the
+merge waits for the next checkpoint.
+

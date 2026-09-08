@@ -747,3 +747,259 @@ fn image_refuses_hash_tables_with_user_defined_tests_as_gnu_does() {
         Ok(_) => panic!("a user-defined test was dumped"),
     }
 }
+
+#[test]
+fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
+    fn printed(interp: &mut Interpreter, value: &Value) -> String {
+        let value = crate::lisp::native_comp::call_c_primitive(
+            interp,
+            &mut Vec::new(),
+            "prin1-to-string",
+            std::slice::from_ref(value),
+        )
+        .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
+        string_like(&value).expect("a string").text
+    }
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    // A buffer with text (an out-of-Unicode character in it), a text
+    // property, a local variable, its own syntax table, a mark, a
+    // narrowing, undo entries (an insertion, a deletion of propertized
+    // text, a boundary) and a modtime; a marker into it and a detached
+    // one; a deleted overlay; two finalizers; the frame and terminal.
+    let program = r#"
+        (let* ((buf (get-buffer-create "zz-dump-buf"))
+               (m1 (make-marker))
+               (m2 (make-marker))
+               (f1 (make-finalizer 'car))
+               (f2 (make-finalizer 'cdr))
+               ov)
+          (set-buffer buf)
+          (insert "héllo wörld")
+          (insert 2097152)
+          (put-text-property 1 3 'face 'bold)
+          (set (make-local-variable 'zz-dump-local) 42)
+          (set-syntax-table (make-char-table 'syntax-table))
+          (set-visited-file-modtime '(0 100))
+          (goto-char 4)
+          (set-marker (mark-marker) 2)
+          (set-marker m1 3 buf)
+          (set-marker-insertion-type m1 t)
+          (setq ov (make-overlay 1 2))
+          (overlay-put ov 'zz-prop 'yes)
+          (delete-overlay ov)
+          (delete-region 1 2)
+          (undo-boundary)
+          (narrow-to-region 2 6)
+          (vector buf m1 m2 f1 f2 (selected-frame) ov
+                  (let ((killed (get-buffer-create "zz-killed")))
+                    (kill-buffer killed)
+                    killed)))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let Value::Vector(source_vector) = &graph else {
+        panic!("root vector")
+    };
+    let source = source_vector.slots().clone();
+    let Value::Buffer(source_buffer) = &source[0] else {
+        panic!("buffer")
+    };
+    let source_id = source_buffer.id;
+    interp.set_buffer_local_hook(source_id, "zz-dump-hook", vec![Value::symbol("car")]);
+    let source_undo_value = interp
+        .get_buffer_by_id(source_id)
+        .expect("live")
+        .undo_list_value();
+    let source_undo = printed(&mut interp, &source_undo_value);
+    let source_syntax_table = interp
+        .buffer_syntax_table_id(source_id)
+        .expect("the buffer set a syntax table");
+    let source_finalizers = interp.finalizer_ids();
+    let terminal = interp.terminal_value();
+    let roots = vec![
+        (RootSlot::LoadPath, graph.clone()),
+        (RootSlot::QuitFlag, terminal.clone()),
+    ];
+    let bytes = dump(&mut interp, roots);
+
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let root = |slot: RootSlot| {
+        image
+            .roots
+            .iter()
+            .find(|(candidate, _)| *candidate == slot)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("root {slot:?} missing"))
+    };
+    let Value::Vector(vector) = root(RootSlot::LoadPath) else {
+        panic!("root vector")
+    };
+    let slots = vector.slots().clone();
+
+    // The buffer: text, positions, narrowing, flags, property spans, the
+    // side list, the undo entries, the modtime, the local binding, the
+    // syntax table, the mark.
+    let Value::Buffer(loaded_buffer) = &slots[0] else {
+        panic!("buffer")
+    };
+    assert_eq!(loaded_buffer.id, source_id);
+    let buffer = target
+        .get_buffer_by_id(source_id)
+        .expect("the buffer was installed");
+    assert_eq!(buffer.name, "zz-dump-buf");
+    assert_eq!(
+        buffer.full_buffer_string(),
+        format!("éllo wörld{}", crate::lisp::json::INVALID_UNICODE_SENTINEL)
+    );
+    assert_eq!(buffer.extended_char_at(11), Some(0x20_0000));
+    assert_eq!(buffer.point(), 3);
+    assert_eq!(buffer.restriction(), (2, 6));
+    // The deletion at 1 moved the mark (set at 2) and m1 (set at 3) back.
+    assert_eq!(buffer.mark(), Some(1));
+    assert!(buffer.is_multibyte());
+    assert!(buffer.is_modified());
+    assert_eq!(
+        buffer.full_property_spans(),
+        vec![TextPropertySpan {
+            start: 1,
+            end: 2,
+            props: vec![("face".into(), Value::symbol("bold"))],
+        }]
+    );
+    assert_eq!(
+        buffer
+            .visited_file_modtime()
+            .map(|modtime| modtime.modified),
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100))
+    );
+    assert!(buffer.overlays.iter().all(|overlay| overlay.is_dead()));
+    let loaded_undo = buffer.undo_list_value();
+    assert_eq!(printed(&mut target, &loaded_undo), source_undo);
+    let locals = target.buffer_local_cells(source_id);
+    assert_eq!(
+        locals.len(),
+        3,
+        "default-directory, buffer-read-only, zz-dump-local: {locals:?}"
+    );
+    assert!(
+        locals
+            .iter()
+            .any(|(symbol, value)| symbol == "zz-dump-local" && *value == Value::Integer(42))
+    );
+    assert_eq!(
+        target.buffer_syntax_table_id(source_id),
+        Some(source_syntax_table)
+    );
+    assert!(target.find_char_table(source_syntax_table).is_some());
+    let mark_marker = target
+        .buffer_mark_marker_id(source_id)
+        .expect("the mark marker relation");
+    let mark = target.find_marker(mark_marker).expect("mark marker");
+    assert_eq!(mark.buffer_id, Some(source_id));
+    assert_eq!(mark.position, Some(1));
+    assert_eq!(mark.mark_buffer_id, Some(source_id));
+
+    // The markers: one into the buffer with its insertion type, one
+    // detached.
+    let Value::Marker(m1) = slots[1] else {
+        panic!("marker")
+    };
+    let m1 = target.find_marker(m1).expect("marker 1");
+    assert_eq!(m1.buffer_id, Some(source_id));
+    assert_eq!(m1.position, Some(2));
+    assert!(m1.insertion_type);
+    let Value::Marker(m2) = slots[2] else {
+        panic!("marker")
+    };
+    let m2 = target.find_marker(m2).expect("marker 2");
+    assert_eq!(m2.buffer_id, None);
+    assert_eq!(m2.position, None);
+    assert_eq!(
+        target.buffer_marker_ids(source_id).len(),
+        interp.buffer_marker_ids(source_id).len()
+    );
+
+    // The finalizers, in list order, with their functions.
+    let Value::Finalizer(f1) = slots[3] else {
+        panic!("finalizer")
+    };
+    let Value::Finalizer(f2) = slots[4] else {
+        panic!("finalizer")
+    };
+    assert_eq!(target.finalizer_ids(), source_finalizers);
+    assert_eq!(target.finalizer_ids(), vec![f1, f2]);
+    assert_eq!(target.finalizer_function(f1), Some(Value::symbol("car")));
+    assert_eq!(target.finalizer_function(f2), Some(Value::symbol("cdr")));
+
+    // The frame is nilled: a dead frame with that id.  The terminal is
+    // nilled likewise; its object is the id.
+    let Value::Frame(frame) = slots[5] else {
+        panic!("frame")
+    };
+    let state = target.frame_state(frame).expect("dead frame installed");
+    assert!(!state.live);
+    assert_eq!(state.name, Value::Nil);
+    assert_eq!(root(RootSlot::QuitFlag), terminal);
+
+    // The deleted overlay, on the buffer's list, with its properties.
+    let Value::Overlay(ov) = slots[6] else {
+        panic!("overlay")
+    };
+    let overlay = target.find_overlay(ov).expect("overlay installed");
+    assert!(overlay.is_dead());
+    assert_eq!(
+        overlay.plist,
+        vec![(Value::symbol("zz-prop"), Value::symbol("yes"))]
+    );
+    assert_eq!(target.overlay_holder_id(ov), Some(source_id));
+
+    // The local hook list came with the buffer.
+    assert_eq!(
+        target.buffer_local_hook_lists(source_id),
+        vec![("zz-dump-hook".to_owned(), vec![Value::symbol("car")])]
+    );
+
+    // The killed buffer is an object with no buffer behind it.
+    let Value::Buffer(killed) = &slots[7] else {
+        panic!("killed buffer")
+    };
+    assert!(target.get_buffer_by_id(killed.id).is_none());
+    assert!(!target.has_buffer_id(killed.id));
+}
+
+#[test]
+fn image_refuses_buffers_with_overlays_as_gnu_does() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (let ((buf (get-buffer-create "zz-overlaid")))
+          (set-buffer buf)
+          (insert "text")
+          (make-overlay 1 3)
+          buf)"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let buffer = interp.eval(&form, &mut env).expect("setup evaluates");
+    let mut ctx = DumpContext::new(false, interp.main_thread_record_id());
+    let result = write_image(
+        &mut ctx,
+        &interp,
+        RootSource::Explicit(vec![(RootSlot::LoadPath, buffer)]),
+    );
+    match result {
+        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+            assert_eq!(message, "dumping overlays is not yet implemented");
+        }
+        Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            panic!("unsupported: {}", unsupported.message)
+        }
+        Ok(_) => panic!("a buffer with a live overlay was dumped"),
+    }
+}
