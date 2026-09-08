@@ -26,7 +26,11 @@ DEFVAR_INT store check, and bound the 73 oracle-only forwarded variables to the
 oracle's defaults (V05 stage 1). Checkpoint 7 made finalizers run as
 alloc.c does, added the mechanical root-set audit, and closed the pdump
 ledger's D03/D04/D06 rows for image construction with D05's owner decision
-recorded; the writer (D07 onward) can start. The Linux records are in
+recorded. Checkpoint 8 closed R03's storage clause: a cons generated code
+allocates is the evaluator's own `ConsCell`, owned by the native heap until
+unreachable, and the block arena is gone; the typed-field reconciliation
+inside that one cell stays open as R03b (bridge cost, not a second
+authority). The writer (D07 onward) starts next. The Linux records are in
 `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

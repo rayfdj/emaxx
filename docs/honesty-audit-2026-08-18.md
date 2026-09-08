@@ -7296,3 +7296,59 @@ own definition counts as a dumping blocker.
 run-1788827584304667786-18386, GROUPED GATE PASSED (every group 0
 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
 committed.
+
+## 2026-09-08 R03: a cons generated code allocates is the evaluator's cons
+
+*Two storages per cons.*  alloc.c:Fcons takes one `Lisp_Cons' from a
+cons block and every primitive, the mark pass and generated code
+address that one object.  Emaxx's bridge allocated a generated cons in
+its own block arena (16K-cell blocks, a free list, a block map, mark
+and occupancy bitmaps) and, the first time Rust read it, allocated a
+second object -- a `ConsCell' whose two ABI words were attached to the
+arena slot -- so the same cons had an arena slot and a Rust cell, with
+the sweep consulting the arena's bit for one and the mirror flag for
+the other, and the census adding an "arena-only" byte term to avoid
+counting the pair twice.  The arena is gone.  `NativeHeap::cons' now
+allocates the `ConsCell' itself (its ABI prefix is the two words
+generated code stores through) and keeps the owning reference in a
+map by address until a collection finds it unreachable; the first Rust
+read attaches the typed view to that same cell.  The mark pass marks
+the owner and, when present, the mirror at the same address, expanding
+car before cdr as process_mark_stack does; the sweep drops the mirror
+and then the owner that no mark reached, which is sweep_conses's free
+unless a Rust value still holds the cell.  The live-bytes census needs
+no arena term.  The 79 runtime tests are unchanged in what they assert;
+ten that read the arena's own bookkeeping now ask the heap whether a
+cons is live, how many generated conses it owns, or its collection
+count.
+
+*What is still not GNU.*  The typed view is still a view: when Rust
+reads or writes a cons that generated code also holds, its two `Value'
+fields are decoded from, and published back to, the two words inside
+the same cell (`reconcile_mirror', `publish_interpreter_writes').  That
+is R03b and is recorded as open in the native ledger.  Positioned-symbol
+views for generated code are per-record boxes the heap roots and never
+frees.
+
+*Measurement, and a regression found on the way.*  The first build was
+1.7x slower on a 300k-cons allocation loop (3.4-4.0 s against
+1.5-2.4 s).  Sampling put the time in the address-keyed heap maps: the
+identity hasher returned raw addresses, and 48-byte cells from one
+allocator cluster in hashbrown's buckets.  The hasher now mixes the key
+(a 64-bit finalizer); no lookup semantics changed.  The handle
+identity word of R02b was already pre-mixed and is now mixed twice;
+the paired timings below include that.  Paired on one
+machine, the corrected build against the checkpoint-7 binary,
+alternating runs: 300k-cons build 1.43-2.85 s against 1.47-2.59 s,
+walk 0.68-0.75 s against 0.77-0.88 s, the two-global native loop
+7.58-7.67 s against 7.87-8.13 s, batch-native-compile comp.el 173.5 s
+user against 176.0 s, the artifact byte-identical to GNU's.  The comp.el
+absolute times are higher than the checkpoint-3 pair (125 s) because
+the machine was slower today; only the paired difference is claimed,
+and it is within run-to-run noise: no speedup is claimed, and the
+1.7x regression is gone.
+
+*Checkpoint 8 gate.*  Alone on the machine: grouped gate
+run-1788840508912446236-6692, GROUPED GATE PASSED (every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.
