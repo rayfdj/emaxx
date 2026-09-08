@@ -32,6 +32,13 @@ pub(crate) const LOCAL_IF_SET: u8 = 4;
 pub(crate) const PER_BUFFER: u8 = 8;
 /// A DEFVAR_PER_BUFFER slot whose index is -1: local in every buffer.
 pub(crate) const ALWAYS_LOCAL: u8 = 16;
+/// `SYMBOL_FORWARDED': a DEFVAR_* slot of the contracted oracle build,
+/// until `makunbound' detaches it (data.c:set_internal makes it plain).
+pub(crate) const FORWARDED: u8 = 32;
+/// `Lisp_Fwd_Bool': a store keeps `!NILP (newval)'.
+pub(crate) const FWD_BOOL: u8 = 64;
+/// `Lisp_Fwd_Int': a store is CHECK_INTEGER plus an intmax_t range check.
+pub(crate) const FWD_INT: u8 = 128;
 
 #[derive(Clone, Default)]
 struct SymbolCell {

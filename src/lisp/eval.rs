@@ -5698,6 +5698,27 @@ impl Interpreter {
                 interp.define_special_variable(name, value);
             }
         }
+        // The DEFVAR_* slots of the contracted oracle build whose C owners
+        // have no Emaxx counterpart (X11, Cairo, font tables, text
+        // conversion): bind each as the oracle binds it at `-Q --batch',
+        // read back from the oracle's own printed value.
+        for (name, printed) in crate::lisp::primitives::gnu_c_forwarded_defaults() {
+            if interp.default_value(name).is_some() {
+                continue;
+            }
+            let read = crate::lisp::primitives::call(
+                &mut interp,
+                "read-from-string",
+                &[Value::string(printed)],
+                &mut Vec::new(),
+            );
+            let value = match read {
+                Ok(Value::Cons(cell)) => cell.car.borrow().clone(),
+                _ => panic!("the oracle's printed default for `{name}' does not read back"),
+            };
+            interp.define_special_variable(name, value);
+        }
+        interp.mark_forwarded_variables();
         // minibuf.c's history controls, read by subr.el's `add-to-history'.
         interp.define_special_variable("history-length", Value::Integer(100));
         interp.define_special_variable("history-delete-duplicates", Value::Nil);

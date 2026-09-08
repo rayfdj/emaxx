@@ -1615,6 +1615,51 @@ fn variable_cells_follow_data_c() {
 }
 
 #[test]
+fn forwarded_c_variables_follow_store_symval_forwarding() {
+    // data.c:store_symval_forwarding by slot kind: Lisp_Fwd_Bool keeps
+    // `!NILP (newval)' on every store path, Lisp_Fwd_Int is CHECK_INTEGER
+    // plus an intmax_t range check (`overflow-error'), and set_internal
+    // storing Qunbound turns the symbol plain: `boundp' nil, a later store
+    // keeps any object.  Fboundp of a still-forwarded slot is t.
+    let program = r#"
+        (list (progn (setq auto-window-vscroll 5) auto-window-vscroll)
+              (progn (setq print-escape-newlines 'yes)
+                     (list print-escape-newlines (let ((print-escape-newlines 'x)) print-escape-newlines)))
+              (condition-case e (setq undo-limit 1.5) (error e))
+              (condition-case e (setq undo-limit (expt 2 70)) (error e))
+              (progn (setq undo-limit 5) undo-limit)
+              (progn (makunbound 'print-length) (list (boundp 'print-length) (progn (setq print-length 'z) print-length)))
+              (progn (makunbound 'print-escape-newlines) (setq print-escape-newlines 5) print-escape-newlines)
+              (boundp 'undo-limit)
+              (progn (makunbound 'undo-limit) (list (boundp 'undo-limit) (progn (setq undo-limit 2.5) undo-limit)))
+              (special-variable-p 'undo-limit)
+              (progn (defvar zz-plain 1) (setq zz-plain 'x)
+                     (list (boundp 'zz-plain) (progn (makunbound 'zz-plain) (boundp 'zz-plain)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t (t t) (wrong-type-argument integerp 1.5) (overflow-error 1180591620717411303424) 5 \
+         (nil z) 5 t (nil 2.5) t (t nil))",
+        "forwarded stores",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn oracle_only_forwarded_c_variables_are_bound_as_the_oracle_binds_them() {
+    // lread.c:defvar_* in the contracted Linux oracle binds these X11,
+    // Cairo, font-table and text-conversion variables that no Emaxx C
+    // owner defines; each must be bound, declared special, not
+    // local-if-set, and carry the oracle's `-Q --batch' default value (a
+    // hash table by its count and test).
+    let program = r##"(mapcar (lambda (n) (let ((v (default-value n))) (list n (boundp n) (default-boundp n) (special-variable-p n) (local-variable-if-set-p n) (if (hash-table-p v) (list 'hash-table (hash-table-count v) (hash-table-test v)) v)))) '(cairo-version-string font-slant-table font-use-system-font font-weight-table font-width-table multibyte-syntax-as-symbol overriding-text-conversion-style text-conversion-edits text-conversion-face x-allow-focus-stealing x-alt-keysym x-auto-preserve-selections x-color-cache-bucket-size x-ctrl-keysym x-cursor-fore-pixel x-detect-server-trust x-dnd-disable-motif-drag x-dnd-disable-motif-protocol x-dnd-fix-motif-leave x-dnd-movement-function x-dnd-native-test-function x-dnd-preserve-selection-data x-dnd-targets-list x-dnd-unsupported-drop-function x-dnd-use-unsupported-drop x-dnd-wheel-function x-fast-protocol-requests x-fast-selection-list x-frame-normalize-before-maximize x-gtk-file-dialog-help-text x-gtk-resize-child-frames x-gtk-show-hidden-files x-gtk-use-native-input x-gtk-use-old-file-dialog x-gtk-use-window-move x-hourglass-pointer-shape x-hyper-keysym x-input-coding-function x-input-coding-system x-input-grab-touch-events x-keysym-table x-lax-frame-positioning x-lost-selection-functions x-meta-keysym x-mouse-click-focus-ignore-position x-mouse-click-focus-ignore-time x-no-window-manager x-pointer-shape x-quit-keysym x-scroll-event-delta-factor x-select-enable-clipboard-manager x-selection-alias-alist x-selection-timeout x-sensitive-text-pointer-shape x-sent-selection-functions x-session-id x-session-previous-id x-set-frame-visibility-more-laxly x-super-keysym x-treat-local-requests-remotely x-use-fast-mouse-position x-wait-for-event-timeout x-window-bottom-edge-cursor x-window-bottom-left-corner-cursor x-window-bottom-right-corner-cursor x-window-horizontal-drag-cursor x-window-left-edge-cursor x-window-right-edge-cursor x-window-top-edge-cursor x-window-top-left-corner-cursor x-window-top-right-corner-cursor x-window-vertical-drag-cursor xft-settings ))"##;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r##"((cairo-version-string t t t nil "1.18.0") (font-slant-table t t t nil [[0 reverse-oblique ro] [10 reverse-italic ri] [100 normal r unspecified] [200 italic i ot] [210 oblique o]]) (font-use-system-font t t t nil nil) (font-weight-table t t t nil [[0 thin] [40 ultra-light ultralight extra-light extralight] [50 light] [55 semi-light semilight demilight] [80 regular normal unspecified book] [100 medium] [180 semi-bold semibold demibold demi-bold demi] [200 bold] [205 extra-bold extrabold ultra-bold ultrabold] [210 black heavy] [250 ultra-heavy ultraheavy]]) (font-width-table t t t nil [[50 ultra-condensed ultracondensed] [63 extra-condensed extracondensed] [75 condensed compressed narrow] [87 semi-condensed semicondensed demicondensed] [100 normal medium regular unspecified] [113 semi-expanded semiexpanded demiexpanded] [125 expanded] [150 extra-expanded extraexpanded] [200 ultra-expanded ultraexpanded wide]]) (multibyte-syntax-as-symbol t t t t nil) (overriding-text-conversion-style t t t nil lambda) (text-conversion-edits t t t nil nil) (text-conversion-face t t t nil underline) (x-allow-focus-stealing t t t nil newer-time) (x-alt-keysym t t t nil nil) (x-auto-preserve-selections t t t nil (CLIPBOARD PRIMARY)) (x-color-cache-bucket-size t t t nil 128) (x-ctrl-keysym t t t nil nil) (x-cursor-fore-pixel t t t nil nil) (x-detect-server-trust t t t nil nil) (x-dnd-disable-motif-drag t t t nil nil) (x-dnd-disable-motif-protocol t t t nil nil) (x-dnd-fix-motif-leave t t t nil t) (x-dnd-movement-function t t t nil x-dnd-movement) (x-dnd-native-test-function t t t nil x-dnd-handle-native-drop) (x-dnd-preserve-selection-data t t t nil nil) (x-dnd-targets-list t t t nil nil) (x-dnd-unsupported-drop-function t t t nil x-dnd-handle-unsupported-drop) (x-dnd-use-unsupported-drop t t t nil t) (x-dnd-wheel-function t t t nil x-dnd-note-wheel-movement) (x-fast-protocol-requests t t t nil nil) (x-fast-selection-list t t t nil (CLIPBOARD)) (x-frame-normalize-before-maximize t t t nil nil) (x-gtk-file-dialog-help-text t t t nil t) (x-gtk-resize-child-frames t t t nil nil) (x-gtk-show-hidden-files t t t nil nil) (x-gtk-use-native-input t t t nil nil) (x-gtk-use-old-file-dialog t t t nil nil) (x-gtk-use-window-move t t t nil t) (x-hourglass-pointer-shape t t t nil nil) (x-hyper-keysym t t t nil nil) (x-input-coding-function t t t nil x-get-input-coding-system) (x-input-coding-system t t t nil nil) (x-input-grab-touch-events t t t nil t) (x-keysym-table t t t nil (hash-table 899 eql)) (x-lax-frame-positioning t t t nil nil) (x-lost-selection-functions t t t nil nil) (x-meta-keysym t t t nil nil) (x-mouse-click-focus-ignore-position t t t nil nil) (x-mouse-click-focus-ignore-time t t t nil 200) (x-no-window-manager t t t nil nil) (x-pointer-shape t t t nil nil) (x-quit-keysym t t t nil nil) (x-scroll-event-delta-factor t t t nil 1.0) (x-select-enable-clipboard-manager t t t nil t) (x-selection-alias-alist t t t nil nil) (x-selection-timeout t t t nil 0) (x-sensitive-text-pointer-shape t t t nil nil) (x-sent-selection-functions t t t nil nil) (x-session-id t t t nil nil) (x-session-previous-id t t t nil nil) (x-set-frame-visibility-more-laxly t t t nil nil) (x-super-keysym t t t nil nil) (x-treat-local-requests-remotely t t t nil nil) (x-use-fast-mouse-position t t t nil nil) (x-wait-for-event-timeout t t t nil 0.1) (x-window-bottom-edge-cursor t t t nil nil) (x-window-bottom-left-corner-cursor t t t nil nil) (x-window-bottom-right-corner-cursor t t t nil nil) (x-window-horizontal-drag-cursor t t t nil nil) (x-window-left-edge-cursor t t t nil nil) (x-window-right-edge-cursor t t t nil nil) (x-window-top-edge-cursor t t t nil nil) (x-window-top-left-corner-cursor t t t nil nil) (x-window-top-right-corner-cursor t t t nil nil) (x-window-vertical-drag-cursor t t t nil nil) (xft-settings t t t nil ""))"##,
+        "oracle-only forwarded variables",
+    );
+}
+
+#[test]
 fn buffer_local_cells_follow_data_c() {
     // data.c: a buffer's local bindings are its `local_var_alist', searched
     // by the symbol object; a cell whose value is Qunbound is still a
