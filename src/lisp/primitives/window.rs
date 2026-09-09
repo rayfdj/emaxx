@@ -362,7 +362,10 @@ pub(crate) fn scroll_selected_window(
         let offset = line_distance(interp, window_start, point_line);
         let (target, target_shortage) = move_screen_lines(interp, env, new_start, offset as isize);
         if target_shortage > 0 {
-            interp.buffer.goto_char(interp.buffer.point_max());
+            {
+                let buffer = &mut interp.buffer;
+                buffer.goto_char(buffer.point_max());
+            }
         } else {
             interp.buffer.goto_char(target);
         }

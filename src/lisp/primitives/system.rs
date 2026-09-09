@@ -1611,6 +1611,7 @@ pub(crate) fn find_file_name_handler(
             if interp.file_name_handler_match_cache.len() >= 4096 {
                 interp.file_name_handler_match_cache.clear();
             }
+            let definition_generation = interp.current_definition_generation();
             interp.file_name_handler_match_cache.insert(
                 cache_key,
                 crate::lisp::eval::FileNameHandlerMatchCacheEntry {
@@ -1620,7 +1621,7 @@ pub(crate) fn find_file_name_handler(
                     cons_mutations,
                     cons_epoch: crate::lisp::types::cons_mutation_epoch(),
                     handler_alist: handlers,
-                    definition_generation: interp.current_definition_generation(),
+                    definition_generation,
                     pattern_snapshots,
                     matches: matches.clone(),
                 },

@@ -1331,13 +1331,14 @@ pub(crate) fn activate_minibuffer(
     }
     interp.set_current_buffer_id(buffer_id)?;
     let end = interp.buffer.point_max();
-    if end > interp.buffer.point_min() {
+    let start = interp.buffer.point_min();
+    if end > start {
         interp
             .buffer
-            .delete_region(interp.buffer.point_min(), end)
+            .delete_region(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?;
     }
-    interp.buffer.goto_char(interp.buffer.point_min());
+    interp.buffer.goto_char(start);
     // minibuf.c inserts with `inhibit-modification-hooks' bound: copy the
     // prompt's string intervals directly rather than entering ordinary
     // buffer-change hooks.
@@ -1407,7 +1408,10 @@ pub(crate) fn activate_minibuffer(
             .buffer
             .set_inserted_extended_chars(initial_start, &initial_string.extended_chars);
     }
-    interp.buffer.goto_char(interp.buffer.point_max());
+    {
+        let buffer = &mut interp.buffer;
+        buffer.goto_char(buffer.point_max());
+    }
 
     // Select the minibuffer window for the read, GNU's read_minibuf: the
     // minibuffer buffer shows there, never in the entry window.

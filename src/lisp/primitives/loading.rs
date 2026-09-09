@@ -440,9 +440,10 @@ pub(crate) fn eval_region_impl(
     });
 
     if interp.current_buffer_id() == buffer_id {
-        interp
-            .buffer
-            .goto_char(saved_point.min(interp.buffer.point_max()));
+        {
+            let point = saved_point.min(interp.buffer.point_max());
+            interp.buffer.goto_char(point);
+        }
     }
     for restore in restores.into_iter().rev() {
         if let Err(error) = interp.restore_special_binding(restore, env)

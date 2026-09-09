@@ -1256,14 +1256,15 @@ impl Interpreter {
                 position
             }
         });
-        let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
+        let state = &mut **self;
+        let Some(marker_ids) = state.markers_by_buffer.get(&buffer_id) else {
             return;
         };
         for marker_id in marker_ids {
             let Some(index) = Self::marker_index(*marker_id) else {
                 continue;
             };
-            let Some(marker) = self.markers.get_mut(index) else {
+            let Some(marker) = state.markers.get_mut(index) else {
                 continue;
             };
             let Some(position) = marker.position else {
@@ -1291,14 +1292,15 @@ impl Interpreter {
                 position
             }
         });
-        let Some(marker_ids) = self.markers_by_buffer.get(&buffer_id) else {
+        let state = &mut **self;
+        let Some(marker_ids) = state.markers_by_buffer.get(&buffer_id) else {
             return;
         };
         for marker_id in marker_ids {
             let Some(index) = Self::marker_index(*marker_id) else {
                 continue;
             };
-            let Some(marker) = self.markers.get_mut(index) else {
+            let Some(marker) = state.markers.get_mut(index) else {
                 continue;
             };
             let Some(position) = marker.position else {

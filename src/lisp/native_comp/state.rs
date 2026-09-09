@@ -19,9 +19,11 @@ use std::ffi::c_void;
 /// be duplicated.
 #[derive(Default)]
 pub(crate) struct NativeCompilerState {
-    compiler: RefCell<Option<Compiler>>,
-    runtime: NativeRuntime,
-    registry: Box<NativeRegistry>,
+    // The compiler can be borrowed by a suspended backend frame. Preserve
+    // that single RefCell (and its re-entry check) across execution owners.
+    pub(super) compiler: loader::SharedCompiler,
+    pub(super) runtime: NativeRuntime,
+    pub(super) registry: Box<NativeRegistry>,
 }
 
 impl Clone for NativeCompilerState {
@@ -106,11 +108,11 @@ impl NativeCompilerState {
     }
 
     pub(crate) fn acquire_active() -> Option<Result<(), String>> {
-        loader::with_active_compiler(Self::acquire_cell)
+        loader::with_active_compiler(|compiler| Self::acquire_cell(compiler))
     }
 
     pub(crate) fn release_active() -> Option<()> {
-        loader::with_active_compiler(Self::release_cell)
+        loader::with_active_compiler(|compiler| Self::release_cell(compiler))
     }
 
     #[cfg(test)]
@@ -284,6 +286,36 @@ impl NativeCompilerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_owners_share_the_context_and_preserve_live_borrow_exclusion() {
+        let mut first = NativeCompilerState::default();
+        let mut second = NativeCompilerState {
+            compiler: first.compiler.clone(),
+            ..NativeCompilerState::default()
+        };
+        first
+            .acquire()
+            .expect("acquire the shared compiler context");
+        assert!(second.is_acquired());
+        assert_eq!(
+            second.acquire(),
+            Err("compiler context already taken".into())
+        );
+        second.release();
+        assert!(!first.is_acquired(), "release is visible to every owner");
+        let borrowed = first.compiler.borrow_mut();
+        assert_eq!(
+            second.acquire(),
+            Err("compiler context already taken".into())
+        );
+        drop(borrowed);
+        second
+            .acquire()
+            .expect("context can be acquired after borrow ends");
+        first.release();
+        assert!(!second.is_acquired());
+    }
 
     #[test]
     fn comp_c_context_is_unique_and_release_is_idempotent() {

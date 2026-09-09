@@ -868,9 +868,10 @@ impl Interpreter {
             FunctionResolution::Resolved(self.lookup_function(name, env)?)
         };
         if !local_context {
-            self.function_resolution_cache.insert(
+            let state = &mut **self;
+            state.function_resolution_cache.insert(
                 name.to_string(),
-                (self.definition_generation, resolution.clone()),
+                (state.definition_generation, resolution.clone()),
             );
         }
         Ok(resolution)
@@ -1309,31 +1310,40 @@ impl Interpreter {
                     // environment for its body.  No caller lexical frame is
                     // visible, while ordinary dynamic lets remain visible
                     // through their value-cell bindings.
-                    let mut call_env = Vec::new();
-                    let mut restores = Vec::with_capacity(frame.len());
-                    let setup = frame.iter().try_for_each(|(name, value)| {
-                        self.bind_special_variable(name, value.clone(), &mut call_env)
-                            .map(|restore| restores.push(restore))
-                    });
-                    let previous_floor = self.special_scan_floor;
-                    self.special_scan_floor = 0;
-                    let result = match setup {
-                        Ok(()) => self.sf_progn(function_executable_body(body), &mut call_env),
-                        Err(error) => Err(error),
-                    };
-                    self.special_scan_floor = previous_floor;
-                    let mut restore_error = None;
-                    for restore in restores.into_iter().rev() {
-                        if let Err(error) = self.restore_special_binding(restore, &mut call_env)
-                            && restore_error.is_none()
-                        {
-                            restore_error = Some(error);
+                    // The caller's lexical cells remain live even though
+                    // the dynamic callee cannot see them. Root the actual
+                    // parked environment across binding watchers and body.
+                    self.with_lisp_stack_roots(&*env, |interp| {
+                        let mut call_env = Vec::new();
+                        let mut restores = Vec::with_capacity(frame.len());
+                        let setup = frame.iter().try_for_each(|(name, value)| {
+                            interp
+                                .bind_special_variable(name, value.clone(), &mut call_env)
+                                .map(|restore| restores.push(restore))
+                        });
+                        let previous_floor = interp.special_scan_floor;
+                        interp.special_scan_floor = 0;
+                        let result = match setup {
+                            Ok(()) => {
+                                interp.sf_progn(function_executable_body(body), &mut call_env)
+                            }
+                            Err(error) => Err(error),
+                        };
+                        interp.special_scan_floor = previous_floor;
+                        let mut restore_error = None;
+                        for restore in restores.into_iter().rev() {
+                            if let Err(error) =
+                                interp.restore_special_binding(restore, &mut call_env)
+                                && restore_error.is_none()
+                            {
+                                restore_error = Some(error);
+                            }
                         }
-                    }
-                    match result {
-                        Ok(value) => restore_error.map_or(Ok(value), Err),
-                        Err(error) => Err(error),
-                    }
+                        match result {
+                            Ok(value) => restore_error.map_or(Ok(value), Err),
+                            Err(error) => Err(error),
+                        }
+                    })
                 } else if body_has_marker(body, ":closure-transparent-env") {
                     // Advice wrappers are plumbing: run them on the caller's
                     // environment chain with the wrapper's captured frames
@@ -1386,7 +1396,9 @@ impl Interpreter {
                     call_env.push(frame.clone());
                     let previous_floor = self.special_scan_floor;
                     self.special_scan_floor = 0;
-                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    let result = self.with_lisp_stack_roots(&*env, |interp| {
+                        interp.sf_progn(function_executable_body(body), &mut call_env)
+                    });
                     self.special_scan_floor = previous_floor;
                     call_env.truncate(captured_len);
                     result
