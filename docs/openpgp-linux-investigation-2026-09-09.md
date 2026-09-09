@@ -96,3 +96,49 @@ mutable reference. No runtime code changed after the 40 passing tests.
 The PTY contracts and Clippy are rerun; the 40 earlier passes are retained
 rather than repeated. The four original OpenPGP tests had not run in this
 job because Clippy stopped the workflow first.
+
+## Completed validation and limits
+
+[Run 34336177090](https://github.com/rayfdj/emaxx/actions/runs/34336177090)
+at `769577d` completed successfully:
+
+- All four unchanged `mml-secure-en-decrypt-1` through `-4` tests passed
+  in both GNU and Emaxx, including their inline and MIME iterations. Both
+  editor processes exited zero. The same four tests also passed in both
+  editors with the historical long fixture-directory layout.
+- The long-path experiment did **not** reproduce the old environment
+  failure. GPG chose 59-byte sockets under `/run/user/1001/gnupg` for both
+  layouts. The earlier socket-length hypothesis remains unproven for the
+  historical host; no harness path or error normalization was changed.
+- All 25 selected Rust checks passed serially: 22 de-cheating checks and
+  the three PTY contracts using the corrected helper. Combined with the
+  retained 40-check run, this covers **43 distinct Rust checks**, with
+  no failed or ignored tests in those selections. These are focused
+  receipts, not a new full Rust gate.
+- All six Python acceptance checks and rustfmt passed. Strict Clippy
+  (`--locked --all-targets --all-features -- -D warnings`) passed with
+  zero warnings on Linux and separately on Darwin. The Darwin log is
+  `/private/tmp/emaxx-openpgp-sept9/darwin-clippy-final.log`.
+- The inventories of the 36 tracked GNU fixture files are identical
+  before and after the correction. No upstream assertion, selector,
+  manifest, oracle lock or expected ciphertext was changed.
+
+Binary SHA-256 values for both successful fixture layouts:
+
+| Binary | SHA-256 |
+| --- | --- |
+| GNU | `d324f30093c1507fa0e00ebe4bc1d9e3d8a96d0224b8892c2afaabb9e3f2a080` |
+| Emaxx | `ce69051dfa23356cda64fe0e4aed70780432a10f0b10dec6109dcc6265a5621c` |
+
+The final publication changes only this evidence, the honesty ledger and
+future workflow selection after `769577d`. Future invocations run the full
+43-check union; already passing checks were not repeated solely to record
+these results. Runtime and Rust test source hashes remain those validated
+above. No later native-comp commits were merged.
+
+The four OpenPGP cases now have real passing Linux coverage. The known
+remaining work discussed in this series is the two ERC startup mismatches
+and one async-shell startup mismatch, pending the dumping/startup work.
+This does not certify a fresh 7,883-test frozen run, the exact historical
+Linux oracle binary, or 100% compatibility. Darwin's original OpenPGP
+skips remain skips.
