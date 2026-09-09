@@ -73,18 +73,23 @@ pub(crate) use generated_gnu_c_primitives::{
 // actual backend unreachable through ordinary Lisp.
 #[cfg(target_os = "linux")]
 pub(crate) mod generated_gnu_c_forwarded_variables_linux;
+#[cfg(target_os = "macos")]
+pub(crate) mod generated_gnu_c_forwarded_variables_macos;
 #[allow(dead_code)]
 mod generated_gnu_c_primitives_linux;
 /// The names the contracted oracle build forwards to a C slot
-/// (`SYMBOL_FORWARDED'), sorted.  Only the Linux oracle has been probed;
-/// on any other platform the manifest is empty and eval.c:Fdefvaralias's
-/// "built-in variable" refusal is not reproduced (disclosed in the ledger).
+/// (`SYMBOL_FORWARDED'), sorted, for the contracted Linux and macOS builds.
+/// Unprobed platforms retain an empty manifest.
 pub(crate) fn gnu_c_forwarded_variables() -> &'static [&'static str] {
     #[cfg(target_os = "linux")]
     {
         generated_gnu_c_forwarded_variables_linux::GNU_C_FORWARDED_VARIABLES
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        generated_gnu_c_forwarded_variables_macos::GNU_C_FORWARDED_VARIABLES
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         &[]
     }
@@ -114,7 +119,11 @@ pub(crate) fn gnu_c_localized_forwarded_variables() -> &'static [&'static str] {
     {
         generated_gnu_c_forwarded_variables_linux::GNU_C_LOCALIZED_FORWARDED_VARIABLES
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        generated_gnu_c_forwarded_variables_macos::GNU_C_LOCALIZED_FORWARDED_VARIABLES
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         &[]
     }
@@ -130,6 +139,7 @@ mod invisibility;
 mod keys;
 mod loading;
 mod numeric_time;
+pub(crate) mod pdumper;
 pub(crate) mod print;
 mod processes;
 mod purecopy;
@@ -202,6 +212,12 @@ const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The next id `make-symbol' would give an uninterned symbol.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn next_make_symbol_id() -> u64 {
+    MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
+}
 static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);

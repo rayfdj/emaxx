@@ -232,11 +232,27 @@ pub(super) fn set_face_attribute(
     value: &Value,
     global: bool,
 ) -> Result<Value, LispError> {
+    set_face_attribute_on(
+        interp,
+        face,
+        attribute,
+        value,
+        (!global).then_some(interp.selected_frame_id),
+    )
+}
+
+fn set_face_attribute_on(
+    interp: &mut Interpreter,
+    face: &str,
+    attribute: &str,
+    value: &Value,
+    frame: Option<u64>,
+) -> Result<Value, LispError> {
     let (index, mut normalized) = normalize_face_attribute_value(attribute, value)?;
-    if global && matches!(&normalized, Value::Symbol(symbol) if symbol == "unspecified") {
+    if frame.is_none() && matches!(&normalized, Value::Symbol(symbol) if symbol == "unspecified") {
         normalized = Value::symbol("ignore-defface");
     }
-    interp.set_lisp_face_attribute(face, index, normalized, global)?;
+    interp.set_lisp_face_attribute_on(face, index, normalized, frame)?;
     Ok(Value::symbol(face))
 }
 
@@ -400,8 +416,8 @@ define_dispatch!(
         match name {
             "frame--face-hash-table" => {
                 need_arg_range(name, args, 0, 1)?;
-                frames::decode_live_frame(interp, args.first(), true)?;
-                Ok(interp.selected_frame_face_hash_table())
+                let frame = frames::decode_live_frame(interp, args.first(), true)?;
+                Ok(interp.frame_face_hash_table(frame))
             }
             "internal-face-x-get-resource" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -454,11 +470,11 @@ define_dispatch!(
                 let face = args[0]
                     .as_symbol()
                     .map_err(|_| wrong_type_argument("symbolp", args[0].clone()))?;
-                let vector = interp.ensure_lisp_face(
-                    face,
-                    args.get(1).is_some_and(Value::is_truthy),
-                    true,
-                )?;
+                let target = match args.get(1) {
+                    None | Some(Value::Nil) => None,
+                    Some(frame) => Some(frames::decode_live_frame(interp, Some(frame), true)?),
+                };
+                let vector = interp.ensure_lisp_face_on(face, target, true)?;
                 interp.register_lisp_face_id(face);
                 Ok(vector)
             }
@@ -471,8 +487,12 @@ define_dispatch!(
                     return Ok(Value::Nil);
                 }
                 let face = resolve_face_name(interp, &args[0])?;
+                let target = match args.get(1) {
+                    None | Some(Value::Nil) => None,
+                    Some(frame) => Some(frames::decode_live_frame(interp, Some(frame), true)?),
+                };
                 Ok(interp
-                    .lisp_face_vector(&face, args.get(1).is_none_or(Value::is_nil))
+                    .lisp_face_vector_on(&face, target)
                     .unwrap_or(Value::Nil))
             }
             "internal-copy-lisp-face" => {
@@ -483,10 +503,18 @@ define_dispatch!(
                 let to = args[1]
                     .as_symbol()
                     .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
-                let global = matches!(args[2], Value::T);
-                interp.ensure_lisp_face(to, !global, false)?;
-                interp.register_lisp_face_id(to);
-                interp.copy_lisp_face_attributes(from, to, global)?;
+                let (source, target) = if matches!(args[2], Value::T) {
+                    (None, None)
+                } else {
+                    let source = frames::decode_live_frame(interp, Some(&args[2]), false)?;
+                    let target = if args[3].is_nil() {
+                        source
+                    } else {
+                        frames::decode_live_frame(interp, Some(&args[3]), false)?
+                    };
+                    (Some(source), Some(target))
+                };
+                interp.copy_lisp_face_attributes(from, to, source, target)?;
                 Ok(Value::symbol(to))
             }
             "internal-set-lisp-face-attribute" => {
@@ -502,19 +530,27 @@ define_dispatch!(
                         return Err(invalid_face_error(&face));
                     }
                     set_face_attribute(interp, &face, attribute, &args[2], true)?;
-                    interp.ensure_lisp_face(&face, true, false)?;
-                    set_face_attribute(interp, &face, attribute, &args[2], false)
+                    let frames: Vec<_> = interp
+                        .frame_states
+                        .iter()
+                        .filter(|frame| frame.live)
+                        .map(|frame| frame.id)
+                        .collect();
+                    for frame in frames {
+                        set_face_attribute_on(interp, &face, attribute, &args[2], Some(frame))?;
+                    }
+                    Ok(Value::symbol(&face))
                 } else if matches!(frame, Value::T) {
                     if interp.lisp_face_vector(&face, true).is_none() {
                         return Err(invalid_face_error(&face));
                     }
                     set_face_attribute(interp, &face, attribute, &args[2], true)
                 } else {
-                    frames::decode_live_frame(interp, Some(frame), true)?;
+                    let frame = frames::decode_live_frame(interp, Some(frame), true)?;
                     // GNU creates a missing frame-local face before it validates
                     // ATTR, so preserve that observable ordering here.
-                    interp.ensure_lisp_face(&face, true, false)?;
-                    set_face_attribute(interp, &face, attribute, &args[2], false)
+                    interp.ensure_lisp_face_on(&face, Some(frame), false)?;
+                    set_face_attribute_on(interp, &face, attribute, &args[2], Some(frame))
                 }
             }
             "internal-set-lisp-face-attribute-from-resource" => {
@@ -562,8 +598,14 @@ define_dispatch!(
                 let attribute = args[1].as_symbol()?;
                 let index = face_attribute_index(attribute)
                     .ok_or_else(|| face_attribute_error(&args[1]))?;
+                let target = if face_target_is_global(args.get(2)) {
+                    None
+                } else {
+                    Some(frames::decode_live_frame(interp, args.get(2), true)?)
+                };
                 let value = interp
-                    .lisp_face_attribute(&face, index, face_target_is_global(args.get(2)))
+                    .lisp_face_vector_on(&face, target)
+                    .and_then(|vector| vector_slot_value(&vector, index).ok())
                     .ok_or_else(|| LispError::Signal(format!("Invalid face: {face}")))?;
                 Ok(
                     if matches!(&value, Value::Symbol(symbol) if symbol == "ignore-defface") {
@@ -634,14 +676,18 @@ define_dispatch!(
             }
             "internal-lisp-face-equal-p" => {
                 need_arg_range(name, args, 2, 3)?;
-                let global = face_target_is_global(args.get(2));
+                let target = if face_target_is_global(args.get(2)) {
+                    None
+                } else {
+                    Some(frames::decode_live_frame(interp, args.get(2), true)?)
+                };
                 let left_name = resolve_face_name(interp, &args[0])?;
                 let right_name = resolve_face_name(interp, &args[1])?;
                 let left = interp
-                    .lisp_face_vector(&left_name, global)
+                    .lisp_face_vector_on(&left_name, target)
                     .ok_or_else(|| LispError::Signal(format!("Invalid face: {left_name}")))?;
                 let right = interp
-                    .lisp_face_vector(&right_name, global)
+                    .lisp_face_vector_on(&right_name, target)
                     .ok_or_else(|| LispError::Signal(format!("Invalid face: {right_name}")))?;
                 Ok(if face_vectors_equal(interp, &left, &right)? {
                     Value::T
@@ -651,10 +697,14 @@ define_dispatch!(
             }
             "internal-lisp-face-empty-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                let global = face_target_is_global(args.get(1));
+                let target = if face_target_is_global(args.get(1)) {
+                    None
+                } else {
+                    Some(frames::decode_live_frame(interp, args.get(1), true)?)
+                };
                 let face = resolve_face_name(interp, &args[0])?;
                 let vector = interp
-                    .lisp_face_vector(&face, global)
+                    .lisp_face_vector_on(&face, target)
                     .ok_or_else(|| LispError::Signal(format!("Invalid face: {face}")))?;
                 for index in 1..LFACE_VECTOR_SIZE {
                     if !matches!(

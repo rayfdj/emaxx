@@ -456,12 +456,33 @@ define_dispatch!(
             "aref" => {
                 need_args(name, args, 2)?;
                 let raw_idx = fixnum_index_arg(&args[1])?;
+                let literal = record_literal_items(&args[0]);
+                // data.c:Faref exposes records and closures, but not the
+                // other pseudovectors kept in our internal Record storage.
+                let readable_record = matches!(args[0], Value::Record(id)
+                if interp.find_record(id).is_some_and(|record| matches!(
+                    record.kind,
+                    crate::lisp::eval::RecordKind::Record
+                        | crate::lisp::eval::RecordKind::Closure
+                        | crate::lisp::eval::RecordKind::BoolVector
+                )));
+                if literal.is_none()
+                    && !args[0].is_string()
+                    && !is_vector_value(&args[0])
+                    && !matches!(args[0], Value::Lambda(_) | Value::CharTable(_))
+                    && !readable_record
+                {
+                    return Err(LispError::WrongTypeArgument(
+                        "arrayp".into(),
+                        args[0].clone(),
+                    ));
+                }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
                 }
                 let idx = raw_idx as usize;
                 // Support both list-vectors and strings
-                if let Some(items) = record_literal_items(&args[0]) {
+                if let Some(items) = literal {
                     return record_literal_aref(&args[0], &items, idx, &args[1]);
                 }
                 match &args[0] {
@@ -519,20 +540,11 @@ define_dispatch!(
                     _ => {
                         if is_vector_value(&args[0]) {
                             vector_slot_value(&args[0], idx)
-                        } else if args[0].is_list() {
-                            // data.c Faref: a plain list is not an array;
-                            // Emaxx silently indexed it (returning the nth
-                            // element GNU refuses to produce).
-                            return Err(LispError::WrongTypeArgument(
+                        } else {
+                            Err(LispError::WrongTypeArgument(
                                 "arrayp".into(),
                                 args[0].clone(),
-                            ));
-                        } else {
-                            let items = vector_items(&args[0])?;
-                            items
-                                .get(idx)
-                                .cloned()
-                                .ok_or_else(|| args_out_of_range(&args[0], &args[1]))
+                            ))
                         }
                     }
                 }
@@ -541,6 +553,24 @@ define_dispatch!(
             "aset" => {
                 need_args(name, args, 3)?;
                 let raw_idx = fixnum_index_arg(&args[1])?;
+                // data.c:Faset permits actual records as well as arrays;
+                // native functions and other opaque pseudovectors are neither.
+                let writable_record = matches!(args[0], Value::Record(id)
+                if interp.find_record(id).is_some_and(|record| matches!(
+                    record.kind,
+                    crate::lisp::eval::RecordKind::Record
+                        | crate::lisp::eval::RecordKind::BoolVector
+                )));
+                if !args[0].is_string()
+                    && !is_vector_value(&args[0])
+                    && !matches!(args[0], Value::CharTable(_))
+                    && !writable_record
+                {
+                    return Err(LispError::WrongTypeArgument(
+                        "arrayp".into(),
+                        args[0].clone(),
+                    ));
+                }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
                 }
@@ -1120,13 +1150,15 @@ define_dispatch!(
                 }
                 let table_id = match args.get(2) {
                     Some(Value::CharTable(id)) => *id,
+                    // syntax.c:Fmodify_syntax_entry uses the current table
+                    // for nil, including native calls' padded optional slot.
+                    Some(Value::Nil) | None => interp.current_syntax_table_id(),
                     Some(other) => {
                         return Err(LispError::WrongTypeArgument(
                             "char-table-p".into(),
                             other.clone(),
                         ));
                     }
-                    None => interp.current_syntax_table_id(),
                 };
                 interp.char_table_set_range(
                     table_id,

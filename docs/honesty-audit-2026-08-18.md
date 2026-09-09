@@ -6250,7 +6250,8 @@ way.  Inside a Rust test process `invocation-name' is the libtest binary,
 which rejects `-no-comp-spawn' ("Unrecognized option: 'n'"), so six
 existing tests that redefine primitives under `cl-letf' failed.  The
 fixtures now run under the configuration GNU's own child uses:
-`comp-no-spawn' t (compile in this process), with the implicit
+`comp-no-spawn' t (this suppresses ordinary compilation, rather than
+selecting in-process emission; corrected in the later merge audit), with the implicit
 compilations off through GNU's options (`comp-enable-subr-trampolines'
 nil, `native-comp-jit-compilation' nil).  The CLI keeps GNU's defaults,
 and the harness replays and the identity ladder use the CLI.  The full
@@ -7352,3 +7353,692 @@ and it is within run-to-run noise: no speedup is claimed, and the
 run-1788840508912446236-6692, GROUPED GATE PASSED (every group 0
 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
 committed.
+
+## 2026-09-08 D07: the dumper's entry runs as pdumper.c writes it, up to the open
+
+*What the entry did.*  `dump-emacs-portable' checked that its
+argument was a string and signaled "Portable dumper backend is
+unavailable".  Nothing of Fdump_emacs_portable's prelude ran: no
+batch-mode refusal, no thread checks, no `load--fixup-all-elns', no
+collection, no `command-line-processed' binding.
+
+*What it does now (`primitives/pdumper.rs').*  In pdumper.c's order:
+the batch-mode refusal with GNU's message; the main-thread refusal;
+the other-threads refusal (`(cdr (all-threads))'); Ffuncall of the
+Lisp `load--fixup-all-elns'; `garbage_collect' repeated while
+`number_finalizers_run' is non-zero; specbind of
+`command-line-processed' to nil, unbound on every exit; CHECK_STRING;
+Fexpand_file_name; then the three variables `dump_unwind_cleanup'
+restores -- purify-flag, post-gc-hook, process-environment -- cleared
+around the writer and put back by direct cell writes (no watcher, as
+`Vpurify_flag = Qnil' has none).  The oracle pinned every observable
+of this order: the wrong-type error on 42 arrives after one
+collection (post-gc-hook ran once), after the fixup, and after the
+binding's `let' watcher event, with the `unlet' event on the way out;
+the thread errors carry GNU's strings; a process with another live
+thread is refused before the fixup runs.  Contract
+`dump_emacs_portable_prelude_follows_pdumper_c' holds all of it.
+
+*Where the boundary is now, and what that is not.*  GNU opens the
+output file (`O_RDWR | O_TRUNC | O_CREAT', 0666) and writes a header
+whose first magic byte is `!' until the dump completes; a failure
+after that point leaves the incomplete file behind.  Emaxx signals
+the unavailable error where the open would be, so no file is created
+(Rust-only control
+`dump_emacs_portable_restores_its_context_at_the_writer_boundary':
+the three variables and the binding are back, no file exists).  A
+missing directory therefore reports the unavailable error where GNU
+reports `(file-missing "Opening dump output" "No such file or
+directory" PATH)'; that case joins the contract with D08, when there
+is a header to write.  Also not GNU and disclosed in the D07 row:
+`will_dump_with_unexec_p' is false by configuration, `check_pure_size'
+has no pure space, `block_input' has nothing to block, ENCODE_FILE is
+the UTF-8 identity every file primitive uses.
+
+*Startup.*  The image reconstruction at startup reaches this
+primitive from loadup.el (dump-mode "pdump"), so the prelude now runs
+there too: the fixup (a no-op without `--bin-dest'/`--eln-dest'), one
+collection of the preloaded heap, the binding, and the unwind.  GNU's
+temacs does the same at that point.  The boundary test that used a
+bare interpreter now runs in the initialized batch image: a bare
+interpreter has `noninteractive' nil and is refused as GNU refuses an
+interactive session.  Startup cost of the added collection, paired and
+alternating against the checkpoint-8 binary on one machine (`-Q --batch
+--eval (kill-emacs)', fresh HOME): 30.96, 34.86, 32.24 s user against
+35.19, 33.15, 31.46 s; within the run-to-run spread, and the absolute
+numbers are this machine's today, not the 18 s baseline recorded
+earlier.
+
+*Checkpoint 9 gate.*  Alone on the machine: grouped gate
+run-1788851939988389086-22849, GROUPED GATE PASSED (2609 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.
+
+## 2026-09-08 D08: the image writer, and a unibyte string GNU could not hold
+
+*What exists now (`primitives/pdumper/').*  `image.rs' is the file
+layout: pdumper.c's 100-byte `dump_header' (magic with the `!' marker
+until completion, the executable's SHA-256 as the fingerprint, table
+locators, section starts), the object types and relocation kinds, and
+the self-representing words (fixnums tagged as lisp.h tags them; nil,
+t and the unbound marker as the symbol words Emaxx represents
+specially).  `context.rs' is `dump_context': the in-memory buffer with
+`dump_write', `dump_seek' and `dump_align_output'; `dump_object_start'
+and `dump_object_finish'; `objects_dumped' with the normal, cold and
+copied states; the `dump_queue' with its four tail queues, link
+weights, sequence numbers and the distance score, ported clause by
+clause from `dump_queue_enqueue' and `dump_queue_dequeue'; the fixup
+list applied by `dump_do_fixups' in offset order; the cold queue
+(strings' bytes in GNU's internal encoding, floats, bignum limbs) and
+the copied queue (built-in functions, the discardable section); the
+three relocation phases, the object-start table and the Emacs
+relocations, whose targets are the interpreter's root slots rather
+than C addresses.  `mod.rs' runs Fdump_emacs_portable's body from the
+open to the completed header in the C order, with the same section
+boundaries and the same stderr report.  `load.rs' (test builds) is the
+validation half of `pdumper_load' -- size, magic, the incomplete
+marker, the fingerprint -- and the object reconstruction that the
+round-trip controls need; the process-level restore is D12/D13.
+
+*What the controls prove.*  From explicit roots, an image holding a
+shared sublist, a self-referential cons, a vector naming the list
+twice, immutable and mutable strings (multibyte, unibyte with raw
+bytes, text properties whose values are shared with the graph, a
+character outside Unicode), one float object referenced twice next to
+a second equal float, two bignums, an integer beyond the fixnum range,
+the fixnum bounds, nil, t, the unbound marker, an interned and an
+uninterned symbol, and a built-in function reads back as an isomorphic
+graph at different addresses, sharing and cycle intact.  Symbol cells
+read from a live interpreter (special flag, alias redirect, watcher
+list with the trapped-write flag, plist, function, an unbound value)
+come back as written.  A short file, the `!' marker, another magic and
+another fingerprint are refused with pdumper_load's outcomes.  Object
+starts are unique and ascending, and each object is written once.
+
+*What a real dump does today.*  `(dump-emacs-portable FILE)' in a
+batch session opens FILE as GNU does and stops at the first object the
+writer does not cover with pdumper.c's "unsupported object type in
+dump: KIND" (a record first in the current image, reached from the
+`gud' custom-group plist; closures, char-tables, buffers, markers,
+overlays, finalizers and reader forms are the others -- D09 to D11;
+with TRACK-REFERRERS the referrer path is printed to stderr as
+print_paths_to_root does), leaving
+the truncated empty file GNU leaves when it fails before its single
+write.  The startup reconstruction, which reaches the primitive from
+loadup.el, hands off with the unavailable error where the open would
+be: `image_reconstruction_handoff' marks that phase, since this
+process has no temacs and loadup's dump call is where it stops.  No
+image is loadable yet and none is claimed.
+
+*Not GNU, disclosed in the D08 row.*  The records are Emaxx's objects
+(a symbol record carries the cells GNU keeps in Lisp_Symbol plus the
+watcher list and the Emaxx-only cell flags); table entries are two
+32-bit words, not GNU's packed word; every symbol other than nil, t
+and unbound is a heap record addressed by name; a built-in function's
+copied record names it where GNU relocates to the subr's address.
+
+*A string GNU could not hold.*  The first real dump stopped inside the
+writer with a unibyte string holding characters above 255: the Burmese
+composition regexp from burmese.el, which `replace-regexp-in-string'
+builds by replacing ASCII keys in an ASCII pattern with multibyte
+pieces.  search.c's Freplace_match with a STRING returns `concat3
+(before, newtext, after)', so the result is multibyte when either is;
+Emaxx's string branch kept STRING's flag.  `(string-bytes ...)' on that
+entry signaled "Character cannot be encoded" where GNU returns 228.
+Fixed at the site; contract
+`replace_match_on_a_string_returns_concat3_multibyteness' pins the
+flag for both argument orders and the two Burmese entries.  The writer
+now refuses such a string with its own message ("unibyte string holds
+character ..."), since GNU has no such state and the fault is at a
+construction site, never in the image.
+
+*Checkpoint 10 gate.*  Alone on the machine: grouped gate
+run-1788863908506282633-10836, GROUPED GATE PASSED (2617 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.
+
+## 2026-09-08 Terminal frames: finding 159
+
+The second-terminal/frame stub has been replaced by real device ownership
+and separate frame/window trees. The port follows the pinned GNU `frame.c`,
+`terminal.c`, `term.c`, `window.c`, `xfaces.c`, and keyboard binding and
+deferred-hook paths. GNU `server.el` and its tests are unchanged. This does
+not substitute a server implementation in Rust or special-case test names.
+
+The seven unchanged server tests passed in both editors, including the
+three failures recorded in finding 159. Three additional contracts call
+the GNU oracle before checking device reuse, window lifetime and ownership,
+independent window operations, face copying, keyboard-local bindings, and
+configuration restoration. The real-client comparison additionally passes
+primary/client input and screen isolation, fragmented arrow-key and UTF-8
+input, saving, normal frame deletion, and abrupt PTY disconnection.
+Artifacts: `/private/tmp/emaxx-terminal-interactive-6`.
+
+The manual ownership review checked live-device closure, batch mode not
+changing the device's input modes, frame-local face copies, window owners,
+GC roots, image-copy restrictions, and both protected and deferred deletion
+hooks. It also corrected a native symbol-word cache crossing keyboards and
+dynamic unbinding after selection moved to another terminal. All 22
+automated audit checks pass; strict all-target/all-feature Clippy and
+formatting pass. The one native-runtime edit only restricts a Linux-only
+`MaybeUninit` import to its existing Linux/x86-64 use site.
+
+The first full grouped attempt could not clone the startup template:
+`NativeCompilerState::clone` correctly rejected live native runtime state,
+and the poisoned template lock caused subsequent failures. Its failed
+result is retained at `/private/tmp/emaxx-terminal-full-gate`. The safety
+check has not been weakened. The follow-up full gate uses fresh interpreters
+and serial groups at `/private/tmp/emaxx-terminal-fresh-full-gate`.
+That run passed all 351 tests in `eval_01`, then reported two `cl_getf_*`
+failures in `eval_02`; the failed group was stopped to diagnose them rather
+than continuing an already-failed checkpoint. Both failures reproduce in
+an isolated, unmodified archive of starting main `450cb77`: the increment
+returns 3 but the existing plist cell still contains 1. The same clean
+baseline also reproduces the native template-clone guard failure.
+Baseline logs: `/private/tmp/emaxx-terminal-cl-getf-baseline.log` and
+`/private/tmp/emaxx-terminal-template-baseline.log`; current-tree diagnostic:
+`/private/tmp/emaxx-terminal-cl-getf-diagnostic.log`. These are unresolved
+baseline failures, not a passing full regression gate. No native mutation
+or image-cloning behavior was changed to bypass them.
+
+A separate affected-area run (frame/window/face/terminal/keyboard/coding
+and TTY tests, excluding the already-passed `eval_01`) finished with 238
+passed, 14 failed, and the two standard ignored TTY tests. Replaying its
+14 failures on clean main gave 3 passed and 11 failed. The three new
+regressions were corrected from GNU C: frame root/first/selected window
+queries accept a valid window argument, and copying a face must create the
+destination before registering its ID. The terminal lifecycle oracle
+contract now covers window arguments belonging to an unselected frame.
+The correction replay passed those three tests, all three terminal
+contracts, and the frame-identity contract; its remaining 11 failures also
+occur on clean main. The completion failures now have the same causes on
+both trees (seven-argument `window-text-pixel-size` and popup height 11
+versus expected 7), rather than the incorrect frame-argument rejection.
+Logs: `/private/tmp/emaxx-terminal-affected-tests.log`,
+`/private/tmp/emaxx-terminal-affected-baseline.log`, and
+`/private/tmp/emaxx-terminal-corrections-tests.log`.
+
+Final serial replay on the corrected binary: 22/22 automated audit checks,
+7/7 unchanged server tests in GNU and Emaxx, and the real `emacsclient -t`
+comparison all pass. Both editors produced `abXéc`, saved `abXéc\n`, exited
+the client with status 0, and preserved the primary frame after normal
+closure and abrupt client disconnection. Fragmented escape/UTF-8 input
+and separate primary/client screen contents were checked. Final artifacts:
+`/private/tmp/emaxx-terminal-interactive-final`; logs:
+`/private/tmp/emaxx-terminal-final-{audit,gnu-server,emaxx-server,interactive}.log`.
+Strict all-target/all-feature Clippy and the final build passed after the
+regression corrections. No complete Rust-gate pass is claimed.
+
+This finding's missing device/frame model is distinct from universal TTY
+parity. Remaining limits, including repainting inactive terminals, terminal
+suspend/resume, legacy termcap output, and non-UTF-8 streaming input, are
+recorded in [terminal-frame-parity.md](terminal-frame-parity.md). No fresh
+7,883-test corpus result or 100% compatibility is claimed here.
+
+Follow-up attribution: all 13 starting-main test failures described above
+pass before the first native-comp merge (`c3aac3e`) and fail at that merge
+(`245ff40`) on the same macOS setup. "Baseline" here means before the
+terminal work, not before native-comp. The compressed-file test's coding
+values actually match; it fails its function-representation assertion, as
+does the help metadata test. See the [comparison evidence and failure
+classification](native-comp-regression-attribution-2026-09-08.md).
+
+## 2026-09-08 Native-comp merge and adversarial regression review
+
+This checkpoint merges `c5ec1b855f8a3535ff32c46bb038272d14bad005` into
+main and retains the terminal-frame work above. The historical failures
+and their attribution are recorded in
+[native-comp-regression-attribution-2026-09-08.md](native-comp-regression-attribution-2026-09-08.md).
+All 13 passed together with native-runtime, dumper, and terminal controls
+in the first combined replay (112 passed, zero failed). That intermediate
+result preceded the additional adversarial corrections below.
+
+The review covered the entire merge diff and local corrections, the
+source-ownership audit, test selection, native-state lifetime, cache
+invalidation, dump validation, terminal/device ownership, and the
+real-client comparison. GNU Lisp and upstream test files were not edited.
+The fixes do not disable native execution or advice trampolines, substitute
+builtin implementations for GNU Elisp functions, copy live native state,
+consume oracle answers in production, or change compatibility selectors.
+The two function-representation assertions now require either bytecode or
+an actual native Elisp subr, as observed in GNU; a builtin facade fails.
+
+Additional adversarial findings and corrections:
+
+- A native-written cached tail stayed stale after return. The read barrier
+  now reaches its stable owning heap outside an active native call. The
+  existing mutation registration supplies that owner once per heap; the
+  cons allocation layout and generated two-word ABI are unchanged. The
+  heap uses explicit raw allocation ownership, and reconciliation/GC suppress
+  recursive heap access. Non-native GC traverses roots without holding a
+  heap borrow. Teardown reconciles before detaching; moving the runtime
+  cannot invalidate the owner address. A second live heap cannot reattach
+  the same canonical prefix.
+- A cached source form could still evaluate old arguments after that tail
+  fix. The new negative control first reproduced 3 instead of 11. Derived
+  caches now watch their native-exposed cons dependencies as well as Rust
+  mutation notifications. Crossing into native storage invalidates older
+  Rust-only snapshots once. A separate control confirms checking one
+  graph does not refresh an unrelated native cons.
+- File-name-handler matches also retained a replaced handler. The negative
+  control reproduced `first` instead of `second`. Its cache now watches the
+  alist graph and handler property lists, including the operations filter,
+  while preserving definition, string, and existing mutation guards.
+- Reading an executable fingerprint could silently fall back to hashing
+  empty bytes. It now requires a successful executable read. The normal
+  digest is unchanged; an internal read failure cannot produce a false
+  cross-binary identity.
+
+The added dump control writes a native-modified cyclic cons after return,
+loads the D08 image, and verifies both the changed value and cycle identity.
+Existing writer controls cover sharing, supported object kinds, symbol
+cells, queue deduplication, incomplete headers, and wrong fingerprints.
+D08 still rejects unsupported objects and does not provide full-image
+startup restoration. Its Rust object layout is not GNU `.pdmp` binary
+interchange. These limitations remain explicit in the pdump ledger.
+
+Final validation results follow after the serial gate completes.
+
+The upstream native-comp comparison, before the final allocation-owner
+correction described below, selected all 178 upstream cases. Both
+editors passed all 177 normal cases, with no skips. The extra bootstrap
+case failed in both because the harness's isolated checkout lacks the
+explicitly loaded `lisp/emacs-lisp/comp.elc`. Thus the harness's reported
+178 matching outcomes are **177 passes and one matching setup failure**,
+not 178 passing tests. A separate bootstrap replay against the built tree
+is required to exercise that case. Artifact:
+`target/compat/run-1788876445995048000-42662`.
+
+Before that allocation-owner correction, the source also passed 136 native-runtime/type/cache/audit
+controls, including all 22 structural audit tests; strict all-target,
+all-feature Clippy with `-D warnings`; rustfmt checking; and the gate-profile
+CLI build, without warnings. Logs:
+`/private/tmp/emaxx-native-final-controls.log`,
+`/private/tmp/emaxx-native-merge-clippy.log`, and
+`/private/tmp/emaxx-native-merge-build.log`.
+
+That rebuilt Emaxx and the pinned GNU binary both passed all seven unchanged
+server tests and the real client comparison. The first GNU server attempt was blocked by the
+sandbox's Unix-socket restriction; the socket-enabled replay passed in
+both editors. Logs retain the restriction failure separately. Final client
+artifacts: `/private/tmp/emaxx-native-merge-terminal-gate`; server logs:
+`/private/tmp/emaxx-native-merge-{gnu,emaxx}-server.log`.
+
+The full Rust gate runs serially at
+`/private/tmp/emaxx-native-merge-final-full-gate`. Its wrapper retains the official
+inventory, selection, template settings, outcome checks, and ignored-test
+policy, while limiting execution to one group and one test worker at a
+time. The manifest records the override. It schedules all 2,558 library
+tests; only the two existing standalone TTY tests are ignored. Binary and
+integration stages follow, including the nine-source native artifact
+identity test. No result is claimed for that gate until it completes.
+
+The first full-gate attempt was stopped during `eval_01`, with no test
+failure, for an additional ownership correction. Rust's documented
+[Box aliasing rules](https://doc.rust-lang.org/std/boxed/index.html#considerations-for-unsafe-code)
+make retaining the heap's Box alongside a persistent raw owner pointer
+unsuitable across later moves and mutable borrows, even with UnsafeCell.
+The owner now consumes the allocation with `Box::into_raw`, retains a
+NonNull pointer, and reconstructs the Box exactly once at teardown. Normal
+heap borrows still suppress reentrant cache reads. Existing move, teardown,
+cross-heap, native mutation, and dump controls exercise that owner. The
+interrupted artifact remains at `/private/tmp/emaxx-native-merge-full-gate`;
+its manifest records the interruption rather than a passing result.
+
+After the allocation-owner correction, the 136 native-runtime/type/cache/audit
+controls passed again (zero failures or ignores), followed by a successful
+gate-profile CLI build. Strict all-target/all-feature Clippy with
+`-D warnings` and rustfmt checking also passed without warnings. These
+checks cover the same source as the restarted full gate. Logs:
+`/private/tmp/emaxx-native-raw-owner-controls.log`,
+`/private/tmp/emaxx-native-merge-raw-owner-clippy.log`, and
+`/private/tmp/emaxx-native-raw-owner-build.log`.
+
+The restarted gate at `/private/tmp/emaxx-native-merge-final-full-gate`
+passed all 351 `eval_01` tests, then finished `eval_02` with 283 passes and
+one failure: `loaded_gnu_cl_generic_method_keeps_generic_documentation_public`.
+The identical test also fails on starting main `450cb77`; the extracted
+expression returns `(t t 11 t)` in pinned GNU. Its error was
+`wrong-type-argument (char-table-p nil)` during help argument highlighting.
+`syntax.c:Fmodify_syntax_entry` treats a nil optional table as the current
+buffer's table. Rust accepted an omitted table but rejected explicit nil,
+including the slot padded by native calls. Matching GNU's nil handling
+fixes the unchanged help test. A new oracle control covers nil, omitted,
+and explicit separate tables without changing either editor's Lisp.
+The primitive probe failed before the correction and matches GNU's
+`(nil 119 119 46 95)` afterward. Evidence:
+`/private/tmp/emaxx-native-generic-documentation-repro` and
+`/private/tmp/emaxx-native-generic-documentation-fixed.log`.
+This is an additional starting-main mismatch, beyond the original 13.
+
+After that correction, 137 native-runtime/type/cache/audit and syntax
+controls passed, with zero failures or ignores. Log:
+`/private/tmp/emaxx-native-syntax-controls.log`.
+The next full run schedules previously unreached groups first and then
+repeats `eval_01` and `eval_02` on the corrected source; no group or test is
+removed. Its artifact root is
+`/private/tmp/emaxx-native-merge-syntax-full-gate`.
+
+That run was interrupted early in `eval_03` after two alignment cases
+failed during fixture reconstruction, before executing alignment. Both
+also fail on starting main: `replace_with_gnu_batch_runtime` constructed
+the replacement while the old native session was still alive. The dynamic
+loader reused live `.eln` handles whose saved compilation-unit words
+belonged to the old interpreter's heap. The fixture now retires the old
+interpreter before reconstructing GNU startup. This preserves native
+execution and the existing test assertions; it does not share or overwrite
+another live session's relocation words. Reproduction logs are in
+`/private/tmp/emaxx-native-alignment-repro`.
+
+All three C-alignment controls then passed in
+`/private/tmp/emaxx-native-alignment-fixed.log`; strict Clippy and rustfmt
+passed again (`/private/tmp/emaxx-native-session-clippy.log`). The subsequent
+full run streamed per-test diagnostics and completed `eval_03` with
+319 passes and one failure in script-mode ownership. Native-compiled
+`sh-mode` and `python-mode` are subrs in both GNU and Emaxx, while the test
+expected them not to be subrs. A focused review also reproduced the same
+kind of failure for electric-mode producers (`tex-insert-quote`) and undo.
+All three fail on starting main as well. GNU and Emaxx agree on the actual
+representations: those four functions are native Elisp subrs; `tex-mode`
+itself is bytecode on this build.
+
+The four related tests now require bytecode or an actual native Elisp subr,
+rejecting a C builtin substitute. Their derived-mode, key-binding,
+indentation, interpreter-alist, and undo expectations are unchanged.
+The already-passing `tex-mode` control uses the same ownership predicate.
+The electric fixture's pre-call `tex-mode` autoload check remains unchanged;
+only its loaded `tex-insert-quote` ownership assertion changes.
+The before-fix replay was one pass and three failures in both current and
+starting-main builds. GNU/Emaxx representation probes and replay logs are
+retained at `/private/tmp/emaxx-native-mode-ownership`. The failed full-run
+artifact remains at `/private/tmp/emaxx-native-merge-session-full-gate`.
+
+The next run, `/private/tmp/emaxx-native-merge-ownership-full-gate`, exposed
+`batch_native_lisp_callables_preserve_help_arglists`: its `zerop` check
+expected a bytecode descriptor even when GNU loads a native Elisp subr.
+The review also found a real public-type mismatch: `aref` exposed the
+private slots of native functions, native compilation units, windows,
+threads, and hash tables because their Rust storage uses `Value::Record`.
+The `data.c:Faref/Faset` dispatch now checks the public object kind before
+index bounds, rejects opaque objects with `wrong-type-argument arrayp`,
+and retains the distinct GNU rules for readable closures and mutable
+ordinary records. The help test retains its bytecode argspec assertion
+and checks that native Elisp functions reject array access. A GNU-backed
+control covers both reads, negative indexes, and writes, as well as a
+real record tagged `subr` and a byte-compiled closure.
+
+While building that control, the audit disproved the old fixture comment
+that `comp-no-spawn` t requested in-process compilation. GNU's
+`comp--native-compile` instead skips ordinary compilation under that flag;
+the earlier advice replays could rely on already-cached trampolines.
+The fixture now uses `comp-no-spawn` nil and
+`comp-running-batch-compilation` t, matching GNU's batch compilation path
+through `comp--final1`. Loaded native code, foreground compilation, and
+missing trampolines remain enabled; only deferred file compilation is
+disabled in the embedded fixture. The CLI's settings remain unchanged.
+A new control starts with a fresh native cache, verifies no trampoline
+exists, compiles a caller, replaces `file-system-info`, checks the native
+caller sees that replacement, and verifies the newly compiled trampoline.
+The Emaxx side deliberately uses the fixture settings without overriding
+them. The GNU side explicitly uses the same batch-compilation settings.
+Evidence and control logs are in `/private/tmp/emaxx-native-array-boundary`.
+
+The adjacent `fns.c:Fcopy_sequence` review found the same internal-record
+leak: copying a native function or compilation unit produced an ordinary
+storage clone without native loader ownership. Public `copy-sequence` now
+accepts GNU's sequence and ordinary-record kinds, rejects opaque objects
+and closures with `wrong-type-argument sequencep`, and projects internal
+keymaps through their public list representation. List copying uses the
+existing proper-list walker, including dotted-tail and cycle checks.
+The native-object oracle control also checks rejected copying and an
+independent ordinary-record copy. It passed against both GNU and Emaxx;
+see `copy-control.log` in the same evidence directory.
+
+After that correction, 138 focused controls passed again, followed by
+strict Clippy, rustfmt, and the CLI build. The next full run completed
+`eval_04` with 250 passes and one failure in
+`format_spec_renders_buffers_with_princ_semantics` (2424.53 seconds).
+The same test fails on starting main. GNU's `print.c:PVEC_BUFFER` reads the
+live buffer's name, while Emaxx printed a name snapshot retained in a Lisp
+value, including native handles created before a rename. The printer now
+looks up the buffer by identity for both escaped and unescaped output,
+and prints `#<killed buffer>` after deletion. The original format-spec
+expectation is retained, with additional rename/deletion checks. GNU and
+before-fix Emaxx probes, plus the baseline reproduction, are retained in
+`/private/tmp/emaxx-native-buffer-printing`. The failed full-run evidence
+remains in `/private/tmp/emaxx-native-merge-array-full-gate`.
+
+The printing correction passed 17 focused controls, including all 13
+original failures, the three format-spec contracts, and the native-object
+boundary control (319.32 seconds). Strict Clippy and rustfmt passed again.
+The next serial wrapper runs every library group even after a group
+failure, retaining the official selectors, inventory, and strict result
+validation. Any caught validation failure prevents a passing final
+summary; this guard was also checked with an injected synthetic failure.
+This scheduling change collects all outstanding failures in one run
+without turning failed tests into passes or excluding them.
+
+The printing diagnostic sweep reached the remaining library groups and
+found 15 failing tests: four Eshell cases, three macOS C-variable forwarding
+cases, three native-Elisp ownership assertions, two platform/toolchain
+assumptions, multisession, DND, and HTTP retrieval. Starting-main replays
+with isolated homes and caches reproduce 14 of these; DND passes with the
+old fixture because its `comp-no-spawn` setting suppresses missing
+trampolines. The complete diagnostic sweep is not a passing gate: one
+Eshell teardown hung after an assertion failure and was terminated, and
+repeated evaluator groups were deferred until the accumulated fixes.
+Evidence is in `/private/tmp/emaxx-native-printing-sweep-baseline` and
+`/private/tmp/emaxx-native-merge-printing-full-gate`.
+
+The macOS forwarding manifest now comes from the pinned GNU binary's
+`defvaralias` classifications: 678 forwarded names, including 29 already
+localized to buffers. The existing strict regeneration check now runs for
+macOS as well as Linux. Diagnostic classification uses the C locale so
+localized quotation marks cannot change the categories. This fixes boolean
+coercion, integer stores, and built-in alias restrictions; it does not add
+a macOS manifest of defaults for C variables lacking runtime owners.
+
+The C-primitive generator had classified native-compiled Lisp as C-owned
+when a Lisp function shared the name of a C DEFUN on another platform.
+It now excludes `subr-native-elisp-p`. Fresh Darwin regeneration removes
+exactly `frame-windows-min-size`, `x-begin-drag`, and `x-file-dialog`, leaving
+1417 C primitives. This supersedes earlier sections that treated their
+native Lisp representations as permission for Rust substitutes.
+`frame-windows-min-size` now runs GNU's `window.el` computation; its Rust
+substitute returned fixed numbers. The file-dialog substitute is removed.
+`x-begin-drag` remains C-owned on the contracted Linux build and Lisp-owned
+in `ns-win.el` on macOS. DND can therefore replace that function without
+requesting an ABI trampoline for a nonexistent C subr. No trampoline hook
+was bypassed or disabled, and the existing cold-cache native-caller control
+remains required. The generator and arity manifests are regenerated, not
+hand-edited to exempt a test.
+
+The multisession fixture now runs its second editor in a separate process,
+as GNU's workflow does. It retains the first live editor, verifies the
+second reads 1 and writes 2, then verifies the first observes 2. The original
+initial-value, invalid-value, file-existence, and SQLite assertions remain.
+This avoids two independent heaps sharing one process's live `.eln`
+relocation globals. The three remaining ownership assertions accept actual
+native Elisp subrs while retaining their source and behavior assertions.
+The loader test checks Darwin's Mach-O diagnostic on Darwin, and the
+compiler-version check compares GNU to the configured libgccjit API's
+actual version, rather than a fixed 14.2.0 literal.
+
+HTTP retrieval exposed MD5's fifth `NOERROR` argument. Its implementation
+now follows `fns.c:extract_data_from_object`: string slices apply after
+encoding, buffer slices use accessible buffer positions, implicit coding
+selection follows the buffer's write policy, invalid coding falls back only
+where GNU permits it, and current-buffer state is restored on errors.
+String hashing does not record a coding system; buffer encoding does.
+The related arity review replaced `make-char`'s charset-ignoring placeholder
+with `charset.c:Fmake_char` position-code assembly, dimension defaults,
+ISO masking, range checks, and charset decoding. GNU-backed controls include
+real native callers to both five-argument primitives. Five minimum-arity
+mismatches are corrected. Additional controls compare errors through source
+calls, `apply`, and actual native callers; GNU's resolved subr object is
+retained in `funcall` arity errors before handlers observe them.
+
+Eshell exposed two native unwinding defects. `eval.c:unwind_to_catch`
+executes cleanup at each handler's saved depth before removing that handler;
+the previous runtime removed inner handlers first. A small native-compiled
+control returns `(t (cleanup handled))` in GNU but signals `no-catch` in the
+old Emaxx binary. Matching GNU's order fixes that control. Eshell also
+requires synchronization of handler removals performed directly by generated
+code before `helper_unbind_n` executes cleanup. Without it, the trace shows
+one cleanup being unbound twice after a deferred subprocess, consuming a
+caller's entry. Synchronizing before cleanup and native error dispatch
+makes both unchanged pipeline assertions pass. The dynamic-stack integrity
+check remains unchanged; temporary tracing is removed. A related control
+checks cleanup crossing into interpreted Lisp (that positive control also
+passes before the fix and is not presented as a reproducer).
+
+The 11 additional failures outside Eshell passed focused checks, as did
+MD5/charset controls and both Eshell pipelines after the unwind correction.
+These are focused results, not a completed full gate. The warning checks,
+broader Eshell suites, and 176 unique regression controls on the final candidate
+are recorded under `/private/tmp/emaxx-native-final-fixes/validation`.
+
+
+The 176 unique focused controls completed with 176 passes, no failures or
+ignores (576.00 seconds). Both broader Eshell suites, rustfmt, and strict
+all-target/all-feature Clippy passed. The subsequent complete Rust run is
+recorded at `/private/tmp/emaxx-native-merge-final-sept9-full-gate`.
+
+That run found two primitive-test failures. The fixed C-mirror snapshot
+still named 1420 entries after the documented regeneration removed three
+native-Elisp owners. Independently comparing the generated inventories
+confirms exactly `frame-windows-min-size`, `x-begin-drag`, and `x-file-dialog`
+were removed, with no additions: 1417 entries and NUL-separated FNV-1a
+10595795051582904188. Updating that snapshot retains its fixed fingerprint,
+the empty missing-C-primitive inventory, and all arity/dispatch checks.
+
+The second failure was introduced by removing the Rust `x-file-dialog`
+substitute: `fboundp` previously returned t because that dispatcher existed,
+although its body only signaled a window-system-unavailable error. Removing
+it exposed a graphical-capability difference. A fresh pinned GNU invocation
+returns `(nil nil nil)` for the three batch dialog eligibility queries,
+and has both feature `ns` and `x-file-dialog`. Its actual function owner is
+`term/ns-win.elc`, loaded by `loadup.el` only when `ns` is present. The Emaxx
+terminal runtime has neither feature `ns` nor that Lisp dialog definition.
+This is a lost public function binding; changing the test is not a claim
+that NS API availability has been restored.
+
+The user requested retaining backend-specific contracts. The corrected test
+keeps identical GNU/Emaxx batch-predicate assertions and checks the oracle's
+file-dialog availability and owner against its actual features: NS requires
+a Lisp owner, PGTK and X11 with GTK/Motif require a C owner, and plain X11 or
+terminal-only builds lack that definition. It reports the exercised backend;
+this host exercises NS, not Linux graphical branches. Emaxx's separate
+assertion pins its terminal-only capability boundary. No OS-based selection,
+function substitution, new ignored test, or GUI-parity claim is introduced.
+
+At the user's direction, repeated evaluator groups were stopped during
+`eval_02`. The run remains recorded as interrupted, with its two primitive
+failures retained. Completed `eval_01`/`eval_05` and other groups are retained;
+earlier completed `eval_02`/`eval_03`/`eval_04` coverage and the successful
+reruns of their fixed failures are reused. The record explicitly spans
+multiple runs and is not relabeled as one passing full-gate execution.
+Only the two test corrections, rustfmt, and strict Clippy are rerun;
+production code is unchanged. Binary/integration and final native/server
+verification remain pending. Evidence and the coverage ledger are under
+`/private/tmp/emaxx-native-final-sept9-gate-corrections`.
+
+
+The two corrected primitive contracts passed together (2/2, 27.01 seconds),
+with rustfmt and strict all-target/all-feature Clippy clean. The coverage
+ledger preserves the original group outcomes plus the successful targeted
+corrections: 2564 library tests covered successfully and two pre-existing
+TTY ignores across those recorded runs. This is not a fresh single-run
+full-gate pass.
+
+The subsequent CLI integration run passed 14 of 15 tests. The remaining
+assertion rejected GNU's own output before comparing Emaxx: it assumed an
+`eval-buffer` loader frame, while the current pinned GNU image reports
+`load-with-code-conversion` immediately after the three probe call frames.
+A standalone shared-descriptor replay produces byte-identical complete
+GNU/Emaxx output and exit status 255. The correction retains the required
+stdout/stderr ordering, error text, and probe frames in the fixed prefix,
+and retains the unchanged exact comparison of the entire subject/oracle
+output (including every loader/startup frame). No output is normalized.
+The single corrected CLI test passed (13.03 seconds); rustfmt and strict
+Clippy passed again. Evidence: `/private/tmp/emaxx-native-final-sept9-stdio`.
+The 14 already-passing CLI cases and completed binary tests are retained;
+only the other three integration targets continue.
+
+
+The binary test targets passed all 42 tests. The remaining integration
+stage passed all three ERT-runner tests, the native artifact identity test,
+and all five package-lifecycle tests. Together with the retained CLI cases
+and its corrected exact-comparison rerun, all 24 integration tests have
+successful coverage. Native identity exercised all nine unchanged GNU
+fixtures (eight byte-identical artifacts plus the no-byte-compile case),
+including the full compiler frontend `comp.el`, in 237.17 seconds. The
+five package-lifecycle tests passed in 396.33 seconds. Evidence:
+`/private/tmp/emaxx-native-final-sept9-gate-corrections/cargo-stages` and
+`/private/tmp/emaxx-native-final-sept9-gate-corrections/remaining-integrations`.
+The subsequent native-comp replay is needed because its earlier result
+predates the allocation-owner, native-unwind, MD5, and charset corrections;
+the isolated later test corrections do not require another broad rerun.
+
+
+The native replay on the final production source selected all 178 upstream
+cases: GNU and Emaxx each passed 177, failed the same bootstrap setup case,
+and skipped none. The isolated checkout lacks `comp.elc`; that matching
+setup failure is not a pass. All three native-cache tests passed in both
+editors. Artifacts: `target/compat/run-1788912698309078000-72391` and
+`target/compat/run-1788914322598418000-76155`. Source fingerprints remained
+unchanged throughout these runs.
+
+The following GNU server attempt failed before exercising server behavior:
+the runner's long temporary root exceeded the Unix socket pathname limit
+(`Service name too long`). That failed receipt remains under
+`/private/tmp/emaxx-native-final-sept9-gate-corrections/after-cli-validation`.
+Only the uncompleted server, PTY, and standalone bootstrap stages resume
+with the shorter `/private/tmp/ex-final` root. No production or upstream
+test changes accompany this runner correction.
+
+The corrected short-path server replay passed all seven unchanged tests
+in each editor. The real PTY replay also passed in both: client and primary
+input isolation, fragmented arrow-key and UTF-8 input, saving `abXéc`,
+normal client closure, and abrupt disconnection preserving the primary
+terminal. Evidence: `/private/tmp/ex-final/server-{gnu,emaxx}.log` and
+`/private/tmp/emaxx-native-merge-terminal-final`.
+
+Publication scope was reconfirmed after observing the newer native-comp
+tip `68c0b22`: publish the validated `c5ec1b8` merge and local corrections
+first, and review the three subsequent dump commits separately. Those
+newer commits are not included in this checkpoint or its coverage claims.
+
+The standalone bootstrap replay loaded the original built-tree `comp.elc`,
+compiled stage one, loaded that generated compiler, and compiled stage two
+in each editor. Both then failed the unchanged raw `cmp` assertion with
+exit status 1. GNU took 114/115 seconds for the two compilation stages;
+Emaxx took 75/76 seconds. Both pairs contain equally sized 881,824-byte
+Mach-O files, with exactly 78 differing bytes per pair. Every difference
+falls within `LC_ID_DYLIB`, `LC_UUID`, or the code-signature data; there
+are zero differing bytes outside those regions. The library identity
+contains the independently generated stage filename. This is a shared
+macOS bootstrap reproducibility limitation, not a passing bootstrap test.
+No bytes or test expectations were normalized. Full logs, original
+artifacts, and read-only binary inspection results are retained under
+`/private/tmp/emaxx-native-merge-bootstrap`. The validation driver preserves
+both editor exit codes separately from its own successful orchestration.
+
+Final review: the original 13 corrections pass, the 176 focused controls
+pass, and the retained Rust coverage accounts for 2,564 successful library
+cases, two pre-existing TTY ignores, 42 binary tests, and 24 integration
+tests. Rustfmt and strict all-target/all-feature Clippy are clean. Native
+comparison has 177 passes plus one shared setup failure, native-cache has
+three passes, and the independent bootstrap reaches the same raw binary
+comparison limitation in GNU and Emaxx. Both editors pass all seven server
+tests and the real PTY comparison. Source fingerprints stayed unchanged
+during final validation; only audit documentation was completed afterward.
+
+The adversarial review and its negative controls are recorded above,
+including allocation ownership, native cons/cache coherence, opaque array
+boundaries, actual advice compilation, and native cleanup ordering. The
+final isolated test corrections preserve complete subject/oracle comparison
+and expose the NS capability gap instead of claiming a restored dialog
+binding. There are no new skipped tests or patched GNU Lisp files. This
+checkpoint does not claim a fresh single-run Rust gate, a fresh 7,883-test
+corpus result, universal terminal/GUI parity, or complete image restoration.

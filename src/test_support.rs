@@ -223,15 +223,18 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter() -> Interpreter {
 /// `fset' of a primitive asks comp-run.el to compile a trampoline the same
 /// way.  A Rust test process is its own `invocation-name', and libtest
 /// cannot act as that child ("Unrecognized option: 'n'"), so the fixtures
-/// take the configuration GNU's own child runs under: `comp-no-spawn' t
-/// compiles in this process, and the implicit compilations (trampolines
-/// on `fset', deferred compilation of loaded files) are switched off with
-/// GNU's own options.  The CLI keeps GNU's defaults.
+/// use GNU's batch-compilation mode, which emits code in this process.
+/// `comp-no-spawn' must remain nil: setting it skips ordinary compilation,
+/// including a missing advice trampoline. Keep subr trampolines enabled as
+/// startup left them. Only deferred compilation of loaded files is disabled;
+/// foreground native compilation and missing trampolines still run. The CLI
+/// keeps GNU's defaults.
 pub(crate) fn configure_embedded_native_compilation(interpreter: &mut Interpreter) {
     eval_lisp(
         interpreter,
         &mut Vec::new(),
-        "(setq comp-no-spawn t comp-enable-subr-trampolines nil native-comp-jit-compilation nil)",
+        "(setq comp-no-spawn nil comp-running-batch-compilation t
+               native-comp-jit-compilation nil)",
     )
     .expect("configure embedded native compilation");
 }
@@ -249,6 +252,10 @@ pub(crate) fn replace_with_gnu_batch_runtime(interpreter: &mut Interpreter) {
             .expect("resolve upstream GNU Lisp load path"),
         ..Default::default()
     };
+    // Retire the previous session before loading another session's .eln
+    // files. dlopen reuses live library handles, whose static relocation
+    // words belong to the previous interpreter's native heap.
+    drop(std::mem::take(interpreter));
     *interpreter = crate::batch::initialize_batch_interpreter(&options)
         .expect("reconstruct compiled GNU batch Lisp image");
     configure_embedded_native_compilation(interpreter);
@@ -301,6 +308,14 @@ pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
     // criterion: identical results to the reconstruct-per-test path,
     // stage for stage.
     if std::env::var("EMAXX_IMAGE_TEMPLATE").is_ok() {
+        // A normal startup may load system .eln files. Their descriptors,
+        // relocation words and heap belong to one interpreter and cannot be
+        // copied with the Lisp template. Reconstruct fresh in that case.
+        static FRESH_REQUIRED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if FRESH_REQUIRED.load(std::sync::atomic::Ordering::Relaxed) {
+            return build_upstream_batch_interpreter();
+        }
         // Process-global template.  Interpreter holds Rc graphs, which are
         // sound across threads only when uses never overlap: libtest runs
         // each test on its own thread, so the serial gate's
@@ -321,7 +336,12 @@ pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
         }
         if slot.is_none() {
             let started = std::time::Instant::now();
-            *slot = Some(AssertSend(build_upstream_batch_interpreter()));
+            let interpreter = build_upstream_batch_interpreter();
+            if !interpreter.native_compiler.can_clone_image() {
+                FRESH_REQUIRED.store(true, std::sync::atomic::Ordering::Relaxed);
+                return interpreter;
+            }
+            *slot = Some(AssertSend(interpreter));
             if std::env::var("EMAXX_DEBUG_TEMPLATE").is_ok() {
                 eprintln!("TEMPLATE build {:?}", started.elapsed());
             }

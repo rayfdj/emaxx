@@ -856,15 +856,8 @@ define_dispatch!(
                 Ok(bytes_to_unibyte_value(&[n as u8]))
             }
             "make-char" => {
-                need_arg_range(name, args, 1, 2)?;
-                let _charset = args[0].as_symbol()?;
-                let code = args
-                    .get(1)
-                    .filter(|code| code.is_truthy())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(0);
-                Ok(Value::Integer(code))
+                need_arg_range(name, args, 1, 5)?;
+                make_charset_character(interp, &args[0], &args[1..])
             }
             "string-to-char" => {
                 need_args(name, args, 1)?;

@@ -47,13 +47,16 @@ impl Interpreter {
     }
 
     pub(crate) fn lisp_face_vector(&self, name: &str, global: bool) -> Option<Value> {
+        self.lisp_face_vector_on(name, (!global).then_some(self.selected_frame_id))
+    }
+
+    pub(crate) fn lisp_face_vector_on(&self, name: &str, frame: Option<u64>) -> Option<Value> {
         let state = self
             .lisp_face_state_index(name)
             .and_then(|index| self.lisp_face_states.get(index))?;
-        if global {
-            state.global.clone()
-        } else {
-            state.selected_frame.clone()
+        match frame {
+            None => state.global.clone(),
+            Some(id) => state.frames.get(&id).cloned(),
         }
     }
 
@@ -63,6 +66,19 @@ impl Interpreter {
         selected_frame: bool,
         reset: bool,
     ) -> Result<Value, LispError> {
+        self.ensure_lisp_face_on(
+            name,
+            selected_frame.then_some(self.selected_frame_id),
+            reset,
+        )
+    }
+
+    pub(crate) fn ensure_lisp_face_on(
+        &mut self,
+        name: &str,
+        frame: Option<u64>,
+        reset: bool,
+    ) -> Result<Value, LispError> {
         let index = match self.lisp_face_state_index(name) {
             Some(index) => index,
             None => {
@@ -70,7 +86,7 @@ impl Interpreter {
                     name: name.to_string(),
                     id: None,
                     global: Some(empty_lisp_face_vector()),
-                    selected_frame: None,
+                    frames: HashMap::new(),
                 });
                 self.lisp_face_states.len() - 1
             }
@@ -79,39 +95,41 @@ impl Interpreter {
         if self.lisp_face_states[index].global.is_none() {
             self.lisp_face_states[index].global = Some(empty_lisp_face_vector());
         }
-        let vector = {
-            let target = if selected_frame {
-                &mut self.lisp_face_states[index].selected_frame
-            } else {
-                &mut self.lisp_face_states[index].global
-            };
-            if target.is_none() {
-                *target = Some(empty_lisp_face_vector());
-            } else if reset {
-                let vector = target
-                    .as_ref()
-                    .expect("an existing Lisp face target must have a vector");
-                for slot in 1..LFACE_VECTOR_SIZE {
-                    aset_vector_value(vector, slot, Value::symbol("unspecified"))?;
-                }
-            }
-            target
+        let vector = match frame {
+            Some(id) => self.lisp_face_states[index]
+                .frames
+                .entry(id)
+                .or_insert_with(empty_lisp_face_vector)
+                .clone(),
+            None => self.lisp_face_states[index]
+                .global
                 .as_ref()
-                .expect("ensuring a Lisp face must produce a vector")
-                .clone()
+                .expect("face has an initialized global definition")
+                .clone(),
         };
-        if selected_frame {
-            self.sync_selected_frame_face_hash_entry(name, vector.clone())?;
+        if reset {
+            for slot in 1..LFACE_VECTOR_SIZE {
+                aset_vector_value(&vector, slot, Value::symbol("unspecified"))?;
+            }
+        }
+        if let Some(id) = frame {
+            self.sync_frame_face_hash_entry(id, name, vector.clone())?;
         }
         Ok(vector)
     }
 
-    fn sync_selected_frame_face_hash_entry(
+    fn sync_frame_face_hash_entry(
         &mut self,
+        frame: u64,
         name: &str,
         vector: Value,
     ) -> Result<(), LispError> {
-        let Some(table) = self.selected_frame_face_hash_table.clone() else {
+        let Some(table) = self
+            .frame_state(frame)
+            .expect("decoded frame has state")
+            .face_hash_table
+            .clone()
+        else {
             return Ok(());
         };
         let Some((_, mut entries)) = crate::lisp::json::hash_table_entries(self, &table) else {
@@ -156,21 +174,28 @@ impl Interpreter {
         crate::lisp::primitives::set_hash_table_entries(self, &table, entries)
     }
 
-    pub(crate) fn selected_frame_face_hash_table(&mut self) -> Value {
-        if let Some(table) = &self.selected_frame_face_hash_table {
+    pub(crate) fn frame_face_hash_table(&mut self, frame: u64) -> Value {
+        if let Some(table) = &self
+            .frame_state(frame)
+            .expect("decoded frame has state")
+            .face_hash_table
+        {
             return table.clone();
         }
         let entries = self
             .lisp_face_states
             .iter()
             .filter_map(|face| {
-                face.selected_frame
-                    .clone()
+                face.frames
+                    .get(&frame)
+                    .cloned()
                     .map(|vector| (Value::symbol(&face.name), vector))
             })
             .collect();
         let table = crate::lisp::json::make_hash_table(self, "eq", entries);
-        self.selected_frame_face_hash_table = Some(table.clone());
+        self.frame_state_mut(frame)
+            .expect("decoded frame has state")
+            .face_hash_table = Some(table.clone());
         table
     }
 
@@ -211,10 +236,25 @@ impl Interpreter {
         value: Value,
         global: bool,
     ) -> Result<Value, LispError> {
-        let vector = self.ensure_lisp_face(name, !global, false)?;
+        self.set_lisp_face_attribute_on(
+            name,
+            index,
+            value,
+            (!global).then_some(self.selected_frame_id),
+        )
+    }
+
+    pub(crate) fn set_lisp_face_attribute_on(
+        &mut self,
+        name: &str,
+        index: usize,
+        value: Value,
+        frame: Option<u64>,
+    ) -> Result<Value, LispError> {
+        let vector = self.ensure_lisp_face_on(name, frame, false)?;
         aset_vector_value(&vector, index, value.clone())?;
         self.face_change_count += 1;
-        if global {
+        if frame.is_none() {
             self.sync_new_frame_face_hash_entry(name)?;
         }
         Ok(value)
@@ -224,12 +264,14 @@ impl Interpreter {
         &mut self,
         from: &str,
         to: &str,
-        global: bool,
+        source_frame: Option<u64>,
+        target_frame: Option<u64>,
     ) -> Result<(), LispError> {
         let source = self
-            .lisp_face_vector(from, global)
+            .lisp_face_vector_on(from, source_frame)
             .ok_or_else(|| LispError::Signal(format!("Invalid face: {from}")))?;
-        let target = self.ensure_lisp_face(to, !global, true)?;
+        let target = self.ensure_lisp_face_on(to, target_frame, true)?;
+        self.register_lisp_face_id(to);
         for index in 0..LFACE_VECTOR_SIZE {
             aset_vector_value(&target, index, vector_slot_value(&source, index)?)?;
         }
@@ -278,5 +320,24 @@ impl Interpreter {
             current = self.face_inherit_target(&name);
         }
         false
+    }
+}
+
+impl Interpreter {
+    pub(crate) fn copy_frame_faces(&mut self, from: u64, to: u64) {
+        for face in &mut self.lisp_face_states {
+            if let Some(vector) = face.frames.get(&from) {
+                let slots = (0..LFACE_VECTOR_SIZE)
+                    .map(|index| {
+                        vector_slot_value(vector, index)
+                            .expect("face vector has LFACE_VECTOR_SIZE slots")
+                    })
+                    .collect::<Vec<_>>();
+                face.frames.insert(
+                    to,
+                    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(slots)),
+                );
+            }
+        }
     }
 }

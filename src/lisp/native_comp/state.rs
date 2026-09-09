@@ -27,9 +27,7 @@ pub(crate) struct NativeCompilerState {
 impl Clone for NativeCompilerState {
     fn clone(&self) -> Self {
         assert!(
-            self.compiler.borrow().is_none()
-                && self.runtime.is_pristine()
-                && self.registry.is_empty(),
+            self.can_clone_image(),
             "cannot clone an interpreter with live native compiler or runtime state"
         );
         Self::default()
@@ -37,6 +35,10 @@ impl Clone for NativeCompilerState {
 }
 
 impl NativeCompilerState {
+    pub(crate) fn can_clone_image(&self) -> bool {
+        self.compiler.borrow().is_none() && self.runtime.is_pristine() && self.registry.is_empty()
+    }
+
     pub(crate) fn available() -> bool {
         gccjit::available()
     }

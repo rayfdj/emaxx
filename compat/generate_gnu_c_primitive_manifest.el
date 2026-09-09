@@ -41,7 +41,11 @@ all runtime subrs excludes native-compiled Lisp functions."
   (let ((symbol (intern-soft name)))
     (when (and symbol
                (fboundp symbol)
-               (subrp (symbol-function symbol)))
+               (subrp (symbol-function symbol))
+               ;; A C DEFUN can share its public name with a Lisp owner on
+               ;; another platform (for example ns-win.el's x-begin-drag).
+               ;; Native compilation must not turn that Lisp owner into C.
+               (not (subr-native-elisp-p (symbol-function symbol))))
       (pcase-let ((`(,minimum . ,maximum)
                    (subr-arity (symbol-function symbol))))
         (when (and (integerp minimum)

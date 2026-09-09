@@ -1204,7 +1204,10 @@ fn upstream_tex_mode_installs_its_lisp_keymap() {
         eval_str_with(
             &mut interp,
             "(list
-               (subrp (indirect-function 'tex-mode))
+               (let ((function (indirect-function 'tex-mode)))
+                 (or (byte-code-function-p function)
+                     (and (subrp function)
+                          (subr-native-elisp-p function))))
                (lookup-key tex-mode-map \"\\\"\")
                (lookup-key latex-mode-map \"\\\"\")
                (with-temp-buffer
@@ -1214,7 +1217,7 @@ fn upstream_tex_mode_installs_its_lisp_keymap() {
                        (key-binding \"\\\"\"))))",
         ),
         Value::list([
-            Value::Nil,
+            Value::T,
             Value::symbol("tex-insert-quote"),
             Value::symbol("tex-insert-quote"),
             Value::list([
@@ -5508,6 +5511,48 @@ fn sqlite_execute_surfaces_sql_input_errors_as_sqlite_error() {
 #[test]
 fn multisession_backends_observe_dynamic_user_init_file_across_library_calls() {
     run_with_large_stack(|| {
+        let new_interpreter = || {
+            let options = crate::batch::BatchRunOptions {
+                load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            crate::batch::initialize_batch_interpreter(&options)
+                .expect("initialize multisession batch interpreter")
+        };
+
+        // GNU multisession synchronizes independent editor processes. Native
+        // compilation units contain process-global relocations, so two live
+        // interpreters in one process are not two independent editor sessions.
+        const CHILD_ROOT: &str = "EMAXX_MULTISESSION_TEST_CHILD_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = std::path::PathBuf::from(root);
+            let mut second = new_interpreter();
+            let second_value = eval_str_with(
+                &mut second,
+                &format!(
+                    r#"(progn
+                         (require 'multisession)
+                         (let ((user-init-file "/tmp/emaxx-multisession-init.el")
+                               (multisession-storage 'files)
+                               (multisession-directory {root:?}))
+                           (define-multisession-variable emaxx-multisession-file 0
+                             "" :synchronized t)
+                           (list
+                            (multisession-value emaxx-multisession-file)
+                            (progn
+                              (setf (multisession-value emaxx-multisession-file) 2)
+                              (multisession-value emaxx-multisession-file)))))"#,
+                    root = root.display().to_string(),
+                ),
+            );
+            assert_eq!(
+                second_value,
+                Value::list([Value::Integer(1), Value::Integer(2)])
+            );
+            return;
+        }
+
         let unique = format!(
             "{}-{}",
             std::process::id(),
@@ -5518,15 +5563,6 @@ fn multisession_backends_observe_dynamic_user_init_file_across_library_calls() {
         );
         let root = std::env::temp_dir().join(format!("emaxx-multisession-{unique}"));
         std::fs::create_dir_all(&root).unwrap();
-        let new_interpreter = || {
-            let options = crate::batch::BatchRunOptions {
-                load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-                    .expect("upstream load path"),
-                ..Default::default()
-            };
-            crate::batch::initialize_batch_interpreter(&options)
-                .expect("initialize multisession batch interpreter")
-        };
 
         let mut first = new_interpreter();
         let file_setup = eval_str_with(
@@ -5567,28 +5603,26 @@ fn multisession_backends_observe_dynamic_user_init_file_across_library_calls() {
             ])
         );
 
-        let mut second = new_interpreter();
-        let second_value = eval_str_with(
-            &mut second,
-            &format!(
-                r#"(progn
-                     (require 'multisession)
-                     (let ((user-init-file "/tmp/emaxx-multisession-init.el")
-                           (multisession-storage 'files)
-                           (multisession-directory {root:?}))
-                       (define-multisession-variable emaxx-multisession-file 0
-                         "" :synchronized t)
-                       (list
-                        (multisession-value emaxx-multisession-file)
-                        (progn
-                          (setf (multisession-value emaxx-multisession-file) 2)
-                          (multisession-value emaxx-multisession-file)))))"#,
-                root = root.display().to_string(),
-            ),
-        );
-        assert_eq!(
-            second_value,
-            Value::list([Value::Integer(1), Value::Integer(2)])
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                concat!(
+                    module_path!(),
+                    "::multisession_backends_observe_dynamic_user_init_file_across_library_calls"
+                )
+                .strip_prefix("emaxx::")
+                .unwrap(),
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD_ROOT, &root)
+            .output()
+            .expect("run the second editor session in an independent process");
+        assert!(
+            child.status.success(),
+            "second editor session failed:\n{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
         );
         assert_eq!(
             eval_str_with(
@@ -6961,7 +6995,10 @@ fn upstream_electric_mode_producers_match_their_gnu_owners() {
                      (tex-mode)
                      (list major-mode
                            (key-binding \"\\\"\")
-                           (subrp (indirect-function 'tex-insert-quote)))))",
+                           (let ((function (indirect-function 'tex-insert-quote)))
+                             (or (byte-code-function-p function)
+                                 (and (subrp function)
+                                      (subr-native-elisp-p function)))))))",
             ),
             Value::list([
                 Value::list([
@@ -6972,7 +7009,7 @@ fn upstream_electric_mode_producers_match_their_gnu_owners() {
                 Value::list([
                     Value::symbol("latex-mode"),
                     Value::symbol("tex-insert-quote"),
-                    Value::Nil,
+                    Value::T,
                 ]),
             ])
         );

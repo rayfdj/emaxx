@@ -965,18 +965,12 @@ define_dispatch!(
             }
             "dump-emacs-portable" => {
                 need_arg_range(name, args, 1, 2)?;
-                if string_like(&args[0]).is_none() {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("wrong-type-argument"),
-                        Value::symbol("stringp"),
-                        args[0].clone(),
-                    ])));
-                }
-                // GNU's implementation serializes the entire live C heap and
-                // later restores it with matching relocations.  Emaxx has no
-                // image writer/loader, so creating a lookalike file would be
-                // corrupt rather than compatible.
-                Err(LispError::Signal(PORTABLE_DUMPER_UNAVAILABLE.into()))
+                crate::lisp::primitives::pdumper::dump_emacs_portable(
+                    interp,
+                    env,
+                    &args[0],
+                    args.get(1),
+                )
             }
             "dump-emacs-portable--sort-predicate-copied" => {
                 need_args(name, args, 2)?;
@@ -1839,35 +1833,49 @@ define_dispatch!(
                         ))
                     })
             }
-            "terminal-coding-system" => Ok(interp
-                .terminal_coding_system()
-                .map(|value| Value::Symbol(value.into()))
-                .unwrap_or(Value::Nil)),
-            "set-terminal-coding-system-internal" | "set-safe-terminal-coding-system-internal" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let coding = checked_coding_name(interp, &args[0])?;
-                interp.set_terminal_coding_system(coding.clone());
+            "terminal-coding-system" | "keyboard-coding-system" => {
+                need_arg_range(name, args, 0, 1)?;
+                let target = args.first().unwrap_or(&Value::Nil);
+                let id = interp
+                    .decode_terminal_id(target)
+                    .ok_or_else(|| wrong_type_argument("terminal-live-p", target.clone()))?;
+                let terminal = interp
+                    .terminal_state(id)
+                    .expect("decoded terminal has state");
+                let coding = if name == "terminal-coding-system" {
+                    &terminal.terminal_coding
+                } else {
+                    &terminal.keyboard_coding
+                };
                 Ok(coding
-                    .map(|value| Value::Symbol(value.into()))
+                    .as_deref()
+                    .filter(|coding| name != "terminal-coding-system" || *coding != "undecided")
+                    .map(Value::symbol)
                     .unwrap_or(Value::Nil))
             }
-            "keyboard-coding-system" => Ok(interp
-                .keyboard_coding_system()
-                .map(|value| Value::Symbol(value.into()))
-                .unwrap_or(Value::Nil)),
-            "set-keyboard-coding-system-internal" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            "set-terminal-coding-system-internal" | "set-keyboard-coding-system-internal" => {
+                need_arg_range(name, args, 1, 2)?;
+                let target = args.get(1).unwrap_or(&Value::Nil);
+                let id = interp
+                    .decode_terminal_id(target)
+                    .ok_or_else(|| wrong_type_argument("terminal-live-p", target.clone()))?;
+                let coding = checked_coding_name(interp, &args[0])?;
+                let terminal = interp
+                    .terminals
+                    .iter_mut()
+                    .find(|terminal| terminal.id == id)
+                    .expect("decoded terminal has state");
+                if name == "set-terminal-coding-system-internal" {
+                    terminal.terminal_coding = coding;
+                } else {
+                    terminal.keyboard_coding = coding.or_else(|| Some("no-conversion".into()));
                 }
-                // A nil CODING means "no decoding": GNU stores raw
-                // keyboard input and (keyboard-coding-system) reads back
-                // `no-conversion', not nil (oracle-pinned).  coding.c's
-                // Fset_keyboard_coding_system_internal returns nil always.
-                let coding =
-                    checked_coding_name(interp, &args[0])?.or_else(|| Some("no-conversion".into()));
-                interp.set_keyboard_coding_system(coding);
+                Ok(Value::Nil)
+            }
+            "set-safe-terminal-coding-system-internal" => {
+                need_args(name, args, 1)?;
+                let coding = checked_coding_name(interp, &args[0])?;
+                interp.safe_terminal_coding = coding;
                 Ok(Value::Nil)
             }
             "find-operation-coding-system" => find_operation_coding_system_value(interp, args, env),

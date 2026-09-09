@@ -60,9 +60,14 @@ pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 #[derive(Debug, Default)]
 pub(crate) struct ConsMutationQueue {
     dirty: RefCell<HashSet<usize, IdentityBuildHasher>>,
+    native_heap: Cell<*mut std::ffi::c_void>,
 }
 
 impl ConsMutationQueue {
+    pub(crate) fn set_native_heap_owner(&self, owner: *mut std::ffi::c_void) {
+        self.native_heap.set(owner);
+    }
+
     pub(crate) fn dirty_keys(&self) -> Vec<usize> {
         self.dirty.borrow().iter().copied().collect()
     }
@@ -91,6 +96,17 @@ thread_local! {
 }
 
 type IdentityMap<T> = HashMap<usize, T, IdentityBuildHasher>;
+
+/// The existing registration ties a canonical cons to its live native heap.
+/// Keep the owner once per queue, without enlarging every Lisp cons.
+pub(crate) fn native_cons_heap_owner(address: usize) -> *mut std::ffi::c_void {
+    NATIVE_CONS_MUTATION_QUEUES.with_borrow(|queues| {
+        queues
+            .get(&address)
+            .and_then(Weak::upgrade)
+            .map_or(std::ptr::null_mut(), |queue| queue.native_heap.get())
+    })
+}
 
 #[derive(Debug)]
 pub(crate) struct NativeConsMutationRegistration {
@@ -269,22 +285,27 @@ fn register_cons_mutation_watchers(field_ids: &[usize], watch: &Rc<ConsMutationW
 /// Mutation dependencies for one derived view of a cons graph.
 ///
 /// Each dependency registers a weak invalidation token with the one mutation
-/// hook used by both cons fields.  Cache reads are therefore a single boolean
-/// load regardless of unrelated data mutation; mutations pay only for caches
-/// that actually depend on the field being borrowed mutably.
+/// hook used by both cons fields. Rust-only dependencies need one boolean
+/// check. For cells exposed to generated code, also check the canonical words:
+/// native stores bypass the Rust mutation hook. Only this cache's native
+/// dependencies are inspected, never unrelated conses.
 #[derive(Debug, Clone)]
 pub(crate) struct ConsMutationSnapshot {
     watch: Rc<ConsMutationWatch>,
     field_ids: Vec<usize>,
+    native_cells: Vec<Weak<ConsCell>>,
 }
 
 impl ConsMutationSnapshot {
     pub(crate) fn cell(cell: &SharedCons) -> Self {
-        Self::from_field_ids(ConsCell::mutation_field_ids(cell).to_vec())
+        let mut snapshot = Self::from_field_ids(ConsCell::mutation_field_ids(cell).to_vec());
+        snapshot.track_native_cell(cell);
+        snapshot
     }
 
     pub(crate) fn list_spine(value: &Value) -> Self {
         let mut field_ids = Vec::new();
+        let mut native_cells = Vec::new();
         let mut seen = HashSet::new();
         let mut current = value.clone();
         while let Value::Cons(cell) = current {
@@ -293,9 +314,14 @@ impl ConsMutationSnapshot {
                 break;
             }
             field_ids.extend(ConsCell::mutation_field_ids(&cell));
+            if cell.attached_native_address().is_some() {
+                native_cells.push(Rc::downgrade(&cell));
+            }
             current = cell.cdr.borrow().clone();
         }
-        Self::from_field_ids(field_ids)
+        let mut snapshot = Self::from_field_ids(field_ids);
+        snapshot.native_cells = native_cells;
+        snapshot
     }
 
     pub(crate) fn tree(value: &Value) -> Self {
@@ -315,7 +341,11 @@ impl ConsMutationSnapshot {
             if !seen.insert(ConsCell::identity(&cell)) {
                 continue;
             }
-            added.extend(ConsCell::mutation_field_ids(&cell));
+            let fields = ConsCell::mutation_field_ids(&cell);
+            if self.field_ids.binary_search(&fields[0]).is_err() {
+                self.track_native_cell(&cell);
+            }
+            added.extend(fields);
             pending.push(cell.car.borrow().clone());
             pending.push(cell.cdr.borrow().clone());
         }
@@ -334,10 +364,34 @@ impl ConsMutationSnapshot {
             valid: Cell::new(true),
         });
         register_cons_mutation_watchers(&field_ids, &watch);
-        Self { watch, field_ids }
+        Self {
+            watch,
+            field_ids,
+            native_cells: Vec::new(),
+        }
+    }
+
+    fn track_native_cell(&mut self, cell: &SharedCons) {
+        if cell.attached_native_address().is_some() {
+            self.native_cells.push(Rc::downgrade(cell));
+        }
     }
 
     pub(crate) fn is_current(&self) -> bool {
+        if !self.watch.valid.get() {
+            return false;
+        }
+        for cell in &self.native_cells {
+            let Some(cell) = cell.upgrade() else {
+                self.watch.valid.set(false);
+                return false;
+            };
+            cell.car.synchronize_native_write();
+            cell.cdr.synchronize_native_write();
+            if !self.watch.valid.get() {
+                return false;
+            }
+        }
         self.watch.valid.get()
     }
 
@@ -1576,6 +1630,10 @@ impl ConsCell {
     /// Attach the Rust value cache to the two words generated code accesses:
     /// this cell's own prefix, whether Rust or generated code allocated it.
     pub(crate) unsafe fn attach_native_words(&self, native: *mut ConsWords, agreed: [usize; 2]) {
+        // Snapshots made before this crossing only watch Rust stores. Retire
+        // them once so their replacements also watch the canonical words.
+        note_cons_mutation(&self.car as *const ConsValueCell as usize);
+        note_cons_mutation(&self.cdr as *const ConsValueCell as usize);
         self.car
             .attach_native_word(unsafe { (*native).car.get() }, agreed[0], false);
         self.cdr

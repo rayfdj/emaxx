@@ -24,7 +24,9 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
 use std::sync::{
     Mutex, OnceLock,
@@ -489,7 +491,7 @@ pub(crate) fn with_active_call<R>(
     };
     let previous = ACTIVE_CALL.replace(&mut active);
     let previous_heap =
-        ACTIVE_NATIVE_HEAP.swap((&mut runtime.heap) as *mut NativeHeap, Ordering::Relaxed);
+        ACTIVE_NATIVE_HEAP.swap((&mut *runtime.heap) as *mut NativeHeap, Ordering::Relaxed);
     if outermost {
         runtime.heap.set_stack_bottom(current_native_stack_bottom());
     }
@@ -521,27 +523,31 @@ fn with_active<R>(body: impl FnOnce(&mut ActiveCall) -> R) -> R {
     })
 }
 
-/// Refresh one Rust cons field before ordinary runtime code reads it while
-/// generated code is active.  GNU needs no hook because both sides already
-/// dereference the same `Lisp_Cons`; this is the narrow transition used while
-/// Emaxx's typed field cache is being folded into that canonical storage.
+/// Refresh the typed view of the canonical Lisp_Cons on an ordinary Rust
+/// read, including after the generated activation has returned. A native
+/// function can reach an already encoded tail without crossing an argument
+/// boundary; the active call's touched set cannot enumerate those writes.
 pub(crate) fn synchronize_cons_read(address: usize) {
     if CONS_SYNC_DEPTH.get() != 0 {
         return;
     }
-    ACTIVE_CALL.with(|active| {
-        let active = active.get();
-        if active.is_null() {
-            return;
-        }
-        let active = unsafe { &mut *active };
-        if let Err(error) = unsafe { &mut *active.runtime }
-            .heap
-            .synchronize_cons(address)
-        {
-            remember_helper_error(active, super::lisp::native_ice(&error));
-        }
-    });
+    // SAFETY: the caller is borrowing a live ConsCell whose ABI prefix is at
+    // this address. Its owner is boxed and detaches every cell before freeing
+    // itself. Reconciliation and shared GC marking suppress recursive reads.
+    let owner = crate::lisp::types::native_cons_heap_owner(address);
+    if owner.is_null() {
+        return;
+    }
+    let result = unsafe { &mut *owner.cast::<NativeHeap>() }.synchronize_cons(address);
+    if let Err(error) = result {
+        ACTIVE_CALL.with(|active| {
+            let active = active.get();
+            if active.is_null() {
+                panic!("a live native cons contains invalid Lisp words: {error}");
+            }
+            remember_helper_error(unsafe { &mut *active }, super::lisp::native_ice(&error));
+        });
+    }
 }
 
 thread_local! {
@@ -781,7 +787,7 @@ enum UnwindAction {
 /// owned; the boxed layouts merely expose the stable C ABI that GNU-generated
 /// machine code expects to read directly.
 pub(crate) struct NativeRuntime {
-    heap: NativeHeap,
+    heap: NativeHeapOwner,
     thread: Box<NativeThreadState>,
     thread_pointer: Box<*mut NativeThreadState>,
     link_table: Box<[*mut c_void]>,
@@ -813,7 +819,7 @@ impl Default for NativeRuntime {
         let mut thread = Box::<NativeThreadState>::default();
         let thread_pointer = Box::new((&mut *thread) as *mut NativeThreadState);
         Self {
-            heap: NativeHeap::default(),
+            heap: NativeHeapOwner::new(),
             thread,
             thread_pointer,
             link_table: runtime_link_table().into_boxed_slice(),
@@ -871,6 +877,15 @@ impl NativeRuntime {
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
+        if self.heap.native_stack_bottom.is_null() {
+            // No generated activation is on the stack. Traverse Lisp roots
+            // without borrowing the heap: ordinary cons reads can lazily
+            // reconcile writes left by earlier native activations.
+            let reachability = interpreter.weak_hash_reachability(environment, &[]);
+            interpreter.queue_doomed_finalizers(&reachability.live_finalizers);
+            crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
+            return;
+        }
         let mut roots = self
             .handlers
             .iter()
@@ -1106,9 +1121,9 @@ impl NativeRuntime {
             .truncate(frame.ephemeral_root_depth);
         // A nested return resumes another generated frame.  Its explicit
         // result was reconciled above, and Rust reads of any indirectly
-        // reachable cons synchronize that exact cell on demand.  Only the
-        // outermost return must flush every remaining typed cache before the
-        // native read barrier is no longer active.
+        // reachable cons synchronize that exact cell on demand.  The outermost
+        // return retires its touched set; indirect writes remain observable
+        // through each cell's read barrier for the lifetime of the heap.
         let heap_result = if self.heap.native_call_depth == 1 {
             self.publish_heap_writes(interpreter, false)
         } else {
@@ -1258,49 +1273,53 @@ impl NativeRuntime {
         else {
             std::process::abort();
         };
-        loop {
-            let Some(target_index) = self.matching_handler(interpreter, environment, &error) else {
-                let outer_handler = handler_depth
-                    .checked_sub(1)
-                    .and_then(|index| self.handlers.get(index))
-                    .map(HandlerEntry::address)
-                    .unwrap_or(std::ptr::null_mut());
-                self.thread.set_handler(outer_handler);
-                if let Err(sync_error) = self.sync_handlers(interpreter) {
-                    error = sync_error;
-                }
-                while self.unwind.len() > unwind_depth {
+        // Generated code can pop a handler immediately before a runtime
+        // helper signals. GNU searches the live thread handler list.
+        if let Err(sync_error) = self.sync_handlers(interpreter) {
+            self.remember_error(sync_error);
+            return escape_buffer;
+        }
+        'dispatch: loop {
+            let target_index = self.matching_handler(interpreter, environment, &error);
+            let retained_handlers = target_index.map_or(handler_depth, |index| index + 1);
+            // eval.c:unwind_to_catch unbinds to EACH handler's pdlcount
+            // before removing that handler. Cleanup may throw or signal to
+            // an inner handler that the original exit was going to bypass.
+            // Removing all inner handlers first changes that control flow.
+            while self.handlers.len() > retained_handlers {
+                let boundary = self.handlers.last().expect("inner handler").unwind_depth;
+                while self.unwind.len() > boundary {
                     if let Err(unwind_error) = self.unwind_one(interpreter, environment) {
                         error = unwind_error;
+                        continue 'dispatch;
                     }
                 }
+                let next = self
+                    .handlers
+                    .len()
+                    .checked_sub(2)
+                    .map(|index| self.handlers[index].address())
+                    .unwrap_or(std::ptr::null_mut());
+                self.thread.set_handler(next);
+                if let Err(sync_error) = self.sync_handlers(interpreter) {
+                    self.remember_error(sync_error);
+                    return escape_buffer;
+                }
+            }
+            let boundary =
+                target_index.map_or(unwind_depth, |index| self.handlers[index].unwind_depth);
+            while self.unwind.len() > boundary {
+                if let Err(unwind_error) = self.unwind_one(interpreter, environment) {
+                    error = unwind_error;
+                    continue 'dispatch;
+                }
+            }
+            let Some(target_index) = target_index else {
                 interpreter.lisp_eval_depth = lisp_eval_depth;
                 interpreter.truncate_backtrace_frames(backtrace_depth);
                 self.remember_error(error);
                 return escape_buffer;
             };
-
-            let target = self.handlers[target_index].address();
-            let unwind_depth = self.handlers[target_index].unwind_depth;
-            let lisp_eval_depth = self.handlers[target_index].lisp_eval_depth;
-            let backtrace_depth = self.handlers[target_index].backtrace_depth;
-            self.thread.set_handler(target);
-            if let Err(sync_error) = self.sync_handlers(interpreter) {
-                self.remember_error(sync_error);
-                return escape_buffer;
-            }
-            let mut superseding_error = None;
-            while self.unwind.len() > unwind_depth {
-                if let Err(unwind_error) = self.unwind_one(interpreter, environment) {
-                    superseding_error = Some(unwind_error);
-                    break;
-                }
-            }
-            if let Some(unwind_error) = superseding_error {
-                error = unwind_error;
-                continue;
-            }
-
             let value = match &error {
                 LispError::Throw(_, value) => value.clone(),
                 LispError::Terminate(_) => unreachable!("termination cannot match a handler"),
@@ -1313,10 +1332,11 @@ impl NativeRuntime {
                     return escape_buffer;
                 }
             };
-            interpreter.lisp_eval_depth = lisp_eval_depth;
-            interpreter.truncate_backtrace_frames(backtrace_depth);
-            self.handlers[target_index].storage.set_value(encoded);
-            return unsafe { target.cast::<u8>().add(HANDLER_JMP_OFFSET).cast() };
+            let target = &mut self.handlers[target_index];
+            interpreter.lisp_eval_depth = target.lisp_eval_depth;
+            interpreter.truncate_backtrace_frames(target.backtrace_depth);
+            target.storage.set_value(encoded);
+            return unsafe { target.address().cast::<u8>().add(HANDLER_JMP_OFFSET).cast() };
         }
     }
 
@@ -3243,6 +3263,10 @@ extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
             let interpreter = unsafe { &mut *active.interpreter };
             let environment = unsafe { &mut *active.environment };
             let runtime = unsafe { &mut *active.runtime };
+            // helper_unbind_n can call an interpreted cleanup without
+            // crossing invoke_subr or NativeRuntime::invoke. Retire handlers
+            // already popped by generated code before that cleanup runs.
+            runtime.sync_handlers(interpreter)?;
             for _ in 0..count {
                 runtime.unwind_one(interpreter, environment)?;
             }
@@ -3869,9 +3893,44 @@ pub(crate) struct NativeHeap {
     native_stack_bottom: *const NativeWord,
 }
 
-impl Default for NativeHeap {
-    fn default() -> Self {
-        Self {
+/// Own the allocation through a raw pointer while cons read barriers retain
+/// aliases to it. A live Box would assert uniqueness when moved or borrowed;
+/// consuming it with into_raw keeps those aliases valid across runtime moves.
+/// Restore the Box only on teardown, after ordinary heap access has ended.
+/// The runtime is single-threaded; heap borrows that read typed cons caches
+/// suppress reentrant read barriers with ConsSyncGuard.
+struct NativeHeapOwner(std::ptr::NonNull<NativeHeap>);
+
+impl Deref for NativeHeapOwner {
+    type Target = NativeHeap;
+
+    fn deref(&self) -> &NativeHeap {
+        // SAFETY: internal callers do not hold this borrow over an unguarded
+        // typed cons read that could reenter the heap through its owner.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl DerefMut for NativeHeapOwner {
+    fn deref_mut(&mut self) -> &mut NativeHeap {
+        // SAFETY: every heap borrow comes from this owner or a read barrier.
+        // Heap operations suppress reentrant barriers before reading caches.
+        unsafe { self.0.as_mut() }
+    }
+}
+
+impl Drop for NativeHeapOwner {
+    fn drop(&mut self) {
+        // SAFETY: new consumed exactly one Box; this owner is not Clone and
+        // reclaims it exactly once. NativeHeap::drop reconciles and detaches
+        // registered conses without reentering the owner through a barrier.
+        unsafe { drop(Box::from_raw(self.0.as_ptr())) };
+    }
+}
+
+impl NativeHeapOwner {
+    fn new() -> Self {
+        let heap = Box::new(NativeHeap {
             id: NATIVE_HEAP_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             word_generation: 1,
             gc: NativeGcState::default(),
@@ -3887,12 +3946,27 @@ impl Default for NativeHeap {
             touched: TouchedConses::default(),
             native_call_depth: 0,
             native_stack_bottom: std::ptr::null(),
-        }
+        });
+        let owner = Self(
+            std::ptr::NonNull::new(Box::into_raw(heap)).expect("a heap allocation is non-null"),
+        );
+        owner
+            .interpreter_dirty
+            .set_native_heap_owner(owner.0.as_ptr().cast());
+        owner
     }
 }
 
 impl Drop for NativeHeap {
     fn drop(&mut self) {
+        // Returned Lisp values can outlive this runtime. Decode pending native
+        // writes while their handles and native-owned descendants are live.
+        // This is a teardown pass, never a scan at each native call boundary.
+        let addresses = self.cons_values.keys().copied().collect::<Vec<_>>();
+        for address in addresses {
+            self.synchronize_cons(address)
+                .expect("a departing native cons contains valid Lisp words");
+        }
         for (&address, mirror) in &self.cons_values {
             unsafe { mirror.value.detach_native_words(address as *mut NativeCons) };
         }
@@ -4030,14 +4104,7 @@ impl NativeHeap {
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
-        if self.native_stack_bottom.is_null() {
-            let reachability = interpreter.weak_hash_reachability(environment, &[]);
-            // alloc.c:garbage_collect queues doomed finalizers after the
-            // mark phase and before the weak-table sweep.
-            interpreter.queue_doomed_finalizers(&reachability.live_finalizers);
-            crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
-            return;
-        }
+        debug_assert!(!self.native_stack_bottom.is_null());
         self.publish_interpreter_writes()
             .expect("Rust cons mutations contain valid Lisp objects before marking");
         // Shared marking borrows this heap exclusively. Its cons reads
@@ -4164,6 +4231,7 @@ impl NativeHeap {
     }
 
     pub(crate) fn encode(&mut self, value: &Value) -> Result<NativeWord, String> {
+        let _sync_guard = ConsSyncGuard::enter();
         self.encode_inner(value, &mut IdentitySet::default())
     }
 
@@ -4432,6 +4500,14 @@ impl NativeHeap {
         let (native, existing) = if let Some(native) = existing {
             (native, true)
         } else {
+            // One canonical prefix cannot hold words from two live heaps.
+            // In particular a second owner must not detach or reinterpret
+            // the first owner's handles. A value may cross again after the
+            // old heap has reconciled and detached it on teardown.
+            let owner = crate::lisp::types::native_cons_heap_owner(identity);
+            if !owner.is_null() && owner != std::ptr::from_mut(self).cast() {
+                return Err("native cons belongs to another live interpreter heap".into());
+            }
             // GNU's evaluator and generated code use the same `Lisp_Cons`.
             // `ConsCell` carries that ABI prefix at offset zero, so a Rust-
             // allocated cons crosses the boundary without a second object.
@@ -7561,9 +7637,263 @@ mod tests {
     }
 
     #[test]
+    fn cached_native_list_tail_is_visible_after_return() {
+        let value = Value::list([Value::Integer(1), Value::Integer(2)]);
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let word = heap.encode(&value).expect("first crossing");
+        heap.finish_call().expect("first return");
+        heap.begin_call();
+        assert_eq!(heap.encode(&value).expect("cached crossing"), word);
+        assert_eq!(heap.touched.conses.len(), 1, "cached encoding stays O(1)");
+        let head = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+        unsafe {
+            let tail = (*head).cdr().wrapping_sub(TAG_CONS) as *mut NativeCons;
+            (*tail).set_car(((3_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
+        }
+        heap.finish_call().expect("second return");
+        assert_eq!(
+            value.to_vec().expect("list"),
+            vec![Value::Integer(1), Value::Integer(3)]
+        );
+    }
+
+    #[test]
+    fn native_constant_write_survives_heap_move_and_teardown() {
+        for read_before_drop in [false, true] {
+            let value = Value::cons(Value::Integer(1), Value::Nil);
+            let mut heap = NativeHeapOwner::new();
+            heap.begin_call();
+            let word = heap.encode(&value).expect("relocation constant");
+            heap.finish_call().expect("finish loading");
+            let mut moved_heap = heap;
+            moved_heap.begin_call();
+            let text = Value::String("native replacement".into());
+            let text_word = moved_heap.encode(&text).expect("string handle");
+            let child = moved_heap.cons(text_word, 0);
+            unsafe {
+                let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+                (*native).set_cdr(child);
+            }
+            moved_heap
+                .finish_call()
+                .expect("return without explicit cons argument");
+            if read_before_drop {
+                assert_eq!(value.cdr().expect("tail").car().expect("child"), text);
+            }
+            drop(moved_heap);
+            assert_eq!(
+                value
+                    .cdr()
+                    .expect("tail")
+                    .car()
+                    .expect("child after teardown"),
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn native_cons_can_change_heaps_only_after_its_owner_detaches() {
+        let value = Value::cons(Value::Integer(1), Value::Nil);
+        let mut first = NativeHeapOwner::new();
+        let mut second = NativeHeapOwner::new();
+        let word = first.encode(&value).expect("first owner");
+        assert!(second.encode(&value).is_err());
+        unsafe {
+            let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+            (*native).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
+        }
+        drop(first);
+        let next_word = second
+            .encode(&value)
+            .expect("detached value can cross again");
+        assert_eq!(next_word, word, "the cons still has one canonical body");
+        assert_eq!(value.car().expect("preserved value"), Value::Integer(9));
+    }
+
+    #[test]
+    fn native_cache_guards_do_not_refresh_unrelated_conses() {
+        let value = Value::list([Value::Integer(1)]);
+        let unrelated = Value::list([Value::Integer(2)]);
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        heap.encode(&value).expect("watched value");
+        let word = heap.encode(&unrelated).expect("unrelated constant");
+        heap.finish_call().expect("initial return");
+        let snapshot = crate::lisp::types::ConsMutationSnapshot::list_spine(&value);
+        let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+        unsafe {
+            (*native).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
+        }
+        assert!(snapshot.is_current());
+        let Value::Cons(cell) = &unrelated else {
+            unreachable!()
+        };
+        assert_ne!(
+            cell.native_words_agreed()[0],
+            unsafe { (*native).car() },
+            "checking one cache does not scan another graph"
+        );
+        assert_eq!(
+            unrelated.car().expect("lazy unrelated read"),
+            Value::Integer(9)
+        );
+    }
+
+    #[test]
+    fn native_tail_write_invalidates_cached_source_arguments() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let form = Value::list([Value::symbol("+"), Value::Integer(1), Value::Integer(2)]);
+        assert_eq!(
+            interpreter
+                .eval(&form, &mut environment)
+                .expect("cache form"),
+            Value::Integer(3)
+        );
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let word = heap.encode(&form).expect("first crossing");
+        heap.finish_call().expect("first return");
+        assert_eq!(
+            interpreter
+                .eval(&form, &mut environment)
+                .expect("cache native-exposed form"),
+            Value::Integer(3)
+        );
+        heap.begin_call();
+        heap.encode(&form).expect("cached crossing");
+        unsafe {
+            let head = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+            let argument = (*head).cdr().wrapping_sub(TAG_CONS) as *mut NativeCons;
+            (*argument).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
+        }
+        heap.finish_call().expect("second return");
+        assert_eq!(
+            interpreter
+                .eval(&form, &mut environment)
+                .expect("evaluate changed form"),
+            Value::Integer(11)
+        );
+    }
+
+    #[test]
+    fn native_write_invalidates_cached_file_name_handlers() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let handlers = Value::list([Value::cons(Value::string("x"), Value::symbol("first"))]);
+        interpreter.set_global_binding("file-name-handler-alist", handlers.clone());
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let word = heap.encode(&handlers).expect("encode handlers");
+        let replacement = heap
+            .encode(&Value::symbol("second"))
+            .expect("encode replacement");
+        heap.finish_call().expect("finish initial crossing");
+        let query = |interpreter: &mut Interpreter, environment: &mut Env| {
+            crate::lisp::primitives::call(
+                interpreter,
+                "find-file-name-handler",
+                &[Value::string("x"), Value::symbol("file-exists-p")],
+                environment,
+            )
+            .expect("find handler")
+        };
+        assert_eq!(
+            query(&mut interpreter, &mut environment),
+            Value::symbol("first")
+        );
+        heap.begin_call();
+        heap.encode(&handlers).expect("cached crossing");
+        unsafe {
+            let head = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+            let entry = (*head).car().wrapping_sub(TAG_CONS) as *mut NativeCons;
+            (*entry).set_cdr(replacement);
+        }
+        heap.finish_call().expect("native return");
+        assert_eq!(
+            query(&mut interpreter, &mut environment),
+            Value::symbol("second")
+        );
+
+        // The operations property also governs the cached selection, even
+        // when neither the handler alist nor the symbol definition changes.
+        let operations = Value::list([Value::symbol("file-exists-p")]);
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "put",
+            &[
+                Value::symbol("second"),
+                Value::symbol("operations"),
+                operations.clone(),
+            ],
+            &mut environment,
+        )
+        .expect("restrict handler operations");
+        heap.begin_call();
+        let operations_word = heap.encode(&operations).expect("encode operations");
+        let other_operation = heap
+            .encode(&Value::symbol("delete-file"))
+            .expect("encode another operation");
+        heap.finish_call().expect("initial operations crossing");
+        assert_eq!(
+            query(&mut interpreter, &mut environment),
+            Value::symbol("second")
+        );
+        heap.begin_call();
+        unsafe {
+            let native = operations_word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+            (*native).set_car(other_operation);
+        }
+        heap.finish_call().expect("native operations write");
+        assert_eq!(query(&mut interpreter, &mut environment), Value::Nil);
+    }
+
+    #[test]
+    fn dump_writer_observes_native_constant_writes_after_return() {
+        use crate::lisp::primitives::pdumper::{
+            RootSource, context::DumpContext, image::RootSlot, load::load_image, write_image,
+        };
+        let interpreter = Interpreter::new();
+        let value = Value::cons(Value::Integer(1), Value::Nil);
+        let mut heap = NativeHeapOwner::new();
+        heap.begin_call();
+        let word = heap.encode(&value).expect("load constant");
+        heap.finish_call().expect("finish loading");
+        heap.begin_call();
+        unsafe {
+            let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
+            (*native).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);
+            (*native).set_cdr(word);
+        }
+        heap.finish_call().expect("return without a cons argument");
+
+        let mut context = DumpContext::new(true);
+        write_image(
+            &mut context,
+            &interpreter,
+            RootSource::Explicit(vec![(RootSlot::LoadPath, value)]),
+        )
+        .unwrap_or_else(|_| panic!("dump native-written graph"));
+        let loaded = load_image(context.buffer()).expect("load graph");
+        let root = &loaded
+            .roots
+            .iter()
+            .find(|(slot, _)| *slot == RootSlot::LoadPath)
+            .expect("loaded root")
+            .1;
+        assert_eq!(root.car().expect("loaded car"), Value::Integer(9));
+        assert!(crate::lisp::primitives::values_eql(
+            root,
+            &root.cdr().expect("loaded cycle")
+        ));
+    }
+
+    #[test]
     fn direct_native_cons_mutation_updates_the_interpreter_value() {
         let value = Value::cons(Value::Integer(1), Value::Integer(2));
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let word = heap.encode(&value).expect("encode cons");
         assert_eq!(word & TAG_MASK, TAG_CONS);
@@ -7579,7 +7909,7 @@ mod tests {
     #[test]
     fn intermediate_decode_does_not_hide_later_native_mutation() {
         let value = Value::cons(Value::Integer(1), Value::Integer(2));
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let word = heap.encode(&value).expect("encode cons");
         assert_eq!(heap.decode(word).expect("intermediate decode"), value);
@@ -7595,7 +7925,7 @@ mod tests {
     #[test]
     fn nested_native_return_publishes_writes_and_keeps_tracking() {
         let value = Value::cons(Value::Integer(1), Value::Integer(2));
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let word = heap.encode(&value).expect("encode cons");
         let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
@@ -7617,7 +7947,7 @@ mod tests {
     #[test]
     fn nested_calls_share_one_cons_tracking_entry() {
         let value = Value::cons(Value::Integer(1), Value::Integer(2));
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let word = heap.encode(&value).expect("encode outer argument");
         assert_eq!(heap.touched.conses.len(), 1);
@@ -7651,7 +7981,7 @@ mod tests {
     #[test]
     fn native_cons_uses_one_two_word_body() {
         let tail = Value::list([Value::Integer(2), Value::Integer(3)]);
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let tail_word = heap.encode(&tail).expect("encode tail");
         let head_word = heap.encode(&Value::Integer(1)).expect("encode head fixnum");
@@ -7674,7 +8004,7 @@ mod tests {
 
     #[test]
     fn native_created_cons_keeps_direct_writes_across_calls() {
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let ten = heap
             .encode(&Value::Integer(10))
@@ -7799,7 +8129,7 @@ mod tests {
         // alloc.c:process_mark_stack expands car first for both conses
         // allocated by generated code and conses passed in by primitives.
         for generated in [true, false] {
-            let mut heap = NativeHeap::default();
+            let mut heap = NativeHeapOwner::new();
             heap.begin_call();
             let car = Value::vector([Value::Integer(1)]);
             let cdr = Value::vector([Value::Integer(2)]);
@@ -7853,7 +8183,7 @@ mod tests {
         // afterwards is a new word.
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         let symbol = Value::symbol("r02c-slot-probe");
         let Value::Symbol(name) = &symbol else {
             unreachable!()
@@ -7899,8 +8229,8 @@ mod tests {
         let Value::Symbol(name) = &symbol else {
             unreachable!()
         };
-        let mut first_heap = NativeHeap::default();
-        let mut second_heap = NativeHeap::default();
+        let mut first_heap = NativeHeapOwner::new();
+        let mut second_heap = NativeHeapOwner::new();
         let first = first_heap.encode(&symbol).expect("first heap");
         assert_eq!(first_heap.symbol_word_from_slot(name), Some(first));
         assert_eq!(second_heap.symbol_word_from_slot(name), None);
@@ -7931,7 +8261,7 @@ mod tests {
     fn native_gc_traces_vector_contents_before_sweeping_cons_storage() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8036,7 +8366,7 @@ mod tests {
     fn native_gc_traces_unencoded_vectors_and_native_cycles() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8074,7 +8404,7 @@ mod tests {
     fn native_gc_traces_interpreter_roots_and_current_native_fields() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8113,7 +8443,7 @@ mod tests {
     fn native_gc_finishes_weak_table_marking_before_sweeping() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8176,7 +8506,7 @@ mod tests {
         // earlier table after the later table discovers a live key.
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8246,7 +8576,7 @@ mod tests {
     fn native_gc_marks_reachable_generated_conses_and_frees_the_rest() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8277,7 +8607,7 @@ mod tests {
     fn native_gc_owns_primitive_returned_rust_cons_until_it_is_unreachable() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8320,7 +8650,7 @@ mod tests {
     fn native_gc_detaches_externally_owned_rust_cons_graphs_without_losing_writes() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8359,7 +8689,7 @@ mod tests {
     fn native_gc_sweeps_unreachable_reference_counted_handles() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8384,7 +8714,7 @@ mod tests {
 
     #[test]
     fn live_native_handle_decode_follows_the_gnu_tagged_pointer_path() {
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         let value = Value::string("direct tagged-pointer access");
         let word = heap.encode(&value).expect("encode native string handle");
         let tag = word & TAG_MASK;
@@ -8405,7 +8735,7 @@ mod tests {
 
     #[test]
     fn live_symbol_access_follows_xsymbol_without_reverse_lookup() {
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         let symbol = SymbolName::from("direct-symbol-cell-access");
         let value = Value::Symbol(symbol.clone());
         let word = heap.encode(&value).expect("encode native symbol handle");
@@ -8436,7 +8766,7 @@ mod tests {
             .collect::<HashSet<_>>();
         assert!(occupied_buckets.len() > 2_000);
 
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         let symbol = Value::Symbol(name.clone());
         let builtin = Value::BuiltinFunc(name);
         let symbol_word = heap.encode(&symbol).expect("encode symbol identity");
@@ -8457,7 +8787,7 @@ mod tests {
 
     #[test]
     fn native_buffer_words_preserve_lisp_buffer_identity() {
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         let first_reference = Value::buffer(42, "buffer-before-rename");
         let same_buffer = Value::buffer(42, "buffer-after-rename");
         let different_buffer = Value::buffer(43, "buffer-before-rename");
@@ -8483,7 +8813,7 @@ mod tests {
     fn native_gc_publishes_native_only_handles_to_lisp_reachability() {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
@@ -8528,7 +8858,7 @@ mod tests {
 
     #[test]
     fn indirect_interpreter_cons_mutation_updates_the_native_mirror() {
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let one = heap
             .encode(&Value::Integer(1))
@@ -8555,7 +8885,7 @@ mod tests {
     fn queued_interpreter_mutation_is_published_on_the_next_native_call() {
         let value = Value::list([Value::Integer(1), Value::Integer(2)]);
         let tail = value.cdr().expect("list tail");
-        let mut heap = NativeHeap::default();
+        let mut heap = NativeHeapOwner::new();
         heap.begin_call();
         let word = heap.encode(&value).expect("encode list");
         let tail_word = unsafe { (*(word.wrapping_sub(TAG_CONS) as *mut NativeCons)).cdr() };

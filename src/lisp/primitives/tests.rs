@@ -1196,10 +1196,137 @@ fn native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary() 
          (comp-native-driver-options-effective-p)
          (comp-native-compiler-options-effective-p)
          (comp-libgccjit-version))"#;
+    let (major, minor, patch) = crate::lisp::native_comp::NativeCompilerState::version()
+        .expect("the configured native backend must load libgccjit");
+    let expected = format!(
+        r#"(("car(1 . 1)" "+(0 . many)" "concat(0 . many)" "if(2 . unevalled)" "let(1 . unevalled)") t t t ({major} {minor} {patch}))"#,
+    );
+    assert_oracle_contract_matches_interpreter(program, &expected, "native-comp introspection");
+}
+
+#[test]
+fn make_char_uses_charset_positions_in_interpreted_and_native_calls() {
     assert_oracle_contract_matches_interpreter(
-        program,
-        r#"(("car(1 . 1)" "+(0 . many)" "concat(0 . many)" "if(2 . unevalled)" "let(1 . unevalled)") t t t (14 2 0))"#,
-        "native-comp introspection",
+        r#"(progn
+(require 'comp)
+(define-charset 'emaxx-position-codes "" :dimension 4
+  :code-space [48 49 64 65 80 81 96 97] :code-offset #x1000)
+(list
+ (mapcar (lambda (args) (condition-case e (apply #'make-char args) (error e)))
+  '((ascii) (ascii 193) (ascii 65 ignored ignored ignored)
+    (unicode 1 246 0) (unicode 1) (eight-bit)
+    (emaxx-position-codes) (emaxx-position-codes 97) (emaxx-position-codes 97 81 65 49)
+    (ascii -1) (ascii 256) (ascii foo) (undefined-charset 0)
+    (unicode 32 0 0)))
+ (let ((comp-running-batch-compilation t) (comp-no-spawn nil))
+   (let ((f (native-compile '(lambda () (make-char 'unicode 1 246 0)))))
+     (list (native-comp-function-p f) (funcall f))))))"#,
+        r#"((0 65 65 128512 65536 4194176 4096 4104 4111 (wrong-type-argument wholenump -1) (args-out-of-range 255 256) (wrong-type-argument wholenump foo) (wrong-type-argument charsetp undefined-charset) (error "Invalid code(s)")) (t 128512))"#,
+        "make-char native and interpreted contract",
+    );
+}
+
+#[test]
+fn md5_coding_endpoints_and_noerror_follow_gnu_in_native_calls() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+(require 'comp)
+(list
+ (mapcar (lambda (args) (condition-case e (apply #'md5 args) (error e)))
+  (list (list "abc" nil nil nil nil)
+        (list "éX" nil nil 'utf-8 nil)
+        (list "éX" 0 1 'utf-8 nil)
+        (list "éX" -1 nil 'utf-8 nil)
+        (list (unibyte-string 233 88) nil nil 'utf-8 nil)
+        (list "éX" nil nil 'invalid-coding nil)
+        (list "éX" nil nil 'invalid-coding t)
+        (list "abc" 2 1 nil nil)))
+ (let ((last-coding-system-used 'sentinel))
+   (md5 "é" nil nil 'utf-8) last-coding-system-used)
+ (with-temp-buffer
+   (insert "aéZ")
+   (let ((coding-system-for-write 'utf-8) (select-safe-coding-system-function nil))
+     (list (md5 (current-buffer) 3 2 nil nil)
+           (let ((coding-system-for-write 'invalid-coding))
+             (condition-case e (md5 (current-buffer)) (error e)))
+           (let ((coding-system-for-write 'invalid-coding))
+             (md5 (current-buffer) nil nil nil t))
+           (progn (narrow-to-region 2 3) (md5 (current-buffer))))))
+ (let ((coding-system-for-write nil) (select-safe-coding-system-function nil))
+   (with-temp-buffer (set-buffer-multibyte nil) (insert (unibyte-string 233 88))
+     (md5 (current-buffer) nil nil 'invalid-coding)))
+ (let ((comp-running-batch-compilation t) (comp-no-spawn nil))
+   (let ((f (native-compile '(lambda (text) (md5 text)))))
+     (list (native-comp-function-p f) (funcall f "abc"))))))"#,
+        r#"(("900150983cd24fb0d6963f7d28e17f72" "5b843fe5ddd9a9f224c494d9632ab2c4" "d78276f56f8ec8d4f8cca375e4534366" "02129bb861061d1a052c592e2dc6b383" "d91dcdf22c90ea773491c6e29245d406" (coding-system-error invalid-coding) "5b843fe5ddd9a9f224c494d9632ab2c4" (args-out-of-range "abc" 2 1)) sentinel ("66ddcd97cfdeabb2f6fb8a999b4bc76f" (coding-system-error invalid-coding) "197a44322718570659ef9da515ff2d51" "66ddcd97cfdeabb2f6fb8a999b4bc76f") "d91dcdf22c90ea773491c6e29245d406" (t "900150983cd24fb0d6963f7d28e17f72"))"#,
+        "md5 native and interpreted contract",
+    );
+}
+
+#[test]
+fn native_cleanup_can_exit_to_a_handler_inside_the_original_target() {
+    // eval.c:unwind_to_catch leaves each inner handler active while
+    // executing its cleanup, including when the original exit bypasses it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+(require 'comp)
+(let ((comp-no-spawn nil) (comp-running-batch-compilation t))
+ (let ((function
+  (native-compile
+   '(lambda ()
+      (list
+       (catch 'outer
+        (catch 'inner
+         (unwind-protect (throw 'outer 'body)
+          (throw 'inner 'cleanup))))
+       (catch 'outer
+        (condition-case nil
+         (unwind-protect (throw 'outer 'body)
+          (error "cleanup"))
+         (error 'handled))))))))
+  (list (native-comp-function-p function) (funcall function)))))"#,
+        "(t (cleanup handled))",
+        "native cleanup handler ordering",
+    );
+}
+
+#[test]
+fn native_cleanup_retires_popped_handlers_before_interpreted_calls() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn (require 'comp)
+(let ((comp-no-spawn nil) (comp-running-batch-compilation t))
+ (let ((function (native-compile
+   '(lambda (body cleanup)
+      (unwind-protect
+          (catch 'defer (funcall body))
+        (funcall cleanup)))))
+       (cleanup (eval '(lambda () (throw 'defer 'cleanup)) t)))
+  (list (native-comp-function-p function)
+        (native-comp-function-p cleanup)
+        (catch 'defer (funcall function (eval '(lambda () (throw 'defer 'body)) t) cleanup))))))"#,
+        "(t nil cleanup)",
+        "native cleanup with an interpreted throw",
+    );
+}
+
+#[test]
+fn primitive_minimum_arities_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn (require 'comp)
+          (let* ((comp-no-spawn nil) (comp-running-batch-compilation t)
+                 (cases '((redirect-debugging-output) (set-window-margins nil)
+                          (move-to-window-line) (self-insert-command)
+                          (get-buffer-process) (selected-window nil)))
+                 (native (native-compile
+                          '(lambda (call)
+                             (condition-case e (apply (car call) (cdr call)) (error e))))))
+            (list (native-comp-function-p native)
+                  (mapcar (lambda (call)
+                            (condition-case e (apply (car call) (cdr call)) (error e))) cases)
+                  (mapcar (lambda (call) (condition-case e (eval call) (error e))) cases)
+                  (mapcar native cases))))"#,
+        "(t ((wrong-number-of-arguments #<subr redirect-debugging-output> 0) (wrong-number-of-arguments #<subr set-window-margins> 1) (wrong-number-of-arguments #<subr move-to-window-line> 0) (wrong-number-of-arguments #<subr self-insert-command> 0) (wrong-number-of-arguments #<subr get-buffer-process> 0) (wrong-number-of-arguments #<subr selected-window> 1)) ((wrong-number-of-arguments redirect-debugging-output 0) (wrong-number-of-arguments set-window-margins 1) (wrong-number-of-arguments move-to-window-line 0) (wrong-number-of-arguments self-insert-command 0) (wrong-number-of-arguments get-buffer-process 0) (wrong-number-of-arguments selected-window 1)) ((wrong-number-of-arguments #<subr redirect-debugging-output> 0) (wrong-number-of-arguments #<subr set-window-margins> 1) (wrong-number-of-arguments #<subr move-to-window-line> 0) (wrong-number-of-arguments #<subr self-insert-command> 0) (wrong-number-of-arguments #<subr get-buffer-process> 0) (wrong-number-of-arguments #<subr selected-window> 1)))",
+        "source, funcall, and native primitive arities",
     );
 }
 
@@ -1289,7 +1416,7 @@ fn native_comp_source_names_hash_canonical_paths_and_real_contents() {
 #[test]
 fn native_comp_context_and_loader_entry_points_follow_comp_c() {
     // comp.c: `comp--init-ctxt' returns t and `comp--release-ctxt' t;
-    // `native-elisp-load' of a file that is not an ELF object fails with
+    // `native-elisp-load' of a file that is not a native object fails with
     // dlerror's text, and of a missing file with "file does not exists".
     // (The remaining `comp--*' entry points abort GNU when called without
     // a compilation context, so they are not contracted here.)
@@ -1298,7 +1425,9 @@ fn native_comp_context_and_loader_entry_points_follow_comp_c() {
               (comp--init-ctxt)
               (comp--release-ctxt)
               (condition-case e (native-elisp-load (expand-file-name "lisp/subr.el" source-directory))
-                (error (list (car e) (file-name-nondirectory (cadr e)) (string-suffix-p "invalid ELF header" (caddr e)))))
+                (error (list (car e) (file-name-nondirectory (cadr e)) (if (eq system-type 'darwin)
+                    (not (null (string-match-p "not valid mach-o file" (caddr e))))
+                  (string-suffix-p "invalid ELF header" (caddr e))))))
               (condition-case e (native-elisp-load "/nonexistent/emaxx-x.eln") (error e)))"#;
     assert_oracle_contract_matches_interpreter(
         program,
@@ -2086,25 +2215,57 @@ fn sqlite_values_are_a_list_or_a_vector() {
 
 #[test]
 fn next_read_file_uses_dialog_p_follows_the_oracle_toolkit() {
-    // fileio.c: without USE_GTK, USE_MOTIF, HAVE_NS, HAVE_NTGUI or
-    // HAVE_HAIKU the predicate is nil, and `x-file-dialog' does not exist,
-    // so `read-file-name' takes the minibuffer path (dired-test-bug25609
-    // signalled `void-function x-file-dialog' when Emaxx answered t).  The
-    // Darwin oracle is an NS build: the batch session's initial frame
-    // counts as a window system, so the default `use-dialog-box' and
-    // `use-file-dialog' answer t until `last-nonmenu-event' is a key.
+    // fileio.c requires window_system_available(SELECTED_FRAME()). GNU's
+    // initial batch frame is a terminal even in its graphical builds.
     let program = r#"
         (list (next-read-file-uses-dialog-p)
               (let ((use-dialog-box t) (use-file-dialog t) (last-nonmenu-event nil))
                 (next-read-file-uses-dialog-p))
-              (let ((use-dialog-box nil)) (next-read-file-uses-dialog-p))
-              (fboundp 'x-file-dialog))"#;
-    let expected = if cfg!(target_os = "macos") {
-        "(t t nil t)"
-    } else {
-        "(nil nil nil nil)"
-    };
-    assert_oracle_contract_matches_interpreter(program, expected, "read-file-name dialog");
+              (let ((use-dialog-box nil)) (next-read-file-uses-dialog-p)))"#;
+    assert_oracle_contract_matches_interpreter(program, "(nil nil nil)", "read-file-name dialog");
+
+    // Preserve separate build contracts: ns-win.el owns the NS function;
+    // pgtkfns.c and GTK/Motif xfns.c own the Linux graphical variants.
+    // Plain X11 and terminal-only builds have no file-dialog definition.
+    // Select by actual features, never by the OS running this Rust test.
+    let availability = r#"
+        (let* ((backend (cond ((featurep 'ns) 'ns)
+                              ((featurep 'pgtk) 'pgtk)
+                              ((featurep 'w32) 'w32)
+                              ((featurep 'haiku) 'haiku)
+                              ((and (featurep 'x) (featurep 'gtk)) 'x-gtk)
+                              ((and (featurep 'x) (featurep 'motif)) 'x-motif)
+                              ((featurep 'x) 'x)
+                              (t 'terminal)))
+               (available (fboundp 'x-file-dialog))
+               (function (and available (indirect-function 'x-file-dialog))))
+          (list backend available
+                (and available
+                     (cond ((autoloadp function) 'autoload)
+                           ((and (subrp function) (not (subr-native-elisp-p function))) 'c)
+                           (t 'lisp)))))"#;
+    let oracle = upstream_primitive_contract_output(&format!("(prin1 {availability})"));
+    assert!(
+        matches!(
+            oracle.as_str(),
+            "(ns t lisp)"
+                | "(pgtk t c)"
+                | "(x-gtk t c)"
+                | "(x-motif t c)"
+                | "(w32 t c)"
+                | "(haiku t c)"
+                | "(x nil nil)"
+                | "(terminal nil nil)"
+        ),
+        "GNU's file-dialog availability/owner does not match its backend: {oracle}"
+    );
+    let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+    let actual = crate::test_support::eval_lisp(&mut interpreter, &mut Vec::new(), availability)
+        .expect("read the terminal runtime's graphical capability boundary");
+    // This is a capability boundary, not a claim of NS/GTK availability
+    // parity. A future graphical runtime needs its matching backend case.
+    assert_eq!(actual.to_string(), "(terminal nil nil)");
+    eprintln!("file-dialog backend coverage: GNU {oracle}; Emaxx {actual}");
 }
 
 #[test]
@@ -2171,20 +2332,24 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
              (dump-emacs-portable 42)
            (error error-data))
          (condition-case error-data
-             (dump-emacs-portable "must-not-be-created.pdmp" t)
-           (error error-data))
+             (dump-emacs-portable "/nonexistent-dir/must-not-be-created.pdmp" t)
+           (error (car error-data)))
          (condition-case error-data
              (dump-emacs-portable--sort-predicate-copied nil nil)
            (error error-data)))"#;
     let unavailable = "(error \"Portable dumper backend is unavailable\")";
     let boundary_expected = format!(
         "((1 . 2) (2 . 2) (wrong-type-argument stringp 42) \
-         {unavailable} {unavailable})"
+         file-missing {unavailable})"
     );
     let form = Reader::new(boundary_program)
         .read()
         .expect("portable-dumper boundary program should parse")
         .expect("portable-dumper boundary program should contain a form");
+    // The writer boundary sits past pdumper.c's batch-mode check, so the
+    // program runs in an initialized batch image (a bare interpreter is
+    // refused as GNU refuses an interactive one).
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let actual = interp
         .eval(&form, &mut env)
         .expect("portable-dumper boundary should be catchable");
@@ -2194,7 +2359,133 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
         .expect("portable-dumper boundary expectation should contain a form");
     assert!(
         values_equal(&interp, &actual, &expected),
-        "portable-dumper boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+        "portable-dumper boundary was not explicit:\nactual: {actual}\nexpected: {expected}"
+    );
+}
+
+#[test]
+fn dump_emacs_portable_prelude_follows_pdumper_c() {
+    // pdumper.c:Fdump_emacs_portable in source order: the main-thread and
+    // other-thread refusals, `load--fixup-all-elns' called as a Lisp
+    // function, one collection (post-gc-hook runs) before the filename is
+    // checked, the `command-line-processed' binding made and unbound
+    // around the failure, and the arity errors.
+    let program = r#"
+        (progn
+          (setq zz-order nil)
+          (fset 'load--fixup-all-elns (lambda () (push 'fixup zz-order)))
+          (add-hook 'post-gc-hook (lambda () (push 'gc zz-order)))
+          (add-variable-watcher 'command-line-processed
+                                (lambda (_symbol value operation _where)
+                                  (push (list 'watch operation value) zz-order)))
+          (list
+           (condition-case error-data (dump-emacs-portable 42) (error error-data))
+           (reverse zz-order)
+           command-line-processed
+           (condition-case error-data
+               (dump-emacs-portable "/nonexistent-dir/zz-dump.pdmp")
+             (error error-data))
+           (let ((thread (make-thread (lambda () (thread-yield) (sleep-for 1)))))
+             (setq zz-order nil)
+             (prog1 (list (condition-case error-data (dump-emacs-portable 42)
+                            (error error-data))
+                          (reverse zz-order))
+               (thread-join thread)))
+           (let ((thread (make-thread
+                          (lambda ()
+                            (condition-case error-data (dump-emacs-portable 42)
+                              (error error-data))))))
+             (thread-join thread))
+           (condition-case error-data (dump-emacs-portable) (error error-data))
+           (condition-case error-data (dump-emacs-portable "a" "b" "c")
+             (error error-data))))"#;
+    let expected = "((wrong-type-argument stringp 42) \
+         (fixup gc (watch let nil) (watch unlet t)) t \
+         (file-missing \"Opening dump output\" \"No such file or directory\" \
+         \"/nonexistent-dir/zz-dump.pdmp\") \
+         ((error \"No other Lisp threads can be running when this function is called\") nil) \
+         (error \"This function can be called only in the main thread\") \
+         (wrong-number-of-arguments dump-emacs-portable 0) \
+         (wrong-number-of-arguments dump-emacs-portable 3))";
+    assert_oracle_contract_matches_interpreter(program, expected, "dump-emacs-portable prelude");
+}
+
+#[test]
+fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
+    // Rust-only: the writer opens the file as GNU does and, until every
+    // object kind of the image is covered, stops at the first unsupported
+    // one with pdumper.c's error.  dump_unwind_cleanup's variables
+    // (purify-flag, post-gc-hook, process-environment) and the
+    // command-line-processed binding are back as GNU's unwind leaves them,
+    // and the file is the truncated, never-written one GNU leaves after a
+    // failure before its single write.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let path =
+        std::env::temp_dir().join(format!("emaxx-d08-incomplete-{}.pdmp", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let program = format!(
+        r#"(progn
+             (defun zz-post-gc () nil)
+             (setq purify-flag 'zz-pure
+                   post-gc-hook '(zz-post-gc)
+                   process-environment '("ZZ=1"))
+             (let ((processed command-line-processed))
+               (list (condition-case error-data (dump-emacs-portable {path:?})
+                       (error (list (car error-data)
+                                    (string-prefix-p "unsupported object type in dump: "
+                                                     (cadr error-data)))))
+                     purify-flag post-gc-hook process-environment
+                     (eq processed command-line-processed))))"#,
+        path = path.display()
+    );
+    let form = Reader::new(&program)
+        .read()
+        .expect("context program parses")
+        .expect("context program has a form");
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("the writer boundary is a catchable error");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print the context result");
+    assert_eq!(
+        string_like(&printed).expect("printed string").text,
+        "((error t) zz-pure (zz-post-gc) (\"ZZ=1\") t)"
+    );
+    let metadata = std::fs::metadata(&path).expect("the output file was opened and truncated");
+    assert_eq!(
+        metadata.len(),
+        0,
+        "nothing is written before the dump completes"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn replace_match_on_a_string_returns_concat3_multibyteness() {
+    // search.c:Freplace_match with STRING returns concat3 (before, newtext,
+    // after): multibyte when STRING or NEWTEXT is.  burmese.el builds its
+    // composition regexp by replacing ASCII keys in an ASCII pattern with
+    // multibyte pieces; the result was left unibyte with characters above
+    // 255, a string GNU cannot hold (the image writer found it).
+    let program = r#"
+        (list
+         (multibyte-string-p (replace-regexp-in-string "V" "္" "aVb" t t))
+         (progn (string-match "V" "aVb")
+                (multibyte-string-p (replace-match "္" t t "aVb")))
+         (progn (string-match "V" "aVb")
+                (multibyte-string-p (replace-match "x" t t "aVb")))
+         (progn (string-match "V" "a္Vb")
+                (multibyte-string-p (replace-match "x" t t "a္Vb")))
+         (let ((case-fold-search nil))
+           (string-bytes (replace-regexp-in-string "K" "[ငၚ]်္"
+                                                   "\\(K\\)?C" t t)))
+         (multibyte-string-p (aref (car (aref composition-function-table #x1000)) 0))
+         (string-bytes (aref (car (aref composition-function-table #x1000)) 0)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t nil t 20 t 228)",
+        "replace-match multibyteness",
     );
 }
 
@@ -2479,7 +2770,9 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_420, 4_253_707_965_298_194_171),
+        // Regeneration excludes three native-Elisp owners mistaken for C:
+        // frame-windows-min-size, x-begin-drag, and x-file-dialog.
+        (1_417, 10_595_795_051_582_904_188),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
@@ -3143,14 +3436,8 @@ fn native_frame_geometry_parameters_and_state_flags_match_gnu() {
     let expected_printed = r#"(1 1 80 25 80 25 80 25 80 25 0 0 0 0 0 0 0 0 1.0 (0 . 0) 8 10 5 (80 25 "F1") first (90 31) (70 21) nil t (0 . 0) nil t t nil t nil nil t)"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
 
-    // `frame-windows-min-size' is window.el Lisp in GNU; only the Darwin
-    // contract lists it with an arity.  On a host whose C contract does not
-    // own it, the interpreter needs the dumped Lisp to answer, as GNU does.
-    let mut interp = if is_builtin("frame-windows-min-size") {
-        Interpreter::new()
-    } else {
-        crate::test_support::initialized_upstream_batch_interpreter()
-    };
+    // window.el owns frame-windows-min-size even when it is native-compiled.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Vec::new();
     let form = Reader::new(program)
         .read()
@@ -5504,7 +5791,9 @@ fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
     let program = r#"
           (list
            (commandp 'undo)
-           (subrp (symbol-function 'undo))
+           (let ((function (symbol-function 'undo)))
+             (or (byte-code-function-p function)
+                 (and (subrp function) (subr-native-elisp-p function))))
            (car (interactive-form 'undo))
            (with-temp-buffer
              (buffer-enable-undo)
@@ -5521,7 +5810,7 @@ fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
         .read()
         .expect("read preloaded undo contract")
         .expect("preloaded undo contract form");
-    let expected = Reader::new("(t nil interactive \"first\")")
+    let expected = Reader::new("(t t interactive \"first\")")
         .read()
         .expect("read preloaded undo expectation")
         .expect("preloaded undo expectation");
@@ -10555,6 +10844,137 @@ fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, lab
         .unwrap_or_else(|| panic!("{label} result printed as a string"))
         .text;
     assert_eq!(printed, expected);
+}
+
+#[test]
+fn embedded_native_compilation_builds_uncached_advice_trampolines() {
+    let program = r#"(progn
+        (require 'comp) (require 'comp-run) (require 'cl-lib)
+        (let* ((root (make-temp-file "native-trampoline-control-" t))
+               (native-comp-eln-load-path (list (file-name-as-directory root)))
+               (comp-installed-trampolines-h (make-hash-table)))
+          (unwind-protect
+              (let ((function
+                     (native-compile '(lambda (path) (file-system-info path)))))
+                (list (native-comp-function-p function)
+                      (null (comp--trampoline-search 'file-system-info))
+                      (cl-letf (((symbol-function 'file-system-info)
+                                 (lambda (_path) 'mocked)))
+                        (funcall function "unused"))
+                      (native-comp-function-p
+                       (comp--trampoline-search 'file-system-info))))
+            (delete-directory root t))))"#;
+    // GNU gets the same documented batch-compilation settings as our
+    // embedded fixture. The Emaxx expression below deliberately does not
+    // override them: this must catch a fixture that suppresses compilation.
+    assert_upstream_primitive_contract(
+        &format!(
+            "(progn (require 'comp)
+               (let ((comp-no-spawn nil) (comp-running-batch-compilation t)
+                     (native-comp-jit-compilation nil))
+                 (prin1 {program})))"
+        ),
+        "(t t mocked t)",
+    );
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("parse cold native compilation control")
+        .expect("native compilation control form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("compile native caller and fresh trampoline"),
+        Value::list([Value::T, Value::T, Value::symbol("mocked"), Value::T]),
+    );
+}
+
+#[test]
+fn opaque_native_objects_reject_array_access_without_exposing_storage() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp)
+            (let* ((comp-no-spawn nil)
+                  (comp-running-batch-compilation t)
+                  (function (native-compile '(lambda (value) value)))
+                  (objects (list (symbol-function 'car) function
+                                 (subr-native-comp-unit function)
+                                 (make-hash-table) (current-thread)
+                                 (selected-window))))
+              (list
+               (native-comp-function-p function)
+               (mapcar
+                (lambda (object)
+                  (list
+                   (arrayp object) (recordp object)
+                   (condition-case err (copy-sequence object)
+                     (error (list (car err) (cadr err))))
+                   (condition-case err (aref object 0)
+                     (error (list (car err) (cadr err))))
+                   (condition-case err (aref object -1)
+                     (error (list (car err) (cadr err))))
+                   (condition-case err (aset object 0 (type-of object))
+                     (error (list (car err) (cadr err))))
+                   (condition-case err
+                       (progn
+                         (aset object 1
+                               (condition-case nil (aref object 1)
+                                 (error nil)))
+                         'accepted)
+                     (error (list (car err) (cadr err))))))
+                objects)
+               (let ((record (record 'subr 9)))
+                 (list (arrayp record) (recordp record) (aref record 0)
+                       (aset record 1 12) (aref record 1)
+                       (let ((copy (copy-sequence record)))
+                         (list (equal copy record) (eq copy record)))))
+               (let* ((lexical-binding t)
+                      (closure (byte-compile '(lambda (value) value))))
+                 (list (aref closure 0)
+                       (condition-case err (copy-sequence closure)
+                         (error (list (car err) (cadr err))))
+                       (condition-case err (aset closure 0 257)
+                         (error (list (car err) (cadr err))))
+                       (funcall closure 3)))
+               (funcall function 3))))"#,
+        &format!(
+            "(t ({}) (nil t subr 12 12 (t nil)) (257 (wrong-type-argument sequencep) (wrong-type-argument arrayp) 3) 3)",
+            std::iter::repeat_n(
+                "(nil nil (wrong-type-argument sequencep) (wrong-type-argument arrayp) (wrong-type-argument arrayp) (wrong-type-argument arrayp) (wrong-type-argument arrayp))",
+                6,
+            )
+            .collect::<Vec<_>>()
+            .join(" ")
+        ),
+        "data.c:Faref/Faset and fns.c:Fcopy_sequence public pseudovector boundary",
+    );
+}
+
+#[test]
+fn modify_syntax_entry_nil_table_uses_the_current_buffer() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+              (set-syntax-table (copy-syntax-table))
+              (let* ((other (copy-syntax-table))
+                     (result (modify-syntax-entry ?! "w" nil))
+                     (current (char-syntax ?!)))
+                (modify-syntax-entry ?! "." other)
+                (list result current (char-syntax ?!)
+                      (with-syntax-table other (char-syntax ?!))
+                      (progn (modify-syntax-entry ?! "_")
+                             (char-syntax ?!)))))"#,
+        "(nil 119 119 46 95)",
+        "syntax.c:Fmodify_syntax_entry optional table",
+    );
+}
+
+#[test]
+fn log_nil_base_uses_the_natural_logarithm() {
+    assert_oracle_contract_matches_interpreter(
+        "(list (= (log 5000) (log 5000 nil)) (log 1 nil) (log 8 2) (log 100 10))",
+        "(t 0.0 3.0 2.0)",
+        "floatfns.c:Flog optional base",
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -17151,39 +17571,35 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
          (condition-case error-data
              (x-select-font)
            (error error-data)))"#;
-    // `x-file-dialog' and `x-select-font' are DEFUNed only in builds whose
-    // configure compiled the X chooser code; a build without it leaves them
-    // unbound and the condition-case catches plain `void-function'.  The
-    // oracle is asked which build it is live; Emaxx models the X-compiled
-    // headless build (the choosers exist and refuse without a display) —
-    // the divergence is recorded in docs/honesty-audit-2026-08-18.md.
-    let expected_with_choosers = |with_choosers: bool| {
-        let chooser_rows = if with_choosers {
-            concat!(
-                "(error \"Window system is not in use or not initialized\") ",
-                "(wrong-type-argument frame-live-p t) ",
-                "(error \"Window system frame should be used\")"
-            )
+    // GNU's macOS file chooser is Lisp-owned; the font chooser is C-owned.
+    // A bare interpreter has only the contracted C function cells.
+    let expected_with_choosers = |file_dialog: bool, font_dialog: bool| {
+        let file_row = if file_dialog {
+            "(error \"Window system is not in use or not initialized\")"
         } else {
-            concat!(
-                "(void-function x-file-dialog) ",
-                "(void-function x-select-font) ",
-                "(void-function x-select-font)"
-            )
+            "(void-function x-file-dialog)"
+        };
+        let font_rows = if font_dialog {
+            "(wrong-type-argument frame-live-p t) (error \"Window system frame should be used\")"
+        } else {
+            "(void-function x-select-font) (void-function x-select-font)"
         };
         format!(
             "((wrong-type-argument listp 1) error \
              (wrong-type-argument stringp 1) \
              (wrong-type-argument frame-live-p t) \
              (error \"Window system frame should be used\") \
-             {chooser_rows})"
+             {file_row} {font_rows})"
         )
     };
     let oracle_has_choosers =
         upstream_oracle_stdout("(prin1 (and (fboundp 'x-file-dialog) (fboundp 'x-select-font) t))");
     assert_upstream_primitive_contract(
         &format!("(prin1 {program})"),
-        &expected_with_choosers(oracle_has_choosers.trim() == "t"),
+        &expected_with_choosers(
+            oracle_has_choosers.trim() == "t",
+            oracle_has_choosers.trim() == "t",
+        ),
     );
 
     let mut interp = Interpreter::new();
@@ -17197,11 +17613,13 @@ fn native_gui_creation_tip_and_chooser_boundary_matches_gnu() {
         .expect("headless GUI action failures should be catchable");
     // Dispatch follows the host's C contract: the choosers exist for Emaxx
     // exactly where the host's oracle build compiled them.
-    let host_has_choosers = is_builtin("x-file-dialog") && is_builtin("x-select-font");
-    let expected = Reader::new(&expected_with_choosers(host_has_choosers))
-        .read()
-        .expect("headless GUI action expected value should parse")
-        .expect("headless GUI action expected value should exist");
+    let expected = Reader::new(&expected_with_choosers(
+        is_builtin("x-file-dialog"),
+        is_builtin("x-select-font"),
+    ))
+    .read()
+    .expect("headless GUI action expected value should parse")
+    .expect("headless GUI action expected value should exist");
     assert!(
         values_equal(&interp, &actual, &expected),
         "headless GUI action result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
@@ -17285,6 +17703,17 @@ fn native_headless_menu_and_drag_actions_preserve_gnu_boundaries() {
     .read()
     .expect("headless menu/drag boundary should parse")
     .expect("headless menu/drag boundary should contain a form");
+    let drag_error = if is_builtin("x-begin-drag") {
+        Value::list([
+            Value::symbol("error"),
+            Value::string("Window system frame should be used"),
+        ])
+    } else {
+        Value::list([
+            Value::symbol("void-function"),
+            Value::symbol("x-begin-drag"),
+        ])
+    };
     assert_eq!(
         interp
             .eval(&boundary, &mut env)
@@ -17296,14 +17725,8 @@ fn native_headless_menu_and_drag_actions_preserve_gnu_boundaries() {
                 Value::symbol("fixnump"),
                 Value::Nil,
             ]),
-            Value::list([
-                Value::symbol("error"),
-                Value::string("Window system frame should be used"),
-            ]),
-            Value::list([
-                Value::symbol("error"),
-                Value::string("Window system frame should be used"),
-            ]),
+            drag_error.clone(),
+            drag_error,
         ])
     );
 }
@@ -19772,6 +20195,8 @@ fn window_text_pixel_size_measures_the_window_buffer_with_mode_lines() {
             Value::Nil,
             Value::Nil,
             Value::T,
+            // GNU's fixed native ABI supplies all seven optional slots.
+            Value::Nil,
         ],
         &mut env,
     )
@@ -21549,5 +21974,216 @@ fn eval_buffer_binds_lexical_binding_from_the_first_line_cookie() {
         program,
         r##"((3 t) (nil t 3) nil nil t nil (3 t (nil nil nil)))"##,
         "eval-buffer lexical-binding cookie",
+    );
+}
+
+#[cfg(unix)]
+struct FrameTestPty {
+    _master: std::fs::File,
+    _slave: std::fs::File,
+    path: String,
+}
+
+#[cfg(unix)]
+impl FrameTestPty {
+    fn new() -> Self {
+        use std::os::fd::FromRawFd;
+        let mut master = -1;
+        let mut slave = -1;
+        let mut name = [0i8; 1024];
+        let mut size = libc::winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: openpty initializes the two owned descriptors and a device
+        // name in the provided buffer. Each descriptor is closed exactly once.
+        unsafe {
+            assert_eq!(
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    name.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    &mut size
+                ),
+                0
+            );
+            Self {
+                _master: std::fs::File::from_raw_fd(master),
+                _slave: std::fs::File::from_raw_fd(slave),
+                path: std::ffi::CStr::from_ptr(name.as_ptr())
+                    .to_str()
+                    .expect("valid terminal contract fixture")
+                    .to_owned(),
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_frames_follow_gnu_device_window_and_deletion_lifecycle() {
+    let pty = FrameTestPty::new();
+    let program = format!(
+        r#"
+        (let* ((initial (selected-frame))
+               (f (make-terminal-frame '((tty . {:?}) (tty-type . "xterm"))))
+               (terminal (frame-terminal f))
+               (g (make-terminal-frame (list (cons 'terminal terminal))))
+               (w (frame-root-window f))
+               (seen nil))
+          (unwind-protect
+              (list
+               (eq (selected-frame) initial)
+               (= (length (frame-list)) 3)
+               (= (length (terminal-list)) 2)
+               (eq (frame-terminal g) terminal)
+               (eq (frame-root-window f) (frame-root-window g))
+               (eq (frame-root-window w) w)
+               (eq (frame-first-window w) w)
+               (eq (frame-selected-window w) w)
+               (eq (window-frame w) f)
+               (eq (window-frame (minibuffer-window f)) f)
+               (eq (car (window-list f)) w)
+               (eq (tty-top-frame terminal) g)
+               (progn (set-terminal-parameter terminal 'probe 'new)
+                      (terminal-parameter (frame-terminal initial) 'probe))
+               (progn (select-frame f)
+                      (eq (selected-window) (frame-selected-window f)))
+               (progn (add-hook 'delete-frame-functions
+                                (lambda (frame) (setq seen (frame-live-p frame))))
+                      (delete-frame f) seen)
+               (frame-live-p f)
+               (window-live-p w)
+               (condition-case error-data (window-frame w) (error (car error-data)))
+               (terminal-live-p terminal)
+               (progn (delete-frame g) (terminal-live-p terminal))
+               (= (length (frame-list)) 1))
+            (when (frame-live-p initial) (select-frame initial))
+            (when (terminal-live-p terminal) (delete-terminal terminal t))))
+    "#,
+        pty.path
+    );
+    let expected = "(t t t t nil t t t t t t t nil t t nil nil wrong-type-argument t nil t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let form = Reader::new(&program)
+        .read_all()
+        .expect("valid terminal contract fixture")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("terminal lifecycle");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_frames_preserve_other_frames_when_windows_change() {
+    let pty = FrameTestPty::new();
+    let program = format!(
+        r#"
+        (let* ((initial (selected-frame))
+               (initial-window (selected-window))
+               (f (make-terminal-frame '((tty . {:?}) (tty-type . "xterm"))))
+               (root (frame-root-window f)))
+          (unwind-protect
+              (progn
+                (select-frame f)
+                (split-window root 10 'below)
+                (let ((split-root (frame-root-window f)))
+                  (list (not (eq split-root root))
+                        (= (length (window-list f)) 2)
+                        (= (length (window-list initial)) 1)
+                        (eq (window-frame split-root) f)
+                        (progn (delete-other-windows root)
+                               (window-live-p initial-window))
+                        (= (length (window-list f)) 1)
+                        (progn (select-frame initial)
+                               (eq (selected-window) initial-window)))))
+            (select-frame initial)
+            (delete-frame f)))
+    "#,
+        pty.path
+    );
+    let expected = "(t t t t t t t)";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(&program)
+        .read_all()
+        .expect("valid terminal contract fixture")
+        .remove(0);
+    let result = interp
+        .eval(&form, &mut Vec::new())
+        .expect("independent window trees");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_frames_isolate_faces_keyboards_and_saved_configurations() {
+    let pty = FrameTestPty::new();
+    let program = format!(
+        r#"
+      (let* ((initial (selected-frame))
+             (initial-map input-decode-map)
+             (f (make-terminal-frame '((tty . {:?}) (tty-type . "xterm"))))
+             (terminal (frame-terminal f))
+             (g (make-terminal-frame (list (cons 'terminal terminal))))
+             (configuration (current-window-configuration f))
+             (client-buffer (get-buffer-create "terminal-gate-buffer")))
+        (unwind-protect
+            (progn
+              (make-face 'terminal-gate-face)
+              (set-face-attribute 'terminal-gate-face initial :foreground "red")
+              (set-face-attribute 'terminal-gate-face f :foreground "blue")
+              (copy-face 'terminal-gate-face 'terminal-gate-copy f g)
+              (set-window-buffer (frame-selected-window g) client-buffer)
+              (let ((prefix-arg 'primary))
+                (select-frame f)
+                (setq prefix-arg 'client)
+                (list
+                  (face-attribute 'terminal-gate-face :foreground initial)
+                  (face-attribute 'terminal-gate-face :foreground f)
+                  (face-attribute 'terminal-gate-copy :foreground g)
+                  (eq (window-configuration-frame configuration) f)
+                  (eq (get-buffer-window client-buffer t) (frame-selected-window g))
+                  (get-buffer-window client-buffer initial)
+                  (eq input-decode-map initial-map)
+                  (lookup-key input-decode-map "\eOD")
+                  (progn (select-frame g) prefix-arg)
+                  (progn (let ((prefix-arg 'temporary)) (select-frame initial)) prefix-arg)
+                  (progn (select-frame f) prefix-arg)
+                  (progn (set-window-configuration configuration) (eq (selected-frame) initial))
+                  (progn (select-frame f) (set-window-configuration configuration t) (eq (selected-frame) f))
+                  (progn (delete-terminal terminal) (eq (selected-frame) initial))
+                  (frame-live-p f) (frame-live-p g) (terminal-live-p terminal))))
+          (select-frame initial)
+          (when (terminal-live-p terminal) (delete-terminal terminal t))
+          (kill-buffer client-buffer)))
+    "#,
+        pty.path
+    );
+    let expected =
+        r#"("red" "blue" "blue" t t nil nil [left] client primary client t t t nil nil nil)"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(&program)
+        .read_all()
+        .expect("valid terminal contract fixture")
+        .remove(0);
+    let mut env = Vec::new();
+    let result = interp
+        .eval(&form, &mut env)
+        .expect("frame/keyboard isolation");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("valid terminal contract fixture");
+    assert_eq!(
+        printed
+            .as_string()
+            .expect("valid terminal contract fixture"),
+        expected
     );
 }
