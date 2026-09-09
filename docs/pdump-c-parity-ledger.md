@@ -395,6 +395,15 @@ count of tests, independent bugs, or a completion percentage.
 
 ## Finite contract inventory
 
+The D11 completed-image receipt below is for a non-AOT Linux startup. The
+2026-09-09 merge also checked ordinary Darwin startup, which loads native
+functions: GNU dumps that state successfully, but Emaxx still refuses it
+pending D14/D15. The renamed
+`dump_emacs_portable_restores_context_and_reports_native_image_limit` control
+checks that precise boundary while retaining the full round trip for a
+supported image. It does not close native-image or process-startup parity;
+see [the merge audit](native-comp-merge-audit-2026-09-09.md).
+
 | ID / phase | GNU owner and invariant | Rust counterpart / present gap | Required evidence |
 |---|---|---|---|
 | D01 PRE | `lread.c:load_path_default`, `init_lread`; `emacs.c:decode_env_path`: initialize paths from build/runtime state, not another editor. Subdirectory expansion belongs to GNU `startup.el`. | Worktree removes production oracle-path queries and `effective_batch_load_path`; `startup.rs` implements C path construction over the rooted Lisp list. Shared openp search fixes the ~/ failure and removes invented filename/suffix rules. Focused checks and a fresh whole-native-artifact comparison pass with GNU launches forbidden. General loader/path/error contracts remain open. | Ordinary startup and image construction succeed with GNU executable launches forbidden; exact initial paths/env handling; unchanged loadup/startup supply their own Lisp transformations. |

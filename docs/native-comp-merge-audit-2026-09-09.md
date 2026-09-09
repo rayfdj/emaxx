@@ -89,3 +89,136 @@ selectors, template policy and strict outcome checks, changing only the
 schedule to one group and one libtest worker, progress verbosity, and the
 matching recorded provenance. All 12 existing gate-harness tests pass.
 No resource-only change is represented as reduced coverage.
+
+## Completed focused receipts
+
+- Linux Actions run
+  [34339137375](https://github.com/rayfdj/emaxx/actions/runs/34339137375),
+  candidate `24f60adbff674b9f6b20ec4d782f2be3382e4b3c`, passed all 65 focused
+  Rust controls with zero failures and zero ignores. This includes the
+  original unconditional complete-startup-image round trip, before the
+  Darwin capability correction. Its non-AOT image therefore really completed.
+  All four original OpenPGP tests passed in both GNU and Emaxx, at both
+  short and historical long fixture paths. Formatting and strict Clippy
+  passed. The runner had GCC 13 and libgccjit 14, exercising the compiler
+  environment mismatch that motivated the startup snapshot.
+- Darwin: all 40 initial dump/root/compiler checks passed, followed by the
+  corrected native-image boundary test (one passed). Formatting and
+  `cargo clippy --locked --all-targets --all-features -- -D warnings` passed
+  with zero warnings.
+- Darwin native artifact identity passed in 717.96 seconds: nine unchanged
+  GNU source fixtures, eight whole `.eln` byte comparisons (including
+  `comp.el` and the upstream compiler test suite) and the unchanged
+  no-byte-compile policy in both editors. This is one Rust integration
+  test containing nine comparisons, not nine Rust test functions.
+- Darwin native-thread integration passed in 78.33 seconds: all six real
+  GNU/Emaxx programs agreed, covering early signals, native suspension,
+  nil signal roots, signal-data identity, condition broadcast and caller
+  boundaries (one Rust integration test, zero ignored).
+- Darwin upstream compiler replay
+  (`target/gate/compat-harness run --file test/src/comp-tests.el --selector all
+  --timeout-seconds 3600`): 178 matching outcomes, zero mismatches. Both
+  editors passed 177 and failed `comp-tests-bootstrap` because the isolated
+  fixture checkout lacks `lisp/emacs-lisp/comp.elc`. This is the same shared
+  setup failure recorded before the merge, not a passing bootstrap test.
+  Artifacts: `target/compat/run-1788951458397139000-91250`. The harness reports
+  test times of 92.644 seconds for GNU and 1,406.730 for Emaxx; matching
+  behavior does not establish performance parity.
+- Darwin native-cache suite: all three tests passed in both editors, zero
+  mismatches (`target/compat/run-1788953064009262000-94920`).
+- The `test/src/thread-tests.el` replay discovered 33 tests: both editors
+  passed 32 and failed `threads-join-error` with the same `ert-test-failed`,
+  nil return and "did not signal an error" assertion. The harness exits one
+  because its failure-message comparison retains the different thread
+  addresses (`0xab7808910` versus `0x460c`). That failed receipt is preserved
+  in `target/compat/run-1788953090044997000-95090`; it is not reported as a
+  successful harness run. No runtime behavior, assertion or normalization
+  was changed. The prior 36-test total additionally loaded
+  `test/lisp/thread-tests.el` (three more tests); that file and the server
+  suite continue in a separate final-stage runner, without repeating the
+  completed native checks. `validation-macos.json` retains its failed stage;
+  the continuation uses `validation-macos-remaining.json` and asserts the
+  same tracked-source fingerprint.
+
+- The additional Lisp thread file passed two tests and skipped the
+  without-threads-build test in each editor, zero mismatches
+  (`target/compat/run-1788953218350447000-95293`). Across the two files, the
+  actual outcome inventory remains 34 passed, one shared failure and one
+  shared skip, as before the merge.
+- The first server harness replay reported seven matching outcomes, but
+  **all seven were failures**: both editors refused the harness's long
+  socket paths with `Service name too long`. The raw receipt remains in
+  `target/compat/run-1788953242261325000-95462`; the harness's `PASS` line
+  does not establish a successful server workflow.
+- The unchanged server file was then run directly in both editors with
+  fresh HOME/TMPDIR under `/private/tmp/ex-nm-sept9/{gnu,emaxx}`, `TERM=xterm`
+  and the real GNU emacsclient. **All seven tests passed in each editor**,
+  with no skips or assertion changes (`server-direct-{gnu,emaxx}.log`).
+  Shortening a private socket path is an environment correction; it does
+  not change the editor or the original test.
+- The real terminal-client driver passed in both editors under
+  `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8`. Both produced `abXéc`, saved
+  `abXéc\n`, preserved the primary frame after client-frame deletion,
+  observed client exit zero and preserved the primary after disconnection.
+  Screens and raw terminal logs: `/private/tmp/ex-nm-sept9/pty`.
+  The commands, exits and elapsed times are in `validation-server-pty.json`.
+
+## First full Linux serial gate
+
+Actions run
+[34341065537](https://github.com/rayfdj/emaxx/actions/runs/34341065537)
+on `66d650b` passed the 65 focused controls again, then passed all five
+evaluator groups serially: eval_01 351, eval_02 284, eval_03 320, eval_04
+251 and eval_05 351 (1,557 tests, zero failures or ignores). The primitive
+group completed with 441 passes and three failures, and the gate stopped.
+The remaining library groups, binary targets and integration targets have
+not yet run in this full-gate attempt. The run failed; it was not timed out.
+
+Two failures arise before Emaxx is evaluated: GNU on this Linux build
+retained a weak key at an immediate GC boundary where the Darwin oracle
+released it. They are `dead_thread_results_are_rooted_only_through_reachable_thread_objects`
+and `suspended_bytecode_observes_live_constant_vector_mutation`. The third,
+`program_search_follows_openp_over_exec_path`, differs at its asynchronous
+shell-output assertion. These failures and complete per-test logs are
+retained in the run artifacts. They are being diagnosed rather than
+reclassified as passes. Completed evaluator groups will be retained.
+
+Diagnostic branch checkpoint `cfdd1e3` changes only the workflow and checks
+out unchanged source `66d650b` for fresh GNU/Emaxx GC and process probes.
+The equivalent Darwin probes retain the original positive release
+expectations when GC runs after the setup file returns, and both editors
+agree on shell output before and after draining. No additional runtime or
+test change has been made at this diagnostic checkpoint.
+
+The Linux diagnostic run
+[34348556781](https://github.com/rayfdj/emaxx/actions/runs/34348556781)
+confirms both revised GC observers return the original required values in
+both editors: `(1 0)` and `(1 t 0)`. The original Linux GNU fixtures still
+return `(1 1)` and `(1 t 1)`; Emaxx returns the release values. The isolated
+Rust replay reproduces those two GNU-side failures and passes the original
+argv0 test. Fresh PTY and pipe probes agree on the resolved shell path and
+on fully delivered output.
+
+An additional direct probe on Darwin shows **both** editors can report
+process exit with an empty buffer, then deliver `ready` during
+`accept-process-output`. GNU process.c:Fprocess_status updates raw status
+without draining output; `status_notify` owns that drain. The argv0 fixture
+now drains before comparing its unchanged expected value. Both GC fixtures
+perform their release observation after the setup file returns, avoiding
+conservative roots in active loader frames. Retention, live constant-vector
+mutation and eventual release assertions remain intact; no expected value
+is weakened and no runtime source changes for these corrections.
+
+Formatting and strict all-target/all-feature Clippy pass on Darwin after
+these isolated test edits. The continuation validates the prior inventory,
+ignore set, complete group result logs and the original gate's zero-exit
+markers before reusing the five evaluator groups. It rejects runtime or
+evaluator source changes. It reruns the entire primitive group, followed
+by all previously unrun library groups and binary/integration targets.
+
+The final validation candidate is
+`66d650bb21e1bb38710eb90cde12c000a450eb2d`. Runtime source is unchanged from
+`24f60ad`; its differences are the explicit native-image test boundary,
+serial gate scheduling, workflow and documentation. The final merge commit
+will retain the actual main/native-comp parents, rather than adopting the
+diagnostic branch's intermediate commit topology.

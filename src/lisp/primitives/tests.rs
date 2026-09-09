@@ -11129,6 +11129,9 @@ fn program_search_follows_openp_over_exec_path() {
          (let* ((b (generate-new-buffer "argv0"))
                 (p (start-process "argv0" b "sh" "-c" "echo $0")))
            (while (process-live-p p) (sleep-for 0.05))
+           ;; Fprocess_status can observe exit before status_notify drains
+           ;; output. This contract compares argv[0], not event-loop timing.
+           (while (accept-process-output p 0.1))
            (equal (car (split-string (with-current-buffer b (buffer-string)) "\n"))
                   (executable-find "sh"))))"#;
     assert_oracle_contract_matches_interpreter(
@@ -22422,21 +22425,27 @@ fn suspended_bytecode_observes_live_constant_vector_mutation() {
               (list (eq (thread-join gc-vector-thread)
                         (aref gc-vector-constants 1)))))
 (setq gc-vector-thread nil gc-vector-constants nil)
-(garbage-collect)
-(setq gc-vector-result
-      (append gc-vector-result (list (hash-table-count gc-vector-table))))
-(prin1 gc-vector-result)
 "#;
-    assert_oracle_file_contract_matches_interpreter(program, "gc-vector-result", "(1 t 0)");
+    let after_load = r#"(progn
+      (garbage-collect)
+      (setq gc-vector-result
+            (append gc-vector-result (list (hash-table-count gc-vector-table))))
+      (prin1 gc-vector-result))"#;
+    assert_oracle_file_contract_with_observer(
+        program,
+        Some(after_load),
+        "gc-vector-result",
+        "(1 t 0)",
+    );
 }
 
 #[test]
 fn dead_thread_results_are_rooted_only_through_reachable_thread_objects() {
     // thread.c removes finished threads from all_threads, but an externally
     // reachable thread still owns its result. Test retention AND release.
-    // Keep the original file's top-level evaluation boundaries. Wrapping
-    // everything in one progn lets GNU's conservative C-stack scan retain
-    // the earlier thread-join result even after the Lisp reference is gone.
+    // Observe release after the setup file returns: GNU's conservative
+    // C-stack scan can retain the earlier thread-join result while the
+    // loader is active, including across top-level forms on Linux.
     let program = r#";;; -*- lexical-binding: t; -*-
         (defvar dead-thread-roots-table (make-hash-table :test 'eq :weakness 'key))
         (defvar dead-thread-roots-worker nil)
@@ -22449,17 +22458,33 @@ fn dead_thread_results_are_rooted_only_through_reachable_thread_objects() {
                    key))))
         (thread-join dead-thread-roots-worker)
         (garbage-collect)
-        (let ((reachable (hash-table-count dead-thread-roots-table)))
-          (setq dead-thread-roots-worker nil)
-          (garbage-collect)
-          (setq dead-thread-roots-result
-                (list reachable (hash-table-count dead-thread-roots-table))))
-        (prin1 dead-thread-roots-result)"#;
-    assert_oracle_file_contract_matches_interpreter(program, "dead-thread-roots-result", "(1 0)");
+        (setq dead-thread-roots-result (list (hash-table-count dead-thread-roots-table)))
+        (setq dead-thread-roots-worker nil)"#;
+    let after_load = r#"(progn
+      (garbage-collect)
+      (setq dead-thread-roots-result
+            (append dead-thread-roots-result
+                    (list (hash-table-count dead-thread-roots-table))))
+      (prin1 dead-thread-roots-result))"#;
+    assert_oracle_file_contract_with_observer(
+        program,
+        Some(after_load),
+        "dead-thread-roots-result",
+        "(1 0)",
+    );
 }
 
 fn assert_oracle_file_contract_matches_interpreter(
     program: &str,
+    result_variable: &str,
+    expected: &str,
+) {
+    assert_oracle_file_contract_with_observer(program, None, result_variable, expected);
+}
+
+fn assert_oracle_file_contract_with_observer(
+    program: &str,
+    after_load: Option<&str>,
     result_variable: &str,
     expected: &str,
 ) {
@@ -22476,11 +22501,12 @@ fn assert_oracle_file_contract_matches_interpreter(
         .write_all(program.as_bytes())
         .expect("write contract fixture");
     crate::test_support::mark_process_test();
-    let oracle = std::process::Command::new(upstream_emacs_repo().join("src/emacs"))
-        .args(["-Q", "--batch", "-l"])
-        .arg(&path)
-        .output()
-        .expect("run GNU file contract");
+    let mut command = std::process::Command::new(upstream_emacs_repo().join("src/emacs"));
+    command.args(["-Q", "--batch", "-l"]).arg(&path);
+    if let Some(observer) = after_load {
+        command.args(["--eval", observer]);
+    }
+    let oracle = command.output().expect("run GNU file contract");
     assert!(
         oracle.status.success(),
         "{}",
@@ -22500,6 +22526,16 @@ fn assert_oracle_file_contract_matches_interpreter(
         &mut Env::new(),
     )
     .expect("load identical contract fixture");
+    if let Some(observer) = after_load {
+        for form in Reader::new(observer)
+            .read_all()
+            .expect("read identical post-load observer")
+        {
+            interp
+                .eval(&form, &mut Env::new())
+                .expect("evaluate identical post-load observer");
+        }
+    }
     let result = interp
         .lookup_var(result_variable, &Env::new())
         .expect("fixture sets its result variable");
