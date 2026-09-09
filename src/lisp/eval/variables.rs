@@ -1096,6 +1096,9 @@ impl Interpreter {
     }
 
     pub fn remove_global_binding(&mut self, name: &str) {
+        for terminal in &mut self.terminals {
+            terminal.keyboard.remove(name);
+        }
         if self.globals.remove_by_name(name).is_some() {}
     }
 
@@ -1106,10 +1109,16 @@ impl Interpreter {
         symbol: &SymbolName,
         stamp: u64,
     ) -> Option<usize> {
+        if self.terminal_keyboard_value(symbol.as_str()).is_some() {
+            return None;
+        }
         self.globals.native_word(symbol, stamp)
     }
 
     pub(crate) fn cache_native_symbol_word(&self, symbol: &SymbolName, stamp: u64, word: usize) {
+        if self.terminal_keyboard_value(symbol.as_str()).is_some() {
+            return;
+        }
         self.globals.set_native_word(symbol, stamp, word);
     }
 
@@ -1255,11 +1264,13 @@ impl Interpreter {
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
-        self.globals.value_by_name(name).cloned()
+        self.terminal_keyboard_value(name)
+            .or_else(|| self.globals.value_by_name(name).cloned())
     }
 
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
-        self.globals.value(name).cloned()
+        self.terminal_keyboard_value(name.as_str())
+            .or_else(|| self.globals.value(name).cloned())
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
@@ -1267,6 +1278,9 @@ impl Interpreter {
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
         let value = Self::stored_value(self.normalize_forwarded_eval_cell(&name, value));
+        if self.set_terminal_keyboard_value(&name, &value) {
+            return;
+        }
         if name == "features" {
             self.provided_features = value
                 .to_vec()
@@ -1586,6 +1600,7 @@ impl Interpreter {
                 name,
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
                 binding_buffer_id: None,
+                keyboard_terminal_id: None,
                 previous: Some(previous),
                 previous_undo_state: Some(previous_undo_state),
                 local_binding_killed: false,
@@ -1604,6 +1619,7 @@ impl Interpreter {
                 name,
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
                 binding_buffer_id: None,
+                keyboard_terminal_id: None,
                 previous,
                 previous_undo_state: None,
                 local_binding_killed: false,
@@ -1619,6 +1635,7 @@ impl Interpreter {
             self.set_global_binding(&name, value);
             SpecialBindingRestore {
                 binding_id,
+                keyboard_terminal_id: self.keyboard_binding_terminal(&name),
                 name,
                 scope: SpecialBindingScope::Global,
                 binding_buffer_id,
@@ -1695,6 +1712,16 @@ impl Interpreter {
         for index in indices {
             let record = &mut records[index];
             if record.local_binding_killed {
+                continue;
+            }
+            if let Some(terminal) = record.keyboard_terminal_id {
+                let current = self.keyboard_binding_value_on(terminal, &record.name);
+                self.set_keyboard_binding_on(
+                    terminal,
+                    &record.name,
+                    record.previous.take().unwrap_or(Value::Unbound),
+                );
+                record.previous = current;
                 continue;
             }
             match record.scope {
@@ -1790,7 +1817,13 @@ impl Interpreter {
                     None,
                     env,
                 )?;
-                if let Some(value) = restore.previous {
+                if let Some(terminal) = restore.keyboard_terminal_id {
+                    self.set_keyboard_binding_on(
+                        terminal,
+                        &restore.name,
+                        restore.previous.unwrap_or(Value::Unbound),
+                    );
+                } else if let Some(value) = restore.previous {
                     self.set_global_binding(&restore.name, value);
                 } else {
                     self.remove_global_binding(&restore.name);

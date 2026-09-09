@@ -585,10 +585,14 @@ define_dispatch!(
                     // The STRING form is non-destructive and GNU returns
                     // before changing search_regs.  Later replacements must
                     // continue to see the original match and subexpressions.
+                    // search.c returns concat3 (before, newtext, after): the
+                    // result is multibyte when STRING or NEWTEXT is.
+                    let newtext_multibyte =
+                        string_like(&args[0]).is_some_and(|newtext| newtext.multibyte);
                     return Ok(make_shared_string_value_with_multibyte(
                         updated,
                         Vec::new(),
-                        source.multibyte,
+                        source.multibyte || newtext_multibyte,
                     ));
                 }
                 let matched = interp

@@ -2091,7 +2091,8 @@ pub(crate) fn interactive_minibuffer_command_loop(
             let event = crate::lisp::primitives::pop_unread_command_event_value(interp, env)?;
             hold_echo = false;
             pending.push(event);
-            match crate::lisp::primitives::resolve_key_sequence(interp, env, &pending) {
+            match crate::lisp::primitives::resolve_decoded_key_sequence(interp, env, &mut pending)?
+            {
                 crate::lisp::primitives::KeyResolution::Command(binding) => {
                     let keys = std::mem::take(&mut pending);
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);

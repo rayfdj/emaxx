@@ -30,7 +30,18 @@ recorded. Checkpoint 8 closed R03's storage clause: a cons generated code
 allocates is the evaluator's own `ConsCell`, owned by the native heap until
 unreachable, and the block arena is gone; the typed-field reconciliation
 inside that one cell stays open as R03b (bridge cost, not a second
-authority). The writer (D07 onward) starts next. The Linux records are in
+authority). Checkpoint 9 started the writer: D07's entry prelude runs in
+pdumper.c's order up to the file open. Checkpoint 10 is the writer core
+(`src/lisp/primitives/pdumper/`): the header, the queue with GNU's link
+weights, fixups, the hot/discardable/cold sections, the relocation and
+object-start tables, and the pdumper_load validation plus object
+reconstruction used by the round-trip controls. A real
+`dump-emacs-portable` now opens the file and stops at the first uncovered
+object (a record) with pdumper.c's "unsupported object type in dump" error; the startup
+reconstruction hands off before the open. Next: D09 (closures, lexical
+environments, char-tables, records, bool-vectors), D10 (hash tables), D11
+(buffers, markers, overlays, finalizers, the remaining root groups), then
+the loader D12/D13. The Linux records are in
 `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

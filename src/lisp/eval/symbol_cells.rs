@@ -58,6 +58,14 @@ struct SymbolCell {
     native: Cell<(u64, usize)>,
 }
 
+/// A cell's value, alias target and flags, copied out for the image writer.
+#[derive(Clone, Debug)]
+pub(crate) struct SymbolCellSnapshot {
+    pub(crate) value: Option<Value>,
+    pub(crate) alias: Option<SymbolName>,
+    pub(crate) flags: u8,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SymbolCells {
     /// Interned symbols, indexed by id.
@@ -276,6 +284,23 @@ impl SymbolCells {
     }
 
     // --- flags -------------------------------------------------------------
+
+    /// The cell as the image writer records it (pdumper.c:dump_symbol
+    /// reads the Lisp_Symbol fields).
+    pub(crate) fn snapshot(&self, symbol: &SymbolName) -> SymbolCellSnapshot {
+        match self.cell(symbol.id()) {
+            Some(cell) => SymbolCellSnapshot {
+                value: cell.value.clone(),
+                alias: cell.alias.clone(),
+                flags: cell.flags,
+            },
+            None => SymbolCellSnapshot {
+                value: None,
+                alias: None,
+                flags: 0,
+            },
+        }
+    }
 
     pub(crate) fn has_flag(&self, symbol: &SymbolName, flag: u8) -> bool {
         self.cell(symbol.id())

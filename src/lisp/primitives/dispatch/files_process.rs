@@ -1926,7 +1926,7 @@ define_dispatch!(
             }
             "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
             "get-buffer-process" => {
-                need_arg_range(name, args, 0, 1)?;
+                need_arg_range(name, args, 1, 1)?;
                 let buffer_id = match args.first() {
                     None | Some(Value::Nil) => Some(interp.current_buffer_id()),
                     Some(buffer) if string_like(buffer).is_some() => string_like(buffer)
