@@ -82,6 +82,9 @@ def main():
                "TMPDIR": str(work / "tmp"), "GNUPGHOME": str(keys),
                "LANG": "C", "LC_ALL": "C", "OPENPGP_OUTPUT": str(work)}
         agent = [programs["gpgconf"], "--homedir", str(keys)]
+        socket_path = subprocess.check_output(
+            agent + ["--list-dirs", "agent-socket"], env=env, timeout=30
+        ).decode().strip()
         driver = work / "capture.el"
         driver.write_text('''(require 'json)
 (let ((directory (getenv "OPENPGP_OUTPUT")) results)
@@ -110,7 +113,8 @@ def main():
             report = work / "results.json"
             outcomes = json.loads(report.read_text()) if report.exists() else None
             results[editor] = {"exit_code": code, "binary_sha256": digest(binary),
-                               "outcomes": outcomes}
+                               "outcomes": outcomes, "agent_socket": socket_path,
+                               "agent_socket_bytes": len(os.fsencode(socket_path))}
             print(editor, json.dumps(results[editor]), flush=True)
         finally:
             # The home is a newly created copy of public fixture keys. Never

@@ -12198,6 +12198,39 @@ fn undecided_decode_detects_shift_jis_like_coding_c() {
 }
 
 #[test]
+fn buffer_multibyte_non_t_flags_preserve_ascii_and_convert_eight_bit_bytes() {
+    // buffer.c:Fset_buffer_multibyte checks ASCII_CHAR_P before inspecting
+    // FLAG. Non-t flags convert eight-bit bytes individually, while t can
+    // recognize an existing multi-byte sequence. Exercise every byte.
+    let program = r#"(list
+      (mapcar
+       (lambda (flag)
+         (with-temp-buffer
+           (set-buffer-multibyte nil)
+           (insert (apply #'unibyte-string (number-sequence 0 255)))
+           (set-buffer-multibyte flag)
+           (equal (append (buffer-string) nil)
+                  (mapcar (lambda (byte)
+                            (if (< byte 128) byte (+ #x3fff00 byte)))
+                          (number-sequence 0 255)))))
+       '(t to another-non-nil-flag))
+      (mapcar
+       (lambda (flag)
+         (with-temp-buffer
+           (set-buffer-multibyte nil)
+           (insert (unibyte-string 65 195 169 66))
+           (set-buffer-multibyte flag)
+           (append (buffer-string) nil)))
+       '(t to another-non-nil-flag)))"#;
+    let expected = "((t t t) ((65 233 66) (65 4194243 4194217 66) (65 4194243 4194217 66)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let result = crate::test_support::eval_lisp(&mut interp, &mut Env::new(), program)
+        .expect("convert all byte values with GNU multibyte flags");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn string_byte_conversions_use_the_internal_encoding() {
     // character.c: `string-as-unibyte' exposes the INTERNAL (UTF-8)
     // bytes and `string-as-multibyte' reads them back (what stood here

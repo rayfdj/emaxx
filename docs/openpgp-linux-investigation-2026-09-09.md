@@ -38,3 +38,30 @@ capture driver against real GNU (it records four skips as skips), and the
 six acceptance checks. An initial Python bytecode check hit macOS's protected
 cache path; the syntax check was repeated with an explicit temporary output
 path. Linux execution and actual decryption results follow separately.
+
+## First Linux evidence and correction
+
+Run 34332448535 at `25a01b7` completed. With short fixture paths GNU passed
+all four original tests. Emaxx failed all four, despite real GPG decryption
+reporting `DECRYPTION_OKAY` and `GOODMDC`. Its plaintext contained raw-byte
+characters in place of ASCII (84 became 4194132). Thus the historical shared
+failure had hidden a real runtime discrepancy; the earlier environment-only
+explanation was incomplete.
+
+The reduced GNU probe and source identify `set-buffer-multibyte` with a
+non-t true flag: GNU's `ASCII_CHAR_P` branch precedes the flag check, whereas
+Emaxx converted every byte to a raw-byte character. The correction preserves
+ASCII before deciding whether to recognize a multi-byte sequence. The new
+contract covers all 256 bytes for t, to, and another non-nil flag, and checks
+that t decodes a valid UTF-8 pair while the other flags retain its bytes.
+No test name, GPG message, ciphertext or MIME-specific behavior appears in
+the runtime correction. The unchanged original tests remain the end-to-end
+gate. Broader byte-conversion controls, root audits and strict Clippy run on
+Linux with the correction.
+
+A separate unproven fixture hypothesis also remains: the old harness's
+GnuPG socket path can reach 109 bytes (117 for the browser socket). A second
+run with the historical long directory layout records actual agent socket
+paths and outcomes. It is an observation, separate from the short-path gate
+which requires all four tests passing in both editors. No harness path
+change has been made without that evidence.
