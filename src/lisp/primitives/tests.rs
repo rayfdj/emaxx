@@ -22045,7 +22045,7 @@ impl FrameTestPty {
                     &mut slave,
                     name.as_mut_ptr(),
                     std::ptr::null_mut(),
-                    &mut size
+                    &raw mut size
                 ),
                 0
             );

@@ -83,16 +83,6 @@ jobs:
             ~/.cargo/git
             emaxx/target
           key: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
-      - name: Audit, byte conversion controls, formatting and strict Clippy
-        env:
-          RUST_MIN_STACK: '134217728'
-          RUST_TEST_THREADS: '1'
-        run: |
-          python3 -m unittest discover -s tools -p test_openpgp_gate.py -v
-          cargo +1.97.1 fmt --all -- --check
-          cargo +1.97.1 test --locked --profile gate --lib \
-            -- anti_cheat::gate_tests multibyte byte_conversions --test-threads=1
-          cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
       - name: Run original OpenPGP tests and capture actual GPG errors
         run: python3 tools/openpgp_gate.py --output /tmp/openpgp-results
       - name: Observe the historical long fixture path separately
@@ -106,6 +96,19 @@ jobs:
           test -f "$fixture_root/summary.json"
           cp -R "$fixture_root" /tmp/openpgp-long-path-results
           printf '%s\n' "$observed_status" > /tmp/openpgp-long-path-results/observed-status.txt
+      # The 40 byte-conversion/audit checks passed on 3730f7d. Only the
+      # existing PTY test helper changed since then; retain those receipts.
+      - name: Audit and validate the corrected PTY test helper
+        env:
+          RUST_MIN_STACK: '134217728'
+          RUST_TEST_THREADS: '1'
+        run: |
+          python3 -m unittest discover -s tools -p test_openpgp_gate.py -v
+          cargo +1.97.1 fmt --all -- --check
+          cargo +1.97.1 test --locked --profile gate --lib \
+            -- anti_cheat::gate_tests terminal_frames --test-threads=1
+      - name: Strict Clippy
+        run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

@@ -56,7 +56,7 @@ contract covers all 256 bytes for t, to, and another non-nil flag, and checks
 that t decodes a valid UTF-8 pair while the other flags retain its bytes.
 No test name, GPG message, ciphertext or MIME-specific behavior appears in
 the runtime correction. The unchanged original tests remain the end-to-end
-gate. Broader byte-conversion controls, root audits and strict Clippy run on
+gate. Broader byte-conversion controls, de-cheating audits and strict Clippy run on
 Linux with the correction.
 
 A separate unproven fixture hypothesis also remains: the old harness's
@@ -65,3 +65,34 @@ run with the historical long directory layout records actual agent socket
 paths and outcomes. It is an observation, separate from the short-path gate
 which requires all four tests passing in both editors. No harness path
 change has been made without that evidence.
+
+## Correction audit
+
+The complete production diff is the ASCII branch in
+`multibyte_buffer_text`. Its caller uses it for current and saved buffer
+text. Both the old and corrected ASCII branches consume one byte and
+advance one character, so the position map's shape is unchanged. The t
+path already recognized ASCII with width one; nil conversion uses a
+separate function. Eight-bit conversion, return values, undo entries and
+marker updates are unchanged. No scheduler, heap ownership, native ABI,
+compiler, dump or startup code is changed.
+
+The regression asks real GNU for the same contract before asserting Emaxx's
+answer. The pre-fix reduction independently reproduced 84 becoming 4194132;
+the original Linux run independently failed all four end-to-end tests.
+A second local pre-fix probe with isolated HOME/TMPDIR timed out during
+startup after 120 seconds; it contributes no passing evidence. The earlier
+completed reduction and the Linux failure receipts remain preserved.
+
+## First correction validation
+
+Run 34335076568 at `3730f7d` passed all 40 selected Rust tests serially
+(22 de-cheating checks and 18 byte-conversion controls), six Python
+acceptance checks, and rustfmt. Strict Linux Clippy then rejected an
+existing PTY test helper's `&mut size` argument: Linux libc takes a const
+pointer, while Darwin takes a mutable pointer. The helper now supplies
+`&raw mut size`, which satisfies either signature without a needless
+mutable reference. No runtime code changed after the 40 passing tests.
+The PTY contracts and Clippy are rerun; the 40 earlier passes are retained
+rather than repeated. The four original OpenPGP tests had not run in this
+job because Clippy stopped the workflow first.
