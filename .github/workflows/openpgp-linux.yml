@@ -5,7 +5,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 jobs:
   compare:
     runs-on: ubuntu-24.04
@@ -17,8 +16,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           path: emaxx
-          ref: a612e355e9d6bb3b44d868856bc9e8ad30040976
-          fetch-depth: 3
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -44,29 +41,39 @@ jobs:
         id: oracle-cache
         with:
           path: emacs
-          key: openpgp-oracle-ubuntu24-636f166c-v1
+          key: native-abi-oracle-ubuntu24-636f166c-${{ hashFiles('emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs') }}
       - name: Build GNU Emacs 30.2 with the Linux capability set
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         working-directory: emacs
         run: |
           ./autogen.sh
-          ./configure --with-native-compilation --with-x --with-x-toolkit=no \
-            --with-tree-sitter --with-gnutls --with-xml2 --with-sqlite3 --with-modules \
-            --with-rsvg --with-webp --with-lcms2 --with-cairo --with-harfbuzz \
-            --with-xpm --with-jpeg --with-tiff --with-gif --with-png \
-            --without-imagemagick --without-dbus --without-libotf --without-m17n-flt
+          # comp.c hashes the literal configure arguments into the .eln ABI.
+          # Use the generated reference target, including its exact option order.
+          python3 - <<'PYTHON'
+          import json, re, shlex, subprocess
+          from pathlib import Path
+          manifest = Path('../emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs').read_text()
+          match = re.search(r'NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS: &str = ("[^"\n]*");', manifest)
+          assert match, 'missing native ABI configure options'
+          subprocess.run(['./configure', *shlex.split(json.loads(match[1]))], check=True)
+          PYTHON
           make -j2
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         with:
           path: emacs
-          key: openpgp-oracle-ubuntu24-636f166c-v1
+          key: native-abi-oracle-ubuntu24-636f166c-${{ hashFiles('emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs') }}
       - name: Record actual oracle identity (not a frozen-corpus repin)
         run: |
           ../emacs/src/emacs -Q --batch --eval \
             '(prin1 (list emacs-version emacs-repository-version system-type system-configuration-options system-configuration-features))' \
             > /tmp/openpgp-metadata/oracle.txt
           sha256sum ../emacs/src/emacs > /tmp/openpgp-metadata/oracle-sha256.txt
+      - name: Verify the complete generated native ABI against the actual oracle
+        run: |
+          rustc +1.97.1 --edition 2024 -O tools/generate_native_subrs.rs -o /tmp/generate-native-subrs
+          /tmp/generate-native-subrs ../emacs/src ../emacs/src/emacs /tmp/openpgp-metadata/native-subrs.rs
+          cmp src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs /tmp/openpgp-metadata/native-subrs.rs
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: rust-cache
         with:
@@ -86,74 +93,48 @@ jobs:
             ~/.cargo/git
             emaxx/target
           key: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
-      - name: Record compiler versions and source identity
+      - name: Run original OpenPGP tests and capture actual GPG errors
+        run: python3 tools/openpgp_gate.py --output /tmp/openpgp-results
+      - name: Observe the historical long fixture path separately
         run: |
-          rustc -Vv > /tmp/openpgp-metadata/default-rustc.txt
-          cargo -V > /tmp/openpgp-metadata/default-cargo.txt
-          rustc +1.97.1 -Vv > /tmp/openpgp-metadata/focused-rustc.txt
-          git rev-parse HEAD > /tmp/openpgp-metadata/candidate-head.txt
-      - name: Reproduce native identity with public-fixture binary diagnostics
-        env:
-          LANG: C
-          LC_ALL: C
-          RUST_MIN_STACK: '134217728'
-          RUST_TEST_THREADS: '1'
-        run: |
-          mkdir -p /tmp/integration-completion
+          fixture_root=/tmp/emaxx-compat-checkout-oracle-9999-1788753809317920348/emacs/test/lisp
           set +e
-          cargo +1.97.1 test --locked --profile gate --test native_comp_identity > /tmp/integration-completion/native-identity.log 2>&1
-          identity_status=$?
+          python3 tools/openpgp_gate.py --output "$fixture_root"
+          observed_status=$?
           set -e
-          printf '%s\n' "$identity_status" > /tmp/integration-completion/native-identity-exit.txt
-          python3 - <<'PYTHON'
-          import os, subprocess, shutil, json, hashlib
-          from pathlib import Path
-          root=Path('/tmp/integration-completion')
-          for work in Path('/tmp').glob('native-comp-identity-*'):
-              case=work/'case-0'
-              source=work/'test/src/comp-resources/comp-test-45603.el'
-              for name,binary in [('gnu-repeat','../emacs/src/emacs'),('emaxx-repeat','target/gate/emaxx')]:
-                  home=case/(name+'-home');temporary=case/(name+'-tmp');home.mkdir();temporary.mkdir()
-                  env={'PATH':os.environ['PATH'],'HOME':str(home),'TMPDIR':str(temporary),'LANG':'C','LC_ALL':'C'}
-                  with (root/(name+'.log')).open('w') as out:
-                      r=subprocess.run([binary,'-Q','--batch','-f','batch-native-compile',str(source)],env=env,stdout=out,stderr=subprocess.STDOUT,timeout=300)
-                  print(name,'exit',r.returncode)
-              artifacts=sorted(case.glob('**/comp-test-45603-*.eln'))
-              manifest=[]
-              for i,p in enumerate(artifacts):
-                  prefix=root/('elf-'+str(i))
-                  shutil.copyfile(p,str(prefix)+'.eln')
-                  for tool,args in [('readelf',['-aW']),('objdump',['-drwC']),('strings',['-a'])]:
-                      with Path(str(prefix)+'.'+tool+'.txt').open('w') as out:
-                          subprocess.run([tool,*args,str(p)],stdout=out,stderr=subprocess.STDOUT,check=True)
-                  manifest.append({'source':str(p),'copy':prefix.name+'.eln','sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size})
-              (root/'elf-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
-              shutil.copyfile(source,root/source.name)
-          PYTHON
-      - name: Upload public fixture diagnostics before longer integration tests
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: native-merge-elf-diagnostics
-          path: /tmp/integration-completion
-          if-no-files-found: error
-          retention-days: 7
-      - name: Run the two integration targets still pending
+          test "$observed_status" -le 1
+          test -f "$fixture_root/summary.json"
+          cp -R "$fixture_root" /tmp/openpgp-long-path-results
+          printf '%s\n' "$observed_status" > /tmp/openpgp-long-path-results/observed-status.txt
+      - name: Audit, byte conversion, dump, compiler and PTY controls
         env:
-          LANG: C
-          LC_ALL: C
           RUST_MIN_STACK: '134217728'
           RUST_TEST_THREADS: '1'
         run: |
-          set -o pipefail
-          cargo +1.97.1 test --locked --profile gate --no-fail-fast --test native_thread_continuations --test package_lifecycle 2>&1 | tee /tmp/integration-completion/remaining-integration.log
+          python3 -m unittest discover -s tools -p test_openpgp_gate.py -v
+          cargo +1.97.1 fmt --all -- --check
+          cargo +1.97.1 test --locked --profile gate --lib \
+            -- anti_cheat::gate_tests multibyte byte_conversions terminal_frames \
+            pdumper dump_roots dump_emacs_portable loads_libgccjit_and_executes_a_smoke_test_function \
+            cl_old_struct_compat_mode_types_tagged_vectors \
+            cl_struct_define_legacy_type_enables_old_struct_mode \
+            upstream_semantic_format_loads_with_complete_eieio_slots --test-threads=1
+      - name: Complete serial Rust gate for native-comp integration
+        if: startsWith(github.ref, 'refs/heads/integrate/native-comp-')
+        run: |
+          python3 -m unittest discover -s tools -p test_grouped_gate.py -v
+          python3 tools/serial_grouped_gate.py --scope full --timeout-seconds 3600 \
+            --artifact-root /tmp/native-merge-rust-gate
       - name: Strict Clippy
         run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: native-merge-native-diagnostics
+          name: openpgp-linux-${{ github.sha }}
           path: |
-            /tmp/integration-completion
             /tmp/openpgp-metadata
+            /tmp/openpgp-results
+            /tmp/openpgp-long-path-results
+            /tmp/native-merge-rust-gate
           if-no-files-found: error
           retention-days: 7
