@@ -230,9 +230,10 @@ The initial full-gate candidate was
 `24f60ad`; its differences are the explicit native-image test boundary,
 serial gate scheduling, workflow and documentation. The subsequent
 `8bf354b` adds only the three isolated fixture corrections, the workflow's
-time allowance and documentation. The final merge commit
-will retain the actual main/native-comp parents, rather than adopting the
-diagnostic branch's intermediate commit topology.
+time allowance and documentation. The integration branch retains both main/native-comp ancestors. The user
+subsequently opened PR #59 for this branch; publication will use that PR
+with its standard workflow restored, preserving the native-comp ancestry.
+The diagnostic checkpoints remain visible in the PR history.
 
 ## Completed library gate and CLI integration follow-up
 
