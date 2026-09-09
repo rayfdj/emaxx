@@ -7503,6 +7503,290 @@ run-1788863908506282633-10836, GROUPED GATE PASSED (2617 tests, every
 group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
 tree as committed.
 
+## 2026-09-08 D09: closures, environments, char-tables, records and bool-vectors in the image
+
+*What the writer covers now.*  Interpreted closures are written as
+their GNU closure slots (parameters, body, environment, documentation,
+interactive) plus the Emaxx fields that hold the exact Lisp objects
+(`public_parameters', `public_environment'); the parameter vector, the
+body vector and the captured environment are shared Rust objects, so
+they are written once each through raw-pointer fixups -- as GNU writes
+interval trees, blvs and fwds -- and a lexical frame carries its
+bindings, identity, function-namespace flag, locally-special
+declarations and the authoritative Lisp alist.  Char-tables are
+written as Emaxx keeps them (subtype, default, parent, extra slots,
+the range log, category docstrings), not as GNU's sub-char-table tree;
+the observable table is the same and the row says so.  Records and
+pseudovectors whose state is their slots (records, byte-code closures,
+fonts, symbols with position, keymap facades) are written with their
+ids, because the id is the identity every `Value::Record' carries and
+the loader installs them under the same ids.  Bool-vectors go to the
+cold section as bits.  Obarrays are records: the initial one with its
+symbol list, a private one with its slot.  The main thread is an
+object of the running process (GNU's DUMP_OBJECT_IS_RUNTIME_MAGIC).
+Windows and processes are nilled as `dump_nilled_pseudovec' does.
+The cells of `nil' and `t' -- self-representing words until now, so
+their function cell and plist were lost -- are scanned with the roots
+and written after the queue drains, where GNU writes the copied
+symbols' hot parts.
+
+*The loader.*  Records and char-tables are installed with the image's
+ids (`install_record', `install_char_table' replace an existing id:
+the image is the authority).  A closure is materialized on demand
+when a field names it, with its environment created as an empty shell
+first so a closure reachable through its own frame terminates, the
+way the test template's graph copier already handles the same cycle;
+a closure that names itself through its body or parameters is an
+error.  `nil' and `t' arriving as immediate words are accepted
+wherever a symbol is expected (obarray entries, parameters, property
+names); the previous loader would have refused them.
+
+*Control.*  Two closures over one `let' binding, a char-table with
+ranges, a subtype, a default and an extra slot, a bool-vector with
+three bits set, a record whose slot shares the closure list, and the
+main thread go through an image into a second interpreter: the two
+closures share one environment object there, calling the first
+returns 1, the second adds 5 and the first then returns 6; the
+char-table's fields, the bits, the record's slots and the shared
+identity are as written; the main thread is the second interpreter's
+own.  The referrer paths (TRACK-REFERRERS) named the object that
+stopped the first attempt -- the standard obarray reaches every
+symbol's value, and `comp-subr-arities-h' is a hash table -- so the
+control does not include the obarray until D10.  print_paths_to_root
+recurses without a guard in GNU; a referrer cycle made the printer
+loop here, and each object's paths are now printed once.
+
+*Still refused, with pdumper.c's error.*  Hash tables (D10); buffers,
+markers, overlays, finalizers, frames, terminals (D11); native
+compilation units and native functions (D14/D15); and what GNU
+refuses too: threads other than the main one, window configurations,
+mutexes, condition variables, tree-sitter objects, sqlite handles.
+Reader forms are refused as well; none has been seen reachable from a
+root after loading.  Not recorded: the interned-in-another-obarray
+state (D09 row).
+
+*Checkpoint 11 gate.*  Alone on the machine: grouped gate
+run-1788876131748816838-30654, GROUPED GATE PASSED (2618 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.  Main was fetched after the gate and still carries
+only merge commits of this branch (its tree is checkpoint 8's), so the
+merge asked for waits for the next checkpoint.
+
+## 2026-09-08 D10: hash tables frozen and thawed as fns.c and pdumper.c do
+
+*The writer.*  `dump_object' now defers a hash table exactly as
+`dump_hash_table' does under `defer_hash_tables': the first reference
+scans the table (its keys and values are enqueued, nothing is written)
+and puts it on the deferred list; the drain loop writes the deferred
+tables before each normal drain, so the tables sit together in the
+image.  A table's record is followed by what `hash_table_freeze'
+keeps: the count, the weakness, the standard test and the mutability,
+then the compact key/value contents in slot order.  The test is
+`hash_table_std_test''s: `eq', `eql' or `equal', and a user-defined
+test signals "cannot dump hash tables with user-defined tests" (GNU's
+message, Bug#36769) as a Lisp error, not as an unsupported object.
+`dump_hash_table_list' writes the vector of every table written at
+`header.hash_list'.
+
+*The loader.*  Each table on the hash list is thawed as
+`hash_table_thaw' does: the runtime index is rebuilt from the compact
+contents, the allocation is minimal (`count' entries, no room for
+growth), and a table dumped immutable comes back immutable.  A table
+missing from the list is an error.
+
+*Control.*  An `eq' table, an `equal' table with a key removed and
+another added, a key-weak table and an empty table go through an image
+into a second interpreter, where `gethash' finds the keys through the
+thawed index (and not the removed one), a value that was a shared
+object is the same object as the graph's, `hash-table-weakness' and
+`hash-table-test' answer as before, the thawed table accepts a
+`puthash', and the entry order is GNU's: `remhash' freed slot 0 and
+the next `puthash' reused it, so the compact contents walk that key
+first.  I had written the opposite order as the expectation; the code
+was right and the expectation was corrected.  The user-defined test
+refusal is its own control.
+
+*Not GNU, in the row.*  The contents follow the record inline rather
+than through a separate packed array, and the hash list names each
+table once where GNU's scan pass can list a table twice.  Weak tables
+are written with their current contents; nothing is swept at load
+until the restore (D13).
+
+*Where a real dump stops now.*  Past every hash table: the first
+refused object is an overlay (show-paren's context overlay), which is
+D11's, where GNU itself signals "dumping overlays is not yet
+implemented" for a buffer that has any.
+
+*Checkpoint 12 gate.*  Alone on the machine: grouped gate
+run-1788886573678285508-17120, GROUPED GATE PASSED (2620 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.  Main was fetched after the gate and still carries
+only merge commits of this branch (its tree is checkpoint 8's); the
+merge waits for the next checkpoint.
+
+## 2026-09-08 D11 (object kinds): buffers, markers, overlays, finalizers, frames and terminals in the image
+
+*The writer.*  `dump_object' dispatches the six remaining heap kinds
+that were refused.  `dump_buffer' writes a live buffer's own fields as
+pdumper.c copies the `struct buffer': name, file and truename, point,
+mark and its activation, the narrowing, the modification counters,
+the visited-file modtime, the multibyte flag and the hook inhibition;
+`last_name' is cleared as `dump_buffer' clears `last_name_'.  The text
+goes to the cold section as COLD_OP_BUFFER does, in GNU's internal
+representation with the out-of-Unicode side list and a terminating
+NUL (GNU also writes the zeroed gap; the rope has none), through a
+raw-pointer fixup to `own_text.beg'.  The property spans follow the
+record as the interval tree does; the markers pointing into the
+buffer are written as the `own_text.markers' chain with WEIGHT_NORMAL;
+the local bindings (`local_var_alist_', a void local as the unbound
+word) and the local hook lists, the syntax and case tables (the
+BVARs), the base buffer of an indirect buffer and the persistent mark
+marker are Lisp fields with WEIGHT_STRONG; the undo entries are
+written as Emaxx's typed entries (`undo_list_' is WEIGHT_STRONG in
+GNU).  A buffer with a live overlay signals GNU's "dumping overlays is
+not yet implemented" as a Lisp error; a killed buffer is written with
+no text and a nil name, as BUFFER_LIVE_P false dumps.  `dump_marker'
+writes the buffer with WEIGHT_NORMAL, the positions and the insertion
+type.  `dump_overlay' writes the buffer field, the bounds, the advance
+flags and the plist; only a deleted overlay can get through, because
+a live one's buffer is a field, is dumped, and refuses -- which is how
+GNU's writer behaves too.  `dump_finalizer' writes the function with
+WEIGHT_NONE ("so we can give it a low weight") and the `prev'/`next'
+neighbours with WEIGHT_NORMAL (a sentinel neighbour, an Emacs pointer
+in GNU, is nil here), and `dump_roots' ends with
+`dump_finalizer_list_head_ptr''s relocations for the list's last and
+first finalizer, none for an empty list.  Frames and terminals are
+nilled as `dump_nilled_pseudovec' writes them: the record is the id.
+
+*The loader.*  Buffers are installed with their ids from the record
+and the cold text; markers with the marker-buffer index and the mark
+relation; deleted overlays on the list of the buffer that held them;
+finalizers in chain order from the `finalizers.next' root (a
+finalizer off the chain follows in image order); a frame as a dead
+`FrameState'; a terminal as its object alone.
+
+*Control.*  A buffer with text (an out-of-Unicode character in it), a
+property span, a local variable, a local hook, its own syntax table,
+a mark, a narrowing, insertion/deletion/boundary undo entries and a
+modtime goes through an image into a second interpreter with every
+field checked, the undo list printing identically, the marker index
+the same size; a marker into it keeps its insertion type and a
+detached marker stays detached; two finalizers come back in list
+order with their functions; the frame is dead after the round trip
+and the terminal's object is the same; a deleted overlay keeps its
+properties and its holding buffer; a killed buffer is an object with
+no buffer behind it.  The refusal of a buffer with a live overlay is
+its own control.  Two expectations of mine were wrong and were
+corrected against the code: the deletion at 1 had moved the mark and
+the marker back one position, and `text_property_at' answers within
+the narrowing only, so the spans are compared directly.
+
+*Not GNU, in the row.*  The saved-text snapshot Emaxx compares for
+`buffer-modified-p' is written beside the text (GNU compares
+counters); the undo entries are typed entries rather than the
+`buffer-undo-list' conses, so a list tail Lisp retained is not the
+same object after a round trip; a marker's last position and
+mark-buffer relation and a deleted overlay's holding buffer are Emaxx
+fields written with the record; a killed buffer loads with an empty
+name behind the object; a terminal's nilled record leaves the running
+process's terminal state alone; the doomed-finalizer list, empty
+after `Fdump_emacs_portable''s collection loop, is an error on the
+explicit-root path rather than dumped, since Emaxx keeps only the
+doomed functions.  The remaining `Interpreter' root groups are open as
+D11b.
+
+*A real dump completes.*  With the object kinds covered,
+`dump-emacs-portable' in an initialized batch process no longer stops
+at an unsupported object: the release binary wrote a complete image of
+the loadup state (Dump complete; header=100 hot=5827884
+discardable=11648 cold=8131360; relocs hot=363152 discardable=1455;
+14029600 bytes), and the D07 boundary contract now asserts the
+completing path instead of the refusal: `nil' returned, the three
+variables and `command-line-processed' restored, the completed magic
+in the file, and pdumper_load's validation and reconstruction reading
+that whole image back into a second interpreter with an obarray of
+the same size as the writer's.  That is an image of every object the
+current roots reach; the root groups D11b tables are not in it yet,
+and no process starts from it until D12/D13.
+
+*Checkpoint 13 gate.*  Alone on the machine: grouped gate
+run-1788899931881043684-12635, GROUPED GATE PASSED (2556 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the
+tree as committed.  Main was fetched before the gate and still carries
+only merge commits of this branch (its tree is checkpoint 8's); the
+merge waits for the next checkpoint.
+
+## 2026-09-08 D11b: the remaining root groups, each against its GNU counterpart
+
+*The table.*  `dump_roots' in GNU visits every staticpro'd slot.  The
+mark phase's root list is Emaxx's inventory of the same thing, and
+`eval/dump_roots.rs' now answers for each entry: written as the Lisp
+value GNU keeps for the group, or not written with the C line that
+re-creates it after a load.  The anti-cheat gate
+`interpreter_roots_are_dumped_or_documented' scans the root-marking
+function and requires every `self.<field>' it reads to appear in
+`dump_root_values', in `dump_roots.rs', or in `ROOTS_RESET_AFTER_LOAD';
+a new root that is neither fails the gate.
+
+*Written.*  Under their own root slots, in GNU's shape (a vector per
+coding system or charset as the hash tables hold them, an alist for
+the buffers, vectors for the key buffers): `Vbuffer_alist', the three
+keyboard vectors, the C slots of forwarded variables, the charset
+tables (attributes, ordered list, `charset-list', ISO-2022 list,
+aliases, `iso_charset_table', non-preferred head, sjis/big5), the
+coding-system tables (attributes, aliases, priorities, category
+representatives and priorities), `Vccl_program_table', the standard
+syntax, category and case tables of `buffer_defaults' and the ASCII
+case tables, `Vfontset_table', the global face vectors, the font
+selection order and alternative alists, the fringe bitmaps,
+`composition_hash_table', the ert registry, `labeled_restrictions',
+`Vtimer_list', `last_thread_error', and the assigned captured lexical
+cells.  The loader reinstalls each from its value.
+
+*Not written, and why.*  Each with its GNU line: frames and the
+selected frame (`init_frame_once_for_pdumper' resets `Vframe_list' and
+`selected_frame'), the windows (`init_window_once_for_pdumper'), the
+terminal's parameters (the terminal is nilled; `init_tty' makes the
+initial one), the kboard's macro state and last event frame
+(`syms_of_keyboard_for_pdumper'; kboards are not in the image),
+`Vprocess_alist' (`init_process_emacs'), the inotify watch list, the
+specpdl, handlerlist and backtrace (`init_eval_once_for_pdumper'
+allocates a fresh specpdl; the dump runs inside its own specbind), the
+current buffer (`init_buffer' selects `*scratch*'), and Emaxx's
+quote-template cache.  Two transient Emaxx queues must be empty and
+the writer signals otherwise (`pending_thread_events', the deferred
+defsubst unbindings).  I first listed the captured lexical cell
+updates as transient; the real dump refused with one entry pending,
+and reading the field showed it is the storage of assigned captured
+variables (GNU's environment conses), so it is written as a group and
+the loader registers each restored closure's frames so assignments
+stay shared.
+
+*Control.*  A bare interpreter given a second buffer, keys, a
+detached forwarded variable, a charset alias, a timer, an ert test, a
+labeled restriction, a fringe bitmap and a composition is written from
+the interpreter's own roots (the obarray included) and read back;
+every group prints the same from the restored interpreter (the timer
+with its remaining seconds elapsed) and the buffer list keeps its
+order.  The pending-state refusal is its own control.  The real dump
+of the initialized batch state is compared the same way: all groups
+but the timer list print identically after the round trip.
+
+*Not GNU, in the row.*  A frame's own face vectors are dropped with
+the frame (GNU re-derives them at frame creation); `timer-list' is a
+native table in Emaxx while the variable reads nil (a pre-existing
+divergence of the timer implementation, not of the dump).  The native
+scalars beside these groups (counters, next ids, the DOC offsets) are
+GNU's remembered data, D13.
+
+*Checkpoint 14 gate.*  Alone on the machine: grouped gate
+run-1788910723379605551-10358, GROUPED GATE PASSED (2560 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.  Main was fetched during the gate and now carries content
+of its own (the terminal and runtime parity work merged over
+checkpoint 10); it is merged in the next commit, with the image code
+adapted to its terminal and frame state, and gated again.
+
 ## 2026-09-08 Terminal frames: finding 159
 
 The second-terminal/frame stub has been replaced by real device ownership
@@ -8048,6 +8332,77 @@ and expose the NS capability gap instead of claiming a restored dialog
 binding. There are no new skipped tests or patched GNU Lisp files. This
 checkpoint does not claim a fresh single-run Rust gate, a fresh 7,883-test
 corpus result, universal terminal/GUI parity, or complete image restoration.
+
+## 2026-09-09 Merge of main 85f0c28 into native-comp
+
+*What came in.*  Main merged checkpoint 10 of this branch and added the
+terminal and frame parity work: terminal states with their own
+codings, parameters and keyboards, per-frame windows and face hash
+tables, `pending_funcalls', the macOS forwarded-variable manifest,
+and the test fixtures running native compilation as GNU's batch
+child does (subr trampolines enabled).  The honesty audit's two
+appended runs are kept in order; nothing else conflicted textually.
+
+*Adapting the image code.*  A nilled frame loads with main's new
+`FrameState' fields; a face's per-frame vectors (`frames') go with the
+nilled frame; `ROOTS_RESET_AFTER_LOAD' lists `terminals' (nilled
+terminal pseudovectors, `init_tty') and `pending_funcalls'
+(`syms_of_keyboard_for_pdumper') in place of the fields main removed;
+the native-comp dump control and the D11 control use the current
+writer, loader and terminal table.  The root-inventory gate passed
+unchanged on the merged tree, as did every image control and the
+real dump with its load-back.
+
+*The merged gate's one failure, and what the oracle said.*  The first
+merged gate stopped in eval_04:
+`lexical_onload_closure_can_define_a_function_in_a_dynamic_obarray'
+signalled "Symbol's function definition is void: byte-code".  The
+test binds `obarray' to a private obarray and `cl-letf's `require';
+with main's fixture now leaving subr trampolines enabled, Emaxx's
+`fset' of the primitive `require' called `comp-subr-trampoline-install'
+(data.c:Ffset's hook), whose autoload loaded comp-run.el while the
+private obarray was current, so its `byte-code' form named a private
+symbol.  GNU does exactly the same: the oracle run of the program with
+trampolines at their batch default answers `(void-function
+byte-code)', and with `native-comp-enable-subr-trampolines' bound to
+nil answers `("erc-lo2-mode" t)', the value the test expects.  The
+test is about closures under a dynamic obarray, not trampolines, so it
+now binds the trampolines off around its program, the state the
+fixture had given it before.  Strict clippy on Linux also flagged
+main's openpty control passing the window size as mutable; it is
+passed by shared reference, as libc declares it.
+
+*The second merged gate's failure: libgccjit's environment.*  With the
+first test corrected, the gate stopped in eval_03:
+`upstream_semantic_format_loads_with_complete_eieio_slots' failed with
+"Wrong type argument: stringp, 1", and only when the whole group ran
+in one process (alone it passed; each half of the preceding tests with
+it passed; with the group's output uncaptured it passed).  Deleting
+the cached `type-of' trampoline and running the two
+cl-old-struct-compat-mode tests before it reproduced the failure every
+time, and logging every `call-process' showed why: `semantic-gcc-query''s
+gcc child exited 1 with "cannot execute 'cc1'", because its
+environment carried `GCC_EXEC_PREFIX=/usr/lib/gcc/x86_64-linux-gnu/14',
+libgccjit 14's prefix, while the system gcc is 13.  libgccjit's driver
+exports that variable into the process environment during the
+in-process trampoline compile the earlier tests trigger (main's
+fixture runs with subr trampolines enabled), and the later test's
+interpreter, made after it, read the process environment into its
+`process-environment'.  GNU's children never see it: callproc.c builds
+a child's environment from `process-environment', which
+`init_callproc' took from the startup environment once, and the
+oracle confirms gcc keeps working after a trampoline compile in the
+same process.  Emaxx captures the environment when it makes an
+interpreter (its test processes make many), so the compiler now
+leaves `GCC_EXEC_PREFIX' as it found it around every in-process
+compile; the three-test sequence passes with the trampoline compiled
+in the process.  The diagnostic logging was not kept.
+
+*Merge gate.*  Alone on the machine, on the merged tree with both
+corrections: grouped gate run-1788932651828361257-12926, GROUPED GATE
+PASSED (2579 tests, every group 0 failed), `cargo fmt --check' and strict clippy
+exit 0 on the tree as committed.
+
 
 ## 2026-09-09 OpenPGP investigation: platform qualification
 

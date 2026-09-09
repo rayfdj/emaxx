@@ -1594,6 +1594,17 @@ impl Interpreter {
         );
     }
 
+    /// fns.c:hash_table_thaw: the index is recomputed from the compact
+    /// contents and the allocation is minimal, with no room for growth.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn thaw_hash_table(&mut self, id: u64, test: &str, entries: Vec<(Value, Value)>) {
+        let count = entries.len();
+        self.replace_hash_table_runtime_entries(id, test, entries);
+        if let Some(state) = self.equal_hash_tables.get_mut(&id) {
+            state.capacity = count;
+        }
+    }
+
     pub(crate) fn gnu_hash_table_capacity(&self, id: u64) -> Option<usize> {
         let record = self
             .find_record(id)

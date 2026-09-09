@@ -5442,11 +5442,18 @@ fn standard_obarray_intern_soft_stays_indexed_at_scale() {
 
 #[test]
 fn lexical_onload_closure_can_define_a_function_in_a_dynamic_obarray() {
+    // With subr trampolines enabled (the batch default) GNU's Ffset of
+    // `require' autoloads comp-run.el while `obarray' is the private
+    // one, and GNU signals (void-function byte-code) -- probed against
+    // the oracle 2026-09-09.  The closures under a dynamic obarray are
+    // what this tests, so trampolines are bound off as the fixture had
+    // them before native compilation ran in tests.
     assert_eq!(
         eval_str_with_upstream_batch_feature(
             "cl-macs",
             r#"
-                (let* ((obarray (obarray-make))
+                (let* ((native-comp-enable-subr-trampolines nil)
+                       (obarray (obarray-make))
                        (on-load nil)
                        (mk-cmd
                         (lambda (module)

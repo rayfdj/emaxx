@@ -11,12 +11,14 @@ use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::strings::{make_shared_string_value_with_extended_chars, string_like};
 use crate::lisp::types::{SymbolName, Value};
 use std::collections::HashMap;
+use std::rc::Rc;
 
-fn dump(interp: &Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
-    let mut ctx = DumpContext::new(true);
+fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
+    let mut ctx = DumpContext::new(true, interp.main_thread_record_id());
     let summary = match write_image(&mut ctx, interp, RootSource::Explicit(roots)) {
         Ok(summary) => summary,
         Err(super::context::DumpError::Unsupported(unsupported)) => {
+            ctx.print_paths_to_root(interp, &mut Vec::new(), &unsupported.object);
             panic!("unsupported object: {}", unsupported.message)
         }
         Err(super::context::DumpError::Lisp(error)) => panic!("dump failed: {error:?}"),
@@ -101,6 +103,11 @@ fn graph_matches(
             Ok(())
         }
         (Value::BuiltinFunc(x), Value::BuiltinFunc(y)) if x.as_str() == y.as_str() => Ok(()),
+        // Identity-bearing kinds compared by the tests through the
+        // interpreters that own them.
+        (Value::Lambda(_), Value::Lambda(_))
+        | (Value::CharTable(_), Value::CharTable(_))
+        | (Value::Record(_), Value::Record(_)) => Ok(()),
         (Value::Cons(_), Value::Cons(_)) => {
             graph_matches(&a.car().expect("car"), &b.car().expect("car"), seen)?;
             graph_matches(&a.cdr().expect("cdr"), &b.cdr().expect("cdr"), seen)
@@ -122,7 +129,7 @@ fn graph_matches(
 
 #[test]
 fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
-    let interp = Interpreter::new();
+    let mut interp = Interpreter::new();
     // A shared sublist, a self-referential cons, a vector holding the
     // list twice, immutable and mutable strings (multibyte, unibyte with
     // raw bytes, text properties, an out-of-Unicode character), floats
@@ -222,9 +229,10 @@ fn image_round_trips_sharing_cycles_and_every_supported_object_kind() {
         (RootSlot::CurrentGlobalMap, Value::Unbound),
         (RootSlot::ThrowOnInput, Value::BuiltinFunc("cdr".into())),
     ];
-    let bytes = dump(&interp, roots);
+    let bytes = dump(&mut interp, roots);
 
-    let image = load_image(&bytes).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     assert_eq!(image.header.magic, DUMP_MAGIC);
     assert_eq!(image.header.cold_start % (64 * 1024), 0);
     assert!(image.header.discardable_start <= image.header.cold_start);
@@ -289,8 +297,9 @@ fn image_records_symbol_cells_from_the_interpreter() {
             Value::symbol("zz-dump-void"),
         ]),
     )];
-    let bytes = dump(&interp, roots);
-    let image = load_image(&bytes).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let bytes = dump(&mut interp, roots);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     let record = |name: &str| {
         image
             .symbols
@@ -337,8 +346,8 @@ fn image_records_symbol_cells_from_the_interpreter() {
 
 #[test]
 fn load_refuses_what_pdumper_load_refuses() {
-    let interp = Interpreter::new();
-    let bytes = dump(&interp, vec![(RootSlot::QuitFlag, Value::Nil)]);
+    let mut interp = Interpreter::new();
+    let bytes = dump(&mut interp, vec![(RootSlot::QuitFlag, Value::Nil)]);
     assert!(validate_header(&bytes).is_ok());
     // Too short to hold a header: PDUMPER_LOAD_BAD_FILE_TYPE.
     assert_eq!(
@@ -367,11 +376,12 @@ fn load_refuses_what_pdumper_load_refuses() {
 
 #[test]
 fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
-    let interp = Interpreter::new();
+    let mut interp = Interpreter::new();
     let inner = Value::list([Value::string("a"), Value::string("b")]);
     let outer = Value::vector([inner.clone(), inner.clone(), Value::string("c")]);
-    let bytes = dump(&interp, vec![(RootSlot::LoadPath, outer.clone())]);
-    let image = load_image(&bytes).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, outer.clone())]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     // Object starts are unique and ascending.
     let header = &image.header;
     let mut previous = 0;
@@ -405,4 +415,728 @@ fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
     );
     // The root vector is the first heap object after the header.
     assert_eq!(kinds[0], DumpType::Vector);
+}
+
+#[test]
+fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (progn
+          (put 'zz-purpose 'char-table-extra-slots 1)
+          (let ((shared (eval '(let ((x 1))
+                                 (list (function (lambda () x))
+                                       (function (lambda (y) (setq x (+ x y))))))
+                              t))
+                (table (make-char-table 'zz-purpose 'dflt))
+                (bits (make-bool-vector 70 nil)))
+            (set-char-table-range table '(?a . ?z) 'lower)
+            (set-char-table-range table ?A 'upper)
+            (set-char-table-extra-slot table 0 "extra")
+            (aset bits 0 t)
+            (aset bits 65 t)
+            (aset bits 69 t)
+            (vector shared table bits (record 'zz-rec 1 "two" shared)
+                    main-thread)))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph.clone())]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| value.clone())
+        .expect("root");
+    let mut seen = HashMap::new();
+    graph_matches(&graph, &loaded, &mut seen).unwrap_or_else(|error| panic!("{error}"));
+    let Value::Vector(vector) = &loaded else {
+        panic!("root vector")
+    };
+    let slots = vector.slots().clone();
+
+    // Two closures over one environment: the frame is shared, and calling
+    // them in the restored interpreter mutates the shared binding.
+    let closures = slots[0].to_vec().expect("closure list");
+    let (Value::Lambda(first), Value::Lambda(second)) = (&closures[0], &closures[1]) else {
+        panic!("closures")
+    };
+    assert!(
+        Rc::ptr_eq(&first.env, &second.env),
+        "one environment object"
+    );
+    assert_eq!(second.params.as_slice().len(), 1);
+    assert_eq!(second.params[0].as_str(), "y");
+    let call = |target: &mut Interpreter, function: &Value, args: &[Value]| {
+        target
+            .call_function_value(function.clone(), None, args, &mut Vec::new())
+            .expect("closure call")
+    };
+    assert_eq!(call(&mut target, &closures[0], &[]), Value::Integer(1));
+    assert_eq!(
+        call(&mut target, &closures[1], &[Value::Integer(5)]),
+        Value::Integer(6)
+    );
+    assert_eq!(call(&mut target, &closures[0], &[]), Value::Integer(6));
+
+    // The char-table with its ranges, subtype, default and extra slot.
+    let Value::CharTable(table_id) = slots[1] else {
+        panic!("char-table")
+    };
+    let table = target
+        .find_char_table(table_id)
+        .expect("installed char-table");
+    assert_eq!(table.subtype.as_deref(), Some("zz-purpose"));
+    assert_eq!(table.default, Value::symbol("dflt"));
+    assert_eq!(
+        table
+            .entries
+            .iter()
+            .map(|entry| (entry.start, entry.end, entry.value.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (97, 122, Value::symbol("lower")),
+            (65, 65, Value::symbol("upper"))
+        ]
+    );
+    assert_eq!(
+        table
+            .extra_slots
+            .iter()
+            .map(|slot| string_like(slot).map(|s| s.text))
+            .collect::<Vec<_>>(),
+        vec![Some("extra".to_owned())]
+    );
+
+    // The bool-vector's bits came through the cold section.
+    let Value::Record(bits_id) = slots[2] else {
+        panic!("bool-vector")
+    };
+    let bits = target.find_record(bits_id).expect("installed bool-vector");
+    assert_eq!(bits.kind, crate::lisp::eval::RecordKind::BoolVector);
+    assert_eq!(bits.slots.len(), 70);
+    let set = bits
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.is_truthy())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(set, vec![0, 65, 69]);
+
+    // The record's slots, with the shared list being the same object.
+    let Value::Record(record_id) = slots[3] else {
+        panic!("record")
+    };
+    let record = target.find_record(record_id).expect("installed record");
+    assert_eq!(record.type_tag, Value::symbol("zz-rec"));
+    assert_eq!(record.slots[0], Value::Integer(1));
+    assert_eq!(
+        string_like(&record.slots[1]).map(|s| s.text),
+        Some("two".to_owned())
+    );
+    assert_eq!(object_key(&record.slots[2]), object_key(&slots[0]));
+
+    // The main thread is the restoring process's own.  (The standard
+    // obarray reaches every symbol's value, hash tables included: it joins
+    // the controls with D10.)
+    assert_eq!(slots[4], Value::Record(target.main_thread_record_id()));
+    assert!(image.obarray.is_empty());
+    assert_eq!(image.builtin_cells.len(), 2);
+    assert_eq!(image.builtin_cells[0].symbol.as_str(), "nil");
+    assert_eq!(image.builtin_cells[1].symbol.as_str(), "t");
+}
+
+#[test]
+fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
+    fn call_in(target: &mut Interpreter, name: &str, args: &[Value]) -> Value {
+        crate::lisp::native_comp::call_c_primitive(target, &mut Vec::new(), name, args)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+    }
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (let ((eq-table (make-hash-table :test 'eq))
+              (equal-table (make-hash-table :test 'equal :size 100))
+              (weak (make-hash-table :weakness 'key))
+              (empty (make-hash-table))
+              (shared (list 1 2)))
+          (puthash 'a 1 eq-table)
+          (puthash 'b shared eq-table)
+          (puthash "k1" "v1" equal-table)
+          (puthash "k2" 2 equal-table)
+          (remhash "k1" equal-table)
+          (puthash "k3" 3 equal-table)
+          (puthash 'w 'x weak)
+          (vector eq-table equal-table weak empty shared))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph.clone())]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    assert_ne!(image.header.hash_list, 0, "the hash list is written");
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| value.clone())
+        .expect("root");
+    let Value::Vector(vector) = &loaded else {
+        panic!("root vector")
+    };
+    let slots = vector.slots().clone();
+    let eq_table = slots[0].clone();
+    let equal_table = slots[1].clone();
+    let weak = slots[2].clone();
+    let empty = slots[3].clone();
+    let shared = slots[4].clone();
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-count",
+            std::slice::from_ref(&eq_table)
+        ),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-test",
+            std::slice::from_ref(&eq_table)
+        ),
+        Value::symbol("eq")
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::symbol("a"), eq_table.clone()]
+        ),
+        Value::Integer(1)
+    );
+    // The value is the shared list object, not a copy.
+    assert_eq!(
+        object_key(&call_in(
+            &mut target,
+            "gethash",
+            &[Value::symbol("b"), eq_table.clone()]
+        )),
+        object_key(&shared)
+    );
+    // `equal' lookups work through the thawed index; the removed key is
+    // gone and the compacted order is the slot order.
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-test",
+            std::slice::from_ref(&equal_table)
+        ),
+        Value::symbol("equal")
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::string("k2"), equal_table.clone()]
+        ),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::string("k3"), equal_table.clone()]
+        ),
+        Value::Integer(3)
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "gethash",
+            &[Value::string("k1"), equal_table.clone()]
+        ),
+        Value::Nil
+    );
+    // Weakness and an empty table survive.
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-weakness",
+            std::slice::from_ref(&weak)
+        ),
+        Value::symbol("key")
+    );
+    assert_eq!(
+        call_in(&mut target, "gethash", &[Value::symbol("w"), weak.clone()]),
+        Value::symbol("x")
+    );
+    assert_eq!(
+        call_in(
+            &mut target,
+            "hash-table-count",
+            std::slice::from_ref(&empty)
+        ),
+        Value::Integer(0)
+    );
+    assert_eq!(
+        call_in(&mut target, "hash-table-test", std::slice::from_ref(&empty)),
+        Value::symbol("eql")
+    );
+    // The thawed table is mutable.
+    call_in(
+        &mut target,
+        "puthash",
+        &[Value::symbol("c"), Value::Integer(3), eq_table.clone()],
+    );
+    assert_eq!(
+        call_in(&mut target, "hash-table-count", &[eq_table]),
+        Value::Integer(3)
+    );
+    let Value::Record(equal_id) = equal_table else {
+        panic!("hash table")
+    };
+    let keys = target
+        .hash_table_runtime_entries(equal_id)
+        .expect("thawed runtime entries")
+        .iter()
+        .map(|(key, _)| string_like(key).map(|s| s.text).unwrap_or_default())
+        .collect::<Vec<_>>();
+    // fns.c reuses the slot `remhash' freed: k3 sits in k1's slot 0, so
+    // the compact contents (hash_table_contents) walk k3 before k2.
+    assert_eq!(keys, vec!["k3".to_owned(), "k2".to_owned()]);
+    // hash_table_thaw: the allocation is minimal, count entries.
+    assert_eq!(target.gnu_hash_table_capacity(equal_id), Some(2));
+}
+
+#[test]
+fn image_refuses_hash_tables_with_user_defined_tests_as_gnu_does() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (progn
+          (define-hash-table-test 'zz-test 'equal 'sxhash-equal)
+          (let ((table (make-hash-table :test 'zz-test)))
+            (puthash "k" 1 table)
+            table))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let table = interp.eval(&form, &mut env).expect("setup evaluates");
+    let mut ctx = DumpContext::new(false, interp.main_thread_record_id());
+    let result = write_image(
+        &mut ctx,
+        &interp,
+        RootSource::Explicit(vec![(RootSlot::LoadPath, table)]),
+    );
+    match result {
+        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+            assert_eq!(message, "cannot dump hash tables with user-defined tests");
+        }
+        Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            panic!("unsupported: {}", unsupported.message)
+        }
+        Ok(_) => panic!("a user-defined test was dumped"),
+    }
+}
+
+#[test]
+fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
+    fn printed(interp: &mut Interpreter, value: &Value) -> String {
+        let value = crate::lisp::native_comp::call_c_primitive(
+            interp,
+            &mut Vec::new(),
+            "prin1-to-string",
+            std::slice::from_ref(value),
+        )
+        .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
+        string_like(&value).expect("a string").text
+    }
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    // A buffer with text (an out-of-Unicode character in it), a text
+    // property, a local variable, its own syntax table, a mark, a
+    // narrowing, undo entries (an insertion, a deletion of propertized
+    // text, a boundary) and a modtime; a marker into it and a detached
+    // one; a deleted overlay; two finalizers; the frame and terminal.
+    let program = r#"
+        (let* ((buf (get-buffer-create "zz-dump-buf"))
+               (m1 (make-marker))
+               (m2 (make-marker))
+               (f1 (make-finalizer 'car))
+               (f2 (make-finalizer 'cdr))
+               ov)
+          (set-buffer buf)
+          (insert "héllo wörld")
+          (insert 2097152)
+          (put-text-property 1 3 'face 'bold)
+          (set (make-local-variable 'zz-dump-local) 42)
+          (set-syntax-table (make-char-table 'syntax-table))
+          (set-visited-file-modtime '(0 100))
+          (goto-char 4)
+          (set-marker (mark-marker) 2)
+          (set-marker m1 3 buf)
+          (set-marker-insertion-type m1 t)
+          (setq ov (make-overlay 1 2))
+          (overlay-put ov 'zz-prop 'yes)
+          (delete-overlay ov)
+          (delete-region 1 2)
+          (undo-boundary)
+          (narrow-to-region 2 6)
+          (vector buf m1 m2 f1 f2 (selected-frame) ov
+                  (let ((killed (get-buffer-create "zz-killed")))
+                    (kill-buffer killed)
+                    killed)))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let Value::Vector(source_vector) = &graph else {
+        panic!("root vector")
+    };
+    let source = source_vector.slots().clone();
+    let Value::Buffer(source_buffer) = &source[0] else {
+        panic!("buffer")
+    };
+    let source_id = source_buffer.id;
+    interp.set_buffer_local_hook(source_id, "zz-dump-hook", vec![Value::symbol("car")]);
+    let source_undo_value = interp
+        .get_buffer_by_id(source_id)
+        .expect("live")
+        .undo_list_value();
+    let source_undo = printed(&mut interp, &source_undo_value);
+    let source_syntax_table = interp
+        .buffer_syntax_table_id(source_id)
+        .expect("the buffer set a syntax table");
+    let source_finalizers = interp.finalizer_ids();
+    let terminal = Value::Terminal(interp.terminals.first().expect("initial terminal").id);
+    let roots = vec![
+        (RootSlot::LoadPath, graph.clone()),
+        (RootSlot::QuitFlag, terminal.clone()),
+    ];
+    let bytes = dump(&mut interp, roots);
+
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let root = |slot: RootSlot| {
+        image
+            .roots
+            .iter()
+            .find(|(candidate, _)| *candidate == slot)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("root {slot:?} missing"))
+    };
+    let Value::Vector(vector) = root(RootSlot::LoadPath) else {
+        panic!("root vector")
+    };
+    let slots = vector.slots().clone();
+
+    // The buffer: text, positions, narrowing, flags, property spans, the
+    // side list, the undo entries, the modtime, the local binding, the
+    // syntax table, the mark.
+    let Value::Buffer(loaded_buffer) = &slots[0] else {
+        panic!("buffer")
+    };
+    assert_eq!(loaded_buffer.id, source_id);
+    let buffer = target
+        .get_buffer_by_id(source_id)
+        .expect("the buffer was installed");
+    assert_eq!(buffer.name, "zz-dump-buf");
+    assert_eq!(
+        buffer.full_buffer_string(),
+        format!("éllo wörld{}", crate::lisp::json::INVALID_UNICODE_SENTINEL)
+    );
+    assert_eq!(buffer.extended_char_at(11), Some(0x20_0000));
+    assert_eq!(buffer.point(), 3);
+    assert_eq!(buffer.restriction(), (2, 6));
+    // The deletion at 1 moved the mark (set at 2) and m1 (set at 3) back.
+    assert_eq!(buffer.mark(), Some(1));
+    assert!(buffer.is_multibyte());
+    assert!(buffer.is_modified());
+    assert_eq!(
+        buffer.full_property_spans(),
+        vec![TextPropertySpan {
+            start: 1,
+            end: 2,
+            props: vec![("face".into(), Value::symbol("bold"))],
+        }]
+    );
+    assert_eq!(
+        buffer
+            .visited_file_modtime()
+            .map(|modtime| modtime.modified),
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100))
+    );
+    assert!(buffer.overlays.iter().all(|overlay| overlay.is_dead()));
+    let loaded_undo = buffer.undo_list_value();
+    assert_eq!(printed(&mut target, &loaded_undo), source_undo);
+    let locals = target.buffer_local_cells(source_id);
+    assert_eq!(
+        locals.len(),
+        3,
+        "default-directory, buffer-read-only, zz-dump-local: {locals:?}"
+    );
+    assert!(
+        locals
+            .iter()
+            .any(|(symbol, value)| symbol == "zz-dump-local" && *value == Value::Integer(42))
+    );
+    assert_eq!(
+        target.buffer_syntax_table_id(source_id),
+        Some(source_syntax_table)
+    );
+    assert!(target.find_char_table(source_syntax_table).is_some());
+    let mark_marker = target
+        .buffer_mark_marker_id(source_id)
+        .expect("the mark marker relation");
+    let mark = target.find_marker(mark_marker).expect("mark marker");
+    assert_eq!(mark.buffer_id, Some(source_id));
+    assert_eq!(mark.position, Some(1));
+    assert_eq!(mark.mark_buffer_id, Some(source_id));
+
+    // The markers: one into the buffer with its insertion type, one
+    // detached.
+    let Value::Marker(m1) = slots[1] else {
+        panic!("marker")
+    };
+    let m1 = target.find_marker(m1).expect("marker 1");
+    assert_eq!(m1.buffer_id, Some(source_id));
+    assert_eq!(m1.position, Some(2));
+    assert!(m1.insertion_type);
+    let Value::Marker(m2) = slots[2] else {
+        panic!("marker")
+    };
+    let m2 = target.find_marker(m2).expect("marker 2");
+    assert_eq!(m2.buffer_id, None);
+    assert_eq!(m2.position, None);
+    assert_eq!(
+        target.buffer_marker_ids(source_id).len(),
+        interp.buffer_marker_ids(source_id).len()
+    );
+
+    // The finalizers, in list order, with their functions.
+    let Value::Finalizer(f1) = slots[3] else {
+        panic!("finalizer")
+    };
+    let Value::Finalizer(f2) = slots[4] else {
+        panic!("finalizer")
+    };
+    assert_eq!(target.finalizer_ids(), source_finalizers);
+    assert_eq!(target.finalizer_ids(), vec![f1, f2]);
+    assert_eq!(target.finalizer_function(f1), Some(Value::symbol("car")));
+    assert_eq!(target.finalizer_function(f2), Some(Value::symbol("cdr")));
+
+    // The frame is nilled: a dead frame with that id.  The terminal is
+    // nilled likewise; its object is the id.
+    let Value::Frame(frame) = slots[5] else {
+        panic!("frame")
+    };
+    let state = target.frame_state(frame).expect("dead frame installed");
+    assert!(!state.live);
+    assert_eq!(state.name, Value::Nil);
+    assert_eq!(root(RootSlot::QuitFlag), terminal);
+
+    // The deleted overlay, on the buffer's list, with its properties.
+    let Value::Overlay(ov) = slots[6] else {
+        panic!("overlay")
+    };
+    let overlay = target.find_overlay(ov).expect("overlay installed");
+    assert!(overlay.is_dead());
+    assert_eq!(
+        overlay.plist,
+        vec![(Value::symbol("zz-prop"), Value::symbol("yes"))]
+    );
+    assert_eq!(target.overlay_holder_id(ov), Some(source_id));
+
+    // The local hook list came with the buffer.
+    assert_eq!(
+        target.buffer_local_hook_lists(source_id),
+        vec![("zz-dump-hook".to_owned(), vec![Value::symbol("car")])]
+    );
+
+    // The killed buffer is an object with no buffer behind it.
+    let Value::Buffer(killed) = &slots[7] else {
+        panic!("killed buffer")
+    };
+    assert!(target.get_buffer_by_id(killed.id).is_none());
+    assert!(!target.has_buffer_id(killed.id));
+}
+
+#[test]
+fn image_refuses_buffers_with_overlays_as_gnu_does() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (let ((buf (get-buffer-create "zz-overlaid")))
+          (set-buffer buf)
+          (insert "text")
+          (make-overlay 1 3)
+          buf)"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let buffer = interp.eval(&form, &mut env).expect("setup evaluates");
+    let mut ctx = DumpContext::new(false, interp.main_thread_record_id());
+    let result = write_image(
+        &mut ctx,
+        &interp,
+        RootSource::Explicit(vec![(RootSlot::LoadPath, buffer)]),
+    );
+    match result {
+        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+            assert_eq!(message, "dumping overlays is not yet implemented");
+        }
+        Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            panic!("unsupported: {}", unsupported.message)
+        }
+        Ok(_) => panic!("a buffer with a live overlay was dumped"),
+    }
+}
+
+#[test]
+fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
+    fn printed(interp: &mut Interpreter, value: &Value) -> String {
+        let value = crate::lisp::native_comp::call_c_primitive(
+            interp,
+            &mut Vec::new(),
+            "prin1-to-string",
+            std::slice::from_ref(value),
+        )
+        .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
+        string_like(&value).expect("a string").text
+    }
+    // A bare interpreter with state in the groups a fresh one leaves
+    // empty: a second buffer, keys, a detached forwarded variable, a
+    // charset with an alias, a timer, an ert test, a labeled restriction
+    // in the current buffer, a fringe bitmap, a composition, a face.
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (progn
+          (get-buffer-create "zz-second")
+          (define-fringe-bitmap 'zz-bitmap [1 2 3])
+          (let ((ov (make-marker))) ov)
+          (internal--labeled-narrow-to-region 1 1 'zz-label)
+          (define-charset-alias 'zz-alias 'ascii)
+          t)"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    interp.eval(&form, &mut env).expect("setup evaluates");
+    interp.keyboard_input.recent_keys = vec![Value::Integer(97), Value::symbol("f1")];
+    interp.keyboard_input.command_keys = vec![Value::Integer(97)];
+    interp
+        .detached_forwarded_variables
+        .insert("zz-detached".into(), Value::list([Value::Integer(1)]));
+    interp.schedule_timer_after(Value::symbol("car"), vec![Value::Nil], 1000.0, Some(5.0));
+    interp.ert_tests.push(crate::lisp::eval::ErtTestDefinition {
+        name: "zz-test".into(),
+        body: Value::list([Value::symbol("should"), Value::T]),
+        source_file: Some("zz.el".into()),
+        tags: vec!["fast".into()],
+        expected_result: ":passed".into(),
+    });
+    interp
+        .composition_states
+        .push(crate::lisp::eval::CompositionState {
+            components: Value::vector([Value::Integer(97), Value::Integer(98)]),
+            relative: true,
+            width: 2,
+        });
+    let source_groups = interp.dump_root_groups();
+    let source_printed = source_groups
+        .iter()
+        .map(|(slot, value)| (*slot, printed(&mut interp, value)))
+        .collect::<Vec<_>>();
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
+    );
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
+    );
+
+    let mut ctx = DumpContext::new(true, interp.main_thread_record_id());
+    let summary = match write_image(&mut ctx, &interp, RootSource::Interpreter) {
+        Ok(summary) => summary,
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            ctx.print_paths_to_root(&mut interp, &mut Vec::new(), &unsupported.object);
+            panic!("unsupported object: {}", unsupported.message)
+        }
+        Err(super::context::DumpError::Lisp(error)) => panic!("dump failed: {error:?}"),
+    };
+    assert!(summary.hot_bytes > 0);
+    let bytes = ctx.buffer().to_vec();
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    for (slot, _) in &source_groups {
+        assert!(
+            image.roots.iter().any(|(candidate, _)| candidate == slot),
+            "root group {slot:?} is in the image"
+        );
+    }
+    // Every group prints the same from the restored interpreter (the
+    // timer's due time is the seconds still to wait, which passed).
+    let target_groups = target.dump_root_groups();
+    for ((slot, source_text), (target_slot, target_value)) in
+        source_printed.iter().zip(&target_groups)
+    {
+        assert_eq!(slot, target_slot);
+        let target_text = printed(&mut target, target_value);
+        if *slot == RootSlot::TimerList {
+            assert!(target_text.starts_with("([car (nil) "), "{target_text}");
+            assert!(target_text.ends_with(" 5.0 car])"), "{target_text}");
+            continue;
+        }
+        assert_eq!(&target_text, source_text, "root group {slot:?}");
+    }
+    // The buffers behind the alist are live in the target, in order.
+    assert_eq!(
+        target
+            .buffer_list
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect::<Vec<_>>(),
+        interp
+            .buffer_list
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(target.has_buffer("zz-second"));
+}
+
+#[test]
+fn image_refuses_pending_transient_state_it_cannot_carry() {
+    let mut interp = Interpreter::new();
+    interp.pending_thread_events.push(Value::symbol("zz-event"));
+    let mut ctx = DumpContext::new(false, interp.main_thread_record_id());
+    match write_image(&mut ctx, &interp, RootSource::Interpreter) {
+        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+            assert_eq!(
+                message,
+                "cannot dump with 1 entries of pending_thread_events pending"
+            );
+        }
+        Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            panic!("unsupported: {}", unsupported.message)
+        }
+        Ok(_) => panic!("pending transient state was dumped"),
+    }
 }

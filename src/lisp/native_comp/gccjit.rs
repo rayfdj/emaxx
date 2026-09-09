@@ -500,6 +500,9 @@ impl Api {
     }
 
     pub(crate) fn context(&'static self) -> Result<Context, String> {
+        // Capture before the GCC driver can change its host environment.
+        // Lisp children use the startup snapshot, as GNU callproc.c does.
+        crate::lisp::eval::initial_process_environment();
         // SAFETY: `self` owns the loaded function and the returned context is
         // uniquely owned by the RAII guard below.
         let raw = unsafe { (self.acquire)() };
@@ -1128,6 +1131,9 @@ mod tests {
 
     #[test]
     fn loads_libgccjit_and_executes_a_smoke_test_function() {
+        let before = crate::lisp::eval::Interpreter::new();
+        let initial = before.default_value("initial-environment");
+        let process = before.default_value("process-environment");
         let api = api().expect("the native compiler test host must provide libgccjit");
         // Every entry point the binding resolves exists from GCC 9 onward.
         assert!(api.version().0 >= 9, "libgccjit {:?}", api.version());
@@ -1159,5 +1165,10 @@ mod tests {
         let function: unsafe extern "C" fn(c_long) -> c_long = unsafe { std::mem::transmute(code) };
         // SAFETY: The result guard owns the code for the duration of the call.
         assert_eq!(unsafe { function(41) }, 42);
+        // A real GCC compile may update host GCC_EXEC_PREFIX. Fresh Lisp
+        // instances still start from the process's original environment.
+        let after = crate::lisp::eval::Interpreter::new();
+        assert_eq!(after.default_value("initial-environment"), initial);
+        assert_eq!(after.default_value("process-environment"), process);
     }
 }
