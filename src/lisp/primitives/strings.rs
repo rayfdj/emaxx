@@ -139,7 +139,7 @@ pub(crate) fn push_emacs_multibyte_char(output: &mut Vec<u8>, code: u32) -> Resu
     Ok(())
 }
 
-fn string_character_code(multibyte: bool, ch: char) -> i64 {
+pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
     if let Some(byte) = raw_byte_from_regex_char(ch) {
         if multibyte {
             RAW_BYTE8_BASE as i64 + i64::from(byte)

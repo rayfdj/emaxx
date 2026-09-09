@@ -10,7 +10,8 @@
 
 use super::super::*;
 use super::image::*;
-use crate::lisp::types::{ConsCell, SymbolName};
+use crate::lisp::eval::{CharTableState, RecordKind, RecordState};
+use crate::lisp::types::{ConsCell, EnvFrame, SharedEnv, SymbolName};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -35,9 +36,10 @@ pub(crate) enum ObjectKey {
     /// values are one bignum record.
     WideInteger(i64),
     Subr(u32),
-    Obarray,
     Lambda(usize),
-    Buffer(usize),
+    /// A buffer's identity is its id (`eq' compares ids): every
+    /// `Value::Buffer' naming one buffer is one object.
+    Buffer(u64),
     Marker(u64),
     Overlay(u64),
     CharTable(u64),
@@ -69,12 +71,11 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
             ObjectKey::WideInteger(*integer)
         }
         Value::BuiltinFunc(name) => ObjectKey::Subr(name.id()),
-        Value::Record(_) if is_obarray_value(value) => ObjectKey::Obarray,
         Value::Nil | Value::T | Value::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
         Value::Lambda(lambda) => ObjectKey::Lambda(Rc::as_ptr(lambda) as usize),
-        Value::Buffer(buffer) => ObjectKey::Buffer(Rc::as_ptr(buffer) as usize),
+        Value::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Value::Marker(id) => ObjectKey::Marker(*id),
         Value::Overlay(id) => ObjectKey::Overlay(*id),
         Value::CharTable(id) => ObjectKey::CharTable(*id),
@@ -100,11 +101,58 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
     }
 }
 
-/// dump_object_emacs_ptr: objects that live in the Emacs image rather
-/// than the Lisp heap.  A built-in function is one; a symbol is not (all
-/// of Emaxx's symbols are heap objects addressed by name).
-fn object_in_emacs_image(value: &Value) -> bool {
-    matches!(value, Value::BuiltinFunc(_))
+/// The record kinds the image distinguishes (eval.rs:RecordKind), as
+/// stable codes.
+pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
+    match kind {
+        RecordKind::Record => 1,
+        RecordKind::BoolVector => 2,
+        RecordKind::Closure => 3,
+        RecordKind::Font => 4,
+        RecordKind::SymbolWithPos => 5,
+        RecordKind::Process => 6,
+        RecordKind::HashTable => 7,
+        RecordKind::Obarray => 8,
+        RecordKind::Window => 9,
+        RecordKind::WindowConfiguration => 10,
+        RecordKind::Thread => 11,
+        RecordKind::Mutex => 12,
+        RecordKind::ConditionVariable => 13,
+        RecordKind::NativeCompUnit => 14,
+        RecordKind::NativeCompiledFunction => 15,
+        RecordKind::TreeSitterParser => 16,
+        RecordKind::TreeSitterNode => 17,
+        RecordKind::TreeSitterCompiledQuery => 18,
+        RecordKind::Sqlite => 19,
+        RecordKind::Keymap => 20,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
+    Some(match code {
+        1 => RecordKind::Record,
+        2 => RecordKind::BoolVector,
+        3 => RecordKind::Closure,
+        4 => RecordKind::Font,
+        5 => RecordKind::SymbolWithPos,
+        6 => RecordKind::Process,
+        7 => RecordKind::HashTable,
+        8 => RecordKind::Obarray,
+        9 => RecordKind::Window,
+        10 => RecordKind::WindowConfiguration,
+        11 => RecordKind::Thread,
+        12 => RecordKind::Mutex,
+        13 => RecordKind::ConditionVariable,
+        14 => RecordKind::NativeCompUnit,
+        15 => RecordKind::NativeCompiledFunction,
+        16 => RecordKind::TreeSitterParser,
+        17 => RecordKind::TreeSitterNode,
+        18 => RecordKind::TreeSitterCompiledQuery,
+        19 => RecordKind::Sqlite,
+        20 => RecordKind::Keymap,
+        _ => return None,
+    })
 }
 
 /// pdumper.c's DUMP_OBJECT_* states for an object `objects_dumped' knows.
@@ -113,6 +161,7 @@ pub(crate) enum ObjectState {
     OnNormalQueue,
     OnColdQueue,
     OnCopiedQueue,
+    OnHashTableQueue,
     Dumped(u32),
 }
 
@@ -124,6 +173,9 @@ pub(crate) struct DumpFlags {
     pub(crate) defer_copied_objects: bool,
     pub(crate) assert_already_seen: bool,
     pub(crate) pack_objects: bool,
+    /// "We want to consolidate certain object types that we know are
+    /// very likely to be modified": hash tables are written together.
+    pub(crate) defer_hash_tables: bool,
 }
 
 enum Fixup {
@@ -146,11 +198,16 @@ enum ColdOp {
     Object(Value),
     String(Value),
     Bignum(Value),
+    /// COLD_OP_BUFFER: a buffer's text.
+    Buffer(Value),
 }
 
 enum EmacsRelocPayload {
     Immediate(u64),
     Object(Value),
+    /// A record dumped outside the object queue (the built-in symbols'
+    /// cells), by offset.
+    Offset(u32, DumpType),
 }
 
 struct EmacsReloc {
@@ -400,6 +457,9 @@ pub(crate) struct DumpContext {
     object_starts: Vec<(u32, DumpType)>,
     emacs_relocs: Vec<EmacsReloc>,
     bignum_data: HashMap<ObjectKey, (u32, i64)>,
+    deferred_hash_tables: Vec<Value>,
+    /// Every hash table written, for the list `thaw_hash_tables' walks.
+    hash_tables: Vec<Value>,
     pub(crate) flags: DumpFlags,
     /// The object being dumped (dump_object_start .. dump_object_finish).
     obj_offset: u32,
@@ -408,10 +468,21 @@ pub(crate) struct DumpContext {
     pub(crate) number_discardable_relocations: u32,
     referrers: Option<HashMap<ObjectKey, Vec<Value>>>,
     current_referrer: Option<Value>,
+    /// The running process's main thread (dump_object_emacs_ptr's
+    /// main_thread_p): an object of the Emacs image, not the heap.
+    main_thread_id: u64,
+    /// Objects dumped outside the queue by their Rust pointer: closure
+    /// parameter and body vectors, lexical environments and frames
+    /// (GNU's interval trees, blvs and fwds are dumped the same way,
+    /// through raw-pointer fixups).
+    aux_dumped: HashMap<usize, u32>,
+    /// The dump type each dumped object got, for the relocations that
+    /// name it later (a record's type depends on its kind).
+    object_types: HashMap<ObjectKey, DumpType>,
 }
 
 impl DumpContext {
-    pub(crate) fn new(track_referrers: bool) -> Self {
+    pub(crate) fn new(track_referrers: bool, main_thread_id: u64) -> Self {
         Self {
             header: DumpHeader::incomplete(),
             buf: Vec::new(),
@@ -426,12 +497,15 @@ impl DumpContext {
             object_starts: Vec::new(),
             emacs_relocs: Vec::new(),
             bignum_data: HashMap::new(),
+            deferred_hash_tables: Vec::new(),
+            hash_tables: Vec::new(),
             // Fdump_emacs_portable's initial flags.
             flags: DumpFlags {
                 dump_object_contents: true,
                 record_object_starts: true,
                 defer_cold_objects: true,
                 defer_copied_objects: true,
+                defer_hash_tables: true,
                 assert_already_seen: false,
                 pack_objects: false,
             },
@@ -441,6 +515,48 @@ impl DumpContext {
             number_discardable_relocations: 0,
             referrers: track_referrers.then(HashMap::new),
             current_referrer: None,
+            main_thread_id,
+            aux_dumped: HashMap::new(),
+            object_types: HashMap::new(),
+        }
+    }
+
+    /// dump_object_emacs_ptr: objects that live in the Emacs image rather
+    /// than the Lisp heap: a built-in function and the main thread.  A
+    /// symbol is not one (all of Emaxx's symbols are heap objects
+    /// addressed by name).
+    fn in_emacs_image(&self, value: &Value) -> bool {
+        match value {
+            Value::BuiltinFunc(_) => true,
+            Value::Record(id) => *id == self.main_thread_id,
+            _ => false,
+        }
+    }
+
+    /// The dump type an object's record got, for a relocation naming it.
+    fn dump_type_of(&self, value: &Value) -> DumpType {
+        if let Some(kind) = object_key(value).and_then(|key| self.object_types.get(&key)) {
+            return *kind;
+        }
+        match value {
+            Value::Cons(_) => DumpType::Cons,
+            Value::String(_) => DumpType::String,
+            Value::StringObject(_) => DumpType::StringObject,
+            Value::Symbol(_) => DumpType::Symbol,
+            Value::Vector(_) => DumpType::Vector,
+            Value::Float(_) => DumpType::Float,
+            Value::BigInteger(_) | Value::Integer(_) => DumpType::Bignum,
+            Value::BuiltinFunc(_) => DumpType::Subr,
+            Value::Lambda(_) => DumpType::Closure,
+            Value::CharTable(_) => DumpType::CharTable,
+            Value::Record(id) if *id == self.main_thread_id => DumpType::MainThread,
+            Value::Buffer(_) => DumpType::Buffer,
+            Value::Marker(_) => DumpType::Marker,
+            Value::Overlay(_) => DumpType::Overlay,
+            Value::Finalizer(_) => DumpType::Finalizer,
+            Value::Frame(_) => DumpType::Frame,
+            Value::Terminal(_) => DumpType::Terminal,
+            _ => panic!("no dump type recorded for {value:?}"),
         }
     }
 
@@ -577,17 +693,26 @@ impl DumpContext {
         env: &mut crate::lisp::types::Env,
         object: &Value,
     ) {
+        // print_paths_to_root_1 recurses without a guard; a referrer cycle
+        // would never end here, so each object's paths are printed once.
         fn walk(
             ctx: &DumpContext,
             interp: &mut Interpreter,
             env: &mut crate::lisp::types::Env,
             object: &Value,
             level: usize,
+            visited: &mut std::collections::HashSet<ObjectKey>,
         ) {
             let Some(referrers) = ctx.referrers.as_ref() else {
                 return;
             };
-            let Some(list) = object_key(object).and_then(|key| referrers.get(&key)) else {
+            let Some(key) = object_key(object) else {
+                return;
+            };
+            if !visited.insert(key) {
+                return;
+            }
+            let Some(list) = referrers.get(&key) else {
                 return;
             };
             for referrer in list {
@@ -601,10 +726,17 @@ impl DumpContext {
                 .and_then(|value| string_like(&value).map(|string| string.text))
                 .unwrap_or_default();
                 eprintln!("{}{printed}", " ".repeat(level));
-                walk(ctx, interp, env, referrer, level + 1);
+                walk(ctx, interp, env, referrer, level + 1, visited);
             }
         }
-        walk(self, interp, env, object, 0);
+        walk(
+            self,
+            interp,
+            env,
+            object,
+            0,
+            &mut std::collections::HashSet::new(),
+        );
     }
 
     fn unsupported(&self, object: &Value, message: &str) -> DumpError {
@@ -723,24 +855,126 @@ impl DumpContext {
 
     /// dump_roots: the interpreter's root slots and the obarray.
     pub(crate) fn dump_roots(&mut self, interp: &Interpreter) -> Result<(), DumpError> {
+        interp
+            .dump_transient_roots_check()
+            .map_err(|message| DumpError::Lisp(LispError::Signal(message)))?;
         self.set_referrer(Value::string("emacs root"));
         for (slot, value) in interp.dump_root_values() {
             self.emacs_reloc_to_lv(slot, &value);
         }
         self.set_referrer(Value::string("built-in symbol list"));
-        self.emacs_reloc_to_lv(RootSlot::Obarray, &obarray_value());
+        self.emacs_reloc_to_lv(RootSlot::Obarray, &interp.standard_obarray_value());
+        self.scan_builtin_symbol_cells(interp)?;
+        self.clear_referrer();
+        self.dump_finalizer_list_heads(interp)
+    }
+
+    /// dump_finalizer_list_head_ptr for `finalizers.prev', `.next' and
+    /// the doomed list's: a head that points at a finalizer object gets a
+    /// root relocation to that object's record; a head that points back
+    /// at its own sentinel gets none.  `doomed_finalizers' is empty here:
+    /// Fdump_emacs_portable collected until no finalizer ran.
+    fn dump_finalizer_list_heads(&mut self, interp: &Interpreter) -> Result<(), DumpError> {
+        if interp.doomed_finalizers_pending() {
+            return Err(
+                LispError::Signal("doomed finalizers are pending at dump time".into()).into(),
+            );
+        }
+        let ids = interp.finalizer_ids();
+        self.set_referrer(Value::string("emacs root"));
+        if let Some(last) = ids.last() {
+            self.emacs_reloc_to_lv(RootSlot::FinalizersPrev, &Value::Finalizer(*last));
+        }
+        if let Some(first) = ids.first() {
+            self.emacs_reloc_to_lv(RootSlot::FinalizersNext, &Value::Finalizer(*first));
+        }
         self.clear_referrer();
         Ok(())
     }
 
-    /// dump_roots for an explicit root list (the round-trip controls).
+    /// The function cell, plist and watchers of `nil' or `t'.
+    fn dump_builtin_symbol_cells(
+        &mut self,
+        interp: &Interpreter,
+        name: &str,
+    ) -> Result<u32, DumpError> {
+        let symbol = SymbolName::intern_str(name);
+        let cell = interp.dump_symbol_cell(&symbol);
+        let function = interp
+            .raw_function_binding(name, &crate::lisp::types::Env::new())
+            .unwrap_or(Value::Nil);
+        let plist = interp.symbol_plist(name);
+        let watchers = interp.variable_watchers(name);
+        let start = self.object_start()?;
+        let mut words = vec![
+            symbol_flags_word(&symbol, &cell, !watchers.is_empty()),
+            0,
+            0,
+            watchers.len() as u64,
+        ];
+        self.field_lv(start, &mut words, 1, &function, WEIGHT_NORMAL);
+        self.field_lv(start, &mut words, 2, &plist, WEIGHT_NORMAL);
+        for watcher in &watchers {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
+        }
+        let offset = self.object_finish(&words)?;
+        if self.flags.dump_object_contents && self.flags.record_object_starts {
+            self.object_starts
+                .push((offset, DumpType::BuiltinSymbolCells));
+        }
+        Ok(offset)
+    }
+
+    /// dump_roots for an explicit root list (the round-trip controls): the
+    /// given slots, plus the built-in symbols' cells as always.
     #[cfg(test)]
-    pub(crate) fn dump_explicit_roots(&mut self, roots: &[(RootSlot, Value)]) {
+    pub(crate) fn dump_explicit_roots(
+        &mut self,
+        interp: &Interpreter,
+        roots: &[(RootSlot, Value)],
+    ) -> Result<(), DumpError> {
         self.set_referrer(Value::string("emacs root"));
         for (slot, value) in roots {
             self.emacs_reloc_to_lv(*slot, value);
         }
+        self.scan_builtin_symbol_cells(interp)?;
         self.clear_referrer();
+        self.dump_finalizer_list_heads(interp)
+    }
+
+    /// The built-in symbols are copied objects in GNU: dump_roots scans
+    /// them (enqueuing what they refer to) and their hot parts are written
+    /// after the queue drains.  Scan the cells of `nil' and `t' here.
+    fn scan_builtin_symbol_cells(&mut self, interp: &Interpreter) -> Result<(), DumpError> {
+        let old_flags = self.flags;
+        self.flags.dump_object_contents = false;
+        for name in ["nil", "t"] {
+            self.dump_builtin_symbol_cells(interp, name)?;
+        }
+        self.flags = old_flags;
+        Ok(())
+    }
+
+    /// dump_hot_parts_of_discardable_objects: the cells of `nil' and `t'
+    /// (dump_pre_dump_symbol for the copied lispsym entries), written once
+    /// everything they refer to has been dumped; their references are
+    /// self-representing words.
+    pub(crate) fn dump_builtin_symbol_roots(
+        &mut self,
+        interp: &Interpreter,
+    ) -> Result<(), DumpError> {
+        for (slot, name) in [(RootSlot::NilCells, "nil"), (RootSlot::TCells, "t")] {
+            let offset = self.dump_builtin_symbol_cells(interp, name)?;
+            if self.flags.dump_object_contents {
+                self.emacs_relocs.push(EmacsReloc {
+                    slot,
+                    payload: EmacsRelocPayload::Offset(offset, DumpType::BuiltinSymbolCells),
+                });
+            }
+        }
+        Ok(())
     }
 
     // ----- dump_object and the per-type writers -----
@@ -756,7 +990,7 @@ impl DumpContext {
         }
         let state = self.recall_object(object);
 
-        let cold = matches!(object, Value::Float(_));
+        let cold = matches!(object, Value::Float(_)) || is_bool_vector(interp, object);
         if cold && self.flags.defer_cold_objects {
             if state != Some(ObjectState::OnColdQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
@@ -766,7 +1000,7 @@ impl DumpContext {
             return Ok(ObjectState::OnColdQueue);
         }
 
-        if object_in_emacs_image(object) && self.flags.defer_copied_objects {
+        if self.in_emacs_image(object) && self.flags.defer_copied_objects {
             if state != Some(ObjectState::OnCopiedQueue) {
                 assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
                 // Scan and enqueue the referents now, dump the object later.
@@ -781,6 +1015,23 @@ impl DumpContext {
             return Ok(ObjectState::OnCopiedQueue);
         }
 
+        // dump_hash_table's deferral: scan the table's referents now, write
+        // the table with the others once the normal queue is drained.
+        if is_hash_table(interp, object) && self.flags.defer_hash_tables {
+            if state != Some(ObjectState::OnHashTableQueue) {
+                assert!(matches!(state, None | Some(ObjectState::OnNormalQueue)));
+                self.clear_referrer();
+                let old_flags = self.flags;
+                self.flags.dump_object_contents = false;
+                self.flags.defer_hash_tables = false;
+                self.dump_object(interp, object)?;
+                self.flags = old_flags;
+                self.remember_object(object, ObjectState::OnHashTableQueue);
+                self.deferred_hash_tables.push(object.clone());
+            }
+            return Ok(ObjectState::OnHashTableQueue);
+        }
+
         // Object needs to be dumped.
         self.set_referrer(object.clone());
         let (offset, kind) = match object {
@@ -793,22 +1044,28 @@ impl DumpContext {
                 (self.dump_bignum(object)?, DumpType::Bignum)
             }
             Value::BuiltinFunc(name) => (self.dump_subr(name)?, DumpType::Subr),
-            Value::Record(id) if is_obarray_value(object) => {
-                let _ = id;
-                (self.dump_obarray(interp)?, DumpType::Obarray)
-            }
+            Value::Lambda(lambda) => (self.dump_closure(lambda)?, DumpType::Closure),
+            Value::CharTable(id) => (
+                self.dump_char_table(interp, *id, object)?,
+                DumpType::CharTable,
+            ),
+            Value::Record(id) => self.dump_record(interp, *id, object)?,
             Value::Nil | Value::T | Value::Unbound => {
                 unreachable!("self-representing objects are never dumped")
             }
-            Value::Lambda(_) => return Err(self.unsupported(object, "closure")),
-            Value::Buffer(_) => return Err(self.unsupported(object, "buffer")),
-            Value::Marker(_) => return Err(self.unsupported(object, "marker")),
-            Value::Overlay(_) => return Err(self.unsupported(object, "overlay")),
-            Value::CharTable(_) => return Err(self.unsupported(object, "char-table")),
-            Value::Frame(_) => return Err(self.unsupported(object, "frame")),
-            Value::Terminal(_) => return Err(self.unsupported(object, "terminal")),
-            Value::Record(_) => return Err(self.unsupported(object, "record")),
-            Value::Finalizer(_) => return Err(self.unsupported(object, "finalizer")),
+            Value::Buffer(buffer) => (
+                self.dump_buffer(interp, buffer.id, object)?,
+                DumpType::Buffer,
+            ),
+            Value::Marker(id) => (self.dump_marker(interp, *id, object)?, DumpType::Marker),
+            Value::Overlay(id) => (self.dump_overlay(interp, *id, object)?, DumpType::Overlay),
+            Value::Finalizer(id) => (
+                self.dump_finalizer(interp, *id, object)?,
+                DumpType::Finalizer,
+            ),
+            // PVEC_FRAME, PVEC_TERMINAL: dump_nilled_pseudovec.
+            Value::Frame(id) => (self.dump_nilled_pseudovec(*id)?, DumpType::Frame),
+            Value::Terminal(id) => (self.dump_nilled_pseudovec(*id)?, DumpType::Terminal),
             Value::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();
@@ -816,6 +1073,9 @@ impl DumpContext {
         if self.flags.dump_object_contents {
             assert_eq!(offset as usize % DUMP_ALIGNMENT, 0);
             self.remember_object(object, ObjectState::Dumped(offset));
+            if let Some(key) = object_key(object) {
+                self.object_types.insert(key, kind);
+            }
             if self.flags.record_object_starts {
                 assert!(!self.flags.pack_objects);
                 self.object_starts.push((offset, kind));
@@ -992,17 +1252,707 @@ impl DumpContext {
         self.object_finish(&words)
     }
 
-    /// dump_obarray: the interned symbols, in the order Emaxx keeps them.
-    fn dump_obarray(&mut self, interp: &Interpreter) -> Result<u32, DumpError> {
-        let names = interp.known_symbol_names();
+    /// dump_vectorlike for a record: the kinds that are plain slots are
+    /// written with their id (the identity every `Value::Record' carries),
+    /// PVEC_FRAME/WINDOW/PROCESS/TERMINAL are nilled as
+    /// dump_nilled_pseudovec does, the obarray gets its symbol list, and
+    /// the rest is refused as GNU refuses it.
+    fn dump_record(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<(u32, DumpType), DumpError> {
+        let Some(record) = interp.find_record(id) else {
+            return Err(self.unsupported(object, "record without an object"));
+        };
+        let kind = record.kind;
+        let type_tag = record.type_tag.clone();
+        let slots = record.slots.clone();
+        match kind {
+            RecordKind::Record
+            | RecordKind::Closure
+            | RecordKind::Font
+            | RecordKind::SymbolWithPos
+            | RecordKind::Keymap => {
+                let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
+                Ok((offset, DumpType::Record))
+            }
+            RecordKind::Window | RecordKind::Process => {
+                let offset = self.dump_record_slots(id, kind, &type_tag, &slots, true)?;
+                Ok((offset, DumpType::Record))
+            }
+            RecordKind::Obarray => {
+                let offset = self.dump_obarray(interp, id, &type_tag, &slots)?;
+                Ok((offset, DumpType::Obarray))
+            }
+            RecordKind::BoolVector => {
+                let offset = self.dump_bool_vector(id, &slots)?;
+                Ok((offset, DumpType::BoolVector))
+            }
+            RecordKind::Thread => {
+                if id == self.main_thread_id {
+                    let offset = self.dump_main_thread(id)?;
+                    Ok((offset, DumpType::MainThread))
+                } else {
+                    Err(self.unsupported(object, "thread"))
+                }
+            }
+            RecordKind::HashTable => {
+                let offset = self.dump_hash_table(interp, id, object, &type_tag, &slots)?;
+                Ok((offset, DumpType::HashTable))
+            }
+            RecordKind::WindowConfiguration => {
+                Err(self.unsupported(object, "window configuration"))
+            }
+            RecordKind::Mutex => Err(self.unsupported(object, "mutex")),
+            RecordKind::ConditionVariable => Err(self.unsupported(object, "condition variable")),
+            RecordKind::NativeCompUnit => Err(self.unsupported(object, "native compilation unit")),
+            RecordKind::NativeCompiledFunction => {
+                Err(self.unsupported(object, "native compiled function"))
+            }
+            RecordKind::TreeSitterParser => Err(self.unsupported(object, "tree-sitter parser")),
+            RecordKind::TreeSitterNode => Err(self.unsupported(object, "tree-sitter node")),
+            RecordKind::TreeSitterCompiledQuery => {
+                Err(self.unsupported(object, "tree-sitter compiled query"))
+            }
+            RecordKind::Sqlite => Err(self.unsupported(object, "sqlite")),
+        }
+    }
+
+    /// A record's id, kind, type tag and slots (nil for a nilled
+    /// pseudovector).
+    fn dump_record_slots(
+        &mut self,
+        id: u64,
+        kind: RecordKind,
+        type_tag: &Value,
+        slots: &[Value],
+        nilled: bool,
+    ) -> Result<u32, DumpError> {
         let start = self.object_start()?;
-        let mut words = vec![names.len() as u64];
-        words.resize(names.len() + 1, 0);
-        for (index, name) in names.iter().enumerate() {
-            let symbol = Value::Symbol(SymbolName::intern_str(name));
-            self.field_lv(start, &mut words, index + 1, &symbol, WEIGHT_STRONG);
+        let mut words = vec![id, u64::from(record_kind_code(kind)), 0, slots.len() as u64];
+        words.resize(slots.len() + 4, WORD_NIL);
+        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        if !nilled {
+            for (index, slot) in slots.iter().enumerate() {
+                self.field_lv(start, &mut words, index + 4, slot, WEIGHT_STRONG);
+            }
         }
         self.object_finish(&words)
+    }
+
+    /// dump_obarray: the record, then the symbols it holds -- the initial
+    /// obarray's are the interpreter's interned names in the order it
+    /// keeps them, a private obarray's live in its slot.
+    fn dump_obarray(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        type_tag: &Value,
+        slots: &[Value],
+    ) -> Result<u32, DumpError> {
+        let names = if interp.is_standard_obarray_id(id) {
+            interp.known_symbol_names()
+        } else {
+            Vec::new()
+        };
+        let start = self.object_start()?;
+        let mut words = vec![
+            id,
+            u64::from(record_kind_code(RecordKind::Obarray)),
+            0,
+            slots.len() as u64,
+        ];
+        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        for slot in slots {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, slot, WEIGHT_STRONG);
+        }
+        words.push(names.len() as u64);
+        for name in &names {
+            let index = words.len();
+            words.push(0);
+            let symbol = Value::Symbol(SymbolName::intern_str(name));
+            self.field_lv(start, &mut words, index, &symbol, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_bool_vector: the bits, in the cold section, with the record's
+    /// id; a cold object refers to nothing.
+    fn dump_bool_vector(&mut self, id: u64, slots: &[Value]) -> Result<u32, DumpError> {
+        assert!(self.header.cold_start != 0);
+        self.object_start()?;
+        let mut words = vec![id, slots.len() as u64];
+        words.resize(2 + slots.len().div_ceil(64), 0);
+        for (index, slot) in slots.iter().enumerate() {
+            if slot.is_truthy() {
+                words[2 + index / 64] |= 1 << (index % 64);
+            }
+        }
+        self.object_finish(&words)
+    }
+
+    /// The main thread's copied record: DUMP_OBJECT_IS_RUNTIME_MAGIC in
+    /// GNU, the running process's own thread on load.
+    fn dump_main_thread(&mut self, id: u64) -> Result<u32, DumpError> {
+        self.object_start()?;
+        self.object_finish(&[id])
+    }
+
+    /// An interpreted closure: the GNU closure slots (parameters, body,
+    /// environment, documentation, interactive) and the Emaxx fields that
+    /// carry their exact Lisp objects; the parameter and body vectors and
+    /// the environment are shared objects dumped through raw-pointer
+    /// fixups, as intervals are.
+    fn dump_closure(
+        &mut self,
+        lambda: &Rc<crate::lisp::types::LambdaValue>,
+    ) -> Result<u32, DumpError> {
+        let start = self.object_start()?;
+        let mut words = [
+            FIXUP_PLACEHOLDER,
+            WORD_UNBOUND,
+            FIXUP_PLACEHOLDER,
+            FIXUP_PLACEHOLDER,
+            WORD_UNBOUND,
+            WORD_UNBOUND,
+            WORD_UNBOUND,
+        ];
+        for (index, value) in [
+            (1, lambda.public_parameters.as_ref()),
+            (4, lambda.documentation.as_ref()),
+            (5, lambda.interactive.as_ref()),
+            (6, lambda.public_environment.as_ref()),
+        ] {
+            if let Some(value) = value {
+                self.field_lv(start, &mut words, index, value, WEIGHT_NORMAL);
+            }
+        }
+        let offset = self.object_finish(&words)?;
+        let params = self.dump_lambda_params(&lambda.params)?;
+        self.remember_fixup_ptr_raw(offset, params);
+        let body = self.dump_lambda_body(&lambda.body)?;
+        self.remember_fixup_ptr_raw(offset + 16, body);
+        let env = self.dump_lexical_environment(&lambda.env)?;
+        self.remember_fixup_ptr_raw(offset + 24, env);
+        Ok(offset)
+    }
+
+    fn aux_start(&mut self, pointer: usize) -> Option<u32> {
+        self.aux_dumped.get(&pointer).copied()
+    }
+
+    fn aux_finish(
+        &mut self,
+        pointer: usize,
+        words: &[u64],
+        kind: DumpType,
+    ) -> Result<u32, DumpError> {
+        let offset = self.object_finish(words)?;
+        if self.flags.dump_object_contents {
+            self.aux_dumped.insert(pointer, offset);
+            if self.flags.record_object_starts {
+                self.object_starts.push((offset, kind));
+            }
+        }
+        Ok(offset)
+    }
+
+    fn dump_lambda_params(&mut self, params: &Rc<Vec<SymbolName>>) -> Result<u32, DumpError> {
+        let pointer = Rc::as_ptr(params) as usize;
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let start = self.object_start()?;
+        let mut words = vec![params.len() as u64];
+        words.resize(params.len() + 1, 0);
+        for (index, symbol) in params.iter().enumerate() {
+            self.field_lv(
+                start,
+                &mut words,
+                index + 1,
+                &Value::Symbol(symbol.clone()),
+                WEIGHT_STRONG,
+            );
+        }
+        self.aux_finish(pointer, &words, DumpType::LambdaParams)
+    }
+
+    fn dump_lambda_body(&mut self, body: &Rc<Vec<Value>>) -> Result<u32, DumpError> {
+        let pointer = Rc::as_ptr(body) as usize;
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let start = self.object_start()?;
+        let mut words = vec![body.len() as u64];
+        words.resize(body.len() + 1, 0);
+        for (index, form) in body.iter().enumerate() {
+            self.field_lv(start, &mut words, index + 1, form, WEIGHT_STRONG);
+        }
+        self.aux_finish(pointer, &words, DumpType::LambdaBody)
+    }
+
+    /// A captured environment: its frames, dumped after it through
+    /// raw-pointer fixups so two closures over one environment share it.
+    fn dump_lexical_environment(&mut self, env: &SharedEnv) -> Result<u32, DumpError> {
+        let pointer = Rc::as_ptr(env) as usize;
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let frames = env.borrow().clone();
+        self.object_start()?;
+        let mut words = vec![frames.len() as u64];
+        words.resize(frames.len() + 1, FIXUP_PLACEHOLDER);
+        let offset = self.aux_finish(pointer, &words, DumpType::LexicalEnvironment)?;
+        for (index, frame) in frames.iter().enumerate() {
+            let frame_offset = self.dump_lexical_frame(frame)?;
+            self.remember_fixup_ptr_raw(offset + 8 * (index as u32 + 1), frame_offset);
+        }
+        Ok(offset)
+    }
+
+    /// One frame: its flags and identity, the (symbol . value) bindings,
+    /// the locally-special declarations by position, and the Lisp
+    /// environment alist that is authoritative for it, if any.
+    fn dump_lexical_frame(&mut self, frame: &EnvFrame) -> Result<u32, DumpError> {
+        let pointer = frame.identity_ptr();
+        if let Some(offset) = self.aux_start(pointer) {
+            return Ok(offset);
+        }
+        let start = self.object_start()?;
+        let mut flags = 0_u64;
+        if frame.has_function_bindings() {
+            flags |= FRAME_FUNCTION_BINDINGS;
+        }
+        if frame.identity().is_some() {
+            flags |= FRAME_HAS_IDENTITY;
+        }
+        if frame.is_captured() {
+            flags |= FRAME_CAPTURED;
+        }
+        let mut words = vec![
+            flags,
+            frame.identity().unwrap_or(0) as u64,
+            frame.len() as u64,
+        ];
+        let mut fields = Vec::new();
+        for (symbol, value) in frame.iter() {
+            fields.push((words.len(), Value::Symbol(symbol.clone())));
+            words.push(0);
+            fields.push((words.len(), value.clone()));
+            words.push(0);
+        }
+        let declarations = frame.local_special_declarations();
+        words.push(declarations.len() as u64);
+        for (position, name) in declarations {
+            words.push(*position as u64);
+            fields.push((words.len(), Value::symbol(name)));
+            words.push(0);
+        }
+        match frame.lisp_environment() {
+            Some(environment) => {
+                fields.push((words.len(), environment.clone()));
+                words.push(0);
+            }
+            None => words.push(WORD_UNBOUND),
+        }
+        for (index, value) in fields {
+            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
+        }
+        self.aux_finish(pointer, &words, DumpType::LexicalFrame)
+    }
+
+    /// A char-table as Emaxx keeps it: id, subtype, default, parent,
+    /// extra slots, the range entries in their log order, and the
+    /// category docstrings.  GNU's is a tree of sub-char-tables; the
+    /// observable table is the same.
+    fn dump_char_table(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(table) = interp.find_char_table(id) else {
+            return Err(self.unsupported(object, "char-table without an object"));
+        };
+        let subtype = table.subtype.clone();
+        let default = table.default.clone();
+        let parent = table.parent;
+        let extra_slots = table.extra_slots.clone();
+        let entries = table
+            .entries
+            .iter()
+            .map(|entry| (entry.start, entry.end, entry.value.clone()))
+            .collect::<Vec<_>>();
+        let category_docs = table.category_docs.clone();
+        let start = self.object_start()?;
+        let mut words = vec![id, WORD_UNBOUND, 0, parent.unwrap_or(u64::MAX)];
+        let mut fields = Vec::new();
+        if let Some(subtype) = subtype {
+            fields.push((1, Value::symbol(&subtype)));
+        }
+        fields.push((2, default));
+        words.push(extra_slots.len() as u64);
+        for slot in extra_slots {
+            fields.push((words.len(), slot));
+            words.push(0);
+        }
+        words.push(entries.len() as u64);
+        for (range_start, range_end, value) in entries {
+            words.push(u64::from(range_start));
+            words.push(u64::from(range_end));
+            fields.push((words.len(), value));
+            words.push(0);
+        }
+        words.push(category_docs.len() as u64);
+        for (character, doc) in category_docs {
+            words.push(u64::from(character));
+            fields.push((words.len(), Value::string(&doc)));
+            words.push(0);
+        }
+        for (index, value) in fields {
+            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_buffer: the buffer's own fields with `last_name' and the
+    /// display state cleared, the text as a cold op, the property spans
+    /// after the record as the interval tree is, the markers pointing
+    /// into it (`own_text.markers'), the local bindings
+    /// (`local_var_alist_'), the syntax and case tables (BVARs), the
+    /// base buffer of an indirect one, and the undo entries the
+    /// `undo_list_' renders from.  A buffer with live overlays is refused
+    /// with GNU's error.
+    fn dump_buffer(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(buffer) = interp.get_buffer_by_id(id) else {
+            // A killed buffer: no text (BUFFER_LIVE_P is false), its name
+            // nil since kill-buffer, nothing on its lists.
+            let start = self.object_start()?;
+            let mut words = vec![0_u64; BUFFER_VARIABLE_PART as usize];
+            words[BUFFER_ID as usize] = id;
+            words[BUFFER_FLAGS as usize] = BUFFER_FLAG_DEAD;
+            words[BUFFER_MARK as usize] = NO_POSITION;
+            words[BUFFER_POINT_BEFORE_BOUNDARY as usize] = NO_POSITION;
+            for index in [
+                BUFFER_NAME,
+                BUFFER_FILE,
+                BUFFER_FILE_TRUENAME,
+                BUFFER_BASE,
+                BUFFER_MARK_MARKER,
+                BUFFER_SYNTAX_TABLE,
+                BUFFER_CASE_TABLE,
+            ] {
+                self.field_lv(
+                    start,
+                    &mut words,
+                    index as usize,
+                    &Value::Nil,
+                    WEIGHT_STRONG,
+                );
+            }
+            // No locals, hooks, markers or undo entries.
+            words.extend([0, 0, 0, 0]);
+            return self.object_finish(&words);
+        };
+        if buffer.overlays.iter().any(|overlay| !overlay.is_dead()) {
+            // "We haven't implemented the code to dump overlays."
+            return Err(LispError::Signal("dumping overlays is not yet implemented".into()).into());
+        }
+        let parts = buffer.image_parts();
+        let extended = parts
+            .extended_chars
+            .iter()
+            .map(|(position, code)| (position - 1, *code))
+            .collect::<Vec<_>>();
+        let z_byte = internal_text_bytes(&parts.text, &extended, parts.multibyte)?.len();
+        let saved_bytes = internal_text_bytes(&parts.saved_text, &[], parts.multibyte)?.len();
+        let base = interp
+            .buffer_base_id(id)
+            .and_then(|base| interp.buffer_value(base));
+        let mark_marker = interp.buffer_mark_marker_id(id).map(Value::Marker);
+        let syntax_table = interp.buffer_syntax_table_id(id).map(Value::CharTable);
+        let case_table = interp.buffer_case_table_id(id).map(Value::CharTable);
+        let locals = interp.buffer_local_cells(id);
+        let hooks = interp.buffer_local_hook_lists(id);
+        let markers = interp.buffer_marker_ids(id);
+
+        let mut flags = 0;
+        for (set, bit) in [
+            (parts.multibyte, BUFFER_FLAG_MULTIBYTE),
+            (parts.mark_active, BUFFER_FLAG_MARK_ACTIVE),
+            (parts.forced_modified, BUFFER_FLAG_FORCED_MODIFIED),
+            (parts.autosaved, BUFFER_FLAG_AUTOSAVED),
+            (parts.undo_disabled, BUFFER_FLAG_UNDO_DISABLED),
+            (parts.inhibit_hooks, BUFFER_FLAG_INHIBIT_HOOKS),
+            (
+                parts.visited_file_modtime.is_some(),
+                BUFFER_FLAG_HAS_MODTIME,
+            ),
+        ] {
+            if set {
+                flags |= bit;
+            }
+        }
+        let (modtime_secs, modtime_nanos) = match parts.visited_file_modtime {
+            Some(modtime) => match modtime.modified.duration_since(std::time::UNIX_EPOCH) {
+                Ok(duration) => (duration.as_secs() as i64, duration.subsec_nanos()),
+                Err(before) => {
+                    let duration = before.duration();
+                    (-(duration.as_secs() as i64), duration.subsec_nanos())
+                }
+            },
+            None => (0, 0),
+        };
+        let position_word = |position: Option<usize>| position.map_or(NO_POSITION, |p| p as u64);
+
+        let start = self.object_start()?;
+        let mut words = vec![0_u64; BUFFER_VARIABLE_PART as usize];
+        words[BUFFER_ID as usize] = id;
+        words[BUFFER_FLAGS as usize] = flags;
+        words[BUFFER_Z as usize] = parts.text.chars().count() as u64;
+        words[BUFFER_Z_BYTE as usize] = z_byte as u64;
+        words[BUFFER_TEXT as usize] = FIXUP_PLACEHOLDER;
+        words[BUFFER_SAVED_BYTES as usize] = saved_bytes as u64;
+        words[BUFFER_SAVED_TEXT as usize] = FIXUP_PLACEHOLDER;
+        words[BUFFER_PT as usize] = parts.pt as u64;
+        words[BUFFER_MARK as usize] = position_word(parts.mark);
+        words[BUFFER_BEGV as usize] = parts.begv as u64;
+        words[BUFFER_ZV as usize] = parts.zv as u64;
+        words[BUFFER_MODIFF as usize] = parts.modiff as u64;
+        words[BUFFER_CHARS_MODIFF as usize] = parts.chars_modiff as u64;
+        words[BUFFER_SAVE_MODIFF as usize] = parts.save_modiff as u64;
+        words[BUFFER_POINT_BEFORE_BOUNDARY as usize] =
+            position_word(parts.point_before_last_boundary);
+        words[BUFFER_MODTIME_SECS as usize] = modtime_secs as u64;
+        words[BUFFER_MODTIME_NANOS as usize] = u64::from(modtime_nanos);
+        words[BUFFER_INTERVALS as usize] = if parts.text_properties.is_empty() {
+            0
+        } else {
+            FIXUP_PLACEHOLDER
+        };
+        // The Lisp fields: dump_pseudovector_lisp_fields writes them
+        // WEIGHT_STRONG; the marker chain is WEIGHT_NORMAL.
+        let mut fields: Vec<(usize, Value, LinkWeight)> = vec![
+            (
+                BUFFER_NAME as usize,
+                Value::string(&parts.name),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_FILE as usize,
+                parts.file.as_deref().map_or(Value::Nil, Value::string),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_FILE_TRUENAME as usize,
+                parts
+                    .file_truename
+                    .as_deref()
+                    .map_or(Value::Nil, Value::string),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_BASE as usize,
+                base.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_MARK_MARKER as usize,
+                mark_marker.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_SYNTAX_TABLE as usize,
+                syntax_table.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_CASE_TABLE as usize,
+                case_table.unwrap_or(Value::Nil),
+                WEIGHT_STRONG,
+            ),
+        ];
+        let mut props_fixups: Vec<(usize, Vec<TextPropertySpan>)> = Vec::new();
+        if !parts.text_properties.is_empty() {
+            props_fixups.push((BUFFER_INTERVALS as usize, parts.text_properties.clone()));
+        }
+        words.push(locals.len() as u64);
+        for (symbol, value) in &locals {
+            fields.push((words.len(), Value::Symbol(symbol.clone()), WEIGHT_STRONG));
+            words.push(0);
+            fields.push((words.len(), value.clone(), WEIGHT_STRONG));
+            words.push(0);
+        }
+        // The buffer-local hook lists are local bindings of the hook
+        // variables in GNU; Emaxx keeps them beside the cells.
+        words.push(hooks.len() as u64);
+        for (name, functions) in &hooks {
+            fields.push((words.len(), Value::symbol(name), WEIGHT_STRONG));
+            words.push(0);
+            words.push(functions.len() as u64);
+            for function in functions {
+                fields.push((words.len(), function.clone(), WEIGHT_STRONG));
+                words.push(0);
+            }
+        }
+        words.push(markers.len() as u64);
+        for marker in &markers {
+            fields.push((words.len(), Value::Marker(*marker), WEIGHT_NORMAL));
+            words.push(0);
+        }
+        words.push(parts.undo_list.len() as u64);
+        for entry in &parts.undo_list {
+            push_undo_entry(&mut words, &mut fields, &mut props_fixups, entry);
+        }
+        for (index, value, weight) in fields {
+            self.field_lv(start, &mut words, index, &value, weight);
+        }
+        self.remember_cold_op(ColdOp::Buffer(object.clone()));
+        let offset = self.object_finish(&words)?;
+        for (index, spans) in props_fixups {
+            let properties = self.dump_text_properties(interp, &spans)?;
+            self.remember_fixup_ptr_raw(offset + 8 * index as u32, properties);
+        }
+        Ok(offset)
+    }
+
+    /// dump_marker: the buffer (WEIGHT_NORMAL), the positions, the
+    /// insertion type, and the buffer whose mark this marker is.
+    fn dump_marker(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(marker) = interp.find_marker(id) else {
+            return Err(self.unsupported(object, "marker without an object"));
+        };
+        let marker = marker.clone();
+        let buffer = marker.buffer_id.and_then(|id| interp.buffer_value(id));
+        let mark_buffer = marker.mark_buffer_id.and_then(|id| interp.buffer_value(id));
+        let start = self.object_start()?;
+        let mut words = [
+            id,
+            0,
+            marker.position.map_or(NO_POSITION, |p| p as u64),
+            marker.last_position.map_or(NO_POSITION, |p| p as u64),
+            u64::from(marker.insertion_type),
+            0,
+        ];
+        self.field_lv(
+            start,
+            &mut words,
+            1,
+            &buffer.unwrap_or(Value::Nil),
+            WEIGHT_NORMAL,
+        );
+        self.field_lv(
+            start,
+            &mut words,
+            5,
+            &mark_buffer.unwrap_or(Value::Nil),
+            WEIGHT_STRONG,
+        );
+        self.object_finish(&words)
+    }
+
+    /// dump_overlay: the Lisp fields (buffer, plist) and the interval
+    /// node's bounds and advance flags.  A live overlay's buffer is a
+    /// field, so the buffer is dumped too, and refuses; only a deleted
+    /// overlay gets through, with the buffer whose list still holds it.
+    fn dump_overlay(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let Some(overlay) = interp.find_overlay(id) else {
+            return Err(self.unsupported(object, "overlay without an object"));
+        };
+        let overlay = overlay.clone();
+        let holder = interp.overlay_holder_id(id);
+        let buffer = overlay.buffer_id.and_then(|id| interp.buffer_value(id));
+        let mut flags = 0;
+        if overlay.front_advance {
+            flags |= OVERLAY_FRONT_ADVANCE;
+        }
+        if overlay.rear_advance {
+            flags |= OVERLAY_REAR_ADVANCE;
+        }
+        let start = self.object_start()?;
+        let mut words = vec![
+            id,
+            flags,
+            overlay.beg as u64,
+            overlay.end as u64,
+            holder.unwrap_or(NO_POSITION),
+            0,
+            overlay.plist.len() as u64,
+        ];
+        let mut fields = vec![(5, buffer.unwrap_or(Value::Nil))];
+        for (key, value) in &overlay.plist {
+            fields.push((words.len(), key.clone()));
+            words.push(0);
+            fields.push((words.len(), value.clone()));
+            words.push(0);
+        }
+        for (index, value) in fields {
+            self.field_lv(start, &mut words, index, &value, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_finalizer: the function with WEIGHT_NONE ("so we can give it
+    /// a low weight"), then the `prev' and `next' list neighbours
+    /// (dump_field_finalizer_ref: a neighbour that is the list's sentinel
+    /// is an Emacs pointer, written as nil here).
+    fn dump_finalizer(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+    ) -> Result<u32, DumpError> {
+        let ids = interp.finalizer_ids();
+        let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
+            return Err(self.unsupported(object, "finalizer without an object"));
+        };
+        let function = interp.finalizer_function(id).unwrap_or(Value::Nil);
+        let prev = index.checked_sub(1).map(|i| Value::Finalizer(ids[i]));
+        let next = ids.get(index + 1).map(|id| Value::Finalizer(*id));
+        let start = self.object_start()?;
+        let mut words = [id, 0, 0, 0];
+        self.field_lv(start, &mut words, 1, &function, WEIGHT_NONE);
+        self.field_lv(
+            start,
+            &mut words,
+            2,
+            &prev.unwrap_or(Value::Nil),
+            WEIGHT_NORMAL,
+        );
+        self.field_lv(
+            start,
+            &mut words,
+            3,
+            &next.unwrap_or(Value::Nil),
+            WEIGHT_NORMAL,
+        );
+        self.object_finish(&words)
+    }
+
+    /// dump_nilled_pseudovec: every Lisp field nil, nothing else kept;
+    /// the record is the object's id alone.
+    fn dump_nilled_pseudovec(&mut self, id: u64) -> Result<u32, DumpError> {
+        self.object_start()?;
+        self.object_finish(&[id])
     }
 
     // ----- Queues -----
@@ -1014,6 +1964,107 @@ impl DumpContext {
             self.dump_object(interp, &object)?;
         }
         Ok(())
+    }
+
+    /// dump_hash_table: the table frozen (hash_table_freeze: the compact
+    /// key/value contents, the standard test or GNU's refusal of a
+    /// user-defined one), with its record, count, weakness and
+    /// mutability; thawed on load.
+    fn dump_hash_table(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+        type_tag: &Value,
+        slots: &[Value],
+    ) -> Result<u32, DumpError> {
+        let test_name = slots
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .unwrap_or("eql")
+            .to_owned();
+        let test_code = match test_name.as_str() {
+            "eq" => HASH_TEST_EQ,
+            "eql" => HASH_TEST_EQL,
+            "equal" => HASH_TEST_EQUAL,
+            _ => {
+                // hash_table_std_test (Bug#36769).
+                return Err(LispError::Signal(
+                    "cannot dump hash tables with user-defined tests".into(),
+                )
+                .into());
+            }
+        };
+        let entries = crate::lisp::json::hash_table_entries(interp, object)
+            .map(|(_, entries)| entries)
+            .unwrap_or_default();
+        let weakness = slots.get(5).cloned().unwrap_or(Value::Nil);
+        let mutable = interp.hash_table_is_mutable(id);
+        if self.flags.dump_object_contents {
+            self.hash_tables.push(object.clone());
+        }
+        let start = self.object_start()?;
+        let mut words = vec![
+            id,
+            u64::from(record_kind_code(RecordKind::HashTable)),
+            0,
+            slots.len() as u64,
+        ];
+        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        for slot in slots {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, slot, WEIGHT_STRONG);
+        }
+        words.push(entries.len() as u64);
+        let weakness_index = words.len();
+        words.push(0);
+        self.field_lv(start, &mut words, weakness_index, &weakness, WEIGHT_STRONG);
+        words.push(test_code);
+        words.push(u64::from(mutable));
+        for (key, value) in &entries {
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, key, WEIGHT_STRONG);
+            let index = words.len();
+            words.push(0);
+            self.field_lv(start, &mut words, index, value, WEIGHT_STRONG);
+        }
+        self.object_finish(&words)
+    }
+
+    /// dump_drain_deferred_hash_tables.
+    pub(crate) fn drain_deferred_hash_tables(
+        &mut self,
+        interp: &Interpreter,
+    ) -> Result<(), DumpError> {
+        let old_flags = self.flags;
+        self.flags.defer_hash_tables = false;
+        let deferred = std::mem::take(&mut self.deferred_hash_tables);
+        for table in deferred {
+            self.dump_object(interp, &table)?;
+        }
+        self.flags = old_flags;
+        Ok(())
+    }
+
+    pub(crate) fn deferred_hash_tables_is_empty(&self) -> bool {
+        self.deferred_hash_tables.is_empty()
+    }
+
+    /// dump_hash_table_list: a vector of every table written, at
+    /// `header.hash_list', for thaw_hash_tables.  Each table is listed
+    /// once (GNU's list can repeat a table its scan pass reached; thawing
+    /// twice is harmless there).
+    pub(crate) fn dump_hash_table_list(&mut self, interp: &Interpreter) -> Result<u32, DumpError> {
+        if self.hash_tables.is_empty() {
+            return Ok(0);
+        }
+        let list = Value::vector(std::mem::take(&mut self.hash_tables));
+        match self.dump_object(interp, &list)? {
+            ObjectState::Dumped(offset) => Ok(offset),
+            _ => panic!("the hash table list is an ordinary vector"),
+        }
     }
 
     pub(crate) fn queue_is_empty(&self) -> bool {
@@ -1062,10 +2113,44 @@ impl DumpContext {
                     assert!(self.dump_queue.is_empty());
                 }
                 ColdOp::Bignum(object) => self.dump_cold_bignum(&object)?,
+                ColdOp::Buffer(object) => self.dump_cold_buffer(interp, &object)?,
             }
         }
         self.flags = old_flags;
         Ok(())
+    }
+
+    /// dump_cold_buffer: the text bytes in GNU's internal representation
+    /// plus the terminating NUL (GNU also writes the zeroed gap; Emaxx's
+    /// rope has none), then the saved-text snapshot Emaxx compares
+    /// against, each with the fixup that points the record at it.
+    fn dump_cold_buffer(&mut self, interp: &Interpreter, object: &Value) -> Result<(), DumpError> {
+        let Some(ObjectState::Dumped(buffer_offset)) = self.recall_object(object) else {
+            panic!("cold buffer was dumped");
+        };
+        let Value::Buffer(buffer) = object else {
+            unreachable!()
+        };
+        let Some(buffer) = interp.get_buffer_by_id(buffer.id) else {
+            panic!("a dumped buffer is live");
+        };
+        let parts = buffer.image_parts();
+        let extended = parts
+            .extended_chars
+            .iter()
+            .map(|(position, code)| (position - 1, *code))
+            .collect::<Vec<_>>();
+        let bytes = internal_text_bytes(&parts.text, &extended, parts.multibyte)?;
+        if bytes.len() > DUMP_OFF_MAX - 1 {
+            return Err(LispError::Signal("buffer too large".into()).into());
+        }
+        self.remember_fixup_ptr_raw(buffer_offset + 8 * BUFFER_TEXT, self.offset);
+        self.write(&bytes)?;
+        self.write(&[0])?;
+        let saved = internal_text_bytes(&parts.saved_text, &[], parts.multibyte)?;
+        self.remember_fixup_ptr_raw(buffer_offset + 8 * BUFFER_SAVED_TEXT, self.offset);
+        self.write(&saved)?;
+        self.write(&[0])
     }
 
     /// dump_cold_string: the bytes in GNU's internal representation plus
@@ -1126,8 +2211,8 @@ impl DumpContext {
                     let Some(ObjectState::Dumped(target)) = self.recall_object(&value) else {
                         panic!("fixup target was dumped");
                     };
-                    let kind = object_dump_type(&value);
-                    let reloc = if object_in_emacs_image(&value) {
+                    let kind = self.dump_type_of(&value);
+                    let reloc = if self.in_emacs_image(&value) {
                         DumpRelocKind::DumpToEmacsLv(kind)
                     } else {
                         DumpRelocKind::DumpToDumpLv(kind)
@@ -1209,13 +2294,16 @@ impl DumpContext {
                     let Some(ObjectState::Dumped(target)) = self.recall_object(value) else {
                         panic!("root object was dumped");
                     };
-                    let kind = object_dump_type(value);
-                    let kind = if object_in_emacs_image(value) {
+                    let kind = self.dump_type_of(value);
+                    let kind = if self.in_emacs_image(value) {
                         EmacsRelocKind::EmacsLv(kind)
                     } else {
                         EmacsRelocKind::DumpLv(kind)
                     };
                     (kind, u64::from(target))
+                }
+                EmacsRelocPayload::Offset(offset, kind) => {
+                    (EmacsRelocKind::DumpLv(*kind), u64::from(*offset))
                 }
             };
             self.write(&kind.to_u32().to_le_bytes())?;
@@ -1255,60 +2343,186 @@ impl DumpContext {
     }
 }
 
-/// The dump type an object's record carries.
-pub(crate) fn object_dump_type(value: &Value) -> DumpType {
-    match value {
-        Value::Cons(_) => DumpType::Cons,
-        Value::String(_) => DumpType::String,
-        Value::StringObject(_) => DumpType::StringObject,
-        Value::Symbol(_) => DumpType::Symbol,
-        Value::Vector(_) => DumpType::Vector,
-        Value::Float(_) => DumpType::Float,
-        Value::BigInteger(_) | Value::Integer(_) => DumpType::Bignum,
-        Value::BuiltinFunc(_) => DumpType::Subr,
-        Value::Record(_) if is_obarray_value(value) => DumpType::Obarray,
-        _ => panic!("no dump type for {value:?}"),
+/// One undo entry of a buffer record: its kind word, then the payload
+/// (an insertion's bounds; a deletion's position, direction, text as a
+/// string object, property spans through a raw-pointer fixup, side list
+/// and marker adjustments; a combined entry's display value and nested
+/// entries; an opaque entry's value; a boundary).
+fn push_undo_entry(
+    words: &mut Vec<u64>,
+    fields: &mut Vec<(usize, Value, LinkWeight)>,
+    props_fixups: &mut Vec<(usize, Vec<TextPropertySpan>)>,
+    entry: &crate::buffer::UndoEntry,
+) {
+    use crate::buffer::UndoEntry;
+    match entry {
+        UndoEntry::Insert { pos, len } => {
+            words.extend([UNDO_INSERT, *pos as u64, *len as u64]);
+        }
+        UndoEntry::Delete {
+            pos,
+            point_after,
+            text,
+            props,
+            extended_chars,
+            markers,
+        } => {
+            words.extend([UNDO_DELETE, *pos as u64, u64::from(*point_after)]);
+            fields.push((
+                words.len(),
+                Value::String(text.clone().into()),
+                WEIGHT_STRONG,
+            ));
+            words.push(0);
+            if props.is_empty() {
+                words.push(0);
+            } else {
+                props_fixups.push((words.len(), props.clone()));
+                words.push(FIXUP_PLACEHOLDER);
+            }
+            words.push(extended_chars.len() as u64);
+            for (position, code) in extended_chars {
+                words.extend([*position as u64, u64::from(*code)]);
+            }
+            words.push(markers.len() as u64);
+            for marker in markers {
+                words.extend([
+                    marker.id,
+                    marker.original_pos as u64,
+                    marker.collapsed_pos as u64,
+                ]);
+            }
+        }
+        UndoEntry::Combined { display, entries } => {
+            words.push(UNDO_COMBINED);
+            fields.push((words.len(), display.clone(), WEIGHT_STRONG));
+            words.push(0);
+            words.push(entries.len() as u64);
+            for entry in entries {
+                push_undo_entry(words, fields, props_fixups, entry);
+            }
+        }
+        UndoEntry::Opaque(value) => {
+            words.push(UNDO_OPAQUE);
+            fields.push((words.len(), value.clone(), WEIGHT_STRONG));
+            words.push(0);
+        }
+        UndoEntry::Boundary => words.push(UNDO_BOUNDARY),
     }
 }
 
-/// The initial obarray as a root object.  Emaxx keeps the standard
-/// obarray's symbols in interpreter tables; the image gives it one
-/// record, reached through a record value that stands for it.
-const OBARRAY_ROOT_RECORD_ID: u64 = u64::MAX;
-
-pub(crate) fn obarray_value() -> Value {
-    Value::Record(OBARRAY_ROOT_RECORD_ID)
-}
-
-fn is_obarray_value(value: &Value) -> bool {
-    matches!(value, Value::Record(id) if *id == OBARRAY_ROOT_RECORD_ID)
-}
-
+/// `Fmemq' on the referrer list: identity.
 fn values_eq(a: &Value, b: &Value) -> bool {
     match (object_key(a), object_key(b)) {
         (Some(a), Some(b)) => a == b,
-        _ => matches!((a, b), (Value::String(x), Value::String(y)) if x == y),
+        _ => false,
     }
+}
+
+// lisp.h:hash_table_std_test: Test_eq, Test_eql, Test_equal.
+pub(crate) const HASH_TEST_EQ: u64 = 0;
+pub(crate) const HASH_TEST_EQL: u64 = 1;
+pub(crate) const HASH_TEST_EQUAL: u64 = 2;
+
+fn is_hash_table(interp: &Interpreter, value: &Value) -> bool {
+    matches!(value, Value::Record(id)
+        if interp.find_record(*id).is_some_and(|record| record.kind == RecordKind::HashTable))
+}
+
+fn is_bool_vector(interp: &Interpreter, value: &Value) -> bool {
+    matches!(value, Value::Record(id)
+        if interp.find_record(*id).is_some_and(|record| record.kind == RecordKind::BoolVector))
+}
+
+// The flag bits of a lexical frame record.
+pub(crate) const FRAME_FUNCTION_BINDINGS: u64 = 1;
+pub(crate) const FRAME_HAS_IDENTITY: u64 = 2;
+pub(crate) const FRAME_CAPTURED: u64 = 4;
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn record_state_for_load(
+    id: u64,
+    kind: RecordKind,
+    type_tag: Value,
+    slots: Vec<Value>,
+) -> RecordState {
+    RecordState {
+        id,
+        type_tag,
+        slots,
+        kind,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn char_table_state_for_load(
+    id: u64,
+    subtype: Option<String>,
+    default: Value,
+    parent: Option<u64>,
+    entries: Vec<(u32, u32, Value)>,
+    extra_slots: Vec<Value>,
+    category_docs: Vec<(u32, String)>,
+) -> CharTableState {
+    let mut table = CharTableState::with_entries(
+        id,
+        subtype,
+        default,
+        parent,
+        entries
+            .into_iter()
+            .map(|(start, end, value)| crate::lisp::eval::CharTableEntry { start, end, value })
+            .collect(),
+    );
+    table.extra_slots = extra_slots;
+    table.category_docs = category_docs;
+    table
 }
 
 /// The string's bytes as GNU stores them: the internal multibyte form for
 /// a multibyte string, the raw octets for a unibyte one.
 pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError> {
     let string = string_like(object).expect("a string");
+    internal_codes_bytes(string.character_codes(), string.multibyte, &string.text)
+}
+
+/// Text with its out-of-Unicode side list (0-based positions) as GNU
+/// stores it: buffer text and strings share the representation.
+pub(crate) fn internal_text_bytes(
+    text: &str,
+    extended_chars: &[(usize, u32)],
+    multibyte: bool,
+) -> Result<Vec<u8>, DumpError> {
+    let codes = text.chars().enumerate().map(|(index, ch)| {
+        extended_chars
+            .binary_search_by_key(&index, |(position, _)| *position)
+            .ok()
+            .map(|found| i64::from(extended_chars[found].1))
+            .unwrap_or_else(|| {
+                crate::lisp::primitives::strings::string_character_code(multibyte, ch)
+            })
+    });
+    internal_codes_bytes(codes, multibyte, text)
+}
+
+fn internal_codes_bytes(
+    codes: impl IntoIterator<Item = i64>,
+    multibyte: bool,
+    text: &str,
+) -> Result<Vec<u8>, DumpError> {
     let mut bytes = Vec::new();
-    if string.multibyte {
-        for code in string.character_codes() {
+    if multibyte {
+        for code in codes {
             crate::lisp::primitives::strings::push_emacs_multibyte_char(&mut bytes, code as u32)?;
         }
     } else {
-        for code in string.character_codes() {
+        for code in codes {
             if !(0..=0xFF).contains(&code) {
                 // GNU cannot hold this state: a unibyte string's bytes are
                 // its characters.  A string built this way is an Emaxx
                 // representation error at its construction site.
                 return Err(LispError::Signal(format!(
-                    "unibyte string holds character {code:#x}, not a byte: {:?}",
-                    string.text
+                    "unibyte string holds character {code:#x}, not a byte: {text:?}"
                 ))
                 .into());
             }
@@ -1317,6 +2531,60 @@ pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError
     }
     Ok(bytes)
 }
+
+// The words of a buffer record before its variable part.
+pub(crate) const BUFFER_ID: u32 = 0;
+pub(crate) const BUFFER_FLAGS: u32 = 1;
+pub(crate) const BUFFER_NAME: u32 = 2;
+pub(crate) const BUFFER_FILE: u32 = 3;
+pub(crate) const BUFFER_FILE_TRUENAME: u32 = 4;
+/// `own_text.z': the character count.
+pub(crate) const BUFFER_Z: u32 = 5;
+/// `own_text.z_byte': the byte count in the internal representation.
+pub(crate) const BUFFER_Z_BYTE: u32 = 6;
+/// `own_text.beg': the cold text (a raw-pointer fixup).
+pub(crate) const BUFFER_TEXT: u32 = 7;
+pub(crate) const BUFFER_SAVED_BYTES: u32 = 8;
+pub(crate) const BUFFER_SAVED_TEXT: u32 = 9;
+pub(crate) const BUFFER_PT: u32 = 10;
+pub(crate) const BUFFER_MARK: u32 = 11;
+pub(crate) const BUFFER_BEGV: u32 = 12;
+pub(crate) const BUFFER_ZV: u32 = 13;
+pub(crate) const BUFFER_MODIFF: u32 = 14;
+pub(crate) const BUFFER_CHARS_MODIFF: u32 = 15;
+pub(crate) const BUFFER_SAVE_MODIFF: u32 = 16;
+pub(crate) const BUFFER_POINT_BEFORE_BOUNDARY: u32 = 17;
+pub(crate) const BUFFER_MODTIME_SECS: u32 = 18;
+pub(crate) const BUFFER_MODTIME_NANOS: u32 = 19;
+pub(crate) const BUFFER_BASE: u32 = 20;
+/// `own_text.intervals': the property spans (a raw-pointer fixup, or 0).
+pub(crate) const BUFFER_INTERVALS: u32 = 21;
+pub(crate) const BUFFER_MARK_MARKER: u32 = 22;
+pub(crate) const BUFFER_SYNTAX_TABLE: u32 = 23;
+pub(crate) const BUFFER_CASE_TABLE: u32 = 24;
+/// The variable part: the local bindings, the markers, the undo entries.
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 25;
+// The flag bits of BUFFER_FLAGS.
+pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
+pub(crate) const BUFFER_FLAG_MARK_ACTIVE: u64 = 2;
+pub(crate) const BUFFER_FLAG_FORCED_MODIFIED: u64 = 4;
+pub(crate) const BUFFER_FLAG_AUTOSAVED: u64 = 8;
+pub(crate) const BUFFER_FLAG_UNDO_DISABLED: u64 = 16;
+pub(crate) const BUFFER_FLAG_INHIBIT_HOOKS: u64 = 32;
+pub(crate) const BUFFER_FLAG_HAS_MODTIME: u64 = 64;
+/// A killed buffer (BUFFER_LIVE_P false): no text, name nil.
+pub(crate) const BUFFER_FLAG_DEAD: u64 = 128;
+/// An absent position.
+pub(crate) const NO_POSITION: u64 = u64::MAX;
+// The kinds of an undo entry.
+pub(crate) const UNDO_INSERT: u64 = 1;
+pub(crate) const UNDO_DELETE: u64 = 2;
+pub(crate) const UNDO_COMBINED: u64 = 3;
+pub(crate) const UNDO_OPAQUE: u64 = 4;
+pub(crate) const UNDO_BOUNDARY: u64 = 5;
+// The flag bits of an overlay record.
+pub(crate) const OVERLAY_FRONT_ADVANCE: u64 = 1;
+pub(crate) const OVERLAY_REAR_ADVANCE: u64 = 2;
 
 /// mpz_export: sign and little-endian 64-bit limbs.
 pub(crate) fn bignum_limbs(object: &Value) -> (bool, Vec<u64>) {

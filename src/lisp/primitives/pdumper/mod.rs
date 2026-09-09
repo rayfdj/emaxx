@@ -171,7 +171,7 @@ fn write_dump(
             filename,
         ))
     })?;
-    let mut ctx = DumpContext::new(track_referrers);
+    let mut ctx = DumpContext::new(track_referrers, interp.main_thread_record_id());
     let summary = match write_image(&mut ctx, interp, RootSource::Interpreter) {
         Ok(summary) => summary,
         Err(DumpError::Unsupported(unsupported)) => {
@@ -246,26 +246,33 @@ pub(crate) fn write_image(
     match roots {
         RootSource::Interpreter => ctx.dump_roots(interp)?,
         #[cfg(test)]
-        RootSource::Explicit(list) => ctx.dump_explicit_roots(&list),
+        RootSource::Explicit(list) => ctx.dump_explicit_roots(interp, &list)?,
     }
     // dump_charset_table, the finalizer list heads, the remembered data
     // and dump_metadata_for_pdumper join the image with their object
     // kinds (D11, D13).
 
-    // "Dump until while we keep finding objects to dump."  Deferred hash
-    // tables are D10; there is nothing else to drain in between.
+    // "Dump until while we keep finding objects to dump.  We add new
+    // objects to the queue by side effect during dumping.  We accumulate
+    // some types of objects in special lists to get more locality for
+    // these object types at runtime."
     loop {
+        ctx.drain_deferred_hash_tables(interp)?;
         ctx.drain_normal_queue(interp)?;
-        if ctx.queue_is_empty() {
+        if ctx.queue_is_empty() && ctx.deferred_hash_tables_is_empty() {
             break;
         }
     }
-    ctx.header.hash_list = 0;
+    ctx.header.hash_list = ctx.dump_hash_table_list(interp)?;
+    // "dump_hash_table_list just adds a new vector to the dump but all its
+    // content should already have been in the dump."
+    assert!(ctx.queue_is_empty() && ctx.deferred_hash_tables_is_empty());
 
     ctx.sort_copied_objects();
-    // dump_hot_parts_of_discardable_objects: a built-in symbol's hot parts
-    // are dumped here in GNU; Emaxx's symbols are heap objects already
-    // written above.
+    // dump_hot_parts_of_discardable_objects: the built-in symbols' hot
+    // parts.  Emaxx's symbols are heap objects already written above,
+    // except `nil' and `t', whose cells are written here.
+    ctx.dump_builtin_symbol_roots(interp)?;
 
     let hot_end = ctx.offset();
     ctx.header.discardable_start = hot_end;

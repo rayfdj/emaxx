@@ -170,6 +170,42 @@ pub(crate) enum DumpType {
     Obarray = 9,
     /// A string's text-property spans (GNU: the interval tree).
     TextProperties = 10,
+    /// An interpreted closure (`Value::Lambda').
+    Closure = 11,
+    /// A closure's parameter vector, shared between closures made from
+    /// one lambda form.
+    LambdaParams = 12,
+    /// A closure's body forms, shared likewise.
+    LambdaBody = 13,
+    /// A closure's captured lexical environment (`SharedEnv').
+    LexicalEnvironment = 14,
+    /// One frame of a lexical environment (`EnvFrame').
+    LexicalFrame = 15,
+    CharTable = 16,
+    /// A record or pseudovector kept as its slots (`Value::Record').
+    Record = 17,
+    /// A bool-vector: bits in the cold section.
+    BoolVector = 18,
+    /// The value cells of `nil' and `t', whose references are
+    /// self-representing words.
+    BuiltinSymbolCells = 19,
+    /// The main thread: an object of the running process (copied record).
+    MainThread = 20,
+    /// A hash table, frozen: its record, count, weakness, test and
+    /// mutability, then the compact key/value contents.
+    HashTable = 21,
+    /// A buffer: `dump_buffer's copy of the struct, its text in the
+    /// cold section.
+    Buffer = 22,
+    Marker = 23,
+    /// An overlay (only a deleted one can be written: a live one's
+    /// buffer refuses).
+    Overlay = 24,
+    Finalizer = 25,
+    /// A frame, nilled as `dump_nilled_pseudovec' writes it.
+    Frame = 26,
+    /// A terminal, nilled likewise.
+    Terminal = 27,
 }
 
 impl DumpType {
@@ -186,6 +222,23 @@ impl DumpType {
             8 => Self::Subr,
             9 => Self::Obarray,
             10 => Self::TextProperties,
+            11 => Self::Closure,
+            12 => Self::LambdaParams,
+            13 => Self::LambdaBody,
+            14 => Self::LexicalEnvironment,
+            15 => Self::LexicalFrame,
+            16 => Self::CharTable,
+            17 => Self::Record,
+            18 => Self::BoolVector,
+            19 => Self::BuiltinSymbolCells,
+            20 => Self::MainThread,
+            21 => Self::HashTable,
+            22 => Self::Buffer,
+            23 => Self::Marker,
+            24 => Self::Overlay,
+            25 => Self::Finalizer,
+            26 => Self::Frame,
+            27 => Self::Terminal,
             _ => return None,
         })
     }
@@ -290,6 +343,57 @@ pub(crate) enum RootSlot {
     LocalTimeZoneRule = 8,
     FrameAndBufferState = 9,
     CurrentGlobalMap = 10,
+    /// The value cells of the built-in symbol `nil' (GNU: the copied
+    /// lispsym entry).
+    NilCells = 11,
+    TCells = 12,
+    /// alloc.c's `finalizers' list head: its `prev' (the last finalizer)
+    /// and `next' (the first) pointers, as dump_finalizer_list_head_ptr
+    /// writes them.
+    FinalizersPrev = 13,
+    FinalizersNext = 14,
+    /// `doomed_finalizers' likewise.
+    DoomedFinalizersPrev = 15,
+    DoomedFinalizersNext = 16,
+    // The root groups (eval/dump_roots.rs), each the Lisp value GNU
+    // keeps for the group.
+    BufferAlist = 17,
+    ThisCommandKeys = 18,
+    RawKeybuf = 19,
+    RecentKeys = 20,
+    DetachedForwardedVariables = 21,
+    Charsets = 22,
+    CharsetOrderedList = 23,
+    CharsetList = 24,
+    Iso2022CharsetList = 25,
+    CharsetAliases = 26,
+    IsoCharsetTable = 27,
+    CharsetNonPreferredHead = 28,
+    SjisCodingSystem = 29,
+    Big5CodingSystem = 30,
+    CodingSystems = 31,
+    CodingAliases = 32,
+    CodingPriority = 33,
+    CodingCategoryRepresentatives = 34,
+    CodingCategoryPriorities = 35,
+    CclProgramTable = 36,
+    StandardSyntaxTable = 37,
+    StandardCategoryTable = 38,
+    StandardCaseTable = 39,
+    AsciiCaseTables = 40,
+    SyntaxWordChars = 41,
+    Fontsets = 42,
+    LispFaces = 43,
+    AlternativeFontFamilyAlist = 44,
+    AlternativeFontRegistryAlist = 45,
+    FringeBitmaps = 46,
+    Compositions = 47,
+    ErtTests = 48,
+    LabeledRestrictions = 49,
+    TimerList = 50,
+    LastThreadError = 51,
+    FontSelectionOrder = 52,
+    LexicalCellUpdates = 53,
 }
 
 impl RootSlot {
@@ -306,6 +410,49 @@ impl RootSlot {
             8 => Self::LocalTimeZoneRule,
             9 => Self::FrameAndBufferState,
             10 => Self::CurrentGlobalMap,
+            11 => Self::NilCells,
+            12 => Self::TCells,
+            13 => Self::FinalizersPrev,
+            14 => Self::FinalizersNext,
+            15 => Self::DoomedFinalizersPrev,
+            16 => Self::DoomedFinalizersNext,
+            17 => Self::BufferAlist,
+            18 => Self::ThisCommandKeys,
+            19 => Self::RawKeybuf,
+            20 => Self::RecentKeys,
+            21 => Self::DetachedForwardedVariables,
+            22 => Self::Charsets,
+            23 => Self::CharsetOrderedList,
+            24 => Self::CharsetList,
+            25 => Self::Iso2022CharsetList,
+            26 => Self::CharsetAliases,
+            27 => Self::IsoCharsetTable,
+            28 => Self::CharsetNonPreferredHead,
+            29 => Self::SjisCodingSystem,
+            30 => Self::Big5CodingSystem,
+            31 => Self::CodingSystems,
+            32 => Self::CodingAliases,
+            33 => Self::CodingPriority,
+            34 => Self::CodingCategoryRepresentatives,
+            35 => Self::CodingCategoryPriorities,
+            36 => Self::CclProgramTable,
+            37 => Self::StandardSyntaxTable,
+            38 => Self::StandardCategoryTable,
+            39 => Self::StandardCaseTable,
+            40 => Self::AsciiCaseTables,
+            41 => Self::SyntaxWordChars,
+            42 => Self::Fontsets,
+            43 => Self::LispFaces,
+            44 => Self::AlternativeFontFamilyAlist,
+            45 => Self::AlternativeFontRegistryAlist,
+            46 => Self::FringeBitmaps,
+            47 => Self::Compositions,
+            48 => Self::ErtTests,
+            49 => Self::LabeledRestrictions,
+            50 => Self::TimerList,
+            51 => Self::LastThreadError,
+            52 => Self::FontSelectionOrder,
+            53 => Self::LexicalCellUpdates,
             _ => return None,
         })
     }

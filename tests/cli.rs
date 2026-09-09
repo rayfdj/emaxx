@@ -485,14 +485,24 @@ fn batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor() {
          (cli-probe-f)\n",
     )
     .unwrap();
+    // Keep the loader call interpreted in both processes. Native compilation
+    // can optimize away the funcall trampolines for `load' and `eval-buffer'
+    // in preloaded startup.el/mule.el (comp.el:comp--call-optim-form-call).
+    // Those build-dependent frames are not a stdio contract. This ASCII
+    // fixture uses lread.c's direct reader and an explicit Lisp caller, so
+    // the complete trace, including loader/startup frames, remains comparable.
+    let setup = format!(
+        "(progn (setq load-source-file-function nil) \
+         (defun cli-probe-load () (load {:?} nil t)))",
+        program.display().to_string()
+    );
     let run = |binary: &std::path::Path| {
         let merged = unique_temp_path("emaxx-cli-stdio-merged");
         let file = std::fs::File::create(&merged).unwrap();
         let status = Command::new(binary)
             .env("LANG", "C")
             .env("LC_ALL", "C")
-            .args(["-Q", "--batch", "-l"])
-            .arg(&program)
+            .args(["-Q", "--batch", "--eval", &setup, "-f", "cli-probe-load"])
             .stdout(Stdio::from(file.try_clone().unwrap()))
             .stderr(Stdio::from(file))
             .status()
@@ -505,8 +515,7 @@ fn batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor() {
     let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
     let _ = std::fs::remove_file(&program);
     assert_eq!(oracle.0, Some(255), "GNU oracle exit status:\n{}", oracle.1);
-    // The remaining loader frames vary with GNU's preloaded loader.
-    // The exact subject/oracle comparison below also checks those frames.
+    // Compare every output byte and every frame; do not strip loader frames.
     assert!(
         oracle.1.starts_with("\ntwo\n\nfour\none\nthreefive\nSymbol's function definition is void: cli-probe-undefined\n\nError: void-function (cli-probe-undefined)\n  (cli-probe-undefined 1 2)\n  cli-probe-g()\n  cli-probe-f()\n"),
         "unexpected GNU oracle output:\n{}",
