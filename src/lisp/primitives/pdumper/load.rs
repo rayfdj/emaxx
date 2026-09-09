@@ -530,6 +530,12 @@ impl Loader<'_> {
                 self.interp.install_finalizer(id, function);
             }
         }
+        // The root groups: each reinstalled from its value.
+        for (slot, value) in &roots {
+            self.interp
+                .install_root_group(*slot, value)
+                .map_err(|message| LoadError::Error(format!("{slot:?}: {message}")))?;
+        }
 
         Ok(LoadedImage {
             header,
@@ -660,7 +666,7 @@ impl Loader<'_> {
             params,
             public_parameters,
             body,
-            env,
+            env: env.clone(),
             documentation,
             interactive,
             public_environment,
@@ -668,6 +674,9 @@ impl Loader<'_> {
         self.objects.insert(offset, closure.clone());
         self.closures_in_progress.remove(&offset);
         self.fill_env(env_offset)?;
+        // The closure owns its captured frames again, so an assignment to
+        // a captured variable is shared as it was before the dump.
+        self.interp.register_captured_lexical_frames(&env);
         Ok(closure)
     }
 

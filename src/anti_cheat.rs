@@ -1380,6 +1380,58 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
     );
 }
 
+/// pdumper.c:dump_roots visits every staticpro'd slot.  Every root the
+/// mark phase visits (the `self.<field>' references of the root-marking
+/// function) must be written by the image (`dump_root_values' or
+/// `dump_roots.rs' reads it) or listed in `ROOTS_RESET_AFTER_LOAD' with
+/// the GNU reason it is re-created after a load, or be one of the
+/// transient groups the writer requires empty.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn interpreter_roots_are_dumped_or_documented() {
+    let source =
+        fs::read_to_string(repo_root().join("src/lisp/eval.rs")).expect("read src/lisp/eval.rs");
+    let roots_start = source
+        .find("pub(crate) fn weak_hash_reachability_with_native")
+        .expect("root-marking function");
+    let roots_end = source[roots_start..]
+        .find("\n    }\n")
+        .map(|offset| roots_start + offset)
+        .expect("end of root-marking function");
+    let marking = &source[roots_start..roots_end];
+    let dump_values_start = source
+        .find("pub(crate) fn dump_root_values")
+        .expect("dump_root_values");
+    let dump_values_end = source[dump_values_start..]
+        .find("\n    }\n")
+        .map(|offset| dump_values_start + offset)
+        .expect("end of dump_root_values");
+    let dump_values = &source[dump_values_start..dump_values_end];
+    let dump_roots = fs::read_to_string(repo_root().join("src/lisp/eval/dump_roots.rs"))
+        .expect("read src/lisp/eval/dump_roots.rs");
+    let field_pattern = regex::Regex::new(r"self\.([a-z_0-9]+)").expect("compile field pattern");
+    let mut fields = std::collections::BTreeSet::new();
+    for capture in field_pattern.captures_iter(marking) {
+        fields.insert(capture[1].to_string());
+    }
+    let mut missing = Vec::new();
+    for field in fields {
+        let read = format!("self.{field}");
+        let documented = format!("\"{field}\"");
+        let covered = dump_values.contains(&read)
+            || dump_roots.contains(&read)
+            || dump_roots.contains(&documented)
+            // The buffers are written through the buffer alist.
+            || matches!(field.as_str(), "buffer" | "inactive_buffers");
+        if !covered {
+            missing.push(field);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "roots the mark phase visits that the image neither writes nor documents: {missing:?}"
+    );
+}
+
 pub(crate) fn gnu_c_int_variable_manifest_matches_fresh_regeneration() {
     // This inventory makes a store into a DEFVAR_INT slot CHECK_INTEGER and
     // range-check as data.c:store_symval_forwarding does; regenerate it from
@@ -1773,6 +1825,11 @@ mod gate_tests {
     #[test]
     fn interpreter_value_fields_are_gc_roots_or_documented() {
         super::interpreter_value_fields_are_gc_roots_or_documented();
+    }
+
+    #[test]
+    fn interpreter_roots_are_dumped_or_documented() {
+        super::interpreter_roots_are_dumped_or_documented();
     }
 
     #[test]
