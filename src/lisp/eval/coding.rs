@@ -961,7 +961,8 @@ impl Interpreter {
     }
 
     pub fn terminal_coding_system(&self) -> Option<String> {
-        self.terminal_coding.clone()
+        self.terminal_state(self.selected_terminal_id())
+            .and_then(|terminal| terminal.terminal_coding.clone())
     }
 
     /// Return the coder term.c uses when terminal output needs encoding.
@@ -975,19 +976,34 @@ impl Interpreter {
                     Some("no-conversion" | "raw-text" | "undecided")
                 )
             })
-            .unwrap_or_else(|| "us-ascii".into())
+            .unwrap_or_else(|| {
+                self.safe_terminal_coding
+                    .clone()
+                    .unwrap_or_else(|| "us-ascii".into())
+            })
     }
 
     pub fn set_terminal_coding_system(&mut self, coding: Option<String>) {
-        self.terminal_coding = coding;
+        let id = self.selected_terminal_id();
+        self.terminals
+            .iter_mut()
+            .find(|terminal| terminal.id == id)
+            .expect("decoded terminal has state")
+            .terminal_coding = coding;
     }
 
     pub fn keyboard_coding_system(&self) -> Option<String> {
-        self.keyboard_coding.clone()
+        self.terminal_state(self.selected_terminal_id())
+            .and_then(|terminal| terminal.keyboard_coding.clone())
     }
 
     pub fn set_keyboard_coding_system(&mut self, coding: Option<String>) {
-        self.keyboard_coding = coding;
+        let id = self.selected_terminal_id();
+        self.terminals
+            .iter_mut()
+            .find(|terminal| terminal.id == id)
+            .expect("decoded terminal has state")
+            .keyboard_coding = coding;
     }
 
     pub fn input_interrupt_mode(&self) -> bool {

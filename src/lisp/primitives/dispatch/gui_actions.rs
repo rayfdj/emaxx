@@ -279,10 +279,6 @@ define_dispatch!(
                 require_live_frame(interp, args.get(1))?;
                 Err(window_system_frame_required())
             }
-            "x-file-dialog" => {
-                need_arg_range(name, args, 2, 5)?;
-                Err(window_system_unavailable())
-            }
             "x-open-connection" => {
                 need_arg_range(name, args, 1, 3)?;
                 if !args[0].is_string() {

@@ -930,6 +930,39 @@ fn mouse_event_on_menu_bar(event: &Value) -> bool {
 /// (`key-binding'), classifying strict prefixes so a multi-key sequence
 /// keeps reading.  This is the single resolution path for every command
 /// loop — the frame's and the minibuffer's recursive one.
+pub(crate) fn resolve_decoded_key_sequence(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pending: &mut Vec<Value>,
+) -> Result<KeyResolution, LispError> {
+    // keyboard.c:read_key_sequence/keyremap_step keeps a partial terminal
+    // sequence across reads. A PTY read boundary is not a key boundary.
+    if let Some(map) = interp
+        .lookup_var("input-decode-map", env)
+        .filter(|map| is_keymap_value(interp, map))
+    {
+        for start in 0..pending.len() {
+            let sequence = Value::vector(pending[start..].iter().cloned());
+            let binding = super::call(interp, "lookup-key", &[map.clone(), sequence], env)?;
+            if is_keymap_value(interp, &binding) {
+                return Ok(KeyResolution::Prefix);
+            }
+            if binding.is_nil() || matches!(binding, Value::Integer(_)) {
+                continue;
+            }
+            let translated = if vector_items(&binding).is_ok() || binding.is_string() {
+                Ok(binding)
+            } else {
+                interp.call_function_value(binding, None, &[Value::Nil], env)
+            };
+            let translated = translated.and_then(|value| translated_input_events(&value))?;
+            pending.splice(start.., translated);
+            break;
+        }
+    }
+    Ok(resolve_key_sequence(interp, env, pending))
+}
+
 pub(crate) fn resolve_key_sequence(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1704,6 +1737,13 @@ pub(crate) fn translated_input_events(value: &Value) -> Result<Vec<Value>, LispE
     if let Ok(items) = vector_items(value) {
         return Ok(items);
     }
+    if let Some(string) = string_like(value) {
+        return Ok(string
+            .character_codes()
+            .into_iter()
+            .map(Value::Integer)
+            .collect());
+    }
     Ok(vec![value.clone()])
 }
 
@@ -1760,6 +1800,7 @@ pub(crate) fn read_decoded_input_event(
         prefix.push(ch);
         let binding = keymap_lookup_binding(interp, &input_decode_map, &prefix)?;
         if !binding.is_nil()
+            && !is_keymap_value(interp, &binding)
             && best_match
                 .as_ref()
                 .is_none_or(|(best_len, _)| prefix.chars().count() > *best_len)
@@ -1775,8 +1816,14 @@ pub(crate) fn read_decoded_input_event(
     remaining.drain(0..prefix_len);
     interp.set_variable("unread-command-events", Value::list(remaining), env);
 
-    let function = resolve_callable(interp, &binding, env)?;
-    let translated = invoke_function_value(interp, &function, &[Value::Nil], env)?;
+    // keyboard.c:read_key_sequence accepts a vector/string translation as
+    // well as a function. Termcap installs vectors in input-decode-map.
+    let translated = if matches!(binding, Value::Vector(_)) || binding.is_string() {
+        binding
+    } else {
+        let function = resolve_callable(interp, &binding, env)?;
+        invoke_function_value(interp, &function, &[Value::Nil], env)?
+    };
     let events = translated_input_events(&translated)?;
     if events.is_empty() {
         return Ok(None);

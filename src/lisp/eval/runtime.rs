@@ -446,26 +446,43 @@ impl Interpreter {
 
     pub(crate) fn set_selected_window_id(&mut self, id: u64) {
         self.selected_window_id = id;
+        self.selected_frame_state_mut()
+            .expect("decoded frame has state")
+            .selected_window_id = id;
     }
 
     pub(crate) fn root_window_value(&self) -> Value {
-        Value::Record(self.root_window_id)
+        Value::Record(
+            self.selected_frame_state()
+                .expect("decoded frame has state")
+                .root_window_id,
+        )
     }
 
     pub(crate) fn set_root_window_id(&mut self, id: u64) {
-        self.root_window_id = id;
+        self.selected_frame_state_mut()
+            .expect("decoded frame has state")
+            .root_window_id = id;
     }
 
     pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.minibuffer_window_id
+        self.selected_frame_state()
+            .expect("decoded frame has state")
+            .minibuffer_window_id
     }
 
     pub(crate) fn minibuffer_window_value(&self) -> Value {
-        Value::Record(self.minibuffer_window_id)
+        Value::Record(
+            self.selected_frame_state()
+                .expect("decoded frame has state")
+                .minibuffer_window_id,
+        )
     }
 
     pub(crate) fn set_minibuffer_window_id(&mut self, id: u64) {
-        self.minibuffer_window_id = id;
+        self.selected_frame_state_mut()
+            .expect("decoded frame has state")
+            .minibuffer_window_id = id;
     }
 
     pub(crate) fn minibuffer_selected_window_id(&self) -> Option<u64> {
@@ -492,12 +509,6 @@ impl Interpreter {
 
     pub(crate) fn old_selected_window_value(&self) -> Value {
         Value::Record(self.old_selected_window_id)
-    }
-
-    pub(crate) fn frame_old_selected_window_value(&self) -> Value {
-        self.frame_old_selected_window_id
-            .map(Value::Record)
-            .unwrap_or(Value::Nil)
     }
 
     pub(crate) fn window_use_time(&self, id: u64) -> i64 {
@@ -628,7 +639,12 @@ impl Interpreter {
     }
 
     pub(crate) fn frame_is_live(&self, id: u64) -> bool {
-        self.terminal_live() && self.frame_state(id).is_some_and(|frame| frame.live)
+        self.frame_state(id).is_some_and(|frame| {
+            frame.live
+                && self
+                    .terminal_state(frame.terminal_id)
+                    .is_some_and(|terminal| terminal.live)
+        })
     }
 
     pub fn frame_width(&self) -> i64 {
@@ -669,21 +685,45 @@ impl Interpreter {
     /// answers (0 colors, dark, mono); only the terminal frontend calls
     /// this.
     pub fn set_tty_display_colors(&mut self, color_cells: i64) {
-        self.tty_display_color_cells = color_cells.max(0);
+        let id = self.selected_terminal_id();
+        self.terminals
+            .iter_mut()
+            .find(|terminal| terminal.id == id)
+            .expect("decoded terminal has state")
+            .colors = color_cells.max(0);
     }
 
     pub(crate) fn tty_display_color_cells(&self) -> i64 {
-        self.tty_display_color_cells
+        self.terminal_state(self.selected_terminal_id())
+            .map_or(0, |terminal| terminal.colors)
     }
 
     /// term.c keeps the terminal's type string (tty->type, from $TERM);
     /// `tty-type' answers it for live tty frames and nil in batch.
     pub fn set_tty_terminal_type(&mut self, terminal_type: Option<String>) {
-        self.tty_terminal_type = terminal_type;
+        let id = self.selected_terminal_id();
+        let terminal = self
+            .terminals
+            .iter_mut()
+            .find(|terminal| terminal.id == id)
+            .expect("decoded terminal has state");
+        terminal.kind = terminal_type;
+        #[cfg(unix)]
+        if terminal.device.is_none() && terminal.kind.is_some() {
+            // The startup terminal is the existing standard-input device.
+            // Store its actual device name so init_tty reuses it by name.
+            let pointer = unsafe { libc::ttyname(libc::STDIN_FILENO) };
+            if !pointer.is_null() {
+                terminal.name = unsafe { std::ffi::CStr::from_ptr(pointer) }
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
     }
 
     pub(crate) fn tty_terminal_type(&self) -> Option<&str> {
-        self.tty_terminal_type.as_deref()
+        self.terminal_state(self.selected_terminal_id())
+            .and_then(|terminal| terminal.kind.as_deref())
     }
 
     /// Adopt the terminal's real geometry: a tty frame's height counts
@@ -704,7 +744,9 @@ impl Interpreter {
             .unwrap_or(1)
             .clamp(0, 1)
             .min(height - 2);
-        self.tty_frame_sized = true;
+        self.selected_frame_state_mut()
+            .expect("decoded frame has state")
+            .tty_sized = true;
         if let Some(frame) = self.selected_frame_state_mut() {
             frame.width = width;
             frame.height = height;
@@ -713,20 +755,6 @@ impl Interpreter {
             frame.parameter_height = height;
         }
         self.resize_frame_window_records();
-    }
-
-    /// Recompute the tty window tree against the current frame
-    /// parameters — the resize `menu-bar-mode' triggers when it stores a
-    /// new `menu-bar-lines' count.  A no-op until a live tty has
-    /// published its size: batch frames ignore the parameter, as GNU's
-    /// batch frames do.
-    pub(crate) fn refresh_tty_frame_layout(&mut self) {
-        if !self.tty_frame_sized {
-            return;
-        }
-        let width = self.frame_width();
-        let height = self.frame_height();
-        self.set_tty_frame_size(width, height);
     }
 
     pub(crate) fn frame_text_height(&self) -> i64 {
@@ -853,19 +881,25 @@ impl Interpreter {
     }
 
     fn resize_frame_window_records(&mut self) {
-        let width = self.frame_width();
-        let total_height = self.frame_height();
-        let text_height = self.frame_text_height();
+        self.resize_frame_window_records_for(self.selected_frame_id);
+    }
+
+    pub(crate) fn resize_frame_window_records_for(&mut self, id: u64) {
+        let frame = self.frame_state(id).expect("decoded frame has state");
+        let (width, total_height, text_height, root, minibuffer) = (
+            frame.width,
+            frame.height,
+            frame.text_height,
+            frame.root_window_id,
+            frame.minibuffer_window_id,
+        );
         let top_margin = total_height.saturating_sub(text_height);
         let root_height = text_height.saturating_sub(1).max(1);
-        if self.find_record(self.root_window_id).is_some() {
-            self.resize_window_record_tree(
-                self.root_window_id,
-                (width, root_height, 0, top_margin),
-            );
+        if self.find_record(root).is_some() {
+            self.resize_window_record_tree(root, (width, root_height, 0, top_margin));
         }
-        if self.find_record(self.minibuffer_window_id).is_some() {
-            let minibuffer_id = self.minibuffer_window_id;
+        if self.find_record(minibuffer).is_some() {
+            let minibuffer_id = minibuffer;
             let old_minibuffer = self.window_record_geometry(minibuffer_id);
             self.set_window_record_geometry(
                 minibuffer_id,
@@ -902,27 +936,37 @@ impl Interpreter {
     }
 
     pub(crate) fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
+        self.snapshot_frame_window_configuration(self.selected_frame_id)
+    }
+
+    fn snapshot_frame_window_configuration(&self, frame_id: u64) -> WindowConfigurationSnapshot {
+        let frame = self.frame_state(frame_id).expect("decoded frame has state");
         WindowConfigurationSnapshot {
+            frame_id,
+            selected_frame_id: self.selected_frame_id,
             current_buffer_id: self.current_buffer_id(),
-            selected_window_id: self.selected_window_id,
+            selected_window_id: frame.selected_window_id,
             selected_window_slots: self
-                .find_record(self.selected_window_id)
+                .find_record(frame.selected_window_id)
                 .map(|record| record.slots.clone())
                 .unwrap_or_default(),
             window_records: self
                 .records
                 .iter()
-                .filter(|record| record.kind == RecordKind::Window)
+                .filter(|record| {
+                    record.kind == RecordKind::Window
+                        && self.window_frame_id(record.id) == Some(frame_id)
+                })
                 .map(|record| (record.id, record.slots.clone()))
                 .collect(),
-            root_window_id: self.root_window_id,
-            frame_width: self.frame_width(),
-            frame_height: self.frame_height(),
+            root_window_id: frame.root_window_id,
+            frame_width: frame.width,
+            frame_height: frame.height,
         }
     }
 
-    pub(crate) fn window_configuration_value(&mut self) -> Value {
-        let snapshot = self.snapshot_window_configuration();
+    pub(crate) fn window_configuration_value(&mut self, frame_id: u64) -> Value {
+        let snapshot = self.snapshot_frame_window_configuration(frame_id);
         self.create_pseudovector(
             RecordKind::WindowConfiguration,
             "window-configuration",
@@ -938,6 +982,8 @@ impl Interpreter {
                         Value::cons(Value::Integer(id as i64), Value::list(slots))
                     }),
                 ),
+                Value::Frame(frame_id),
+                Value::Frame(snapshot.selected_frame_id),
             ],
         )
     }
@@ -949,6 +995,9 @@ impl Interpreter {
         let Some(snapshot) = self.window_configuration_snapshot_from_value(value) else {
             return Ok(false);
         };
+        if !self.frame_is_live(snapshot.frame_id) {
+            return Ok(false);
+        }
         self.restore_window_configuration(snapshot)?;
         Ok(true)
     }
@@ -986,6 +1035,20 @@ impl Interpreter {
             })
             .unwrap_or_else(|| vec![(selected_window_id, selected_window_slots.clone())]);
         Some(WindowConfigurationSnapshot {
+            frame_id: slots.get(7).and_then(|value| {
+                if let Value::Frame(id) = value {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })?,
+            selected_frame_id: slots.get(8).and_then(|value| {
+                if let Value::Frame(id) = value {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })?,
             current_buffer_id: slots
                 .first()
                 .and_then(|value| value.as_integer().ok())
@@ -1041,7 +1104,9 @@ impl Interpreter {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        Ok(left.current_buffer_id == right.current_buffer_id
+        Ok(left.frame_id == right.frame_id
+            && left.selected_frame_id == right.selected_frame_id
+            && left.current_buffer_id == right.current_buffer_id
             && left.frame_width == right.frame_width
             && left.frame_height == right.frame_height
             && layout_slots(&left.selected_window_slots)
@@ -1052,21 +1117,24 @@ impl Interpreter {
         &mut self,
         snapshot: WindowConfigurationSnapshot,
     ) -> Result<(), LispError> {
+        if !self.frame_is_live(snapshot.frame_id) {
+            return Ok(());
+        }
         let saved_windows = snapshot
             .window_records
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
-        for record in self
-            .records
-            .iter_mut()
-            .filter(|record| record.kind == RecordKind::Window)
-        {
+        for record in self.records.iter_mut().filter(|record| {
+            record.kind == RecordKind::Window
+                && record.slots.get(primitives::WINDOW_FRAME_SLOT)
+                    == Some(&Value::Frame(snapshot.frame_id))
+        }) {
             if let Some(slots) = saved_windows.get(&record.id) {
                 record.slots.clone_from(slots);
             } else {
                 record
                     .slots
-                    .resize(primitives::WINDOW_FIRST_CHILD_SLOT + 1, Value::Nil);
+                    .resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
                 record.slots[primitives::WINDOW_BUFFER_SLOT] = Value::Nil;
                 record.slots[primitives::WINDOW_KIND_SLOT] =
                     Value::Symbol(primitives::DELETED_WINDOW_KIND.into());
@@ -1080,62 +1148,27 @@ impl Interpreter {
                 }
             }
         }
-        self.root_window_id = snapshot.root_window_id;
-        self.selected_window_id = snapshot.selected_window_id;
-        if self.has_buffer_id(snapshot.current_buffer_id) {
-            self.set_current_buffer_id(snapshot.current_buffer_id)?;
-        }
+        self.frame_state_mut(snapshot.frame_id)
+            .expect("decoded frame has state")
+            .root_window_id = snapshot.root_window_id;
+        self.note_selected_frame(snapshot.frame_id);
+        self.set_selected_window_id(snapshot.selected_window_id);
         // GNU records frame dimensions for configuration equality, but
         // `set-window-configuration' does not rewind a frame resize.  Restore
         // the saved tree into the frame's current geometry instead.
         self.resize_frame_window_records();
-        Ok(())
-    }
-
-    pub fn terminal_parameter(&self, parameter: &Value) -> Option<Value> {
-        self.terminal_parameters
-            .iter()
-            .rfind(|(key, _)| key == parameter)
-            .map(|(_, value)| value.clone())
-    }
-
-    pub fn terminal_live(&self) -> bool {
-        self.terminal_live
-    }
-
-    pub(crate) fn terminal_value(&self) -> Value {
-        Value::Terminal(0)
-    }
-
-    pub fn delete_terminal_state(&mut self) {
-        self.terminal_live = false;
-        self.terminal_parameters.clear();
-    }
-
-    pub fn set_terminal_parameter(&mut self, parameter: Value, value: Value) -> Value {
-        let parameter = Self::stored_value(parameter);
-        let value = Self::stored_value(value);
-        if let Some(index) = self
-            .terminal_parameters
-            .iter()
-            .rposition(|(key, _)| key == &parameter)
-        {
-            let previous = self.terminal_parameters[index].1.clone();
-            self.terminal_parameters[index].1 = value;
-            previous
-        } else {
-            self.terminal_parameters.push((parameter, value));
-            Value::Nil
+        if self.frame_is_live(snapshot.selected_frame_id) {
+            self.note_selected_frame(snapshot.selected_frame_id);
+            let selected_window = self
+                .selected_frame_state()
+                .expect("decoded frame has state")
+                .selected_window_id;
+            self.set_selected_window_id(selected_window);
         }
-    }
-
-    pub fn terminal_parameters(&self) -> Value {
-        Value::list(
-            self.terminal_parameters
-                .iter()
-                .rev()
-                .map(|(parameter, value)| Value::cons(parameter.clone(), value.clone())),
-        )
+        if self.has_buffer_id(snapshot.current_buffer_id) {
+            self.set_current_buffer_id(snapshot.current_buffer_id)?;
+        }
+        Ok(())
     }
 
     /// Remove a non-current buffer from the live buffer list.
@@ -2395,8 +2428,12 @@ impl Interpreter {
         &mut self,
         kind: RecordKind,
         type_name: &str,
-        slots: Vec<Value>,
+        mut slots: Vec<Value>,
     ) -> Value {
+        if kind == RecordKind::Window {
+            slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
+            slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
+        }
         debug_assert_ne!(kind, RecordKind::Record);
         self.create_record_with_kind(Value::symbol(type_name), slots, kind)
     }
@@ -2978,6 +3015,90 @@ impl Interpreter {
 
     pub(crate) fn take_combined_after_change(&mut self) -> Option<CombinedAfterChangeState> {
         self.combined_after_change.take()
+    }
+}
+
+impl Interpreter {
+    /// frame.c:change_frame_size propagates a text terminal's dimensions to
+    /// every frame displayed on that device, preserving each window tree.
+    pub(crate) fn resize_terminal_frames(&mut self, id: u64, width: i64, height: i64) {
+        let terminal = self
+            .frame_state(id)
+            .expect("decoded frame has state")
+            .terminal_id;
+        let ids: Vec<_> = self
+            .frame_states
+            .iter()
+            .filter(|frame| frame.live && frame.terminal_id == terminal)
+            .map(|frame| frame.id)
+            .collect();
+        for id in ids {
+            let frame = self.frame_state_mut(id).expect("decoded frame has state");
+            let margin: i64 = ["menu-bar-lines", "tab-bar-lines"]
+                .iter()
+                .map(|name| {
+                    frame
+                        .parameter_overrides
+                        .iter()
+                        .find(|(key, _)| key == name)
+                        .and_then(|(_, value)| value.as_integer().ok())
+                        .unwrap_or(0)
+                        .clamp(0, 1)
+                })
+                .sum();
+            frame.width = width.max(2);
+            frame.height = height.max(margin + 2);
+            frame.text_height = frame.height - margin;
+            frame.parameter_width = frame.width;
+            frame.parameter_height = frame.height;
+            self.resize_frame_window_records_for(id);
+        }
+    }
+}
+
+impl Interpreter {
+    /// eval.c:safe_funcall: establish the catch before invoking Lisp, so
+    /// outer handler-bind handlers and the debugger do not observe muted
+    /// errors. Log through add_to_log's sink, without replacing the echo.
+    pub(crate) fn safe_funcall(
+        &mut self,
+        function: Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let restore = self.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
+        let handlers = self.push_condition_case_handler(vec![Value::T]);
+        let depth = env.len();
+        let result = self.call_function_value(function.clone(), None, args, env);
+        self.pop_handler_bindings(handlers);
+        env.truncate(depth);
+        let result = match result {
+            Err(
+                error @ (LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)),
+            ) => Err(error),
+            Err(error) => {
+                self.clear_batch_error_backtrace();
+                let message = primitives::call(
+                    self,
+                    "format-message",
+                    &[
+                        Value::string("Error muted by safe_call: %S signaled %S"),
+                        Value::list(std::iter::once(function).chain(args.iter().cloned())),
+                        super::error_condition_value(&error),
+                    ],
+                    env,
+                );
+                message.map(|message| {
+                    if let Some(message) = primitives::string_like(&message) {
+                        primitives::log_message_text(self, &message.text, env);
+                    }
+                    Value::Nil
+                })
+            }
+            value => value,
+        };
+        self.restore_special_dynamic(restore, env)?;
+        result
     }
 }
 

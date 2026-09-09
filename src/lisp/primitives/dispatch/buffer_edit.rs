@@ -361,7 +361,7 @@ define_dispatch!(
             "insert-and-inherit" => insert_impl(interp, args, env, true, false),
             "insert-char" => insert_char_impl(interp, args, env),
             "self-insert-command" => {
-                need_arg_range(name, args, 0, 2)?;
+                need_arg_range(name, args, 1, 2)?;
                 let amalgamating = args
                     .first()
                     .filter(|value| !value.is_nil())

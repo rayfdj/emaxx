@@ -569,18 +569,28 @@ fn decode_live_frame(
 }
 
 fn require_live_terminal(interp: &Interpreter, value: Option<&Value>) -> Result<(), LispError> {
-    if !interp.terminal_live() {
-        return Err(wrong_type_argument(
-            "terminal-live-p",
-            value.cloned().unwrap_or(Value::Nil),
-        ));
+    let value = value.unwrap_or(&Value::Nil);
+    interp
+        .decode_terminal_id(value)
+        .map(|_| ())
+        .ok_or_else(|| wrong_type_argument("terminal-live-p", value.clone()))
+}
+
+// window.c accepts either a live frame or a valid leaf/interior window in
+// frame-root-window, frame-first-window, and frame-selected-window.
+fn frame_or_window_id(interp: &Interpreter, value: Option<&Value>) -> Result<u64, LispError> {
+    if let Some(value) = value
+        && let Some(window) = window_record_id_from_value(interp, value)
+        && !matches!(
+            window_slot_value(interp, window, WINDOW_KIND_SLOT),
+            Value::Symbol(kind) if kind == DELETED_WINDOW_KIND
+        )
+    {
+        return Ok(interp
+            .window_frame_id(window)
+            .expect("valid window stores its owning frame"));
     }
-    match value.unwrap_or(&Value::Nil) {
-        Value::Nil => Ok(()),
-        Value::Terminal(0) => Ok(()),
-        Value::Frame(id) if interp.frame_is_live(*id) => Ok(()),
-        value => Err(wrong_type_argument("terminal-live-p", value.clone())),
-    }
+    super::frames::decode_live_frame(interp, value, true)
 }
 
 fn current_frame_and_buffer_state(interp: &Interpreter) -> Vec<Value> {
@@ -880,9 +890,14 @@ fn is_live_ordinary_window(interp: &Interpreter, id: u64) -> bool {
 /// chains.  `next-window' cycles and `window-list' both follow it, and it
 /// is the top-to-bottom, left-to-right order the glass paints.
 fn window_tree_leaf_ids(interp: &Interpreter) -> Vec<u64> {
-    let Value::Record(root_id) = frame_root_window_value(interp) else {
-        return Vec::new();
-    };
+    frame_window_tree_leaf_ids(interp, interp.selected_frame_id)
+}
+
+fn frame_window_tree_leaf_ids(interp: &Interpreter, frame: u64) -> Vec<u64> {
+    let root_id = interp
+        .frame_state(frame)
+        .expect("decoded frame has state")
+        .root_window_id;
     // A malformed tree (stale sibling links) must not loop forever; no
     // healthy tree revisits a window record.
     let budget = interp.record_ids_by_type("window").len().saturating_add(1);
@@ -1682,6 +1697,9 @@ fn select_window_value(
             .unwrap_or(1)
             .max(1) as usize
     };
+    if let Some(frame) = interp.window_frame_id(window_id) {
+        interp.note_selected_frame(frame);
+    }
     interp.set_selected_window_id(window_id);
     if !norecord {
         interp.record_window_selection(window_id);
@@ -1893,8 +1911,17 @@ fn split_window_tree(
         )?;
     }
     set_window_geometry(interp, old_id, old_geometry)?;
+    let frame = interp
+        .window_frame_id(old_id)
+        .expect("window stores its owning frame");
+    for id in [new_id, parent_id] {
+        set_window_slot_value(interp, id, WINDOW_FRAME_SLOT, Value::Frame(frame))?;
+    }
     if old_parent.is_none() {
-        interp.set_root_window_id(parent_id);
+        interp
+            .frame_state_mut(frame)
+            .expect("decoded frame has state")
+            .root_window_id = parent_id;
     }
     Ok(Value::Record(new_id))
 }
@@ -1909,13 +1936,21 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
     let outside_prev = window_link(interp, parent_id, WINDOW_PREV_SIBLING_SLOT);
     let outside_next = window_link(interp, parent_id, WINDOW_NEXT_SIBLING_SLOT);
     let parent_geometry = window_geometry(interp, parent_id);
-    let replacement = (interp.selected_window_id() == window_id).then(|| {
-        let point = window_slot_value(interp, sibling_id, WINDOW_POINT_SLOT)
-            .as_integer()
-            .unwrap_or(1)
-            .max(1) as usize;
-        (sibling_id, point)
-    });
+    let owner = interp
+        .window_frame_id(window_id)
+        .expect("window stores its owning frame");
+    let replacement = (interp
+        .frame_state(owner)
+        .expect("decoded frame has state")
+        .selected_window_id
+        == window_id)
+        .then(|| {
+            let point = window_slot_value(interp, sibling_id, WINDOW_POINT_SLOT)
+                .as_integer()
+                .unwrap_or(1)
+                .max(1) as usize;
+            (sibling_id, point)
+        });
 
     if let Some(grandparent_id) = grandparent
         && window_link(interp, grandparent_id, WINDOW_FIRST_CHILD_SLOT) == Some(parent_id)
@@ -1976,9 +2011,22 @@ fn delete_window_from_tree(interp: &mut Interpreter, window_id: u64) -> Result<(
         set_window_slot_value(interp, deleted_id, WINDOW_FIRST_CHILD_SLOT, Value::Nil)?;
     }
     if grandparent.is_none() {
-        interp.set_root_window_id(sibling_id);
+        let frame = interp
+            .window_frame_id(window_id)
+            .expect("window stores its owning frame");
+        interp
+            .frame_state_mut(frame)
+            .expect("decoded frame has state")
+            .root_window_id = sibling_id;
     }
     if let Some((replacement_id, point)) = replacement {
+        interp
+            .frame_state_mut(owner)
+            .expect("decoded frame has state")
+            .selected_window_id = replacement_id;
+        if owner != interp.selected_frame_id {
+            return Ok(());
+        }
         interp.set_selected_window_id(replacement_id);
         if let Some(buffer_id) = window_buffer_id(interp, &Value::Record(replacement_id)) {
             interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
@@ -1992,11 +2040,16 @@ fn delete_other_windows_from_tree(
     interp: &mut Interpreter,
     window_id: u64,
 ) -> Result<(), LispError> {
-    let root = frame_root_window_value(interp);
-    let root_id = window_id_or_selected(interp, &root)?;
+    let frame = interp
+        .window_frame_id(window_id)
+        .expect("window stores its owning frame");
+    let root_id = interp
+        .frame_state(frame)
+        .expect("decoded frame has state")
+        .root_window_id;
     let root_geometry = window_geometry(interp, root_id);
     for id in interp.record_ids_by_type("window") {
-        if id == window_id {
+        if id == window_id || interp.window_frame_id(id) != Some(frame) {
             continue;
         }
         let kind = window_slot_value(interp, id, WINDOW_KIND_SLOT);
@@ -2014,7 +2067,10 @@ fn delete_other_windows_from_tree(
     set_window_slot_value(interp, window_id, WINDOW_PREV_SIBLING_SLOT, Value::Nil)?;
     set_window_slot_value(interp, window_id, WINDOW_NEXT_SIBLING_SLOT, Value::Nil)?;
     set_window_geometry(interp, window_id, root_geometry)?;
-    interp.set_root_window_id(window_id);
+    interp
+        .frame_state_mut(frame)
+        .expect("decoded frame has state")
+        .root_window_id = window_id;
     Ok(())
 }
 
@@ -2298,22 +2354,33 @@ fn window_list_value(
     interp: &Interpreter,
     minibuf: Option<&Value>,
     start: Option<&Value>,
+    frames: &[u64],
 ) -> Value {
-    let mut ids = live_ordinary_window_ids(interp);
-    // GNU window.c includes the active minibuffer when MINIBUF is nil or
-    // omitted, and includes it unconditionally for t.  Any other non-nil
-    // value excludes it.  Add it before rotating so an active, selected
-    // minibuffer is first in the cyclic order; window.el's
-    // `get-buffer-window-list' relies on precisely this default contract.
-    let include_minibuffer = match minibuf {
-        Some(Value::T) => true,
-        None | Some(Value::Nil) => interp.active_minibuffer_buffer_id().is_some(),
-        Some(_) => false,
-    };
-    if include_minibuffer {
-        let minibuffer_id = interp.minibuffer_window_id();
-        if !ids.contains(&minibuffer_id) {
-            ids.push(minibuffer_id);
+    let mut ids = Vec::new();
+    for frame in frames {
+        ids.extend(
+            frame_window_tree_leaf_ids(interp, *frame)
+                .into_iter()
+                .filter(|id| is_live_ordinary_window(interp, *id)),
+        );
+        // GNU window.c includes the active minibuffer when MINIBUF is nil or
+        // omitted, and includes it unconditionally for t.  Any other non-nil
+        // value excludes it.  Add it before rotating so an active, selected
+        // minibuffer is first in the cyclic order; window.el's
+        // `get-buffer-window-list' relies on precisely this default contract.
+        let include_minibuffer = match minibuf {
+            Some(Value::T) => true,
+            None | Some(Value::Nil) => interp.active_minibuffer_buffer_id().is_some(),
+            Some(_) => false,
+        };
+        if include_minibuffer {
+            let minibuffer_id = interp
+                .frame_state(*frame)
+                .expect("decoded frame has state")
+                .minibuffer_window_id;
+            if !ids.contains(&minibuffer_id) {
+                ids.push(minibuffer_id);
+            }
         }
     }
     // GNU lists windows in cyclic order starting from WINDOW (default
@@ -2843,7 +2910,7 @@ define_dispatch!(
                 Ok(args[0].clone())
             }
             "redirect-debugging-output" => {
-                need_arg_range(name, args, 0, 2)?;
+                need_arg_range(name, args, 1, 2)?;
                 let target = match args.first() {
                     None | Some(Value::Nil) => Value::Nil,
                     Some(value) => Value::String(string_text(value)?.into()),
@@ -3016,12 +3083,33 @@ define_dispatch!(
             "tty-type" => {
                 need_arg_range(name, args, 0, 1)?;
                 require_live_terminal(interp, args.first())?;
+                let id = interp
+                    .decode_terminal_id(args.first().unwrap_or(&Value::Nil))
+                    .expect("terminal was validated");
                 Ok(interp
-                    .tty_terminal_type()
-                    .map(|terminal_type| Value::String(terminal_type.to_string().into()))
+                    .terminal_state(id)
+                    .expect("decoded terminal has state")
+                    .kind
+                    .as_deref()
+                    .map(Value::string)
                     .unwrap_or(Value::Nil))
             }
-            "controlling-tty-p" | "tty-top-frame" => {
+            "tty-top-frame" => {
+                need_arg_range(name, args, 0, 1)?;
+                require_live_terminal(interp, args.first())?;
+                let id = interp
+                    .decode_terminal_id(args.first().unwrap_or(&Value::Nil))
+                    .expect("terminal was validated");
+                let terminal = interp
+                    .terminal_state(id)
+                    .expect("decoded terminal has state");
+                Ok(if terminal.kind.is_some() {
+                    Value::Frame(terminal.top_frame)
+                } else {
+                    Value::Nil
+                })
+            }
+            "controlling-tty-p" => {
                 need_arg_range(name, args, 0, 1)?;
                 require_live_terminal(interp, args.first())?;
                 Ok(Value::Nil)
@@ -3394,7 +3482,7 @@ define_dispatch!(
                 Ok(Value::Record(candidate_id))
             }
             "set-window-margins" => {
-                need_arg_range(name, args, 1, 3)?;
+                need_arg_range(name, args, 2, 3)?;
                 let window_id = if args.first().is_none_or(|value| value.is_nil()) {
                     interp.selected_window_id()
                 } else {
@@ -3781,7 +3869,7 @@ define_dispatch!(
                 Ok(Value::Integer(0))
             }
             "move-to-window-line" => {
-                need_arg_range(name, args, 0, 1)?;
+                need_arg_range(name, args, 1, 1)?;
                 let height = selected_command_text_height(interp, env);
                 let line = resolve_window_line(args.first(), height / 2, height)?;
                 let window_start = current_window_start(interp);
@@ -3835,13 +3923,13 @@ define_dispatch!(
             }
             "window-text-pixel-size" => {
                 // (window-text-pixel-size &optional WINDOW FROM TO X-LIMIT
-                //  Y-LIMIT MODE-LINES).  Without a graphical frame a cell
+                //  Y-LIMIT MODE-LINES IGNORE-LINE-AT-END).  Without a graphical frame a cell
                 // is the pixel unit: the widest line's character count and
                 // the line count stand for the pixel size of WINDOW's
                 // buffer text.  MODE-LINES non-nil adds the window's mode,
                 // header, and tab lines — `fit-window-to-buffer' sizes the
                 // whole window from that total.
-                need_arg_range(name, args, 0, 6)?;
+                need_arg_range(name, args, 0, 7)?;
                 let window = args.first().cloned().unwrap_or(Value::Nil);
                 let window_id = window_id_or_selected(interp, &window)?;
                 let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
@@ -4216,19 +4304,44 @@ define_dispatch!(
             }
             "selected-window" => Ok(interp.selected_window_value()),
             "old-selected-window" => Ok(interp.old_selected_window_value()),
-            "frame-selected-window" => Ok(interp.selected_window_value()),
+            "frame-selected-window" => {
+                need_arg_range(name, args, 0, 1)?;
+                let id = frame_or_window_id(interp, args.first())?;
+                Ok(Value::Record(
+                    interp
+                        .frame_state(id)
+                        .expect("decoded frame has state")
+                        .selected_window_id,
+                ))
+            }
             "frame-old-selected-window" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(interp.frame_old_selected_window_value())
+                let id = super::frames::decode_live_frame(interp, args.first(), true)?;
+                Ok(interp
+                    .frame_state(id)
+                    .expect("decoded frame has state")
+                    .old_selected_window_id
+                    .map(Value::Record)
+                    .unwrap_or(Value::Nil))
             }
             "set-frame-selected-window" => {
                 need_arg_range(name, args, 2, 3)?;
-                if !args[0].is_nil()
-                    && !matches!(&args[0], Value::Frame(id) if interp.frame_is_live(*id))
-                {
-                    return Err(wrong_type_argument("frame-live-p", args[0].clone()));
+                let frame = super::frames::decode_live_frame(interp, args.first(), true)?;
+                let window = live_window_id_or_selected(interp, args.get(1))?;
+                if interp.window_frame_id(window) != Some(frame) {
+                    return Err(LispError::Signal(
+                        "In `set-frame-selected-window', WINDOW is not on FRAME".into(),
+                    ));
                 }
-                select_window_value(interp, &args[1], args.get(2).is_some_and(Value::is_truthy))
+                if frame == interp.selected_frame_id {
+                    select_window_value(interp, &args[1], args.get(2).is_some_and(Value::is_truthy))
+                } else {
+                    interp
+                        .frame_state_mut(frame)
+                        .expect("decoded frame has state")
+                        .selected_window_id = window;
+                    Ok(args[1].clone())
+                }
             }
             "select-window" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -4236,11 +4349,22 @@ define_dispatch!(
             }
             "current-window-configuration" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(interp.window_configuration_value())
+                let frame = super::frames::decode_live_frame(interp, args.first(), true)?;
+                Ok(interp.window_configuration_value(frame))
             }
             "set-window-configuration" => {
                 need_arg_range(name, args, 1, 3)?;
+                let selected = interp.selected_frame_id;
                 let restored = interp.apply_window_configuration_value(&args[0])?;
+                if args.get(1).is_some_and(Value::is_truthy) && interp.frame_is_live(selected) {
+                    interp.note_selected_frame(selected);
+                    interp.set_selected_window_id(
+                        interp
+                            .frame_state(selected)
+                            .expect("decoded frame has state")
+                            .selected_window_id,
+                    );
+                }
                 Ok(if restored { Value::T } else { Value::Nil })
             }
             "window-configuration-p" => {
@@ -4267,7 +4391,14 @@ define_dispatch!(
                         args[0].clone(),
                     ));
                 }
-                Ok(interp.selected_frame_value())
+                let Value::Record(id) = args[0] else {
+                    unreachable!()
+                };
+                Ok(interp
+                    .find_record(id)
+                    .expect("allocated window has a record")
+                    .slots[7]
+                    .clone())
             }
             "force-window-update" => {
                 need_arg_range(name, args, 0, 1)?;
@@ -4567,46 +4698,100 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "window-list" | "window-list-1" => {
+            "window-list" => {
                 need_arg_range(name, args, 0, 3)?;
-                let start = if name == "window-list" {
-                    args.get(2)
-                } else {
-                    args.first()
+                let frame = args
+                    .first()
+                    .filter(|frame| !frame.is_nil())
+                    .cloned()
+                    .unwrap_or_else(|| interp.selected_frame_value());
+                let start = args
+                    .get(2)
+                    .filter(|window| !window.is_nil())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        if let Value::Frame(id) = &frame {
+                            interp
+                                .frame_state(*id)
+                                .map(|f| Value::Record(f.selected_window_id))
+                                .unwrap_or_else(|| interp.selected_window_value())
+                        } else {
+                            interp.selected_window_value()
+                        }
+                    });
+                let window = window_id_or_selected(interp, &start)?;
+                if Some(frame.clone()) != interp.window_frame_id(window).map(Value::Frame) {
+                    return Err(LispError::Signal("Window is on a different frame".into()));
+                }
+                let Value::Frame(frame) = frame else {
+                    unreachable!()
                 };
-                Ok(window_list_value(interp, args.get(1), start))
+                Ok(window_list_value(
+                    interp,
+                    args.get(1),
+                    Some(&start),
+                    &[frame],
+                ))
             }
-            "next-window" | "previous-window" => {
+            "window-list-1" | "next-window" | "previous-window" => {
                 need_arg_range(name, args, 0, 3)?;
                 let current = args
                     .first()
                     .filter(|window| !window.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
-                let current_id = window_id_or_selected(interp, &current)?;
-                let mut ids = live_ordinary_window_ids(interp);
-                let include_minibuffer = matches!(args.get(1), Some(Value::T));
-                if include_minibuffer {
-                    ids.push(interp.minibuffer_window_id());
+                let window = live_window_id_or_selected(interp, Some(&current))?;
+                let own_frame = interp
+                    .window_frame_id(window)
+                    .expect("window stores its owning frame");
+                let frame_filter = args.get(2).unwrap_or(&Value::Nil);
+                let frames: Vec<_> = interp
+                    .frame_states
+                    .iter()
+                    .filter(|frame| interp.frame_is_live(frame.id))
+                    .filter(|frame| match frame_filter {
+                        Value::T => true,
+                        Value::Frame(id) => frame.id == *id,
+                        Value::Integer(0) => frame.terminal_id == interp.selected_terminal_id(),
+                        Value::Symbol(name) if name == "visible" => {
+                            frame.terminal_id == interp.selected_terminal_id()
+                        }
+                        _ => frame.id == own_frame,
+                    })
+                    .map(|frame| frame.id)
+                    .collect();
+                let windows = window_list_value(interp, args.get(1), Some(&current), &frames);
+                if name == "window-list-1" {
+                    return Ok(windows);
                 }
-                if ids.is_empty() {
-                    return Ok(interp.selected_window_value());
-                }
-                let index = ids.iter().position(|id| *id == current_id).unwrap_or(0);
-                let next = if name == "next-window" {
-                    (index + 1) % ids.len()
+                let windows = windows.to_vec()?;
+                Ok(if name == "next-window" {
+                    windows.get(1).or(windows.first())
                 } else {
-                    (index + ids.len() - 1) % ids.len()
-                };
-                Ok(Value::Record(ids[next]))
+                    windows.last()
+                }
+                .cloned()
+                .unwrap_or(current))
             }
             "frame-root-window" => {
                 need_arg_range(name, args, 0, 1)?;
-                Ok(frame_root_window_value(interp))
+                let id = frame_or_window_id(interp, args.first())?;
+                Ok(Value::Record(
+                    interp
+                        .frame_state(id)
+                        .expect("decoded frame has state")
+                        .root_window_id,
+                ))
             }
             "frame-first-window" => {
                 need_arg_range(name, args, 0, 1)?;
-                let mut window = frame_root_window_value(interp);
+                let id = frame_or_window_id(interp, args.first())?;
+                let mut window = Value::Record(
+                    interp
+                        .frame_state(id)
+                        .expect("decoded frame has state")
+                        .root_window_id,
+                );
                 while let Value::Record(id) = window {
                     let Some(child) = window_link(interp, id, WINDOW_FIRST_CHILD_SLOT) else {
                         return Ok(Value::Record(id));
@@ -4670,9 +4855,20 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "window-frame" => {
-                // emaxx has a single frame; any live window belongs to it.
                 need_arg_range(name, args, 0, 1)?;
-                Ok(interp.selected_frame_value())
+                let value = args.first().unwrap_or(&Value::Nil);
+                let id = window_id_or_selected(interp, value)?;
+                if window_slot_value(interp, id, WINDOW_KIND_SLOT)
+                    .as_symbol()
+                    .ok()
+                    == Some(DELETED_WINDOW_KIND)
+                {
+                    return Err(wrong_type_argument("window-valid-p", value.clone()));
+                }
+                Ok(interp
+                    .window_frame_id(id)
+                    .map(Value::Frame)
+                    .unwrap_or(Value::Nil))
             }
             "windowp" | "window-live-p" | "window-valid-p" => {
                 need_args(name, args, 1)?;
@@ -5022,49 +5218,54 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "get-buffer-window" => {
-                need_arg_range(name, args, 0, 3)?;
-                let buffer_id = if let Some(buffer) = args.first() {
-                    if buffer.is_nil() {
-                        Some(interp.current_buffer_id())
-                    } else if let Some(string) = string_like(buffer) {
-                        interp.find_buffer(&string.text).map(|(id, _)| id)
-                    } else {
-                        Some(interp.resolve_buffer_id(buffer)?)
+                need_arg_range(name, args, 0, 2)?;
+                let buffer_id = match args.first().filter(|buffer| !buffer.is_nil()) {
+                    None => Some(interp.current_buffer_id()),
+                    Some(Value::Buffer(buffer)) => {
+                        interp.has_buffer_id(buffer.id).then_some(buffer.id)
                     }
-                } else {
-                    Some(interp.current_buffer_id())
+                    Some(value) => {
+                        let name = string_text(value)?;
+                        interp.find_buffer(&name).map(|(id, _)| id)
+                    }
                 };
-                Ok(buffer_id
-                    .and_then(|buffer_id| {
-                        live_ordinary_window_ids(interp)
-                            .into_iter()
-                            .find(|id| {
-                                window_buffer_id(interp, &Value::Record(*id)) == Some(buffer_id)
-                            })
-                            .or_else(|| {
-                                // ALL-FRAMES t considers the minibuffer
-                                // window when it is active (GNU's
-                                // choose-completion-string finds the
-                                // minibuffer through this).
-                                if !matches!(args.get(1), Some(Value::T)) {
-                                    return None;
-                                }
-                                interp.active_minibuffer_buffer_id()?;
-                                match interp.minibuffer_window_value() {
-                                    Value::Record(id)
-                                        if window_buffer_id(interp, &Value::Record(id))
-                                            == Some(buffer_id) =>
-                                    {
-                                        Some(id)
-                                    }
-                                    _ => None,
-                                }
-                            })
+                let Some(buffer_id) = buffer_id else {
+                    return Ok(Value::Nil);
+                };
+                let windows = call(
+                    interp,
+                    "window-list-1",
+                    &[
+                        interp.selected_window_value(),
+                        Value::T,
+                        args.get(1).cloned().unwrap_or(Value::Nil),
+                    ],
+                    env,
+                )?
+                .to_vec()?;
+                Ok(windows
+                    .into_iter()
+                    .find(|window| {
+                        let Value::Record(id) = window else {
+                            return false;
+                        };
+                        (is_live_ordinary_window(interp, *id)
+                            || (interp.active_minibuffer_buffer_id().is_some()
+                                && *id == interp.minibuffer_window_id()))
+                            && window_buffer_id(interp, window) == Some(buffer_id)
                     })
-                    .map(Value::Record)
                     .unwrap_or(Value::Nil))
             }
-            "minibuffer-window" => Ok(interp.minibuffer_window_value()),
+            "minibuffer-window" => {
+                need_arg_range(name, args, 0, 1)?;
+                let id = super::frames::decode_live_frame(interp, args.first(), true)?;
+                Ok(Value::Record(
+                    interp
+                        .frame_state(id)
+                        .expect("decoded frame has state")
+                        .minibuffer_window_id,
+                ))
+            }
             "set-minibuffer-window" => {
                 need_args(name, args, 1)?;
                 let Some(window_id) = window_record_id_from_value(interp, &args[0]) else {

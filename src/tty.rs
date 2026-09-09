@@ -98,6 +98,19 @@ fn terminal_color_cells() -> i64 {
     }
 }
 
+fn terminal_output() -> Box<dyn Write> {
+    struct FailedOutput(io::Error);
+    impl Write for FailedOutput {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(self.0.kind(), self.0.to_string()))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(self.0.kind(), self.0.to_string()))
+        }
+    }
+    crate::lisp::eval::terminal::output().unwrap_or_else(|error| Box::new(FailedOutput(error)))
+}
+
 type CellAttrs = crate::lisp::primitives::TtyFaceAttrs;
 
 /// A face layered over a base: attributes the face leaves unspecified
@@ -190,6 +203,8 @@ impl PaintRow {
 }
 
 struct TtyState {
+    terminal_id: u64,
+    other_terminals: std::collections::HashMap<u64, Box<TtyState>>,
     /// Per-window display anchors, keyed by window record id.
     views: std::collections::HashMap<u64, WindowView>,
     /// A `C-u' sequence is accumulating: digits and `-' extend the prefix
@@ -242,8 +257,25 @@ struct TtyState {
 }
 
 impl TtyState {
+    fn activate_terminal(&mut self, id: u64) {
+        if id == self.terminal_id {
+            return;
+        }
+        let mut states = std::mem::take(&mut self.other_terminals);
+        let next = states
+            .remove(&id)
+            .map(|state| *state)
+            .unwrap_or_else(Self::new);
+        let old = std::mem::replace(self, next);
+        states.insert(old.terminal_id, Box::new(old));
+        self.terminal_id = id;
+        self.other_terminals = states;
+    }
+
     fn new() -> Self {
         Self {
+            terminal_id: 0,
+            other_terminals: Default::default(),
             views: std::collections::HashMap::new(),
             prefix_active: false,
             pending: Vec::new(),
@@ -422,6 +454,15 @@ impl SharedEventQueue {
                     if events.is_empty() {
                         continue;
                     }
+                    if crate::lisp::eval::terminal::secondary_output_active() {
+                        events.insert(
+                            0,
+                            Value::list([
+                                Value::symbol("switch-frame"),
+                                Value::Frame(crate::lisp::eval::terminal::primary_top_frame()),
+                            ]),
+                        );
+                    }
                     let first = events.remove(0);
                     self.0
                         .borrow_mut()
@@ -454,6 +495,15 @@ impl SharedEventQueue {
                     let mut events = encode_key(key);
                     if events.is_empty() {
                         continue;
+                    }
+                    if crate::lisp::eval::terminal::secondary_output_active() {
+                        events.insert(
+                            0,
+                            Value::list([
+                                Value::symbol("switch-frame"),
+                                Value::Frame(crate::lisp::eval::terminal::primary_top_frame()),
+                            ]),
+                        );
                     }
                     let first = events.remove(0);
                     self.0
@@ -635,7 +685,7 @@ fn draw_echo_row_composed(
     env: &mut Env,
     state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) {
-    let Ok((cols, rows)) = terminal::size() else {
+    let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
         return;
     };
     let Ok(mut state) = state.try_borrow_mut() else {
@@ -667,7 +717,7 @@ fn draw_echo_row_composed(
     }
     echo_paint.resize(mini_rows, PaintRow::blank(cols));
     let base = (rows.max(4) as usize).saturating_sub(mini_rows);
-    let mut out = io::stdout();
+    let mut out = terminal_output();
     for (index, echo_row) in echo_paint.iter().enumerate() {
         let _ = paint_row(&mut out, base + index, echo_row);
     }
@@ -695,7 +745,7 @@ fn draw_echo_row_composed(
 /// When the full redisplay already painted this text (with its face
 /// attributes — the minibuffer prompt), leave that paint alone.
 fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
-    let Ok((cols, rows)) = terminal::size() else {
+    let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
         return;
     };
     let text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
@@ -725,7 +775,7 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
                 long.blit(0, &text, CellAttrs::default());
                 let (row, col) = wrapped_echo_cursor(&long, text.chars().count(), cols, mini_rows);
                 let base = (rows as usize).saturating_sub(mini_rows);
-                let mut out = io::stdout();
+                let mut out = terminal_output();
                 let _ = queue!(
                     out,
                     cursor::MoveTo(
@@ -774,7 +824,7 @@ fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
     let mut echo_paint = wrap_echo_paint(&long, cols, mini_rows);
     echo_paint.resize(mini_rows, PaintRow::blank(cols));
     let base = (rows as usize).saturating_sub(mini_rows);
-    let mut out = io::stdout();
+    let mut out = terminal_output();
     for (index, echo_row) in echo_paint.iter().enumerate() {
         let _ = paint_row(&mut out, base + index, echo_row);
     }
@@ -891,12 +941,26 @@ fn command_loop(
         // arrives — sequences and silently-discarded button-downs
         // included; the glass catches up at the next redisplay.
         crate::lisp::primitives::expire_echo_area_message();
+        if event
+            .car()
+            .ok()
+            .and_then(|value| value.as_symbol().ok().map(str::to_owned))
+            .as_deref()
+            == Some("switch-frame")
+        {
+            crate::lisp::primitives::call(interpreter, "handle-switch-frame", &[event], env)
+                .map_err(|error| error.to_string())?;
+            shared_state
+                .borrow_mut()
+                .activate_terminal(interpreter.selected_terminal_id());
+            continue;
+        }
         // The state borrow is scoped: `execute_binding' below may re-enter
         // redisplay through the minibuffer's frame-redraw hook, and
         // resolution itself can run the whole dropdown executor (a
         // keymap-bound mouse click pops it), both of which borrow the
         // same cell.
-        let pending_snapshot = {
+        let mut pending_snapshot = {
             let state = &mut *shared_state.borrow_mut();
 
             // A fresh key erases a previous command's echo, but not the
@@ -908,9 +972,23 @@ fn command_loop(
             state.pending.push(event);
             state.pending.clone()
         };
-        let resolution = resolve_pending(interpreter, env, &pending_snapshot);
+        let resolution = match crate::lisp::primitives::resolve_decoded_key_sequence(
+            interpreter,
+            env,
+            &mut pending_snapshot,
+        ) {
+            Ok(resolution) => resolution,
+            Err(LispError::Terminate(termination)) => return Ok(termination.exit_code),
+            Err(error) => {
+                let text = command_error_text(interpreter, env, &error);
+                crate::lisp::primitives::set_echo_area_message(Some(text));
+                shared_state.borrow_mut().pending.clear();
+                continue;
+            }
+        };
         let dispatch = {
             let state = &mut *shared_state.borrow_mut();
+            state.pending = pending_snapshot;
             debug_log(&format!(
                 "keys {:?} -> {}",
                 describe_keys(&state.pending),
@@ -1144,7 +1222,7 @@ fn synthesize_mouse_event(
     }
     name.push_str(&format!("mouse-{button}"));
 
-    let (_, rows) = terminal::size().ok()?;
+    let (_, rows) = crate::lisp::eval::terminal::output_size().ok()?;
     let menu_bar_rows = ((rows as i64) - interpreter.frame_text_height()).clamp(0, 1);
     let posn = if menu_bar_rows > 0 && row == 0 {
         // xt-mouse builds the menu-bar posn with a nil window slot —
@@ -2778,7 +2856,8 @@ fn redraw_with_echo_policy(
     state: &mut TtyState,
     exact_echo: bool,
 ) -> io::Result<()> {
-    let (cols, rows) = terminal::size()?;
+    state.activate_terminal(interpreter.selected_terminal_id());
+    let (cols, rows) = crate::lisp::eval::terminal::output_size()?;
     let cols = cols.max(10) as usize;
     let rows = rows.max(4) as usize;
     // The interpreter's window tree carries the frame geometry: keep it
@@ -4140,7 +4219,7 @@ fn redraw_with_echo_policy(
     }
     state.painted_rows.resize(frame_rows, PaintRow::unpainted());
 
-    let mut out = io::stdout();
+    let mut out = terminal_output();
     queue!(out, cursor::Hide)?;
     for (row, rendered) in frame.into_iter().enumerate() {
         if state.painted_rows[row] != rendered {
@@ -6515,7 +6594,7 @@ fn make_menu_executor(
               pane: &TtyMenuPane,
               x0: usize,
               y0: usize| {
-            let Ok((cols, rows)) = terminal::size() else {
+            let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
                 return TtyMenuOutcome::Quit;
             };
             let (cols, rows) = (cols.max(10) as usize, rows.max(4) as usize);
@@ -6597,7 +6676,7 @@ fn make_menu_executor(
             // in the selected face — ' File > ' clobbering the bar.
             let title_width = pane.title.chars().count() + 4;
             let draw = |state: &mut TtyState, selected_row: usize, first_item: usize| {
-                let mut out = io::stdout();
+                let mut out = terminal_output();
                 let _ = queue!(out, cursor::Hide);
                 if title_row < state.painted_rows.len() {
                     let cell = menu_cell(
@@ -6648,7 +6727,7 @@ fn make_menu_executor(
                 let _ = out.flush();
             };
             let place_cursor = |selected_row: usize| {
-                let mut out = io::stdout();
+                let mut out = terminal_output();
                 let _ = queue!(
                     out,
                     cursor::MoveTo(
@@ -6793,7 +6872,7 @@ fn make_menu_executor(
             // screen_update: put back what the menu covered.
             {
                 let mut state = state.borrow_mut();
-                let mut out = io::stdout();
+                let mut out = terminal_output();
                 for (row, cell) in saved {
                     let _ = paint_row(&mut out, row, &cell);
                     if row < state.painted_rows.len() {

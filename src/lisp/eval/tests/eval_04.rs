@@ -2129,6 +2129,30 @@ fn format_spec_renders_buffers_with_princ_semantics() {
         ),
         Value::String("buffer=#format-spec-buffer".into())
     );
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r##"(let ((buffer (generate-new-buffer "#buffer-print-before")))
+                  (unwind-protect
+                      (progn
+                        (with-current-buffer buffer
+                          (rename-buffer "#buffer-print-after"))
+                        (list (format "%s" buffer) (format "%S" buffer)
+                              (buffer-name buffer)
+                              (progn
+                                (kill-buffer buffer)
+                                (list (format "%s" buffer) (format "%S" buffer)))))
+                    (when (buffer-live-p buffer) (kill-buffer buffer))))"##
+        ),
+        Value::list([
+            Value::String("#buffer-print-after".into()),
+            Value::String("#<buffer #buffer-print-after>".into()),
+            Value::String("#buffer-print-after".into()),
+            Value::list([
+                Value::String("#<killed buffer>".into()),
+                Value::String("#<killed buffer>".into()),
+            ]),
+        ])
+    );
 }
 
 #[test]
@@ -5418,11 +5442,18 @@ fn standard_obarray_intern_soft_stays_indexed_at_scale() {
 
 #[test]
 fn lexical_onload_closure_can_define_a_function_in_a_dynamic_obarray() {
+    // With subr trampolines enabled (the batch default) GNU's Ffset of
+    // `require' autoloads comp-run.el while `obarray' is the private
+    // one, and GNU signals (void-function byte-code) -- probed against
+    // the oracle 2026-09-09.  The closures under a dynamic obarray are
+    // what this tests, so trampolines are bound off as the fixture had
+    // them before native compilation ran in tests.
     assert_eq!(
         eval_str_with_upstream_batch_feature(
             "cl-macs",
             r#"
-                (let* ((obarray (obarray-make))
+                (let* ((native-comp-enable-subr-trampolines nil)
+                       (obarray (obarray-make))
                        (on-load nil)
                        (mk-cmd
                         (lambda (module)
@@ -5803,7 +5834,10 @@ fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
                             "a[[:blank:]]+ignore"
                             (substitute-command-keys
                              "\\{emaxx-help-test-map}"))))
-                     (type-of (symbol-function 'last))
+                     (let ((function (symbol-function 'last)))
+                       (or (byte-code-function-p function)
+                           (and (subrp function)
+                                (subr-native-elisp-p function))))
                      (symbol-function 'search-forward-regexp)
                      (file-name-nondirectory (symbol-file 'chmod 'defun))
                      (file-name-nondirectory (symbol-file 'posn-window 'defun))
@@ -5816,11 +5850,10 @@ fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
                 Value::String("Demo".into()),
                 Value::Symbol("ignore".into()),
                 Value::T,
-                // A batch session loads `last' from subr.elc: GNU answers
-                // `byte-code-function' with `subr-native-elisp-p' nil
-                // (no subr.eln is loaded there), and so does the Emaxx
-                // CLI; the fixture now matches both.
-                Value::Symbol("byte-code-function".into()),
+                // GNU loads this Lisp definition as bytecode or as a native
+                // Elisp subr depending on its available .eln cache. A C/Rust
+                // builtin substitute must not satisfy this ownership check.
+                Value::T,
                 Value::BuiltinFunc("re-search-forward".into()),
                 Value::String("subr.elc".into()),
                 Value::String("subr.elc".into()),
@@ -6086,7 +6119,14 @@ fn batch_native_lisp_callables_preserve_help_arglists() {
                            (func-arity function)
                            (listp (help-function-arglist 'defvar-keymap t))))
                    (let ((function (indirect-function 'zerop)))
-                     (list (aref function 0)
+                     (list (if (byte-code-function-p function)
+                               (= (aref function 0) 257)
+                             (and (subrp function)
+                                  (subr-native-elisp-p function)
+                                  (condition-case err
+                                      (progn (aref function 0) nil)
+                                    (wrong-type-argument
+                                     (eq (cadr err) 'arrayp)))))
                            (func-arity function)
                            (help-function-arglist 'zerop t)))
                    (let ((function (indirect-function 'cl-oddp)))
@@ -6112,9 +6152,9 @@ fn batch_native_lisp_callables_preserve_help_arglists() {
                     Value::T,
                 ]),
                 Value::list([
-                    // Compiled `zerop' from GNU's subr.elc: slot 0 is the
-                    // packed argspec for exactly one required argument.
-                    Value::Integer(257),
+                    // GNU exposes the bytecode argspec through aref, while
+                    // a native Elisp subr rejects array access entirely.
+                    Value::T,
                     Value::cons(Value::Integer(1), Value::Integer(1)),
                     Value::list([Value::Symbol("number".into())]),
                 ]),

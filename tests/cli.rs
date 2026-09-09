@@ -505,8 +505,10 @@ fn batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor() {
     let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
     let _ = std::fs::remove_file(&program);
     assert_eq!(oracle.0, Some(255), "GNU oracle exit status:\n{}", oracle.1);
+    // The remaining loader frames vary with GNU's preloaded loader.
+    // The exact subject/oracle comparison below also checks those frames.
     assert!(
-        oracle.1.starts_with("\ntwo\n\nfour\none\nthreefive\nSymbol's function definition is void: cli-probe-undefined\n\nError: void-function (cli-probe-undefined)\n  (cli-probe-undefined 1 2)\n  cli-probe-g()\n  cli-probe-f()\n  eval-buffer("),
+        oracle.1.starts_with("\ntwo\n\nfour\none\nthreefive\nSymbol's function definition is void: cli-probe-undefined\n\nError: void-function (cli-probe-undefined)\n  (cli-probe-undefined 1 2)\n  cli-probe-g()\n  cli-probe-f()\n"),
         "unexpected GNU oracle output:\n{}",
         oracle.1
     );

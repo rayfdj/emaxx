@@ -2233,7 +2233,8 @@ mod tests {
             let form = Reader::new(
                 "(list (featurep 'select)\
                        (fboundp 'gui-set-selection)\
-                       (not (subrp (symbol-function 'gui-set-selection)))\
+                       (or (not (subrp (symbol-function 'gui-set-selection)))\
+                           (subr-native-elisp-p (symbol-function 'gui-set-selection)))\
                        (boundp 'selection-converter-alist)\
                        (gui-set-selection 'PRIMARY \"payload\")\
                        (condition-case error-data\
@@ -2279,7 +2280,8 @@ mod tests {
                 "(list (featurep 'mouse)\
                        (special-variable-p 'context-menu-functions)\
                        (special-variable-p 'context-menu-filter-function)\
-                       (not (subrp (symbol-function 'context-menu-map)))\
+                       (or (not (subrp (symbol-function 'context-menu-map)))\
+                           (subr-native-elisp-p (symbol-function 'context-menu-map)))\
                        (let ((context-menu-functions nil))\
                          (equal (context-menu-map)\
                                 '(keymap \"Context Menu\"))))",
@@ -2364,9 +2366,8 @@ mod tests {
                     .expect("upstream load path"),
                 ..Default::default()
             };
-            // The test fixture turns trampolines off after startup (tests
-            // must not compile them); loadup's own transition is asked for
-            // on the image as started.
+            // Ask for loadup's own transition on the image as started,
+            // before the embedded fixture configures in-process compilation.
             let interpreter =
                 initialize_batch_interpreter_as_started(&options).expect("init batch interpreter");
             assert_eq!(

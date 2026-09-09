@@ -3126,6 +3126,13 @@ impl Interpreter {
         env: &mut Env,
         idle: f64,
     ) -> Result<bool, LispError> {
+        // keyboard.c:timer_check_2 drains deferred noelisp deletion hooks.
+        while let Some(call) = self.pending_funcalls.pop() {
+            let values = call.to_vec()?;
+            if let Some(function) = values.first() {
+                self.safe_funcall(function.clone(), &values[1..], env)?;
+            }
+        }
         let native_ran = self.run_pending_native_timers(env)?;
         let lisp_ran = primitives::run_due_timers(self, env, idle)?;
         Ok(native_ran || lisp_ran)
@@ -3148,6 +3155,7 @@ impl Interpreter {
         } else {
             false
         };
+        let terminal_input = self.service_terminal_input(env)?;
         let file_events = self.service_file_notifications(env)?;
         let timer_events = if let Some(idle) = idle_seconds {
             self.run_pending_timer_events_with_idle(env, idle)?
@@ -3161,7 +3169,7 @@ impl Interpreter {
                         && matches!(thread.status, ThreadStatus::Blocked(ThreadBlocker::Sleep)))
         });
         self.drive_threads_inner(env, wake_sleepers, false)?;
-        Ok(user_signal_events || file_events || timer_events || thread_events)
+        Ok(terminal_input || user_signal_events || file_events || timer_events || thread_events)
     }
 
     pub fn current_thread_value(&self) -> Value {

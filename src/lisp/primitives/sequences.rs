@@ -1,9 +1,15 @@
 use super::*;
+use crate::lisp::eval::RecordKind;
 
 pub(crate) fn copy_sequence_value(
     interp: &mut Interpreter,
     value: &Value,
 ) -> Result<Value, LispError> {
+    if matches!(value, Value::Record(_))
+        && let Some(public) = runtime_keymap_public_view(interp, value)
+    {
+        return copy_sequence_value(interp, &public);
+    }
     if let Some(string) = string_like(value) {
         return Ok(make_shared_string_value_with_multibyte(
             string.text,
@@ -18,15 +24,19 @@ pub(crate) fn copy_sequence_value(
 
     match value {
         Value::Nil => Ok(Value::Nil),
-        Value::Cons(_) => {
-            let Some((car, cdr)) = value.cons_values() else {
-                return Ok(value.clone());
-            };
-            Ok(Value::cons(car, copy_sequence_value(interp, &cdr)?))
-        }
+        Value::Cons(_) => Ok(Value::list(value.to_vec()?)),
         Value::CharTable(id) => interp.clone_char_table(*id),
-        Value::Record(id) => interp.copy_record(*id),
-        _ => Ok(value.clone()),
+        Value::Record(id)
+            if interp.find_record(*id).is_some_and(|record| {
+                matches!(record.kind, RecordKind::Record | RecordKind::BoolVector)
+            }) =>
+        {
+            interp.copy_record(*id)
+        }
+        _ => Err(LispError::WrongTypeArgument(
+            "sequencep".into(),
+            value.clone(),
+        )),
     }
 }
 

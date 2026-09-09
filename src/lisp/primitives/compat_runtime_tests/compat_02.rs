@@ -287,7 +287,8 @@ fn advice_add_supports_after_function_inner() {
     let forms = Reader::new(
         r#"
             (progn
-              (unless (and (not (subrp (symbol-function 'advice-add)))
+              (unless (and (or (not (subrp (symbol-function 'advice-add)))
+                               (subr-native-elisp-p (symbol-function 'advice-add)))
                            (string-match-p "nadvice\\.el"
                                            (symbol-file 'advice-add 'defun))
                            (macrop 'add-function)

@@ -1274,6 +1274,9 @@ fn probe_oracle_forwarded_variables(
         listing.display().to_string()
     );
     let output = std::process::Command::new(oracle)
+        // Classify C's diagnostics, not locale-dependent quote typography.
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
         .args(["-Q", "--batch", "--eval", &program])
         .output()
         .expect("run the forwarded-variable probe with the oracle binary");
@@ -1519,9 +1522,10 @@ pub(crate) fn gnu_c_forwarded_variable_manifest_matches_fresh_regeneration() {
         "pinned GNU sibling checkout required for the forwarded-variable manifest gate"
     );
     let reported_configuration = oracle_reported_configuration(&oracle);
-    if !reported_configuration.contains("linux-gnu") {
-        // Only the Linux manifest exists; other platforms carry an empty
-        // manifest by construction (see primitives::gnu_c_forwarded_variables).
+    if !reported_configuration.contains("linux-gnu")
+        && !reported_configuration.contains("apple-darwin")
+    {
+        // Other platforms have not yet been probed.
         return;
     }
     let source_root = root.join("../emacs/src");

@@ -32,6 +32,7 @@ mod loops;
 mod macros;
 mod resource_forms;
 pub(crate) mod runtime;
+pub(crate) mod terminal;
 pub(crate) use local_cells::LocalCells;
 mod symbol_cells;
 pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
@@ -1576,6 +1577,7 @@ pub(crate) struct SpecialBindingRestore {
     name: String,
     scope: SpecialBindingScope,
     binding_buffer_id: Option<u64>,
+    keyboard_terminal_id: Option<u64>,
     previous: Option<Value>,
     previous_undo_state: Option<crate::buffer::UndoState>,
     // `kill-all-local-variables' can remove a buffer-local value while a
@@ -2282,6 +2284,8 @@ struct ProcessState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct WindowConfigurationSnapshot {
+    frame_id: u64,
+    selected_frame_id: u64,
     current_buffer_id: u64,
     selected_window_id: u64,
     selected_window_slots: Vec<Value>,
@@ -2397,6 +2401,7 @@ struct PendingFileNotification {
 pub(crate) struct FileNameHandlerMatchCacheEntry {
     pub(crate) handler_alist: Value,
     pub(crate) cons_epoch: crate::lisp::types::ConsMutationEpoch,
+    pub(crate) cons_mutations: crate::lisp::types::ConsMutationSnapshot,
     pub(crate) definition_generation: u64,
     pub(crate) pattern_snapshots: Vec<(Value, String)>,
     pub(crate) matches: Vec<(usize, Value)>,
@@ -2438,7 +2443,7 @@ pub(crate) struct LispFaceState {
     pub(crate) name: String,
     pub(crate) id: Option<i64>,
     pub(crate) global: Option<Value>,
-    pub(crate) selected_frame: Option<Value>,
+    pub(crate) frames: HashMap<u64, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2469,6 +2474,13 @@ pub(crate) struct FontsetState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FrameState {
+    pub(crate) terminal_id: u64,
+    pub(crate) face_hash_table: Option<Value>,
+    pub(crate) root_window_id: u64,
+    pub(crate) selected_window_id: u64,
+    pub(crate) minibuffer_window_id: u64,
+    pub(crate) old_selected_window_id: Option<u64>,
+    pub(crate) tty_sized: bool,
     pub(crate) id: u64,
     pub(crate) name: Value,
     pub(crate) live: bool,
@@ -3443,6 +3455,13 @@ impl Interpreter {
     pub(crate) fn install_dead_frame(&mut self, id: u64) {
         self.frame_states.retain(|frame| frame.id != id);
         self.frame_states.push(FrameState {
+            terminal_id: 0,
+            face_hash_table: None,
+            root_window_id: 0,
+            selected_window_id: 0,
+            minibuffer_window_id: 0,
+            old_selected_window_id: None,
+            tty_sized: false,
             id,
             name: Value::Nil,
             live: false,
@@ -3560,9 +3579,17 @@ impl Interpreter {
             mark(value);
         }
         mark(&self.frame_and_buffer_state);
-        for (key, value) in &self.terminal_parameters {
-            mark(key);
-            mark(value);
+        for call in &self.pending_funcalls {
+            mark(call);
+        }
+        for terminal in &self.terminals {
+            for value in terminal.keyboard.values() {
+                mark(value);
+            }
+            for (key, value) in &terminal.parameters {
+                mark(key);
+                mark(value);
+            }
         }
         for table in &self.char_tables {
             mark(&Value::CharTable(table.id));
@@ -3610,8 +3637,10 @@ impl Interpreter {
                 mark(value);
             }
         }
-        if let Some(value) = &self.selected_frame_face_hash_table {
-            mark(value);
+        for frame in &self.frame_states {
+            if let Some(value) = &frame.face_hash_table {
+                mark(value);
+            }
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -3681,10 +3710,7 @@ impl Interpreter {
             }
         }
         for face in &self.lisp_face_states {
-            for value in [face.global.as_ref(), face.selected_frame.as_ref()]
-                .into_iter()
-                .flatten()
-            {
+            for value in face.global.iter().chain(face.frames.values()) {
                 mark(value);
             }
         }
@@ -3752,15 +3778,19 @@ impl Interpreter {
         for (_, buffer) in &self.inactive_buffers {
             buffer.visit_lisp_values(&mut visit_buffer);
         }
-        for id in [
-            self.standard_obarray_id,
-            self.selected_window_id,
-            self.root_window_id,
-            self.minibuffer_window_id,
-        ] {
+        for id in [self.standard_obarray_id, self.selected_window_id] {
             mark(&Value::Record(id));
         }
 
+        for frame in self.frame_states.iter().filter(|frame| frame.live) {
+            for id in [
+                frame.root_window_id,
+                frame.selected_window_id,
+                frame.minibuffer_window_id,
+            ] {
+                mark(&Value::Record(id));
+            }
+        }
         let weak_tables = self
             .records
             .iter()
@@ -3842,7 +3872,11 @@ impl Interpreter {
         let mut vector_slots = vectors.slots;
         let live_buffers = 1 + self.inactive_buffers.len();
         let live_frames = self.frame_states.iter().filter(|frame| frame.live).count();
-        let live_terminals = usize::from(self.terminal_live);
+        let live_terminals = self
+            .terminals
+            .iter()
+            .filter(|terminal| terminal.live)
+            .count();
         let live_overlays = self
             .buffer
             .overlays
@@ -3944,6 +3978,12 @@ impl Interpreter {
     /// template.  Identity-keyed caches are dropped because the copied
     /// cells have new identities; they repopulate on use.
     pub fn deep_clone_image(&self) -> Interpreter {
+        assert!(
+            self.terminals
+                .iter()
+                .all(|terminal| terminal.device.is_none()),
+            "cannot clone an interpreter with live terminal devices"
+        );
         let mut clone = self.clone();
         let mut copier = ImageGraphCopier::new();
         {
@@ -3968,6 +4008,9 @@ impl Interpreter {
             clone.loads_in_progress = c.copy(&self.loads_in_progress);
             for value in clone.detached_forwarded_variables.values_mut() {
                 *value = c.copy(value);
+            }
+            for call in &mut clone.pending_funcalls {
+                *call = c.copy(call);
             }
             for event in &mut clone.pending_thread_events {
                 *event = c.copy(event);
@@ -4000,7 +4043,16 @@ impl Interpreter {
                 clone.current_global_map = Some(c.copy(map));
             }
             clone.frame_and_buffer_state = c.copy(&clone.frame_and_buffer_state.clone());
-            for (key, value) in &mut clone.terminal_parameters {
+            for terminal in &mut clone.terminals {
+                for value in terminal.keyboard.values_mut() {
+                    *value = c.copy(value);
+                }
+            }
+            for (key, value) in clone
+                .terminals
+                .iter_mut()
+                .flat_map(|terminal| &mut terminal.parameters)
+            {
                 *key = c.copy(key);
                 *value = c.copy(value);
             }
@@ -4072,8 +4124,10 @@ impl Interpreter {
                     *value = c.copy(value);
                 }
             }
-            if let Some(table) = &clone.selected_frame_face_hash_table {
-                clone.selected_frame_face_hash_table = Some(c.copy(table));
+            for frame in &mut clone.frame_states {
+                if let Some(table) = &frame.face_hash_table {
+                    frame.face_hash_table = Some(c.copy(table));
+                }
             }
             clone.alternative_font_family_alist =
                 c.copy(&clone.alternative_font_family_alist.clone());
@@ -4141,8 +4195,8 @@ impl Interpreter {
                 if let Some(global) = &face.global {
                     face.global = Some(c.copy(global));
                 }
-                if let Some(selected) = &face.selected_frame {
-                    face.selected_frame = Some(c.copy(selected));
+                for value in face.frames.values_mut() {
+                    *value = c.copy(value);
                 }
             }
             for bitmap in &mut clone.fringe_bitmap_states {
@@ -4347,6 +4401,7 @@ pub struct Interpreter {
     /// (keyboard.c kbd_buffer_store_event), delivered by the input reader
     /// through `special-event-map'.
     pub(crate) pending_thread_events: Vec<Value>,
+    pub(crate) pending_funcalls: Vec<Value>,
     /// Variable aliases keyed by alias name.
     variable_aliases: Vec<(String, String)>,
     /// Variables with dynamic binding semantics, in declaration order; the
@@ -4449,8 +4504,6 @@ pub struct Interpreter {
     selected_window_id: u64,
     /// Root and minibuffer window identities are interpreter/frame state,
     /// never Lisp variables.
-    root_window_id: u64,
-    minibuffer_window_id: u64,
     minibuffer_selected_window_id: Option<u64>,
     /// Whether each window should display its cursor on the next redisplay.
     /// Missing entries retain GNU's visible-by-default state.
@@ -4459,7 +4512,6 @@ pub struct Interpreter {
     old_selected_window_id: u64,
     /// Per-frame old selected window.  GNU's initial batch frame leaves this
     /// unset until the first completed window-change cycle.
-    frame_old_selected_window_id: Option<u64>,
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
     /// Opaque frame identities and their frame-local state.  The headless
@@ -4470,16 +4522,7 @@ pub struct Interpreter {
     pub(crate) old_selected_frame_id: u64,
     /// dispnew.c's internal frame/buffer menu state vector.
     frame_and_buffer_state: Value,
-    /// Terminal-local parameters for the single runtime terminal.
-    ///
-    /// GNU stores this as an alist and `set-terminal-parameter' accepts any
-    /// Lisp object as a key, even though the getter's public contract requires
-    /// a symbol.  Keep the native representation equally general.
-    terminal_parameters: Vec<(Value, Value)>,
-    /// Whether the single headless/bootstrap terminal has not been deleted.
-    /// GNU keeps deleted terminal objects as non-live Lisp identities while
-    /// removing them from `terminal-list`.
-    terminal_live: bool,
+    pub(crate) terminals: Vec<terminal::TerminalState>,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::buffer::Buffer)>,
     /// File names retained by dead buffer objects.  GNU kills the buffer's
@@ -4585,10 +4628,7 @@ pub struct Interpreter {
     pub(crate) coding_category_representatives: Vec<Option<String>>,
     /// coding.c's `coding_priorities': the categories in detection order.
     pub(crate) coding_category_priorities: Vec<usize>,
-    /// Current terminal coding system.
-    terminal_coding: Option<String>,
-    /// Current keyboard coding system.
-    keyboard_coding: Option<String>,
+    pub(crate) safe_terminal_coding: Option<String>,
     input_interrupt_mode: bool,
     /// Shared standard category table.
     standard_category_table_id: Option<u64>,
@@ -4805,7 +4845,6 @@ pub struct Interpreter {
     pub lossage_size: i64,
     interactive_call_depth: usize,
     pub(crate) lisp_face_states: Vec<LispFaceState>,
-    selected_frame_face_hash_table: Option<Value>,
     pub(crate) next_lisp_face_id: i64,
     pub(crate) font_selection_order: [String; 4],
     pub(crate) alternative_font_family_alist: Value,
@@ -4879,11 +4918,8 @@ pub struct Interpreter {
     window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
     /// Live terminal color count published by the tty frontend; batch
     /// sessions keep GNU's dumb-terminal zero.
-    pub(crate) tty_display_color_cells: i64,
-    pub(crate) tty_terminal_type: Option<String>,
     /// True once a live tty published its frame size; the layout then
     /// tracks `menu-bar-lines' changes like GNU's adjust_frame_size.
-    pub(crate) tty_frame_sized: bool,
     /// Bumped whenever a face definition changes, GNU's face_change
     /// flag: the frontend invalidates its resolved-attribute cache on a
     /// new value instead of re-resolving faces every redisplay.
@@ -5039,6 +5075,7 @@ impl Interpreter {
             image_template_token: None,
             detached_forwarded_variables: HashMap::new(),
             pending_thread_events: Vec::new(),
+            pending_funcalls: Vec::new(),
             globals: SymbolCells::from_bindings(vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("obarray".into(), Value::Record(standard_obarray_id)),
@@ -5327,14 +5364,18 @@ impl Interpreter {
             keymap_public_cons_ids: HashMap::new(),
             current_buffer_id: 0,
             selected_window_id: 0,
-            root_window_id: 0,
-            minibuffer_window_id: 0,
             minibuffer_selected_window_id: None,
             window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
-            frame_old_selected_window_id: None,
             window_select_count: 1,
             frame_states: vec![FrameState {
+                terminal_id: 0,
+                face_hash_table: None,
+                root_window_id: 0,
+                selected_window_id: 0,
+                minibuffer_window_id: 0,
+                old_selected_window_id: None,
+                tty_sized: false,
                 id: 1,
                 name: frame_name,
                 live: true,
@@ -5355,8 +5396,7 @@ impl Interpreter {
             selected_frame_id: 1,
             old_selected_frame_id: 1,
             frame_and_buffer_state: Value::Nil,
-            terminal_parameters: Vec::new(),
-            terminal_live: true,
+            terminals: vec![terminal::TerminalState::initial()],
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
             killed_buffer_file_names: HashMap::new(),
             // GNU's batch `buffer-list' is (*scratch* " *Minibuf-0*"
@@ -5532,11 +5572,7 @@ impl Interpreter {
                 representatives
             },
             coding_category_priorities: (0..coding::CODING_CATEGORY_COUNT).collect(),
-            terminal_coding: None,
-            // keyboard.c initializes keyboard decoding to no-conversion; a
-            // batch GNU answers `no-conversion' for (keyboard-coding-system)
-            // before any Lisp touches it (oracle-pinned under LANG=C).
-            keyboard_coding: Some("no-conversion".into()),
+            safe_terminal_coding: Some("us-ascii".into()),
             input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_table_id: None,
@@ -5633,9 +5669,8 @@ impl Interpreter {
                 name: "default".into(),
                 id: Some(0),
                 global: Some(empty_lisp_face_vector()),
-                selected_frame: Some(tty_default_lisp_face_vector()),
+                frames: HashMap::from([(1, tty_default_lisp_face_vector())]),
             }],
-            selected_frame_face_hash_table: None,
             next_lisp_face_id: 1,
             font_selection_order: [
                 ":width".into(),
@@ -5697,9 +5732,6 @@ impl Interpreter {
             dispatched_signal: None,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
-            tty_display_color_cells: 0,
-            tty_terminal_type: None,
-            tty_frame_sized: false,
             face_change_count: 0,
         };
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
@@ -6875,8 +6907,8 @@ impl Interpreter {
         let Value::Record(selected_window_id) = selected_window else {
             unreachable!("window records use Value::Record");
         };
-        interp.selected_window_id = selected_window_id;
-        interp.root_window_id = selected_window_id;
+        interp.set_selected_window_id(selected_window_id);
+        interp.set_root_window_id(selected_window_id);
         interp.old_selected_window_id = selected_window_id;
         if let Some(window) = interp.find_record_mut(selected_window_id) {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
@@ -6901,7 +6933,7 @@ impl Interpreter {
         let Value::Record(minibuffer_window_id) = minibuffer_window else {
             unreachable!("window records use Value::Record");
         };
-        interp.minibuffer_window_id = minibuffer_window_id;
+        interp.set_minibuffer_window_id(minibuffer_window_id);
         // Interpreter::new also constructs several dumped values after the
         // base struct exists (keymaps, tables, and window objects).  Reconcile
         // the completed image through the same registry before exposing it;

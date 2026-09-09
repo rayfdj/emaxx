@@ -647,14 +647,23 @@ impl Interpreter {
             return Err(error);
         }
         match (callable_name.as_ref(), prepared) {
-            (Some(name), FunctionResolution::DirectBuiltin(facts)) => {
-                self.dispatch_named_builtin(name, facts, Some(CallName::Symbol(name)), &args, env)
-            }
-            (Some(name), FunctionResolution::Resolved(func)) => {
-                self.call_function_value_named(func, Some(CallName::Symbol(name)), &args, env)
-            }
+            (Some(name), FunctionResolution::DirectBuiltin(facts)) => self.dispatch_named_builtin(
+                name,
+                facts,
+                Some(CallName::Symbol(name)),
+                &args,
+                env,
+                false,
+            ),
+            (Some(name), FunctionResolution::Resolved(func)) => self.call_function_value_named(
+                func,
+                Some(CallName::Symbol(name)),
+                &args,
+                env,
+                false,
+            ),
             (None, FunctionResolution::Resolved(func)) => {
-                self.call_function_value_named(func, None, &args, env)
+                self.call_function_value_named(func, None, &args, env, false)
             }
             (None, FunctionResolution::DirectBuiltin(_)) => {
                 unreachable!("only a symbol callee can have a direct native verdict")
@@ -670,8 +679,13 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         self.begin_funcall(env)?;
-        let result =
-            self.call_function_value_named(func, original_name.map(CallName::Text), args, env);
+        let result = self.call_function_value_named(
+            func,
+            original_name.map(CallName::Text),
+            args,
+            env,
+            true,
+        );
         self.end_funcall();
         result
     }
@@ -771,6 +785,7 @@ impl Interpreter {
         original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
+        funcall: bool,
     ) -> Result<Value, LispError> {
         if let Some(termination) = self.pending_termination().cloned() {
             return Err(LispError::Terminate(termination));
@@ -780,11 +795,11 @@ impl Interpreter {
         if let Some(path) = profile_path() {
             let started = std::time::Instant::now();
             profile_enter();
-            let result = self.call_function_value_inner(func, original_name, args, env);
+            let result = self.call_function_value_inner(func, original_name, args, env, funcall);
             profile_leave(original_name.map(CallName::as_str), started.elapsed(), path);
             return result;
         }
-        self.call_function_value_inner(func, original_name, args, env)
+        self.call_function_value_inner(func, original_name, args, env, funcall)
     }
 
     /// Resolve a symbol function cell once, before argument evaluation.
@@ -871,6 +886,7 @@ impl Interpreter {
         original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
+        funcall: bool,
     ) -> Result<Value, LispError> {
         let backtrace_function = original_name
             .map(|original| original.symbol_value(name))
@@ -881,10 +897,38 @@ impl Interpreter {
             env,
             None,
         );
-        let result = primitives::call_with_facts(self, name, facts, args, env);
+        let result = primitives::call_with_facts(self, name, facts, args, env)
+            .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
         let result = self.settle_frame_result(result, env);
         self.pop_backtrace_frame();
         result
+    }
+
+    // eval.c:funcall_subr reports the resolved subr object. eval_sub
+    // reports the source callee instead. Translate before signaling to
+    // handler-bind, while the callee's backtrace frame is still live.
+    fn builtin_call_error(name: &str, nargs: usize, funcall: bool, error: LispError) -> LispError {
+        match error {
+            LispError::WrongNumberOfArgs(ref failed_name, count)
+                if funcall
+                    && failed_name == name
+                    && count == nargs
+                    && primitives::GNU_C_PRIMITIVES
+                        .binary_search_by_key(&name, |contract| contract.name)
+                        .ok()
+                        .and_then(|index| primitives::GNU_C_PRIMITIVES[index].arity)
+                        .is_some_and(|(minimum, maximum)| {
+                            nargs < minimum as usize || (maximum >= 0 && nargs > maximum as usize)
+                        }) =>
+            {
+                LispError::SignalValue(Value::list([
+                    Value::symbol("wrong-number-of-arguments"),
+                    Value::BuiltinFunc(name.into()),
+                    Value::Integer(count as i64),
+                ]))
+            }
+            error => error,
+        }
     }
 
     /// What every backtrace frame does with an error on its way out, while
@@ -969,6 +1013,7 @@ impl Interpreter {
         original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
+        funcall: bool,
     ) -> Result<Value, LispError> {
         // eval.c/bytecode.c use XBARE_SYMBOL for a positioned callee while
         // the byte compiler's symbol-position mode is active.  This covers
@@ -1013,7 +1058,8 @@ impl Interpreter {
                 match resolution {
                     FunctionResolution::DirectBuiltin(facts) => {
                         let call_name = original_name.or(Some(CallName::Symbol(&name)));
-                        return self.dispatch_named_builtin(&name, facts, call_name, args, env);
+                        return self
+                            .dispatch_named_builtin(&name, facts, call_name, args, env, funcall);
                     }
                     FunctionResolution::Resolved(value) => value,
                 }
@@ -1064,10 +1110,7 @@ impl Interpreter {
         };
 
         match func {
-            Value::BuiltinFunc(ref name) if name == "selected-window" => {
-                if !args.is_empty() {
-                    return Err(LispError::WrongNumberOfArgs(name.to_string(), args.len()));
-                }
+            Value::BuiltinFunc(ref name) if name == "selected-window" && args.is_empty() => {
                 Ok(self.selected_window_value())
             }
             Value::BuiltinFunc(ref name) => {
@@ -1080,7 +1123,8 @@ impl Interpreter {
                     env,
                     None,
                 );
-                let result = primitives::call(self, name, args, env);
+                let result = primitives::call(self, name, args, env)
+                    .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
                 let result = self.settle_frame_result(result, env);
                 self.pop_backtrace_frame();
                 result
@@ -1129,11 +1173,12 @@ impl Interpreter {
                 // Unwrapping the record is still the same Ffuncall entry.
                 if uses_dynamic_binding {
                     self.push_lambda_capture_override(false);
-                    let result = self.call_function_value_named(inner, original_name, args, env);
+                    let result =
+                        self.call_function_value_named(inner, original_name, args, env, funcall);
                     self.pop_lambda_capture_override();
                     result
                 } else {
-                    self.call_function_value_named(inner, original_name, args, env)
+                    self.call_function_value_named(inner, original_name, args, env, funcall)
                 }
             }
             Value::Lambda(ref lambda) => {
