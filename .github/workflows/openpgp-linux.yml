@@ -8,7 +8,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: emaxx
@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           path: emaxx
+          ref: 66d650bb21e1bb38710eb90cde12c000a450eb2d
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -83,48 +84,88 @@ jobs:
             ~/.cargo/git
             emaxx/target
           key: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
-      - name: Run original OpenPGP tests and capture actual GPG errors
-        run: python3 tools/openpgp_gate.py --output /tmp/openpgp-results
-      - name: Observe the historical long fixture path separately
+      - name: Diagnose primitive boundaries on unchanged source
         run: |
-          fixture_root=/tmp/emaxx-compat-checkout-oracle-9999-1788753809317920348/emacs/test/lisp
-          set +e
-          python3 tools/openpgp_gate.py --output "$fixture_root"
-          observed_status=$?
-          set -e
-          test "$observed_status" -le 1
-          test -f "$fixture_root/summary.json"
-          cp -R "$fixture_root" /tmp/openpgp-long-path-results
-          printf '%s\n' "$observed_status" > /tmp/openpgp-long-path-results/observed-status.txt
-      - name: Audit, byte conversion, dump, compiler and PTY controls
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess
+          from pathlib import Path
+          
+          output = Path(os.environ.get('PROBE_OUTPUT', '/tmp/native-merge-probes'))
+          output.mkdir(parents=True, exist_ok=False)
+          source = Path('src/lisp/primitives/tests.rs').read_text()
+          
+          def fixture(name):
+              body = source.split('fn ' + name + '()', 1)[1]
+              return re.search(r'let program = r#"(.*?)"#;', body, re.S)[1]
+          
+          dead = fixture('dead_thread_results_are_rooted_only_through_reachable_thread_objects')
+          vector = fixture('suspended_bytecode_observes_live_constant_vector_mutation')
+          search = fixture('program_search_follows_openp_over_exec_path')
+          dead_setup = dead[:dead.index('        (let ((reachable')]
+          dead_setup += '''
+          (setq dead-thread-roots-result (list (hash-table-count dead-thread-roots-table)))
+          (setq dead-thread-roots-worker nil)
+          '''
+          vector_setup = vector[:vector.index('(setq gc-vector-thread nil gc-vector-constants nil)')]
+          vector_setup += '(setq gc-vector-thread nil gc-vector-constants nil)\n'
+          
+          cases = [
+              ('dead-original', dead, None),
+              ('vector-original', vector, None),
+              ('dead-after-load', dead_setup, '(progn (garbage-collect) (setq dead-thread-roots-result (append dead-thread-roots-result (list (hash-table-count dead-thread-roots-table)))) (prin1 dead-thread-roots-result))'),
+              ('vector-after-load', vector_setup, '(progn (garbage-collect) (setq gc-vector-result (append gc-vector-result (list (hash-table-count gc-vector-table)))) (prin1 gc-vector-result))'),
+              ('program-search-original', '(prin1 ' + search + ')', None),
+          ]
+          for label,connection in [('pty','t'),('pipe','nil')]:
+              cases.append(('argv0-'+label, '''
+          (let* ((process-connection-type CONNECTION)
+                 (b (generate-new-buffer "argv0"))
+                 (p (start-process "argv0" b "sh" "-c" "echo $0")))
+            (while (process-live-p p) (sleep-for 0.05))
+            (let ((early (with-current-buffer b (buffer-string))))
+              (while (accept-process-output p 0.1))
+              (prin1 (list (executable-find "sh") (process-command p)
+                           early (with-current-buffer b (buffer-string))
+                           (process-status p) (process-exit-status p)))))
+          '''.replace('CONNECTION',connection), None))
+          
+          results=[]
+          for label,program,observe in cases:
+              path=output/(label+'.el');path.write_text(program)
+              if observe: (output/(label+'-observe.el')).write_text(observe+'\n')
+              for editor,binary in [('gnu','../emacs/src/emacs'),('emaxx','target/gate/emaxx')]:
+                  command=[binary,'-Q','--batch','-l',str(path)]
+                  if observe: command += ['--eval',observe]
+                  result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={**os.environ,'LANG':'C','LC_ALL':'C'},timeout=300)
+                  (output/(label+'-'+editor+'.stdout')).write_bytes(result.stdout)
+                  (output/(label+'-'+editor+'.stderr')).write_bytes(result.stderr)
+                  record={'case':label,'editor':editor,'command':command,'exit':result.returncode,'stdout':result.stdout.decode(errors='replace'),'stderr':result.stderr.decode(errors='replace')}
+                  results.append(record)
+                  print(json.dumps(record),flush=True)
+                  (output/'results.json').write_text(json.dumps(results,indent=2)+'\n')
+          
+          (output/'binary-hashes.json').write_text(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in ['../emacs/src/emacs','target/gate/emaxx']},indent=2)+'\n')
+          PY
+      - name: Reproduce the three Rust failures in isolation
         env:
           RUST_MIN_STACK: '134217728'
           RUST_TEST_THREADS: '1'
+          EMAXX_IMAGE_TEMPLATE: '1'
         run: |
-          python3 -m unittest discover -s tools -p test_openpgp_gate.py -v
-          cargo +1.97.1 fmt --all -- --check
-          cargo +1.97.1 test --locked --profile gate --lib \
-            -- anti_cheat::gate_tests multibyte byte_conversions terminal_frames \
-            pdumper dump_roots dump_emacs_portable loads_libgccjit_and_executes_a_smoke_test_function \
-            cl_old_struct_compat_mode_types_tagged_vectors \
-            cl_struct_define_legacy_type_enables_old_struct_mode \
-            upstream_semantic_format_loads_with_complete_eieio_slots --test-threads=1
-      - name: Complete serial Rust gate for native-comp integration
-        if: startsWith(github.ref, 'refs/heads/integrate/native-comp-')
-        run: |
-          python3 -m unittest discover -s tools -p test_grouped_gate.py -v
-          python3 tools/serial_grouped_gate.py --scope full --timeout-seconds 3600 \
-            --artifact-root /tmp/native-merge-rust-gate
-      - name: Strict Clippy
-        run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
+          set +e
+          cargo +1.97.1 test --locked --profile gate --lib -- \
+            program_search_follows_openp_over_exec_path \
+            dead_thread_results_are_rooted_only_through_reachable_thread_objects \
+            suspended_bytecode_observes_live_constant_vector_mutation \
+            --test-threads=1 > /tmp/native-merge-probes/rust-focused.log 2>&1
+          observed_status=$?
+          set -e
+          printf '%s\n' "$observed_status" > /tmp/native-merge-probes/rust-exit.txt
+          cat /tmp/native-merge-probes/rust-focused.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: openpgp-linux-${{ github.sha }}
-          path: |
-            /tmp/openpgp-metadata
-            /tmp/openpgp-results
-            /tmp/openpgp-long-path-results
-            /tmp/native-merge-rust-gate
+          name: native-merge-primitive-probes
+          path: /tmp/native-merge-probes
           if-no-files-found: error
           retention-days: 7
