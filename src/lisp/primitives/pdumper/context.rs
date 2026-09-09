@@ -855,6 +855,9 @@ impl DumpContext {
 
     /// dump_roots: the interpreter's root slots and the obarray.
     pub(crate) fn dump_roots(&mut self, interp: &Interpreter) -> Result<(), DumpError> {
+        interp
+            .dump_transient_roots_check()
+            .map_err(|message| DumpError::Lisp(LispError::Signal(message)))?;
         self.set_referrer(Value::string("emacs root"));
         for (slot, value) in interp.dump_root_values() {
             self.emacs_reloc_to_lv(slot, &value);

@@ -2307,6 +2307,47 @@ fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
             .any(|(slot, _)| *slot == RootSlot::Obarray)
     );
     assert!(image.symbols.len() >= image.obarray.len());
+    // Every root group of the loadup state prints the same from the
+    // restored interpreter (the timer list's due times are relative).
+    let source_groups = interp.dump_root_groups();
+    let target_groups = target.dump_root_groups();
+    assert_eq!(source_groups.len(), target_groups.len());
+    let mut compared = 0;
+    for ((slot, source_value), (target_slot, target_value)) in
+        source_groups.iter().zip(&target_groups)
+    {
+        assert_eq!(slot, target_slot);
+        if *slot == RootSlot::TimerList {
+            continue;
+        }
+        let source_text = call(
+            &mut interp,
+            "prin1-to-string",
+            std::slice::from_ref(source_value),
+            &mut env,
+        )
+        .expect("print the source group");
+        let target_text = call(
+            &mut target,
+            "prin1-to-string",
+            std::slice::from_ref(target_value),
+            &mut Vec::new(),
+        )
+        .expect("print the restored group");
+        assert_eq!(
+            string_like(&source_text).expect("printed").text,
+            string_like(&target_text).expect("printed").text,
+            "root group {slot:?}"
+        );
+        compared += 1;
+    }
+    assert!(compared > 30);
+    assert!(
+        !target
+            .dump_root_groups()
+            .iter()
+            .any(|(slot, value)| { *slot == RootSlot::CodingSystems && value.is_nil() })
+    );
 }
 
 #[test]

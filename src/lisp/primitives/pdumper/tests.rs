@@ -1003,3 +1003,140 @@ fn image_refuses_buffers_with_overlays_as_gnu_does() {
         Ok(_) => panic!("a buffer with a live overlay was dumped"),
     }
 }
+
+#[test]
+fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
+    fn printed(interp: &mut Interpreter, value: &Value) -> String {
+        let value = crate::lisp::native_comp::call_c_primitive(
+            interp,
+            &mut Vec::new(),
+            "prin1-to-string",
+            std::slice::from_ref(value),
+        )
+        .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
+        string_like(&value).expect("a string").text
+    }
+    // A bare interpreter with state in the groups a fresh one leaves
+    // empty: a second buffer, keys, a detached forwarded variable, a
+    // charset with an alias, a timer, an ert test, a labeled restriction
+    // in the current buffer, a fringe bitmap, a composition, a face.
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (progn
+          (get-buffer-create "zz-second")
+          (define-fringe-bitmap 'zz-bitmap [1 2 3])
+          (let ((ov (make-marker))) ov)
+          (internal--labeled-narrow-to-region 1 1 'zz-label)
+          (define-charset-alias 'zz-alias 'ascii)
+          t)"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    interp.eval(&form, &mut env).expect("setup evaluates");
+    interp.keyboard_input.recent_keys = vec![Value::Integer(97), Value::symbol("f1")];
+    interp.keyboard_input.command_keys = vec![Value::Integer(97)];
+    interp
+        .detached_forwarded_variables
+        .insert("zz-detached".into(), Value::list([Value::Integer(1)]));
+    interp.schedule_timer_after(Value::symbol("car"), vec![Value::Nil], 1000.0, Some(5.0));
+    interp.ert_tests.push(crate::lisp::eval::ErtTestDefinition {
+        name: "zz-test".into(),
+        body: Value::list([Value::symbol("should"), Value::T]),
+        source_file: Some("zz.el".into()),
+        tags: vec!["fast".into()],
+        expected_result: ":passed".into(),
+    });
+    interp
+        .composition_states
+        .push(crate::lisp::eval::CompositionState {
+            components: Value::vector([Value::Integer(97), Value::Integer(98)]),
+            relative: true,
+            width: 2,
+        });
+    let source_groups = interp.dump_root_groups();
+    let source_printed = source_groups
+        .iter()
+        .map(|(slot, value)| (*slot, printed(&mut interp, value)))
+        .collect::<Vec<_>>();
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
+    );
+    assert!(
+        source_printed
+            .iter()
+            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
+    );
+
+    let mut ctx = DumpContext::new(true, interp.main_thread_record_id());
+    let summary = match write_image(&mut ctx, &interp, RootSource::Interpreter) {
+        Ok(summary) => summary,
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            ctx.print_paths_to_root(&mut interp, &mut Vec::new(), &unsupported.object);
+            panic!("unsupported object: {}", unsupported.message)
+        }
+        Err(super::context::DumpError::Lisp(error)) => panic!("dump failed: {error:?}"),
+    };
+    assert!(summary.hot_bytes > 0);
+    let bytes = ctx.buffer().to_vec();
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    for (slot, _) in &source_groups {
+        assert!(
+            image.roots.iter().any(|(candidate, _)| candidate == slot),
+            "root group {slot:?} is in the image"
+        );
+    }
+    // Every group prints the same from the restored interpreter (the
+    // timer's due time is the seconds still to wait, which passed).
+    let target_groups = target.dump_root_groups();
+    for ((slot, source_text), (target_slot, target_value)) in
+        source_printed.iter().zip(&target_groups)
+    {
+        assert_eq!(slot, target_slot);
+        let target_text = printed(&mut target, target_value);
+        if *slot == RootSlot::TimerList {
+            assert!(target_text.starts_with("([car (nil) "), "{target_text}");
+            assert!(target_text.ends_with(" 5.0 car])"), "{target_text}");
+            continue;
+        }
+        assert_eq!(&target_text, source_text, "root group {slot:?}");
+    }
+    // The buffers behind the alist are live in the target, in order.
+    assert_eq!(
+        target
+            .buffer_list
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect::<Vec<_>>(),
+        interp
+            .buffer_list
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(target.has_buffer("zz-second"));
+}
+
+#[test]
+fn image_refuses_pending_transient_state_it_cannot_carry() {
+    let mut interp = Interpreter::new();
+    interp.pending_thread_events.push(Value::symbol("zz-event"));
+    let mut ctx = DumpContext::new(false, interp.main_thread_record_id());
+    match write_image(&mut ctx, &interp, RootSource::Interpreter) {
+        Err(super::context::DumpError::Lisp(crate::lisp::types::LispError::Signal(message))) => {
+            assert_eq!(
+                message,
+                "cannot dump with 1 entries of pending_thread_events pending"
+            );
+        }
+        Err(super::context::DumpError::Lisp(other)) => panic!("other error: {other:?}"),
+        Err(super::context::DumpError::Unsupported(unsupported)) => {
+            panic!("unsupported: {}", unsupported.message)
+        }
+        Ok(_) => panic!("pending transient state was dumped"),
+    }
+}

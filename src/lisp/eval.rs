@@ -25,6 +25,7 @@ pub(crate) mod coding;
 mod control_forms;
 mod core;
 mod definitions;
+mod dump_roots;
 mod faces;
 mod local_cells;
 mod loops;
@@ -3168,14 +3169,16 @@ impl Interpreter {
     }
 
     /// pdumper.c:dump_roots for the interpreter's staticpro'd slots: the
-    /// single-value fields the mark phase above starts from.  The obarray
-    /// is dumped separately; the remaining root groups (buffer locals,
-    /// frames, coding systems, ...) join the image with their object kinds.
+    /// single-value fields the mark phase above starts from, then the
+    /// root groups of `dump_roots.rs' (each the Lisp value GNU keeps for
+    /// it).  The obarray and the finalizer list heads are dumped
+    /// separately; the groups GNU resets after a load are listed in
+    /// `dump_roots::ROOTS_RESET_AFTER_LOAD'.
     pub(crate) fn dump_root_values(
         &self,
     ) -> Vec<(crate::lisp::primitives::pdumper::image::RootSlot, Value)> {
         use crate::lisp::primitives::pdumper::image::RootSlot;
-        vec![
+        let mut roots = vec![
             (RootSlot::QuitFlag, self.quit_flag.clone()),
             (RootSlot::InhibitQuit, self.inhibit_quit.clone()),
             (RootSlot::ThrowOnInput, self.throw_on_input.clone()),
@@ -3197,7 +3200,9 @@ impl Interpreter {
                 RootSlot::CurrentGlobalMap,
                 self.current_global_map.clone().unwrap_or(Value::Unbound),
             ),
-        ]
+        ];
+        roots.extend(self.dump_root_groups());
+        roots
     }
 
     /// pdumper.c:dump_symbol reads the Lisp_Symbol's value cell.

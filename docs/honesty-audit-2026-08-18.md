@@ -7709,3 +7709,74 @@ tree as committed.  Main was fetched before the gate and still carries
 only merge commits of this branch (its tree is checkpoint 8's); the
 merge waits for the next checkpoint.
 
+## 2026-09-08 D11b: the remaining root groups, each against its GNU counterpart
+
+*The table.*  `dump_roots' in GNU visits every staticpro'd slot.  The
+mark phase's root list is Emaxx's inventory of the same thing, and
+`eval/dump_roots.rs' now answers for each entry: written as the Lisp
+value GNU keeps for the group, or not written with the C line that
+re-creates it after a load.  The anti-cheat gate
+`interpreter_roots_are_dumped_or_documented' scans the root-marking
+function and requires every `self.<field>' it reads to appear in
+`dump_root_values', in `dump_roots.rs', or in `ROOTS_RESET_AFTER_LOAD';
+a new root that is neither fails the gate.
+
+*Written.*  Under their own root slots, in GNU's shape (a vector per
+coding system or charset as the hash tables hold them, an alist for
+the buffers, vectors for the key buffers): `Vbuffer_alist', the three
+keyboard vectors, the C slots of forwarded variables, the charset
+tables (attributes, ordered list, `charset-list', ISO-2022 list,
+aliases, `iso_charset_table', non-preferred head, sjis/big5), the
+coding-system tables (attributes, aliases, priorities, category
+representatives and priorities), `Vccl_program_table', the standard
+syntax, category and case tables of `buffer_defaults' and the ASCII
+case tables, `Vfontset_table', the global face vectors, the font
+selection order and alternative alists, the fringe bitmaps,
+`composition_hash_table', the ert registry, `labeled_restrictions',
+`Vtimer_list', `last_thread_error', and the assigned captured lexical
+cells.  The loader reinstalls each from its value.
+
+*Not written, and why.*  Each with its GNU line: frames and the
+selected frame (`init_frame_once_for_pdumper' resets `Vframe_list' and
+`selected_frame'), the windows (`init_window_once_for_pdumper'), the
+terminal's parameters (the terminal is nilled; `init_tty' makes the
+initial one), the kboard's macro state and last event frame
+(`syms_of_keyboard_for_pdumper'; kboards are not in the image),
+`Vprocess_alist' (`init_process_emacs'), the inotify watch list, the
+specpdl, handlerlist and backtrace (`init_eval_once_for_pdumper'
+allocates a fresh specpdl; the dump runs inside its own specbind), the
+current buffer (`init_buffer' selects `*scratch*'), and Emaxx's
+quote-template cache.  Two transient Emaxx queues must be empty and
+the writer signals otherwise (`pending_thread_events', the deferred
+defsubst unbindings).  I first listed the captured lexical cell
+updates as transient; the real dump refused with one entry pending,
+and reading the field showed it is the storage of assigned captured
+variables (GNU's environment conses), so it is written as a group and
+the loader registers each restored closure's frames so assignments
+stay shared.
+
+*Control.*  A bare interpreter given a second buffer, keys, a
+detached forwarded variable, a charset alias, a timer, an ert test, a
+labeled restriction, a fringe bitmap and a composition is written from
+the interpreter's own roots (the obarray included) and read back;
+every group prints the same from the restored interpreter (the timer
+with its remaining seconds elapsed) and the buffer list keeps its
+order.  The pending-state refusal is its own control.  The real dump
+of the initialized batch state is compared the same way: all groups
+but the timer list print identically after the round trip.
+
+*Not GNU, in the row.*  A frame's own face vectors are dropped with
+the frame (GNU re-derives them at frame creation); `timer-list' is a
+native table in Emaxx while the variable reads nil (a pre-existing
+divergence of the timer implementation, not of the dump).  The native
+scalars beside these groups (counters, next ids, the DOC offsets) are
+GNU's remembered data, D13.
+
+*Checkpoint 14 gate.*  Alone on the machine: grouped gate
+run-1788910723379605551-10358, GROUPED GATE PASSED (2560 tests, every
+group 0 failed), `cargo fmt --check' and strict clippy exit 0 on the tree as
+committed.  Main was fetched during the gate and now carries content
+of its own (the terminal and runtime parity work merged over
+checkpoint 10); it is merged in the next commit, with the image code
+adapted to its terminal and frame state, and gated again.
+

@@ -53,10 +53,17 @@ list heads, and nilled frames and terminals, with GNU's refusal of a buffer
 that has a live overlay; the loader installs them under the image's ids.
 A real `dump-emacs-portable` now completes (a 14 MB image of the loadup
 state) and the loader reads it back into a second interpreter; nothing
-starts from it until D12/D13. Main is checked at every checkpoint and merged as soon as it carries
-content (it held only merge commits of this branch at checkpoints 11, 12
-and 13). Next: D11b (the remaining `Interpreter` root groups, each tabled
-against its GNU counterpart), then the loader D12/D13.
+starts from it until D12/D13. Checkpoint 14 (D11b) tables every root the
+mark phase visits against GNU: the staticpro'd groups (buffer alist, key
+buffers, charset and coding tables, standard tables, fontsets, faces,
+fringe bitmaps, compositions, ert tests, labeled restrictions, timers,
+captured lexical cells) are written as the Lisp values GNU keeps and
+reinstalled on load; the groups GNU resets after a load are listed with
+their C lines, and an anti-cheat gate keeps the inventory complete. Main
+is checked at every checkpoint and merged as soon as it carries content
+(it held only merge commits of this branch at checkpoints 11 through 14).
+Next: the loader into a process, D12/D13 (validation and the ordered
+restore, the remembered scalars), then D14/D15 native units.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
