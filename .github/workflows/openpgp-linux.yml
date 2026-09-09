@@ -130,6 +130,13 @@ jobs:
               (root/'elf-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
               shutil.copyfile(source,root/source.name)
           PYTHON
+      - name: Upload public fixture diagnostics before longer integration tests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-merge-elf-diagnostics
+          path: /tmp/integration-completion
+          if-no-files-found: error
+          retention-days: 7
       - name: Run the two integration targets still pending
         env:
           LANG: C
