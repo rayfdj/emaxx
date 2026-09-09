@@ -120,6 +120,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "standard_obarray_id",
         "the obarray root (RootSlot::Obarray)",
     ),
+    (
+        "stack_roots",
+        "the running Rust frames' registered Lisp roots (GNU's stack scan of the main thread): per-thread runtime state, empty once the dump returns",
+    ),
 ];
 
 /// The interpreter's remaining fields, none of them a Lisp root, each
@@ -130,6 +134,18 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
 /// of `Interpreter' to be written, installed, or listed here.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
+    (
+        "state",
+        "the shell's owned editor payload (InterpreterState), whose fields this inventory covers",
+    ),
+    (
+        "continuations",
+        "the suspended Lisp thread stacks: only the main thread exists at dump time (Fdump_emacs_portable refuses otherwise), so there are none",
+    ),
+    (
+        "new_thread_continuations",
+        "never-started thread stacks awaiting the driving shell: none at dump time, as continuations",
+    ),
     (
         "image_template_token",
         "the test harness's template ownership, not process state",
@@ -159,10 +175,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "garbage_collection_inhibited",
         "the running collection's inhibit count",
-    ),
-    (
-        "fruitless_stepped_yields",
-        "thread scheduling of the running process",
     ),
     (
         "kbd_macro_committed_len",
@@ -294,10 +306,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "next_special_binding_id",
         "carried in the remembered scalars",
     ),
-    (
-        "thread_swap_boundaries",
-        "the running process's thread switches",
-    ),
     ("indirect_buffers", "written as each buffer's base"),
     ("change_hooks_running", "a running change hook's guard"),
     (
@@ -365,10 +373,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("builtin_doc_offsets", "carried in the remembered scalars"),
     ("require_nesting", "the running load"),
     ("lambda_capture_overrides", "the running evaluation"),
-    (
-        "executing_thread_ids",
-        "only the main thread exists at dump time",
-    ),
     ("mutex_states", "mutex objects are refused by the writer"),
     (
         "condition_variables",
@@ -1437,19 +1441,20 @@ mod tests {
             );
         }
         // Every field documented as not carried is a declared field of
-        // `Interpreter'.
-        let struct_start = source
-            .find("pub struct Interpreter {")
-            .expect("Interpreter struct definition");
-        let struct_end = struct_start
-            + source[struct_start..]
-                .find("\n}\n")
-                .expect("end of Interpreter struct");
-        let declarations = &source[struct_start..struct_end];
+        // the `Interpreter' shell or its `InterpreterState' payload.
+        let declarations = ["pub struct Interpreter {", "pub struct InterpreterState {"]
+            .iter()
+            .map(|header| {
+                let start = source.find(header).expect("struct definition");
+                let end = start + source[start..].find("\n}\n").expect("end of struct");
+                &source[start..end]
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         for (name, _) in FIELDS_NOT_CARRIED {
             assert!(
                 declarations.contains(&format!(" {name}: ")),
-                "{name} is not a field of Interpreter"
+                "{name} is not a field of Interpreter or InterpreterState"
             );
         }
         // A field is documented once: either it is a re-created root or

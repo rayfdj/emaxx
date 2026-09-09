@@ -362,7 +362,8 @@ impl Interpreter {
                 .iter()
                 .position(|(buffer_id, _)| *buffer_id == right_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
-            let (buffer, inactive_buffers) = (&mut self.buffer, &mut self.inactive_buffers);
+            let state = &mut **self;
+            let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
             buffer.swap_text_state(&mut inactive_buffers[pos].1);
             return Ok(());
         }
@@ -372,7 +373,8 @@ impl Interpreter {
                 .iter()
                 .position(|(buffer_id, _)| *buffer_id == left_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
-            let (buffer, inactive_buffers) = (&mut self.buffer, &mut self.inactive_buffers);
+            let state = &mut **self;
+            let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
             buffer.swap_text_state(&mut inactive_buffers[pos].1);
             return Ok(());
         }
@@ -413,10 +415,12 @@ impl Interpreter {
 
     /// Find a mutable overlay by ID in any live buffer.
     pub fn find_overlay_mut(&mut self, id: u64) -> Option<&mut crate::overlay::Overlay> {
-        if let Some(overlay) = self.buffer.overlays.iter_mut().find(|ov| ov.id == id) {
+        let state = &mut **self;
+        if let Some(overlay) = state.buffer.overlays.iter_mut().find(|ov| ov.id == id) {
             return Some(overlay);
         }
-        self.inactive_buffers
+        state
+            .inactive_buffers
             .iter_mut()
             .find_map(|(_, buffer)| buffer.overlays.iter_mut().find(|ov| ov.id == id))
     }

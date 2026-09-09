@@ -1900,9 +1900,12 @@ define_dispatch!(
                     .transpose()?
                     .unwrap_or(1);
                 interp.set_variable("defining-kbd-macro", Value::Nil, env);
-                interp
-                    .kbd_macro_definition
-                    .truncate(interp.kbd_macro_committed_len);
+                {
+                    let state = &mut **interp;
+                    state
+                        .kbd_macro_definition
+                        .truncate(state.kbd_macro_committed_len);
+                }
                 let last_macro = Value::list(
                     std::iter::once(Value::symbol("vector-literal"))
                         .chain(interp.kbd_macro_definition.iter().cloned()),
@@ -1965,9 +1968,12 @@ define_dispatch!(
             "execute-kbd-macro" => execute_kbd_macro(interp, args, env),
             "cancel-kbd-macro-events" => {
                 need_args(name, args, 0)?;
-                interp
-                    .kbd_macro_definition
-                    .truncate(interp.kbd_macro_committed_len);
+                {
+                    let state = &mut **interp;
+                    state
+                        .kbd_macro_definition
+                        .truncate(state.kbd_macro_committed_len);
+                }
                 Ok(Value::Nil)
             }
             "store-kbd-macro-event" => {

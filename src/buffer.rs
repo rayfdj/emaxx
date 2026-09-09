@@ -262,6 +262,40 @@ pub(crate) struct BufferImage {
     pub(crate) multibyte: bool,
 }
 
+impl UndoState {
+    /// Trace the actual saved undo payload, including values not materialized
+    /// into its Lisp list view yet. A dynamically bound undo list can be the
+    /// only remaining owner while its execution thread is suspended.
+    pub(crate) fn visit_lisp_roots(&self, visit: &mut impl FnMut(&Value)) {
+        fn entries_roots(entries: &[UndoEntry], visit: &mut impl FnMut(&Value)) {
+            for entry in entries {
+                match entry {
+                    UndoEntry::Combined { display, entries } => {
+                        visit(display);
+                        entries_roots(entries, visit);
+                    }
+                    UndoEntry::Opaque(value) => visit(value),
+                    UndoEntry::Delete { props, markers, .. } => {
+                        for span in props {
+                            for (_, value) in &span.props {
+                                visit(value);
+                            }
+                        }
+                        for marker in markers {
+                            visit(&Value::Marker(marker.id));
+                        }
+                    }
+                    UndoEntry::Insert { .. } | UndoEntry::Boundary => {}
+                }
+            }
+        }
+        entries_roots(&self.entries, visit);
+        if let Some(view) = &self.view {
+            visit(&view.value);
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct UndoMarker {
     pub id: u64,

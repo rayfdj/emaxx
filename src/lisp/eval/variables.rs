@@ -5,14 +5,14 @@ use super::*;
 use crate::lisp::types::SymbolName;
 
 impl BacktraceFrame {
-    fn function_snapshot(&self) -> Value {
+    pub(super) fn function_snapshot(&self) -> Value {
         self.source_form
             .as_ref()
             .and_then(|form| form.car().ok())
             .unwrap_or_else(|| self.function.clone())
     }
 
-    fn args_snapshot(&self) -> Vec<Value> {
+    pub(super) fn args_snapshot(&self) -> Vec<Value> {
         if let Some(words) = &self.native_args {
             return crate::lisp::native_comp::decode_active_backtrace_arguments(words)
                 .expect("a native backtrace frame is inspected only during its activation")
@@ -1677,6 +1677,17 @@ impl Interpreter {
             if restore.name == name && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
             {
                 restore.local_binding_killed = true;
+            }
+        }
+        for thread in &mut self.thread_states {
+            if let Some(context) = &mut thread.context {
+                for restore in &mut context.active_special_restores {
+                    if restore.name == name
+                        && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
+                    {
+                        restore.local_binding_killed = true;
+                    }
+                }
             }
         }
     }

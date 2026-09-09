@@ -1095,7 +1095,10 @@ fn auto_coding_for_file(
     interp.set_current_buffer_id(temp_id)?;
     interp.buffer.set_multibyte(false);
     interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
-    interp.buffer.goto_char(interp.buffer.point_min());
+    {
+        let buffer = &mut interp.buffer;
+        buffer.goto_char(buffer.point_min());
+    }
 
     let mut detection_env = env.clone();
     let result = interp.call_function_value(
@@ -1439,9 +1442,10 @@ pub(crate) fn insert_file_contents(
                     env,
                 )?;
             }
-            interp
-                .buffer
-                .goto_char(replacement_point.min(interp.buffer.point_max()));
+            {
+                let point = replacement_point.min(interp.buffer.point_max());
+                interp.buffer.goto_char(point);
+            }
             return Ok(());
         }
         if let Some(hooks) = interp.lookup_var("after-insert-file-functions", env)

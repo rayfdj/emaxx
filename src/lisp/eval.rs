@@ -22,6 +22,7 @@ pub(crate) use bindings::dynamic_library_suffix_values;
 mod bootstrap;
 mod buffers;
 pub(crate) mod coding;
+pub(crate) mod continuations;
 mod control_forms;
 mod core;
 mod definitions;
@@ -32,8 +33,10 @@ mod local_cells;
 mod loops;
 mod macros;
 mod resource_forms;
+pub(crate) mod roots;
 pub(crate) mod runtime;
 pub(crate) mod terminal;
+mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
 pub(crate) use image_install::PdumperLoadRecord;
 pub(crate) use local_cells::LocalCells;
@@ -1629,6 +1632,9 @@ pub(crate) enum BufferDisposition {
 enum ThreadBlocker {
     Mutex(u64),
     ConditionVariable(u64),
+    Thread(u64),
+    /// condition-wait clears event_object before reacquiring its mutex.
+    ReacquireMutex(u64),
     Sleep,
 }
 
@@ -1640,45 +1646,6 @@ enum ThreadStatus {
 }
 
 #[derive(Clone, Debug)]
-enum ThreadProgram {
-    Main,
-    Ignore,
-    /// Run a real callable to completion in one scheduler step.  Emaxx has no
-    /// preemptive threads, so such a body cannot interleave with the main
-    /// thread; that is a tracked architectural gap, not something to simulate.
-    Call(Value),
-    Noop,
-    /// Body shapes the cooperative scheduler can actually step.  These are
-    /// recognised by shape only — never by function or variable name.
-    Sleep {
-        blocked: bool,
-        /// The literal SECONDS of the `(sleep-for SECONDS)' body.
-        seconds: f64,
-        /// When the sleep ends, once it has started.
-        until: Option<std::time::Instant>,
-    },
-    InfiniteYield,
-}
-
-#[derive(Clone, Debug)]
-enum ThreadOutcome {
-    /// `delivered' distinguishes a signal INJECTED with `thread-signal' from
-    /// an error the body raised itself.  GNU keeps them in different places:
-    /// a body error is caught by thread.c:815's internal_condition_case,
-    /// recorded for `thread-last-error', and the thread finishes with a nil
-    /// result -- `thread-join' returns nil.  `thread-signal' sets the
-    /// target's `error_symbol', and `Fthread_join' SNAPSHOTS that field on
-    /// entry (thread.c:1081) and re-raises it after the target dies
-    /// (thread.c:1088) -- which is what threads-mutex-signal requires: the
-    /// injected `quit' comes out of the JOIN.
-    Returned(Value),
-    Signaled {
-        value: Value,
-        delivered: bool,
-    },
-}
-
-#[derive(Clone, Debug)]
 struct ThreadState {
     record_id: u64,
     name: Option<String>,
@@ -1686,8 +1653,12 @@ struct ThreadState {
     buffer_disposition: BufferDisposition,
     buffer_killed: bool,
     status: ThreadStatus,
-    program: ThreadProgram,
-    outcome: Option<ThreadOutcome>,
+    entry: Option<Value>,
+    outcome: Option<Value>,
+    signal_condition: Value,
+    signal_data: Value,
+    wake_at: Option<std::time::Instant>,
+    context: Option<Box<thread_context::ThreadExecutionContext>>,
     /// Whether this thread's event wait is currently servicing process
     /// callbacks on behalf of user input.
     waiting_for_user_input: bool,
@@ -3116,6 +3087,17 @@ impl LispReachability<'_, '_> {
                 {
                     children.extend(entries.into_iter().flat_map(|(key, value)| [key, value]));
                 }
+                // A dead thread is no longer an independent GC root
+                // (thread.c:run_thread unlinks it). Its result and injected
+                // error still belong to the thread object when reachable.
+                if record.kind == RecordKind::Thread
+                    && let Some(thread) = interp.find_thread_state(*id)
+                {
+                    children.extend(thread.entry.iter().cloned());
+                    children.push(thread.signal_condition.clone());
+                    children.push(thread.signal_data.clone());
+                    children.extend(thread.outcome.iter().cloned());
+                }
                 for child in &children {
                     self.mark(interp, child);
                 }
@@ -3241,8 +3223,9 @@ impl Interpreter {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_record(&mut self, state: RecordState) {
         let index = self.record_index_for(state.id);
-        if let Some(type_name) = self.records[index].symbol_type_name()
-            && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
+        let previous_type = self.records[index].symbol_type_name().map(str::to_owned);
+        if let Some(type_name) = previous_type
+            && let Some(ids) = self.record_ids_by_type_index.get_mut(&type_name)
         {
             ids.remove(&state.id);
         }
@@ -3595,6 +3578,12 @@ impl Interpreter {
         for value in native_roots {
             marked.mark(self, value);
         }
+        self.stack_roots.mark(self, &mut marked);
+        for thread in &self.thread_states {
+            if let Some(context) = &thread.context {
+                roots::mark_source(self, &mut marked, &**context);
+            }
+        }
 
         let mut mark = |value: &Value| {
             marked.mark(self, value);
@@ -3800,6 +3789,9 @@ impl Interpreter {
             if let Some(value) = &restore.previous {
                 mark(value);
             }
+            if let Some(state) = &restore.previous_undo_state {
+                state.visit_lisp_roots(&mut mark);
+            }
         }
         for restriction in &self.labeled_restrictions {
             if let Some(value) = &restriction.label {
@@ -3827,16 +3819,12 @@ impl Interpreter {
                 mark(value);
             }
         }
-        for thread in &self.thread_states {
+        for thread in self
+            .thread_states
+            .iter()
+            .filter(|thread| !matches!(thread.status, ThreadStatus::Finished))
+        {
             mark(&Value::Record(thread.record_id));
-            if let ThreadProgram::Call(function) = &thread.program {
-                mark(function);
-            }
-            match &thread.outcome {
-                Some(ThreadOutcome::Returned(value))
-                | Some(ThreadOutcome::Signaled { value, .. }) => mark(value),
-                None => {}
-            }
         }
         for value in self.plain_quote_templates.values() {
             mark(&value.value);
@@ -4431,10 +4419,38 @@ impl Drop for ImageTemplateToken {
     }
 }
 
-/// The interpreter state: holds the global environment, the current buffer,
-/// and ERT test results.
+/// An execution shell owning the editor state while it is active.
+///
+/// Keeping the payload separate allows a suspension boundary to transfer its
+/// ownership to another shell without aliasing the parked shell's mutable
+/// references. A parked shell must not be dereferenced until its state returns.
 #[derive(Clone)]
 pub struct Interpreter {
+    state: Option<Box<InterpreterState>>,
+    continuations: continuations::ThreadContinuations,
+}
+
+impl std::ops::Deref for Interpreter {
+    type Target = InterpreterState;
+
+    fn deref(&self) -> &Self::Target {
+        self.state.as_deref().expect("interpreter shell is parked")
+    }
+}
+
+impl std::ops::DerefMut for Interpreter {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state
+            .as_deref_mut()
+            .expect("interpreter shell is parked")
+    }
+}
+
+/// The uniquely owned editor payload. Thread switching must also save and
+/// restore the per-thread execution fields; moving this allocation alone does
+/// not implement a scheduler. This type is public only as the Deref target.
+#[derive(Clone)]
+pub struct InterpreterState {
     /// Present only on interpreters cloned from the test image template.
     /// Never read: it exists for its Drop, which decrements the live-clone
     /// counter that keeps template use single-threaded.
@@ -4494,12 +4510,6 @@ pub struct Interpreter {
     /// alloc.c's nesting counter.  Hash-table user tests enter this section
     /// so arbitrary callback Lisp cannot collect the table being probed.
     garbage_collection_inhibited: usize,
-    /// Consecutive `thread-yield's from a stepped (non-main) thread during
-    /// which drive_threads ran nothing else.  The parent that could change
-    /// this thread's loop condition is suspended up-stack until the step
-    /// returns, so past a threshold the yield loop can never progress and
-    /// signals the cooperative-model deadlock (finding 84's class).
-    pub(crate) fruitless_stepped_yields: u32,
     pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
     pub(crate) kbd_macro_definition: Vec<Value>,
     pub(crate) kbd_macro_committed_len: usize,
@@ -4740,6 +4750,8 @@ pub struct Interpreter {
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
     pub(crate) vm_stack_pool: Vec<Vec<Value>>,
+    /// Live Rust-owned operand/context roots, independent of the reusable pool.
+    stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
     backtrace_args_pool: Vec<Vec<Value>>,
     /// SQLite objects keyed by record ID.
@@ -4785,12 +4797,6 @@ pub struct Interpreter {
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
     next_special_binding_id: u64,
-    /// Indices into `active_special_restores' marking where suspended
-    /// ancestor threads' records end.  GNU's unbind_for_thread_switch walks
-    /// only the OUTGOING thread's own specpdl; swapping the whole stack
-    /// re-exposed a grandparent's let values to a grandchild (audit finding
-    /// on the first version of the thread-switch swap).
-    thread_swap_boundaries: Vec<usize>,
     /// Marker-tracked labeled restrictions, with the innermost entry last.
     labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
@@ -4942,10 +4948,10 @@ pub struct Interpreter {
     require_nesting: Vec<String>,
     lambda_capture_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
-    /// Cooperative thread bodies currently suspended on Rust call stacks,
-    /// outermost first.  `active_thread_id' identifies only the deepest one;
-    /// event pumping from that body must not re-enter any suspended ancestor.
-    executing_thread_ids: Vec<u64>,
+    /// Newly allocated, never-started stacks. A child may create threads;
+    /// the driving shell takes these before their first resume. Started
+    /// continuations stay outside the movable payload in that driving shell.
+    new_thread_continuations: continuations::ThreadContinuations,
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
     combined_after_change: Option<CombinedAfterChangeState>,
@@ -5003,7 +5009,7 @@ pub struct Interpreter {
 /// `signal' walks this innermost-first: a matching `condition-case' clause
 /// stops the search before any outer `handler-bind' functions run, while
 /// matching `handler-bind' functions run at the signal point (pre-unwind).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum ActiveHandler {
     /// One CONDITIONS/HANDLER pair from `handler-bind'.  Keep the condition
     /// list grouped so a handler whose list contains both a child condition
@@ -5144,7 +5150,7 @@ impl Interpreter {
                 face: Value::Nil,
             })
             .collect();
-        let mut interp = Interpreter {
+        let state = InterpreterState {
             image_template_token: None,
             detached_forwarded_variables: HashMap::new(),
             pending_thread_events: Vec::new(),
@@ -5322,7 +5328,6 @@ impl Interpreter {
             special_scan_floor: 0,
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
-            fruitless_stepped_yields: 0,
             kbd_macro_executions: Vec::new(),
             kbd_macro_definition: Vec::new(),
             kbd_macro_committed_len: 0,
@@ -5677,6 +5682,7 @@ impl Interpreter {
             bytecode_program_cache: Vec::new(),
             keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
             vm_stack_pool: Vec::new(),
+            stack_roots: roots::StackRoots::default(),
             backtrace_args_pool: Vec::new(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
@@ -5694,7 +5700,6 @@ impl Interpreter {
             buffer_syntax_tables: Vec::new(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
-            thread_swap_boundaries: Vec::new(),
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
@@ -5775,11 +5780,15 @@ impl Interpreter {
                 buffer_disposition: BufferDisposition::Default,
                 buffer_killed: false,
                 status: ThreadStatus::Runnable,
-                program: ThreadProgram::Main,
+                entry: None,
+                signal_condition: Value::Nil,
+                signal_data: Value::Nil,
+                wake_at: None,
+                context: None,
                 outcome: None,
                 waiting_for_user_input: false,
             }],
-            executing_thread_ids: Vec::new(),
+            new_thread_continuations: continuations::ThreadContinuations::default(),
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
             combined_after_change: None,
@@ -5807,6 +5816,10 @@ impl Interpreter {
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
             face_change_count: 0,
+        };
+        let mut interp = Interpreter {
+            state: Some(Box::new(state)),
+            continuations: continuations::ThreadContinuations::default(),
         };
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
         // Startup globals are dumped `defvar'/DEFVAR value cells, hence
@@ -7451,12 +7464,13 @@ impl Interpreter {
             // dynamic closures are handled directly on the caller chain.
             // Preserve the lexical scope boundary without manufacturing a
             // fake binding that leaks into instrumentation/capture analysis.
-            return evaluate(self, &mut Vec::new());
+            return self.with_lisp_stack_roots(&*env, |interp| evaluate(interp, &mut Vec::new()));
         }
 
         if env_has_truthy_binding(env, "__closure-isolated-current-env") {
             let mut call_env = captured_snapshot.clone();
-            let result = evaluate(self, &mut call_env);
+            let result =
+                self.with_lisp_stack_roots(&*env, |interp| evaluate(interp, &mut call_env));
             self.refresh_captured_lexical_cells(&mut call_env);
             {
                 let mut stored_env = closure_env.borrow_mut();
@@ -7476,7 +7490,7 @@ impl Interpreter {
 
         let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
         let mut call_env = Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
-        let result = evaluate(self, &mut call_env);
+        let result = self.with_lisp_stack_roots(&*env, |interp| evaluate(interp, &mut call_env));
         self.refresh_captured_lexical_cells(&mut call_env);
         {
             let mut stored_env = closure_env.borrow_mut();
@@ -7974,13 +7988,8 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
 // with `_'; without a placeholder the object becomes the last argument.
 
 fn build_signal_value(condition: Value, data: Value) -> Value {
-    if let Ok(items) = data.to_vec() {
-        Value::cons(condition, Value::list(items))
-    } else {
-        // GNU keeps non-list DATA as the cdr: (signal 'foo 4) is caught
-        // as the dotted pair (foo . 4).
-        Value::cons(condition, data)
-    }
+    // Fsignal keeps the original DATA object, including its list identity.
+    Value::cons(condition, data)
 }
 
 #[cfg(test)]

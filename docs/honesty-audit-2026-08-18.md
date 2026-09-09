@@ -52,7 +52,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 81 | HOSTNAME/COMPUTERNAME/EMAXX_USER_FULL_NAME identity knobs | FIXED (removed; gethostname/$NAME only) |
 | 82 | eq/eql/equal compared floats with IEEE ==, not GNU's representation equality | FIXED (to_bits at five sites; NaN self-eq restored, signed zeros distinct; boxed-float eq identity remains approximated) |
 | 83 | Interpreted (+ FLOAT) seeded its accumulator with 0.0, losing the zero sign | FIXED (accumulate from the first argument, data.c arith_driver) |
-| 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (deadlock signals instead of spinning; scheduler no longer re-steps the active thread) |
+| 84 | Cooperative thread model cannot suspend a thread mid-body | PARTIALLY FIXED 2026-09-09 (owned continuations suspend actual frames; four target cases pass; scheduling limits and validation in [thread audit](thread-continuation-audit-2026-09-09.md)) |
 | 85 | Batch reconstruction skipped startup.el's tty-color registration | FIXED (runs GNU's own tty-register-default-colors) |
 | 86 | color-gray-p/color-supported-p/color-distance/color-values-from-color-spec bypass GNU's Lisp color path | FIXED 2026-09-04 (xfaces.c port: tty-defined-color, Riemersma distance with METRIC, parse_color_spec) |
 | 87 | `\u{2620}` hardcoded into the word class to satisfy one upstream test | FIXED (removed; word/space now resolve through the syntax table everywhere) |
@@ -6060,6 +6060,12 @@ a patch, and a frame that merely reported itself live while sharing the
 initial frame's windows would be a lie about `frame-root-window'; so
 this stays open as finding 159.
 
+**2026-09-09 correction to the historical claim below:** a fresh Linux
+run exposed a real Emaxx ASCII conversion bug once GPG decryption worked.
+The bug is now corrected and all four original tests pass in both editors.
+See [the OpenPGP audit](openpgp-linux-investigation-2026-09-09.md). The old
+agent/sandbox diagnosis was not established by the historical results.
+
 **mml-sec-tests (4 mismatches; no Emaxx divergence).**  The four
 `mml-secure-en-decrypt-N' tests fail on both sides here: with gpg 2.4.4
 and no agent in the sandbox, decryption does not happen and `decrypted'
@@ -8327,6 +8333,79 @@ binding. There are no new skipped tests or patched GNU Lisp files. This
 checkpoint does not claim a fresh single-run Rust gate, a fresh 7,883-test
 corpus result, universal terminal/GUI parity, or complete image restoration.
 
+## 2026-09-09 OpenPGP investigation: platform qualification
+
+The four recorded `mml-secure-en-decrypt-1` through `-4` ciphertext
+mismatches require a Linux reproduction. The current pinned Darwin source
+explicitly rejects `system-type == darwin` in its `test-conf` helper before
+these test bodies run. Fresh isolated runs on main `1b60d9b`, using identical
+copies of the unchanged upstream test and its 35 tracked resource files,
+produce four skips and zero passes in both GNU and Emaxx. These skips do not
+close the four recorded Linux mismatches. The previously discussed
+7,876/7,883 figure is an extrapolation from the historical corpus and focused
+fixes, not a newly measured platform-independent total.
+
+Source inspection shows that `mml2015-epg-clear-decrypt` catches a decryption
+error and preserves the ciphertext buffer. That explains the failure's
+appearance but does not establish the cause of the GPG error. The older
+agent/sandbox diagnosis remains to be verified against the actual EasyPG
+status/debug output. No runtime correction or ciphertext normalization has
+been made.
+
+The current macOS host has no GnuPG executable or available Linux container
+runtime. Linux execution details have been requested. Prepared copies,
+SHA-256 fixture inventory, separate GNU/Emaxx outputs and an EasyPG debug
+capture driver are under `/private/tmp/emaxx-openpgp-sept9`. The capture
+driver was checked against GNU: a skipped test returns a failing diagnostic
+status, rather than being counted as a pass. The next step is to reproduce
+on Linux with isolated test-key homes and capture the underlying decryption
+error before choosing a correction. Pending native-comp dumping commits
+remain separate from this investigation.
+
+Follow-up: a Linux login is no longer required. The investigation now uses
+an isolated GitHub Actions branch, `investigate/openpgp-linux`, checkpoint
+`25a01b7`. Run `https://github.com/rayfdj/emaxx/actions/runs/34332448535`
+builds GNU 30.2 and the current Emaxx source on Ubuntu 24.04, retains the
+original four tests and test keys, and captures EasyPG debug output. Its
+acceptance checks reject matching failures, skips and incomplete reports.
+This diagnostic uses the publicly available upstream revision `636f166c...`
+with the Linux capability set and records its actual identity; it does not
+repin or certify the historical Linux frozen oracle. No decryption result is
+claimed before the run completes.
+
+### Completed Linux OpenPGP correction
+
+The earlier environment-only explanation was incomplete. Linux run
+34332448535 at `25a01b7` passed all four original tests in GNU and failed
+all four in Emaxx, even though GPG reported successful decryption. Emaxx's
+`set-buffer-multibyte` with non-t flag `to` converted ASCII to raw-byte
+characters. GNU's `buffer.c:Fset_buffer_multibyte` preserves ASCII before
+checking that flag. The corresponding generic branch is now corrected;
+there is no GPG-specific runtime behavior or ciphertext normalization.
+
+Run 34336177090 at `769577d` passes all four original tests in both editors,
+in separate fresh fixture homes, for both short and historical long
+fixture layouts. GPG used 59-byte sockets under `/run/user`; the proposed
+long-socket explanation for the historical environment failure was not
+reproduced and remains unproven. All 36 tracked GNU fixture hashes are
+unchanged. No original test, oracle lock or corpus manifest was changed.
+
+Validation covers 43 distinct focused Rust checks across the retained
+40-check byte/audit run and the final 25-check audit/PTY run. All pass
+serially without skips or ignores. The overlap is the 22 de-cheating
+checks. Rustfmt, six Python acceptance checks and strict all-targets,
+all-features Clippy pass; Clippy has zero warnings on Linux and Darwin.
+The one Linux Clippy finding was an unnecessary mutable reference in an
+existing PTY test helper; its pointer argument was corrected for both
+platform signatures and all three affected PTY contracts passed.
+
+Full provenance, binary hashes, negative controls and limitations are in
+[the OpenPGP audit](openpgp-linux-investigation-2026-09-09.md). This closes
+the four OpenPGP cases with actual Linux passes. The two known ERC startup
+mismatches and one async-shell startup mismatch remain for dumping/startup
+work. No subsequent native-comp commits were merged, and no fresh full
+Rust or 7,883-test corpus result is claimed.
+
 ## 2026-09-09 Merge of main 85f0c28 into native-comp
 
 *What came in.*  Main merged checkpoint 10 of this branch and added the
@@ -8481,3 +8560,53 @@ record, frame, terminal and finalizer paths, all passing; `cargo fmt
 --check' and strict clippy exit 0.  The full gate is run once, on the
 tree with main 4311aa6 merged over this checkpoint, and its line is
 recorded in the merge section that follows.
+
+## 2026-09-09 Merge of main 4311aa6 into native-comp
+
+*What came in.*  Five commits over the previous merge: the real Lisp
+thread stacks resumed with the native runtime's ownership preserved
+(`thread_context', the undo state's root visitor, the thread
+continuation fixtures), ASCII preserved when a buffer is made
+multibyte with a non-`t' flag, the warning-free PTY test setup, and
+the OpenPGP investigation with its recovery record.
+
+*Resolution.*  Four textual conflicts.  `buffer.rs': the buffer image
+(this branch) and the undo root visitor (main) are both kept.
+`eval.rs': `thread_context' joins the eval modules beside the image
+exports.  The openpty control passes the window size as `&raw mut',
+main's warning-free form, with the binding mutable again.  The honesty
+audit keeps both appended sections in order, main's first.  One
+non-textual adaptation: `install_record' reads the previous record's
+type name by value, since main's `symbol_type_name' borrows the
+record while the index is updated.
+
+*The inventories after main's restructuring.*  Main made `Interpreter'
+a shell (`state', the owned `InterpreterState' payload, and
+`continuations', the suspended thread stacks) and added `stack_roots'
+(the running Rust frames' registered Lisp roots) and
+`new_thread_continuations', removing `fruitless_stepped_yields',
+`thread_swap_boundaries' and `executing_thread_ids'.  The field and
+root inventories now scan the shell and the payload as main's own
+GC-root gate does; `stack_roots' is listed as reset after a load (the
+main thread's stack scan, empty once the dump returns), the shell's
+payload and the two continuation tables as not carried (no thread but
+the main one exists at dump time), and the three removed fields are
+gone from the list, which a unit test checks names declared fields only.
+
+*Checking main's changes are all in.*  Every line main added since
+the merge base (44 files) is present in the merged tree, checked
+mechanically; the lines main has that the merged tree lacks are this
+branch's own D08-era writer comments and control, the pre-D13 table
+pushes and the old `DumpContext::new' signature, all replaced by later
+checkpoints.  Main's OpenPGP gate unit tests pass on the merged tree
+(6 tests); its Rust additions -- the multibyte-enabling ASCII control,
+the byte-code prologue identity control, the continuation and stack
+switch controls and the thread continuation fixtures -- are run below
+with the image controls before the gate.
+
+*Merge gate.*  Alone on the machine, on the merged tree as committed:
+grouped gate run-1788954331026622077-28040, GROUPED GATE PASSED (2600
+tests across the ten groups, every group 0 failed, the integration
+binaries included), `cargo fmt --check' and strict clippy exit 0 both
+before and after the run.  This is the one full gate of checkpoint 15
+and the merge together.

@@ -7872,7 +7872,10 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
-    interp.buffer.goto_char(interp.buffer.point_max());
+    {
+        let buffer = &mut interp.buffer;
+        buffer.goto_char(buffer.point_max());
+    }
     let mut env = Vec::new();
 
     call_via_lisp(
@@ -12461,6 +12464,39 @@ fn undecided_decode_detects_shift_jis_like_coding_c() {
 }
 
 #[test]
+fn buffer_multibyte_non_t_flags_preserve_ascii_and_convert_eight_bit_bytes() {
+    // buffer.c:Fset_buffer_multibyte checks ASCII_CHAR_P before inspecting
+    // FLAG. Non-t flags convert eight-bit bytes individually, while t can
+    // recognize an existing multi-byte sequence. Exercise every byte.
+    let program = r#"(list
+      (mapcar
+       (lambda (flag)
+         (with-temp-buffer
+           (set-buffer-multibyte nil)
+           (insert (apply #'unibyte-string (number-sequence 0 255)))
+           (set-buffer-multibyte flag)
+           (equal (append (buffer-string) nil)
+                  (mapcar (lambda (byte)
+                            (if (< byte 128) byte (+ #x3fff00 byte)))
+                          (number-sequence 0 255)))))
+       '(t to another-non-nil-flag))
+      (mapcar
+       (lambda (flag)
+         (with-temp-buffer
+           (set-buffer-multibyte nil)
+           (insert (unibyte-string 65 195 169 66))
+           (set-buffer-multibyte flag)
+           (append (buffer-string) nil)))
+       '(t to another-non-nil-flag)))"#;
+    let expected = "((t t t) ((65 233 66) (65 4194243 4194217 66) (65 4194243 4194217 66)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let result = crate::test_support::eval_lisp(&mut interp, &mut Env::new(), program)
+        .expect("convert all byte values with GNU multibyte flags");
+    assert_eq!(result.to_string(), expected);
+}
+
+#[test]
 fn string_byte_conversions_use_the_internal_encoding() {
     // character.c: `string-as-unibyte' exposes the INTERNAL (UTF-8)
     // bytes and `string-as-multibyte' reads them back (what stood here
@@ -15745,7 +15781,10 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
     let marker = interp
         .copy_marker_value(&Value::Integer(interp.buffer.point_max() as i64), false)
         .expect("copy marker at process output boundary");
-    interp.buffer.goto_char(interp.buffer.point_min());
+    {
+        let buffer = &mut interp.buffer;
+        buffer.goto_char(buffer.point_min());
+    }
     call(
         &mut interp,
         "internal-default-process-filter",
@@ -22257,7 +22296,7 @@ impl FrameTestPty {
         let mut master = -1;
         let mut slave = -1;
         let mut name = [0i8; 1024];
-        let size = libc::winsize {
+        let mut size = libc::winsize {
             ws_row: 24,
             ws_col: 80,
             ws_xpixel: 0,
@@ -22272,7 +22311,7 @@ impl FrameTestPty {
                     &mut slave,
                     name.as_mut_ptr(),
                     std::ptr::null_mut(),
-                    &size
+                    &raw mut size
                 ),
                 0
             );
@@ -22452,4 +22491,221 @@ fn terminal_frames_isolate_faces_keyboards_and_saved_configurations() {
             .expect("valid terminal contract fixture"),
         expected
     );
+}
+
+#[test]
+fn threads_retain_lexical_caller_roots_across_separate_callee_environments() {
+    // GNU marks all live thread stacks, including an interpreted caller's
+    // lexical cells which its independently scoped callee cannot access.
+    // Neither backtrace display nor a captured lambda owns KEY here.
+    let program = r#"
+        (progn
+          (defvar suspension-roots-table nil)
+          (defvar suspension-roots-stage nil)
+          (defun suspension-roots-wait ()
+            (setq suspension-roots-stage 'parked)
+            (while (eq suspension-roots-stage 'parked) (thread-yield)))
+          (defun suspension-roots-run (helper)
+            (setq suspension-roots-table (make-hash-table :test 'eq :weakness 'key)
+                  suspension-roots-stage nil)
+            (fset 'suspension-roots-helper helper)
+            (let ((worker
+                   (make-thread
+                    (eval '(lambda ()
+                             (let ((key (list 'owned-only-by-caller)))
+                               (puthash key t suspension-roots-table)
+                               (suspension-roots-helper)
+                               (gethash key suspension-roots-table))) t))))
+              (while (not (eq suspension-roots-stage 'parked)) (thread-yield))
+              (garbage-collect)
+              (let ((during (hash-table-count suspension-roots-table)))
+                (setq suspension-roots-stage 'resume)
+                (let ((result (thread-join worker)))
+                  (garbage-collect)
+                  (list during result (hash-table-count suspension-roots-table))))))
+          (list
+           (suspension-roots-run (eval '(lambda () (suspension-roots-wait)) nil))
+           (suspension-roots-run (eval '(lambda () (suspension-roots-wait)) t))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 t 0) (1 t 0))",
+        "live suspended caller environments",
+    );
+}
+
+#[test]
+fn suspended_bytecode_retains_operand_and_unwind_roots() {
+    // GNU bytecode.c:mark_bytecode marks the live operand stack, and the
+    // specpdl marks pending cleanup functions. The keys are allocated at
+    // runtime, not held by bytecode constants or a test-owned strong root.
+    let program = r#";;; -*- lexical-binding: t; -*-
+        (require 'bytecomp)
+        (defvar vm-suspension-table nil)
+        (defvar vm-suspension-stage nil)
+        (defvar vm-suspension-observed nil)
+        (defvar vm-suspension-result nil)
+        (defun vm-suspension-pause (&rest _)
+          (setq vm-suspension-stage 'parked)
+          (while (eq vm-suspension-stage 'parked) (thread-yield)))
+        (defun vm-suspension-key ()
+          (let ((key (list 'runtime-key)))
+            (puthash key t vm-suspension-table)
+            key))
+        (defun vm-suspension-cleanup ()
+          (let ((key (vm-suspension-key)))
+            (lambda ()
+              (setq vm-suspension-observed (gethash key vm-suspension-table)))))
+        (defun vm-suspension-lookup (key)
+          (gethash key vm-suspension-table))
+        (defun vm-suspension-run (function)
+          (setq vm-suspension-table (make-hash-table :test 'eq :weakness 'key)
+                vm-suspension-stage nil vm-suspension-observed nil)
+          (let ((worker (make-thread function)))
+            (while (not (eq vm-suspension-stage 'parked)) (thread-yield))
+            (garbage-collect)
+            (let ((during (hash-table-count vm-suspension-table)))
+              (setq vm-suspension-stage 'resume)
+              (let ((result (thread-join worker)))
+                (garbage-collect)
+                (list during (or result vm-suspension-observed)
+                      (hash-table-count vm-suspension-table))))))
+        (setq vm-suspension-result
+              (list
+               ;; Runtime cleanup closure held in the VM's unwind stack.
+               (vm-suspension-run
+                (make-byte-code
+                 0
+                 (unibyte-string byte-constant byte-call byte-unwind-protect
+                                 (+ byte-constant 1) byte-call
+                                 (+ byte-unbind 1) byte-return)
+                 [vm-suspension-cleanup vm-suspension-pause] 1))
+               ;; A live key below Binsert's argument while its ordinary
+               ;; modification hook suspends in the dedicated opcode.
+               (with-temp-buffer
+                 (add-hook 'before-change-functions #'vm-suspension-pause nil t)
+                 (vm-suspension-run
+                  (make-byte-code
+                   0
+                   (unibyte-string byte-constant (+ byte-constant 1) byte-call
+                                   (+ byte-constant 2) byte-insert byte-discard
+                                   (+ byte-call 1) byte-return)
+                   [vm-suspension-lookup vm-suspension-key "payload"] 3)))))
+        (prin1 vm-suspension-result)"#;
+    assert_oracle_file_contract_matches_interpreter(
+        program,
+        "vm-suspension-result",
+        "((1 t 0) (1 t 0))",
+    );
+}
+
+#[test]
+fn suspended_bytecode_observes_live_constant_vector_mutation() {
+    let program = r#";;; -*- lexical-binding: t; -*-
+(defvar gc-vector-table (make-hash-table :test 'eq :weakness 'key))
+(defvar gc-vector-ready nil)
+(defvar gc-vector-resume nil)
+(defvar gc-vector-constants
+  (vector (lambda ()
+            (setq gc-vector-ready t)
+            (while (not gc-vector-resume) (thread-yield)))
+          (list 'old)))
+(puthash (aref gc-vector-constants 1) t gc-vector-table)
+(defvar gc-vector-thread
+  (make-thread
+   (make-byte-code 0 (unibyte-string 192 32 136 193 135)
+                   gc-vector-constants 1)))
+(while (not gc-vector-ready) (thread-yield))
+(aset gc-vector-constants 1 (list 'new))
+(puthash (aref gc-vector-constants 1) t gc-vector-table)
+(garbage-collect)
+(defvar gc-vector-result (list (hash-table-count gc-vector-table)))
+(setq gc-vector-resume t)
+(setq gc-vector-result
+      (append gc-vector-result
+              (list (eq (thread-join gc-vector-thread)
+                        (aref gc-vector-constants 1)))))
+(setq gc-vector-thread nil gc-vector-constants nil)
+(garbage-collect)
+(setq gc-vector-result
+      (append gc-vector-result (list (hash-table-count gc-vector-table))))
+(prin1 gc-vector-result)
+"#;
+    assert_oracle_file_contract_matches_interpreter(program, "gc-vector-result", "(1 t 0)");
+}
+
+#[test]
+fn dead_thread_results_are_rooted_only_through_reachable_thread_objects() {
+    // thread.c removes finished threads from all_threads, but an externally
+    // reachable thread still owns its result. Test retention AND release.
+    // Keep the original file's top-level evaluation boundaries. Wrapping
+    // everything in one progn lets GNU's conservative C-stack scan retain
+    // the earlier thread-join result even after the Lisp reference is gone.
+    let program = r#";;; -*- lexical-binding: t; -*-
+        (defvar dead-thread-roots-table (make-hash-table :test 'eq :weakness 'key))
+        (defvar dead-thread-roots-worker nil)
+        (defvar dead-thread-roots-result nil)
+        (setq dead-thread-roots-worker
+              (make-thread
+               (lambda ()
+                 (let ((key (list 'owned-by-thread-result)))
+                   (puthash key t dead-thread-roots-table)
+                   key))))
+        (thread-join dead-thread-roots-worker)
+        (garbage-collect)
+        (let ((reachable (hash-table-count dead-thread-roots-table)))
+          (setq dead-thread-roots-worker nil)
+          (garbage-collect)
+          (setq dead-thread-roots-result
+                (list reachable (hash-table-count dead-thread-roots-table))))
+        (prin1 dead-thread-roots-result)"#;
+    assert_oracle_file_contract_matches_interpreter(program, "dead-thread-roots-result", "(1 0)");
+}
+
+fn assert_oracle_file_contract_matches_interpreter(
+    program: &str,
+    result_variable: &str,
+    expected: &str,
+) {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-file-contract-{}-{}.el",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("timestamp")
+            .as_nanos(),
+    ));
+    fs::File::create_new(&path)
+        .expect("create unique contract fixture")
+        .write_all(program.as_bytes())
+        .expect("write contract fixture");
+    crate::test_support::mark_process_test();
+    let oracle = std::process::Command::new(upstream_emacs_repo().join("src/emacs"))
+        .args(["-Q", "--batch", "-l"])
+        .arg(&path)
+        .output()
+        .expect("run GNU file contract");
+    assert!(
+        oracle.status.success(),
+        "{}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&oracle.stdout), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    call(
+        &mut interp,
+        "load",
+        &[
+            Value::string(&path.to_string_lossy()),
+            Value::Nil,
+            Value::T,
+            Value::T,
+        ],
+        &mut Env::new(),
+    )
+    .expect("load identical contract fixture");
+    let result = interp
+        .lookup_var(result_variable, &Env::new())
+        .expect("fixture sets its result variable");
+    fs::remove_file(&path).expect("remove owned contract fixture");
+    assert_eq!(result.to_string(), expected);
 }

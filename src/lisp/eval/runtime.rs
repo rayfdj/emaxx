@@ -1185,11 +1185,10 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
-        self.killed_buffer_file_names.insert(
-            id,
-            self.get_buffer_by_id(id)
-                .and_then(|buffer| buffer.file.clone()),
-        );
+        let file_name = self
+            .get_buffer_by_id(id)
+            .and_then(|buffer| buffer.file.clone());
+        self.killed_buffer_file_names.insert(id, file_name);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
         if let Some(marker_id) = self.buffer_mark_marker_ids.remove(&id)

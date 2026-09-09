@@ -311,7 +311,11 @@ fn multibyte_buffer_text(text: &str, preserve_utf8_sequences: bool) -> (String, 
 
     while byte_index < bytes.len() {
         position_map[byte_index] = new_position;
-        let width = if preserve_utf8_sequences {
+        // buffer.c:Fset_buffer_multibyte preserves ASCII for every non-nil
+        // flag. Only recognition of multi-byte sequences depends on FLAG=t.
+        let width = if bytes[byte_index].is_ascii() {
+            1
+        } else if preserve_utf8_sequences {
             utf8_sequence_width(bytes[byte_index])
         } else {
             0
