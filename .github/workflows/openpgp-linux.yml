@@ -92,117 +92,42 @@ jobs:
           cargo -V > /tmp/openpgp-metadata/default-cargo.txt
           rustc +1.97.1 -Vv > /tmp/openpgp-metadata/focused-rustc.txt
           git rev-parse HEAD > /tmp/openpgp-metadata/candidate-head.txt
-      - name: Retrieve completed evaluator receipts
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Inspect CLI loader representation and controlled stdio fixture
         run: |
-          gh run download 34341065537 --repo rayfdj/emaxx \
-            --name openpgp-linux-66d650bb21e1bb38710eb90cde12c000a450eb2d --dir /tmp/previous
-          gh run view 34341065537 --repo rayfdj/emaxx --log > /tmp/previous/workflow.log
-      - name: Validate gate controls and formatting
-        run: |
-          python3 -m unittest discover -s tools -p test_grouped_gate.py -v
-          cargo +1.97.1 fmt --all -- --check
-      - name: Complete the serial gate using verified evaluator receipts
-        run: |
-          python3 - --scope full --timeout-seconds 3600 --artifact-root /tmp/native-merge-rust-continuation <<'PY'
-          """Continue the failed 34341065537 run; reuse only its five completed eval groups."""
-          import hashlib
-          import json
-          import os
+          mkdir -p /tmp/integration-completion
+          python3 - <<'PYTHON'
+          import json, subprocess
           from pathlib import Path
-          import re
-          import subprocess
-          import sys
-          
-          sys.path.insert(0, str(Path.cwd() / 'tools'))
-          import serial_grouped_gate as serial
-          
-          gate = serial.gate
-          previous = Path(os.environ.get('PREVIOUS_GATE_ROOT', '/tmp/previous/native-merge-rust-gate'))
-          previous_workflow = Path(os.environ.get('PREVIOUS_WORKFLOW_LOG', '/tmp/previous/workflow.log'))
-          previous_head = '66d650bb21e1bb38710eb90cde12c000a450eb2d'
-          previous_run = 34341065537
-          summary = json.loads((previous / 'summary.json').read_text())
-          assert summary['git'] == {'head': previous_head, 'dirty': False}, summary['git']
-          assert summary['environment']['RUST_TEST_THREADS'] == '1'
-          assert summary['scope'] == 'full'
-          old_inventory = gate.parse_inventory((previous / 'inventory.txt').read_text())
-          digest = hashlib.sha256(('\n'.join(old_inventory)+'\n').encode()).hexdigest()
-          assert digest == summary['inventory']['sha256']
-          workflow_log = previous_workflow.read_text()
-          
-          # The sole changed Rust source is a private cfg(test) module. Its edits
-          # change three primitive fixtures; the evaluator groups and runtime source
-          # are unchanged. Reject any broader change rather than reusing stale tests.
-          changed = subprocess.check_output(['git','diff','--name-only',previous_head,'--'], text=True).splitlines()
-          unapproved = [p for p in changed if p != 'src/lisp/primitives/tests.rs'
-                        and not p.startswith(('docs/','.github/workflows/'))]
-          assert not unapproved, ('reuse requires unchanged runtime/evaluator sources',unapproved)
-          reuse_names = {f'eval_0{n}' for n in range(1,6)}
-          reused = []
-          run_phase = gate.run_phase
-          
-          def phase_with_receipts(phase, groups, binary, artifact_root, repetition, total, timeout, ignored):
-              assert repetition == 1
-              current_inventory = sorted(n for names in groups.values() for n in names)
-              assert current_inventory == old_inventory, 'test inventory changed'
-              assert set(ignored) == set(summary['inventory']['ignored_tests']), 'ignore inventory changed'
-              assert len(phase) == 1, 'continuation must remain serial'
-              spec = phase[0]
-              if spec.name not in reuse_names:
-                  return run_phase(phase, groups, binary, artifact_root, repetition, total, timeout, ignored)
-              assert spec.test_threads == 1 and spec.template
-              log_path = previous / f'repeat-01-{spec.name}.log'
-              result = gate.parse_test_result(log_path.read_text())
-              expected_ignored = len(set(ignored).intersection(groups[spec.name]))
-              gate.validate_test_result(result, len(groups[spec.name]), total, expected_ignored)
-              marker = re.search(r'\bPASS '+re.escape(spec.name)+r': '+str(result['passed'])
-                                 +r' passed, '+str(result['ignored'])+r' ignored, ([0-9.]+)s', workflow_log)
-              assert marker, 'missing original gate marker proving validated zero process exit'
-              record = {
-                  'group':spec.name,
-                  'command':spec.command(Path(summary['test_binary']['path'])),
-                  'expected_tests':len(groups[spec.name]), 'expected_ignored':expected_ignored,
-                  'template':True, 'test_threads':1,
-                  'elapsed_seconds':float(marker[1]), 'exit_code':0, 'timed_out':False,
-                  'log':str(log_path), 'result':result,
-                  'reused_from':{'run':previous_run,'head':previous_head,
-                                 'test_binary_sha256':summary['test_binary']['sha256'],
-                                 'log_sha256':hashlib.sha256(log_path.read_bytes()).hexdigest()},
-              }
-              reused.append(spec.name)
-              print(f'REUSE {spec.name}: {result["passed"]} previously passed in run {previous_run}; unchanged evaluator/runtime source',flush=True)
-              return [record]
-          
-          gate.run_phase = phase_with_receipts
-          write_summary = gate.write_summary
-          def write_with_provenance(path, current):
-              current['continuation'] = {'previous_run':previous_run, 'previous_head':previous_head,
-                                         'changed_files':changed, 'reused_groups':list(reused),
-                                         'policy':'Only completed evaluator groups reused; primitive fixtures rerun, all remaining groups and targets executed with original strict checks.'}
-              write_summary(path,current)
-          gate.write_summary = write_with_provenance
-          
-          if os.environ.get('RESUME_VALIDATE_ONLY') == '1':
-              groups, phases = gate.classify_inventory(old_inventory,'full')
-              for phase in phases[:5]:
-                  phase_with_receipts(phase,groups,Path(summary['test_binary']['path']),Path('/tmp/unused'),1,len(old_inventory),3600,set(summary['inventory']['ignored_tests']))
-              assert set(reused) == reuse_names
-              print('Five completed receipts validated; no tests executed')
-          else:
-              raise SystemExit(gate.main())
-          PY
+          root=Path('/tmp/integration-completion')
+          program=root/'stdio.el'
+          program.write_text('(princ "one\\n")\n(message "two")\n(princ "three")\n(message "four")\n(flush-standard-output)\n(message "five")\n(defun cli-probe-g () (cli-probe-undefined 1 2))\n(defun cli-probe-f () (cli-probe-g))\n(cli-probe-f)\n')
+          setup='(progn (setq load-source-file-function nil) (defun cli-probe-load () (load '+json.dumps(str(program))+' nil t)))'
+          identity="(prin1 (mapcar (lambda (s) (list s (type-of (symbol-function s)) (subr-native-elisp-p (symbol-function s)))) '(command-line-1 load-with-code-conversion)))"
+          results=[]
+          for name,binary in [('gnu','../emacs/src/emacs'),('emaxx','target/gate/emaxx')]:
+              for case,args in [('identity',['--eval',identity]),('original',['-l',str(program)]),('controlled',['--eval',setup,'-f','cli-probe-load'])]:
+                  with (root/(name+'-'+case+'.log')).open('w') as out:
+                      r=subprocess.run([binary,'-Q','--batch',*args],stdout=out,stderr=subprocess.STDOUT,timeout=300)
+                  results.append({'editor':name,'case':case,'exit':r.returncode})
+          (root/'probes.json').write_text(json.dumps(results,indent=2)+'\n')
+          PYTHON
+      - name: Run the four integration targets not reached by the previous gate
+        env:
+          LANG: C
+          LC_ALL: C
+          RUST_MIN_STACK: '134217728'
+          RUST_TEST_THREADS: '1'
+        run: |
+          set -o pipefail
+          cargo test --locked --profile gate --test ert_runner --test native_comp_identity --test native_thread_continuations --test package_lifecycle 2>&1 | tee /tmp/integration-completion/remaining-integration.log
       - name: Strict Clippy
         run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: native-merge-serial-continuation
+          name: native-merge-integration-completion
           path: |
-            /tmp/native-merge-rust-continuation
-            /tmp/previous/native-merge-rust-gate
-            /tmp/previous/workflow.log
+            /tmp/integration-completion
             /tmp/openpgp-metadata
           if-no-files-found: error
           retention-days: 7
