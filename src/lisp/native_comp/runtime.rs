@@ -8108,14 +8108,15 @@ mod tests {
         }
         heap.finish_call().expect("return without a cons argument");
 
-        let mut context = DumpContext::new(true);
+        let mut context = DumpContext::new(true, interpreter.main_thread_record_id());
         write_image(
             &mut context,
             &interpreter,
             RootSource::Explicit(vec![(RootSlot::LoadPath, value)]),
         )
         .unwrap_or_else(|_| panic!("dump native-written graph"));
-        let loaded = load_image(context.buffer()).expect("load graph");
+        let mut target = crate::lisp::eval::Interpreter::new();
+        let loaded = load_image(context.buffer(), &mut target).expect("load graph");
         let root = &loaded
             .roots
             .iter()

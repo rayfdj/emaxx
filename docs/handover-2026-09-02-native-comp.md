@@ -37,12 +37,35 @@ weights, fixups, the hot/discardable/cold sections, the relocation and
 object-start tables, and the pdumper_load validation plus object
 reconstruction used by the round-trip controls. A real
 `dump-emacs-portable` now opens the file and stops at the first uncovered
-object (a record) with pdumper.c's "unsupported object type in dump" error; the startup
-reconstruction hands off before the open. Next: D09 (closures, lexical
-environments, char-tables, records, bool-vectors), D10 (hash tables), D11
-(buffers, markers, overlays, finalizers, the remaining root groups), then
-the loader D12/D13. The Linux records are in
-`docs/honesty-audit-2026-08-18.md`.
+object with pdumper.c's "unsupported object type in dump" error; the startup
+reconstruction hands off before the open. Checkpoint 11 (D09) added
+interpreted closures with their shared environments, char-tables, records
+and pseudovectors kept as slots with their ids preserved, bool-vectors, the
+obarray records, the main thread, nilled windows and processes, and the
+cells of `nil` and `t`; the loader materializes closures on demand and
+installs records and char-tables under the image's ids. A real dump now
+stops at the first hash table. Checkpoint 12 (D10) freezes and thaws hash
+tables as pdumper.c and fns.c do, with the deferred drain, the hash list and
+GNU's refusal of user-defined tests. Checkpoint 13 (D11, the object kinds)
+writes buffers with their text, spans, markers, locals, hooks, tables and
+undo entries, markers, deleted overlays, finalizers with their chain and
+list heads, and nilled frames and terminals, with GNU's refusal of a buffer
+that has a live overlay; the loader installs them under the image's ids.
+A real `dump-emacs-portable` now completes (a 14 MB image of the loadup
+state) and the loader reads it back into a second interpreter; nothing
+starts from it until D12/D13. Checkpoint 14 (D11b) tables every root the
+mark phase visits against GNU: the staticpro'd groups (buffer alist, key
+buffers, charset and coding tables, standard tables, fontsets, faces,
+fringe bitmaps, compositions, ert tests, labeled restrictions, timers,
+captured lexical cells) are written as the Lisp values GNU keeps and
+reinstalled on load; the groups GNU resets after a load are listed with
+their C lines, and an anti-cheat gate keeps the inventory complete. Main
+`85f0c28` (the terminal and frame parity work over checkpoint 10) is merged
+after checkpoint 14, with the image code adapted to its terminal and frame
+state and the full gate run on the merged tree.
+Next: the loader into a process, D12/D13 (validation and the ordered
+restore, the remembered scalars), then D14/D15 native units.
+The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
 
