@@ -109,6 +109,12 @@ jobs:
             cl_old_struct_compat_mode_types_tagged_vectors \
             cl_struct_define_legacy_type_enables_old_struct_mode \
             upstream_semantic_format_loads_with_complete_eieio_slots --test-threads=1
+      - name: Complete serial Rust gate for native-comp integration
+        if: startsWith(github.ref, 'refs/heads/integrate/native-comp-')
+        run: |
+          python3 -m unittest discover -s tools -p test_grouped_gate.py -v
+          python3 tools/serial_grouped_gate.py --scope full --timeout-seconds 3600 \
+            --artifact-root /tmp/native-merge-rust-gate
       - name: Strict Clippy
         run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -119,5 +125,6 @@ jobs:
             /tmp/openpgp-metadata
             /tmp/openpgp-results
             /tmp/openpgp-long-path-results
+            /tmp/native-merge-rust-gate
           if-no-files-found: error
           retention-days: 7
