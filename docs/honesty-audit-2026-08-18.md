@@ -8397,3 +8397,87 @@ corrections: grouped gate run-1788932651828361257-12926, GROUPED GATE
 PASSED (2579 tests, every group 0 failed), `cargo fmt --check' and strict clippy
 exit 0 on the tree as committed.
 
+
+## 2026-09-09 D12/D13/D16/D17: a process starts from the image
+
+*What was built.*  The process-level loader (`pdumper_load'):
+pdumper.c's result codes for a missing, short, foreign, incomplete or
+other-build file, the refusal of a second load, and the point of no
+return that rebuilds the objects, installs the symbols in the initial
+obarray's order with their cells, aliases, flags, function cells,
+plists and watchers, the built-in cells, the static root slots, the
+root groups and the remembered scalars, and records the load for
+`pdumper-stats'.  The startup path loads the image before every
+init_* value as emacs.c:main does: `--dump-file' (both spellings,
+consumed with its value, sorted at GNU's priority) or the
+executable's own `<name>.pdmp'; a loaded process skips loadup and
+keeps the image's `custom-delayed-init-variables' and eln load path
+as emacs.c's `!initialized' branches do; `init_after_pdump_load'
+applies the new process's environment lists, `command-line-args',
+`exec-path' and TZ over the image and erases the pre-dump
+`*Messages*'; `after-pdump-load-hook' runs through eval.c's
+safe_run_hooks before the top level; a failed load is term.c's fatal
+with emacs.c's reason strings and exit 1.
+
+*What the first loads found.*  The mapatoms count of the restored
+process was ten short: cl-macs's autoloaded symbols are interned in
+GNU's obarray at dump time but Emaxx materializes an autoload lazily,
+so the writer's obarray list omitted them and the installer wrongly
+treated them as removed.  The writer now flags a symbol removed from
+the initial obarray (`FLAG_UNINTERNED_FROM_OBARRAY') and the loader
+interns every other symbol record; the restored obarray is a superset
+of the writer's list, disclosed in the D12 row.  The first startup
+from an image failed in `tty-set-up-initial-frame-faces' with
+`terminal-live-p': the image's nilled frame was installed under its
+dump-time id, which is the id of the live initial frame the new
+process had just made, so the live frame became dead.  A nilled frame
+or terminal now loads as a dead object with an id of its own (GNU's
+init_frame_once_for_pdumper and init_tty make the live ones anew).
+The second startup failed in normal-top-level with "Wrong type
+argument: marker, marker<38>": the marker table is indexed by id, the
+remembered next id (38) exceeded the markers the image carried
+(markers dead at dump time are not written), and `make-marker' pushed
+the new marker at the wrong index.  The marker, char-table and record
+tables now fill the ids the image did not carry with empty entries
+(records had a linear-scan fallback; char-tables had none and would
+have failed on the first `make-char-table' after a load).  The unit
+control's probes then matched, except for two of my own: a timestamp
+and `custom-delayed-init-variables', which startup.el sets to `t'
+after processing.  A hook control in a bare interpreter needed
+`#'(lambda ...)' and `save-current-buffer' (the `lambda' and
+`with-current-buffer' macros are subr.el's) and a buffer-local hook
+value to exercise the local-then-global removal.
+
+*Startup order.*  The load had first been placed inside the
+reconstruction closure, after the constructor's process-derived
+settings; GNU loads first and applies init_* afterwards, so the
+image's dump-time `process-environment' (nil, as the writer leaves
+it), `command-line-args' and `exec-path' would have stood.  The load
+now precedes them and `init_after_pdump_load' is the second
+application GNU makes; the D16 row lists what it covers and the two
+candidates GNU has that Emaxx does not (`PATH_EXEC/emacs-VERSION.pdmp',
+`--temacs').  The file-not-found reason was first written as "could
+not open dump file"; emacs.c:dump_error_to_string says "could not
+open file", and the CLI control compares the whole line.
+
+*The field inventory.*  `interpreter_fields_are_carried_or_documented'
+requires every field of `Interpreter' to be written, installed, or
+listed in `FIELDS_NOT_CARRIED' with its reason; both documentation
+gates now consult the constants rather than matching a quoted name
+anywhere in the image code, and a unit test checks every documented
+name is a declared field and that no field is documented twice.
+
+*Timing.*  A batch process that evaluates `(kill-emacs 0)': 39.2 s
+from the reconstruction, 1.0 s from the image (36023296 bytes), two
+runs each, measured while a clippy build ran alongside; the loader's
+own read of the image in the unit control is 0.63 s.  Nothing runs
+from an image in the gate yet: producing the image once per build and
+booting the fixtures from it is the next step (D16b).
+
+*Verification.*  Focused: the pdumper controls, the anti-cheat gates,
+the D12 boundary control, the D16 startup control, the hook control,
+the CLI control, and a 213-test sweep over the marker, char-table,
+record, frame, terminal and finalizer paths, all passing; `cargo fmt
+--check' and strict clippy exit 0.  The full gate is run once, on the
+tree with main 4311aa6 merged over this checkpoint, and its line is
+recorded in the merge section that follows.

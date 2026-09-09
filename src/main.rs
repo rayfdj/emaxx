@@ -52,6 +52,10 @@ struct Cli {
     #[cfg(target_os = "linux")]
     #[arg(long = "seccomp", value_name = "FILE")]
     _seccomp: Option<String>,
+    // emacs.c:load_pdump's `--dump-file': the image this process starts
+    // from, consumed in C before startup.el sees the arguments.
+    #[arg(long = "dump-file", value_name = "FILE")]
+    dump_file: Option<PathBuf>,
     #[arg(value_name = "FILE")]
     file: Vec<PathBuf>,
 }
@@ -104,6 +108,7 @@ fn try_main() -> Result<u8, String> {
                 no_site_lisp,
                 startup_command_line_args: Some(startup_args),
                 defer_delayed_custom_init: true,
+                dump_file: cli.dump_file,
                 ..Default::default()
             },
             actions,
@@ -117,7 +122,7 @@ fn try_main() -> Result<u8, String> {
         };
     }
 
-    run_interactive(&startup_args, no_site_lisp)
+    run_interactive(&startup_args, no_site_lisp, cli.dump_file)
 }
 
 /// emacs.c's `maybe_load_seccomp'/`load_seccomp': read a Secure Computing
@@ -441,6 +446,7 @@ fn normalize_gnu_single_dash_long_options(
             // Normalize the subset Emaxx implements before Clap interprets
             // each spelling as a cluster of unrelated short options.
             Some("-batch") => OsString::from("--batch"),
+            Some("-dump-file") => OsString::from("--dump-file"),
             Some("-eval") => OsString::from("--eval"),
             Some("-funcall") => OsString::from("--funcall"),
             Some("-help") => OsString::from("--help"),
@@ -461,27 +467,33 @@ fn normalize_gnu_single_dash_long_options(
 /// consumed its C-owned startup switches.  All remaining arguments retain
 /// their original order and are interpreted by `normal-top-level'.
 fn startup_command_line_args(args: &[OsString]) -> Result<Vec<String>, String> {
-    args.iter()
-        .filter(|arg| {
-            !matches!(
-                arg.to_str(),
-                Some(
-                    "-batch"
-                        | "--batch"
-                        | "-no-build-details"
-                        | "--no-build-details"
-                        | "-nsl"
-                        | "-no-site-lisp"
-                        | "--no-site-lisp"
-                )
-            )
-        })
-        .map(|arg| {
+    let mut remaining = Vec::new();
+    let mut skip_value = false;
+    for arg in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        match arg.to_str() {
+            Some(
+                "-batch" | "--batch" | "-no-build-details" | "--no-build-details" | "-nsl"
+                | "-no-site-lisp" | "--no-site-lisp",
+            ) => continue,
+            // emacs.c:load_pdump consumes the switch with its value.
+            Some("-dump-file" | "--dump-file") => {
+                skip_value = true;
+                continue;
+            }
+            Some(text) if text.starts_with("--dump-file=") => continue,
+            _ => {}
+        }
+        remaining.push(
             arg.to_str()
                 .map(str::to_owned)
-                .ok_or_else(|| "command-line argument is not valid UTF-8".to_string())
-        })
-        .collect()
+                .ok_or_else(|| "command-line argument is not valid UTF-8".to_string())?,
+        );
+    }
+    Ok(remaining)
 }
 
 fn ordered_batch_actions(matches: &ArgMatches) -> Vec<BatchAction> {
@@ -562,8 +574,12 @@ fn restart_current_process() -> Result<u8, String> {
     Ok(status.code().unwrap_or(1) as u8)
 }
 
-fn run_interactive(args: &[String], no_site_lisp: bool) -> Result<u8, String> {
-    tty::run(args, no_site_lisp).map(|code| code as u8)
+fn run_interactive(
+    args: &[String],
+    no_site_lisp: bool,
+    dump_file: Option<PathBuf>,
+) -> Result<u8, String> {
+    tty::run(args, no_site_lisp, dump_file).map(|code| code as u8)
 }
 
 #[cfg(test)]

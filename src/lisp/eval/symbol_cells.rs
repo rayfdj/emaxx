@@ -302,6 +302,31 @@ impl SymbolCells {
         }
     }
 
+    /// Install a cell as the image writer recorded it (the inverse of
+    /// `snapshot'): the value keeps first-binding order, the alias and
+    /// flags replace whatever the cell had.
+    pub(crate) fn install_cell(&mut self, symbol: &SymbolName, snapshot: SymbolCellSnapshot) {
+        match snapshot.value {
+            Some(value) => {
+                self.insert(symbol, value);
+            }
+            None => {
+                self.remove_by_name(symbol.as_str());
+            }
+        }
+        let had_alias = self.alias(symbol).is_some();
+        let cell = self.cell_mut(symbol);
+        cell.native.set((0, 0));
+        cell.flags = snapshot.flags;
+        let has_alias = snapshot.alias.is_some();
+        cell.alias = snapshot.alias;
+        match (had_alias, has_alias) {
+            (false, true) => self.aliases += 1,
+            (true, false) => self.aliases -= 1,
+            _ => {}
+        }
+    }
+
     pub(crate) fn has_flag(&self, symbol: &SymbolName, flag: u8) -> bool {
         self.cell(symbol.id())
             .is_some_and(|cell| cell.flags & flag != 0)

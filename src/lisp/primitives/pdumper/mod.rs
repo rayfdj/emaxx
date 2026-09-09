@@ -13,15 +13,13 @@
 
 pub(crate) mod context;
 pub(crate) mod image;
-/// pdumper_load's validation and reconstruction: exercised by the D08
-/// round-trip controls until the process-level restore (D12) wires it
-/// into startup.
-#[cfg(test)]
+/// pdumper_load's validation and object reconstruction.
 pub(crate) mod load;
 #[cfg(test)]
 mod tests;
 
 use super::*;
+use crate::lisp::eval::PdumperLoadRecord;
 use context::{DumpContext, DumpError};
 use image::*;
 
@@ -320,4 +318,118 @@ pub(crate) fn write_image(
         hot_relocations,
         discardable_relocations,
     })
+}
+
+/// pdumper.c:pdumper_load_result, for the process-level loader.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PdumperLoadError {
+    /// PDUMPER_LOAD_FILE_NOT_FOUND: ENOENT or ENOTDIR on open.
+    FileNotFound,
+    /// PDUMPER_LOAD_BAD_FILE_TYPE: too small, or not a dump's magic.
+    BadFileType,
+    /// PDUMPER_LOAD_FAILED_DUMP: the incomplete marker is still set.
+    FailedDump,
+    /// PDUMPER_LOAD_VERSION_MISMATCH: another build's fingerprint.
+    VersionMismatch,
+    /// PDUMPER_LOAD_ERROR (+ errno) and the reconstruction failures.
+    Error(String),
+}
+
+impl PdumperLoadError {
+    /// emacs.c:dump_error_to_string (a reconstruction failure carries
+    /// its own message where GNU says "generic error" or strerror).
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::FileNotFound => "could not open file".into(),
+            Self::BadFileType => "not a dump file".into(),
+            Self::FailedDump => "dump file is result of failed dump attempt".into(),
+            Self::VersionMismatch => "not built for this Emacs executable".into(),
+            Self::Error(message) => message.clone(),
+        }
+    }
+}
+
+/// pdumper.c:pdumper_load: refuse a second load, open and validate the
+/// file exactly as GNU does, then the point of no return: rebuild the
+/// objects, install the symbols and static roots, record the load.
+pub(crate) fn pdumper_load(
+    path: &std::path::Path,
+    interp: &mut Interpreter,
+) -> Result<PdumperLoadRecord, PdumperLoadError> {
+    // eassert (!dump_loaded_p ()): "We can load only one dump."
+    if interp.dump_loaded_p() {
+        return Err(PdumperLoadError::Error("a dump is already loaded".into()));
+    }
+    let started = std::time::Instant::now();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Err(match error.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+                    PdumperLoadError::FileNotFound
+                }
+                _ => PdumperLoadError::Error(error.to_string()),
+            });
+        }
+    };
+    if bytes.len() < HEADER_LEN {
+        return Err(PdumperLoadError::BadFileType);
+    }
+    let image = match load::load_image(&bytes, interp) {
+        Ok(image) => image,
+        Err(load::LoadError::BadFileType) => return Err(PdumperLoadError::BadFileType),
+        Err(load::LoadError::FailedDump) => return Err(PdumperLoadError::FailedDump),
+        Err(load::LoadError::VersionMismatch) => return Err(PdumperLoadError::VersionMismatch),
+        Err(load::LoadError::Error(message)) => return Err(PdumperLoadError::Error(message)),
+    };
+    let record = PdumperLoadRecord {
+        filename: path.to_string_lossy().into_owned(),
+        load_time: started.elapsed(),
+        dump_size: bytes.len() as u64,
+    };
+    interp
+        .install_image(&image, record.clone())
+        .map_err(PdumperLoadError::Error)?;
+    Ok(record)
+}
+
+/// emacs.c:load_pdump for the startup path.  An explicit `--dump-file'
+/// is loaded, and any failure -- a missing file included -- is the fatal
+/// "could not load dump file".  Otherwise the executable's own
+/// `<name>.pdmp' beside it is tried: missing means the process is
+/// temacs and builds its state itself (`Ok(None)'), any other failure is
+/// fatal.  GNU's further candidate, `PATH_EXEC/emacs-VERSION.pdmp' (the
+/// installed image), has no Emaxx installation layout yet.
+pub(crate) fn load_pdump_at_startup(
+    interp: &mut Interpreter,
+    dump_file: Option<&std::path::Path>,
+) -> Option<PdumperLoadRecord> {
+    // term.c:fatal: "emacs: " and the message on stderr, exit 1.
+    let fatal = |candidate: &std::path::Path, error: PdumperLoadError| -> ! {
+        eprintln!(
+            "emacs: could not load dump file \"{}\": {}",
+            candidate.display(),
+            error.reason()
+        );
+        std::process::exit(1)
+    };
+    if let Some(named) = dump_file {
+        return match pdumper_load(named, interp) {
+            Ok(record) => Some(record),
+            Err(error) => fatal(named, error),
+        };
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut sibling = exe.clone();
+    sibling.set_file_name(format!(
+        "{}.pdmp",
+        exe.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ));
+    match pdumper_load(&sibling, interp) {
+        Ok(record) => Some(record),
+        Err(PdumperLoadError::FileNotFound) => None,
+        Err(error) => fatal(&sibling, error),
+    }
 }

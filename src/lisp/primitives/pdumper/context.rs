@@ -907,7 +907,7 @@ impl DumpContext {
         let watchers = interp.variable_watchers(name);
         let start = self.object_start()?;
         let mut words = vec![
-            symbol_flags_word(&symbol, &cell, !watchers.is_empty()),
+            symbol_flags_word(&symbol, &cell, !watchers.is_empty(), false),
             0,
             0,
             watchers.len() as u64,
@@ -1179,8 +1179,9 @@ impl DumpContext {
         let plist = interp.symbol_plist(symbol.as_str());
         let watchers = interp.variable_watchers(symbol.as_str());
         let start = self.object_start()?;
+        let uninterned_from_obarray = interp.standard_obarray_symbol_is_uninterned(symbol.as_str());
         let mut words = vec![
-            symbol_flags_word(symbol, &cell, !watchers.is_empty()),
+            symbol_flags_word(symbol, &cell, !watchers.is_empty(), uninterned_from_obarray),
             0,
             0,
             0,
@@ -2608,6 +2609,7 @@ pub(crate) fn symbol_flags_word(
     symbol: &SymbolName,
     cell: &crate::lisp::eval::SymbolCellSnapshot,
     trapped_write: bool,
+    uninterned_from_obarray: bool,
 ) -> u64 {
     use crate::lisp::eval::symbol_cell_flags as flags;
     let redirect: u64 = if cell.alias.is_some() {
@@ -2619,12 +2621,20 @@ pub(crate) fn symbol_flags_word(
     } else {
         SYMBOL_PLAINVAL
     };
-    let interned: u64 = if symbol.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0 {
+    // `unintern' leaves the symbol object with SYMBOL_UNINTERNED; Emaxx
+    // keeps such a name in a set beside its ordinary id, so the record
+    // says both.
+    let interned: u64 = if symbol.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0
+        || uninterned_from_obarray
+    {
         SYMBOL_UNINTERNED
     } else {
         SYMBOL_INTERNED_IN_INITIAL_OBARRAY
     };
     let mut word = redirect | (interned << 4);
+    if uninterned_from_obarray {
+        word |= FLAG_UNINTERNED_FROM_OBARRAY;
+    }
     if cell.flags & flags::SPECIAL != 0 {
         word |= FLAG_DECLARED_SPECIAL;
     }
@@ -2664,3 +2674,6 @@ pub(crate) const FLAG_PER_BUFFER: u64 = 1 << 9;
 pub(crate) const FLAG_ALWAYS_LOCAL: u64 = 1 << 10;
 pub(crate) const FLAG_FWD_BOOL: u64 = 1 << 11;
 pub(crate) const FLAG_FWD_INT: u64 = 1 << 12;
+/// A standard symbol `unintern' removed from the initial obarray: its
+/// name is an ordinary interned name Emaxx keeps out of the obarray.
+pub(crate) const FLAG_UNINTERNED_FROM_OBARRAY: u64 = 1 << 13;

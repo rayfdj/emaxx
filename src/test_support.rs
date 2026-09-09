@@ -292,7 +292,7 @@ pub(crate) fn initialized_gnu_early_lisp_interpreter_with(libraries: &[&str]) ->
 /// startup skips init files, but still reads GNU's normal abbrev file. Run
 /// this fixture in a process with an isolated HOME; -Q alone is not isolation.
 pub(crate) fn initialized_upstream_interactive_interpreter() -> Interpreter {
-    let mut interpreter = crate::batch::initialize_interactive_interpreter(true)
+    let mut interpreter = crate::batch::initialize_interactive_interpreter(true, None)
         .expect("reconstruct interactive runtime");
     crate::batch::initialize_initial_frame_faces(&mut interpreter).expect("initialize frame faces");
     crate::batch::run_startup_top_level(&mut interpreter, &["emaxx".into(), "-Q".into()])

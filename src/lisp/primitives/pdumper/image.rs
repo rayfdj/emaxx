@@ -394,6 +394,9 @@ pub(crate) enum RootSlot {
     LastThreadError = 51,
     FontSelectionOrder = 52,
     LexicalCellUpdates = 53,
+    /// PDUMPER_REMEMBER_SCALAR: the native state a loaded session starts
+    /// from (eval/dump_roots.rs).
+    RememberedScalars = 54,
 }
 
 impl RootSlot {
@@ -453,6 +456,7 @@ impl RootSlot {
             51 => Self::LastThreadError,
             52 => Self::FontSelectionOrder,
             53 => Self::LexicalCellUpdates,
+            54 => Self::RememberedScalars,
             _ => return None,
         })
     }

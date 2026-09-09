@@ -48,6 +48,65 @@ fn sigusr_events_follow_gnu_special_event_map_semantics() {
 }
 
 #[test]
+fn dump_file_starts_the_process_from_its_portable_dump() {
+    // emacs.c:load_pdump: a batch session dumps itself with
+    // `dump-emacs-portable' (command-line-processed bound to nil for the
+    // dump, so the restored process runs startup again); `--dump-file'
+    // starts a process from the image and startup.el runs as usual in
+    // it; a dump file that cannot be loaded is term.c's fatal on stderr
+    // with exit status 1.
+    let image = unique_temp_path("emaxx-cli-dump");
+    let dump = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args([
+            "--batch",
+            "--eval",
+            &format!("(dump-emacs-portable {:?})", image.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        dump.status.success(),
+        "the batch session did not dump:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&dump.stdout),
+        String::from_utf8_lossy(&dump.stderr)
+    );
+    let started = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args([
+            "--batch",
+            "--dump-file",
+            &image.display().to_string(),
+            "--eval",
+            "(princ (list (car (pdumper-stats)) command-line-processed \
+             (featurep 'simple) (+ 1 2) (getenv \"HOME\")))",
+        ])
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&image);
+    assert!(
+        started.status.success(),
+        "the process did not start from the image:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&started.stdout),
+        String::from_utf8_lossy(&started.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&started.stdout),
+        format!(
+            "((dumped-with-pdumper . t) t t 3 {})",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    );
+    let missing = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .args(["--batch", "--dump-file", "/nonexistent-dir/none.pdmp"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&missing.stderr),
+        "emacs: could not load dump file \"/nonexistent-dir/none.pdmp\": could not open file\n"
+    );
+}
+
+#[test]
 fn empty_batch_invocation_succeeds_like_gnu_emacs() {
     let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .arg("--batch")

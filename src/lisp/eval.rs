@@ -27,12 +27,15 @@ mod core;
 mod definitions;
 mod dump_roots;
 mod faces;
+mod image_install;
 mod local_cells;
 mod loops;
 mod macros;
 mod resource_forms;
 pub(crate) mod runtime;
 pub(crate) mod terminal;
+pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
+pub(crate) use image_install::PdumperLoadRecord;
 pub(crate) use local_cells::LocalCells;
 mod symbol_cells;
 pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
@@ -3237,13 +3240,11 @@ impl Interpreter {
     /// the type index and the id allocator ahead of it.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_record(&mut self, state: RecordState) {
-        if let Some(existing) = self.records.iter().position(|record| record.id == state.id) {
-            let previous = self.records.remove(existing);
-            if let Some(type_name) = previous.symbol_type_name()
-                && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
-            {
-                ids.remove(&previous.id);
-            }
+        let index = self.record_index_for(state.id);
+        if let Some(type_name) = self.records[index].symbol_type_name()
+            && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
+        {
+            ids.remove(&state.id);
         }
         if let Some(type_name) = state.symbol_type_name() {
             self.record_ids_by_type_index
@@ -3252,16 +3253,48 @@ impl Interpreter {
                 .insert(state.id);
         }
         self.next_record_id = self.next_record_id.max(state.id + 1);
-        self.records.push(state);
+        self.records[index] = state;
+    }
+
+    /// The record table is indexed by id (`find_record'): the slot for
+    /// ID, with any gap below it filled by empty records, as the image
+    /// installs records in image order and a remembered next id can
+    /// exceed the records the image carried.
+    pub(crate) fn record_index_for(&mut self, id: u64) -> usize {
+        let index = usize::try_from(id - 1).expect("record id fits");
+        while self.records.len() <= index {
+            let filler = self.records.len() as u64 + 1;
+            self.records.push(RecordState {
+                id: filler,
+                type_tag: Value::Nil,
+                slots: Vec::new(),
+                kind: RecordKind::Record,
+            });
+        }
+        index
     }
 
     /// Install a char-table with the id the image gave it.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_char_table(&mut self, state: CharTableState) {
-        self.char_tables.retain(|table| table.id != state.id);
         self.next_char_table_id = self.next_char_table_id.max(state.id + 1);
         self.char_table_mutation_generation += 1;
-        self.char_tables.push(state);
+        let index = self.char_table_index_for(state.id);
+        self.char_tables[index] = state;
+    }
+
+    /// The table is indexed by id (`find_char_table'): the slot for ID,
+    /// with any gap below it filled by empty tables, as the image can
+    /// install tables out of id order and a remembered next id can
+    /// exceed the tables the image carried.
+    pub(crate) fn char_table_index_for(&mut self, id: u64) -> usize {
+        let index = usize::try_from(id - 1).expect("char-table id fits");
+        while self.char_tables.len() <= index {
+            let filler = self.char_tables.len() as u64 + 1;
+            self.char_tables
+                .push(CharTableState::new(filler, None, Value::Nil));
+        }
+        index
     }
 
     // ----- pdumper.c:dump_buffer and its neighbours: what the writer reads
@@ -3452,8 +3485,17 @@ impl Interpreter {
     /// Install the dead frame a nilled frame pseudovector loads as: no
     /// name, not live, nothing else.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_dead_frame(&mut self, id: u64) {
-        self.frame_states.retain(|frame| frame.id != id);
+    /// A frame the image nilled (pdumper.c:dump_nilled_pseudovec): a dead
+    /// frame object of its own, beside the live initial frame the new
+    /// process made (frame.c:init_frame_once_for_pdumper).
+    pub(crate) fn install_dead_frame(&mut self) -> u64 {
+        let id = self
+            .frame_states
+            .iter()
+            .map(|frame| frame.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
         self.frame_states.push(FrameState {
             terminal_id: 0,
             face_hash_table: None,
@@ -3479,6 +3521,34 @@ impl Interpreter {
             pointer_invisible: false,
             was_invisible: false,
         });
+        id
+    }
+
+    /// A terminal the image nilled: a dead terminal object of its own,
+    /// beside the initial terminal init_tty made for the new process.
+    pub(crate) fn install_dead_terminal(&mut self) -> u64 {
+        let id = self
+            .terminals
+            .iter()
+            .map(|terminal| terminal.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.terminals.push(terminal::TerminalState {
+            id,
+            live: false,
+            name: String::new(),
+            kind: None,
+            colors: 0,
+            terminal_coding: None,
+            keyboard_coding: None,
+            keyboard: HashMap::new(),
+            pending_input: Vec::new(),
+            parameters: Vec::new(),
+            top_frame: 0,
+            device: None,
+        });
+        id
     }
 
     /// Install a buffer's local bindings as its `local_var_alist_'.
@@ -4699,6 +4769,9 @@ pub struct Interpreter {
     /// dump call there is the point where temacs would write the file,
     /// and this process hands off instead of writing one.
     pub(crate) image_reconstruction_handoff: bool,
+    /// pdumper.c's `dump_private': the image this process loaded, if any
+    /// (`dump_loaded_p'), with what `pdumper-stats' reports of it.
+    pdumper_loaded: Option<PdumperLoadRecord>,
     /// Next generated symbol ID used by built-in macro expansion helpers.
     /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
     /// order.  This is the sole backing store for local hook metadata.
@@ -5615,6 +5688,7 @@ impl Interpreter {
             doomed_finalizers: Vec::new(),
             finalizers_run: 0,
             image_reconstruction_handoff: false,
+            pdumper_loaded: None,
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
             buffer_syntax_tables: Vec::new(),

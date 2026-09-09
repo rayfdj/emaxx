@@ -301,8 +301,12 @@ impl TtyState {
     }
 }
 
-pub fn run(command_line_args: &[String], no_site_lisp: bool) -> Result<i32, String> {
-    let mut interpreter = batch::initialize_interactive_interpreter(no_site_lisp)?;
+pub fn run(
+    command_line_args: &[String],
+    no_site_lisp: bool,
+    dump_file: Option<std::path::PathBuf>,
+) -> Result<i32, String> {
+    let mut interpreter = batch::initialize_interactive_interpreter(no_site_lisp, dump_file)?;
     let mut env: Env = Vec::new();
     // emacs.c:init_display establishes the terminal before keyboard.c
     // evaluates top-level. startup.el then owns palette registration,

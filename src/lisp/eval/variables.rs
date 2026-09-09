@@ -1150,7 +1150,7 @@ impl Interpreter {
         }
     }
 
-    fn update_forwarded_eval_cell(&mut self, name: &str, value: &Value) {
+    pub(super) fn update_forwarded_eval_cell(&mut self, name: &str, value: &Value) {
         // data.c:set_internal turns a voided forwarded symbol into a plain
         // symbol. Later stores cannot reconnect it to the C variable.
         if self.detached_forwarded_variables.contains_key(name) {

@@ -63,8 +63,18 @@ their C lines, and an anti-cheat gate keeps the inventory complete. Main
 `85f0c28` (the terminal and frame parity work over checkpoint 10) is merged
 after checkpoint 14, with the image code adapted to its terminal and frame
 state and the full gate run on the merged tree.
-Next: the loader into a process, D12/D13 (validation and the ordered
-restore, the remembered scalars), then D14/D15 native units.
+Checkpoint 15 (D12/D13/D16/D17) is the process-level loader and the
+startup path: `pdumper_load` with pdumper.c's result codes and the point
+of no return, the remembered scalars, `--dump-file` and the executable's
+`<name>.pdmp` loaded before every init_* value with the new process's
+environment, argv, `exec-path` and TZ applied over the image,
+`after-pdump-load-hook` through safe_run_hooks, and `pdumper-stats` from
+the load record. A batch process boots from the image in 1.0 s where the
+reconstruction takes 39 s (`(kill-emacs 0)`, Linux). Main `4311aa6` is
+merged after checkpoint 15 and the full gate ran on the merged tree.
+Next: D16b, producing the image once per build and booting the test
+fixtures from it (the gate's speedup), then D14/D15 native units in the
+image.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

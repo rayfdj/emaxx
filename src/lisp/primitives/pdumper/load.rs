@@ -44,6 +44,8 @@ pub(crate) struct LoadedSymbol {
 }
 
 pub(crate) struct LoadedImage {
+    /// The validated header; the tests check its section layout.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) header: DumpHeader,
     pub(crate) roots: Vec<(RootSlot, Value)>,
     pub(crate) symbols: Vec<LoadedSymbol>,
@@ -202,7 +204,12 @@ impl Loader<'_> {
                         .map(|string| string.text)
                         .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?;
                     let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-                    let symbol = if interned == SYMBOL_UNINTERNED {
+                    // A symbol `unintern' removed from the obarray keeps its
+                    // ordinary name; only a symbol made uninterned gets a
+                    // fresh identity.
+                    let symbol = if interned == SYMBOL_UNINTERNED
+                        && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0
+                    {
                         SymbolName::make_uninterned(name, &name_text, next_make_symbol_id())
                     } else {
                         SymbolName::intern_str(&name_text)
@@ -278,13 +285,16 @@ impl Loader<'_> {
                     self.objects.insert(offset, Value::Finalizer(id));
                     finalizers.push((offset, id));
                 }
+                // Nilled pseudovectors: each is a dead object of its own
+                // in the new process, whose live initial frame and
+                // terminal were made anew (init_frame_once_for_pdumper,
+                // init_tty); the dump-time id is not an identity here.
                 DumpType::Frame => {
-                    let id = self.reader.word(offset)?;
-                    self.interp.install_dead_frame(id);
+                    let id = self.interp.install_dead_frame();
                     self.objects.insert(offset, Value::Frame(id));
                 }
                 DumpType::Terminal => {
-                    let id = self.reader.word(offset)?;
+                    let id = self.interp.install_dead_terminal();
                     self.objects.insert(offset, Value::Terminal(id));
                 }
                 _ => {}

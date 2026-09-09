@@ -24,6 +24,9 @@ pub struct BatchRunOptions {
     /// Return before the Lisp top-level runs. GNU startup.el, not the Rust
     /// constructor, owns delayed Custom initialization in the live session.
     pub defer_delayed_custom_init: bool,
+    /// emacs.c's `--dump-file FILE': the image the process starts from.
+    /// None looks for the executable's own `<name>.pdmp' beside it.
+    pub dump_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -433,10 +436,12 @@ fn finish_test_fixture(interpreter: Result<Interpreter, String>) -> Result<Inter
 /// process state. The terminal must be ready before run_startup_top_level.
 pub(crate) fn initialize_interactive_interpreter(
     no_site_lisp: bool,
+    dump_file: Option<PathBuf>,
 ) -> Result<Interpreter, String> {
     let options = BatchRunOptions {
         no_site_lisp,
         defer_delayed_custom_init: true,
+        dump_file,
         ..Default::default()
     };
     finish_test_fixture(initialize_interpreter(&options, false))
@@ -472,6 +477,19 @@ fn initialize_interpreter(
     // "Cannot open load file".
     let _boot_environment = compat::boot_environment_read_guard();
     let mut interpreter = Interpreter::new();
+    // emacs.c:main: load_pdump precedes every init_* call.  A process
+    // with an image starts from it (`initialized') and never runs
+    // loadup; without one it is temacs and reconstructs the dumped state
+    // in the closure below.  The process values the constructor took
+    // once are applied again over the image, as GNU's init_* are.
+    let initialized = crate::lisp::primitives::pdumper::load_pdump_at_startup(
+        &mut interpreter,
+        options.dump_file.as_deref(),
+    )
+    .is_some();
+    if initialized {
+        interpreter.init_after_pdump_load();
+    }
     let before_init_time =
         lisp::primitives::system_time_list_value(std::time::SystemTime::now())
             .map_err(|error| format!("record batch initialization start: {error}"))?;
@@ -479,7 +497,11 @@ fn initialize_interpreter(
     interpreter.define_special_variable("after-init-time", Value::Nil);
     let installation_load_path = installation_lisp_load_path()?;
     interpreter.set_load_path(installation_load_path.clone());
-    configure_native_load_path_for_dump_reconstruction(&mut interpreter)?;
+    // emacs.c: the eln load path is expanded only in a non-initialized
+    // Emacs about to load Lisp (the `if (!initialized)' branch).
+    if !initialized {
+        configure_native_load_path_for_dump_reconstruction(&mut interpreter)?;
+    }
     // GNU starts batch evaluation in *scratch*, whose buffer-local
     // `lexical-binding' is t while the default remains nil.  File cookies
     // override and restore this state around loads.
@@ -500,8 +522,11 @@ fn initialize_interpreter(
         &mut Vec::new(),
     );
     // Loading the dumped Lisp owners below corresponds to GNU's pre-dump
-    // phase, where delayed Custom initializers accumulate until startup.
-    interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());
+    // phase, where delayed Custom initializers accumulate until startup;
+    // an image carries the accumulated list.
+    if !initialized {
+        interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());
+    }
     configure_batch_source_provenance(&mut interpreter)?;
     // font.c:init_font runs after syms_of_font and before loadup.el.  Merely
     // having EMACS_FONT_LOG in the environment enables logging, even when its
@@ -527,6 +552,10 @@ fn initialize_interpreter(
     interpreter.set_variable("message-log-max", Value::Nil, &mut Vec::new());
     interpreter.set_variable("inhibit-message", Value::T, &mut Vec::new());
     let reconstruction = (|interpreter: &mut Interpreter| -> Result<(), String> {
+        // An initialized process has the dumped state already.
+        if initialized {
+            return Ok(());
+        }
         preload_batch_compat_libraries(interpreter)?;
         // The dump boundary.  charset.c's Vcharset_non_preferred_head is
         // not staticpro'd, so the value loadup left (english.el's
@@ -572,6 +601,10 @@ fn initialize_interpreter(
     if noninteractive {
         initialize_initial_frame_faces(&mut interpreter)?;
     }
+    // emacs.c:main after `initialized = true': "Allow code to be run
+    // (mostly useful after redumping)."  Every process runs it, dumped or
+    // not, before the top level.
+    safe_run_hooks(&mut interpreter, "after-pdump-load-hook");
     // The process CLI enters top-level with its complete argv in the caller.
     // Embedders request an initialized session without executing user actions;
     // use the same GNU owner and consume its normal batch termination here.
@@ -664,6 +697,87 @@ fn configure_batch_source_provenance(interpreter: &mut Interpreter) -> Result<()
         Path::new(&dump_root).join("lisp"),
     );
     Ok(())
+}
+
+/// eval.c:safe_run_hooks: run HOOK's functions as `run-hook-with-args'
+/// does, each under a handler; a function that signals is reported with
+/// `message' ("Error in %s (%S): %S") and removed from the hook, from
+/// the local value if it is there, else from the global one
+/// (safe_run_hooks_error).  `inhibit-quit' is not bound here: batch
+/// startup has no quit to inhibit.
+pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) {
+    let mut env = Vec::new();
+    // run_hook_with_args: void or nil is nothing; a non-list or a lambda
+    // list is one function; a list runs each element, `t' standing for
+    // the global value's functions.
+    let functions_of = |value: Value| -> Vec<Value> {
+        if value.is_nil() || matches!(value, Value::Unbound) {
+            Vec::new()
+        } else if !value.is_cons()
+            || value
+                .car()
+                .ok()
+                .is_some_and(|car| car.as_symbol().is_ok_and(|name| name == "lambda"))
+        {
+            vec![value]
+        } else {
+            value.to_vec().unwrap_or_default()
+        }
+    };
+    let Some(local) = interpreter.lookup_var(hook, &env) else {
+        return;
+    };
+    let mut functions = Vec::new();
+    for function in functions_of(local) {
+        if function.as_symbol().is_ok_and(|name| name == "t") {
+            let global = interpreter.default_value(hook).unwrap_or(Value::Nil);
+            functions.extend(
+                functions_of(global)
+                    .into_iter()
+                    .filter(|function| !function.as_symbol().is_ok_and(|name| name == "t")),
+            );
+        } else {
+            functions.push(function);
+        }
+    }
+    for function in functions {
+        let Err(error) = interpreter.call_function_value(function.clone(), None, &[], &mut env)
+        else {
+            continue;
+        };
+        let condition = lisp::eval::error_condition_value(&error);
+        let _ = lisp::primitives::call(
+            interpreter,
+            "message",
+            &[
+                Value::string("Error in %s (%S): %S"),
+                Value::symbol(hook),
+                function.clone(),
+                condition,
+            ],
+            &mut env,
+        );
+        // safe_run_hooks_error: the local part first, then the global.
+        let removed_from = |interpreter: &mut Interpreter, value: Value| -> Option<Value> {
+            let entries = value.to_vec().ok()?;
+            if !entries.iter().any(|entry| entry == &function) {
+                return None;
+            }
+            let _ = interpreter;
+            Some(Value::list(
+                entries.into_iter().filter(|entry| entry != &function),
+            ))
+        };
+        let local = interpreter.lookup_var(hook, &env).unwrap_or(Value::Nil);
+        if let Some(rest) = removed_from(interpreter, local) {
+            interpreter.set_variable(hook, rest, &mut env);
+            continue;
+        }
+        let global = interpreter.default_value(hook).unwrap_or(Value::Nil);
+        if let Some(rest) = removed_from(interpreter, global) {
+            interpreter.set_global_binding(hook, rest);
+        }
+    }
 }
 
 pub(crate) fn initialize_initial_frame_faces(interpreter: &mut Interpreter) -> Result<(), String> {
@@ -1013,6 +1127,51 @@ fn xml_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn safe_run_hooks_reports_and_removes_a_failing_function_as_eval_c_does() {
+        // eval.c:safe_run_hooks: every function runs, a signalling one is
+        // reported with `message' and removed from the hook (the local
+        // value first, then the global), the rest keep running.
+        let mut interpreter = Interpreter::new();
+        let mut env = Vec::new();
+        let program = r#"(progn
+             (fset 'zz-ok #'(lambda () (setq zz-ran t)))
+             (fset 'zz-bad #'(lambda () (signal 'error '("boom"))))
+             (fset 'zz-ok2 #'(lambda () (setq zz-ran2 t)))
+             (setq zz-ran nil zz-ran2 nil)
+             (set-default 'zz-hook '(zz-bad zz-ok2))
+             (make-local-variable 'zz-hook)
+             (setq zz-hook '(zz-ok t)))"#;
+        crate::test_support::eval_lisp(&mut interpreter, &mut env, program).expect("set up");
+        super::safe_run_hooks(&mut interpreter, "zz-hook");
+        let state = crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            r#"(list zz-ran zz-ran2 zz-hook (default-value 'zz-hook)
+                     (save-current-buffer (set-buffer "*Messages*") (buffer-string)))"#,
+        )
+        .expect("read the state");
+        let printed =
+            lisp::primitives::call(&mut interpreter, "prin1-to-string", &[state], &mut env)
+                .expect("print");
+        assert_eq!(
+            lisp::primitives::string_like(&printed)
+                .expect("printed")
+                .text,
+            "(t t (zz-ok t) (zz-ok2) \"Error in zz-hook (zz-bad): (error \\\"boom\\\")\n\")"
+        );
+        // A void hook and a single-function value.
+        super::safe_run_hooks(&mut interpreter, "zz-no-such-hook");
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(progn (setq zz-ran nil) (setq zz-hook 'zz-ok))",
+        )
+        .expect("single function");
+        super::safe_run_hooks(&mut interpreter, "zz-hook");
+        assert_eq!(interpreter.lookup_var("zz-ran", &env), Some(Value::T));
+    }
+
     use super::*;
     use std::fs;
     use std::thread;
@@ -1044,7 +1203,7 @@ mod tests {
             Value::float(0.1)
         );
         let interactive =
-            initialize_interactive_interpreter(true).expect("prepare interactive session");
+            initialize_interactive_interpreter(true, None).expect("prepare interactive session");
         assert_eq!(
             interactive
                 .symbol_value_cell("undo-outer-limit")
