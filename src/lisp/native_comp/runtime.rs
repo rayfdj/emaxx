@@ -6,6 +6,11 @@
 //! the exact two-word memory prefix generated code reads and writes.  It is
 //! an in-process Rust runtime representation; it never calls GNU Emacs.
 
+mod suspension;
+pub(crate) use suspension::with_thread_suspended;
+#[cfg(test)]
+pub(crate) use suspension::{invoke_suspension_companion, invoke_suspension_probe};
+
 use super::abi::{
     HANDLER_JMP_OFFSET, HANDLER_NEXT_OFFSET, HANDLER_SIZE, HANDLER_VALUE_OFFSET, SYS_JMP_BUF_SIZE,
     THREAD_HANDLERLIST_OFFSET, THREAD_STATE_SIZE,
@@ -20,16 +25,17 @@ use crate::lisp::{
     eval::Interpreter,
     types::{Env, LispError},
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
 use std::sync::{
-    Mutex, OnceLock,
+    Mutex, MutexGuard, OnceLock,
     atomic::{AtomicPtr, Ordering},
 };
 
@@ -410,11 +416,17 @@ struct ActiveCall {
 
 #[cfg(target_os = "macos")]
 fn current_native_stack_bottom() -> *const NativeWord {
+    if let Some(base) = crate::lisp::eval::continuations::current_stack_base() {
+        return base;
+    }
     unsafe { libc::pthread_get_stackaddr_np(libc::pthread_self()).cast() }
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn current_native_stack_bottom() -> *const NativeWord {
+    if let Some(base) = crate::lisp::eval::continuations::current_stack_base() {
+        return base;
+    }
     unsafe {
         let mut attributes = MaybeUninit::<libc::pthread_attr_t>::uninit();
         if libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()) != 0 {
@@ -454,19 +466,72 @@ impl Drop for ConsSyncGuard {
 }
 
 // A Lisp interpreter is single-threaded, as reflected by its Rc-owned values.
-// Serialize the outermost native activation so allocation helpers can use one
-// direct atomic heap pointer instead of paying macOS's dynamic TLS lookup on
-// every cons.  Nested native calls replace and restore the pointer normally.
+// Serialize native activation between OS threads so allocation helpers can
+// use one direct atomic heap pointer. Cooperative Lisp threads on the same OS
+// thread share the lock; a suspended first call can return before another
+// call, so ownership must not be tied to the first call's Rust stack frame.
 static NATIVE_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE_NATIVE_HEAP: AtomicPtr<NativeHeap> = AtomicPtr::new(std::ptr::null_mut());
+
+#[derive(Default)]
+struct NativeExecutionOwnership {
+    activations: usize,
+    lock: Option<MutexGuard<'static, ()>>,
+}
+
+thread_local! {
+    static NATIVE_EXECUTION_OWNERSHIP: RefCell<NativeExecutionOwnership> =
+        RefCell::new(NativeExecutionOwnership::default());
+}
+
+struct NativeExecutionGuard {
+    // A token must be released on the OS thread that acquired it.
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl NativeExecutionGuard {
+    fn enter() -> Self {
+        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
+            let mut ownership = ownership.borrow_mut();
+            if ownership.activations == 0 {
+                ownership.lock = Some(
+                    NATIVE_EXECUTION_LOCK
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+            }
+            ownership.activations += 1;
+        });
+        Self {
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl Drop for NativeExecutionGuard {
+    fn drop(&mut self) {
+        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
+            let mut ownership = ownership.borrow_mut();
+            ownership.activations -= 1;
+            if ownership.activations == 0 {
+                ownership.lock.take();
+            }
+        });
+    }
+}
 
 struct ActiveCallGuard {
     previous: *mut ActiveCall,
     previous_heap: *mut NativeHeap,
+    heap: *mut NativeHeap,
+    previous_stack_bottom: *const NativeWord,
 }
 
 impl Drop for ActiveCallGuard {
     fn drop(&mut self) {
+        // The owned shared payload has returned to this activation before
+        // its scope exits. Restore the physical stack, not another fiber's.
+        unsafe { (*self.heap).native_stack_bottom = self.previous_stack_bottom };
         ACTIVE_CALL.set(self.previous);
         ACTIVE_NATIVE_HEAP.store(self.previous_heap, Ordering::Relaxed);
     }
@@ -479,11 +544,7 @@ pub(crate) fn with_active_call<R>(
     body: impl FnOnce() -> R,
 ) -> R {
     let outermost = ACTIVE_CALL.with(|active| active.get().is_null());
-    let _execution_guard = outermost.then(|| {
-        NATIVE_EXECUTION_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    });
+    let _execution_guard = NativeExecutionGuard::enter();
     let mut active = ActiveCall {
         interpreter,
         environment,
@@ -492,12 +553,15 @@ pub(crate) fn with_active_call<R>(
     let previous = ACTIVE_CALL.replace(&mut active);
     let previous_heap =
         ACTIVE_NATIVE_HEAP.swap((&mut *runtime.heap) as *mut NativeHeap, Ordering::Relaxed);
+    let previous_stack_bottom = runtime.heap.native_stack_bottom;
     if outermost {
         runtime.heap.set_stack_bottom(current_native_stack_bottom());
     }
     let _guard = ActiveCallGuard {
         previous,
         previous_heap,
+        heap: runtime.heap.0.as_ptr(),
+        previous_stack_bottom,
     };
     body()
 }
@@ -783,19 +847,46 @@ enum UnwindAction {
     Cleanup { function: bool, value: Value },
 }
 
-/// Per-interpreter state used by loaded native code.  All objects are Rust
-/// owned; the boxed layouts merely expose the stable C ABI that GNU-generated
-/// machine code expects to read directly.
+/// Native execution shell. The shared allocation can move to a different
+/// shell at a suspension boundary while this thread's live call state stays
+/// with its Rust/native frames. The scheduler must also switch TLS and roots;
+/// transferring this payload alone is not a native context switch.
 pub(crate) struct NativeRuntime {
-    heap: NativeHeapOwner,
+    shared: Option<Box<NativeSharedState>>,
     thread: Box<NativeThreadState>,
-    thread_pointer: Box<*mut NativeThreadState>,
-    link_table: Box<[*mut c_void]>,
     handlers: Vec<HandlerEntry>,
     unwind: Vec<UnwindAction>,
     calls: Vec<NativeCallFrame>,
-    permanent_root_ranges: Vec<NativeRootRange>,
     ephemeral_root_ranges: Vec<NativeRootRange>,
+}
+
+/// One editor's native heap and loaded-code relocation storage. GNU's
+/// current-thread relocation points to a stable cell shared by all units;
+/// changing threads updates that cell, not the machine code's relocation.
+pub(crate) struct NativeSharedState {
+    heap: NativeHeapOwner,
+    thread_pointer: Box<*mut NativeThreadState>,
+    link_table: Box<[*mut c_void]>,
+    permanent_root_ranges: Vec<NativeRootRange>,
+    suspended_stacks: suspension::SuspendedNativeStacks,
+}
+
+impl std::ops::Deref for NativeRuntime {
+    type Target = NativeSharedState;
+
+    fn deref(&self) -> &Self::Target {
+        self.shared
+            .as_deref()
+            .expect("native runtime shell is parked")
+    }
+}
+
+impl std::ops::DerefMut for NativeRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.shared
+            .as_deref_mut()
+            .expect("native runtime shell is parked")
+    }
 }
 
 struct NativeCallFrame {
@@ -819,14 +910,17 @@ impl Default for NativeRuntime {
         let mut thread = Box::<NativeThreadState>::default();
         let thread_pointer = Box::new((&mut *thread) as *mut NativeThreadState);
         Self {
-            heap: NativeHeapOwner::new(),
+            shared: Some(Box::new(NativeSharedState {
+                heap: NativeHeapOwner::new(),
+                thread_pointer,
+                link_table: runtime_link_table().into_boxed_slice(),
+                permanent_root_ranges: Vec::new(),
+                suspended_stacks: suspension::SuspendedNativeStacks::default(),
+            })),
             thread,
-            thread_pointer,
-            link_table: runtime_link_table().into_boxed_slice(),
             handlers: Vec::new(),
             unwind: Vec::new(),
             calls: Vec::new(),
-            permanent_root_ranges: Vec::new(),
             ephemeral_root_ranges: Vec::new(),
         }
     }
@@ -839,11 +933,18 @@ impl NativeRuntime {
             && self.calls.is_empty()
             && self.permanent_root_ranges.is_empty()
             && self.ephemeral_root_ranges.is_empty()
+            && self.suspended_stacks.is_empty()
             && self.thread.handler().is_null()
             && self.heap.is_empty()
     }
 
+    fn activate_thread(&mut self) {
+        let thread = std::ptr::from_mut(&mut *self.thread);
+        *self.thread_pointer = thread;
+    }
+
     pub(crate) fn begin_call(&mut self, escape_buffer: *mut c_void, interpreter: &Interpreter) {
+        self.activate_thread();
         self.heap.begin_call();
         self.calls.push(NativeCallFrame {
             handler_depth: self.handlers.len(),
@@ -877,7 +978,7 @@ impl NativeRuntime {
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
-        if self.heap.native_stack_bottom.is_null() {
+        if self.heap.native_stack_bottom.is_null() && self.suspended_stacks.is_empty() {
             // No generated activation is on the stack. Traverse Lisp roots
             // without borrowing the heap: ordinary cons reads can lazily
             // reconcile writes left by earlier native activations.
@@ -906,6 +1007,7 @@ impl NativeRuntime {
                 roots.extend(unsafe { std::slice::from_raw_parts(range.start, range.len) });
             }
         }
+        self.suspended_stacks.append_words(&mut roots);
         self.heap
             .collect(stack_top, &roots, interpreter, environment)
     }
@@ -1124,7 +1226,7 @@ impl NativeRuntime {
         // reachable cons synchronize that exact cell on demand.  The outermost
         // return retires its touched set; indirect writes remain observable
         // through each cell's read barrier for the lifetime of the heap.
-        let heap_result = if self.heap.native_call_depth == 1 {
+        let heap_result = if self.calls.is_empty() {
             self.publish_heap_writes(interpreter, false)
         } else {
             self.heap.finish_nested_call();
@@ -4055,9 +4157,7 @@ impl NativeHeap {
     }
 
     fn set_stack_bottom(&mut self, stack_bottom: *const NativeWord) {
-        if self.native_call_depth == 1 {
-            self.native_stack_bottom = stack_bottom;
-        }
+        self.native_stack_bottom = stack_bottom;
     }
 
     fn collection_due(&mut self, threshold: i64, percentage: Option<f64>) -> bool {
@@ -4104,7 +4204,6 @@ impl NativeHeap {
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
-        debug_assert!(!self.native_stack_bottom.is_null());
         self.publish_interpreter_writes()
             .expect("Rust cons mutations contain valid Lisp objects before marking");
         // Shared marking borrows this heap exclusively. Its cons reads
@@ -4119,14 +4218,16 @@ impl NativeHeap {
             }
         }
 
-        let start = (stack_top as usize).min(self.native_stack_bottom as usize);
-        let end = (stack_top as usize).max(self.native_stack_bottom as usize);
-        let alignment = std::mem::align_of::<NativeWord>();
-        let mut current = start.div_ceil(alignment) * alignment;
-        pending.reserve(end.saturating_sub(current) / alignment);
-        while current.saturating_add(std::mem::size_of::<NativeWord>()) <= end {
-            pending.push(unsafe { std::ptr::read(current as *const NativeWord) });
-            current += alignment;
+        if !self.native_stack_bottom.is_null() {
+            let start = (stack_top as usize).min(self.native_stack_bottom as usize);
+            let end = (stack_top as usize).max(self.native_stack_bottom as usize);
+            let alignment = std::mem::align_of::<NativeWord>();
+            let mut current = start.div_ceil(alignment) * alignment;
+            pending.reserve(end.saturating_sub(current) / alignment);
+            while current.saturating_add(std::mem::size_of::<NativeWord>()) <= end {
+                pending.push(unsafe { std::ptr::read(current as *const NativeWord) });
+                current += alignment;
+            }
         }
 
         let mut marking = NativeMark {
@@ -4876,6 +4977,28 @@ fn handle_identity(value: &Value) -> Result<(NativeIdentity, usize), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_execution_lock_survives_non_lifo_activation_returns() {
+        let first = NativeExecutionGuard::enter();
+        let second = NativeExecutionGuard::enter();
+        drop(first);
+        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
+            let ownership = ownership.borrow();
+            assert_eq!(ownership.activations, 1);
+            assert!(ownership.lock.is_some());
+        });
+        assert!(matches!(
+            NATIVE_EXECUTION_LOCK.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock),
+        ));
+        drop(second);
+        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
+            let ownership = ownership.borrow();
+            assert_eq!(ownership.activations, 0);
+            assert!(ownership.lock.is_none());
+        });
+    }
 
     extern "C" fn add_one_fixnum(value: NativeWord) -> NativeWord {
         value.wrapping_add(1 << FIXNUM_BITS)
@@ -6129,6 +6252,72 @@ mod tests {
                 Value::T,
             ]
         );
+    }
+
+    #[test]
+    fn native_shell_transfer_preserves_heap_and_keeps_call_frames_local() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut first = NativeRuntime::default();
+        let mut second = NativeRuntime::default();
+        let value = Value::list([Value::Integer(7)]);
+        let word = first.heap.encode(&value).expect("encode shared cons");
+        let payload = std::ptr::from_ref(&*first);
+        let relocation = first.current_thread_relocation();
+        let mut invocation = NativeInvocation::new(add_one_fixnum as *const c_void);
+        first.begin_call(invocation.jump_buffer(), &interpreter);
+        let first_frame = std::ptr::from_ref(&first.calls[0]);
+        let first_thread = std::ptr::from_mut(&mut *first.thread);
+        let second_thread = std::ptr::from_mut(&mut *second.thread);
+        assert_ne!(first_thread, second_thread);
+
+        second.shared = first.shared.take();
+        assert!(first.shared.is_none());
+        assert_eq!(
+            first.calls.len(),
+            1,
+            "the original native frame stays local"
+        );
+        assert!(second.calls.is_empty());
+        assert_eq!(std::ptr::from_ref(&*second), payload);
+        assert_eq!(second.current_thread_relocation(), relocation);
+        assert_eq!(
+            second
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    add_one_fixnum as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::Integer(41)],
+                )
+                .expect("call using the same heap from a distinct native shell"),
+            Value::Integer(42),
+        );
+        assert_eq!(*second.thread_pointer, second_thread);
+        assert!(second.calls.is_empty());
+        assert_eq!(second.heap.encode(&value).expect("same object"), word);
+        let decoded = second
+            .heap
+            .decode(word)
+            .expect("original word is still live");
+        assert!(crate::lisp::primitives::values_eq_in_env(
+            &interpreter,
+            &decoded,
+            &value,
+            &environment,
+        ));
+
+        first.shared = second.shared.take();
+        first.activate_thread();
+        assert_eq!(first.current_thread_relocation(), relocation);
+        assert_eq!(*first.thread_pointer, first_thread);
+        assert_eq!(std::ptr::from_ref(&first.calls[0]), first_frame);
+        assert_eq!(first.calls[0].escape_buffer, invocation.jump_buffer());
+        first
+            .finish_call(&mut interpreter)
+            .expect("finish original frame");
+        assert_eq!(first.heap.native_call_depth, 0);
+        assert!(first.calls.is_empty());
     }
 
     #[test]
@@ -7511,6 +7700,56 @@ mod tests {
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
         assert!(runtime.calls.is_empty());
+    }
+
+    #[test]
+    fn native_funcall_log_accepts_an_omitted_or_nil_base() {
+        // Ffuncall pads a fixed subr's optional arguments with Qnil. The
+        // actual native entry must reach Flog's natural-log branch for both
+        // forms, not require callers or pretty-printers to avoid that ABI.
+        for (arguments, expected) in [
+            (vec![Value::symbol("log"), Value::Integer(80)], 80_f64.ln()),
+            (
+                vec![Value::symbol("log"), Value::Integer(80), Value::Nil],
+                80_f64.ln(),
+            ),
+            (
+                vec![Value::symbol("log"), Value::Integer(8), Value::Integer(2)],
+                3.0,
+            ),
+            (
+                vec![
+                    Value::symbol("log"),
+                    Value::Integer(100),
+                    Value::Integer(10),
+                ],
+                2.0,
+            ),
+        ] {
+            let mut interpreter = Interpreter::new();
+            let mut environment = Env::new();
+            let mut runtime = NativeRuntime::default();
+            let target = if arguments.len() == 2 {
+                call_funcall_one as *const c_void
+            } else {
+                call_funcall_two as *const c_void
+            };
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        target,
+                        NativeCallingConvention::Fixed,
+                        &arguments,
+                    )
+                    .expect("native logarithm"),
+                Value::float(expected),
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+            assert!(runtime.calls.is_empty());
+        }
     }
 
     #[test]

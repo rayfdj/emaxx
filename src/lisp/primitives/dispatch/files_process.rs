@@ -2564,9 +2564,10 @@ define_dispatch!(
                 interp.buffer.goto_char(start);
                 let text = decode_raw_text_bytes(&output);
                 interp.insert_current_buffer(&text);
-                interp
-                    .buffer
-                    .goto_char(saved_point.min(interp.buffer.point_max()));
+                {
+                    let point = saved_point.min(interp.buffer.point_max());
+                    interp.buffer.goto_char(point);
+                }
                 run_change_hooks(
                     interp,
                     "after-change-functions",

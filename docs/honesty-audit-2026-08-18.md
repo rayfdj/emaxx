@@ -52,7 +52,7 @@ documented not faked), SCHEDULED (in the execution plan), OPEN QUESTION.
 | 81 | HOSTNAME/COMPUTERNAME/EMAXX_USER_FULL_NAME identity knobs | FIXED (removed; gethostname/$NAME only) |
 | 82 | eq/eql/equal compared floats with IEEE ==, not GNU's representation equality | FIXED (to_bits at five sites; NaN self-eq restored, signed zeros distinct; boxed-float eq identity remains approximated) |
 | 83 | Interpreted (+ FLOAT) seeded its accumulator with 0.0, losing the zero sign | FIXED (accumulate from the first argument, data.c arith_driver) |
-| 84 | Cooperative thread model cannot suspend a thread mid-body | DISCLOSED (deadlock signals instead of spinning; scheduler no longer re-steps the active thread) |
+| 84 | Cooperative thread model cannot suspend a thread mid-body | PARTIALLY FIXED 2026-09-09 (owned continuations suspend actual frames; four target cases pass; scheduling limits and validation in [thread audit](thread-continuation-audit-2026-09-09.md)) |
 | 85 | Batch reconstruction skipped startup.el's tty-color registration | FIXED (runs GNU's own tty-register-default-colors) |
 | 86 | color-gray-p/color-supported-p/color-distance/color-values-from-color-spec bypass GNU's Lisp color path | FIXED 2026-09-04 (xfaces.c port: tty-defined-color, Riemersma distance with METRIC, parse_color_spec) |
 | 87 | `\u{2620}` hardcoded into the word class to satisfy one upstream test | FIXED (removed; word/space now resolve through the syntax table everywhere) |

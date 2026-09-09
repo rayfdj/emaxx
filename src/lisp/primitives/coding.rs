@@ -561,7 +561,10 @@ fn run_coding_conversion(
     // bytes starting at point, so leaving point after the insertion silently
     // turns the conversion into a no-op.
     if !pre_write {
-        interp.buffer.goto_char(interp.buffer.point_min());
+        {
+            let buffer = &mut interp.buffer;
+            buffer.goto_char(buffer.point_min());
+        }
     }
     let arguments = if pre_write {
         vec![

@@ -2537,7 +2537,7 @@ pub(crate) fn wait_pumping_processes(
         nap = nap
             .min(std::time::Duration::from_millis(10))
             .max(std::time::Duration::from_millis(1));
-        std::thread::sleep(nap);
+        interp.sleep_current_thread(env, nap)?;
     }
     let result = if let Some(process_id) = target_process_id {
         interp.process_output_delivery_count(process_id) != target_start

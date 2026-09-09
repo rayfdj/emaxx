@@ -1314,14 +1314,15 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
     let source =
         fs::read_to_string(repo_root().join("src/lisp/eval.rs")).expect("read src/lisp/eval.rs");
     let struct_start = source
-        .find("pub struct Interpreter {")
-        .expect("Interpreter struct definition");
+        .find("pub struct InterpreterState {")
+        .expect("InterpreterState payload definition");
     let struct_end = source[struct_start..]
         .find("\n}\n")
         .map(|offset| struct_start + offset)
-        .expect("end of Interpreter struct");
-    let field_pattern = regex::Regex::new(r"(?m)^    (?:pub(?:\(crate\))? )?([a-z_0-9]+): (.+),$")
-        .expect("compile field pattern");
+        .expect("end of InterpreterState payload");
+    let field_pattern =
+        regex::Regex::new(r"(?m)^    (?:pub(?:\((?:crate|super)\))? )?([a-z_0-9]+): (.+),$")
+            .expect("compile field pattern");
     let roots_start = source
         .find("pub(crate) fn weak_hash_reachability_with_native")
         .expect("root-marking function");
@@ -1330,6 +1331,14 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
         .map(|offset| roots_start + offset)
         .expect("end of root-marking function");
     let roots = &source[roots_start..roots_end];
+    assert!(
+        field_pattern
+            .captures_iter(&source[struct_start..struct_end])
+            .any(|field| &field[1] == "globals"),
+        "the inventory must inspect the editor payload, not an empty execution shell"
+    );
+    assert!(roots.contains("self.stack_roots.mark("));
+    assert!(roots.contains("roots::mark_source(self, &mut marked, &**context)"));
     // Fields that hold Lisp objects but are not GNU roots, each with the
     // C reason.
     let documented: &[(&str, &str)] = &[
@@ -1375,6 +1384,68 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
             undocumented.push(format!("{name}: both marked and listed as not a root"));
         } else if !marked && !listed {
             undocumented.push(format!("{name}: {kind}"));
+        }
+    }
+    // Parked stacks keep their dynamic bindings, handlers and backtraces in
+    // a separate context. Follow those aggregate owners as well as direct
+    // Value fields; scanning only InterpreterState would miss this boundary.
+    let context = fs::read_to_string(repo_root().join("src/lisp/eval/thread_context.rs"))
+        .expect("read parked thread context");
+    let definition = context
+        .split_once("struct ThreadExecutionContext {")
+        .expect("thread context definition")
+        .1
+        .split_once("\n}")
+        .expect("end of thread context")
+        .0;
+    let trace = context
+        .split_once("impl TraceLispRoots for ThreadExecutionContext {")
+        .expect("parked context root visitor")
+        .1
+        .split_once("\n}\n")
+        .expect("end of context root visitor")
+        .0;
+    for field in field_pattern.captures_iter(definition) {
+        let (name, kind) = (&field[1], &field[2]);
+        if ![
+            "Value",
+            "SpecialBindingRestore",
+            "BacktraceFrame",
+            "BatchErrorBacktrace",
+            "ActiveHandler",
+        ]
+        .iter()
+        .any(|owner| kind.contains(owner))
+        {
+            continue;
+        }
+        let marked = trace.contains(&format!("self.{name}"));
+        // Same identity-only memo as the active interpreter field above.
+        let listed = name == "dispatched_signal";
+        if marked == listed {
+            undocumented.push(format!("ThreadExecutionContext::{name}: {kind}"));
+        }
+    }
+    // Signal DATA remains owned even when its condition is nil. Inventory
+    // direct Lisp fields in the thread object independently of live stacks.
+    let thread_definition = source
+        .split_once("struct ThreadState {")
+        .expect("thread state definition")
+        .1
+        .split_once("\n}")
+        .expect("end of thread state")
+        .0;
+    let thread_trace = source
+        .split_once("if record.kind == RecordKind::Thread")
+        .expect("reachable thread object visitor")
+        .1
+        .split_once("for child in &children")
+        .expect("end of thread object visitor")
+        .0;
+    for field in field_pattern.captures_iter(thread_definition) {
+        let (name, kind) = (&field[1], &field[2]);
+        if kind.contains("Value") && !thread_trace.contains(&format!("thread.{name}")) {
+            undocumented.push(format!("ThreadState::{name}: {kind}"));
         }
     }
     assert!(

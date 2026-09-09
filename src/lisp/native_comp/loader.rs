@@ -22,6 +22,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
+use std::rc::Rc;
 
 const TOP_LEVEL_RUN_SYM: &str = "top_level_run";
 const LATE_TOP_LEVEL_RUN_SYM: &str = "late_top_level_run";
@@ -31,6 +32,7 @@ struct StaticObjectHeader {
 }
 
 pub(crate) type UnitLibrary = Library;
+pub(super) type SharedCompiler = Rc<RefCell<Option<Compiler>>>;
 
 struct LoadedUnit {
     library: Library,
@@ -38,11 +40,11 @@ struct LoadedUnit {
     /// comp.c sets this when the shared object's saved unit pointer was
     /// already non-nil.  Repeated top-level runs must not recreate anonymous
     /// native lambdas.
-    loaded_once: bool,
+    loaded_once: Cell<bool>,
     /// comp.c's `load_ongoing`: a unit whose top-level code is still running
     /// on this thread must not have its ephemeral relocations rewritten by
     /// a nested load of the same file.
-    load_ongoing: bool,
+    load_ongoing: Cell<bool>,
     _data: Value,
     _impure_data: Value,
     _optimization_qualities: Value,
@@ -123,11 +125,45 @@ fn native_function_signature(
     }
 }
 
-#[derive(Default)]
+/// A loader execution shell. Its code registry may move to another shell
+/// while the original loader frame is suspended. Loaded units have separate
+/// stable ownership, so a callback can grow the registry without invalidating
+/// the library whose static data the original frame is reading.
 pub(crate) struct NativeRegistry {
-    units: Vec<LoadedUnit>,
+    shared: Option<Box<RegisteredNativeCode>>,
+}
+
+#[derive(Default)]
+pub(crate) struct RegisteredNativeCode {
+    units: Vec<Rc<LoadedUnit>>,
     functions: HashMap<u64, NativeFunction>,
     function_names: HashMap<u64, Box<str>>,
+}
+
+impl Default for NativeRegistry {
+    fn default() -> Self {
+        Self {
+            shared: Some(Box::default()),
+        }
+    }
+}
+
+impl std::ops::Deref for NativeRegistry {
+    type Target = RegisteredNativeCode;
+
+    fn deref(&self) -> &Self::Target {
+        self.shared
+            .as_deref()
+            .expect("native registry shell is parked")
+    }
+}
+
+impl std::ops::DerefMut for NativeRegistry {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.shared
+            .as_deref_mut()
+            .expect("native registry shell is parked")
+    }
 }
 
 impl NativeRegistry {
@@ -135,8 +171,11 @@ impl NativeRegistry {
         self.units.is_empty() && self.functions.is_empty() && self.function_names.is_empty()
     }
 
-    fn unit(&self, record_id: u64) -> Option<&LoadedUnit> {
-        self.units.iter().find(|unit| unit.record_id == record_id)
+    fn unit(&self, record_id: u64) -> Option<Rc<LoadedUnit>> {
+        self.units
+            .iter()
+            .find(|unit| unit.record_id == record_id)
+            .cloned()
     }
 
     fn function(&self, record_id: u64) -> Option<NativeFunction> {
@@ -149,14 +188,14 @@ impl NativeRegistry {
 }
 
 pub(super) struct LoaderState<'a> {
-    compiler: &'a RefCell<Option<Compiler>>,
+    compiler: &'a SharedCompiler,
     registry: &'a mut NativeRegistry,
     runtime: &'a mut NativeRuntime,
 }
 
 impl<'a> LoaderState<'a> {
     pub(super) fn new(
-        compiler: &'a RefCell<Option<Compiler>>,
+        compiler: &'a SharedCompiler,
         registry: &'a mut NativeRegistry,
         runtime: &'a mut NativeRuntime,
     ) -> Self {
@@ -172,14 +211,14 @@ thread_local! {
     static ACTIVE_REGISTRY: Cell<*mut NativeRegistry> = const { Cell::new(std::ptr::null_mut()) };
     static ACTIVE_REGISTERED_RUNTIME: Cell<*mut NativeRuntime> =
         const { Cell::new(std::ptr::null_mut()) };
-    static ACTIVE_COMPILER: Cell<*const RefCell<Option<Compiler>>> =
+    static ACTIVE_COMPILER: Cell<*const SharedCompiler> =
         const { Cell::new(std::ptr::null()) };
 }
 
 struct RegistryGuard {
     previous_registry: *mut NativeRegistry,
     previous_runtime: *mut NativeRuntime,
-    previous_compiler: *const RefCell<Option<Compiler>>,
+    previous_compiler: *const SharedCompiler,
 }
 
 impl Drop for RegistryGuard {
@@ -191,7 +230,7 @@ impl Drop for RegistryGuard {
 }
 
 pub(super) fn with_native_state<R>(
-    compiler: &RefCell<Option<Compiler>>,
+    compiler: &SharedCompiler,
     registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     body: impl FnOnce(&mut NativeRuntime) -> R,
@@ -205,6 +244,57 @@ pub(super) fn with_native_state<R>(
         previous_compiler,
     };
     body(runtime)
+}
+
+/// Move loaded-code ownership out of a paused loader/backend frame. The
+/// compiler RefCell itself is shared, so a live backend borrow continues to
+/// exclude re-entry even while this thread is suspended.
+pub(super) fn with_suspended_state<R>(
+    interpreter: &mut Interpreter,
+    body: impl FnOnce(&mut Interpreter, *mut NativeRuntime) -> R,
+) -> R {
+    let registry = ACTIVE_REGISTRY.replace(std::ptr::null_mut());
+    let runtime = ACTIVE_REGISTERED_RUNTIME.replace(std::ptr::null_mut());
+    let compiler = ACTIVE_COMPILER.replace(std::ptr::null());
+    let _guard = RegistryGuard {
+        previous_registry: registry,
+        previous_runtime: runtime,
+        previous_compiler: compiler,
+    };
+    // SAFETY: this private scope is entered from the currently executing
+    // loader callback. The old shell stays parked until body returns; only
+    // its separately owned registry allocation crosses the suspension.
+    let placeholder_registry = if registry.is_null() {
+        None
+    } else {
+        Some(std::mem::replace(
+            &mut interpreter.native_compiler.registry.shared,
+            unsafe { &mut *registry }.shared.take(),
+        ))
+    };
+    let placeholder_compiler = if compiler.is_null() {
+        None
+    } else {
+        Some(std::mem::replace(
+            &mut interpreter.native_compiler.compiler,
+            Rc::clone(unsafe { &*compiler }),
+        ))
+    };
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(interpreter, runtime)));
+    if let Some(placeholder) = placeholder_registry {
+        unsafe { &mut *registry }.shared = std::mem::replace(
+            &mut interpreter.native_compiler.registry.shared,
+            placeholder,
+        );
+    }
+    if let Some(placeholder) = placeholder_compiler {
+        interpreter.native_compiler.compiler = placeholder;
+    }
+    match result {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 fn with_active_registry<R>(body: impl FnOnce(&mut NativeRegistry) -> R) -> Option<R> {
@@ -230,9 +320,7 @@ fn with_active_registered_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R)
     })
 }
 
-pub(super) fn with_active_compiler<R>(
-    body: impl FnOnce(&RefCell<Option<Compiler>>) -> R,
-) -> Option<R> {
+pub(super) fn with_active_compiler<R>(body: impl FnOnce(&SharedCompiler) -> R) -> Option<R> {
     ACTIVE_COMPILER.with(|compiler| {
         let compiler = compiler.get();
         (!compiler.is_null()).then(|| {
@@ -243,6 +331,59 @@ pub(super) fn with_active_compiler<R>(
             body(unsafe { &*compiler })
         })
     })
+}
+
+#[cfg(test)]
+mod suspension_tests {
+    use super::*;
+
+    #[test]
+    fn suspended_loader_restores_owners_and_tls_after_a_rust_panic() {
+        let mut interpreter = Interpreter::new();
+        let compiler = SharedCompiler::default();
+        let mut registry = NativeRegistry::default();
+        let mut runtime = NativeRuntime::default();
+        registry
+            .function_names
+            .insert(23, "before-suspension".into());
+        with_native_state(&compiler, &mut registry, &mut runtime, |_runtime| {
+            let registry_pointer = ACTIVE_REGISTRY.get();
+            let runtime_pointer = ACTIVE_REGISTERED_RUNTIME.get();
+            let compiler_pointer = ACTIVE_COMPILER.get();
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::super::runtime::with_thread_suspended(&mut interpreter, |interpreter| {
+                    assert!(ACTIVE_REGISTRY.get().is_null());
+                    assert!(ACTIVE_REGISTERED_RUNTIME.get().is_null());
+                    assert!(ACTIVE_COMPILER.get().is_null());
+                    assert!(Rc::ptr_eq(&interpreter.native_compiler.compiler, &compiler));
+                    assert_eq!(
+                        interpreter.native_compiler.registry.function_name(23),
+                        Some("before-suspension")
+                    );
+                    interpreter
+                        .native_compiler
+                        .registry
+                        .function_names
+                        .insert(29, "while-suspended".into());
+                    panic!("loader-suspension-test");
+                })
+            }))
+            .expect_err("the Rust panic must propagate after owner restoration");
+            assert_eq!(
+                panic.downcast_ref::<&str>(),
+                Some(&"loader-suspension-test")
+            );
+            assert_eq!(ACTIVE_REGISTRY.get(), registry_pointer);
+            assert_eq!(ACTIVE_REGISTERED_RUNTIME.get(), runtime_pointer);
+            assert_eq!(ACTIVE_COMPILER.get(), compiler_pointer);
+        });
+        assert_eq!(registry.function_name(23), Some("before-suspension"));
+        assert_eq!(registry.function_name(29), Some("while-suspended"));
+        assert!(runtime.is_pristine());
+        assert!(ACTIVE_REGISTRY.get().is_null());
+        assert!(ACTIVE_REGISTERED_RUNTIME.get().is_null());
+        assert!(ACTIVE_COMPILER.get().is_null());
+    }
 }
 
 fn inconsistent(file: &Value) -> LispError {
@@ -460,15 +601,10 @@ pub(super) fn load(
         let Value::Record(record_id) = unit else {
             return Err(inconsistent(filename));
         };
-        if registry.unit(record_id).is_none() {
-            return Err(inconsistent(filename));
-        }
-        registry
-            .units
-            .iter_mut()
-            .find(|loaded| loaded.record_id == record_id)
-            .expect("unit existence checked above")
-            .loaded_once = true;
+        let loaded = registry
+            .unit(record_id)
+            .ok_or_else(|| inconsistent(filename))?;
+        loaded.loaded_once.set(true);
         let unit_file = interpreter
             .find_record(record_id)
             .and_then(|record| record.slots.first())
@@ -497,13 +633,10 @@ pub(super) fn load(
         )?
     };
 
-    let index = registry
-        .units
-        .iter()
-        .position(|loaded| loaded.record_id == record_id)
+    let loaded = registry
+        .unit(record_id)
         .expect("unit registered before its top-level code runs");
-    let recursive_load = registry.units[index].load_ongoing;
-    registry.units[index].load_ongoing = true;
+    let recursive_load = loaded.load_ongoing.replace(true);
     let unit_file = interpreter
         .find_record(record_id)
         .and_then(|record| record.slots.first())
@@ -515,7 +648,7 @@ pub(super) fn load(
         Ok(None)
     } else {
         fill_ephemeral_relocations(
-            &registry.units[index].library,
+            &loaded.library,
             &unit_file,
             runtime,
             interpreter,
@@ -549,14 +682,14 @@ pub(super) fn load(
     };
     if result.is_ok() {
         debug_assert!(comp_unit_relocations_match(
-            &registry.units[index],
+            &loaded,
             runtime,
             interpreter,
             environment,
         ));
     }
     if !recursive_load {
-        registry.units[index].load_ongoing = false;
+        loaded.load_ongoing.set(false);
     }
     let result = result?;
     // comp.c:register_native_comp_unit.
@@ -732,11 +865,11 @@ fn first_load(
     runtime.register_permanent_root_range(data_relocations, data_values.len());
     runtime.register_permanent_root_range(impure_relocations, impure_values.len());
 
-    registry.units.push(LoadedUnit {
+    registry.units.push(Rc::new(LoadedUnit {
         library,
         record_id,
-        loaded_once: false,
-        load_ongoing: false,
+        loaded_once: Cell::new(false),
+        load_ongoing: Cell::new(false),
         _data: data,
         _impure_data: impure_data,
         _optimization_qualities: optimization_qualities,
@@ -744,7 +877,7 @@ fn first_load(
         data_relocation_count: data_values.len(),
         impure_relocations,
         impure_relocation_count: impure_values.len(),
-    });
+    }));
     runtime.register_permanent_root_range(saved_unit, 1);
     saved_unit_rollback.disarm();
     Ok((record_id, unit, top_level))
@@ -933,7 +1066,7 @@ pub(super) fn register_with_state(
         let unit = registry.unit(unit_record_id).ok_or_else(|| {
             LispError::SignalValue(Value::list([Value::symbol("wrong-register-subr-call")]))
         })?;
-        if matches!(kind, RegistrationKind::Lambda) && unit.loaded_once {
+        if matches!(kind, RegistrationKind::Lambda) && unit.loaded_once.get() {
             return Ok(Value::Nil);
         }
         let target = unsafe { function_symbol(&unit.library, &c_name) }
@@ -1096,7 +1229,7 @@ pub(crate) fn call_active_function(
 }
 
 pub(crate) fn call_function(
-    compiler: &RefCell<Option<Compiler>>,
+    compiler: &SharedCompiler,
     registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,

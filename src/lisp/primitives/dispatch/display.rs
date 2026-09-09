@@ -2790,9 +2790,12 @@ define_dispatch!(
                     .lookup_var("defining-kbd-macro", env)
                     .is_some_and(|value| value.is_truthy())
                 {
-                    interp
-                        .kbd_macro_definition
-                        .truncate(interp.kbd_macro_committed_len);
+                    {
+                        let state = &mut **interp;
+                        state
+                            .kbd_macro_definition
+                            .truncate(state.kbd_macro_committed_len);
+                    }
                     let last_macro = Value::list(
                         std::iter::once(Value::symbol("vector-literal"))
                             .chain(interp.kbd_macro_definition.iter().cloned()),

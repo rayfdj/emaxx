@@ -1,0 +1,6 @@
+(defvar thread-port-body-ran nil)
+(let ((worker (make-thread (lambda () (setq thread-port-body-ran t)))))
+  (thread-signal worker 'quit nil)
+  (condition-case nil (thread-join worker) (quit nil))
+  (prin1 (list thread-port-body-ran (thread-live-p worker))))
+(terpri)
