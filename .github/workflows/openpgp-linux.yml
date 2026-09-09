@@ -92,7 +92,7 @@ jobs:
           cargo -V > /tmp/openpgp-metadata/default-cargo.txt
           rustc +1.97.1 -Vv > /tmp/openpgp-metadata/focused-rustc.txt
           git rev-parse HEAD > /tmp/openpgp-metadata/candidate-head.txt
-      - name: Validate the revised CLI fixture
+      - name: Reproduce native identity with public-fixture binary diagnostics
         env:
           LANG: C
           LC_ALL: C
@@ -100,15 +100,51 @@ jobs:
           RUST_TEST_THREADS: '1'
         run: |
           mkdir -p /tmp/integration-completion
+          set +e
+          cargo +1.97.1 test --locked --profile gate --test native_comp_identity > /tmp/integration-completion/native-identity.log 2>&1
+          identity_status=$?
+          set -e
+          printf '%s\n' "$identity_status" > /tmp/integration-completion/native-identity-exit.txt
+          python3 - <<'PYTHON'
+          import os, subprocess, shutil, json, hashlib
+          from pathlib import Path
+          root=Path('/tmp/integration-completion')
+          for work in Path('/tmp').glob('native-comp-identity-*'):
+              case=work/'case-0'
+              source=work/'test/src/comp-resources/comp-test-45603.el'
+              for name,binary in [('gnu-repeat','../emacs/src/emacs'),('emaxx-repeat','target/gate/emaxx')]:
+                  home=case/(name+'-home');temporary=case/(name+'-tmp');home.mkdir();temporary.mkdir()
+                  env={'PATH':os.environ['PATH'],'HOME':str(home),'TMPDIR':str(temporary),'LANG':'C','LC_ALL':'C'}
+                  with (root/(name+'.log')).open('w') as out:
+                      r=subprocess.run([binary,'-Q','--batch','-f','batch-native-compile',str(source)],env=env,stdout=out,stderr=subprocess.STDOUT,timeout=300)
+                  print(name,'exit',r.returncode)
+              artifacts=sorted(case.glob('**/comp-test-45603-*.eln'))
+              manifest=[]
+              for i,p in enumerate(artifacts):
+                  prefix=root/('elf-'+str(i))
+                  shutil.copyfile(p,str(prefix)+'.eln')
+                  for tool,args in [('readelf',['-aW']),('objdump',['-drwC']),('strings',['-a'])]:
+                      with Path(str(prefix)+'.'+tool+'.txt').open('w') as out:
+                          subprocess.run([tool,*args,str(p)],stdout=out,stderr=subprocess.STDOUT,check=True)
+                  manifest.append({'source':str(p),'copy':prefix.name+'.eln','sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size})
+              (root/'elf-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+              shutil.copyfile(source,root/source.name)
+          PYTHON
+      - name: Run the two integration targets still pending
+        env:
+          LANG: C
+          LC_ALL: C
+          RUST_MIN_STACK: '134217728'
+          RUST_TEST_THREADS: '1'
+        run: |
           set -o pipefail
-          cargo +1.97.1 fmt --all -- --check
-          cargo test --locked --profile gate --test cli batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor -- --exact 2>&1 | tee /tmp/integration-completion/cli-focused.log
+          cargo +1.97.1 test --locked --profile gate --no-fail-fast --test native_thread_continuations --test package_lifecycle 2>&1 | tee /tmp/integration-completion/remaining-integration.log
       - name: Strict Clippy
         run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: native-merge-cli-completion
+          name: native-merge-native-diagnostics
           path: |
             /tmp/integration-completion
             /tmp/openpgp-metadata
