@@ -270,3 +270,45 @@ four integration targets not reached previously run at source `8bf354b`
 in workflow checkpoint `d61e2ca`; a focused Rust check covers the revised
 fixture itself separately. No completed library or binary tests need
 repetition for this private integration-test edit.
+
+The revised CLI Rust test passed on Darwin (13.84 seconds) and Linux
+(31.24 seconds, run [34355687638](https://github.com/rayfdj/emaxx/actions/runs/34355687638),
+source `a612e355`). Both formatting and strict Clippy passed. Linux's
+separate probe confirms `command-line-1` and `load-with-code-conversion`
+are native subrs in GNU and bytecode in Emaxx, and the complete controlled
+output matches. All 15 CLI cases now have passing receipts, with the other
+14 retained from the preceding run.
+
+The remaining-integration attempt
+[34355419764](https://github.com/rayfdj/emaxx/actions/runs/34355419764)
+passed all three `ert_runner` cases, then **failed** the native artifact
+identity test at its first fixture, `comp-test-45603.el`: both ELFs were
+17,032 bytes, first difference at byte 584. This is not declared harmless
+or accepted as a native-comp pass. The default Rust toolchain in this
+attempt was 1.98.0. Native-thread and package-lifecycle targets had not run
+when Cargo stopped. The original attempt's log is retained; its temporary
+ELFs were not included by that workflow's artifact upload. The follow-up
+keeps complete fresh generated ELF artifacts and repeats each editor's
+compile to distinguish determinism/configuration from compiler behavior.
+
+The fresh ELF diagnostics reproduce the mismatch on Rust 1.97.1 too.
+Each editor's repeat is byte-identical to its own first file. Across
+editors, the only 28 differing bytes are the 20-byte ELF build ID at
+584–603 and the eight ASCII bytes of `comp-abi-hash` at 12329–12336;
+the complete disassembly matches. The two hashes are GNU `c10985d9`
+and Emaxx `1564b906`. Applying GNU's hash_native_abi formula to the
+unchanged committed subroutine signatures and the CI configure-option
+string reproduces `c10985d9`; using the committed reference configure
+string produces `1564b906`. The discrepancy therefore follows exactly
+from CI's expanded option string, including redundant feature switches,
+not a changed generated instruction or nondeterminism. These remain
+failing whole-file comparisons against that differently configured oracle.
+
+The standard Linux workflow now reads the exact configure options from
+the existing generated native ABI reference. It keys the GNU build cache
+by that manifest, then mechanically regenerates and compares the complete
+subroutine table **and configuration metadata** from the actual built
+oracle before testing. The product ABI target and generated tables are
+unchanged. No ABI hash is overridden and no byte is excluded from native
+artifact comparison. A fresh reference build and the original complete
+native identity test validate this workflow correction.
