@@ -42,7 +42,7 @@ OpenPGP ASCII correction. This is not a completed startup image loader.
   the image/compiler integration controls. Its public GNU 30.2 diagnostic
   oracle remains separate from the historical frozen Linux binary.
 
-Validation receipts are recorded below when completed. The scratch root
+Validation receipts and failed attempts are recorded below. The scratch root
 is `/private/tmp/emaxx-native-merge-sept9-round2`.
 
 ## First preflight and the native image limit
@@ -339,5 +339,72 @@ Its new metadata preflight stopped before native identity because it
 compared the generator's unformatted Rust output directly with the
 rustfmt-formatted committed file (first difference at line 14). The
 workflow now rustfmts generated Rust before the complete byte comparison;
-no metadata field is omitted. The correctly configured GNU build is
-cached and reused by the continuation. This failed preflight is retained.
+no metadata field is omitted. The correctly configured GNU build was cached on the integration ref.
+The separate validation refs did not reuse that cache and rebuilt GNU;
+this setup cost is not additional Rust coverage. The failed preflight is
+retained.
+
+Formatting a copy of the freshly generated Linux manifest with Rustfmt
+1.97.1 produces a byte-for-byte match with the committed file (SHA-256
+`879b48969985a04e57b1fe8bf4280411427a4137c8130aa12798a9fe6aba4baa`).
+The rebuilt oracle's feature string is identical to the previous expanded
+configuration; the literal configure options now match the reference.
+The corrected native-thread integration passes on Darwin in 91.76 seconds
+(one Rust test, all six real programs). Strict all-target/all-feature
+Clippy passes again after this final Rust fixture edit.
+
+Linux [34359464978](https://github.com/rayfdj/emaxx/actions/runs/34359464978)
+on source `981ed0d` passes the corrected native-thread integration:
+one Rust test, all six GNU/Emaxx programs, zero failures or ignores,
+164.88 seconds. Formatting and strict Clippy also pass. Source `b4e5e2b`
+changes only workflow/documentation from that tree, so this receipt covers
+the final thread fixture without repeating the package or library tests.
+
+## Final publication coverage
+
+Linux [34359647754](https://github.com/rayfdj/emaxx/actions/runs/34359647754)
+on source `b4e5e2b47ab74c2682fc683c66ea51be6230182d` passes the complete
+native identity test in 534.61 seconds. All eight generated `.eln` files
+are byte-identical to GNU's, including `comp.el` (914,592 bytes) and the
+upstream native-compiler test suite (1,087,480 bytes). The ninth fixture
+correctly produces no artifact in either editor under its unchanged
+no-byte-compile policy. Full native ABI regeneration, formatting and
+strict all-target/all-feature Clippy also pass. No artifact bytes, ABI
+hashes or oracle results are overridden or excluded.
+
+The complete Rust inventory is covered by **2,664 passing active tests
+and two existing ignored library tests**:
+
+| Scope | Passed | Existing ignores |
+| --- | ---: | ---: |
+| Library (five evaluator groups and five remaining groups) | 2,597 | 2 |
+| Three binary targets | 42 | 0 |
+| CLI integration | 15 | 0 |
+| Upstream ERT-runner integration | 3 | 0 |
+| Native artifact identity integration | 1 | 0 |
+| Native-thread integration (six real programs) | 1 | 0 |
+| Package lifecycle integration | 5 | 0 |
+
+This is combined coverage from the retained runs above, **not** a claim
+that a previously failed workflow became green or that a new uninterrupted
+full gate ran on the final commit. Runtime source did not change during
+the fixture/CI follow-ups. The library gate used the expanded Linux
+configuration and default Rust 1.98.0; final native identity used the exact
+reference configuration and Rust 1.97.1. The GNU feature sets match, and
+the complete reference ABI manifest is freshly verified. Both Darwin and
+Linux have passing real native artifact and thread checks, and both have
+clean rustfmt and zero-warning strict Clippy on the final Rust changes.
+
+The local receipt verifier checks inventory/results, original zero-exit
+receipts, source-diff boundaries, the 14 retained CLI case names, every
+native fixture result and the full ABI manifest. Its report is retained at
+`/private/tmp/emaxx-native-merge-sept9-round2/final-receipts.json`. The only
+final publication changes after tested source `b4e5e2b` are documentation;
+CI is not relaunched for that receipt-only commit, as requested by the
+user. PR #59 retains the normal workflow and the native-comp ancestry.
+
+The honesty/decheating review retains all failure evidence and the actual
+native-image gap. It adds no runtime result substitution, fresh ignored
+tests, native heap ownership bypass, oracle repin or unsafe environment
+restoration. Portable startup loading (D12/D13) and native images (D14/D15)
+remain unfinished. No new frozen 7,883-test compatibility score is claimed.
