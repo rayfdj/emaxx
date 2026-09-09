@@ -204,6 +204,80 @@ fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, 
     (!children.is_empty()).then_some(children)
 }
 
+/// charset.c:Fmake_char assembles position codes in most-significant-byte
+/// order, filling omitted dimensions from the charset's code space.
+pub(crate) fn make_charset_character(
+    interp: &Interpreter,
+    charset: &Value,
+    positions: &[Value],
+) -> Result<Value, LispError> {
+    let name = charset.as_symbol()?;
+    let canonical = interp
+        .charset_canonical_name(name)
+        .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), charset.clone()))?;
+    let bounds = charset_code_space(interp, &canonical)
+        .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
+    let dimension = charset_dimension(interp, &canonical) as usize;
+    let first = positions.first().unwrap_or(&Value::Nil);
+    let mut code = if first.is_nil() {
+        let ascii_compatible = charset_plist_property(interp, &canonical, ":ascii-compatible-p")
+            .map(|value| value.is_truthy())
+            .unwrap_or(matches!(
+                canonical.as_str(),
+                "ascii" | "iso-8859-1" | "unicode" | "emacs"
+            ));
+        if ascii_compatible {
+            0
+        } else {
+            charset_code_bounds(interp, &canonical)
+                .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?
+                .0
+        }
+    } else {
+        let mut code = 0u32;
+        for index in 0..dimension {
+            let position = positions.get(index).unwrap_or(&Value::Nil);
+            let byte = if position.is_nil() {
+                bounds[dimension - index - 1].0
+            } else {
+                let Value::Integer(number) = position else {
+                    return Err(LispError::WrongTypeArgument(
+                        "wholenump".into(),
+                        position.clone(),
+                    ));
+                };
+                if *number < 0 {
+                    return Err(LispError::WrongTypeArgument(
+                        "wholenump".into(),
+                        position.clone(),
+                    ));
+                }
+                if *number >= 256 {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        Value::Integer(255),
+                        position.clone(),
+                    ])));
+                }
+                *number as u32
+            };
+            code = (code << 8) | byte;
+        }
+        code
+    };
+    if iso2022::charset_iso_final(interp, &canonical).is_some() {
+        code &= 0x7f7f7f7f;
+    }
+    let character = decode_charset_code(interp, &canonical, code)
+        .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
+    let character = if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&character) {
+        RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
+    } else {
+        character
+    };
+    Ok(Value::Integer(i64::from(character)))
+}
+
 pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32) -> Option<u32> {
     let canonical = interp.charset_canonical_name(charset)?;
     match canonical.as_str() {
@@ -2887,10 +2961,23 @@ pub(crate) fn encode_coding_value(
     nocopy: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    encode_coding_value_recording(interp, value, coding, nocopy, true, env)
+}
+
+pub(crate) fn encode_coding_value_recording(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    nocopy: bool,
+    record_used: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let string = string_like(value)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), value.clone()))?;
     let Some(coding) = coding else {
-        set_last_coding_system_used(interp, "no-conversion", env);
+        if record_used {
+            set_last_coding_system_used(interp, "no-conversion", env);
+        }
         return if nocopy {
             Ok(value.clone())
         } else {
@@ -2902,7 +2989,9 @@ pub(crate) fn encode_coding_value(
         .ok_or_else(|| coding_system_error(coding))?;
     // The requested spelling, not the canonical name (the oracle answers
     // `euc-jp' for (encode-coding-string "a" 'euc-jp)).
-    set_last_coding_system_used(interp, coding, env);
+    if record_used {
+        set_last_coding_system_used(interp, coding, env);
+    }
     let pre_write =
         coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
     let converted_text = run_coding_conversion(interp, &string.text, &pre_write, true, env)?;

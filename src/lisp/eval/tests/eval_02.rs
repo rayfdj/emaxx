@@ -5675,7 +5675,10 @@ fn compressed_file_visit_preserves_detected_coding_across_mode_and_save() {
                             (set-buffer-modified-p t)
                             (save-buffer)
                             (prog1
-                                (list (subrp (indirect-function 'save-buffer))
+                                (list (let ((function (indirect-function 'save-buffer)))
+                                        (or (byte-code-function-p function)
+                                            (and (subrp function)
+                                                 (subr-native-elisp-p function))))
                                       before last-before
                                       buffer-file-coding-system
                                       last-coding-system-used
@@ -5690,7 +5693,7 @@ fn compressed_file_visit_preserves_detected_coding_across_mode_and_save() {
                 "#
         )),
         Value::list([
-            Value::Nil,
+            Value::T,
             Value::Symbol("iso-2022-7bit-unix".into()),
             Value::Symbol("iso-2022-7bit-unix".into()),
             Value::Symbol("iso-2022-7bit-unix".into()),

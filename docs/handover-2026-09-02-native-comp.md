@@ -60,8 +60,9 @@ fringe bitmaps, compositions, ert tests, labeled restrictions, timers,
 captured lexical cells) are written as the Lisp values GNU keeps and
 reinstalled on load; the groups GNU resets after a load are listed with
 their C lines, and an anti-cheat gate keeps the inventory complete. Main
-is checked at every checkpoint and merged as soon as it carries content
-(it held only merge commits of this branch at checkpoints 11 through 14).
+`85f0c28` (the terminal and frame parity work over checkpoint 10) is merged
+after checkpoint 14, with the image code adapted to its terminal and frame
+state and the full gate run on the merged tree.
 Next: the loader into a process, D12/D13 (validation and the ordered
 restore, the remembered scalars), then D14/D15 native units.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.

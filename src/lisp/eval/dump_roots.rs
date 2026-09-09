@@ -22,27 +22,19 @@ use crate::lisp::primitives::pdumper::image::RootSlot;
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
         "frame_states",
-        "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image",
+        "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),
     (
-        "selected_frame_face_hash_table",
-        "a frame's face hash table dies with the nilled frame (frame.c:init_frame_once_for_pdumper)",
+        "terminals",
+        "the terminal pseudovectors are nilled (pdumper.c:dump_vectorlike PVEC_TERMINAL); init_tty makes the initial terminal anew, its parameters, codings and keyboard with it",
+    ),
+    (
+        "pending_funcalls",
+        "keyboard.c:syms_of_keyboard_for_pdumper resets pending_funcalls to nil",
     ),
     (
         "selected_window_id",
         "window.c:init_window_once_for_pdumper resets selected_window",
-    ),
-    (
-        "root_window_id",
-        "window.c:init_window_once_for_pdumper resets Vwindow_list; the initial frame's windows are made anew",
-    ),
-    (
-        "minibuffer_window_id",
-        "window.c:init_window_once_for_pdumper resets minibuf_window",
-    ),
-    (
-        "terminal_parameters",
-        "the terminal pseudovector is nilled (pdumper.c:dump_vectorlike PVEC_TERMINAL); init_tty makes the initial terminal",
     ),
     (
         "kbd_macro_definition",
@@ -387,7 +379,8 @@ impl Interpreter {
             })),
         ));
         // xfaces.c: Vface_new_frame_defaults holds the global lface
-        // vectors; a frame's own vectors go with the frame.
+        // vectors; a frame's own vectors (the `frames' map) go with the
+        // nilled frame.
         groups.push((
             RootSlot::LispFaces,
             Value::list(self.lisp_face_states.iter().map(|face| {
@@ -867,7 +860,7 @@ mod install {
                             name: expect_string(&fields[0], "face name")?,
                             id: opt_of(&fields[1], |v| expect_int(v, "face id"))?,
                             global: opt_of(&fields[2], |v| Ok(v.clone()))?,
-                            selected_frame: None,
+                            frames: HashMap::new(),
                         });
                     }
                     self.lisp_face_states = faces;

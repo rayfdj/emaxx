@@ -7536,13 +7536,19 @@ fn upstream_script_modes_own_their_derived_mode_contracts() {
                  (sh-mode)
                  (list major-mode
                        (derived-mode-p 'sh-base-mode)
-                       (subrp (indirect-function 'sh-mode))
+                       (let ((function (indirect-function 'sh-mode)))
+                         (or (byte-code-function-p function)
+                             (and (subrp function)
+                                  (subr-native-elisp-p function))))
                        (local-variable-p 'sh-shell)))
                (with-temp-buffer
                  (python-mode)
                  (list major-mode
                        (derived-mode-p 'python-base-mode)
-                       (subrp (indirect-function 'python-mode))))
+                       (let ((function (indirect-function 'python-mode)))
+                         (or (byte-code-function-p function)
+                             (and (subrp function)
+                                  (subr-native-elisp-p function))))))
                (list
                 (cdr (assoc \"python[0-9.]*\" interpreter-mode-alist))
                 (cdr (assoc \"gawk\" interpreter-mode-alist))))",
@@ -7551,13 +7557,13 @@ fn upstream_script_modes_own_their_derived_mode_contracts() {
             Value::list([
                 Value::Symbol("sh-mode".into()),
                 Value::Symbol("sh-base-mode".into()),
-                Value::Nil,
+                Value::T,
                 Value::T,
             ]),
             Value::list([
                 Value::Symbol("python-mode".into()),
                 Value::Symbol("python-base-mode".into()),
-                Value::Nil,
+                Value::T,
             ]),
             Value::list([
                 Value::Symbol("python-mode".into()),

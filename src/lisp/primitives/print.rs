@@ -1174,7 +1174,11 @@ pub(crate) fn render_prin1_body(
             }
             match value {
                 Value::BuiltinFunc(name) => Ok(format!("#<subr {name}>")),
-                Value::Buffer(buffer) if !context.options.escape => Ok(buffer.name.to_string()),
+                Value::Buffer(buffer) => Ok(match interp.get_buffer_by_id(buffer.id) {
+                    Some(live) if context.options.escape => format!("#<buffer {}>", live.name),
+                    Some(live) => live.name.clone(),
+                    None => "#<killed buffer>".into(),
+                }),
                 Value::Marker(id) => {
                     if let Some(marker) = interp.find_marker(*id) {
                         return Ok(match marker.buffer_id {
@@ -2332,40 +2336,226 @@ fn read_from_lisp_source_raw(
     }
 }
 
-pub(crate) fn md5_source_text(
+/// fns.c:extract_data_from_object's MD5 coding policy. String endpoints
+/// address the encoded string; buffer endpoints address the narrowed buffer.
+pub(crate) fn md5_source_bytes(
     interp: &mut Interpreter,
-    source: &Value,
-    start: Option<&Value>,
-    end: Option<&Value>,
-) -> Result<String, LispError> {
-    match source {
-        Value::Buffer(_) => {
-            let buffer_id = interp.resolve_buffer_id(source)?;
-            let buffer = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            let start = start
-                .filter(|value| !value.is_nil())
-                .map(|value| position_from_value(interp, value))
-                .transpose()?
-                .unwrap_or_else(|| buffer.point_min());
-            let end = end
-                .filter(|value| !value.is_nil())
-                .map(|value| position_from_value(interp, value))
-                .transpose()?
-                .unwrap_or_else(|| buffer.point_max());
-            buffer
-                .buffer_substring(start, end)
-                .map_err(|error| LispError::Signal(error.to_string()))
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    let source = &args[0];
+    let start = args.get(1).unwrap_or(&Value::Nil);
+    let end = args.get(2).unwrap_or(&Value::Nil);
+    let mut coding = args.get(3).cloned().unwrap_or(Value::Nil);
+    let noerror = args.get(4).is_some_and(Value::is_truthy);
+    let validate = |interp: &Interpreter, coding: Value| -> Result<Value, LispError> {
+        if coding.is_nil()
+            || coding
+                .as_symbol()
+                .ok()
+                .is_some_and(|name| interp.has_coding_system(name))
+        {
+            Ok(coding)
+        } else if noerror {
+            Ok(Value::symbol("raw-text"))
+        } else {
+            Err(LispError::SignalValue(Value::list([
+                Value::symbol("coding-system-error"),
+                coding,
+            ])))
         }
-        _ => {
-            let text = string_text(source)?;
-            let chars: Vec<char> = text.chars().collect();
-            let start = normalize_string_index(start, 0, chars.len() as i64)? as usize;
-            let end = normalize_string_index(end, chars.len() as i64, chars.len() as i64)? as usize;
-            Ok(chars[start..end].iter().collect())
+    };
+    let buffer_source = matches!(source, Value::Buffer(_));
+    let object = if buffer_source {
+        let id = interp.resolve_buffer_id(source)?;
+        let saved = interp.current_buffer_id();
+        interp.set_current_buffer_id(id)?;
+        let result = (|| {
+            let buffer = interp.get_buffer_by_id(id).expect("resolved live buffer");
+            let mut b = if start.is_nil() {
+                buffer.point_min()
+            } else {
+                position_from_value(interp, start)?
+            };
+            let mut e = if end.is_nil() {
+                buffer.point_max()
+            } else {
+                position_from_value(interp, end)?
+            };
+            if b > e {
+                std::mem::swap(&mut b, &mut e);
+            }
+            if b < buffer.point_min() || e > buffer.point_max() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("args-out-of-range"),
+                    start.clone(),
+                    end.clone(),
+                ])));
+            }
+            let multibyte = buffer.is_multibyte();
+            let b = Value::Integer(b as i64);
+            let e = Value::Integer(e as i64);
+            if coding.is_nil() {
+                coding = interp
+                    .lookup_var("coding-system-for-write", env)
+                    .unwrap_or(Value::Nil);
+                if coding.is_nil() {
+                    let default = interp
+                        .lookup_var("buffer-file-coding-system", env)
+                        .unwrap_or(Value::Nil);
+                    coding = default.clone();
+                    let local = call(
+                        interp,
+                        "local-variable-p",
+                        &[Value::symbol("buffer-file-coding-system")],
+                        env,
+                    )?
+                    .is_truthy();
+                    let force_raw = (coding.is_nil() || !local) && !multibyte;
+                    if !local {
+                        coding = Value::Nil;
+                    }
+                    let filename = call(
+                        interp,
+                        "buffer-file-name",
+                        std::slice::from_ref(source),
+                        env,
+                    )?;
+                    if coding.is_nil() && filename.is_truthy() {
+                        let selected = interp.call_function_value(
+                            Value::symbol("find-operation-coding-system"),
+                            Some("find-operation-coding-system"),
+                            &[
+                                Value::symbol("write-region"),
+                                b.clone(),
+                                e.clone(),
+                                filename,
+                            ],
+                            env,
+                        )?;
+                        if let Some((_, value)) = selected.cons_values()
+                            && value.is_truthy()
+                        {
+                            coding = value;
+                        }
+                    }
+                    if coding.is_nil() {
+                        coding = default;
+                    }
+                    let selector = interp
+                        .lookup_var("select-safe-coding-system-function", env)
+                        .unwrap_or(Value::Nil);
+                    if !force_raw
+                        && call(interp, "fboundp", std::slice::from_ref(&selector), env)?
+                            .is_truthy()
+                    {
+                        coding = interp.call_function_value(
+                            selector,
+                            None,
+                            &[b.clone(), e.clone(), coding.clone(), Value::Nil],
+                            env,
+                        )?;
+                    }
+                    if force_raw {
+                        coding = Value::symbol("raw-text");
+                    }
+                }
+                coding = validate(interp, coding.clone())?;
+            }
+            call(interp, "buffer-substring-no-properties", &[b, e], env)
+        })();
+        if interp.has_buffer_id(saved) {
+            interp.set_current_buffer_id(saved)?;
         }
+        result?
+    } else if let Some(string) = string_like(source) {
+        if coding.is_nil() {
+            coding = if string.multibyte {
+                interp
+                    .coding_system_priority_list()
+                    .first()
+                    .map(|name| Value::symbol(name))
+                    .unwrap_or(Value::Nil)
+            } else {
+                Value::symbol("raw-text")
+            };
+        }
+        coding = validate(interp, coding)?;
+        source.clone()
+    } else if matches!(source, Value::Symbol(name) if name == "iv-auto") {
+        if !matches!(start, Value::Integer(number) if *number >= 0) {
+            return Err(LispError::Signal(
+                "Without a length, `iv-auto' can't be used; see ELisp manual".into(),
+            ));
+        }
+        return crate::lisp::primitives::text::secure_hash_source_bytes(
+            interp,
+            source,
+            Some(start),
+            Some(end),
+        );
+    } else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("error"),
+            Value::string("Invalid object argument"),
+            if source.is_nil() {
+                Value::string("nil")
+            } else {
+                source.clone()
+            },
+        ])));
+    };
+    let object = if string_like(&object).expect("extracted string").multibyte {
+        // Explicit buffer coding is checked by code_convert_string only
+        // when the extracted string is multibyte. NOERROR does not alter
+        // that check, and the requested alias is what gets recorded.
+        let coding_name = if coding.is_nil() {
+            None
+        } else {
+            let name = coding.as_symbol()?;
+            if !interp.has_coding_system(name) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("coding-system-error"),
+                    coding.clone(),
+                ])));
+            }
+            Some(name)
+        };
+        encode_coding_value_recording(interp, &object, coding_name, false, buffer_source, env)?
+    } else {
+        object
+    };
+    let bytes = crate::lisp::primitives::text::internal_string_bytes(
+        &string_like(&object).expect("encoded string"),
+    )?;
+    if buffer_source {
+        return Ok(bytes);
     }
+    let endpoint = |value: &Value, default: i64| -> Result<i64, LispError> {
+        match value {
+            Value::Nil => Ok(default),
+            Value::Integer(index) => Ok(if *index < 0 {
+                *index + bytes.len() as i64
+            } else {
+                *index
+            }),
+            _ => Err(LispError::WrongTypeArgument(
+                "integerp".into(),
+                value.clone(),
+            )),
+        }
+    };
+    let b = endpoint(start, 0)?;
+    let e = endpoint(end, bytes.len() as i64)?;
+    if b < 0 || b > e || e > bytes.len() as i64 {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            object,
+            start.clone(),
+            end.clone(),
+        ])));
+    }
+    Ok(bytes[b as usize..e as usize].to_vec())
 }
 
 #[cfg(test)]

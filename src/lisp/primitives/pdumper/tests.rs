@@ -818,7 +818,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         .buffer_syntax_table_id(source_id)
         .expect("the buffer set a syntax table");
     let source_finalizers = interp.finalizer_ids();
-    let terminal = interp.terminal_value();
+    let terminal = Value::Terminal(interp.terminals.first().expect("initial terminal").id);
     let roots = vec![
         (RootSlot::LoadPath, graph.clone()),
         (RootSlot::QuitFlag, terminal.clone()),

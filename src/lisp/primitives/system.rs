@@ -1549,6 +1549,7 @@ pub(crate) fn find_file_name_handler(
         .get(&cache_key)
         .filter(|entry| {
             entry.cons_epoch == cons_epoch
+                && entry.cons_mutations.is_current()
                 && entry.definition_generation == definition_generation
                 && entry.handler_alist.cons_id() == handler_alist_id
                 && entry.pattern_snapshots.iter().all(|(pattern, snapshot)| {
@@ -1566,6 +1567,7 @@ pub(crate) fn find_file_name_handler(
         regexp_env.push(vec![("case-fold-search".into(), Value::Nil)].into());
         let mut cacheable = handler_alist_id.is_some();
         let mut pattern_snapshots = Vec::new();
+        let mut property_dependencies = Vec::new();
         let mut matches = Vec::new();
         for entry in entries {
             let Some((pattern, handler)) = (entry).cons_cells() else {
@@ -1578,6 +1580,9 @@ pub(crate) fn find_file_name_handler(
             };
             cacheable &= !regexp::pattern_depends_on_syntax_table(&pattern_text.text);
             pattern_snapshots.push((pattern, pattern_text.text.clone()));
+            if let Value::Symbol(symbol) = &handler {
+                property_dependencies.push(interp.symbol_plist(symbol));
+            }
             if let Value::Symbol(symbol) = &handler
                 && let Some(operations) = interp.get_symbol_property(symbol, "operations")
                 && !operations.is_nil()
@@ -1599,17 +1604,22 @@ pub(crate) fn find_file_name_handler(
             matches.push((position, handler));
         }
         if cacheable {
+            let mut cons_mutations = crate::lisp::types::ConsMutationSnapshot::tree(&handlers);
+            for plist in property_dependencies {
+                cons_mutations.include_tree(&plist);
+            }
             if interp.file_name_handler_match_cache.len() >= 4096 {
                 interp.file_name_handler_match_cache.clear();
             }
             interp.file_name_handler_match_cache.insert(
                 cache_key,
                 crate::lisp::eval::FileNameHandlerMatchCacheEntry {
-                    handler_alist: handlers,
                     // Regexp compilation may lazily initialize Lisp-visible
-                    // tables.  Stamp the derived result after that work so
-                    // the entry is not born stale.
+                    // tables. Watch the actual alist graph after that work,
+                    // including writes made directly by native code.
+                    cons_mutations,
                     cons_epoch: crate::lisp::types::cons_mutation_epoch(),
+                    handler_alist: handlers,
                     definition_generation: interp.current_definition_generation(),
                     pattern_snapshots,
                     matches: matches.clone(),

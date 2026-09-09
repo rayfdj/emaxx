@@ -561,6 +561,37 @@ pub(crate) struct Context {
     raw: *mut ContextOpaque,
 }
 
+/// libgccjit's driver exports GCC_EXEC_PREFIX into this process's
+/// environment for the gcc it runs.  GNU's children never see that:
+/// callproc.c builds a child's environment from `process-environment',
+/// which init_callproc took from the startup environment.  Emaxx reads
+/// the process environment when it makes an interpreter, so the
+/// compiler leaves the variable as it found it.
+struct ProcessEnvironmentGuard {
+    gcc_exec_prefix: Option<std::ffi::OsString>,
+}
+
+impl ProcessEnvironmentGuard {
+    fn new() -> Self {
+        Self {
+            gcc_exec_prefix: std::env::var_os("GCC_EXEC_PREFIX"),
+        }
+    }
+}
+
+impl Drop for ProcessEnvironmentGuard {
+    fn drop(&mut self) {
+        // SAFETY: the process environment is only read and written from the
+        // Lisp thread that owns the compiler; no other thread reads it here.
+        unsafe {
+            match &self.gcc_exec_prefix {
+                Some(value) => std::env::set_var("GCC_EXEC_PREFIX", value),
+                None => std::env::remove_var("GCC_EXEC_PREFIX"),
+            }
+        }
+    }
+}
+
 impl Context {
     pub(crate) fn c_type(&self, kind: TypeKind) -> *mut TypeOpaque {
         // SAFETY: The type belongs to this live context.
@@ -1010,6 +1041,7 @@ impl Context {
 
     #[cfg(test)]
     pub(crate) fn compile(&self) -> Result<Compiled, String> {
+        let _environment = ProcessEnvironmentGuard::new();
         // SAFETY: The context is complete and remains alive during compile.
         let raw = unsafe { (self.api.compile)(self.raw) };
         if raw.is_null() {
@@ -1022,6 +1054,7 @@ impl Context {
     }
 
     pub(crate) fn compile_to_file(&self, kind: OutputKind, path: &CStr) -> Result<(), String> {
+        let _environment = ProcessEnvironmentGuard::new();
         // SAFETY: libgccjit copies/consumes PATH during this call; the context
         // remains live for the complete compilation.
         unsafe { (self.api.compile_to_file)(self.raw, kind as c_int, path.as_ptr()) };

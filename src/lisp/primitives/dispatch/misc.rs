@@ -394,33 +394,8 @@ define_dispatch!(
                 }
             }
             "md5" => {
-                need_arg_range(name, args, 1, 4)?;
-                let bytes = match args.get(3) {
-                    Some(coding) if !coding.is_nil() => {
-                        let text = md5_source_text(interp, &args[0], args.get(1), args.get(2))?;
-                        let inhibit_eol_conversion = interp
-                            .lookup_var("inhibit-eol-conversion", env)
-                            .is_some_and(|value| value.is_truthy());
-                        encode_text_bytes(
-                            interp,
-                            &text,
-                            &checked_coding_symbol(interp, coding)?,
-                            inhibit_eol_conversion,
-                            true,
-                        )?
-                    }
-                    // fns.c extract_data_from_object: without CODING a
-                    // unibyte string contributes its bytes verbatim and a
-                    // multibyte one its internal (utf-8-emacs) encoding --
-                    // the same bytes secure-hash digests (rfc2104-hash
-                    // feeds md5 raw digest bytes through this path).
-                    _ => crate::lisp::primitives::text::secure_hash_source_bytes(
-                        interp,
-                        &args[0],
-                        args.get(1),
-                        args.get(2),
-                    )?,
-                };
+                need_arg_range(name, args, 1, 5)?;
+                let bytes = md5_source_bytes(interp, args, env)?;
                 Ok(Value::String(format!("{:x}", md5::compute(bytes)).into()))
             }
             "secure-hash" => {

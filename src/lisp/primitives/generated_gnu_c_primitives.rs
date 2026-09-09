@@ -515,7 +515,7 @@ pub(crate) const GNU_C_PRIMITIVES: &[GnuCPrimitiveContract] = &[
     GnuCPrimitiveContract { name: "frame-total-lines", arity: Some((0, 1)), command: false, special_form: false, origins: "frame.c" },
     GnuCPrimitiveContract { name: "frame-visible-p", arity: Some((1, 1)), command: false, special_form: false, origins: "frame.c" },
     GnuCPrimitiveContract { name: "frame-window-state-change", arity: Some((0, 1)), command: false, special_form: false, origins: "frame.c" },
-    GnuCPrimitiveContract { name: "frame-windows-min-size", arity: Some((0, 4)), command: false, special_form: false, origins: "frame.c" },
+    GnuCPrimitiveContract { name: "frame-windows-min-size", arity: None, command: false, special_form: false, origins: "frame.c" },
     GnuCPrimitiveContract { name: "framep", arity: Some((1, 1)), command: false, special_form: false, origins: "frame.c" },
     GnuCPrimitiveContract { name: "frexp", arity: Some((1, 1)), command: false, special_form: false, origins: "floatfns.c" },
     GnuCPrimitiveContract { name: "fringe-bitmaps-at-pos", arity: Some((0, 2)), command: false, special_form: false, origins: "fringe.c" },
@@ -1597,7 +1597,7 @@ pub(crate) const GNU_C_PRIMITIVES: &[GnuCPrimitiveContract] = &[
     GnuCPrimitiveContract { name: "write-char", arity: Some((1, 2)), command: false, special_form: false, origins: "print.c" },
     GnuCPrimitiveContract { name: "write-region", arity: Some((3, 7)), command: true, special_form: false, origins: "fileio.c" },
     GnuCPrimitiveContract { name: "x-backspace-delete-keys-p", arity: None, command: false, special_form: false, origins: "xfns.c" },
-    GnuCPrimitiveContract { name: "x-begin-drag", arity: Some((1, 6)), command: false, special_form: false, origins: "xfns.c" },
+    GnuCPrimitiveContract { name: "x-begin-drag", arity: None, command: false, special_form: false, origins: "xfns.c" },
     GnuCPrimitiveContract { name: "x-change-window-property", arity: None, command: false, special_form: false, origins: "w32fns.c,xfns.c" },
     GnuCPrimitiveContract { name: "x-close-connection", arity: Some((1, 1)), command: false, special_form: false, origins: "haikufns.c,pgtkfns.c,w32fns.c,xfns.c" },
     GnuCPrimitiveContract { name: "x-create-frame", arity: Some((1, 1)), command: false, special_form: false, origins: "androidfns.c,haikufns.c,pgtkfns.c,w32fns.c,xfns.c" },
@@ -1620,7 +1620,7 @@ pub(crate) const GNU_C_PRIMITIVES: &[GnuCPrimitiveContract] = &[
     GnuCPrimitiveContract { name: "x-double-buffered-p", arity: None, command: false, special_form: false, origins: "haikufns.c,xfns.c" },
     GnuCPrimitiveContract { name: "x-export-frames", arity: None, command: false, special_form: false, origins: "pgtkfns.c,xfns.c" },
     GnuCPrimitiveContract { name: "x-family-fonts", arity: Some((0, 2)), command: false, special_form: false, origins: "xfaces.c" },
-    GnuCPrimitiveContract { name: "x-file-dialog", arity: Some((2, 5)), command: false, special_form: false, origins: "pgtkfns.c,w32fns.c,xfns.c" },
+    GnuCPrimitiveContract { name: "x-file-dialog", arity: None, command: false, special_form: false, origins: "pgtkfns.c,w32fns.c,xfns.c" },
     GnuCPrimitiveContract { name: "x-focus-frame", arity: Some((1, 2)), command: false, special_form: false, origins: "frame.c" },
     GnuCPrimitiveContract { name: "x-frame-edges", arity: None, command: false, special_form: false, origins: "xfns.c" },
     GnuCPrimitiveContract { name: "x-frame-geometry", arity: None, command: false, special_form: false, origins: "xfns.c" },
@@ -1704,7 +1704,7 @@ pub(crate) const GNU_C_PRIMITIVES: &[GnuCPrimitiveContract] = &[
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const GNU_C_PRIMITIVE_SOURCE_COUNT: usize = 1685;
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const GNU_C_PRIMITIVE_AVAILABLE_COUNT: usize = 1420;
+pub(crate) const GNU_C_PRIMITIVE_AVAILABLE_COUNT: usize = 1417;
 
 pub(crate) fn generated_gnu_c_primitive_contract(
     name: &str,

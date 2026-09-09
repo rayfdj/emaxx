@@ -116,7 +116,7 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
             let _ = interp.eval(form, &mut Vec::new());
         }
     }
-    let menu_bar_lines_changed = parameter == "menu-bar-lines";
+    let menu_bar_lines_changed = matches!(parameter.as_str(), "menu-bar-lines" | "tab-bar-lines");
     let Some(frame) = interp.frame_state_mut(id) else {
         return;
     };
@@ -132,10 +132,23 @@ fn store_frame_parameter(interp: &mut Interpreter, id: u64, parameter: String, v
     } else {
         frame.parameter_overrides.insert(0, (parameter, value));
     }
-    if menu_bar_lines_changed {
-        // menu-bar-mode stored a new line count; on a live tty the
-        // window tree re-derives under it (frame.c adjust_frame_size).
-        interp.refresh_tty_frame_layout();
+    if menu_bar_lines_changed && frame.tty_sized {
+        let menu = frame
+            .parameter_overrides
+            .iter()
+            .find(|(key, _)| key == "menu-bar-lines")
+            .and_then(|(_, value)| value.as_integer().ok())
+            .unwrap_or(0)
+            .clamp(0, 1);
+        let tab = frame
+            .parameter_overrides
+            .iter()
+            .find(|(key, _)| key == "tab-bar-lines")
+            .and_then(|(_, value)| value.as_integer().ok())
+            .unwrap_or(0)
+            .clamp(0, 1);
+        frame.text_height = frame.height - menu - tab;
+        interp.resize_frame_window_records_for(id);
     }
 }
 
@@ -223,7 +236,7 @@ define_dispatch!(
         interp: &mut Interpreter,
         name: &str,
         args: &[Value],
-        _env: &mut Env,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         match name {
             "selected-frame" | "last-nonminibuffer-frame" => {
@@ -279,16 +292,24 @@ define_dispatch!(
             }
             "frame-parameter" => {
                 need_args(name, args, 2)?;
-                let id = decode_live_frame(interp, args.first(), true)?;
+                let id = decode_frame(interp, args.first(), true, false)?;
                 let parameter = args[1]
                     .as_symbol()
                     .map_err(|_| wrong_type_argument("symbolp", args[1].clone()))?;
-                Ok(frame_parameter_value(interp, id, parameter))
+                Ok(if interp.frame_is_live(id) {
+                    frame_parameter_value(interp, id, parameter)
+                } else {
+                    Value::Nil
+                })
             }
             "frame-parameters" => {
                 need_arg_range(name, args, 0, 1)?;
-                let id = decode_live_frame(interp, args.first(), true)?;
-                Ok(frame_parameters_value(interp, id))
+                let id = decode_frame(interp, args.first(), true, false)?;
+                Ok(if interp.frame_is_live(id) {
+                    frame_parameters_value(interp, id)
+                } else {
+                    Value::Nil
+                })
             }
             "modify-frame-parameters" => {
                 need_args(name, args, 2)?;
@@ -351,7 +372,19 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 4)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let size = check_frame_size(&args[1])?;
-                if id == interp.selected_frame_id {
+                if interp
+                    .frame_state(id)
+                    .expect("decoded frame has state")
+                    .tty_sized
+                {
+                    let frame = interp.frame_state(id).expect("decoded frame has state");
+                    let (width, height) = if name == "set-frame-width" {
+                        (size, frame.height)
+                    } else {
+                        (frame.width, size)
+                    };
+                    interp.resize_terminal_frames(id, width, height);
+                } else if id == interp.selected_frame_id {
                     if name == "set-frame-width" {
                         interp.set_frame_width(size);
                     } else {
@@ -365,7 +398,13 @@ define_dispatch!(
                 let id = decode_live_frame(interp, args.first(), true)?;
                 let width = check_frame_size(&args[1])?;
                 let height = check_frame_size(&args[2])?;
-                if id == interp.selected_frame_id {
+                if interp
+                    .frame_state(id)
+                    .expect("decoded frame has state")
+                    .tty_sized
+                {
+                    interp.resize_terminal_frames(id, width, height);
+                } else if id == interp.selected_frame_id {
                     interp.set_frame_width(width);
                     interp.set_frame_height(height);
                 }
@@ -395,19 +434,6 @@ define_dispatch!(
                 decode_live_frame(interp, args.first(), true)?;
                 Ok(Value::float(1.0))
             }
-            "frame-windows-min-size" => {
-                need_arg_range(name, args, 0, 4)?;
-                decode_live_frame(interp, args.first(), true)?;
-                let horizontal = args.get(1).is_some_and(Value::is_truthy);
-                let pixelwise = args.get(3).is_some_and(Value::is_truthy);
-                Ok(Value::Integer(if horizontal {
-                    10
-                } else if pixelwise {
-                    5
-                } else {
-                    8
-                }))
-            }
             "frame-parent" => {
                 need_arg_range(name, args, 0, 1)?;
                 decode_live_frame(interp, args.first(), true)?;
@@ -422,15 +448,49 @@ define_dispatch!(
             "next-frame" | "previous-frame" => {
                 need_arg_range(name, args, 0, 2)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                Ok(frame_value(id))
+                let terminal = interp
+                    .frame_state(id)
+                    .expect("decoded frame has state")
+                    .terminal_id;
+                let mut ids: Vec<_> = interp
+                    .frame_states
+                    .iter()
+                    .filter(|frame| interp.frame_is_live(frame.id) && frame.terminal_id == terminal)
+                    .map(|frame| frame.id)
+                    .collect();
+                if name == "previous-frame" {
+                    ids.reverse();
+                }
+                if let Some(index) = ids.iter().position(|frame| *frame == id) {
+                    ids.rotate_left(index);
+                }
+                let next = ids
+                    .iter()
+                    .cycle()
+                    .skip(1)
+                    .take(ids.len())
+                    .copied()
+                    .find(|candidate| {
+                        frame_parameter_value(interp, *candidate, "no-other-frame").is_nil()
+                            && match args.get(1) {
+                                Some(Value::Record(window)) => {
+                                    interp
+                                        .frame_state(*candidate)
+                                        .expect("decoded frame has state")
+                                        .minibuffer_window_id
+                                        == *window
+                                        || interp.window_frame_id(*window) == Some(*candidate)
+                                }
+                                _ => true,
+                            }
+                    })
+                    .unwrap_or(id);
+                Ok(frame_value(next))
             }
             "select-frame" => {
                 need_arg_range(name, args, 1, 2)?;
                 let id = decode_live_frame(interp, args.first(), false)?;
-                if id != interp.selected_frame_id {
-                    interp.old_selected_frame_id = interp.selected_frame_id;
-                    interp.selected_frame_id = id;
-                }
+                select_frame(interp, id, args.get(1).is_some_and(Value::is_truthy), env)?;
                 Ok(frame_value(id))
             }
             "handle-switch-frame" => {
@@ -447,26 +507,25 @@ define_dispatch!(
                 if !interp.frame_is_live(id) {
                     return Ok(Value::Nil);
                 }
+                select_frame(interp, id, false, env)?;
                 Ok(frame_value(id))
             }
             "make-terminal-frame" => {
                 need_args(name, args, 1)?;
-                args[0]
-                    .to_vec()
-                    .map_err(|_| wrong_type_argument("listp", args[0].clone()))?;
-                Err(LispError::Signal("Unknown terminal type".into()))
+                make_terminal_frame(interp, &args[0], env)
             }
             "delete-frame" => {
                 need_arg_range(name, args, 0, 2)?;
-                decode_live_frame(interp, args.first(), true)?;
-                Err(LispError::Signal(
-                    if args.get(1).is_some_and(Value::is_truthy) {
-                        "Attempt to delete the only frame"
-                    } else {
-                        "Attempt to delete the sole visible or iconified frame"
-                    }
-                    .into(),
-                ))
+                let id = decode_frame(interp, args.first(), true, false)?;
+                delete_frame(
+                    interp,
+                    id,
+                    args.get(1).is_some_and(Value::is_truthy),
+                    args.get(1)
+                        .is_some_and(|value| value.as_symbol().ok() == Some("noelisp")),
+                    env,
+                )?;
+                Ok(Value::Nil)
             }
             "mouse-position" | "mouse-pixel-position" => {
                 need_args(name, args, 0)?;
@@ -477,19 +536,13 @@ define_dispatch!(
                 let id = decode_live_frame(interp, args.first(), false)?;
                 check_frame_size(&args[1])?;
                 check_frame_size(&args[2])?;
-                if id != interp.selected_frame_id {
-                    interp.old_selected_frame_id = interp.selected_frame_id;
-                    interp.selected_frame_id = id;
-                }
+                select_frame(interp, id, false, env)?;
                 Ok(Value::Nil)
             }
             "raise-frame" => {
                 need_arg_range(name, args, 0, 1)?;
                 let id = decode_live_frame(interp, args.first(), true)?;
-                if id != interp.selected_frame_id {
-                    interp.old_selected_frame_id = interp.selected_frame_id;
-                    interp.selected_frame_id = id;
-                }
+                select_frame(interp, id, false, env)?;
                 Ok(Value::Nil)
             }
             "lower-frame" => {
@@ -627,3 +680,206 @@ define_dispatch!(
         }
     }
 );
+
+fn make_terminal_frame(
+    interp: &mut Interpreter,
+    parameters: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let entries = parameters.to_vec()?;
+    let parameter = |name: &str| {
+        entries.iter().find_map(|entry| {
+            let (key, value) = entry.cons_values()?;
+            (key.as_symbol().ok() == Some(name)).then_some(value)
+        })
+    };
+    let terminal_id = if let Some(value) = parameter("terminal") {
+        interp
+            .decode_terminal_id(&value)
+            .ok_or_else(|| wrong_type_argument("terminal-live-p", value))?
+    } else {
+        // frame.c:get_future_frame_param: supplied alist, selected frame
+        // parameter alist, then that frame's terminal. Non-strings mean nil.
+        let future = |name: &str| {
+            parameter(name)
+                .or_else(|| interp.frame_parameter_override(name))
+                .map(|value| string_like(&value).map(|s| s.text))
+                .unwrap_or_else(|| {
+                    let terminal = interp.terminal_state(interp.selected_terminal_id())?;
+                    if name == "tty" {
+                        terminal.kind.as_ref().map(|_| terminal.name.clone())
+                    } else {
+                        terminal.kind.clone()
+                    }
+                })
+        };
+        let tty = future("tty").unwrap_or_else(|| "/dev/tty".into());
+        let kind =
+            future("tty-type").ok_or_else(|| LispError::Signal("Unknown terminal type".into()))?;
+        interp.open_tty_terminal(&tty, &kind)?
+    };
+    let id = interp.new_terminal_frame(terminal_id);
+    let terminal = interp
+        .terminal_state(terminal_id)
+        .expect("decoded terminal has state");
+    let tty = Value::string(&terminal.name);
+    let kind = terminal
+        .kind
+        .as_deref()
+        .map(Value::string)
+        .unwrap_or(Value::Nil);
+    // Fmodify_frame_parameters processes the alist in reverse so its first
+    // occurrence wins. Terminal and minibuffer identity come from creation.
+    for entry in entries.into_iter().rev() {
+        let (key, value) = entry
+            .cons_values()
+            .ok_or_else(|| wrong_type_argument("consp", entry.clone()))?;
+        let name = key
+            .as_symbol()
+            .map_err(|_| wrong_type_argument("symbolp", key.clone()))?;
+        if !matches!(name, "minibuffer" | "tty" | "tty-type") {
+            store_frame_parameter(interp, id, name.to_owned(), value);
+        }
+    }
+    for (key, value) in [("minibuffer", Value::T), ("tty", tty), ("tty-type", kind)] {
+        store_frame_parameter(interp, id, key.into(), value);
+    }
+    let _ = env;
+    Ok(Value::Frame(id))
+}
+
+pub(super) fn select_frame(
+    interp: &mut Interpreter,
+    id: u64,
+    norecord: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if id == interp.selected_frame_id {
+        return Ok(());
+    }
+    let window = interp
+        .frame_state(id)
+        .expect("decoded frame has state")
+        .selected_window_id;
+    super::call(
+        interp,
+        "select-window",
+        &[
+            Value::Record(window),
+            if norecord { Value::T } else { Value::Nil },
+        ],
+        env,
+    )?;
+    Ok(())
+}
+
+pub(super) fn deletion_hook(
+    interp: &mut Interpreter,
+    name: &str,
+    target: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    interp
+        .safe_funcall(
+            Value::symbol("run-hook-with-args"),
+            &[Value::symbol(name), target],
+            env,
+        )
+        .map(|_| ())
+}
+
+pub(super) fn delete_frame(
+    interp: &mut Interpreter,
+    id: u64,
+    force: bool,
+    noelisp: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if !interp.frame_state(id).is_some_and(|frame| frame.live) {
+        return Ok(());
+    }
+    let check = |interp: &Interpreter| {
+        if !noelisp
+            && !interp
+                .frame_states
+                .iter()
+                .any(|frame| frame.id != id && interp.frame_is_live(frame.id))
+        {
+            Err(LispError::Signal(
+                if force {
+                    "Attempt to delete the only frame"
+                } else {
+                    "Attempt to delete the sole visible or iconified frame"
+                }
+                .into(),
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    check(interp)?;
+    if noelisp {
+        interp.pending_funcalls.push(Value::list([
+            Value::symbol("run-hook-with-args"),
+            Value::symbol("delete-frame-functions"),
+            Value::Frame(id),
+        ]));
+    } else {
+        deletion_hook(interp, "delete-frame-functions", Value::Frame(id), env)?;
+    }
+    if !interp.frame_state(id).is_some_and(|frame| frame.live) {
+        return Ok(());
+    }
+    check(interp)?;
+    let terminal_id = interp
+        .frame_state(id)
+        .expect("decoded frame has state")
+        .terminal_id;
+    if id == interp.selected_frame_id {
+        let replacement = interp
+            .frame_states
+            .iter()
+            .find(|frame| {
+                frame.id != id && interp.frame_is_live(frame.id) && frame.terminal_id == terminal_id
+            })
+            .or_else(|| {
+                interp
+                    .frame_states
+                    .iter()
+                    .find(|frame| frame.id != id && interp.frame_is_live(frame.id))
+            })
+            .map(|frame| frame.id);
+        if let Some(replacement) = replacement {
+            select_frame(interp, replacement, false, env)?;
+        }
+    }
+    interp.retire_frame(id);
+    if !noelisp
+        && !interp
+            .frame_states
+            .iter()
+            .any(|frame| frame.live && frame.terminal_id == terminal_id)
+    {
+        super::call(
+            interp,
+            "delete-terminal",
+            &[Value::Terminal(terminal_id), Value::T],
+            env,
+        )?;
+    }
+    if noelisp {
+        interp.pending_funcalls.push(Value::list([
+            Value::symbol("run-hook-with-args"),
+            Value::symbol("after-delete-frame-functions"),
+            Value::Frame(id),
+        ]));
+    } else {
+        deletion_hook(
+            interp,
+            "after-delete-frame-functions",
+            Value::Frame(id),
+            env,
+        )?;
+    }
+    Ok(())
+}

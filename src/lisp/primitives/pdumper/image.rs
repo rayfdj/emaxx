@@ -32,10 +32,10 @@ pub(crate) fn executable_fingerprint() -> &'static [u8; FINGERPRINT_LEN] {
     static FINGERPRINT: OnceLock<[u8; FINGERPRINT_LEN]> = OnceLock::new();
     FINGERPRINT.get_or_init(|| {
         use sha2::Digest;
-        let bytes = std::env::current_exe()
-            .ok()
-            .and_then(|path| std::fs::read(path).ok())
-            .unwrap_or_default();
+        // A failed read must never give unrelated binaries the fingerprint
+        // of an empty byte string and thereby bypass image validation.
+        let executable = std::env::current_exe().expect("locate executable for dump fingerprint");
+        let bytes = std::fs::read(executable).expect("read executable for dump fingerprint");
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let digest = hasher.finalize();

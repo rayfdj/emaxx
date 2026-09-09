@@ -341,7 +341,9 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let value = numeric_to_f64(interp, &args[0])?;
-                let result = if let Some(base) = args.get(1) {
+                // floatfns.c:Flog treats a nil BASE as the natural log.
+                // Native fixed-arity calls include this optional nil slot.
+                let result = if let Some(base) = args.get(1).filter(|base| !base.is_nil()) {
                     let base = numeric_to_f64(interp, base)?;
                     if base == 10.0 {
                         value.log10()
