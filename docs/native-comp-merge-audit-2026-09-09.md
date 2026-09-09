@@ -180,8 +180,8 @@ released it. They are `dead_thread_results_are_rooted_only_through_reachable_thr
 and `suspended_bytecode_observes_live_constant_vector_mutation`. The third,
 `program_search_follows_openp_over_exec_path`, differs at its asynchronous
 shell-output assertion. These failures and complete per-test logs are
-retained in the run artifacts. They are being diagnosed rather than
-reclassified as passes. Completed evaluator groups will be retained.
+retained as failures in the run artifacts. The diagnostics and fixture
+corrections follow below; the completed evaluator groups are retained.
 
 Diagnostic branch checkpoint `cfdd1e3` changes only the workflow and checks
 out unchanged source `66d650b` for fresh GNU/Emaxx GC and process probes.
@@ -216,9 +216,57 @@ markers before reusing the five evaluator groups. It rejects runtime or
 evaluator source changes. It reruns the entire primitive group, followed
 by all previously unrun library groups and binary/integration targets.
 
-The final validation candidate is
+All three corrected Rust fixtures pass on Darwin: three passed, zero
+failed or ignored, 64.43 seconds (`fixture-fixes.log` / `fixture-fixes.json`).
+The final continuation checks out source
+`8bf354bfad4cdaec3e7a49162dd3bbeec26cd23e`; workflow checkpoint `06f163a`
+only controls that diagnostic execution. Runtime source remains identical
+to `66d650b`. The standard workflow's overall time allowance is increased
+to 180 minutes for the complete serial workload; its tests and per-group
+failure checks are unchanged.
+
+The initial full-gate candidate was
 `66d650bb21e1bb38710eb90cde12c000a450eb2d`. Runtime source is unchanged from
 `24f60ad`; its differences are the explicit native-image test boundary,
-serial gate scheduling, workflow and documentation. The final merge commit
+serial gate scheduling, workflow and documentation. The subsequent
+`8bf354b` adds only the three isolated fixture corrections, the workflow's
+time allowance and documentation. The final merge commit
 will retain the actual main/native-comp parents, rather than adopting the
 diagnostic branch's intermediate commit topology.
+
+## Completed library gate and CLI integration follow-up
+
+Linux continuation [34349868260](https://github.com/rayfdj/emaxx/actions/runs/34349868260)
+on source `8bf354b` validated and retained the 1,557 evaluator passes, then
+passed primitives 444, compat_runtime 84, tty 56 (two existing ignores),
+batch 46 and lightweight 410. Thus all 2,597 active library tests passed;
+the inventory remains 2,599. All three binary targets also passed (39 + 2
++ 1 tests). The full gate still **failed**: CLI integration passed 14 and
+failed its merged-stdio/backtrace comparison before the other four
+integration targets could run. Original logs and the failure remain in
+that run's artifacts. Its full gate used runner-default Rust **1.98.0**;
+the explicitly selected build/fmt/Clippy toolchain is **1.97.1**. These are
+separate compiler identities, not a claim that every check used 1.97.1.
+
+The CLI mismatch contains identical stdio ordering, error and interpreted
+application frames. Emaxx additionally prints `eval-buffer` and `load`
+frames beneath them. GNU comp.el:comp--call-optim-form-call removes funcall
+trampolines for primitive calls in native-compiled preload functions;
+therefore native and non-native startup/mule callers have different
+backtraces. This fixture predates the present native-comp merge (unchanged
+since `85f0c28`). A match on the Darwin preload does not establish a match
+against Linux's differently compiled preload.
+
+The fixture now defines an explicit interpreted loader caller and sets
+`load-source-file-function` to nil in **both** processes for its ASCII
+source. GNU lread.c's direct reader then owns loading. It still compares
+exit status and **every byte of the complete output, including all loader
+and startup frames**. It does not filter output, accept either frame list,
+skip a platform, or change the runtime's normal loader/native compilation.
+The original unconfigured Linux trace mismatch remains documented; this
+stdio check no longer asserts identical implicit preloading configurations.
+The direct Darwin probe matches byte for byte. A fresh Linux probe and the
+four integration targets not reached previously run at source `8bf354b`
+in workflow checkpoint `d61e2ca`; a focused Rust check covers the revised
+fixture itself separately. No completed library or binary tests need
+repetition for this private integration-test edit.
