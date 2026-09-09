@@ -313,3 +313,22 @@ oracle before testing. The product ABI target and generated tables are
 unchanged. No ABI hash is overridden and no byte is excluded from native
 artifact comparison. A fresh reference build and the original complete
 native identity test validate this workflow correction.
+
+Run [34357070323](https://github.com/rayfdj/emaxx/actions/runs/34357070323)
+completed all five package lifecycle tests successfully (749.09 seconds),
+covering archive operations, use-package, VC installation/deletion,
+upgrades/restarts and failures. Its native-thread test failed on the GNU
+side of `nil-signal-roots`: `(1 1)` instead of `(1 0)` before Emaxx's case
+was run. The preceding early-signal and native-worker cases completed.
+This run remains failed; its diagnostic collection does not turn the
+native identity or thread failure into a pass.
+
+The nil-signal fixture now preserves its initial live-thread retention
+observation, clears the sole named thread root, and performs the same
+single release GC after the setup file returns. Both editors receive the
+identical post-load observer, with the original `(1 0)` requirement.
+The change parallels the two previously corrected library GC fixtures;
+it changes only the fixture and integration driver, with no runtime
+change, skip, result normalization or extra GC retry loop. The complete
+six-case native-thread test is rerun on Darwin and Linux. The five
+successful package tests are retained.

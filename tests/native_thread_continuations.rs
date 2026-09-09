@@ -21,35 +21,45 @@ fn thread_suspension_and_signals_match_gnu_with_real_native_code() {
         (
             "early-signal",
             include_str!("fixtures/thread-early-signal.el"),
+            None,
             "(t nil)\n",
         ),
         (
             "native-workers",
             include_str!("fixtures/thread-native-suspension.el"),
+            None,
             "(t 2 (0 0) (1 caught 1) [1 1])\n",
         ),
         (
             "nil-signal-roots",
             include_str!("fixtures/thread-nil-signal-roots.el"),
+            Some(
+                "(progn (garbage-collect) \
+                 (prin1 (list nil-signal-retained (hash-table-count nil-signal-table))) \
+                 (terpri))",
+            ),
             "(1 0)\n",
         ),
         (
             "signal-data-identity",
             include_str!("fixtures/thread-signal-data-identity.el"),
+            None,
             "(t after)\n",
         ),
         (
             "signal-condition-broadcast",
             include_str!("fixtures/thread-signal-condition-broadcast.el"),
+            None,
             "2\n",
         ),
         (
             "signal-caller-boundary",
             include_str!("fixtures/thread-signal-caller-boundary.el"),
+            None,
             "caught\n",
         ),
     ];
-    for (name, program, expected) in cases {
+    for (name, program, observer, expected) in cases {
         let case = work.join(name);
         std::fs::create_dir_all(&case).expect("create contract directory");
         let source = case.join("contract.el");
@@ -63,9 +73,13 @@ fn thread_suspension_and_signals_match_gnu_with_real_native_code() {
             }
             let stdout = root.join("stdout.log");
             let stderr = root.join("stderr.log");
-            let mut child = Command::new(binary)
-                .args(["-Q", "--batch", "-l"])
-                .arg(&source)
+            let mut command = Command::new(binary);
+            command.args(["-Q", "--batch", "-l"]).arg(&source);
+            if let Some(observer) = observer {
+                // Both editors observe GC after their loader frames unwind.
+                command.args(["--eval", observer]);
+            }
+            let mut child = command
                 .env_clear()
                 .env(
                     "PATH",
