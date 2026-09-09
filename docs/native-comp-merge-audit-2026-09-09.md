@@ -332,3 +332,12 @@ it changes only the fixture and integration driver, with no runtime
 change, skip, result normalization or extra GC retry loop. The complete
 six-case native-thread test is rerun on Darwin and Linux. The five
 successful package tests are retained.
+
+The first exact-reference build completed in run
+[34358237060](https://github.com/rayfdj/emaxx/actions/runs/34358237060).
+Its new metadata preflight stopped before native identity because it
+compared the generator's unformatted Rust output directly with the
+rustfmt-formatted committed file (first difference at line 14). The
+workflow now rustfmts generated Rust before the complete byte comparison;
+no metadata field is omitted. The correctly configured GNU build is
+cached and reused by the continuation. This failed preflight is retained.

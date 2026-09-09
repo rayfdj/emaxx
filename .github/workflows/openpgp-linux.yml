@@ -73,6 +73,7 @@ jobs:
         run: |
           rustc +1.97.1 --edition 2024 -O tools/generate_native_subrs.rs -o /tmp/generate-native-subrs
           /tmp/generate-native-subrs ../emacs/src ../emacs/src/emacs /tmp/openpgp-metadata/native-subrs.rs
+          rustfmt +1.97.1 --edition 2024 /tmp/openpgp-metadata/native-subrs.rs
           cmp src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs /tmp/openpgp-metadata/native-subrs.rs
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: rust-cache
