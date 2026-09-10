@@ -193,7 +193,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "external_debugging_output_target",
         "the running process's debug output",
     ),
-    ("native_compiler", "the native units are D14/D15"),
+    (
+        "native_compiler",
+        "the registry is rebuilt by the late relocations (each dumped unit reopened) and the very late ones (each dumped function resolved); the compiler context and the runtime are process state, as comp.c's comp_t and freloc are",
+    ),
     (
         "default_file_modes",
         "emacs.c:init_callproc_1 takes the umask of the new process",

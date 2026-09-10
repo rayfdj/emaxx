@@ -103,8 +103,16 @@ the full gate runs in forty minutes where it took 2h20m, and the frozen
 corpus in an hour where it took 5h41m (7879 / 7883 on the merged tree,
 the four OpenPGP residuals only). Main `08a4004` and then `56dd60a` (its
 validation of the process loader) are merged after checkpoint 16, and
-`EMAXX_FIXTURE_IMAGE_DIR` is the operator's knob for the corpus runs. Next: D14/D15, native units and native subrs in the
-image, the last open rows.
+`EMAXX_FIXTURE_IMAGE_DIR` is the operator's knob for the corpus runs.
+Checkpoint 17 (2026-09-10) closes D14/D15: native compilation units and
+native functions are written and, in the process that loads the image,
+reopened and resolved as pdumper.c's late and very late relocations do;
+the harness image dumps under loadup.el's `load--bin-dest-dir` and
+`load--eln-dest-dir`, so a Darwin startup that loaded native units dumps
+them (the statement above that D14/D15 block ordinary native images is
+superseded; the Darwin run of the three startup controls is the receipt
+still to be taken on that platform). Every row of the dump program is
+closed; the ledger's D14 and D15 rows carry the disclosures.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

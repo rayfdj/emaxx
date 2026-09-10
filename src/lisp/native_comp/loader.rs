@@ -110,6 +110,40 @@ pub(crate) struct DirectNativeFunction {
     pub(crate) max_args: Option<usize>,
 }
 
+/// make_subr's arity fields from `comp--register-subr's MINARG and MAXARG
+/// (MAXARG is `many' or a count; a dynamic function's are the car and cdr
+/// of one cons), and the calling convention they select.
+fn native_arity(
+    dynamic: bool,
+    min_args: i64,
+    max_value: &Value,
+) -> Result<(usize, NativeCallingConvention, Option<usize>), LispError> {
+    let min_args = usize::try_from(min_args)
+        .map_err(|_| super::lisp::native_ice("negative native minimum arity"))?;
+    let (convention, max_args) = match max_value {
+        Value::Integer(maximum) => {
+            let maximum = usize::try_from(*maximum)
+                .map_err(|_| super::lisp::native_ice("negative native maximum arity"))?;
+            native_function_signature(dynamic, maximum)
+        }
+        Value::Symbol(name) if name == "many" => (
+            if dynamic {
+                NativeCallingConvention::Fixed
+            } else {
+                NativeCallingConvention::Many
+            },
+            None,
+        ),
+        other => {
+            return Err(crate::lisp::primitives::wrong_type_argument(
+                "integer-or-many-p",
+                other.clone(),
+            ));
+        }
+    };
+    Ok((min_args, convention, max_args))
+}
+
 fn native_function_signature(
     dynamic: bool,
     maximum: usize,
@@ -138,6 +172,10 @@ pub(crate) struct RegisteredNativeCode {
     units: Vec<Rc<LoadedUnit>>,
     functions: HashMap<u64, NativeFunction>,
     function_names: HashMap<u64, Box<str>>,
+    /// Lisp_Subr.native_c_name: the symbol the function is resolved by in
+    /// its unit, which the portable dumper writes (COLD_OP_NATIVE_SUBR)
+    /// and its loader resolves again (RELOC_NATIVE_SUBR).
+    function_c_names: HashMap<u64, Box<str>>,
 }
 
 impl Default for NativeRegistry {
@@ -168,7 +206,10 @@ impl std::ops::DerefMut for NativeRegistry {
 
 impl NativeRegistry {
     pub(crate) fn is_empty(&self) -> bool {
-        self.units.is_empty() && self.functions.is_empty() && self.function_names.is_empty()
+        self.units.is_empty()
+            && self.functions.is_empty()
+            && self.function_names.is_empty()
+            && self.function_c_names.is_empty()
     }
 
     fn unit(&self, record_id: u64) -> Option<Rc<LoadedUnit>> {
@@ -184,6 +225,10 @@ impl NativeRegistry {
 
     pub(crate) fn function_name(&self, record_id: u64) -> Option<&str> {
         self.function_names.get(&record_id).map(AsRef::as_ref)
+    }
+
+    pub(crate) fn function_c_name(&self, record_id: u64) -> Option<&str> {
+        self.function_c_names.get(&record_id).map(AsRef::as_ref)
     }
 }
 
@@ -1032,29 +1077,7 @@ pub(super) fn register_with_state(
     } else {
         (arguments[2].as_integer()?, arguments[3].clone(), Value::Nil)
     };
-    let min_args = usize::try_from(min_args)
-        .map_err(|_| super::lisp::native_ice("negative native minimum arity"))?;
-    let (convention, max_args) = match max_value {
-        Value::Integer(maximum) => {
-            let maximum = usize::try_from(maximum)
-                .map_err(|_| super::lisp::native_ice("negative native maximum arity"))?;
-            native_function_signature(dynamic, maximum)
-        }
-        Value::Symbol(ref name) if name == "many" => (
-            if dynamic {
-                NativeCallingConvention::Fixed
-            } else {
-                NativeCallingConvention::Many
-            },
-            None,
-        ),
-        other => {
-            return Err(crate::lisp::primitives::wrong_type_argument(
-                "integer-or-many-p",
-                other,
-            ));
-        }
-    };
+    let (min_args, convention, max_args) = native_arity(dynamic, min_args, &max_value)?;
     let Value::Record(unit_record_id) = arguments[6] else {
         return Err(crate::lisp::primitives::wrong_type_argument(
             "native-comp-unit-p",
@@ -1112,6 +1135,9 @@ pub(super) fn register_with_state(
         registry
             .function_names
             .insert(function_record_id, symbol_name.into_boxed_str());
+        registry
+            .function_c_names
+            .insert(function_record_id, c_name.into_boxed_str());
 
         if matches!(kind, RegistrationKind::Lambda) {
             let (lambda_guard, lambda_name_index) = {
@@ -1447,6 +1473,400 @@ pub(crate) fn active_function_target(
 
 pub(crate) fn active_function_name(record_id: u64) -> Option<String> {
     with_active_registry(|registry| registry.function_name(record_id).map(str::to_owned)).flatten()
+}
+
+pub(crate) fn active_function_c_name(record_id: u64) -> Option<String> {
+    with_active_registry(|registry| registry.function_c_name(record_id).map(str::to_owned))
+        .flatten()
+}
+
+/// pdumper.c:dump_do_dump_relocation's `installation_state': whether the
+/// preloaded units are found where an installed Emacs keeps them (the
+/// car of each unit's file pair) or where the build left them (the cdr),
+/// decided once by the first unit.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum InstallationState {
+    #[default]
+    Unknown,
+    LocalBuild,
+    Installed,
+}
+
+fn dump_load_error(message: String) -> LispError {
+    LispError::Signal(message)
+}
+
+/// pdumper.c:dump_do_dump_relocation for RELOC_NATIVE_COMP_UNIT, then
+/// comp.c:load_comp_unit with `loading_dump' true: the unit's file
+/// resolved against the executable's directory, the shared object
+/// opened, the runtime pointers linked, the data relocations filled from
+/// the dumped data vectors (no serialized object is read again, no
+/// top-level code runs), the unit registered.
+pub(super) fn load_dumped_unit(
+    registry: &mut NativeRegistry,
+    runtime: &mut NativeRuntime,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    record_id: u64,
+    execdir: &str,
+    installation_state: &mut InstallationState,
+) -> Result<(), LispError> {
+    let unit = Value::Record(record_id);
+    let file = {
+        let record = interpreter
+            .find_record(record_id)
+            .filter(|record| record.kind == RecordKind::NativeCompUnit)
+            .ok_or_else(|| {
+                dump_load_error("incoherent compilation unit for dump was dumped".into())
+            })?;
+        record.slots.first().cloned().unwrap_or(Value::Nil)
+    };
+    // comp_u->lambda_gc_guard_h = CALLN (Fmake_hash_table, QCtest, Qeq).
+    let lambda_guard = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
+    if let Some(record) = interpreter.find_record_mut(record_id)
+        && let Some(slot) = record.slots.get_mut(2)
+    {
+        *slot = lambda_guard;
+    }
+    if let Some(text) = string_like(&file).map(|string| string.text) {
+        return Err(dump_load_error(format!(
+            "trying to load incoherent dumped eln file {text}"
+        )));
+    }
+    let Value::Cons(_) = file else {
+        return Err(dump_load_error(
+            "incoherent compilation unit for dump was dumped".into(),
+        ));
+    };
+    let relative = |value: Value| -> Result<String, LispError> {
+        string_like(&value)
+            .map(|string| string.text)
+            .ok_or_else(|| {
+                dump_load_error("incoherent compilation unit for dump was dumped".into())
+            })
+    };
+    let cu_file1 = relative(file.car()?)?;
+    let cu_file2 = relative(file.cdr()?)?;
+    // Check just once if this is a local build or Emacs was installed.
+    let eln_fname = if *installation_state == InstallationState::Unknown {
+        let installed = format!("{execdir}{cu_file1}");
+        let eln_fname = if Path::new(&installed).exists() {
+            *installation_state = InstallationState::Installed;
+            installed
+        } else {
+            *installation_state = InstallationState::LocalBuild;
+            format!("{execdir}{cu_file2}")
+        };
+        fixup_eln_load_path(interpreter, environment, &eln_fname)?;
+        eln_fname
+    } else if *installation_state == InstallationState::Installed {
+        format!("{execdir}{cu_file1}")
+    } else {
+        format!("{execdir}{cu_file2}")
+    };
+    let eln_file = Value::string(&eln_fname);
+    if let Some(record) = interpreter.find_record_mut(record_id)
+        && let Some(slot) = record.slots.first_mut()
+    {
+        *slot = eln_file.clone();
+    }
+    let library = match unsafe { Library::new(Path::new(&eln_fname)) } {
+        Ok(library) => library,
+        Err(error) => {
+            eprintln!("Error using execdir {execdir}:");
+            return Err(dump_load_error(error.to_string()));
+        }
+    };
+
+    // load_comp_unit (comp_u, true, false).
+    let saved_unit = unsafe { data_symbol::<NativeWord>(&library, COMP_UNIT_SYM) }
+        .map_err(|_| inconsistent(&eln_file))?;
+    if saved_unit.is_null() {
+        return Err(inconsistent(&eln_file));
+    }
+    // eassert (!(loading_dump && comp_u->loaded_once)): a unit the process
+    // already holds cannot be the one the image describes.
+    if unsafe { std::ptr::read(saved_unit) } != 0 {
+        return Err(dump_load_error(format!(
+            "dumped compilation unit {eln_fname} is already loaded in this process"
+        )));
+    }
+    let unit_word = runtime.encode_relocations(std::slice::from_ref(&unit))?[0];
+    unsafe { std::ptr::write(saved_unit, unit_word) };
+    let mut saved_unit_rollback = SavedUnitRollback::new(saved_unit);
+    for symbol in [
+        CURRENT_THREAD_RELOC_SYM,
+        F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM,
+        PURE_RELOC_SYM,
+        DATA_RELOC_SYM,
+        DATA_RELOC_IMPURE_SYM,
+        DATA_RELOC_EPHEMERAL_SYM,
+        FUNC_LINK_TABLE_SYM,
+    ] {
+        let pointer =
+            unsafe { data_symbol::<u8>(&library, symbol) }.map_err(|_| inconsistent(&eln_file))?;
+        if pointer.is_null() {
+            return Err(inconsistent(&eln_file));
+        }
+    }
+    unsafe { function_symbol(&library, TOP_LEVEL_RUN_SYM) }.map_err(|_| inconsistent(&eln_file))?;
+    let abi_hash = unsafe {
+        read_static_object(
+            &library,
+            &eln_file,
+            LINK_TABLE_HASH_SYM,
+            interpreter,
+            environment,
+        )?
+    };
+    let expected_hash = interpreter
+        .lookup_var("comp-abi-hash", environment)
+        .unwrap_or(Value::Nil);
+    if !super::lisp::call_c_primitive(
+        interpreter,
+        environment,
+        "string-equal",
+        &[abi_hash, expected_hash],
+    )?
+    .is_truthy()
+    {
+        return Err(inconsistent(&eln_file));
+    }
+    unsafe {
+        initialize_pointer(
+            &library,
+            CURRENT_THREAD_RELOC_SYM,
+            runtime.current_thread_relocation(),
+        )
+        .map_err(|_| inconsistent(&eln_file))?;
+        initialize_pointer(
+            &library,
+            F_SYMBOLS_WITH_POS_ENABLED_RELOC_SYM,
+            interpreter.symbols_with_positions_relocation(),
+        )
+        .map_err(|_| inconsistent(&eln_file))?;
+        initialize_pointer(&library, PURE_RELOC_SYM, runtime.pure_relocation())
+            .map_err(|_| inconsistent(&eln_file))?;
+        initialize_pointer(&library, FUNC_LINK_TABLE_SYM, runtime.function_link_table())
+            .map_err(|_| inconsistent(&eln_file))?;
+    }
+    // Imported data: the dumped data_vec and data_impure_vec, not the
+    // serialized objects (`if (!loading_dump)' skips load_static_obj).
+    let (optimization_qualities, data, impure_data) = {
+        let record = interpreter
+            .find_record(record_id)
+            .expect("dumped native compilation unit remains live");
+        (
+            record.slots.get(1).cloned().unwrap_or(Value::Nil),
+            record.slots.get(5).cloned().unwrap_or(Value::Nil),
+            record.slots.get(6).cloned().unwrap_or(Value::Nil),
+        )
+    };
+    let data_values = vector_values(&data)?;
+    let impure_values = vector_values(&impure_data)?;
+    let data_relocations =
+        unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
+    let impure_relocations =
+        unsafe { fill_relocations(&library, DATA_RELOC_IMPURE_SYM, runtime, &impure_values)? };
+    runtime.register_permanent_root_range(data_relocations, data_values.len());
+    runtime.register_permanent_root_range(impure_relocations, impure_values.len());
+    registry.units.push(Rc::new(LoadedUnit {
+        library,
+        record_id,
+        loaded_once: Cell::new(false),
+        load_ongoing: Cell::new(false),
+        _data: data,
+        _impure_data: impure_data,
+        _optimization_qualities: optimization_qualities,
+        data_relocations,
+        data_relocation_count: data_values.len(),
+        impure_relocations,
+        impure_relocation_count: impure_values.len(),
+    }));
+    runtime.register_permanent_root_range(saved_unit, 1);
+    saved_unit_rollback.disarm();
+    // comp.c:register_native_comp_unit.
+    let loaded_units = interpreter
+        .lookup_var("comp-loaded-comp-units-h", environment)
+        .unwrap_or(Value::Nil);
+    super::lisp::call_c_primitive(
+        interpreter,
+        environment,
+        "puthash",
+        &[eln_file, unit, loaded_units],
+    )?;
+    Ok(())
+}
+
+/// comp.c:fixup_eln_load_path: the system eln-cache directory, the last
+/// entry of `native-comp-eln-load-path', is the directory one level (two
+/// for a preloaded unit) above the unit's own.
+fn fixup_eln_load_path(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    eln_filename: &str,
+) -> Result<(), LispError> {
+    let load_path = interpreter
+        .lookup_var("native-comp-eln-load-path", environment)
+        .unwrap_or(Value::Nil);
+    let mut last_cell = Value::Nil;
+    let mut tail = load_path;
+    while let Value::Cons(_) = tail {
+        last_cell = tail.clone();
+        tail = tail.cdr()?;
+    }
+    fn directory(
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        value: &Value,
+    ) -> Result<Value, LispError> {
+        super::lisp::call_c_primitive(
+            interpreter,
+            environment,
+            "file-name-directory",
+            std::slice::from_ref(value),
+        )
+    }
+    let mut eln_cache_sys = directory(interpreter, environment, &Value::string(eln_filename))?;
+    let preloaded =
+        string_like(&eln_cache_sys).is_some_and(|string| string.text.ends_with("/preloaded/"));
+    // One or two directories up...
+    for _ in 0..if preloaded { 2 } else { 1 } {
+        let shorter = super::lisp::call_c_primitive(
+            interpreter,
+            environment,
+            "substring-no-properties",
+            &[eln_cache_sys, Value::Nil, Value::Integer(-1)],
+        )?;
+        eln_cache_sys = directory(interpreter, environment, &shorter)?;
+    }
+    if let Value::Cons(_) = last_cell {
+        last_cell.set_car(eln_cache_sys)?;
+    }
+    Ok(())
+}
+
+/// The names the portable dumper keeps for a native function: GNU's
+/// Lisp_Subr.symbol_name and native_c_name, both C strings.
+pub(crate) struct DumpedNativeFunction {
+    pub(crate) record_id: u64,
+    pub(crate) name: String,
+    pub(crate) c_name: String,
+}
+
+/// pdumper.c:dump_do_dump_relocation for RELOC_NATIVE_SUBR: the function
+/// pointer resolved by its C name in the unit's shared object; an
+/// anonymous lambda additionally replaces its `lambda-fixup' impure
+/// relocation and enters the unit's GC guard.
+pub(super) fn resolve_dumped_function(
+    registry: &mut NativeRegistry,
+    runtime: &mut NativeRuntime,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    function: &DumpedNativeFunction,
+) -> Result<(), LispError> {
+    let record_id = function.record_id;
+    let (min_args, max_value, dynamic, unit_record_id) = {
+        let record = interpreter
+            .find_record(record_id)
+            .filter(|record| record.kind == RecordKind::NativeCompiledFunction)
+            .ok_or_else(|| dump_load_error("dumped native function record is missing".into()))?;
+        let unit_record_id = match record.slots.get(8) {
+            Some(Value::Record(id)) => *id,
+            _ => {
+                return Err(dump_load_error(
+                    "dumped native function has no compilation unit".into(),
+                ));
+            }
+        };
+        (
+            record
+                .slots
+                .get(1)
+                .cloned()
+                .unwrap_or(Value::Nil)
+                .as_integer()?,
+            record.slots.get(2).cloned().unwrap_or(Value::Nil),
+            record.slots.get(10).is_some_and(Value::is_truthy),
+            unit_record_id,
+        )
+    };
+    let unit_file = interpreter
+        .find_record(unit_record_id)
+        .and_then(|record| record.slots.first())
+        .and_then(|file| string_like(file).map(|string| string.text))
+        .unwrap_or_default();
+    let unit = registry
+        .unit(unit_record_id)
+        .ok_or_else(|| dump_load_error(format!("NULL handle in compilation unit {unit_file}")))?;
+    let c_name = function.c_name.as_str();
+    let target = unsafe { function_symbol(&unit.library, c_name) }.map_err(|_| {
+        dump_load_error(format!(
+            "can't find function \"{c_name}\" in compilation unit {unit_file}"
+        ))
+    })?;
+    let (min_args, convention, max_args) = native_arity(dynamic, min_args, &max_value)?;
+    registry.functions.insert(
+        record_id,
+        NativeFunction {
+            target,
+            convention,
+            min_args,
+            max_args,
+            dynamic,
+        },
+    );
+    registry
+        .function_names
+        .insert(record_id, function.name.clone().into_boxed_str());
+    registry
+        .function_c_names
+        .insert(record_id, function.c_name.clone().into_boxed_str());
+
+    let (lambda_guard, lambda_name_index) = {
+        let record = interpreter
+            .find_record(unit_record_id)
+            .filter(|record| record.kind == RecordKind::NativeCompUnit)
+            .ok_or_else(|| dump_load_error("dumped native compilation unit is missing".into()))?;
+        (
+            record.slots.get(2).cloned().unwrap_or(Value::Nil),
+            record.slots.get(3).cloned().unwrap_or(Value::Nil),
+        )
+    };
+    let lambda_data_index = super::lisp::call_c_primitive(
+        interpreter,
+        environment,
+        "gethash",
+        &[Value::string(c_name), lambda_name_index, Value::Nil],
+    )?;
+    if lambda_data_index.is_truthy() {
+        // This is an anonymous lambda.  We must fixup d_reloc_imp so the
+        // lambda can be referenced by code.
+        let index = usize::try_from(lambda_data_index.as_integer()?)
+            .map_err(|_| super::lisp::native_ice("negative lambda relocation index"))?;
+        if index >= unit.impure_relocation_count {
+            return Err(super::lisp::native_ice(
+                "native lambda relocation index is out of range",
+            ));
+        }
+        let current = runtime
+            .decode_relocation(unsafe { std::ptr::read(unit.impure_relocations.add(index)) })?;
+        if current.as_symbol().ok() != Some("lambda-fixup") {
+            return Err(super::lisp::native_ice(
+                "dumped lambda relocation is not a lambda-fixup placeholder",
+            ));
+        }
+        let subr = Value::Record(record_id);
+        let word = runtime.encode_relocations(std::slice::from_ref(&subr))?[0];
+        unsafe { std::ptr::write(unit.impure_relocations.add(index), word) };
+        super::lisp::call_c_primitive(
+            interpreter,
+            environment,
+            "puthash",
+            &[subr, Value::T, lambda_guard],
+        )?;
+    }
+    Ok(())
 }
 
 /// comp.c:native_function_doc's lazy static-object load.  The returned

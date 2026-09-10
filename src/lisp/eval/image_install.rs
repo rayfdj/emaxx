@@ -91,6 +91,20 @@ impl Interpreter {
         Ok(())
     }
 
+    /// editfns.c:init_editfns: the user names of this process, computed
+    /// once and kept in their variables (Vuser_real_login_name from the
+    /// real uid's account, Vuser_login_name from LOGNAME or USER, else
+    /// the effective uid's account, Vuser_full_name from NAME, else the
+    /// account the login name claims, with "unknown" where GNU answers
+    /// it).  emacs.c:main runs it in every process, dumped or not; a
+    /// name looked up again on every reference answered differently when
+    /// one account lookup failed under load (the 2026-09-10 gate).
+    pub(crate) fn init_editfns(&mut self) {
+        for (name, value) in editfns_identity() {
+            self.set_global_binding(name, value);
+        }
+    }
+
     /// emacs.c:main after load_pdump: the process state the image does
     /// not carry is set from the new process.  `Interpreter::new' takes
     /// these from the process once as GNU's `init_*' functions do; after
@@ -110,6 +124,9 @@ impl Interpreter {
         };
         self.set_global_binding("initial-environment", environment());
         self.set_global_binding("process-environment", environment());
+        // editfns.c:init_editfns, which emacs.c:main runs in every process
+        // after load_pdump: the user names are this process's.
+        self.init_editfns();
         // buffer.c:init_buffer selects *scratch* and initializes its and
         // the first minibuffer's directory from this process's cwd. Other
         // saved buffers retain their own directories.
@@ -311,6 +328,31 @@ impl Interpreter {
             _ => {}
         }
     }
+}
+
+/// init_editfns's three values, in the order it computes them.
+pub(crate) fn editfns_identity() -> [(&'static str, Value); 3] {
+    let real_login = primitives::current_real_user_login_name().unwrap_or_else(|| "unknown".into());
+    let login = primitives::current_user_login_name().unwrap_or_else(|| "unknown".into());
+    // If the user name claimed in the environment vars differs from the
+    // real uid, use the claimed name to find the full name.
+    let full_name = std::env::var("NAME")
+        .ok()
+        .or_else(|| {
+            if login == real_login {
+                primitives::user_full_name_from_login(&login)
+            } else {
+                primitives::current_user_id()
+                    .ok()
+                    .and_then(primitives::user_full_name_from_uid)
+            }
+        })
+        .unwrap_or_else(|| "unknown".into());
+    [
+        ("user-real-login-name", Value::String(real_login.into())),
+        ("user-login-name", Value::String(login.into())),
+        ("user-full-name", Value::String(full_name.into())),
+    ]
 }
 
 #[cfg(test)]

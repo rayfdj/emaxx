@@ -612,12 +612,12 @@ impl Interpreter {
             )),
             "user-login-name" => Some(Value::String(
                 primitives::current_user_login_name()
-                    .unwrap_or_else(|| "user".into())
+                    .unwrap_or_else(|| "unknown".into())
                     .into(),
             )),
             "user-real-login-name" => Some(Value::String(
                 primitives::current_real_user_login_name()
-                    .unwrap_or_else(|| "user".into())
+                    .unwrap_or_else(|| "unknown".into())
                     .into(),
             )),
             // sysdep.c initializes this dumped variable from the same host
@@ -626,7 +626,7 @@ impl Interpreter {
             "user-full-name" => Some(Value::String(
                 primitives::current_user_full_name()
                     .or_else(primitives::current_user_login_name)
-                    .unwrap_or_else(|| "user".into())
+                    .unwrap_or_else(|| "unknown".into())
                     .into(),
             )),
             "default-directory" => Some(Value::String(primitives::default_directory().into())),

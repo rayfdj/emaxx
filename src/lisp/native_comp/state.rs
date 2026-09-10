@@ -179,6 +179,46 @@ impl NativeCompilerState {
         self.registry.function_name(record_id)
     }
 
+    pub(crate) fn function_c_name(&self, record_id: u64) -> Option<&str> {
+        self.registry.function_c_name(record_id)
+    }
+
+    /// The image loader's LATE_RELOCS and VERY_LATE_RELOCS phases: every
+    /// dumped compilation unit reopened and linked, then every dumped
+    /// native function resolved in its unit.
+    pub(crate) fn load_dumped_code(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        units: &[u64],
+        functions: &[loader::DumpedNativeFunction],
+    ) -> Result<(), LispError> {
+        let execdir = crate::lisp::primitives::current_invocation_directory()
+            .unwrap_or_else(crate::lisp::primitives::default_directory);
+        let mut installation_state = loader::InstallationState::default();
+        for &record_id in units {
+            loader::load_dumped_unit(
+                &mut self.registry,
+                &mut self.runtime,
+                interp,
+                env,
+                record_id,
+                &execdir,
+                &mut installation_state,
+            )?;
+        }
+        for function in functions {
+            loader::resolve_dumped_function(
+                &mut self.registry,
+                &mut self.runtime,
+                interp,
+                env,
+                function,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn unit_documentation(
         &self,
         interp: &mut Interpreter,
