@@ -980,10 +980,26 @@ define_dispatch!(
             }
             "pdumper-stats" => {
                 need_args(name, args, 0)?;
-                // GNU returns nil when the running process was not restored from
-                // a portable dump.  Emaxx initializes its Rust/Lisp state
-                // directly and therefore has no dump file or restore time.
-                Ok(Value::Nil)
+                // Fpdumper_stats: nil unless this process was restored from a
+                // dump; then the alist of the load time and the expanded file
+                // name.
+                let Some(record) = interp.pdumper_load_record().cloned() else {
+                    return Ok(Value::Nil);
+                };
+                let file_name = crate::lisp::primitives::system::expand_file_name_runtime(
+                    interp,
+                    env,
+                    &record.filename,
+                    None,
+                )?;
+                Ok(Value::list([
+                    Value::cons(Value::symbol("dumped-with-pdumper"), Value::T),
+                    Value::cons(
+                        Value::symbol("load-time"),
+                        Value::float(record.load_time.as_secs_f64()),
+                    ),
+                    Value::cons(Value::symbol("dump-file-name"), Value::string(&file_name)),
+                ]))
             }
             "native-comp-function-p" => {
                 need_args(name, args, 1)?;

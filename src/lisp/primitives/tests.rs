@@ -2522,6 +2522,238 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
             .iter()
             .any(|(slot, value)| { *slot == RootSlot::CodingSystems && value.is_nil() })
     );
+
+    // pdumper_load: the same image into a fresh process-state interpreter
+    // through the process-level loader, which installs the symbols and
+    // the static roots; Lisp then answers the same on both sides, and
+    // pdumper-stats reports the load.
+    use super::pdumper::{PdumperLoadError, pdumper_load};
+    let loaded_path =
+        std::env::temp_dir().join(format!("emaxx-d12-load-{}.pdmp", std::process::id()));
+    std::fs::write(&loaded_path, &bytes).expect("write the image for the loader");
+    let mut restored = crate::lisp::eval::Interpreter::new();
+    let record = pdumper_load(&loaded_path, &mut restored)
+        .unwrap_or_else(|error| panic!("pdumper_load: {error:?}"));
+    assert_eq!(record.dump_size, bytes.len() as u64);
+    assert!(restored.dump_loaded_p());
+    assert_eq!(
+        pdumper_load(&loaded_path, &mut restored),
+        Err(PdumperLoadError::Error("a dump is already loaded".into()))
+    );
+    let mut env_restored = Vec::new();
+    let programs = [
+        "(list (featurep 'subr-x) (featurep 'cl-lib) (fboundp 'when-let) (macrop 'when))",
+        "(list (length load-path) (symbol-value 'emacs-version) (default-value 'fill-column))",
+        "(let ((x 41)) (cl-incf x) x)",
+        "(with-temp-buffer (insert \"abc\") (upcase-region 1 3) (buffer-string))",
+        "(list (get 'car 'side-effect-free) (symbol-plist 'zz-none) (boundp 'zz-none))",
+        "(format \"%S %s %d\" '(1 . 2) \"s\" 7)",
+        "(mapconcat #'symbol-name (list 'a 'b) \",\")",
+        "(sort (list 3 1 2) #'<)",
+        "(string-match \"b+\" \"abbbc\")",
+        "(list (buffer-name) (current-buffer) (mapcar #'buffer-name (buffer-list)))",
+        "(let ((n 0)) (mapatoms (lambda (_s) (setq n (1+ n)))) n)",
+        "(pdumper-stats)",
+    ];
+    for program in programs {
+        let read = || {
+            Reader::new(program)
+                .read()
+                .expect("program parses")
+                .expect("a form")
+        };
+        let expected = interp
+            .eval(&read(), &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        let expected = call(&mut interp, "prin1-to-string", &[expected], &mut env).expect("print");
+        let actual = restored
+            .eval(&read(), &mut env_restored)
+            .unwrap_or_else(|error| panic!("restored {program}: {error:?}"));
+        let actual = call(
+            &mut restored,
+            "prin1-to-string",
+            &[actual],
+            &mut env_restored,
+        )
+        .expect("print");
+        let (expected, actual) = (
+            string_like(&expected).expect("printed").text,
+            string_like(&actual).expect("printed").text,
+        );
+        if program.starts_with("(let ((n 0)) (mapatoms") {
+            // Every symbol the writer's obarray knows is in the restored
+            // one; the restored obarray can hold more: a symbol whose
+            // only mention at dump time was an autoload not yet read into
+            // its function cell is interned in GNU's obarray and listed
+            // here only once something looks it up.
+            let source: std::collections::HashSet<String> =
+                interp.known_symbol_names().into_iter().collect();
+            let target: std::collections::HashSet<String> =
+                restored.known_symbol_names().into_iter().collect();
+            let missing = source.difference(&target).collect::<Vec<_>>();
+            assert!(
+                missing.is_empty(),
+                "missing from the restored obarray: {missing:?}"
+            );
+            continue;
+        }
+        if program == "(pdumper-stats)" {
+            assert_eq!(expected, "nil");
+            assert!(
+                actual.starts_with("((dumped-with-pdumper . t) (load-time . "),
+                "{actual}"
+            );
+            assert!(
+                actual.ends_with(&format!("(dump-file-name . {:?}))", loaded_path.display())),
+                "{actual}"
+            );
+            continue;
+        }
+        assert_eq!(actual, expected, "{program}");
+    }
+    let _ = std::fs::remove_file(&loaded_path);
+    // The error contract: a missing file and a truncated one (the foreign
+    // fingerprint and the incomplete marker are the loader's own controls).
+    let mut fresh = crate::lisp::eval::Interpreter::new();
+    assert_eq!(
+        pdumper_load(
+            std::path::Path::new("/nonexistent-dir/none.pdmp"),
+            &mut fresh
+        ),
+        Err(PdumperLoadError::FileNotFound)
+    );
+    let short = std::env::temp_dir().join(format!("emaxx-d12-short-{}.pdmp", std::process::id()));
+    std::fs::write(&short, &bytes[..10]).expect("write a short file");
+    assert_eq!(
+        pdumper_load(&short, &mut fresh),
+        Err(PdumperLoadError::BadFileType)
+    );
+    let _ = std::fs::remove_file(&short);
+}
+
+#[test]
+fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
+    // Capability boundary, not a claim that native images are supported.
+    // With no native functions, temacs (before the Lisp top level)
+    // dumps; a batch startup with emacs.c's --dump-file starts from the
+    // image, applies the new process's init_* values over it, runs GNU's
+    // normal-top-level as an initialized process, and then answers what
+    // the temacs-built batch session answers.
+    let upstream = crate::compat::project_root().join("../emacs");
+    let load_path =
+        crate::compat::emaxx_upstream_load_path(&upstream).expect("upstream GNU Emacs load path");
+    let mut temacs = crate::batch::initialize_batch_interpreter(&crate::batch::BatchRunOptions {
+        load_path: load_path.clone(),
+        defer_delayed_custom_init: true,
+        ..Default::default()
+    })
+    .expect("the loadup state");
+    let has_native_functions = temacs.known_symbol_names().iter().any(|name| {
+        matches!(temacs.raw_function_binding(name, &Vec::new()), Some(Value::Record(id))
+            if temacs.find_record(id).is_some_and(|record|
+                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+    });
+    let path = std::env::temp_dir().join(format!("emaxx-d16-startup-{}.pdmp", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    // The hook emacs.c runs after the load ("mostly useful after
+    // redumping") is set in the dumped state.
+    let dump = Reader::new(&format!(
+        "(progn (setenv \"ZZ_DUMPED\" \"1\") \
+                (defvar zz-after-pdump-load nil) \
+                (add-hook 'after-pdump-load-hook (lambda () (setq zz-after-pdump-load t))) \
+                (dump-emacs-portable {:?}))",
+        path.display()
+    ))
+    .read()
+    .expect("dump form parses")
+    .expect("a dump form");
+    let dumped = temacs.eval(&dump, &mut Vec::new());
+    if has_native_functions {
+        assert!(
+            matches!(dumped, Err(LispError::Signal(ref message))
+            if message == "unsupported object type in dump: native compiled function"),
+            "unexpected native image result: {dumped:?}"
+        );
+        assert_eq!(std::fs::metadata(&path).expect("incomplete image").len(), 0);
+        std::fs::remove_file(&path).expect("remove incomplete image");
+        eprintln!("D14/D15 open: native startup image refused; no restored startup was tested");
+        return;
+    }
+    dumped.unwrap_or_else(|error| panic!("temacs dumps: {error:?}"));
+    drop(temacs);
+
+    let mut restored = crate::batch::initialize_batch_interpreter(&crate::batch::BatchRunOptions {
+        load_path: load_path.clone(),
+        dump_file: Some(path.clone()),
+        ..Default::default()
+    })
+    .unwrap_or_else(|error| panic!("start from the image: {error}"));
+    let _ = std::fs::remove_file(&path);
+    assert!(restored.dump_loaded_p());
+    let mut reference = crate::test_support::initialized_upstream_batch_interpreter();
+    let programs = [
+        "(list (featurep 'subr-x) (featurep 'cl-lib) (fboundp 'when-let) (macrop 'when))",
+        "(list (symbol-value 'emacs-version) (default-value 'fill-column) purify-flag)",
+        "(let ((x 41)) (cl-incf x) x)",
+        "(with-temp-buffer (insert \"abc\") (upcase-region 1 3) (buffer-string))",
+        "(list command-line-processed noninteractive (consp after-init-time))",
+        "(list custom-delayed-init-variables (getenv \"HOME\") (getenv \"ZZ-NONE\"))",
+        "(with-current-buffer \"*Messages*\" (buffer-string))",
+        "(list (buffer-name) (mapcar #'buffer-name (buffer-list)))",
+        "(list (car command-line-args) (length load-path) (car exec-path))",
+        "(format \"%S %s %d\" '(1 . 2) \"s\" 7)",
+    ];
+    for program in programs {
+        let read = || {
+            Reader::new(program)
+                .read()
+                .expect("program parses")
+                .expect("a form")
+        };
+        let print = |interp: &mut crate::lisp::eval::Interpreter| {
+            let mut env = Vec::new();
+            let value = interp
+                .eval(&read(), &mut env)
+                .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+            let printed = call(interp, "prin1-to-string", &[value], &mut env).expect("print");
+            string_like(&printed).expect("printed").text
+        };
+        assert_eq!(print(&mut restored), print(&mut reference), "{program}");
+    }
+    // The load is recorded (emacs.c's dump_file names the image), and
+    // the environment was rebuilt from the new process after the load
+    // (the image carries `process-environment' as nil; `HOME' above
+    // answered the same as the reference), the dump-time `setenv' gone
+    // with the dumped list.
+    let mut env = Vec::new();
+    let stats = restored
+        .eval(
+            &Reader::new(
+                "(list (car (pdumper-stats)) (cdr (assq 'dump-file-name (pdumper-stats))) \
+                 (getenv \"ZZ_DUMPED\") (> (length process-environment) 0) \
+                 zz-after-pdump-load)",
+            )
+            .read()
+            .expect("parses")
+            .expect("a form"),
+            &mut env,
+        )
+        .expect("pdumper-stats");
+    let stats = call(&mut restored, "prin1-to-string", &[stats], &mut env).expect("print");
+    assert_eq!(
+        string_like(&stats).expect("printed").text,
+        format!("((dumped-with-pdumper . t) {:?} nil t t)", path.display())
+    );
+    let reference_stats = reference
+        .eval(
+            &Reader::new("(pdumper-stats)")
+                .read()
+                .expect("parses")
+                .expect("a form"),
+            &mut Vec::new(),
+        )
+        .expect("pdumper-stats");
+    assert!(reference_stats.is_nil());
 }
 
 #[test]

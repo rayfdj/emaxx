@@ -1357,6 +1357,21 @@ impl Interpreter {
     pub fn make_marker(&mut self) -> Value {
         let id = self.next_marker_id;
         self.next_marker_id += 1;
+        // The table is indexed by id: after an image load the remembered
+        // next id can exceed the markers the image carried (markers dead
+        // at dump time were not written), so the gap holds markers that
+        // point nowhere, as `install_marker' fills it.
+        while (self.markers.len() as u64) + 1 < id {
+            let filler = self.markers.len() as u64 + 1;
+            self.markers.push(MarkerState {
+                id: filler,
+                buffer_id: None,
+                position: None,
+                last_position: None,
+                insertion_type: false,
+                mark_buffer_id: None,
+            });
+        }
         self.markers.push(MarkerState {
             id,
             buffer_id: None,
@@ -1532,8 +1547,8 @@ impl Interpreter {
     pub fn make_char_table(&mut self, subtype: Option<String>, default: Value) -> Value {
         let id = self.next_char_table_id;
         self.next_char_table_id += 1;
-        self.char_tables
-            .push(CharTableState::new(id, subtype, default));
+        let index = self.char_table_index_for(id);
+        self.char_tables[index] = CharTableState::new(id, subtype, default);
         Value::CharTable(id)
     }
 
@@ -2387,10 +2402,11 @@ impl Interpreter {
         })?;
         let new_id = self.next_char_table_id;
         self.next_char_table_id += 1;
-        self.char_tables.push(CharTableState {
+        let index = self.char_table_index_for(new_id);
+        self.char_tables[index] = CharTableState {
             id: new_id,
             ..source
-        });
+        };
         if self.is_ascii_case_table(id) {
             self.mark_ascii_case_table(new_id);
         }
@@ -2492,12 +2508,13 @@ impl Interpreter {
         }
         let id = self.alloc_record_id();
         let indexed_type = type_tag.as_symbol().ok().map(str::to_owned);
-        self.records.push(RecordState {
+        let index = self.record_index_for(id);
+        self.records[index] = RecordState {
             id,
             type_tag,
             slots,
             kind,
-        });
+        };
         if let Some(type_name) = indexed_type {
             self.record_ids_by_type_index
                 .entry(type_name)

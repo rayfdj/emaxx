@@ -375,6 +375,109 @@ fn load_refuses_what_pdumper_load_refuses() {
 }
 
 #[test]
+fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
+    use std::os::unix::fs::DirBuilderExt;
+    // A supported C-state image, not ordinary loadup or a native image.
+    // Exercise production sibling discovery, fingerprint validation,
+    // installation and process initialization in a different executable
+    // location and OS process, without disabling native loading anywhere.
+    const CHILD: &str = "EMAXX_PDUMPER_PROCESS_TEST_CHILD";
+    if let Some(parent_pid) = std::env::var_os(CHILD) {
+        let mut interpreter = Interpreter::new();
+        let record = super::load_pdump_at_startup(&mut interpreter, None)
+            .expect("the copied executable discovers its actual sibling image");
+        interpreter
+            .init_after_pdump_load()
+            .expect("initialize loaded process");
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("zz-builder-pid")
+                .expect("saved marker"),
+            Value::Integer(parent_pid.to_string_lossy().parse().expect("parent pid"))
+        );
+        assert_ne!(parent_pid.to_string_lossy(), std::process::id().to_string());
+        let executable = std::env::current_exe().expect("child executable");
+        assert_eq!(record.filename, format!("{}.pdmp", executable.display()));
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("invocation-name")
+                .expect("fresh name"),
+            Value::string("restored-process-test")
+        );
+        assert_eq!(
+            interpreter.lookup_var("default-directory", &Vec::new()),
+            Some(Value::string(&crate::lisp::primitives::default_directory()))
+        );
+        let environment = interpreter
+            .symbol_value_cell("process-environment")
+            .expect("fresh environment")
+            .to_vec()
+            .expect("environment list");
+        assert!(
+            environment
+                .iter()
+                .any(|value| string_like(value).is_some_and(
+                    |string| string.text == format!("{CHILD}={}", parent_pid.to_string_lossy())
+                ))
+        );
+        assert!(interpreter.dump_loaded_p());
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("emaxx-pdump-process-{}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .expect("new private process fixture");
+    let executable = root.join("restored-process-test");
+    std::fs::copy(
+        std::env::current_exe().expect("test executable"),
+        &executable,
+    )
+    .expect("copy unchanged executable bytes");
+    let mut interpreter = Interpreter::new();
+    interpreter.set_global_binding(
+        "zz-builder-pid",
+        Value::Integer(i64::from(std::process::id())),
+    );
+    interpreter.set_buffer_local_value(
+        interpreter.current_buffer_id(),
+        "default-directory",
+        Value::string("/saved-builder-directory/"),
+    );
+    let mut context = DumpContext::new(false, interpreter.main_thread_record_id());
+    if let Err(error) = write_image(&mut context, &interpreter, RootSource::Interpreter) {
+        match error {
+            super::context::DumpError::Unsupported(unsupported) => {
+                panic!("unsupported C-state object: {}", unsupported.message)
+            }
+            super::context::DumpError::Lisp(error) => panic!("write C-state image: {error:?}"),
+        }
+    }
+    let image = root.join("restored-process-test.pdmp");
+    std::fs::write(&image, context.buffer()).expect("write complete image");
+    let child = std::process::Command::new(&executable)
+        .args(["--exact", "lisp::primitives::pdumper::tests::supported_image_starts_in_a_fresh_process_with_new_process_values",
+            "--test-threads=1"])
+        .env(CHILD, std::process::id().to_string())
+        .current_dir(&root)
+        .output().expect("launch the fresh process");
+    assert!(
+        child.status.success(),
+        "child failed:\n{}\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&child.stdout)
+            .contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+        "the selected child test must actually execute: {}",
+        String::from_utf8_lossy(&child.stdout)
+    );
+    std::fs::remove_dir_all(&root).expect("remove successful process fixture");
+}
+
+#[test]
 fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
     let mut interp = Interpreter::new();
     let inner = Value::list([Value::string("a"), Value::string("b")]);
@@ -821,7 +924,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let terminal = Value::Terminal(interp.terminals.first().expect("initial terminal").id);
     let roots = vec![
         (RootSlot::LoadPath, graph.clone()),
-        (RootSlot::QuitFlag, terminal.clone()),
+        (RootSlot::QuitFlag, terminal),
     ];
     let bytes = dump(&mut interp, roots);
 
@@ -935,15 +1038,34 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     assert_eq!(target.finalizer_function(f1), Some(Value::symbol("car")));
     assert_eq!(target.finalizer_function(f2), Some(Value::symbol("cdr")));
 
-    // The frame is nilled: a dead frame with that id.  The terminal is
-    // nilled likewise; its object is the id.
+    // The frame is nilled: a dead frame object of its own, beside the
+    // live initial frame of the loading process.  The terminal is nilled
+    // likewise: a dead terminal beside the live initial one.
     let Value::Frame(frame) = slots[5] else {
         panic!("frame")
     };
     let state = target.frame_state(frame).expect("dead frame installed");
     assert!(!state.live);
     assert_eq!(state.name, Value::Nil);
-    assert_eq!(root(RootSlot::QuitFlag), terminal);
+    assert!(
+        target
+            .frame_state(target.selected_frame_id)
+            .is_some_and(|frame| frame.live)
+    );
+    assert_ne!(frame, target.selected_frame_id);
+    let Value::Terminal(dead_terminal) = root(RootSlot::QuitFlag) else {
+        panic!("terminal")
+    };
+    assert!(
+        target
+            .terminal_state(dead_terminal)
+            .is_some_and(|terminal| !terminal.live)
+    );
+    assert_ne!(
+        Value::Terminal(dead_terminal),
+        Value::Terminal(target.terminals.first().expect("initial terminal").id)
+    );
+    assert!(target.terminals.first().expect("initial terminal").live);
 
     // The deleted overlay, on the buffer's list, with its properties.
     let Value::Overlay(ov) = slots[6] else {

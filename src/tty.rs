@@ -301,8 +301,12 @@ impl TtyState {
     }
 }
 
-pub fn run(command_line_args: &[String], no_site_lisp: bool) -> Result<i32, String> {
-    let mut interpreter = batch::initialize_interactive_interpreter(no_site_lisp)?;
+pub fn run(
+    command_line_args: &[String],
+    no_site_lisp: bool,
+    dump_file: Option<std::path::PathBuf>,
+) -> Result<i32, String> {
+    let mut interpreter = batch::initialize_interactive_interpreter(no_site_lisp, dump_file)?;
     let mut env: Env = Vec::new();
     // emacs.c:init_display establishes the terminal before keyboard.c
     // evaluates top-level. startup.el then owns palette registration,
@@ -376,7 +380,10 @@ pub fn run(command_line_args: &[String], no_site_lisp: bool) -> Result<i32, Stri
     })));
     // keyboard.c:command_loop enters top_level_1 after terminal input is
     // available, then the editing loop. Do not replay Lisp startup actions.
-    let startup = batch::run_startup_top_level(&mut interpreter, command_line_args);
+    // emacs.c runs after-pdump-load-hook after init_display. Hook code can
+    // therefore inspect the real terminal or read events before top-level.
+    let startup = batch::safe_run_hooks(&mut interpreter, "after-pdump-load-hook")
+        .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
     let termination = match startup {
         Err(LispError::Terminate(termination)) => Some(termination),
         Err(error) => {
