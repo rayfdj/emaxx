@@ -10,8 +10,11 @@ native compilation is no longer the active design.
 The incoming process loader is now integrated locally for validation. See
 [`native-loader-integration-audit-2026-09-10.md`](native-loader-integration-audit-2026-09-10.md)
 for GNU startup corrections, preserved thread/GC/native ownership, and the
-positive saved-image gate. D14/D15 still block ordinary native images on Darwin;
-the incoming loader is not a claim that those images work or a new corpus score.
+positive saved-image gate. D14/D15 still block ordinary native images on both
+Darwin and the freshly built Linux ABI oracle. The incoming loader is not a
+claim that those images work or a new corpus score. GNU passes the three
+original startup-sensitive tests from real images on both platforms; Emaxx
+fails while creating its ordinary native image, before those tests can run.
 
 ## Main integration validation — 2026-09-09 (before the process loader)
 

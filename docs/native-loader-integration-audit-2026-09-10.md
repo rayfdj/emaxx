@@ -67,12 +67,17 @@ run passed the hook-order and async-shell cases but timed out in `erc--find-mode
 It overlapped a local Rust build and is retained as a failed attempt, not
 discarded or counted as closure. Emaxx still refused the ordinary Darwin image.
 
-## Remaining validation
+## Validation status
 
-- Linux ordinary image startup and the three original timeout cases.
-- Focused hook/process controls, thread/GC/native preservation, full Rust gate,
-  rustfmt and zero-warning Clippy on the integrated implementation.
-- A fresh frozen corpus run only after ordinary startup is established. Linux
+- Focused Darwin hook/process controls, thread/GC/native preservation, rustfmt
+  and zero-warning Clippy are complete; detailed receipts follow below.
+- Linux run `34443650353` rebuilt production candidate `b76525c` and passed
+  the focused controls. The full serial Rust gate began at 06:24:41 UTC.
+  Its outcome is pending. The separate test/tool follow-up `fbf4990` runs in
+  `34444846429`; it does not restart the unchanged production-code gate.
+- GNU passes ordinary image startup and all three original timeout tests on
+  both platforms. Emaxx's ordinary native image remains blocked by D14/D15.
+- A fresh frozen corpus run follows only after ordinary startup is established. Linux
   diagnostic results against the ABI oracle do not repin the frozen Linux
   oracle or establish the Darwin score. D14/D15 still block native images.
 
@@ -122,7 +127,9 @@ the lint. The final strict Clippy run and CLI image-boundary control pass.
   eight complete `.eln` byte comparisons and the no-artifact policy case,
   all passing (227.31 seconds).
 - `cargo fmt --all -- --check` and Clippy with `--all-targets --all-features
-  -- -D warnings` pass. There are no lint suppressions for the new code.
+  -- -D warnings` pass. The Clippy findings were fixed without suppressions.
+  The incoming inventory helpers retain the existing
+  `cfg_attr(not(test), allow(dead_code))` convention for test-only consumers.
 
 The quieter relocated-GNU retry still timed out in `erc--find-mode`.
 An isolated comparison then reused the same image and executable bytes but
