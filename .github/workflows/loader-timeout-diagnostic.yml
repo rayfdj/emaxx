@@ -1,0 +1,125 @@
+name: Linux interrupted loader test diagnostic
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: emaxx
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: emaxx
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: emacs-mirror/emacs
+          ref: 636f166cfc86aa90d63f592fd99f3fdd9ef95ebd
+          path: emacs
+          persist-credentials: false
+      - name: Install compiler and oracle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config texinfo autoconf automake \
+            libgnutls28-dev libncurses-dev libgccjit-13-dev libgmp-dev libxml2-dev \
+            libsqlite3-dev zlib1g-dev libtree-sitter-dev libx11-dev libxpm-dev \
+            libjpeg-dev libgif-dev libtiff-dev libpng-dev libxft-dev libxrender-dev \
+            libxt-dev liblcms2-dev libharfbuzz-dev libcairo2-dev librsvg2-dev \
+            libwebp-dev libseccomp-dev libasound2-dev libacl1-dev libselinux1-dev \
+            gnupg gpgsm
+          mkdir -p /tmp/openpgp-metadata
+          dpkg-query -W > /tmp/openpgp-metadata/packages.txt
+          gpg --version > /tmp/openpgp-metadata/gpg-version.txt
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: oracle-cache
+        with:
+          path: emacs
+          key: native-abi-oracle-ubuntu24-636f166c-${{ hashFiles('emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs') }}
+      - name: Build GNU Emacs 30.2 with the Linux capability set
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        working-directory: emacs
+        run: |
+          ./autogen.sh
+          # comp.c hashes the literal configure arguments into the .eln ABI.
+          # Use the generated reference target, including its exact option order.
+          python3 - <<'PYTHON'
+          import json, re, shlex, subprocess
+          from pathlib import Path
+          manifest = Path('../emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs').read_text()
+          match = re.search(r'NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS: &str = ("[^"\n]*");', manifest)
+          assert match, 'missing native ABI configure options'
+          subprocess.run(['./configure', *shlex.split(json.loads(match[1]))], check=True)
+          PYTHON
+          make -j2
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        with:
+          path: emacs
+          key: native-abi-oracle-ubuntu24-636f166c-${{ hashFiles('emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs') }}
+      - name: Record actual oracle identity (not a frozen-corpus repin)
+        run: |
+          ../emacs/src/emacs -Q --batch --eval \
+            '(prin1 (list emacs-version emacs-repository-version system-type system-configuration-options system-configuration-features))' \
+            > /tmp/openpgp-metadata/oracle.txt
+          sha256sum ../emacs/src/emacs > /tmp/openpgp-metadata/oracle-sha256.txt
+      - name: Verify the complete generated native ABI against the actual oracle
+        run: |
+          rustc +1.97.1 --edition 2024 -O tools/generate_native_subrs.rs -o /tmp/generate-native-subrs
+          /tmp/generate-native-subrs ../emacs/src ../emacs/src/emacs /tmp/openpgp-metadata/native-subrs.rs
+          rustfmt +1.97.1 --edition 2024 /tmp/openpgp-metadata/native-subrs.rs
+          cmp src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs /tmp/openpgp-metadata/native-subrs.rs
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            emaxx/target
+          key: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
+      - name: Build current Emaxx
+        run: |
+          # A restored target/ can be newer than freshly checked-out source.
+          # Keep dependency artifacts, but never trust cached Emaxx outputs.
+          cargo +1.97.1 clean --package emaxx
+          cargo +1.97.1 clean --package emaxx --profile gate
+          test ! -e target/gate/emaxx
+          cargo +1.97.1 build --locked --profile gate --bin emaxx -j2
+          git rev-parse HEAD > /tmp/openpgp-metadata/subject-commit.txt
+          git diff --exit-code
+          sha256sum target/gate/emaxx > /tmp/openpgp-metadata/subject-sha256.txt
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            emaxx/target
+          key: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+      - name: Run only the interrupted original Rust test
+        env:
+          RUST_MIN_STACK: '134217728'
+          RUST_TEST_THREADS: '1'
+        run: |
+          rustc +1.97.1 --version > /tmp/openpgp-metadata/rustc.txt
+          set -o pipefail
+          cargo +1.97.1 test --locked --profile gate --lib \
+            lisp::eval::tests::eval_01::quoted_visited_buffers_compose_with_earlier_file_name_handlers \
+            -- --exact --test-threads=1 2>&1 | tee /tmp/openpgp-metadata/interrupted-test.log
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          log = Path('/tmp/openpgp-metadata/interrupted-test.log').read_text()
+          assert 'test result: ok. 1 passed; 0 failed; 0 ignored;' in log
+          PYTHON
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: interrupted-loader-test-${{ github.sha }}
+          path: /tmp/openpgp-metadata
+          if-no-files-found: error
+          retention-days: 7

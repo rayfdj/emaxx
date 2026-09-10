@@ -72,8 +72,8 @@ discarded or counted as closure. Emaxx still refused the ordinary Darwin image.
 - Focused Darwin hook/process controls, thread/GC/native preservation, rustfmt
   and zero-warning Clippy are complete; detailed receipts follow below.
 - Linux run `34443650353` rebuilt production candidate `b76525c` and passed
-  the focused controls. The full serial Rust gate began at 06:24:41 UTC.
-  Its outcome is pending. The separate test/tool follow-up `fbf4990` completed
+  the focused controls. Its full serial Rust gate failed at the one-hour
+  `eval_01` group limit; the detailed receipt follows below. The separate test/tool follow-up `fbf4990` completed
   in `34444846429`; it did not restart the unchanged production-code gate.
 - GNU passes ordinary image startup and all three original timeout tests on
   both platforms. Emaxx's ordinary native image remains blocked by D14/D15.
@@ -111,6 +111,14 @@ The positive startup result remains a mandatory failing result if no real
 image is available. It is recorded separately so runtime, warning and full
 Rust checks can finish even when D14/D15 blocks this acceptance test. A green
 Rust gate alone cannot close the startup cases or establish a new corpus score.
+
+The existing test-template helper refuses to clone live native ownership:
+`NativeCompilerState::can_clone_image` requires an empty registry, pristine
+runtime and no compiler context. `initialized_upstream_batch_interpreter`
+reconstructs startup for subsequent tests when that condition is false.
+With native libraries present, the earlier non-native template timings are
+therefore not a reliable estimate for the full gate. This safety boundary
+and the serial gate's timeout policy remain unchanged.
 
 On Darwin the final focused selection passed 46 of 47 checks; the sole failure
 was an unquoted lambda in the new bare-interpreter watcher fixture. Correcting
@@ -179,3 +187,31 @@ source. The later `e683291` changes only documentation. Complete logs, run
 metadata, build hashes and original test receipts are retained in
 `linux-followup-complete.log`, `linux-followup-run.json` and
 `linux-followup-artifacts` under the scratch root.
+
+## Full serial gate timeout
+
+Run [34443650353](https://github.com/rayfdj/emaxx/actions/runs/34443650353)
+rebuilt `b76525c136b726e8048d6d0252bae275533e039a`. The subject executable
+SHA256 is `399a1d6b5cb065ccab238ec9b24d1f4a8e37646ff431ef319a5995d929d64909`.
+Its 71 focused library controls and CLI boundary test passed. The full-gate
+inventory contains 2,605 library tests and the two existing TTY ignores.
+Unlike the explicitly pinned focused checks, the existing full-gate script
+invokes the runner's default Cargo; no compiler-version identity is inferred
+from the earlier pinned build.
+
+After compiling its library binary, `eval_01` started at 06:28:09 UTC and was
+terminated at 07:28:09 by its unchanged 3,600-second group limit. Its log
+contains 265 completed `ok` outcomes, no `FAILED` outcomes, and one unfinished
+test: `quoted_visited_buffers_compose_with_earlier_file_name_handlers`.
+The full 351-test group has no successful completion result. All subsequent
+groups, binaries and integration targets were unrun; the overall gate failed.
+These partial outcomes are diagnostic evidence, not a completed gate to reuse.
+
+The interrupted test passes separately on Darwin in 11.93 seconds. A dedicated
+Linux diagnostic runs only that unchanged test and requires one actual pass;
+it does not repeat the completed focused selection or turn the full timeout
+into a pass. Its result is pending. No runtime or test assertions changed.
+The full run's logs, inventory, summary and executable identities are retained
+under `linux-full-complete.log`, `linux-full-run.json` and
+`linux-full-artifacts` in the scratch root. The full run skipped Clippy after
+the timeout; the separate completed Linux follow-up supplies that check.
