@@ -78,3 +78,34 @@ discarded or counted as closure. Emaxx still refused the ordinary Darwin image.
 
 Local diagnostic receipts are under
 `/private/tmp/emaxx-loader-sept10.IqOklp/`; CI uploads its raw receipts.
+
+## First Linux diagnostics and cache audit
+
+Run [34441410465](https://github.com/rayfdj/emaxx/actions/runs/34441410465)
+compiled candidate `871742e` from source. GNU passed all three original tests
+from its image. Emaxx refused an ordinary image containing native compiled
+functions. The actual Linux build has 137 preloaded native libraries and 12
+other native libraries; the earlier description of Linux as a generally
+supported non-native image path was too broad. Native-image support is still
+needed for this ordinary startup too. No timeout was changed.
+
+Run [34441758870](https://github.com/rayfdj/emaxx/actions/runs/34441758870)
+checked out `f929d34`, but its build finished in 0.15 seconds without compiling
+Emaxx and produced the same subject SHA256 as the earlier candidate:
+`3b36a20338240d8a4667327549778d2c8096d6c779a61de960ce6112f06b1286`.
+The restored target cache was newer than the checkout. This run is not evidence
+for `f929d34`. The workflow now cleans Emaxx's own package artifacts after cache
+restore, asserts the executable is absent, rebuilds it, and records the source
+commit and binary hash. Dependency artifacts remain reusable.
+
+The positive startup result remains a mandatory failing result if no real
+image is available. It is recorded separately so runtime, warning and full
+Rust checks can finish even when D14/D15 blocks this acceptance test. A green
+Rust gate alone cannot close the startup cases or establish a new corpus score.
+
+On Darwin the final focused selection passed 46 of 47 checks; the sole failure
+was an unquoted lambda in the new bare-interpreter watcher fixture. Correcting
+that test alone passed its rerun. No previously passed group was repeated for
+the fixture correction. Strict Clippy then identified a redundant closure in
+the hook wrapper; it was replaced by the equivalent block without suppressing
+the lint. The final strict Clippy run and CLI image-boundary control pass.

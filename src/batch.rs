@@ -720,13 +720,13 @@ fn configure_batch_source_provenance(interpreter: &mut Interpreter) -> Result<()
 pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) -> Result<(), LispError> {
     let mut env = Vec::new();
     let binding = interpreter.bind_special_dynamic("inhibit-quit", Value::T, &mut env)?;
-    let result = (|| {
+    let result = {
         // GNU's Vrun_hooks is an internal initialization flag, not the
         // value cell of the Lisp run-hooks symbol. This constructor has
         // already installed the primitive definitions before calling us.
         let value = interpreter.lookup_var(hook, &env).unwrap_or(Value::Nil);
         run_safe_hook_value(interpreter, hook, value, false, &mut env)
-    })();
+    };
     let restored = interpreter.restore_special_dynamic(binding, &mut env);
     result.and(restored)
 }
@@ -1276,7 +1276,7 @@ mod tests {
             &mut env,
             "(progn (setq zz-watcher-seen nil) \
              (add-variable-watcher 'zz-hook \
-               (lambda (_symbol value operation where) \
+               #'(lambda (_symbol value operation where) \
                  (setq zz-watcher-seen (list value operation where)))))",
         )
         .expect("watch the hook removal");

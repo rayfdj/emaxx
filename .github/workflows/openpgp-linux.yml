@@ -85,7 +85,15 @@ jobs:
           key: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
           restore-keys: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
       - name: Build current Emaxx
-        run: cargo +1.97.1 build --locked --profile gate --bin emaxx -j2
+        run: |
+          # A restored target/ can be newer than freshly checked-out source.
+          # Keep dependency artifacts, but never trust cached Emaxx outputs.
+          cargo +1.97.1 clean --package emaxx
+          test ! -e target/gate/emaxx
+          cargo +1.97.1 build --locked --profile gate --bin emaxx -j2
+          git rev-parse HEAD > /tmp/openpgp-metadata/subject-commit.txt
+          git diff --exit-code
+          sha256sum target/gate/emaxx > /tmp/openpgp-metadata/subject-sha256.txt
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         if: steps.rust-cache.outputs.cache-hit != 'true'
         with:
@@ -97,6 +105,8 @@ jobs:
       - name: Run original OpenPGP tests and capture actual GPG errors
         run: python3 tools/openpgp_gate.py --output /tmp/openpgp-results
       - name: Require image-backed startup and the three original timeout tests
+        id: dumped-startup
+        continue-on-error: true
         run: |
           python3 -m unittest discover -s tools -p test_dumped_startup_gate.py -v
           python3 tools/dumped_startup_gate.py --output /tmp/dumped-startup-results
@@ -135,6 +145,11 @@ jobs:
             --artifact-root /tmp/native-merge-rust-gate
       - name: Strict Clippy
         run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
+      - name: Enforce the separate startup acceptance result
+        if: always() && steps.dumped-startup.outcome != 'success'
+        run: |
+          echo 'Image-backed startup acceptance failed; see dumped-startup-results.'
+          exit 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -144,6 +159,12 @@ jobs:
             /tmp/openpgp-results
             /tmp/openpgp-long-path-results
             /tmp/dumped-startup-results
+            !/tmp/dumped-startup-results/gnu/lisp/**
+            !/tmp/dumped-startup-results/emaxx/lisp/**
+            !/tmp/dumped-startup-results/gnu/etc/**
+            !/tmp/dumped-startup-results/emaxx/etc/**
+            !/tmp/dumped-startup-results/gnu/lib-src/**
+            !/tmp/dumped-startup-results/emaxx/lib-src/**
             /tmp/native-merge-rust-gate
           if-no-files-found: error
           retention-days: 7
