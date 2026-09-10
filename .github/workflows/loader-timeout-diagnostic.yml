@@ -1,14 +1,15 @@
-name: Linux runtime compatibility
+name: Linux interrupted loader test diagnostic
 on:
   push:
-    branches: [investigate/openpgp-linux, "integrate/native-comp-*"]
+    branches: [validate/native-loader-checks]
+    paths: [.github/workflows/loader-timeout-diagnostic.yml]
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: emaxx
@@ -103,69 +104,25 @@ jobs:
             ~/.cargo/git
             emaxx/target
           key: openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
-      - name: Run original OpenPGP tests and capture actual GPG errors
-        run: python3 tools/openpgp_gate.py --output /tmp/openpgp-results
-      - name: Require image-backed startup and the three original timeout tests
-        id: dumped-startup
-        continue-on-error: true
-        run: |
-          python3 -m unittest discover -s tools -p test_dumped_startup_gate.py -v
-          python3 tools/dumped_startup_gate.py --output /tmp/dumped-startup-results
-      - name: Observe the historical long fixture path separately
-        run: |
-          fixture_root=/tmp/emaxx-compat-checkout-oracle-9999-1788753809317920348/emacs/test/lisp
-          set +e
-          python3 tools/openpgp_gate.py --output "$fixture_root"
-          observed_status=$?
-          set -e
-          test "$observed_status" -le 1
-          test -f "$fixture_root/summary.json"
-          cp -R "$fixture_root" /tmp/openpgp-long-path-results
-          printf '%s\n' "$observed_status" > /tmp/openpgp-long-path-results/observed-status.txt
-      - name: Audit, byte conversion, dump, compiler and PTY controls
+      - name: Run only the interrupted original Rust test
         env:
           RUST_MIN_STACK: '134217728'
           RUST_TEST_THREADS: '1'
         run: |
-          python3 -m unittest discover -s tools -p test_openpgp_gate.py -v
-          cargo +1.97.1 fmt --all -- --check
+          rustc +1.97.1 --version > /tmp/openpgp-metadata/rustc.txt
+          set -o pipefail
           cargo +1.97.1 test --locked --profile gate --lib \
-            -- anti_cheat::gate_tests multibyte byte_conversions terminal_frames \
-            pdumper dump_roots dump_emacs_portable loads_libgccjit_and_executes_a_smoke_test_function \
-            batch_startup_image safe_startup_hooks safe_run_hooks restored_process_replaces_build_paths \
-            cl_old_struct_compat_mode_types_tagged_vectors \
-            cl_struct_define_legacy_type_enables_old_struct_mode \
-            upstream_semantic_format_loads_with_complete_eieio_slots --test-threads=1
-          cargo +1.97.1 test --locked --profile gate --test cli \
-            dump_file_process_round_trip_or_explicit_native_image_limit -- --test-threads=1
-      - name: Complete serial Rust gate for native-comp integration
-        if: startsWith(github.ref, 'refs/heads/integrate/native-comp-')
-        run: |
-          python3 -m unittest discover -s tools -p test_grouped_gate.py -v
-          python3 tools/serial_grouped_gate.py --scope full --timeout-seconds 3600 \
-            --artifact-root /tmp/native-merge-rust-gate
-      - name: Strict Clippy
-        run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
-      - name: Enforce the separate startup acceptance result
-        if: always() && steps.dumped-startup.outcome != 'success'
-        run: |
-          echo 'Image-backed startup acceptance failed; see dumped-startup-results.'
-          exit 1
+            lisp::eval::tests::eval_01::quoted_visited_buffers_compose_with_earlier_file_name_handlers \
+            -- --exact --test-threads=1 2>&1 | tee /tmp/openpgp-metadata/interrupted-test.log
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          log = Path('/tmp/openpgp-metadata/interrupted-test.log').read_text()
+          assert 'test result: ok. 1 passed; 0 failed; 0 ignored;' in log
+          PYTHON
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: openpgp-linux-${{ github.sha }}
-          path: |
-            /tmp/openpgp-metadata
-            /tmp/openpgp-results
-            /tmp/openpgp-long-path-results
-            /tmp/dumped-startup-results
-            !/tmp/dumped-startup-results/gnu/lisp/**
-            !/tmp/dumped-startup-results/emaxx/lisp/**
-            !/tmp/dumped-startup-results/gnu/etc/**
-            !/tmp/dumped-startup-results/emaxx/etc/**
-            !/tmp/dumped-startup-results/gnu/lib-src/**
-            !/tmp/dumped-startup-results/emaxx/lib-src/**
-            /tmp/native-merge-rust-gate
+          name: interrupted-loader-test-${{ github.sha }}
+          path: /tmp/openpgp-metadata
           if-no-files-found: error
           retention-days: 7

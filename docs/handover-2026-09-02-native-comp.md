@@ -5,7 +5,18 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Main integration validation — 2026-09-09
+## Process-loader integration — 2026-09-10, validation in progress
+
+The incoming process loader is now integrated locally for validation. See
+[`native-loader-integration-audit-2026-09-10.md`](native-loader-integration-audit-2026-09-10.md)
+for GNU startup corrections, preserved thread/GC/native ownership, and the
+positive saved-image gate. D14/D15 still block ordinary native images on both
+Darwin and the freshly built Linux ABI oracle. The incoming loader is not a
+claim that those images work or a new corpus score. GNU passes the three
+original startup-sensitive tests from real images on both platforms; Emaxx
+fails while creating its ordinary native image, before those tests can run.
+
+## Main integration validation — 2026-09-09 (before the process loader)
 
 The integration of native-comp `7a87362` with main `4311aa6` is recorded in
 [`native-comp-merge-audit-2026-09-09.md`](native-comp-merge-audit-2026-09-09.md).
@@ -13,7 +24,7 @@ It preserves main's thread continuations, scoped GC roots and shared native
 heap ownership. The 14 MB completed-image checkpoint below describes the
 non-AOT Linux fixture. Ordinary Darwin startup includes native functions:
 GNU dumps those successfully, while this writer still refuses them until
-D14/D15. The loader remains test-only until D12/D13. Neither a supported
+D14/D15. At that checkpoint the loader remained test-only. Neither a supported
 graph round trip nor the explicit native-image refusal closes startup
 compatibility. See the integration audit for validation receipts and scope.
 

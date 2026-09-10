@@ -8795,3 +8795,36 @@ the gate on the tree with this correction: grouped gate
 run-1789037478153525215-14024, GROUPED GATE PASSED (2602 library tests
 and the integration binaries, every group 0 failed), fmt and strict
 clippy exit 0, 10:51 to 11:30.
+
+## 2026-09-10 Merge of main 56dd60a into native-comp
+
+*What came in.*  Main merged checkpoint 15 and validated the process
+loader over eleven commits.  Its corrections match what this branch
+found on its own in the meantime -- init_buffer, init_cmdargs and
+init_callproc reapplied after the load, the environment lists from
+the startup snapshot -- and add keyboard.c's safe_run_hooks details
+(`inhibit-quit' bound, removal by function identity through `set' and
+`set-default' so watchers see it, the global value read when a local
+list reaches `t'), a fallible `init_after_pdump_load', the image
+controls renamed to distinguish a supported round trip from the
+native-image refusal, and `tools/dumped_startup_gate.py', the
+positive acceptance gate that builds an image from an ordinary
+startup and runs three original ERT tests from it in both editors.
+
+*Resolution.*  Four textual conflicts: `init_after_pdump_load' is
+main's version, the superset of this branch's follow-up (which had
+added the same init_buffer port a few hours earlier); the D16 ledger
+row keeps this branch's D16b text; the CLI control keeps main's
+native-limit branch with this branch's change of working directory
+between the dump and the load and its directory probes; the honesty
+audit keeps its sections in order with the 85f0c28 merge record once.
+The line check found 26 lines main has that the merged tree lacks,
+all checkpoint-15-era lines that checkpoint 16 replaced (the old
+symbol creation, the old keymap-cache reasons, the old nil
+expectations for `pdumper-stats').
+
+*Merge gate.*  Alone on the machine, on the merged tree as committed,
+with the shared image on: grouped gate run-1789040516032552015-27701,
+GROUPED GATE PASSED (2606 library tests across the ten groups and the
+integration binaries, every group 0 failed), `cargo fmt --check' and
+strict clippy exit 0 before and after; 11:41 to 12:20.

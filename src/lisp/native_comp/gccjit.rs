@@ -1167,7 +1167,16 @@ mod tests {
         assert_eq!(unsafe { function(41) }, 42);
         // A real GCC compile may update host GCC_EXEC_PREFIX. Fresh Lisp
         // instances still start from the process's original environment.
-        let after = crate::lisp::eval::Interpreter::new();
+        let mut after = crate::lisp::eval::Interpreter::new();
+        assert_eq!(after.default_value("initial-environment"), initial);
+        assert_eq!(after.default_value("process-environment"), process);
+        // Restored sessions use the same initialization boundary. The
+        // image's environment is replaced without rereading driver changes.
+        after.set_global_binding("initial-environment", crate::lisp::types::Value::Nil);
+        after.set_global_binding("process-environment", crate::lisp::types::Value::Nil);
+        after
+            .init_after_pdump_load()
+            .expect("initialize restored process");
         assert_eq!(after.default_value("initial-environment"), initial);
         assert_eq!(after.default_value("process-environment"), process);
     }

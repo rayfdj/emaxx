@@ -48,13 +48,16 @@ fn sigusr_events_follow_gnu_special_event_map_semantics() {
 }
 
 #[test]
-fn dump_file_starts_the_process_from_its_portable_dump() {
+fn dump_file_process_round_trip_or_explicit_native_image_limit() {
     // emacs.c:load_pdump: a batch session dumps itself with
     // `dump-emacs-portable' (command-line-processed bound to nil for the
     // dump, so the restored process runs startup again); `--dump-file'
     // starts a process from the image and startup.el runs as usual in
     // it; a dump file that cannot be loaded is term.c's fatal on stderr
-    // with exit status 1.
+    // with exit status 1. Native images remain unsupported (D14/D15):
+    // assert the precise refusal when ordinary startup loaded native code.
+    // tools/dumped_startup_gate.py requires a real image and cannot accept
+    // this capability limit as success for the three original ERT tests.
     let image = unique_temp_path("emaxx-cli-dump");
     // The dump happens in one directory and the load in another:
     // buffer.c:init_buffer gives the restored `*scratch*' and minibuffer
@@ -68,48 +71,68 @@ fn dump_file_starts_the_process_from_its_portable_dump() {
         .args([
             "--batch",
             "--eval",
-            &format!("(dump-emacs-portable {:?})", image.display()),
+            &format!(
+                "(progn (let (native) \
+                   (mapatoms (lambda (symbol) \
+                     (when (native-comp-function-p (symbol-function symbol)) \
+                       (setq native t)))) \
+                   (princ (format \"native-functions=%S\\n\" native))) \
+                   (dump-emacs-portable {:?}))",
+                image.display()
+            ),
         ])
         .output()
         .unwrap();
-    assert!(
-        dump.status.success(),
-        "the batch session did not dump:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&dump.stdout),
-        String::from_utf8_lossy(&dump.stderr)
-    );
-    let started = Command::new(env!("CARGO_BIN_EXE_emaxx"))
-        .current_dir(&load_directory)
-        .args([
-            "--batch",
-            "--dump-file",
-            &image.display().to_string(),
-            "--eval",
-            "(princ (list (car (pdumper-stats)) command-line-processed \
-             (featurep 'simple) (+ 1 2) (getenv \"HOME\") \
-             (with-current-buffer \"*scratch*\" default-directory) \
-             (with-current-buffer \" *Minibuf-0*\" default-directory) \
-             (buffer-name)))",
-        ])
-        .output()
-        .unwrap();
-    let _ = std::fs::remove_file(&image);
-    let _ = std::fs::remove_dir_all(&dump_directory);
-    let _ = std::fs::remove_dir_all(&load_directory);
-    assert!(
-        started.status.success(),
-        "the process did not start from the image:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&started.stdout),
-        String::from_utf8_lossy(&started.stderr)
-    );
-    let load_directory_name = format!("{}/", load_directory.display());
-    assert_eq!(
-        String::from_utf8_lossy(&started.stdout),
-        format!(
-            "((dumped-with-pdumper . t) t t 3 {} {load_directory_name} {load_directory_name} *scratch*)",
-            std::env::var("HOME").unwrap_or_default()
-        )
-    );
+    let native_loaded = dump.stdout.starts_with(b"native-functions=t\n");
+    if native_loaded {
+        assert_eq!(dump.status.code(), Some(255));
+        assert!(
+            String::from_utf8_lossy(&dump.stderr)
+                .contains("unsupported object type in dump: native compiled function")
+        );
+        assert_eq!(std::fs::metadata(&image).unwrap().len(), 0);
+        std::fs::remove_file(&image).unwrap();
+        eprintln!("D14/D15 open: native startup image refused; no restored process was tested");
+    } else {
+        assert!(
+            dump.status.success(),
+            "the batch session did not dump:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&dump.stdout),
+            String::from_utf8_lossy(&dump.stderr)
+        );
+        let started = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+            .current_dir(&load_directory)
+            .args([
+                "--batch",
+                "--dump-file",
+                &image.display().to_string(),
+                "--eval",
+                "(princ (list (car (pdumper-stats)) command-line-processed \
+                 (featurep 'simple) (+ 1 2) (getenv \"HOME\") \
+                 (with-current-buffer \"*scratch*\" default-directory) \
+                 (with-current-buffer \" *Minibuf-0*\" default-directory) \
+                 (buffer-name)))",
+            ])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&image);
+        let _ = std::fs::remove_dir_all(&dump_directory);
+        let _ = std::fs::remove_dir_all(&load_directory);
+        assert!(
+            started.status.success(),
+            "the process did not start from the image:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&started.stdout),
+            String::from_utf8_lossy(&started.stderr)
+        );
+        let load_directory_name = format!("{}/", load_directory.display());
+        assert_eq!(
+            String::from_utf8_lossy(&started.stdout),
+            format!(
+                "((dumped-with-pdumper . t) t t 3 {} {load_directory_name} {load_directory_name} *scratch*)",
+                std::env::var("HOME").unwrap_or_default()
+            )
+        );
+    }
     let missing = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .args(["--batch", "--dump-file", "/nonexistent-dir/none.pdmp"])
         .output()

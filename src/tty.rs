@@ -380,7 +380,10 @@ pub fn run(
     })));
     // keyboard.c:command_loop enters top_level_1 after terminal input is
     // available, then the editing loop. Do not replay Lisp startup actions.
-    let startup = batch::run_startup_top_level(&mut interpreter, command_line_args);
+    // emacs.c runs after-pdump-load-hook after init_display. Hook code can
+    // therefore inspect the real terminal or read events before top-level.
+    let startup = batch::safe_run_hooks(&mut interpreter, "after-pdump-load-hook")
+        .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
     let termination = match startup {
         Err(LispError::Terminate(termination)) => Some(termination),
         Err(error) => {

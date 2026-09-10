@@ -295,6 +295,8 @@ pub(crate) fn initialized_upstream_interactive_interpreter() -> Interpreter {
     let mut interpreter = crate::batch::initialize_interactive_interpreter(true, None)
         .expect("reconstruct interactive runtime");
     crate::batch::initialize_initial_frame_faces(&mut interpreter).expect("initialize frame faces");
+    crate::batch::safe_run_hooks(&mut interpreter, "after-pdump-load-hook")
+        .expect("run the initialized session's hook");
     crate::batch::run_startup_top_level(&mut interpreter, &["emaxx".into(), "-Q".into()])
         .expect("GNU interactive startup completes");
     assert!(interpreter.take_pending_termination().is_none());

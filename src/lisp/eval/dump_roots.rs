@@ -124,10 +124,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "standard_obarray_id",
         "the obarray root (RootSlot::Obarray)",
     ),
-    (
-        "stack_roots",
-        "the running Rust frames' registered Lisp roots (GNU's stack scan of the main thread): per-thread runtime state, empty once the dump returns",
-    ),
 ];
 
 /// The interpreter's remaining fields, none of them a Lisp root, each

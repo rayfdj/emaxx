@@ -2660,8 +2660,9 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
 }
 
 #[test]
-fn batch_startup_loads_the_dump_file_as_emacs_c_load_pdump_does() {
-    // Rust-only: temacs (the loadup state, before the Lisp top level)
+fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
+    // Capability boundary, not a claim that native images are supported.
+    // With no native functions, temacs (before the Lisp top level)
     // dumps; a batch startup with emacs.c's --dump-file starts from the
     // image, applies the new process's init_* values over it, runs GNU's
     // normal-top-level as an initialized process, and then answers what
@@ -2675,6 +2676,11 @@ fn batch_startup_loads_the_dump_file_as_emacs_c_load_pdump_does() {
         ..Default::default()
     })
     .expect("the loadup state");
+    let has_native_functions = temacs.known_symbol_names().iter().any(|name| {
+        matches!(temacs.raw_function_binding(name, &Vec::new()), Some(Value::Record(id))
+            if temacs.find_record(id).is_some_and(|record|
+                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+    });
     let path = std::env::temp_dir().join(format!("emaxx-d16-startup-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);
     // The hook emacs.c runs after the load ("mostly useful after
@@ -2689,9 +2695,19 @@ fn batch_startup_loads_the_dump_file_as_emacs_c_load_pdump_does() {
     .read()
     .expect("dump form parses")
     .expect("a dump form");
-    temacs
-        .eval(&dump, &mut Vec::new())
-        .unwrap_or_else(|error| panic!("temacs dumps: {error:?}"));
+    let dumped = temacs.eval(&dump, &mut Vec::new());
+    if has_native_functions {
+        assert!(
+            matches!(dumped, Err(LispError::Signal(ref message))
+            if message == "unsupported object type in dump: native compiled function"),
+            "unexpected native image result: {dumped:?}"
+        );
+        assert_eq!(std::fs::metadata(&path).expect("incomplete image").len(), 0);
+        std::fs::remove_file(&path).expect("remove incomplete image");
+        eprintln!("D14/D15 open: native startup image refused; no restored startup was tested");
+        return;
+    }
+    dumped.unwrap_or_else(|error| panic!("temacs dumps: {error:?}"));
     drop(temacs);
 
     let mut restored = crate::batch::initialize_batch_interpreter(&crate::batch::BatchRunOptions {

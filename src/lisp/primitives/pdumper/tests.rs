@@ -375,6 +375,109 @@ fn load_refuses_what_pdumper_load_refuses() {
 }
 
 #[test]
+fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
+    use std::os::unix::fs::DirBuilderExt;
+    // A supported C-state image, not ordinary loadup or a native image.
+    // Exercise production sibling discovery, fingerprint validation,
+    // installation and process initialization in a different executable
+    // location and OS process, without disabling native loading anywhere.
+    const CHILD: &str = "EMAXX_PDUMPER_PROCESS_TEST_CHILD";
+    if let Some(parent_pid) = std::env::var_os(CHILD) {
+        let mut interpreter = Interpreter::new();
+        let record = super::load_pdump_at_startup(&mut interpreter, None)
+            .expect("the copied executable discovers its actual sibling image");
+        interpreter
+            .init_after_pdump_load()
+            .expect("initialize loaded process");
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("zz-builder-pid")
+                .expect("saved marker"),
+            Value::Integer(parent_pid.to_string_lossy().parse().expect("parent pid"))
+        );
+        assert_ne!(parent_pid.to_string_lossy(), std::process::id().to_string());
+        let executable = std::env::current_exe().expect("child executable");
+        assert_eq!(record.filename, format!("{}.pdmp", executable.display()));
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("invocation-name")
+                .expect("fresh name"),
+            Value::string("restored-process-test")
+        );
+        assert_eq!(
+            interpreter.lookup_var("default-directory", &Vec::new()),
+            Some(Value::string(&crate::lisp::primitives::default_directory()))
+        );
+        let environment = interpreter
+            .symbol_value_cell("process-environment")
+            .expect("fresh environment")
+            .to_vec()
+            .expect("environment list");
+        assert!(
+            environment
+                .iter()
+                .any(|value| string_like(value).is_some_and(
+                    |string| string.text == format!("{CHILD}={}", parent_pid.to_string_lossy())
+                ))
+        );
+        assert!(interpreter.dump_loaded_p());
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("emaxx-pdump-process-{}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .expect("new private process fixture");
+    let executable = root.join("restored-process-test");
+    std::fs::copy(
+        std::env::current_exe().expect("test executable"),
+        &executable,
+    )
+    .expect("copy unchanged executable bytes");
+    let mut interpreter = Interpreter::new();
+    interpreter.set_global_binding(
+        "zz-builder-pid",
+        Value::Integer(i64::from(std::process::id())),
+    );
+    interpreter.set_buffer_local_value(
+        interpreter.current_buffer_id(),
+        "default-directory",
+        Value::string("/saved-builder-directory/"),
+    );
+    let mut context = DumpContext::new(false, interpreter.main_thread_record_id());
+    if let Err(error) = write_image(&mut context, &interpreter, RootSource::Interpreter) {
+        match error {
+            super::context::DumpError::Unsupported(unsupported) => {
+                panic!("unsupported C-state object: {}", unsupported.message)
+            }
+            super::context::DumpError::Lisp(error) => panic!("write C-state image: {error:?}"),
+        }
+    }
+    let image = root.join("restored-process-test.pdmp");
+    std::fs::write(&image, context.buffer()).expect("write complete image");
+    let child = std::process::Command::new(&executable)
+        .args(["--exact", "lisp::primitives::pdumper::tests::supported_image_starts_in_a_fresh_process_with_new_process_values",
+            "--test-threads=1"])
+        .env(CHILD, std::process::id().to_string())
+        .current_dir(&root)
+        .output().expect("launch the fresh process");
+    assert!(
+        child.status.success(),
+        "child failed:\n{}\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&child.stdout)
+            .contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+        "the selected child test must actually execute: {}",
+        String::from_utf8_lossy(&child.stdout)
+    );
+    std::fs::remove_dir_all(&root).expect("remove successful process fixture");
+}
+
+#[test]
 fn queue_order_writes_referents_after_their_referrer_and_each_object_once() {
     let mut interp = Interpreter::new();
     let inner = Value::list([Value::string("a"), Value::string("b")]);

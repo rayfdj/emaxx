@@ -77,6 +77,9 @@ pub fn run_batch_with_actions(
     actions: Vec<BatchAction>,
 ) -> Result<BatchRunOutcome, String> {
     let mut interpreter = initialize_batch_interpreter(&options)?;
+    if let Some(termination) = interpreter.take_pending_termination() {
+        return Ok(termination.into());
+    }
     if let Some(command_line_args) = &options.startup_command_line_args {
         return run_batch_through_normal_top_level(&mut interpreter, command_line_args);
     }
@@ -517,7 +520,9 @@ fn initialize_interpreter(
         }
     }
     if initialized {
-        interpreter.init_after_pdump_load();
+        interpreter
+            .init_after_pdump_load()
+            .map_err(|error| format!("initialize restored process: {error}"))?;
     }
     let before_init_time =
         lisp::primitives::system_time_list_value(std::time::SystemTime::now())
@@ -637,8 +642,18 @@ fn initialize_interpreter(
     }
     // emacs.c:main after `initialized = true': "Allow code to be run
     // (mostly useful after redumping)."  Every process runs it, dumped or
-    // not, before the top level.
-    safe_run_hooks(&mut interpreter, "after-pdump-load-hook");
+    // not, before the top level. The interactive caller does this after
+    // establishing terminal input and display, just as init_display does.
+    if noninteractive {
+        match safe_run_hooks(&mut interpreter, "after-pdump-load-hook") {
+            Ok(()) => {}
+            Err(LispError::Terminate(termination)) => {
+                interpreter.request_termination(termination);
+                return Ok(interpreter);
+            }
+            Err(error) => return Err(format!("after-pdump-load-hook: {error}")),
+        }
+    }
     // The process CLI enters top-level with its complete argv in the caller.
     // Embedders request an initialized session without executing user actions;
     // use the same GNU owner and consume its normal batch termination here.
@@ -733,54 +748,84 @@ fn configure_batch_source_provenance(interpreter: &mut Interpreter) -> Result<()
     Ok(())
 }
 
-/// eval.c:safe_run_hooks: run HOOK's functions as `run-hook-with-args'
-/// does, each under a handler; a function that signals is reported with
-/// `message' ("Error in %s (%S): %S") and removed from the hook, from
-/// the local value if it is there, else from the global one
-/// (safe_run_hooks_error).  `inhibit-quit' is not bound here: batch
-/// startup has no quit to inhibit.
-pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) {
+/// keyboard.c:safe_run_hooks: inhibit quits while calling each function,
+/// demote signals to messages, and remove the failing function by identity.
+/// Throws and process termination still leave the hook.
+pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) -> Result<(), LispError> {
     let mut env = Vec::new();
-    // run_hook_with_args: void or nil is nothing; a non-list or a lambda
-    // list is one function; a list runs each element, `t' standing for
-    // the global value's functions.
-    let functions_of = |value: Value| -> Vec<Value> {
-        if value.is_nil() || matches!(value, Value::Unbound) {
-            Vec::new()
-        } else if !value.is_cons()
-            || value
-                .car()
-                .ok()
-                .is_some_and(|car| car.as_symbol().is_ok_and(|name| name == "lambda"))
-        {
-            vec![value]
-        } else {
-            value.to_vec().unwrap_or_default()
-        }
+    let binding = interpreter.bind_special_dynamic("inhibit-quit", Value::T, &mut env)?;
+    let result = {
+        // GNU's Vrun_hooks is an internal initialization flag, not the
+        // value cell of the Lisp run-hooks symbol. This constructor has
+        // already installed the primitive definitions before calling us.
+        let value = interpreter.lookup_var(hook, &env).unwrap_or(Value::Nil);
+        run_safe_hook_value(interpreter, hook, value, false, &mut env)
     };
-    let Some(local) = interpreter.lookup_var(hook, &env) else {
-        return;
-    };
-    let mut functions = Vec::new();
-    for function in functions_of(local) {
-        if function.as_symbol().is_ok_and(|name| name == "t") {
-            let global = interpreter.default_value(hook).unwrap_or(Value::Nil);
-            functions.extend(
-                functions_of(global)
-                    .into_iter()
-                    .filter(|function| !function.as_symbol().is_ok_and(|name| name == "t")),
-            );
-        } else {
-            functions.push(function);
-        }
+    let restored = interpreter.restore_special_dynamic(binding, &mut env);
+    result.and(restored)
+}
+
+fn run_safe_hook_value(
+    interpreter: &mut Interpreter,
+    hook: &str,
+    value: Value,
+    global: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if value.is_nil() || matches!(value, Value::Unbound) {
+        return Ok(());
     }
-    for function in functions {
-        let Err(error) = interpreter.call_function_value(function.clone(), None, &[], &mut env)
-        else {
-            continue;
+    let function = !value.is_cons()
+        || lisp::primitives::call(interpreter, "functionp", std::slice::from_ref(&value), env)?
+            .is_truthy();
+    if function {
+        return call_safe_hook_function(interpreter, hook, &value, env);
+    }
+    // Follow the original cons cells, including mutations made by a callback.
+    // A local t reads the global value at that point, after earlier callbacks.
+    let mut tail = value;
+    while tail.is_cons() {
+        interpreter.with_lisp_stack_roots(&tail, |interpreter| {
+            let function = tail.car()?;
+            if matches!(function, Value::T) {
+                if !global {
+                    let default = interpreter.default_value(hook).unwrap_or(Value::Nil);
+                    run_safe_hook_value(interpreter, hook, default, true, env)?;
+                }
+            } else {
+                call_safe_hook_function(interpreter, hook, &function, env)?;
+            }
+            Ok::<_, LispError>(())
+        })?;
+        tail = tail.cdr()?;
+    }
+    Ok(())
+}
+
+fn call_safe_hook_function(
+    interpreter: &mut Interpreter,
+    hook: &str,
+    function: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    interpreter.with_lisp_stack_roots(function, |interpreter| {
+        // internal_condition_case_n establishes its catch before funcall:
+        // outer handler-bind handlers must not observe a handled signal.
+        let handlers = interpreter.push_condition_case_handler(vec![Value::T]);
+        let depth = env.len();
+        let result = interpreter.call_function_value(function.clone(), None, &[], env);
+        interpreter.pop_handler_bindings(handlers);
+        env.truncate(depth);
+        let error = match result {
+            Ok(_) => return Ok(()),
+            Err(
+                error @ (LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)),
+            ) => return Err(error),
+            Err(error) => error,
         };
+        interpreter.clear_batch_error_backtrace();
         let condition = lisp::eval::error_condition_value(&error);
-        let _ = lisp::primitives::call(
+        lisp::primitives::call(
             interpreter,
             "message",
             &[
@@ -789,29 +834,41 @@ pub(crate) fn safe_run_hooks(interpreter: &mut Interpreter, hook: &str) {
                 function.clone(),
                 condition,
             ],
-            &mut env,
-        );
-        // safe_run_hooks_error: the local part first, then the global.
-        let removed_from = |interpreter: &mut Interpreter, value: Value| -> Option<Value> {
-            let entries = value.to_vec().ok()?;
-            if !entries.iter().any(|entry| entry == &function) {
-                return None;
+            env,
+        )?;
+        // keyboard.c:safe_run_hooks_error searches the current value first,
+        // then the default, and uses EQ rather than structural equality.
+        let without_function = |interpreter: &Interpreter, value: Value| -> Option<Value> {
+            let mut tail = value;
+            let mut found = false;
+            let mut kept = Vec::new();
+            while tail.is_cons() {
+                let entry = tail.car().ok()?;
+                if lisp::primitives::values::values_eq_in_env(interpreter, &entry, function, env) {
+                    found = true;
+                } else {
+                    kept.push(entry);
+                }
+                tail = tail.cdr().ok()?;
             }
-            let _ = interpreter;
-            Some(Value::list(
-                entries.into_iter().filter(|entry| entry != &function),
-            ))
+            found.then(|| Value::list(kept))
         };
-        let local = interpreter.lookup_var(hook, &env).unwrap_or(Value::Nil);
-        if let Some(rest) = removed_from(interpreter, local) {
-            interpreter.set_variable(hook, rest, &mut env);
-            continue;
+        let local = interpreter.lookup_var(hook, env).unwrap_or(Value::Nil);
+        if let Some(rest) = without_function(interpreter, local) {
+            lisp::primitives::call(interpreter, "set", &[Value::symbol(hook), rest], env)?;
+        } else {
+            let global = interpreter.default_value(hook).unwrap_or(Value::Nil);
+            if let Some(rest) = without_function(interpreter, global) {
+                lisp::primitives::call(
+                    interpreter,
+                    "set-default",
+                    &[Value::symbol(hook), rest],
+                    env,
+                )?;
+            }
         }
-        let global = interpreter.default_value(hook).unwrap_or(Value::Nil);
-        if let Some(rest) = removed_from(interpreter, global) {
-            interpreter.set_global_binding(hook, rest);
-        }
-    }
+        Ok(())
+    })
 }
 
 pub(crate) fn initialize_initial_frame_faces(interpreter: &mut Interpreter) -> Result<(), String> {
@@ -1246,8 +1303,77 @@ fn xml_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn safe_run_hooks_reports_and_removes_a_failing_function_as_eval_c_does() {
-        // eval.c:safe_run_hooks: every function runs, a signalling one is
+    fn safe_startup_hooks_inhibit_quit_and_observe_live_global_values() {
+        // keyboard.c:safe_run_hooks specbinds inhibit-quit, and
+        // eval.c:run_hook_with_args reads the default only on reaching t.
+        let mut interpreter = Interpreter::new();
+        let mut env = Vec::new();
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            r#"(progn
+                 (setq zz-seen nil)
+                 (fset 'zz-before #'(lambda ()
+                     (setq zz-seen (cons inhibit-quit zz-seen))
+                     (set-default 'zz-hook '(zz-after))))
+                 (fset 'zz-after #'(lambda () (setq zz-seen (cons 'after zz-seen))))
+                 (set-default 'zz-hook '(zz-unused))
+                 (make-local-variable 'zz-hook)
+                 (setq zz-hook '(zz-before t)))"#,
+        )
+        .expect("set up the live global hook");
+        super::safe_run_hooks(&mut interpreter, "zz-hook").expect("run the hook");
+        let result = crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(list zz-seen zz-hook (default-value 'zz-hook) inhibit-quit)",
+        )
+        .expect("observe the hook state");
+        assert_eq!(
+            result.to_string(),
+            "((after t) (zz-before t) (zz-after) nil)"
+        );
+    }
+
+    #[test]
+    fn safe_startup_hooks_preserve_nonlocal_exits_and_restore_inhibit_quit() {
+        let mut interpreter = Interpreter::new();
+        let mut env = Vec::new();
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(setq zz-hook (list #'(lambda () (throw 'stop 7))))",
+        )
+        .expect("a throwing hook");
+        // With no active catch GNU signals no-catch, which a safe hook
+        // handles like any other signal. Register the enclosing catch so
+        // this exercises a nonlocal exit, not that error path.
+        interpreter.push_catch_tag(Value::symbol("stop"));
+        let result = super::safe_run_hooks(&mut interpreter, "zz-hook");
+        interpreter.pop_catch_tag();
+        assert!(matches!(result,
+            Err(LispError::Throw(tag, Value::Integer(7))) if tag.as_symbol().is_ok_and(|name| name == "stop")));
+        assert_eq!(
+            interpreter.lookup_var("inhibit-quit", &env),
+            Some(Value::Nil)
+        );
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(setq zz-hook (list #'(lambda () (kill-emacs 7))))",
+        )
+        .expect("a terminating hook");
+        assert!(matches!(super::safe_run_hooks(&mut interpreter, "zz-hook"),
+            Err(LispError::Terminate(termination)) if termination.exit_code == 7));
+        assert_eq!(
+            interpreter.lookup_var("inhibit-quit", &env),
+            Some(Value::Nil)
+        );
+    }
+
+    #[test]
+    fn safe_run_hooks_reports_and_removes_a_failing_function_as_keyboard_c_does() {
+        // keyboard.c:safe_run_hooks: every function runs, a signalling one is
         // reported with `message' and removed from the hook (the local
         // value first, then the global), the rest keep running.
         let mut interpreter = Interpreter::new();
@@ -1256,12 +1382,34 @@ mod tests {
              (fset 'zz-ok #'(lambda () (setq zz-ran t)))
              (fset 'zz-bad #'(lambda () (signal 'error '("boom"))))
              (fset 'zz-ok2 #'(lambda () (setq zz-ran2 t)))
+             (fset 'zz-outer #'(lambda (_error) (setq zz-outer-ran t)))
+             (setq zz-outer-ran nil)
              (setq zz-ran nil zz-ran2 nil)
              (set-default 'zz-hook '(zz-bad zz-ok2))
              (make-local-variable 'zz-hook)
              (setq zz-hook '(zz-ok t)))"#;
         crate::test_support::eval_lisp(&mut interpreter, &mut env, program).expect("set up");
-        super::safe_run_hooks(&mut interpreter, "zz-hook");
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(progn (setq zz-watcher-seen nil) \
+             (add-variable-watcher 'zz-hook \
+               #'(lambda (_symbol value operation where) \
+                 (setq zz-watcher-seen (list value operation where)))))",
+        )
+        .expect("watch the hook removal");
+        let handlers =
+            interpreter.push_handler_bindings(&[(vec!["error".into()], Value::symbol("zz-outer"))]);
+        super::safe_run_hooks(&mut interpreter, "zz-hook").expect("run the local and global hook");
+        interpreter.pop_handler_bindings(handlers);
+        let watched = interpreter
+            .lookup_var("zz-watcher-seen", &env)
+            .expect("watcher observation");
+        assert_eq!(watched.to_string(), "((zz-ok2) set nil)");
+        assert_eq!(
+            interpreter.lookup_var("zz-outer-ran", &env),
+            Some(Value::Nil)
+        );
         let state = crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
@@ -1279,14 +1427,14 @@ mod tests {
             "(t t (zz-ok t) (zz-ok2) \"Error in zz-hook (zz-bad): (error \\\"boom\\\")\n\")"
         );
         // A void hook and a single-function value.
-        super::safe_run_hooks(&mut interpreter, "zz-no-such-hook");
+        super::safe_run_hooks(&mut interpreter, "zz-no-such-hook").expect("void hook");
         crate::test_support::eval_lisp(
             &mut interpreter,
             &mut env,
             "(progn (setq zz-ran nil) (setq zz-hook 'zz-ok))",
         )
         .expect("single function");
-        super::safe_run_hooks(&mut interpreter, "zz-hook");
+        super::safe_run_hooks(&mut interpreter, "zz-hook").expect("single-function hook");
         assert_eq!(interpreter.lookup_var("zz-ran", &env), Some(Value::T));
     }
 
