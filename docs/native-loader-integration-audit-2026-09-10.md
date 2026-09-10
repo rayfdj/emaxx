@@ -207,11 +207,37 @@ The full 351-test group has no successful completion result. All subsequent
 groups, binaries and integration targets were unrun; the overall gate failed.
 These partial outcomes are diagnostic evidence, not a completed gate to reuse.
 
-The interrupted test passes separately on Darwin in 11.93 seconds. A dedicated
-Linux diagnostic runs only that unchanged test and requires one actual pass;
-it does not repeat the completed focused selection or turn the full timeout
-into a pass. Its result is pending. No runtime or test assertions changed.
+The interrupted test passes separately on Darwin in 11.93 seconds. The dedicated
+Linux diagnostic [34454171258](https://github.com/rayfdj/emaxx/actions/runs/34454171258)
+passes that unchanged test in 30.29 seconds on Rust 1.97.1, with exactly one
+pass and no failures or ignores. It does not repeat the completed focused
+selection or turn the full timeout into a pass. No runtime or test assertions
+changed. The receipts are in `linux-interrupted-test-complete.log` and
+`linux-interrupted-test-artifacts` under the scratch root.
 The full run's logs, inventory, summary and executable identities are retained
 under `linux-full-complete.log`, `linux-full-run.json` and
 `linux-full-artifacts` in the scratch root. The full run skipped Clippy after
 the timeout; the separate completed Linux follow-up supplies that check.
+
+## Darwin serial continuation
+
+The full Darwin library gate is running against clean `095171b` with Rust
+1.97.1, one worker and the unchanged 3,600-second group limit. Native
+compilation remains enabled; these fixtures reconstruct ordinary startup.
+They do not use a dumped native image. The complete `eval_01` group passed:
+351 tests, zero failures or ignores, 2,210.32 seconds. This includes the test
+interrupted in the Linux run. The complete `eval_02` group also passed:
+284 tests, zero failures or ignores, 2,487.50 seconds. Later groups remain in
+progress; there is no whole-gate pass yet. Source hashes and explicit toolchain
+versions are recorded in `darwin-source-and-toolchain.json` under the scratch
+root.
+
+After the library gate passes, the continuation checks all binary targets and
+the remaining CLI, ERT-runner and package-lifecycle integration targets. It
+retains the completed native-artifact and thread-continuation receipts above
+only after checking that their production and integration-test sources are
+unchanged. The sole Rust change after `b76525c` adds the separate-process
+supported-image control under `cfg(test)`. The continuation also checks the
+discovered Cargo target inventory against the union of retained and remaining
+integration targets. Receipts are in `darwin-library-gate` and
+`darwin-remaining-gate` under the scratch root.
