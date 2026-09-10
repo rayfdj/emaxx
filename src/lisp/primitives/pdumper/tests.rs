@@ -821,7 +821,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let terminal = Value::Terminal(interp.terminals.first().expect("initial terminal").id);
     let roots = vec![
         (RootSlot::LoadPath, graph.clone()),
-        (RootSlot::QuitFlag, terminal.clone()),
+        (RootSlot::QuitFlag, terminal),
     ];
     let bytes = dump(&mut interp, roots);
 
@@ -935,15 +935,34 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     assert_eq!(target.finalizer_function(f1), Some(Value::symbol("car")));
     assert_eq!(target.finalizer_function(f2), Some(Value::symbol("cdr")));
 
-    // The frame is nilled: a dead frame with that id.  The terminal is
-    // nilled likewise; its object is the id.
+    // The frame is nilled: a dead frame object of its own, beside the
+    // live initial frame of the loading process.  The terminal is nilled
+    // likewise: a dead terminal beside the live initial one.
     let Value::Frame(frame) = slots[5] else {
         panic!("frame")
     };
     let state = target.frame_state(frame).expect("dead frame installed");
     assert!(!state.live);
     assert_eq!(state.name, Value::Nil);
-    assert_eq!(root(RootSlot::QuitFlag), terminal);
+    assert!(
+        target
+            .frame_state(target.selected_frame_id)
+            .is_some_and(|frame| frame.live)
+    );
+    assert_ne!(frame, target.selected_frame_id);
+    let Value::Terminal(dead_terminal) = root(RootSlot::QuitFlag) else {
+        panic!("terminal")
+    };
+    assert!(
+        target
+            .terminal_state(dead_terminal)
+            .is_some_and(|terminal| !terminal.live)
+    );
+    assert_ne!(
+        Value::Terminal(dead_terminal),
+        Value::Terminal(target.terminals.first().expect("initial terminal").id)
+    );
+    assert!(target.terminals.first().expect("initial terminal").live);
 
     // The deleted overlay, on the buffer's list, with its properties.
     let Value::Overlay(ov) = slots[6] else {

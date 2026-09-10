@@ -5,7 +5,15 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
-## Main integration validation — 2026-09-09
+## Process-loader integration — 2026-09-10, validation in progress
+
+The incoming process loader is now integrated locally for validation. See
+[`native-loader-integration-audit-2026-09-10.md`](native-loader-integration-audit-2026-09-10.md)
+for GNU startup corrections, preserved thread/GC/native ownership, and the
+positive saved-image gate. D14/D15 still block ordinary native images on Darwin;
+the incoming loader is not a claim that those images work or a new corpus score.
+
+## Main integration validation — 2026-09-09 (before the process loader)
 
 The integration of native-comp `7a87362` with main `4311aa6` is recorded in
 [`native-comp-merge-audit-2026-09-09.md`](native-comp-merge-audit-2026-09-09.md).
@@ -13,7 +21,7 @@ It preserves main's thread continuations, scoped GC roots and shared native
 heap ownership. The 14 MB completed-image checkpoint below describes the
 non-AOT Linux fixture. Ordinary Darwin startup includes native functions:
 GNU dumps those successfully, while this writer still refuses them until
-D14/D15. The loader remains test-only until D12/D13. Neither a supported
+D14/D15. At that checkpoint the loader remained test-only. Neither a supported
 graph round trip nor the explicit native-image refusal closes startup
 compatibility. See the integration audit for validation receipts and scope.
 
@@ -75,8 +83,18 @@ their C lines, and an anti-cheat gate keeps the inventory complete. Main
 `85f0c28` (the terminal and frame parity work over checkpoint 10) is merged
 after checkpoint 14, with the image code adapted to its terminal and frame
 state and the full gate run on the merged tree.
-Next: the loader into a process, D12/D13 (validation and the ordered
-restore, the remembered scalars), then D14/D15 native units.
+Checkpoint 15 (D12/D13/D16/D17) is the process-level loader and the
+startup path: `pdumper_load` with pdumper.c's result codes and the point
+of no return, the remembered scalars, `--dump-file` and the executable's
+`<name>.pdmp` loaded before every init_* value with the new process's
+environment, argv, `exec-path` and TZ applied over the image,
+`after-pdump-load-hook` through safe_run_hooks, and `pdumper-stats` from
+the load record. A batch process boots from the image in 1.0 s where the
+reconstruction takes 39 s (`(kill-emacs 0)`, Linux). Main `4311aa6` is
+merged after checkpoint 15 and the full gate ran on the merged tree.
+Next: D16b, producing the image once per build and booting the test
+fixtures from it (the gate's speedup), then D14/D15 native units in the
+image.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

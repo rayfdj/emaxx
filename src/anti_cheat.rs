@@ -1490,10 +1490,13 @@ pub(crate) fn interpreter_roots_are_dumped_or_documented() {
     let mut missing = Vec::new();
     for field in fields {
         let read = format!("self.{field}");
-        let documented = format!("\"{field}\"");
+        let documented = crate::lisp::eval::ROOTS_RESET_AFTER_LOAD
+            .iter()
+            .any(|(name, _)| *name == field)
+            || crate::lisp::eval::TRANSIENT_ROOTS.contains(&field.as_str());
         let covered = dump_values.contains(&read)
             || dump_roots.contains(&read)
-            || dump_roots.contains(&documented)
+            || documented
             // The buffers are written through the buffer alist.
             || matches!(field.as_str(), "buffer" | "inactive_buffers");
         if !covered {
@@ -1503,6 +1506,69 @@ pub(crate) fn interpreter_roots_are_dumped_or_documented() {
     assert!(
         missing.is_empty(),
         "roots the mark phase visits that the image neither writes nor documents: {missing:?}"
+    );
+}
+
+/// pdumper.c:dump_drain_user_remembered_data and the static roots cover
+/// every C global of the process; every field of `Interpreter' must be
+/// written or installed by the image code (`dump_roots.rs',
+/// `image_install.rs', the loader) or listed in `FIELDS_NOT_CARRIED' or
+/// `ROOTS_RESET_AFTER_LOAD' with its reason.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn interpreter_fields_are_carried_or_documented() {
+    let source =
+        fs::read_to_string(repo_root().join("src/lisp/eval.rs")).expect("read src/lisp/eval.rs");
+    // The `Interpreter' shell and the `InterpreterState' payload it owns.
+    let declarations = ["pub struct Interpreter {", "pub struct InterpreterState {"]
+        .iter()
+        .map(|header| {
+            let start = source.find(header).expect("struct definition");
+            let end = start + source[start..].find("\n}\n").expect("end of struct");
+            &source[start..end]
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let field_pattern =
+        regex::Regex::new(r"(?m)^    (?:pub(?:\((?:crate|super)\))? )?([a-z_0-9]+): (.+),$")
+            .expect("compile field pattern");
+    assert!(
+        field_pattern
+            .captures_iter(&declarations)
+            .any(|field| &field[1] == "globals"),
+        "the inventory must inspect the editor payload, not an empty execution shell"
+    );
+    let dump_values_start = source
+        .find("pub(crate) fn dump_root_values")
+        .expect("dump_root_values");
+    let dump_values_end = source[dump_values_start..]
+        .find("\n    }\n")
+        .map(|offset| dump_values_start + offset)
+        .expect("end of dump_root_values");
+    let dump_values = &source[dump_values_start..dump_values_end];
+    let image_code = [
+        "src/lisp/eval/dump_roots.rs",
+        "src/lisp/eval/image_install.rs",
+    ]
+    .iter()
+    .map(|path| fs::read_to_string(repo_root().join(path)).expect("read image code"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    let mut missing = Vec::new();
+    for capture in field_pattern.captures_iter(&declarations) {
+        let name = &capture[1];
+        let read = format!("self.{name}");
+        let documented = crate::lisp::eval::FIELDS_NOT_CARRIED
+            .iter()
+            .chain(crate::lisp::eval::ROOTS_RESET_AFTER_LOAD.iter())
+            .any(|(field, _)| *field == name)
+            || crate::lisp::eval::TRANSIENT_ROOTS.contains(&name);
+        if !(dump_values.contains(&read) || image_code.contains(&read) || documented) {
+            missing.push(name.to_string());
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "Interpreter fields the image neither carries nor documents: {missing:?}"
     );
 }
 
@@ -1905,6 +1971,11 @@ mod gate_tests {
     #[test]
     fn interpreter_roots_are_dumped_or_documented() {
         super::interpreter_roots_are_dumped_or_documented();
+    }
+
+    #[test]
+    fn interpreter_fields_are_carried_or_documented() {
+        super::interpreter_fields_are_carried_or_documented();
     }
 
     #[test]

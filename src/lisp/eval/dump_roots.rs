@@ -126,10 +126,288 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     ),
 ];
 
+/// The interpreter's remaining fields, none of them a Lisp root, each
+/// with why the image does not carry it: GNU re-creates the state after
+/// a load, or it is the running process's transient state, or a cache
+/// or index rebuilt from carried state.  The anti-cheat gate
+/// `interpreter_fields_are_carried_or_documented' requires every field
+/// of `Interpreter' to be written, installed, or listed here.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
+    (
+        "state",
+        "the shell's owned editor payload (InterpreterState), whose fields this inventory covers",
+    ),
+    (
+        "continuations",
+        "the suspended Lisp thread stacks: only the main thread exists at dump time (Fdump_emacs_portable refuses otherwise), so there are none",
+    ),
+    (
+        "new_thread_continuations",
+        "never-started thread stacks awaiting the driving shell: none at dump time, as continuations",
+    ),
+    (
+        "image_template_token",
+        "the test harness's template ownership, not process state",
+    ),
+    (
+        "max_lisp_eval_depth",
+        "the forwarded C slot of max-lisp-eval-depth, refilled from the symbol's value on install",
+    ),
+    (
+        "debug_on_next_call",
+        "the forwarded C slot of debug-on-next-call, refilled likewise",
+    ),
+    (
+        "symbols_with_positions_enabled",
+        "the forwarded C slot of symbols-with-pos-enabled, refilled likewise",
+    ),
+    (
+        "local_special_names",
+        "eval.c's specpdl-scoped local specials of the running evaluation",
+    ),
+    (
+        "dlet_active_names",
+        "dynamic bindings of the running evaluation",
+    ),
+    ("special_scan_floor", "an evaluation-scoped scan position"),
+    ("lisp_eval_depth", "eval.c:init_eval resets lisp_eval_depth"),
+    (
+        "garbage_collection_inhibited",
+        "the running collection's inhibit count",
+    ),
+    (
+        "kbd_macro_committed_len",
+        "kboard state (keyboard.c:syms_of_keyboard_for_pdumper allocates initial_kboard anew)",
+    ),
+    (
+        "command_loop_recursion_depth",
+        "minibuf.c:init_minibuf_once_for_pdumper resets the command loop state",
+    ),
+    (
+        "minibuffer_runtime",
+        "minibuf.c:init_minibuf_once_for_pdumper resets minibuffer state",
+    ),
+    ("minibuffer_activation_count", "minibuffer state, as above"),
+    (
+        "external_debugging_output_target",
+        "the running process's debug output",
+    ),
+    ("native_compiler", "the native units are D14/D15"),
+    (
+        "default_file_modes",
+        "emacs.c:init_callproc_1 takes the umask of the new process",
+    ),
+    (
+        "symbol_properties_index",
+        "an index over symbol_properties, rebuilt by set_symbol_plist",
+    ),
+    (
+        "interned_symbols",
+        "filled by install_image in the obarray's order",
+    ),
+    ("interned_symbol_names", "the set over interned_symbols"),
+    ("keymap_public_cons_owners", "a cache over keymap records"),
+    ("keymap_public_cons_ids", "a cache over keymap records"),
+    (
+        "minibuffer_selected_window_id",
+        "window.c:init_window_once_for_pdumper resets minibuf_selected_window",
+    ),
+    (
+        "window_cursor_visibility",
+        "window state re-created with the initial frame",
+    ),
+    (
+        "old_selected_window_id",
+        "window.c:init_window_once_for_pdumper resets old_selected_window",
+    ),
+    (
+        "window_select_count",
+        "window state re-created with the initial frame",
+    ),
+    (
+        "selected_frame_id",
+        "frame.c:init_frame_once_for_pdumper resets selected_frame",
+    ),
+    ("old_selected_frame_id", "frame state, as selected_frame_id"),
+    (
+        "killed_buffer_file_names",
+        "Emaxx's memory of killed buffers' file names; a killed buffer's filename is nil in GNU",
+    ),
+    ("next_buffer_id", "carried in the remembered scalars"),
+    ("next_overlay_id", "carried in the remembered scalars"),
+    ("next_marker_id", "carried in the remembered scalars"),
+    ("markers", "installed per marker record"),
+    ("markers_by_buffer", "the index install_marker keeps"),
+    (
+        "buffer_mark_marker_ids",
+        "the relation install_marker keeps",
+    ),
+    ("char_table_mutation_generation", "a cache generation"),
+    ("regexp_syntax_class_cache", "a cache"),
+    ("syntax_segment_cache", "a cache"),
+    ("equal_hash_tables", "thawed from the hash list"),
+    (
+        "custom_hash_tables",
+        "user-defined tests are refused by the writer",
+    ),
+    (
+        "hash_tables_under_test",
+        "the running comparison's critical section",
+    ),
+    ("immutable_hash_tables", "restored by the thaw"),
+    (
+        "safe_terminal_coding",
+        "terminal state, re-created by init_tty",
+    ),
+    (
+        "input_interrupt_mode",
+        "keyboard.c's interrupt mode is set at terminal init",
+    ),
+    ("buffer_case_tables", "written per buffer record"),
+    ("next_char_table_id", "carried in the remembered scalars"),
+    ("records", "installed per record"),
+    ("record_ids_by_type_index", "the index install_record keeps"),
+    ("gc_live_record_ids", "the last collection's census"),
+    ("gc_record_high_water", "the last collection's census"),
+    ("gc_has_record_census", "the last collection's census"),
+    ("vm_stack_pool", "released bytecode stacks"),
+    ("backtrace_args_pool", "released argument vectors"),
+    (
+        "sqlite_handles",
+        "sqlite objects are refused by the writer (OS handles)",
+    ),
+    (
+        "treesit_queries",
+        "tree-sitter objects are refused by the writer",
+    ),
+    (
+        "treesit_parsers",
+        "tree-sitter objects are refused by the writer",
+    ),
+    (
+        "treesit_nodes",
+        "tree-sitter objects are refused by the writer",
+    ),
+    (
+        "treesit_languages",
+        "tree-sitter languages are loaded libraries of the process",
+    ),
+    ("next_record_id", "carried in the remembered scalars"),
+    ("next_finalizer_id", "carried in the remembered scalars"),
+    ("finalizer_functions", "installed from the finalizer chain"),
+    ("finalizers_run", "carried in the remembered scalars"),
+    (
+        "image_reconstruction_handoff",
+        "the startup reconstruction's flag",
+    ),
+    ("buffer_syntax_tables", "written per buffer record"),
+    (
+        "next_special_binding_id",
+        "carried in the remembered scalars",
+    ),
+    ("indirect_buffers", "written as each buffer's base"),
+    ("change_hooks_running", "a running change hook's guard"),
+    (
+        "network_connect_counter",
+        "the running process's connections",
+    ),
+    ("definition_generation", "a cache generation"),
+    ("not_macro_names", "a cache"),
+    ("lambda_source_bodies", "a cache"),
+    ("current_load_file", "nil at top level, where the dump runs"),
+    (
+        "load_source_provenance_remap",
+        "a process option of the harness",
+    ),
+    ("ert_test_source_file", "the running ERT session"),
+    ("current_ert_test_name", "the running ERT session"),
+    ("test_results", "the running ERT session"),
+    ("last_selected_tests", "the running ERT session"),
+    ("pending_termination", "the running process's exit"),
+    (
+        "last_match_data",
+        "search.c's search_regs are the running process's",
+    ),
+    ("last_match_data_buffer_id", "as last_match_data"),
+    ("profiler_memory_running", "the running profiler"),
+    ("profiler_memory_log_pending", "the running profiler"),
+    ("profiler_cpu_running", "the running profiler"),
+    ("profiler_cpu_log_pending", "the running profiler"),
+    ("message_capture_stack", "the running ERT session"),
+    (
+        "batch_standard_output_last_char",
+        "the running process's stdout",
+    ),
+    ("batch_stdout_need_newline", "the running process's stdout"),
+    (
+        "print_number_index",
+        "print.c's print_number_index is per print",
+    ),
+    ("current_activation_id", "the running evaluation"),
+    ("next_activation_id", "the running evaluation"),
+    (
+        "closure_capture_cache",
+        "weak owners, re-registered as closures load",
+    ),
+    (
+        "captured_lexical_frames",
+        "weak owners, re-registered as closures load",
+    ),
+    ("captured_env_registrations", "a registration counter"),
+    (
+        "closure_eval_contexts",
+        "weak owners of running evaluations",
+    ),
+    (
+        "closure_eval_context_registrations",
+        "a registration counter",
+    ),
+    ("lossage_size", "carried in the remembered scalars"),
+    ("interactive_call_depth", "the running command"),
+    ("next_lisp_face_id", "carried in the remembered scalars"),
+    (
+        "tty_suppress_bold_inverse_default_colors",
+        "tty state set at terminal init",
+    ),
+    ("builtin_doc_offsets", "carried in the remembered scalars"),
+    ("require_nesting", "the running load"),
+    ("lambda_capture_overrides", "the running evaluation"),
+    ("mutex_states", "mutex objects are refused by the writer"),
+    (
+        "condition_variables",
+        "condition variable objects are refused by the writer",
+    ),
+    ("combined_after_change", "the running change group"),
+    ("timer_callback_depth", "the running timer"),
+    ("file_notify_kqueue", "an OS descriptor of the process"),
+    ("file_notify_inotify", "an OS descriptor of the process"),
+    (
+        "main_thread_id",
+        "the main thread is the running process's (runtime magic)",
+    ),
+    ("active_thread_id", "as main_thread_id"),
+    ("handler_dispatch_depth", "the running signal dispatch"),
+    ("dispatched_signal", "the running signal dispatch"),
+    (
+        "suspend_condition_case_count",
+        "the running signal dispatch",
+    ),
+    (
+        "window_margins",
+        "window state re-created with the initial frame",
+    ),
+    ("face_change_count", "carried in the remembered scalars"),
+    ("special_variables", "carried in the remembered scalars"),
+    ("pdumper_loaded", "set by the load itself"),
+    ("buffer", "written through the buffer alist"),
+];
+
 /// The transient groups that must be empty at dump time: they belong to
 /// an evaluation in progress, which Fdump_emacs_portable is not inside
 /// of beyond its own frame.
-const TRANSIENT_ROOTS: &[&str] = &["pending_thread_events", "deferred_defsubst_unbindings"];
+pub(crate) const TRANSIENT_ROOTS: &[&str] =
+    &["pending_thread_events", "deferred_defsubst_unbindings"];
 
 fn opt_string(value: Option<&str>) -> Value {
     value.map_or(Value::Nil, Value::string)
@@ -250,10 +528,9 @@ impl Interpreter {
                     }),
             ),
         ));
-        groups.push((
-            RootSlot::CharsetNonPreferredHead,
-            opt_symbol(self.charset_non_preferred_head.as_deref()),
-        ));
+        // charset.c's Vcharset_non_preferred_head is not staticpro'd: a
+        // loaded session starts with it nil, whatever loadup left there.
+        groups.push((RootSlot::CharsetNonPreferredHead, Value::Nil));
         groups.push((
             RootSlot::SjisCodingSystem,
             Value::symbol(&self.sjis_coding_system),
@@ -505,6 +782,76 @@ impl Interpreter {
                 ])
             })),
         ));
+        // PDUMPER_REMEMBER_SCALAR: the native state beside the Lisp
+        // objects that a loaded session must start from -- the id
+        // allocators above every id in the image, the declared-special
+        // list, the DOC offsets Snarf-documentation installed (GNU keeps
+        // them in the subr objects), lossage_size, the face change
+        // counter and the finalizer count.  Everything else the
+        // interpreter holds is in `FIELDS_NOT_CARRIED' with its reason.
+        let mut doc_offsets = self.builtin_doc_offsets.iter().collect::<Vec<_>>();
+        doc_offsets.sort_by(|a, b| a.0.cmp(b.0));
+        groups.push((
+            RootSlot::RememberedScalars,
+            Value::list([
+                pair(
+                    Value::symbol("special-variables"),
+                    symbol_list(&self.special_variables),
+                ),
+                pair(
+                    Value::symbol("next-buffer-id"),
+                    Value::Integer(self.next_buffer_id as i64),
+                ),
+                pair(
+                    Value::symbol("next-overlay-id"),
+                    Value::Integer(self.next_overlay_id as i64),
+                ),
+                pair(
+                    Value::symbol("next-marker-id"),
+                    Value::Integer(self.next_marker_id as i64),
+                ),
+                pair(
+                    Value::symbol("next-char-table-id"),
+                    Value::Integer(self.next_char_table_id as i64),
+                ),
+                pair(
+                    Value::symbol("next-record-id"),
+                    Value::Integer(self.next_record_id as i64),
+                ),
+                pair(
+                    Value::symbol("next-finalizer-id"),
+                    Value::Integer(self.next_finalizer_id as i64),
+                ),
+                pair(
+                    Value::symbol("next-lisp-face-id"),
+                    Value::Integer(self.next_lisp_face_id),
+                ),
+                pair(
+                    Value::symbol("next-special-binding-id"),
+                    Value::Integer(self.next_special_binding_id as i64),
+                ),
+                pair(
+                    Value::symbol("lossage-size"),
+                    Value::Integer(self.lossage_size),
+                ),
+                pair(
+                    Value::symbol("builtin-doc-offsets"),
+                    Value::list(
+                        doc_offsets.into_iter().map(|(name, offset)| {
+                            pair(Value::symbol(name), Value::Integer(*offset))
+                        }),
+                    ),
+                ),
+                pair(
+                    Value::symbol("face-change-count"),
+                    Value::Integer(self.face_change_count as i64),
+                ),
+                pair(
+                    Value::symbol("finalizers-run"),
+                    Value::Integer(self.finalizers_run as i64),
+                ),
+            ]),
+        ));
         groups
     }
 
@@ -565,6 +912,10 @@ mod install {
         value
             .as_integer()
             .map_err(|_| format!("{what}: not an integer: {value:?}"))
+    }
+
+    fn expect_id(value: &Value, what: &str) -> Result<u64, String> {
+        u64::try_from(expect_int(value, what)?).map_err(|_| format!("{what}: negative id"))
     }
 
     fn opt_of<T>(
@@ -978,6 +1329,58 @@ mod install {
                 RootSlot::LastThreadError => {
                     self.last_thread_error = opt_of(value, |v| Ok(v.clone()))?;
                 }
+                RootSlot::RememberedScalars => {
+                    for entry in expect_list(value, "remembered scalars")? {
+                        let (name, scalar) = expect_pair(&entry, "remembered scalar")?;
+                        let name = expect_symbol(&name, "remembered scalar name")?;
+                        let int = |what: &str| expect_int(&scalar, what);
+                        let id = |what: &str| expect_id(&scalar, what);
+                        match name.as_str() {
+                            "special-variables" => {
+                                self.special_variables =
+                                    symbol_names(&scalar, "special variables")?;
+                            }
+                            "next-buffer-id" => {
+                                self.next_buffer_id = self.next_buffer_id.max(id(&name)?)
+                            }
+                            "next-overlay-id" => {
+                                self.next_overlay_id = self.next_overlay_id.max(id(&name)?);
+                            }
+                            "next-marker-id" => {
+                                self.next_marker_id = self.next_marker_id.max(id(&name)?)
+                            }
+                            "next-char-table-id" => {
+                                self.next_char_table_id = self.next_char_table_id.max(id(&name)?);
+                            }
+                            "next-record-id" => {
+                                self.next_record_id = self.next_record_id.max(id(&name)?)
+                            }
+                            "next-finalizer-id" => {
+                                self.next_finalizer_id = self.next_finalizer_id.max(id(&name)?);
+                            }
+                            "next-lisp-face-id" => self.next_lisp_face_id = int(&name)?,
+                            "next-special-binding-id" => {
+                                self.next_special_binding_id = id(&name)?;
+                            }
+                            "lossage-size" => self.lossage_size = int(&name)?,
+                            "builtin-doc-offsets" => {
+                                self.builtin_doc_offsets.clear();
+                                for offset in expect_list(&scalar, "doc offsets")? {
+                                    let (subr, offset) = expect_pair(&offset, "doc offset")?;
+                                    self.builtin_doc_offsets.insert(
+                                        expect_symbol(&subr, "doc offset name")?,
+                                        expect_int(&offset, "doc offset")?,
+                                    );
+                                }
+                            }
+                            "face-change-count" => self.face_change_count = id(&name)?,
+                            "finalizers-run" => self.finalizers_run = id(&name)?,
+                            other => {
+                                return Err(format!("unknown remembered scalar {other}"));
+                            }
+                        }
+                    }
+                }
                 RootSlot::LexicalCellUpdates => {
                     self.lexical_cell_updates.clear();
                     for entry in expect_list(value, "lexical cell updates")? {
@@ -1035,6 +1438,33 @@ mod tests {
             assert!(
                 source.contains(&format!("self.{name}")),
                 "{name} is not an Interpreter field the mark phase visits"
+            );
+        }
+        // Every field documented as not carried is a declared field of
+        // the `Interpreter' shell or its `InterpreterState' payload.
+        let declarations = ["pub struct Interpreter {", "pub struct InterpreterState {"]
+            .iter()
+            .map(|header| {
+                let start = source.find(header).expect("struct definition");
+                let end = start + source[start..].find("\n}\n").expect("end of struct");
+                &source[start..end]
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (name, _) in FIELDS_NOT_CARRIED {
+            assert!(
+                declarations.contains(&format!(" {name}: ")),
+                "{name} is not a field of Interpreter or InterpreterState"
+            );
+        }
+        // A field is documented once: either it is a re-created root or
+        // it is state the image does not carry, never both.
+        for (name, _) in FIELDS_NOT_CARRIED {
+            assert!(
+                !ROOTS_RESET_AFTER_LOAD
+                    .iter()
+                    .any(|(reset, _)| reset == name),
+                "{name} is listed both as reset after load and as not carried"
             );
         }
     }
