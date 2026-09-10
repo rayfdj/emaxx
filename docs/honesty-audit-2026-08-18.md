@@ -8828,3 +8828,13 @@ with the shared image on: grouped gate run-1789040516032552015-27701,
 GROUPED GATE PASSED (2606 library tests across the ten groups and the
 integration binaries, every group 0 failed), `cargo fmt --check' and
 strict clippy exit 0 before and after; 11:41 to 12:20.
+
+*The corpus from the image, on the merged tree.*  Frozen corpus with
+`EMAXX_FIXTURE_IMAGE_DIR' set, artifact
+`frozen-1789043156837100912-1662', 12:24 to 13:27: 7879 / 7883
+matching, 4 mismatching, against the recorded 7869 / 7883 (14).  The
+four are the OpenPGP decryption platform residual of mml-sec-tests
+(`mml-secure-en-decrypt-1' to `-4', recorded above and in main's
+audits); erc, server, simple and both thread files are at 0, and
+gv-tests is back at 0 with the init_buffer correction.  One hour and
+three minutes for the run that took five hours and forty-one.

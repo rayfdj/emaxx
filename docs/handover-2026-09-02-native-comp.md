@@ -99,10 +99,11 @@ Checkpoint 16 (D16b) makes the harness boot from a shared loadup image:
 `EMAXX_FIXTURE_IMAGE_DIR` names a directory where the first startup dumps
 the loadup state and every later startup, in any process, loads it (the
 grouped gate sets it; the compat harness passes it to every emaxx runner);
-the full gate runs in forty minutes where it took 2h20m. Main `08a4004`
-(its validation of the earlier native-comp merge) is merged after
-checkpoint 16, and `EMAXX_FIXTURE_IMAGE_DIR` is the operator's knob for
-the corpus runs. Next: D14/D15, native units and native subrs in the
+the full gate runs in forty minutes where it took 2h20m, and the frozen
+corpus in an hour where it took 5h41m (7879 / 7883 on the merged tree,
+the four OpenPGP residuals only). Main `08a4004` and then `56dd60a` (its
+validation of the process loader) are merged after checkpoint 16, and
+`EMAXX_FIXTURE_IMAGE_DIR` is the operator's knob for the corpus runs. Next: D14/D15, native units and native subrs in the
 image, the last open rows.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
