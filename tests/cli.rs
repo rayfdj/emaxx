@@ -59,7 +59,15 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
     // tools/dumped_startup_gate.py requires a real image and cannot accept
     // this capability limit as success for the three original ERT tests.
     let image = unique_temp_path("emaxx-cli-dump");
+    // The dump happens in one directory and the load in another:
+    // buffer.c:init_buffer gives the restored `*scratch*' and minibuffer
+    // the new process's working directory.
+    let dump_directory = unique_temp_path("emaxx-cli-dump-from");
+    let load_directory = unique_temp_path("emaxx-cli-load-in");
+    std::fs::create_dir_all(&dump_directory).unwrap();
+    std::fs::create_dir_all(&load_directory).unwrap();
     let dump = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+        .current_dir(&dump_directory)
         .args([
             "--batch",
             "--eval",
@@ -93,27 +101,34 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
             String::from_utf8_lossy(&dump.stderr)
         );
         let started = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+            .current_dir(&load_directory)
             .args([
                 "--batch",
                 "--dump-file",
                 &image.display().to_string(),
                 "--eval",
                 "(princ (list (car (pdumper-stats)) command-line-processed \
-             (featurep 'simple) (+ 1 2) (getenv \"HOME\")))",
+                 (featurep 'simple) (+ 1 2) (getenv \"HOME\") \
+                 (with-current-buffer \"*scratch*\" default-directory) \
+                 (with-current-buffer \" *Minibuf-0*\" default-directory) \
+                 (buffer-name)))",
             ])
             .output()
             .unwrap();
         let _ = std::fs::remove_file(&image);
+        let _ = std::fs::remove_dir_all(&dump_directory);
+        let _ = std::fs::remove_dir_all(&load_directory);
         assert!(
             started.status.success(),
             "the process did not start from the image:\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&started.stdout),
             String::from_utf8_lossy(&started.stderr)
         );
+        let load_directory_name = format!("{}/", load_directory.display());
         assert_eq!(
             String::from_utf8_lossy(&started.stdout),
             format!(
-                "((dumped-with-pdumper . t) t t 3 {})",
+                "((dumped-with-pdumper . t) t t 3 {} {load_directory_name} {load_directory_name} *scratch*)",
                 std::env::var("HOME").unwrap_or_default()
             )
         );

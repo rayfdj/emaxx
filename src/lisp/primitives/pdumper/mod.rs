@@ -187,9 +187,39 @@ fn write_dump(
             filename,
         )));
     }
-    eprint!("{}", summary.report());
+    if !dump_messages_suppressed() {
+        eprint!("{}", summary.report());
+    }
     // unblock_input (); return unbind_to (count, Qnil).
     Ok(Value::Nil)
+}
+
+/// The harness's fixture dump and load run inside processes whose
+/// stderr the tests compare byte for byte with GNU's, so their
+/// fingerprint and byte-count lines (GNU prints them from a build's
+/// dump and a failed load, never from a session) are held back while
+/// the guard lives.  `dump-emacs-portable' called from Lisp prints as
+/// pdumper.c does.
+static DUMP_MESSAGES_SUPPRESSED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub(crate) fn dump_messages_suppressed() -> bool {
+    DUMP_MESSAGES_SUPPRESSED.load(std::sync::atomic::Ordering::Relaxed) != 0
+}
+
+pub(crate) struct QuietDumpMessages;
+
+impl QuietDumpMessages {
+    pub(crate) fn hold() -> Self {
+        DUMP_MESSAGES_SUPPRESSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for QuietDumpMessages {
+    fn drop(&mut self) {
+        DUMP_MESSAGES_SUPPRESSED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Where the roots come from: the interpreter (Fdump_emacs_portable) or
@@ -234,7 +264,9 @@ pub(crate) fn write_image(
     roots: RootSource,
 ) -> Result<DumpSummary, DumpError> {
     let header_start = ctx.offset();
-    eprintln!("Dumping fingerprint: {}", hex(executable_fingerprint()));
+    if !dump_messages_suppressed() {
+        eprintln!("Dumping fingerprint: {}", hex(executable_fingerprint()));
+    }
     ctx.write_header()?;
     let header_end = ctx.offset();
 

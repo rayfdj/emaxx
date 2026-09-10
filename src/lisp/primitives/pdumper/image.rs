@@ -397,6 +397,9 @@ pub(crate) enum RootSlot {
     /// PDUMPER_REMEMBER_SCALAR: the native state a loaded session starts
     /// from (eval/dump_roots.rs).
     RememberedScalars = 54,
+    /// Not GNU: Emaxx's keymap facade records, reachable only through
+    /// the view-to-record index (GNU's keymaps are the lists themselves).
+    KeymapRecords = 55,
 }
 
 impl RootSlot {
@@ -457,6 +460,7 @@ impl RootSlot {
             52 => Self::FontSelectionOrder,
             53 => Self::LexicalCellUpdates,
             54 => Self::RememberedScalars,
+            55 => Self::KeymapRecords,
             _ => return None,
         })
     }

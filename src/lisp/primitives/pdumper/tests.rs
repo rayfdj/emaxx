@@ -852,6 +852,77 @@ fn image_refuses_hash_tables_with_user_defined_tests_as_gnu_does() {
 }
 
 #[test]
+fn image_keeps_a_private_obarray_symbol_apart_from_its_namesake() {
+    // lisp.h: a symbol interned in another obarray is its own object with
+    // SYMBOL_INTERNED, not SYMBOL_INTERNED_IN_INITIAL_OBARRAY.  Emaxx keys
+    // it by an internal name; the image carries that name so the loaded
+    // object is the one its obarray's lookups produce, and its cells never
+    // touch the initial obarray's symbol of the same Lisp name (the
+    // loadup state has such a pair: lisp.el's functions were void after
+    // a load until this).
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let program = r#"
+        (let* ((ob (obarray-make))
+               (sym (intern "car" ob))
+               (only (intern "zz-private-only" ob)))
+          (set sym 7)
+          (fset sym 'cdr)
+          (put sym 'zz 'yes)
+          (set only 'p)
+          (vector ob sym only))"#;
+    let form = crate::lisp::reader::Reader::new(program)
+        .read()
+        .expect("setup parses")
+        .expect("setup has a form");
+    let graph = interp.eval(&form, &mut env).expect("setup evaluates");
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    let vector = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| value.clone())
+        .expect("the root vector");
+    target
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "zz.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
+        )
+        .expect("install");
+    target.set_global_binding("zz-v", vector);
+    let probe = r#"
+        (let ((ob (aref zz-v 0)) (sym (aref zz-v 1)) (only (aref zz-v 2)))
+          (list (symbol-value sym) (symbol-function sym) (symbol-plist sym)
+                (symbol-name sym) (eq sym 'car) (eq (intern-soft "car" ob) sym)
+                (eq (intern "car" ob) sym) (boundp 'car) (subrp (symbol-function 'car))
+                (symbol-plist 'car) (eq (intern-soft "zz-private-only" ob) only)
+                (symbol-value only) (boundp 'zz-private-only)
+                (eq (intern "zz-new" ob) (intern "zz-new" ob))
+                (length (let (all) (mapatoms #'(lambda (s) (setq all (cons s all))) ob) all))))"#;
+    let form = crate::lisp::reader::Reader::new(probe)
+        .read()
+        .expect("probe parses")
+        .expect("probe has a form");
+    let value = target
+        .eval(&form, &mut Vec::new())
+        .unwrap_or_else(|error| panic!("probe: {error:?}"));
+    let printed =
+        crate::lisp::primitives::call(&mut target, "prin1-to-string", &[value], &mut Vec::new())
+            .expect("print");
+    assert_eq!(
+        string_like(&printed).expect("printed").text,
+        "(7 cdr (zz yes) \"car\" nil t t nil t nil t p nil t 3)"
+    );
+}
+
+#[test]
 fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     fn printed(interp: &mut Interpreter, value: &Value) -> String {
         let value = crate::lisp::native_comp::call_c_primitive(
@@ -1151,6 +1222,10 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
           (let ((ov (make-marker))) ov)
           (internal--labeled-narrow-to-region 1 1 'zz-label)
           (define-charset-alias 'zz-alias 'ascii)
+          (let ((m (make-sparse-keymap)) (p (make-sparse-keymap)))
+            (set-keymap-parent m p)
+            (define-key p "\M-q" 'ignore)
+            (define-key m "\C-c" 'car))
           t)"#;
     let form = crate::lisp::reader::Reader::new(program)
         .read()
@@ -1241,6 +1316,44 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             .collect::<Vec<_>>()
     );
     assert!(target.has_buffer("zz-second"));
+    // The keymap facade records came through as a group, and the loader
+    // rebuilt the view-to-record index: the child's list resolves to its
+    // record, whose parent answers a binding through the list.
+    let keymap_records = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::KeymapRecords)
+        .map(|(_, value)| value.to_vec().expect("a list"))
+        .expect("the keymap records group");
+    assert!(keymap_records.len() >= 2, "{keymap_records:?}");
+    let mut resolved = 0;
+    for record in &keymap_records {
+        let Value::Record(id) = record else {
+            panic!("not a record: {record:?}")
+        };
+        let view = target
+            .find_record(*id)
+            .expect("keymap record installed")
+            .slots
+            .get(crate::lisp::primitives::values::KEYMAP_PUBLIC_VIEW_SLOT)
+            .cloned()
+            .expect("the public view");
+        target.set_global_binding("zz-loaded-keymap", view);
+        let form = crate::lisp::reader::Reader::new(
+            "(list (keymapp zz-loaded-keymap) (lookup-key zz-loaded-keymap \"\\C-c\") \
+                   (keymapp (keymap-parent zz-loaded-keymap)) (lookup-key zz-loaded-keymap \"\\M-q\"))",
+        )
+        .read()
+        .expect("probe parses")
+        .expect("a form");
+        let answer = target
+            .eval(&form, &mut Vec::new())
+            .expect("probe evaluates");
+        if printed(&mut target, &answer) == "(t car t ignore)" {
+            resolved += 1;
+        }
+    }
+    assert_eq!(resolved, 1, "the child keymap resolves through its record");
 }
 
 #[test]

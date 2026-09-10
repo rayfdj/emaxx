@@ -1203,6 +1203,16 @@ impl DumpContext {
             words.push(0);
             self.field_lv(start, &mut words, index, watcher, WEIGHT_NORMAL);
         }
+        // Not GNU: a symbol interned in another obarray is keyed here by
+        // its internal name (the Lisp name, the obarray's id and a
+        // serial), which the loader needs to give it the identity its
+        // obarray's lookups produce; it follows the watchers.
+        if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+            let index = words.len();
+            words.push(0);
+            let internal = Value::String(symbol.as_str().to_owned().into());
+            self.field_lv(start, &mut words, index, &internal, WEIGHT_STRONG);
+        }
         self.object_finish(&words)
     }
 
@@ -2612,12 +2622,15 @@ pub(crate) fn symbol_flags_word(
     uninterned_from_obarray: bool,
 ) -> u64 {
     use crate::lisp::eval::symbol_cell_flags as flags;
+    // data.c: a DEFVAR_PER_BUFFER variable is SYMBOL_FORWARDED whether or
+    // not a buffer has its own value; Emaxx's cell keeps LOCALIZED beside
+    // FORWARDED for such a variable, and the record says so in its own bit.
     let redirect: u64 = if cell.alias.is_some() {
         SYMBOL_VARALIAS
-    } else if cell.flags & flags::LOCALIZED != 0 {
-        SYMBOL_LOCALIZED
     } else if cell.flags & flags::FORWARDED != 0 {
         SYMBOL_FORWARDED
+    } else if cell.flags & flags::LOCALIZED != 0 {
+        SYMBOL_LOCALIZED
     } else {
         SYMBOL_PLAINVAL
     };
@@ -2628,12 +2641,19 @@ pub(crate) fn symbol_flags_word(
         || uninterned_from_obarray
     {
         SYMBOL_UNINTERNED
+    } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+        // lisp.h: interned in some other obarray -- a private obarray's
+        // or an abbrev table's own symbol object.
+        SYMBOL_INTERNED
     } else {
         SYMBOL_INTERNED_IN_INITIAL_OBARRAY
     };
     let mut word = redirect | (interned << 4);
     if uninterned_from_obarray {
         word |= FLAG_UNINTERNED_FROM_OBARRAY;
+    }
+    if redirect != SYMBOL_LOCALIZED && cell.flags & flags::LOCALIZED != 0 {
+        word |= FLAG_LOCALIZED_BESIDE_FORWARDED;
     }
     if cell.flags & flags::SPECIAL != 0 {
         word |= FLAG_DECLARED_SPECIAL;
@@ -2664,6 +2684,7 @@ pub(crate) const SYMBOL_FORWARDED: u64 = 3;
 pub(crate) const SYMBOL_REDIRECT_MASK: u64 = 7;
 // lisp.h:symbol_interned, in bits 4-5.
 pub(crate) const SYMBOL_UNINTERNED: u64 = 0;
+pub(crate) const SYMBOL_INTERNED: u64 = 1;
 pub(crate) const SYMBOL_INTERNED_IN_INITIAL_OBARRAY: u64 = 2;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const SYMBOL_INTERNED_SHIFT: u32 = 4;
@@ -2677,3 +2698,7 @@ pub(crate) const FLAG_FWD_INT: u64 = 1 << 12;
 /// A standard symbol `unintern' removed from the initial obarray: its
 /// name is an ordinary interned name Emaxx keeps out of the obarray.
 pub(crate) const FLAG_UNINTERNED_FROM_OBARRAY: u64 = 1 << 13;
+/// Emaxx: the cell of a forwarded (per-buffer) variable also carries
+/// LOCALIZED; GNU's redirect field holds one kind, so this bit keeps the
+/// second.
+pub(crate) const FLAG_LOCALIZED_BESIDE_FORWARDED: u64 = 1 << 14;

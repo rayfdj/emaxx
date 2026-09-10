@@ -2290,6 +2290,12 @@ pub(crate) fn is_uninterned_symbol(symbol: &str) -> bool {
     symbol.contains(UNINTERNED_SYMBOL_MARKER)
 }
 
+/// A symbol interned in a private obarray (or an abbrev table): its own
+/// object, whose Lisp name can equal an initial-obarray symbol's.
+pub(crate) fn is_private_obarray_symbol(symbol: &str) -> bool {
+    symbol.contains(OBARRAY_SYMBOL_MARKER)
+}
+
 pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
     symbol
         .split_once(UNINTERNED_SYMBOL_MARKER)

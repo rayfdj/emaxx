@@ -95,9 +95,16 @@ environment, argv, `exec-path` and TZ applied over the image,
 the load record. A batch process boots from the image in 1.0 s where the
 reconstruction takes 39 s (`(kill-emacs 0)`, Linux). Main `4311aa6` is
 merged after checkpoint 15 and the full gate ran on the merged tree.
-Next: D16b, producing the image once per build and booting the test
-fixtures from it (the gate's speedup), then D14/D15 native units in the
-image.
+Checkpoint 16 (D16b) makes the harness boot from a shared loadup image:
+`EMAXX_FIXTURE_IMAGE_DIR` names a directory where the first startup dumps
+the loadup state and every later startup, in any process, loads it (the
+grouped gate sets it; the compat harness passes it to every emaxx runner);
+the full gate runs in forty minutes where it took 2h20m, and the frozen
+corpus in an hour where it took 5h41m (7879 / 7883 on the merged tree,
+the four OpenPGP residuals only). Main `08a4004` and then `56dd60a` (its
+validation of the process loader) are merged after checkpoint 16, and
+`EMAXX_FIXTURE_IMAGE_DIR` is the operator's knob for the corpus runs. Next: D14/D15, native units and native subrs in the
+image, the last open rows.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

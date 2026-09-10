@@ -8333,75 +8333,6 @@ binding. There are no new skipped tests or patched GNU Lisp files. This
 checkpoint does not claim a fresh single-run Rust gate, a fresh 7,883-test
 corpus result, universal terminal/GUI parity, or complete image restoration.
 
-## 2026-09-09 Merge of main 85f0c28 into native-comp
-
-*What came in.*  Main merged checkpoint 10 of this branch and added the
-terminal and frame parity work: terminal states with their own
-codings, parameters and keyboards, per-frame windows and face hash
-tables, `pending_funcalls', the macOS forwarded-variable manifest,
-and the test fixtures running native compilation as GNU's batch
-child does (subr trampolines enabled).  The honesty audit's two
-appended runs are kept in order; nothing else conflicted textually.
-
-*Adapting the image code.*  A nilled frame loads with main's new
-`FrameState' fields; a face's per-frame vectors (`frames') go with the
-nilled frame; `ROOTS_RESET_AFTER_LOAD' lists `terminals' (nilled
-terminal pseudovectors, `init_tty') and `pending_funcalls'
-(`syms_of_keyboard_for_pdumper') in place of the fields main removed;
-the native-comp dump control and the D11 control use the current
-writer, loader and terminal table.  The root-inventory gate passed
-unchanged on the merged tree, as did every image control and the
-real dump with its load-back.
-
-*The merged gate's one failure, and what the oracle said.*  The first
-merged gate stopped in eval_04:
-`lexical_onload_closure_can_define_a_function_in_a_dynamic_obarray'
-signalled "Symbol's function definition is void: byte-code".  The
-test binds `obarray' to a private obarray and `cl-letf's `require';
-with main's fixture now leaving subr trampolines enabled, Emaxx's
-`fset' of the primitive `require' called `comp-subr-trampoline-install'
-(data.c:Ffset's hook), whose autoload loaded comp-run.el while the
-private obarray was current, so its `byte-code' form named a private
-symbol.  GNU does exactly the same: the oracle run of the program with
-trampolines at their batch default answers `(void-function
-byte-code)', and with `native-comp-enable-subr-trampolines' bound to
-nil answers `("erc-lo2-mode" t)', the value the test expects.  The
-test is about closures under a dynamic obarray, not trampolines, so it
-now binds the trampolines off around its program, the state the
-fixture had given it before.  Strict clippy on Linux also flagged
-main's openpty control passing the window size as mutable; it is
-passed by shared reference, as libc declares it.
-
-*The second merged gate's failure: libgccjit's environment.*  With the
-first test corrected, the gate stopped in eval_03:
-`upstream_semantic_format_loads_with_complete_eieio_slots' failed with
-"Wrong type argument: stringp, 1", and only when the whole group ran
-in one process (alone it passed; each half of the preceding tests with
-it passed; with the group's output uncaptured it passed).  Deleting
-the cached `type-of' trampoline and running the two
-cl-old-struct-compat-mode tests before it reproduced the failure every
-time, and logging every `call-process' showed why: `semantic-gcc-query''s
-gcc child exited 1 with "cannot execute 'cc1'", because its
-environment carried `GCC_EXEC_PREFIX=/usr/lib/gcc/x86_64-linux-gnu/14',
-libgccjit 14's prefix, while the system gcc is 13.  libgccjit's driver
-exports that variable into the process environment during the
-in-process trampoline compile the earlier tests trigger (main's
-fixture runs with subr trampolines enabled), and the later test's
-interpreter, made after it, read the process environment into its
-`process-environment'.  GNU's children never see it: callproc.c builds
-a child's environment from `process-environment', which
-`init_callproc' took from the startup environment once, and the
-oracle confirms gcc keeps working after a trampoline compile in the
-same process.  Emaxx captures the environment when it makes an
-interpreter (its test processes make many), so the compiler now
-leaves `GCC_EXEC_PREFIX' as it found it around every in-process
-compile; the three-test sequence passes with the trampoline compiled
-in the process.  The diagnostic logging was not kept.
-
-*Merge gate.*  Alone on the machine, on the merged tree with both
-corrections: grouped gate run-1788932651828361257-12926, GROUPED GATE
-PASSED (2579 tests, every group 0 failed), `cargo fmt --check' and strict clippy
-exit 0 on the tree as committed.
 ## 2026-09-09 OpenPGP investigation: platform qualification
 
 The four recorded `mml-secure-en-decrypt-1` through `-4` ciphertext
@@ -8474,6 +8405,78 @@ the four OpenPGP cases with actual Linux passes. The two known ERC startup
 mismatches and one async-shell startup mismatch remain for dumping/startup
 work. No subsequent native-comp commits were merged, and no fresh full
 Rust or 7,883-test corpus result is claimed.
+
+## 2026-09-09 Merge of main 85f0c28 into native-comp
+
+*What came in.*  Main merged checkpoint 10 of this branch and added the
+terminal and frame parity work: terminal states with their own
+codings, parameters and keyboards, per-frame windows and face hash
+tables, `pending_funcalls', the macOS forwarded-variable manifest,
+and the test fixtures running native compilation as GNU's batch
+child does (subr trampolines enabled).  The honesty audit's two
+appended runs are kept in order; nothing else conflicted textually.
+
+*Adapting the image code.*  A nilled frame loads with main's new
+`FrameState' fields; a face's per-frame vectors (`frames') go with the
+nilled frame; `ROOTS_RESET_AFTER_LOAD' lists `terminals' (nilled
+terminal pseudovectors, `init_tty') and `pending_funcalls'
+(`syms_of_keyboard_for_pdumper') in place of the fields main removed;
+the native-comp dump control and the D11 control use the current
+writer, loader and terminal table.  The root-inventory gate passed
+unchanged on the merged tree, as did every image control and the
+real dump with its load-back.
+
+*The merged gate's one failure, and what the oracle said.*  The first
+merged gate stopped in eval_04:
+`lexical_onload_closure_can_define_a_function_in_a_dynamic_obarray'
+signalled "Symbol's function definition is void: byte-code".  The
+test binds `obarray' to a private obarray and `cl-letf's `require';
+with main's fixture now leaving subr trampolines enabled, Emaxx's
+`fset' of the primitive `require' called `comp-subr-trampoline-install'
+(data.c:Ffset's hook), whose autoload loaded comp-run.el while the
+private obarray was current, so its `byte-code' form named a private
+symbol.  GNU does exactly the same: the oracle run of the program with
+trampolines at their batch default answers `(void-function
+byte-code)', and with `native-comp-enable-subr-trampolines' bound to
+nil answers `("erc-lo2-mode" t)', the value the test expects.  The
+test is about closures under a dynamic obarray, not trampolines, so it
+now binds the trampolines off around its program, the state the
+fixture had given it before.  Strict clippy on Linux also flagged
+main's openpty control passing the window size as mutable; it is
+passed by shared reference, as libc declares it.
+
+*The second merged gate's failure: libgccjit's environment.*  With the
+first test corrected, the gate stopped in eval_03:
+`upstream_semantic_format_loads_with_complete_eieio_slots' failed with
+"Wrong type argument: stringp, 1", and only when the whole group ran
+in one process (alone it passed; each half of the preceding tests with
+it passed; with the group's output uncaptured it passed).  Deleting
+the cached `type-of' trampoline and running the two
+cl-old-struct-compat-mode tests before it reproduced the failure every
+time, and logging every `call-process' showed why: `semantic-gcc-query''s
+gcc child exited 1 with "cannot execute 'cc1'", because its
+environment carried `GCC_EXEC_PREFIX=/usr/lib/gcc/x86_64-linux-gnu/14',
+libgccjit 14's prefix, while the system gcc is 13.  libgccjit's driver
+exports that variable into the process environment during the
+in-process trampoline compile the earlier tests trigger (main's
+fixture runs with subr trampolines enabled), and the later test's
+interpreter, made after it, read the process environment into its
+`process-environment'.  GNU's children never see it: callproc.c builds
+a child's environment from `process-environment', which
+`init_callproc' took from the startup environment once, and the
+oracle confirms gcc keeps working after a trampoline compile in the
+same process.  Emaxx captures the environment when it makes an
+interpreter (its test processes make many), so the compiler now
+leaves `GCC_EXEC_PREFIX' as it found it around every in-process
+compile; the three-test sequence passes with the trampoline compiled
+in the process.  The diagnostic logging was not kept.
+
+*Merge gate.*  Alone on the machine, on the merged tree with both
+corrections: grouped gate run-1788932651828361257-12926, GROUPED GATE
+PASSED (2579 tests, every group 0 failed), `cargo fmt --check' and strict clippy
+exit 0 on the tree as committed.
+
+
 ## 2026-09-09 D12/D13/D16/D17: a process starts from the image
 
 *What was built.*  The process-level loader (`pdumper_load'):
@@ -8607,3 +8610,231 @@ tests across the ten groups, every group 0 failed, the integration
 binaries included), `cargo fmt --check' and strict clippy exit 0 both
 before and after the run.  This is the one full gate of checkpoint 15
 and the merge together.
+
+## 2026-09-10 D16b: the harness boots from a shared loadup image
+
+*What was built.*  With `EMAXX_FIXTURE_IMAGE_DIR' set, the first
+startup that finds no image builds the loadup state as before and
+then dumps it -- loadup.el's own final act, `(dump-emacs-portable
+"emacs.pdmp")', performed by the Rust startup after the
+reconstruction -- and every later startup in any process loads it as
+emacs.c loads emacs.pdmp.  The file is named by this build's
+fingerprint and the installation Lisp tree, so a rebuilt binary or
+another tree gets its own file and the loader's fingerprint check
+refuses a stale one (it is then removed and rebuilt); an exclusive
+`flock' on a sibling lock file serializes the processes that check
+and build it, and the dump lands under a temporary name renamed into
+place so no process sees a partial image.  The grouped gate sets the
+directory for its test processes; the compat harness passes it to
+every emaxx runner it spawns, after its EMAXX_* strip, so the
+corpus's per-file boots start from the image.  Production runs
+without the variable are unchanged: `--dump-file' and the
+executable's `<name>.pdmp' remain the only images they consider.
+
+*What changed in the tests.*  Three controls asserted that a directly
+initialized Emaxx reports no dump (`pdumper-stats' nil).  A process
+the harness started from its image reports that file, as GNU's emacs
+reports emacs.pdmp, so those assertions now follow
+`pdumper_load_record': nil without a load, the image's name with one.
+No test's Lisp answers changed: the D12 boundary control, the D16
+startup control and the new fixture control compare an image-booted
+process against a reconstructed one probe by probe, and the full
+gate's pass count is the whole-suite check.
+
+*What the first image-enabled gate found.*  It stopped in two
+minutes: eval_02's tests found `backward-sexp', `beginning-of-defun-raw'
+and `move-to-left-margin' void.  A plain CLI dump and load showed the
+whole of lisp.el's functions void while simple.el's and subr-x's were
+fine, and instrumenting the installer showed the image holding two
+symbol records named `forward-sexp' with the same id: the initial
+obarray's, with its byte-code function, and a second with value `t'
+and no function, installed over it.  The second is a symbol interned
+in a private obarray (Emaxx keys such a symbol by an internal name --
+the Lisp name, the obarray's id and a serial -- and the loadup state
+holds one named like the lisp.el command); the writer recorded it as
+interned in the initial obarray under its Lisp name, the D09 row's
+disclosed shortcut, and the loader resolved it to the standard symbol.
+The writer now gives such a symbol lisp.h's SYMBOL_INTERNED and
+appends its internal name after the watchers; the loader re-creates
+it under that name, so its obarray's lookups find the same object,
+and the installer keeps it out of the initial obarray.  The D16 and
+fixture controls now probe lisp.el's functions, and a unit control
+round-trips a private obarray whose symbol shares `car''s name.  The
+D12 boundary control had not caught it because its probes never
+named a lisp.el function, and the D16 control's did not either: both
+gaps are closed by the new probes.
+
+*What the second image-enabled gate found.*  eval_01's edmacro test
+parsed `<<goto-line>>' as `[execute ...]' instead of `[?\M-x ...]':
+`key-binding' answered nil for `M-x', `ESC x' and `C-x C-f' while
+`lookup-key' on the global map answered, and `keymap-parent' of the
+local map was nil.  Emaxx keeps an identity-bearing facade record
+behind each keymap list it makes (parent, bindings, char-table and
+the public view), found from the list through a view-to-record index;
+the index is derived state and is not written, and the records
+themselves were reachable from nothing the writer visits (Lisp holds
+the lists), so 7 of them came through and the rest were lost.  The
+records are now a root group of their own, disclosed as not GNU's,
+and the loader rebuilds the index from their views; the CLI probes
+and the startup controls' new key-binding probes answer as the
+reconstruction does.  The first attempt rebuilt the index from
+records typed by the `keymap' symbol and found the same 7: the
+facade's kind is `RecordKind::Keymap', not a type tag.
+
+*What the third found.*  `defvaralias' on `fill-column' after a load
+said "Don't know how to make a buffer-local variable an alias" where
+eval.c says "Cannot make a built-in variable an alias": a
+DEFVAR_PER_BUFFER variable is SYMBOL_FORWARDED in GNU whether or not a
+buffer has its own value, and Emaxx's cell keeps LOCALIZED beside
+FORWARDED for it, which the writer's one redirect field encoded as
+the localized kind.  The record now carries GNU's redirect (forwarded
+first) and an Emaxx bit for the second flag, which the installer
+restores.  The eval groups of that gate ran in 130, 137, 297, 74 and
+300 seconds against 840, 884, 1187, 203 and 2630 for the previous
+gate's, before the primitives group stopped on this.
+
+*What the fourth found.*  Every library group passed (2602 tests in
+27 minutes, against 2h20m for the previous gate's 2600), and the
+integration stage stopped in tests/cli.rs: a test that compares the
+process's stderr byte for byte with GNU's saw the fixture dump's
+"Dumping fingerprint", "Dump complete" and byte-count lines, printed
+by the first process of the run as it built the image.  GNU prints
+those from a build's dump and a failed load, never from a session, so
+the harness's dump and its load attempt hold them back while a guard
+lives; `dump-emacs-portable' called from Lisp prints as pdumper.c does.
+
+*Honesty.*  This is the harness's convenience, not GNU's flow:
+loadup.el performs the dump in GNU, Emaxx's startup performs it, and
+only under the variable.  The loadup state an image holds is the one
+the reconstruction produces in the same environment (the same
+`EMAXX_DUMP_SOURCE_DIRECTORY' or sibling tree, which the file name
+hashes); the per-run isolation the harness applies (the test
+directory, `source-directory', the eln cache) is applied after the
+load in both paths, as startup.el and the runner's `--eval's apply it
+in GNU.
+
+*Gate.*  Alone on the machine, with the shared image on: grouped gate
+run-1789024341050155106-30784, GROUPED GATE PASSED (2602 library tests
+across the ten groups and the integration binaries, every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 before and after.
+Wall time 07:12 to 07:52, forty minutes, against 2h20m for the gate of
+checkpoint 15; the library groups took 41, 11, 148, 138, 300, 80, 323,
+9, 682 and 11 seconds.
+
+## 2026-09-10 Merge of main 08a4004 into native-comp
+
+*What came in.*  Main merged native-comp 7a87362 (the state before
+checkpoint 15) and validated it over seventeen commits: the completed
+startup image control became a context-and-capability boundary
+control (on Darwin the ordinary startup loads native functions and the
+writer refuses them, the D14/D15 gap this branch's next checkpoints
+close), `tools/serial_grouped_gate.py', the Linux oracle built with
+the exact reference native ABI configuration, the dead-thread GC
+release observed after the GNU loader returns, the public native
+diagnostics, and the OpenPGP workflow.  The remote history was
+rewritten in the meantime (every commit re-hashed with its tree,
+author and date kept); the local branch was moved onto the rewritten
+native-comp tip without a file changing, which a tree diff confirmed
+empty.
+
+*Resolution.*  Two textual conflicts, both kept in main's shape: the
+buffer image follows the undo root visitor in buffer.rs, and the
+honesty audit keeps its sections in order with the record of the
+85f0c28 merge once.  The line check found 30 lines main has that the
+merged tree lacks, all this branch's own pre-checkpoint-15 code that
+main received through its merge of the older native-comp and that
+checkpoints 15 and 16 replaced (the old loader's symbol creation, the
+old dead-frame install by id, the old record install, the old
+inventory match, the old handover pointer).
+
+*The merged gate's one failure.*  The primitives group stopped in
+`module_load_validates_real_libraries_without_fabricating_the_gnu_value_abi':
+its C probe did not compile.  Main replaced this branch's
+`ProcessEnvironmentGuard' (which put GCC_EXEC_PREFIX back after every
+in-process libgccjit compile) with callproc.c's own approach, a
+startup snapshot of environ that every interpreter's environment
+lists are built from; the host environment itself now keeps what the
+GCC driver exported, as GNU's does, and the test spawned the system
+cc with `Command' inheriting that host environment (an earlier test in
+the same two-worker process had compiled a trampoline).  The probe's
+compiler now gets the startup snapshot, as a GNU child built from
+`process-environment' would, and `init_after_pdump_load' takes the
+same snapshot for the lists it rebuilds after a load.  Main's
+serial gate had not met this because it runs one worker.
+
+*Merge gate.*  Alone on the machine, on the merged tree as committed,
+with the shared image on: grouped gate run-1789029688488327082-23803,
+GROUPED GATE PASSED (2602 library tests across the ten groups and the
+integration binaries, every group 0 failed), `cargo fmt --check' and
+strict clippy exit 0 before and after; 08:41 to 09:20.
+
+*The corpus from the image.*  The frozen corpus with
+`EMAXX_FIXTURE_IMAGE_DIR' set (artifact
+`frozen-1789032315130318069-30301', 09:20 to 10:25, one hour and five
+minutes where the recorded run took five hours and forty-one; a
+runner's setup 1.1 to 1.6 s where it was 23): 7873 / 7883 matching,
+10 mismatching, against the recorded 7869 / 7883.  Ten outcomes came
+right (erc, server, simple and the two thread files, main's thread
+work and the earlier server fixes), and one file regressed:
+gv-tests.el, 0 to 6.  Its tests write a file into a temporary
+directory and spawn a child emacs there to byte-compile it; under
+the image the child looked for the file in the harness's working
+directory: the child was image-booted, and the `*scratch*' it
+started in had the dumping process's `default-directory'.
+buffer.c:init_buffer, which emacs.c runs after the load, selects
+`*scratch*' and gives it and the first minibuffer the new process's
+working directory (a separator appended, "/:" in front when a handler
+would claim it); the other dumped buffers keep their dump-time
+directories, as GNU's do.  That is now part of the after-load
+initialization; the CLI control dumps in one directory and loads in
+another and reads both buffers' directories.  The direct
+reproductions had missed it because they ran the child in the
+directory the image was dumped from.
+gv-tests passes through the harness with the image on (8 / 8), and
+the gate on the tree with this correction: grouped gate
+run-1789037478153525215-14024, GROUPED GATE PASSED (2602 library tests
+and the integration binaries, every group 0 failed), fmt and strict
+clippy exit 0, 10:51 to 11:30.
+
+## 2026-09-10 Merge of main 56dd60a into native-comp
+
+*What came in.*  Main merged checkpoint 15 and validated the process
+loader over eleven commits.  Its corrections match what this branch
+found on its own in the meantime -- init_buffer, init_cmdargs and
+init_callproc reapplied after the load, the environment lists from
+the startup snapshot -- and add keyboard.c's safe_run_hooks details
+(`inhibit-quit' bound, removal by function identity through `set' and
+`set-default' so watchers see it, the global value read when a local
+list reaches `t'), a fallible `init_after_pdump_load', the image
+controls renamed to distinguish a supported round trip from the
+native-image refusal, and `tools/dumped_startup_gate.py', the
+positive acceptance gate that builds an image from an ordinary
+startup and runs three original ERT tests from it in both editors.
+
+*Resolution.*  Four textual conflicts: `init_after_pdump_load' is
+main's version, the superset of this branch's follow-up (which had
+added the same init_buffer port a few hours earlier); the D16 ledger
+row keeps this branch's D16b text; the CLI control keeps main's
+native-limit branch with this branch's change of working directory
+between the dump and the load and its directory probes; the honesty
+audit keeps its sections in order with the 85f0c28 merge record once.
+The line check found 26 lines main has that the merged tree lacks,
+all checkpoint-15-era lines that checkpoint 16 replaced (the old
+symbol creation, the old keymap-cache reasons, the old nil
+expectations for `pdumper-stats').
+
+*Merge gate.*  Alone on the machine, on the merged tree as committed,
+with the shared image on: grouped gate run-1789040516032552015-27701,
+GROUPED GATE PASSED (2606 library tests across the ten groups and the
+integration binaries, every group 0 failed), `cargo fmt --check' and
+strict clippy exit 0 before and after; 11:41 to 12:20.
+
+*The corpus from the image, on the merged tree.*  Frozen corpus with
+`EMAXX_FIXTURE_IMAGE_DIR' set, artifact
+`frozen-1789043156837100912-1662', 12:24 to 13:27: 7879 / 7883
+matching, 4 mismatching, against the recorded 7869 / 7883 (14).  The
+four are the OpenPGP decryption platform residual of mml-sec-tests
+(`mml-secure-en-decrypt-1' to `-4', recorded above and in main's
+audits); erc, server, simple and both thread files are at 0, and
+gv-tests is back at 0 with the init_buffer correction.  One hour and
+three minutes for the run that took five hours and forty-one.

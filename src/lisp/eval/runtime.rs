@@ -2606,6 +2606,27 @@ impl Interpreter {
         self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
     }
 
+    /// After an image load: the keymap records came back with their
+    /// public views, and the view-to-record index that every keymap
+    /// primitive consults is rebuilt from them (the index is derived
+    /// state, not written).
+    pub(crate) fn rebuild_keymap_public_views(&mut self) {
+        let views = self
+            .records
+            .iter()
+            .filter(|record| record.kind == RecordKind::Keymap)
+            .filter_map(|record| {
+                let view = record
+                    .slots
+                    .get(crate::lisp::primitives::values::KEYMAP_PUBLIC_VIEW_SLOT)?;
+                view.is_cons().then(|| (record.id, view.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (id, view) in views {
+            self.register_keymap_public_cons_owners(id, &view);
+        }
+    }
+
     pub(crate) fn keymap_public_cons_owner_ids(&self, value: &Value) -> Vec<u64> {
         value
             .cons_id()
