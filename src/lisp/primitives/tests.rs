@@ -2305,12 +2305,31 @@ fn portable_dump_introspection_and_backend_boundary_are_honest() {
                         (stringp (alist-get 'dump-file-name stats))))))"#,
         "t",
     );
-    assert_eq!(
-        call(&mut interp, "pdumper-stats", &[], &mut env)
-            .expect("a directly initialized Emaxx has valid dump statistics"),
-        Value::Nil,
-        "Emaxx must not claim it restored from a portable dump"
-    );
+    // A reconstructed process reports no dump; one the harness started
+    // from its shared loadup image reports that file, as GNU's emacs
+    // reports emacs.pdmp.
+    let stats = call(&mut interp, "pdumper-stats", &[], &mut env)
+        .expect("a directly initialized Emaxx has valid dump statistics");
+    match interp
+        .pdumper_load_record()
+        .map(|record| record.filename.clone())
+    {
+        None => assert_eq!(
+            stats,
+            Value::Nil,
+            "Emaxx must not claim it restored from a portable dump"
+        ),
+        Some(filename) => {
+            let printed = call(&mut interp, "prin1-to-string", &[stats], &mut env).expect("print");
+            assert!(
+                string_like(&printed)
+                    .expect("printed")
+                    .text
+                    .ends_with(&format!("(dump-file-name . {filename:?}))")),
+                "{printed:?}"
+            );
+        }
+    }
 
     let contract_program = r#"
         (list
@@ -2585,7 +2604,16 @@ fn dump_emacs_portable_restores_its_context_at_the_writer_boundary() {
             continue;
         }
         if program == "(pdumper-stats)" {
-            assert_eq!(expected, "nil");
+            // The writer's process reports the harness image it started
+            // from, if any; the restored one reports this load.
+            if interp.dump_loaded_p() {
+                assert!(
+                    expected.starts_with("((dumped-with-pdumper . t) "),
+                    "{expected}"
+                );
+            } else {
+                assert_eq!(expected, "nil");
+            }
             assert!(
                 actual.starts_with("((dumped-with-pdumper . t) (load-time . "),
                 "{actual}"
@@ -2664,6 +2692,10 @@ fn batch_startup_loads_the_dump_file_as_emacs_c_load_pdump_does() {
     let mut reference = crate::test_support::initialized_upstream_batch_interpreter();
     let programs = [
         "(list (featurep 'subr-x) (featurep 'cl-lib) (fboundp 'when-let) (macrop 'when))",
+        "(list (fboundp 'forward-sexp) (fboundp 'beginning-of-defun-raw) (fboundp 'kill-region) \
+               (fboundp 'move-to-left-margin) (intern-soft \"forward-sexp\"))",
+        "(list (key-binding [?\\M-x]) (key-binding [?\\C-x ?\\C-f]) (key-binding \"\\M-x\") \
+               (keymapp (keymap-parent (current-local-map))) (where-is-internal 'execute-extended-command))",
         "(list (symbol-value 'emacs-version) (default-value 'fill-column) purify-flag)",
         "(let ((x 41)) (cl-incf x) x)",
         "(with-temp-buffer (insert \"abc\") (upcase-region 1 3) (buffer-string))",
@@ -2724,7 +2756,88 @@ fn batch_startup_loads_the_dump_file_as_emacs_c_load_pdump_does() {
             &mut Vec::new(),
         )
         .expect("pdumper-stats");
-    assert!(reference_stats.is_nil());
+    assert_eq!(reference_stats.is_nil(), !reference.dump_loaded_p());
+}
+
+#[test]
+fn fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it() {
+    // Rust-only, the harness's shared loadup image: with
+    // EMAXX_FIXTURE_IMAGE_DIR set, the first batch startup builds the
+    // loadup state and dumps it (loadup.el's own final act), the second
+    // starts from that file (emacs.c's load_pdump of emacs.pdmp), and
+    // both answer the same; the file is named by the build's fingerprint.
+    let upstream = crate::compat::project_root().join("../emacs");
+    let load_path =
+        crate::compat::emaxx_upstream_load_path(&upstream).expect("upstream GNU Emacs load path");
+    let directory =
+        std::env::temp_dir().join(format!("emaxx-fixture-images-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || crate::batch::BatchRunOptions {
+        load_path: load_path.clone(),
+        ..Default::default()
+    };
+    let (mut first, mut second, images) = {
+        let _env_write = crate::compat::lock_boot_environment_for_write();
+        unsafe {
+            std::env::set_var("EMAXX_FIXTURE_IMAGE_DIR", &directory);
+        }
+        let first = crate::batch::initialize_batch_interpreter(&options());
+        let images = std::fs::read_dir(&directory)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.ends_with(".pdmp"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let second = crate::batch::initialize_batch_interpreter(&options());
+        unsafe {
+            std::env::remove_var("EMAXX_FIXTURE_IMAGE_DIR");
+        }
+        (
+            first.unwrap_or_else(|error| panic!("the dumping boot: {error}")),
+            second.unwrap_or_else(|error| panic!("the boot from the image: {error}")),
+            images,
+        )
+    };
+    let _ = std::fs::remove_dir_all(&directory);
+    let fingerprint = crate::lisp::primitives::pdumper::image::executable_fingerprint()[..4]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(images.len(), 1, "{images:?}");
+    assert!(
+        images[0].starts_with(&format!("loadup-{fingerprint}-")),
+        "{images:?}"
+    );
+    assert!(!first.dump_loaded_p());
+    assert!(second.dump_loaded_p());
+    let programs = [
+        "(list (featurep 'subr-x) (fboundp 'when-let) (macrop 'when) purify-flag)",
+        "(list (fboundp 'forward-sexp) (fboundp 'beginning-of-defun-raw) (fboundp 'move-to-left-margin))",
+        "(list (key-binding [?\\M-x]) (key-binding [?\\C-x ?\\C-f]) (keymapp (keymap-parent (current-local-map))))",
+        "(list command-line-processed noninteractive custom-delayed-init-variables)",
+        "(with-current-buffer \"*Messages*\" (buffer-string))",
+        "(list (buffer-name) (mapcar #'buffer-name (buffer-list)) (length load-path))",
+        "(with-temp-buffer (insert \"abc\") (upcase-region 1 3) (buffer-string))",
+        "(list (getenv \"HOME\") (car command-line-args) (car exec-path))",
+    ];
+    for program in programs {
+        let print = |interp: &mut crate::lisp::eval::Interpreter| {
+            let mut env = Vec::new();
+            let form = Reader::new(program)
+                .read()
+                .expect("program parses")
+                .expect("a form");
+            let value = interp
+                .eval(&form, &mut env)
+                .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+            let printed = call(interp, "prin1-to-string", &[value], &mut env).expect("print");
+            string_like(&printed).expect("printed").text
+        };
+        assert_eq!(print(&mut second), print(&mut first), "{program}");
+    }
 }
 
 #[test]

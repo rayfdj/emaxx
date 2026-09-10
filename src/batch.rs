@@ -482,11 +482,40 @@ fn initialize_interpreter(
     // loadup; without one it is temacs and reconstructs the dumped state
     // in the closure below.  The process values the constructor took
     // once are applied again over the image, as GNU's init_* are.
-    let initialized = crate::lisp::primitives::pdumper::load_pdump_at_startup(
+    let mut initialized = crate::lisp::primitives::pdumper::load_pdump_at_startup(
         &mut interpreter,
         options.dump_file.as_deref(),
     )
     .is_some();
+    // The harness's shared loadup image (`EMAXX_FIXTURE_IMAGE_DIR'): the
+    // `emacs.pdmp' of this build, loaded when present, else dumped by
+    // this process once its loadup state is built.
+    let mut fixture_to_dump = None;
+    if !initialized
+        && options.dump_file.is_none()
+        && let Some(fixture) = FixtureImage::acquire()?
+    {
+        use crate::lisp::primitives::pdumper::{PdumperLoadError, QuietDumpMessages, pdumper_load};
+        let _quiet = QuietDumpMessages::hold();
+        match pdumper_load(&fixture.path, &mut interpreter) {
+            Ok(_) => initialized = true,
+            Err(
+                PdumperLoadError::FileNotFound
+                | PdumperLoadError::BadFileType
+                | PdumperLoadError::FailedDump
+                | PdumperLoadError::VersionMismatch,
+            ) => {
+                let _ = fs::remove_file(&fixture.path);
+                fixture_to_dump = Some(fixture);
+            }
+            Err(PdumperLoadError::Error(message)) => {
+                return Err(format!(
+                    "could not load the fixture image \"{}\": {message}",
+                    fixture.path.display()
+                ));
+            }
+        }
+    }
     if initialized {
         interpreter.init_after_pdump_load();
     }
@@ -574,6 +603,11 @@ fn initialize_interpreter(
     interpreter.set_variable("inhibit-message", Value::Nil, &mut Vec::new());
     interpreter.set_variable("message-log-max", saved_message_log_max, &mut Vec::new());
     reconstruction?;
+    // loadup.el's end: `(dump-emacs-portable "emacs.pdmp")' from the state
+    // just built, for the processes and tests that follow.
+    if let Some(fixture) = fixture_to_dump {
+        fixture.dump(&mut interpreter)?;
+    }
     // emacs.c uses 0.1 while temacs builds the dump, then raises the value to
     // 1.0 only when an initialized (dump-loaded) process starts in batch mode.
     // The reconstructed image above is the temacs/loadup phase. Apply the
@@ -807,6 +841,90 @@ pub(crate) fn initialize_initial_frame_faces(interpreter: &mut Interpreter) -> R
         )
         .map_err(|error| format!("initialize initial-frame faces: {error}"))?;
     Ok(())
+}
+
+/// The loadup image the test harness shares between its processes and
+/// tests (`EMAXX_FIXTURE_IMAGE_DIR'): what GNU's `temacs --batch -l loadup
+/// pdump' leaves beside the executable as `emacs.pdmp'.  The first boot
+/// that finds none builds the loadup state and dumps it there; every
+/// later boot starts from it, 1 s instead of the reconstruction's tens
+/// of seconds.  The file is named by this build's fingerprint and the
+/// installation Lisp tree the state is built from, the loader's
+/// fingerprint check refuses another build's image, and an exclusive
+/// lock on the directory serializes the processes that check and build
+/// it.  Not GNU's: loadup.el performs the dump itself; here the startup
+/// performs it after the reconstruction, only under the harness's
+/// variable.
+struct FixtureImage {
+    path: PathBuf,
+    _lock: fs::File,
+}
+
+impl FixtureImage {
+    fn acquire() -> Result<Option<Self>, String> {
+        let Some(directory) = env::var_os("EMAXX_FIXTURE_IMAGE_DIR") else {
+            return Ok(None);
+        };
+        let directory = PathBuf::from(directory);
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("create {}: {error}", directory.display()))?;
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let fingerprint =
+            hex(&crate::lisp::primitives::pdumper::image::executable_fingerprint()[..4]);
+        let tree = {
+            use sha2::Digest;
+            let mut hasher = sha2::Sha256::new();
+            for path in installation_lisp_load_path()? {
+                hasher.update(path.as_os_str().as_encoded_bytes());
+                hasher.update(b"\0");
+            }
+            hex(&hasher.finalize()[..4])
+        };
+        let path = directory.join(format!("loadup-{fingerprint}-{tree}.pdmp"));
+        let lock_path = directory.join(format!("loadup-{fingerprint}-{tree}.lock"));
+        let lock = fs::File::create(&lock_path)
+            .map_err(|error| format!("create {}: {error}", lock_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: a blocking exclusive advisory lock on an open file.
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(format!(
+                    "lock {}: {}",
+                    lock_path.display(),
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        Ok(Some(Self { path, _lock: lock }))
+    }
+
+    /// `(dump-emacs-portable FILE)' to a temporary name, then the rename:
+    /// no process ever sees a partial image under the final name.
+    fn dump(self, interpreter: &mut Interpreter) -> Result<(), String> {
+        let temporary = self.path.with_extension("pdmp.tmp");
+        let _ = fs::remove_file(&temporary);
+        let _quiet = lisp::primitives::pdumper::QuietDumpMessages::hold();
+        lisp::primitives::call(
+            interpreter,
+            "dump-emacs-portable",
+            &[Value::String(temporary.display().to_string().into())],
+            &mut Vec::new(),
+        )
+        .map_err(|error| format!("dump the fixture image: {error}"))?;
+        fs::rename(&temporary, &self.path).map_err(|error| {
+            format!(
+                "rename {} to {}: {error}",
+                temporary.display(),
+                self.path.display()
+            )
+        })
+    }
 }
 
 /// The Lisp tree the dumped image is reconstructed FROM.

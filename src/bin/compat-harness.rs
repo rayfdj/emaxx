@@ -2845,6 +2845,11 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     // host-side trace preserves the nested file/form that produced opaque
     // conditions such as `(args-out-of-range [] 0)' in the immutable log.
     command.env("EMAXX_TRACE_LOAD_ERRORS", "1");
+    // The shared loadup image, when the operator gave the harness one:
+    // the runner starts from it as the oracle starts from its emacs.pdmp.
+    if let Some(fixture_images) = std::env::var_os("EMAXX_FIXTURE_IMAGE_DIR") {
+        command.env("EMAXX_FIXTURE_IMAGE_DIR", fixture_images);
+    }
     command.env("EMAXX_COMPAT_RELATIVE_FILE", request.relative_file);
     command.env(
         "EMAXX_COMPAT_SELECTOR",

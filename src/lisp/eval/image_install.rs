@@ -56,10 +56,12 @@ impl Interpreter {
         }
         // Symbols the obarray does not list: one `unintern' removed keeps
         // its name out of the obarray; a made-uninterned one has its own
-        // identity; any other interned symbol belongs in the obarray, as
-        // every interned symbol does in GNU (the writer's obarray list can
-        // miss a symbol whose only mention is an autoload not yet read
-        // into its function cell).
+        // identity; one interned in another obarray keeps its own cells
+        // under its internal name (the obarray record lists the object);
+        // any other interned symbol belongs in the obarray, as every
+        // interned symbol does in GNU (the writer's obarray list can miss
+        // a symbol whose only mention is an autoload not yet read into
+        // its function cell).
         for symbol in &image.symbols {
             use crate::lisp::primitives::pdumper::context::FLAG_UNINTERNED_FROM_OBARRAY;
             let text = symbol.symbol.as_str();
@@ -69,7 +71,9 @@ impl Interpreter {
             if symbol.flags & FLAG_UNINTERNED_FROM_OBARRAY != 0 {
                 self.uninterned_standard_symbol_names
                     .insert(text.to_owned());
-            } else if symbol.symbol.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT == 0 {
+            } else if symbol.symbol.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT == 0
+                && !crate::lisp::types::is_private_obarray_symbol(text)
+            {
                 self.intern_symbol_name(text);
             }
             self.install_symbol(symbol);
@@ -128,13 +132,13 @@ impl Interpreter {
     fn install_symbol(&mut self, symbol: &LoadedSymbol) {
         use crate::lisp::primitives::pdumper::context::{
             FLAG_ALWAYS_LOCAL, FLAG_DECLARED_SPECIAL, FLAG_FWD_BOOL, FLAG_FWD_INT,
-            FLAG_LOCAL_IF_SET, FLAG_PER_BUFFER, SYMBOL_FORWARDED, SYMBOL_LOCALIZED,
-            SYMBOL_REDIRECT_MASK,
+            FLAG_LOCAL_IF_SET, FLAG_LOCALIZED_BESIDE_FORWARDED, FLAG_PER_BUFFER, SYMBOL_FORWARDED,
+            SYMBOL_LOCALIZED, SYMBOL_REDIRECT_MASK,
         };
         let name = symbol.symbol.as_str().to_owned();
         let redirect = symbol.flags & SYMBOL_REDIRECT_MASK;
         let mut flags = 0_u8;
-        if redirect == SYMBOL_LOCALIZED {
+        if redirect == SYMBOL_LOCALIZED || symbol.flags & FLAG_LOCALIZED_BESIDE_FORWARDED != 0 {
             flags |= symbol_cell_flags::LOCALIZED;
         }
         if redirect == SYMBOL_FORWARDED {

@@ -259,6 +259,11 @@ def gate_environment(template: bool) -> dict[str, str]:
             "RUST_TEST_THREADS": "2",
         }
     )
+    # The loadup image every process and test boots from (batch.rs's
+    # FixtureImage): built once by the first boot, loaded by the rest.
+    fixture_images = PROJECT_ROOT / "target" / "grouped-gate" / "fixture-images"
+    fixture_images.mkdir(parents=True, exist_ok=True)
+    environment["EMAXX_FIXTURE_IMAGE_DIR"] = str(fixture_images)
     if template:
         environment["EMAXX_IMAGE_TEMPLATE"] = "1"
     else:

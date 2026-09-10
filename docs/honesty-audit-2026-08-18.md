@@ -8610,3 +8610,113 @@ tests across the ten groups, every group 0 failed, the integration
 binaries included), `cargo fmt --check' and strict clippy exit 0 both
 before and after the run.  This is the one full gate of checkpoint 15
 and the merge together.
+
+## 2026-09-10 D16b: the harness boots from a shared loadup image
+
+*What was built.*  With `EMAXX_FIXTURE_IMAGE_DIR' set, the first
+startup that finds no image builds the loadup state as before and
+then dumps it -- loadup.el's own final act, `(dump-emacs-portable
+"emacs.pdmp")', performed by the Rust startup after the
+reconstruction -- and every later startup in any process loads it as
+emacs.c loads emacs.pdmp.  The file is named by this build's
+fingerprint and the installation Lisp tree, so a rebuilt binary or
+another tree gets its own file and the loader's fingerprint check
+refuses a stale one (it is then removed and rebuilt); an exclusive
+`flock' on a sibling lock file serializes the processes that check
+and build it, and the dump lands under a temporary name renamed into
+place so no process sees a partial image.  The grouped gate sets the
+directory for its test processes; the compat harness passes it to
+every emaxx runner it spawns, after its EMAXX_* strip, so the
+corpus's per-file boots start from the image.  Production runs
+without the variable are unchanged: `--dump-file' and the
+executable's `<name>.pdmp' remain the only images they consider.
+
+*What changed in the tests.*  Three controls asserted that a directly
+initialized Emaxx reports no dump (`pdumper-stats' nil).  A process
+the harness started from its image reports that file, as GNU's emacs
+reports emacs.pdmp, so those assertions now follow
+`pdumper_load_record': nil without a load, the image's name with one.
+No test's Lisp answers changed: the D12 boundary control, the D16
+startup control and the new fixture control compare an image-booted
+process against a reconstructed one probe by probe, and the full
+gate's pass count is the whole-suite check.
+
+*What the first image-enabled gate found.*  It stopped in two
+minutes: eval_02's tests found `backward-sexp', `beginning-of-defun-raw'
+and `move-to-left-margin' void.  A plain CLI dump and load showed the
+whole of lisp.el's functions void while simple.el's and subr-x's were
+fine, and instrumenting the installer showed the image holding two
+symbol records named `forward-sexp' with the same id: the initial
+obarray's, with its byte-code function, and a second with value `t'
+and no function, installed over it.  The second is a symbol interned
+in a private obarray (Emaxx keys such a symbol by an internal name --
+the Lisp name, the obarray's id and a serial -- and the loadup state
+holds one named like the lisp.el command); the writer recorded it as
+interned in the initial obarray under its Lisp name, the D09 row's
+disclosed shortcut, and the loader resolved it to the standard symbol.
+The writer now gives such a symbol lisp.h's SYMBOL_INTERNED and
+appends its internal name after the watchers; the loader re-creates
+it under that name, so its obarray's lookups find the same object,
+and the installer keeps it out of the initial obarray.  The D16 and
+fixture controls now probe lisp.el's functions, and a unit control
+round-trips a private obarray whose symbol shares `car''s name.  The
+D12 boundary control had not caught it because its probes never
+named a lisp.el function, and the D16 control's did not either: both
+gaps are closed by the new probes.
+
+*What the second image-enabled gate found.*  eval_01's edmacro test
+parsed `<<goto-line>>' as `[execute ...]' instead of `[?\M-x ...]':
+`key-binding' answered nil for `M-x', `ESC x' and `C-x C-f' while
+`lookup-key' on the global map answered, and `keymap-parent' of the
+local map was nil.  Emaxx keeps an identity-bearing facade record
+behind each keymap list it makes (parent, bindings, char-table and
+the public view), found from the list through a view-to-record index;
+the index is derived state and is not written, and the records
+themselves were reachable from nothing the writer visits (Lisp holds
+the lists), so 7 of them came through and the rest were lost.  The
+records are now a root group of their own, disclosed as not GNU's,
+and the loader rebuilds the index from their views; the CLI probes
+and the startup controls' new key-binding probes answer as the
+reconstruction does.  The first attempt rebuilt the index from
+records typed by the `keymap' symbol and found the same 7: the
+facade's kind is `RecordKind::Keymap', not a type tag.
+
+*What the third found.*  `defvaralias' on `fill-column' after a load
+said "Don't know how to make a buffer-local variable an alias" where
+eval.c says "Cannot make a built-in variable an alias": a
+DEFVAR_PER_BUFFER variable is SYMBOL_FORWARDED in GNU whether or not a
+buffer has its own value, and Emaxx's cell keeps LOCALIZED beside
+FORWARDED for it, which the writer's one redirect field encoded as
+the localized kind.  The record now carries GNU's redirect (forwarded
+first) and an Emaxx bit for the second flag, which the installer
+restores.  The eval groups of that gate ran in 130, 137, 297, 74 and
+300 seconds against 840, 884, 1187, 203 and 2630 for the previous
+gate's, before the primitives group stopped on this.
+
+*What the fourth found.*  Every library group passed (2602 tests in
+27 minutes, against 2h20m for the previous gate's 2600), and the
+integration stage stopped in tests/cli.rs: a test that compares the
+process's stderr byte for byte with GNU's saw the fixture dump's
+"Dumping fingerprint", "Dump complete" and byte-count lines, printed
+by the first process of the run as it built the image.  GNU prints
+those from a build's dump and a failed load, never from a session, so
+the harness's dump and its load attempt hold them back while a guard
+lives; `dump-emacs-portable' called from Lisp prints as pdumper.c does.
+
+*Honesty.*  This is the harness's convenience, not GNU's flow:
+loadup.el performs the dump in GNU, Emaxx's startup performs it, and
+only under the variable.  The loadup state an image holds is the one
+the reconstruction produces in the same environment (the same
+`EMAXX_DUMP_SOURCE_DIRECTORY' or sibling tree, which the file name
+hashes); the per-run isolation the harness applies (the test
+directory, `source-directory', the eln cache) is applied after the
+load in both paths, as startup.el and the runner's `--eval's apply it
+in GNU.
+
+*Gate.*  Alone on the machine, with the shared image on: grouped gate
+run-1789024341050155106-30784, GROUPED GATE PASSED (2602 library tests
+across the ten groups and the integration binaries, every group 0
+failed), `cargo fmt --check' and strict clippy exit 0 before and after.
+Wall time 07:12 to 07:52, forty minutes, against 2h20m for the gate of
+checkpoint 15; the library groups took 41, 11, 148, 138, 300, 80, 323,
+9, 682 and 11 seconds.

@@ -95,8 +95,10 @@ pub(crate) fn validate_header(bytes: &[u8]) -> Result<DumpHeader, LoadError> {
     }
     let desired = executable_fingerprint();
     if header.fingerprint != *desired {
-        eprintln!("desired fingerprint: {}", hex(desired));
-        eprintln!("found fingerprint: {}", hex(&header.fingerprint));
+        if !super::dump_messages_suppressed() {
+            eprintln!("desired fingerprint: {}", hex(desired));
+            eprintln!("found fingerprint: {}", hex(&header.fingerprint));
+        }
         return Err(LoadError::VersionMismatch);
     }
     Ok(header)
@@ -203,17 +205,7 @@ impl Loader<'_> {
                     let name_text = string_like(&name)
                         .map(|string| string.text)
                         .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?;
-                    let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-                    // A symbol `unintern' removed from the obarray keeps its
-                    // ordinary name; only a symbol made uninterned gets a
-                    // fresh identity.
-                    let symbol = if interned == SYMBOL_UNINTERNED
-                        && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0
-                    {
-                        SymbolName::make_uninterned(name, &name_text, next_make_symbol_id())
-                    } else {
-                        SymbolName::intern_str(&name_text)
-                    };
+                    let symbol = self.symbol_of_record(offset, flags, name, &name_text)?;
                     self.objects.insert(offset, Value::Symbol(symbol.clone()));
                     symbol_records.push((offset, symbol, flags));
                 }
@@ -547,6 +539,10 @@ impl Loader<'_> {
                 .map_err(|message| LoadError::Error(format!("{slot:?}: {message}")))?;
         }
 
+        // The keymap primitives find a keymap record through its public
+        // view's cons cells; that index is derived from the records.
+        self.interp.rebuild_keymap_public_views();
+
         Ok(LoadedImage {
             header,
             roots,
@@ -623,7 +619,9 @@ impl Loader<'_> {
                         "a record's type tag is an uninterned symbol read early".into(),
                     ));
                 }
-                Ok(Value::Symbol(SymbolName::intern_str(&name_text)))
+                Ok(Value::Symbol(
+                    self.symbol_of_record(target, flags, name, &name_text)?,
+                ))
             }
             _ => self.value_at(field_offset),
         }
@@ -653,6 +651,46 @@ impl Loader<'_> {
     /// environment is created as an empty shell first so a closure that
     /// reaches itself through its own frame terminates, as
     /// ImageGraphCopier does for the test template.
+    /// The symbol a record stands for.  A symbol `unintern' removed from
+    /// the obarray keeps its ordinary name; a symbol made uninterned gets
+    /// a fresh identity; one interned in another obarray (SYMBOL_INTERNED)
+    /// is re-created under the internal name the record carries after
+    /// its watchers, so its obarray's lookups find the same object.
+    fn symbol_of_record(
+        &mut self,
+        offset: u32,
+        flags: u64,
+        name: Value,
+        name_text: &str,
+    ) -> Result<SymbolName, LoadError> {
+        let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
+        if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
+            return Ok(SymbolName::make_uninterned(
+                name,
+                name_text,
+                next_make_symbol_id(),
+            ));
+        }
+        if interned == SYMBOL_INTERNED {
+            let nwatchers = self.reader.word(offset + 40)? as u32;
+            let internal = self.value_at(offset + 48 + 8 * nwatchers)?;
+            let internal = string_like(&internal)
+                .map(|string| string.text)
+                .ok_or_else(|| {
+                    LoadError::Error(format!(
+                        "symbol {name_text}: the other-obarray name is not a string"
+                    ))
+                })?;
+            if !crate::lisp::types::is_private_obarray_symbol(&internal) {
+                return Err(LoadError::Error(format!(
+                    "symbol {name_text}: not an other-obarray name: {internal:?}"
+                )));
+            }
+            return Ok(SymbolName::intern_with_lisp_name(internal, Some(name)));
+        }
+        Ok(SymbolName::intern_str(name_text))
+    }
+
     fn closure_at(&mut self, offset: u32) -> Result<Value, LoadError> {
         if let Some(value) = self.objects.get(&offset) {
             return Ok(value.clone());
