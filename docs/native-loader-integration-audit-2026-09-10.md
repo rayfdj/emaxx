@@ -113,3 +113,41 @@ that test alone passed its rerun. No previously passed group was repeated for
 the fixture correction. Strict Clippy then identified a redundant closure in
 the hook wrapper; it was replaced by the equivalent block without suppressing
 the lint. The final strict Clippy run and CLI image-boundary control pass.
+
+## Completed Darwin preservation and oracle controls
+
+- `native_thread_continuations`: one integration test, six real GNU/Emaxx
+  native/thread/GC programs, all matching (74.65 seconds).
+- `native_comp_identity`: one integration test, nine unchanged fixtures,
+  eight complete `.eln` byte comparisons and the no-artifact policy case,
+  all passing (227.31 seconds).
+- `cargo fmt --all -- --check` and Clippy with `--all-targets --all-features
+  -- -D warnings` pass. There are no lint suppressions for the new code.
+
+The quieter relocated-GNU retry still timed out in `erc--find-mode`.
+An isolated comparison then reused the same image and executable bytes but
+linked the original native-library installation instead of copying those
+libraries. All three original tests passed: the two ERC cases took 1.09 and
+0.38 seconds, and async-shell took 0.28 seconds. This demonstrates a library
+relocation/setup timing effect; it does not identify its OS-level cause.
+
+The gate now shares the unchanged built native libraries, as it already does
+the standard Lisp/data installation. Hashes and the complete native-library
+inventory are checked after execution. A fresh run with that layout passes
+the GNU image probe and all three original tests. Emaxx still fails while
+building its native image (exit 255); the gate correctly exits 1. The raw
+attempts remain under `dumped-startup-darwin-final`,
+`gnu-shared-native-libraries`, and `dumped-startup-darwin-shared` in the
+scratch root. The six gate-acceptance negative controls pass.
+
+`supported_image_starts_in_a_fresh_process_with_new_process_values` adds a
+positive process-boundary control without claiming ordinary loadup. It writes
+a supported image from the built-in interpreter state, copies the unchanged
+test executable, and launches that copy from a new directory. The child must
+discover its sibling image through the production loader, validate its real
+fingerprint, retain the parent's saved marker, and expose the child's new
+invocation name, directory and environment. Its exact child test must execute;
+an empty test selection is rejected. It passes in 0.73 seconds. The subsequent
+24 audit checks plus that control all pass, and strict Clippy passes after
+removing an unnecessary mutable borrow in the new test. These are additional
+focused controls, not a replacement for the original startup acceptance test.

@@ -88,19 +88,17 @@ def main():
             (directory / name).mkdir(parents=True, mode=0o700)
         # Preserve the uninstalled GNU build layout, including init_lread's
         # discovery of lisp/ and init_cmdargs's discovery of etc/.
-        for name in ["lisp", "etc", "lib-src"]:
+        for name in ["lisp", "etc", "lib-src", "native-lisp"]:
             (directory / name).symlink_to(source / name, target_is_directory=True)
         for name in paths:
             target = directory / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source / name, target)
-        # GNU resolves preloaded .eln files relative to the executable when
-        # restoring a dump. Relocate its unchanged libraries with the binary;
-        # omitting them would test a broken installation instead of startup.
-        for name in native_manifest:
-            target = directory / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / name, target)
+        # GNU resolves .eln files relative to the executable. Use the same
+        # built libraries as ordinary startup, with hashes checked below.
+        # Copying those files changed GNU's first-use loading time on Darwin
+        # enough to exceed ERC's unchanged deadline; shared installation
+        # libraries passed with the same saved image and executable bytes.
         binary = directory / "bin" / ("emacs" if editor == "gnu" else "emaxx")
         shutil.copy2(original, binary)
         assert digest(binary) == digest(original)
@@ -157,6 +155,8 @@ def main():
         print(editor, json.dumps(result), flush=True)
     assert manifest == {path: digest(source / path) for path in paths}
     assert native_manifest == {path: digest(source / path) for path in native_manifest}
+    assert native_manifest == {str(path.relative_to(source)): digest(path)
+                               for path in (source / "native-lisp").rglob("*.eln")}
     return 0 if gate_succeeded(results) else 1
 
 
