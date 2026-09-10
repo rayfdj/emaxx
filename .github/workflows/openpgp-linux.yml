@@ -89,6 +89,7 @@ jobs:
           # A restored target/ can be newer than freshly checked-out source.
           # Keep dependency artifacts, but never trust cached Emaxx outputs.
           cargo +1.97.1 clean --package emaxx
+          cargo +1.97.1 clean --package emaxx --profile gate
           test ! -e target/gate/emaxx
           cargo +1.97.1 build --locked --profile gate --bin emaxx -j2
           git rev-parse HEAD > /tmp/openpgp-metadata/subject-commit.txt

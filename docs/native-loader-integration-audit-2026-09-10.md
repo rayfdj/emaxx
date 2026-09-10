@@ -97,6 +97,10 @@ The restored target cache was newer than the checkout. This run is not evidence
 for `f929d34`. The workflow now cleans Emaxx's own package artifacts after cache
 restore, asserts the executable is absent, rebuilds it, and records the source
 commit and binary hash. Dependency artifacts remain reusable.
+Run [34443360422](https://github.com/rayfdj/emaxx/actions/runs/34443360422)
+stopped at the executable-absence assertion: Cargo's default package clean
+does not clean the custom `gate` profile. The workflow now explicitly cleans
+that profile too. No runtime test result was produced by this attempt.
 
 The positive startup result remains a mandatory failing result if no real
 image is available. It is recorded separately so runtime, warning and full
