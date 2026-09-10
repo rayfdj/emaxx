@@ -8767,3 +8767,31 @@ with the shared image on: grouped gate run-1789029688488327082-23803,
 GROUPED GATE PASSED (2602 library tests across the ten groups and the
 integration binaries, every group 0 failed), `cargo fmt --check' and
 strict clippy exit 0 before and after; 08:41 to 09:20.
+
+*The corpus from the image.*  The frozen corpus with
+`EMAXX_FIXTURE_IMAGE_DIR' set (artifact
+`frozen-1789032315130318069-30301', 09:20 to 10:25, one hour and five
+minutes where the recorded run took five hours and forty-one; a
+runner's setup 1.1 to 1.6 s where it was 23): 7873 / 7883 matching,
+10 mismatching, against the recorded 7869 / 7883.  Ten outcomes came
+right (erc, server, simple and the two thread files, main's thread
+work and the earlier server fixes), and one file regressed:
+gv-tests.el, 0 to 6.  Its tests write a file into a temporary
+directory and spawn a child emacs there to byte-compile it; under
+the image the child looked for the file in the harness's working
+directory: the child was image-booted, and the `*scratch*' it
+started in had the dumping process's `default-directory'.
+buffer.c:init_buffer, which emacs.c runs after the load, selects
+`*scratch*' and gives it and the first minibuffer the new process's
+working directory (a separator appended, "/:" in front when a handler
+would claim it); the other dumped buffers keep their dump-time
+directories, as GNU's do.  That is now part of the after-load
+initialization; the CLI control dumps in one directory and loads in
+another and reads both buffers' directories.  The direct
+reproductions had missed it because they ran the child in the
+directory the image was dumped from.
+gv-tests passes through the harness with the image on (8 / 8), and
+the gate on the tree with this correction: grouped gate
+run-1789037478153525215-14024, GROUPED GATE PASSED (2602 library tests
+and the integration binaries, every group 0 failed), fmt and strict
+clippy exit 0, 10:51 to 11:30.

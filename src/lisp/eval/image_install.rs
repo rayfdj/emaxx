@@ -120,6 +120,39 @@ impl Interpreter {
         self.local_time_zone_rule = std::env::var("TZ")
             .map(|value| Value::String(value.into()))
             .unwrap_or_else(|_| Value::Symbol("wall".into()));
+        // buffer.c:init_buffer: `*scratch*' is the current buffer, and its
+        // `default-directory' and the first minibuffer's are the new
+        // process's working directory (emacs_wd), with a directory
+        // separator appended and "/:" in front when a handler would
+        // otherwise claim it; the dumped buffers keep the dump-time
+        // directories otherwise, as GNU's do.
+        let scratch = self
+            .find_buffer("*scratch*")
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| self.create_buffer("*scratch*").0);
+        let _ = self.set_current_buffer_id(scratch);
+        if self
+            .default_value("enable-multibyte-characters")
+            .is_some_and(|value| value.is_nil())
+        {
+            let _ = primitives::call(self, "set-buffer-multibyte", &[Value::Nil], &mut Vec::new());
+        }
+        let mut directory = primitives::default_directory();
+        let handled = primitives::call(
+            self,
+            "find-file-name-handler",
+            &[Value::String(directory.clone().into()), Value::T],
+            &mut Vec::new(),
+        )
+        .is_ok_and(|handler| handler.is_truthy());
+        if handled && directory != "/" {
+            directory.insert_str(0, "/:");
+        }
+        let directory = Value::String(directory.into());
+        self.set_buffer_local_value(scratch, "default-directory", directory.clone());
+        if let Some((minibuffer, _)) = self.find_buffer(" *Minibuf-0*") {
+            self.set_buffer_local_value(minibuffer, "default-directory", directory);
+        }
         // emacs.c: "Erase any pre-dump messages in the message log, to
         // avoid confusion" (message_dolog with message-log-max 0).
         if let Some(buffer_id) = self.find_buffer("*Messages*").map(|(id, _)| id)
