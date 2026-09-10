@@ -1,5 +1,8 @@
 name: Linux interrupted loader test diagnostic
 on:
+  push:
+    branches: [validate/native-loader-checks]
+    paths: [.github/workflows/loader-timeout-diagnostic.yml]
   workflow_dispatch:
 permissions:
   contents: read
