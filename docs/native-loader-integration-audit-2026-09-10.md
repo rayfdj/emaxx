@@ -73,8 +73,8 @@ discarded or counted as closure. Emaxx still refused the ordinary Darwin image.
   and zero-warning Clippy are complete; detailed receipts follow below.
 - Linux run `34443650353` rebuilt production candidate `b76525c` and passed
   the focused controls. The full serial Rust gate began at 06:24:41 UTC.
-  Its outcome is pending. The separate test/tool follow-up `fbf4990` runs in
-  `34444846429`; it does not restart the unchanged production-code gate.
+  Its outcome is pending. The separate test/tool follow-up `fbf4990` completed
+  in `34444846429`; it did not restart the unchanged production-code gate.
 - GNU passes ordinary image startup and all three original timeout tests on
   both platforms. Emaxx's ordinary native image remains blocked by D14/D15.
 - A fresh frozen corpus run follows only after ordinary startup is established. Linux
@@ -158,3 +158,24 @@ an empty test selection is rejected. It passes in 0.73 seconds. The subsequent
 24 audit checks plus that control all pass, and strict Clippy passes after
 removing an unnecessary mutable borrow in the new test. These are additional
 focused controls, not a replacement for the original startup acceptance test.
+
+## Completed Linux follow-up
+
+Run [34444846429](https://github.com/rayfdj/emaxx/actions/runs/34444846429)
+rebuilt `fbf499057dd5d6829a9f750160b9e908c1fb7509` from source. Its executable
+SHA256 is `4c1ad58f48be0d0e2f7c25a821f63d008048db19bbf24223b369e5701ac13ee1`.
+It passed 72 focused library tests (632.44 seconds), including the new
+separate-process image test, and the CLI image-boundary check (26.44 seconds),
+with zero failures or ignores. Rustfmt and strict all-target/all-feature
+Clippy passed. All four original OpenPGP tests passed in each editor at both
+fixture paths. The original three startup tests passed in GNU after its
+saved-image probe; Emaxx failed to create its native image, exit 255.
+
+The workflow therefore finished **failed**, at the final startup-acceptance
+enforcement step. This is the expected unresolved capability result, not a
+green whole-workflow claim. Its full-gate step was deliberately absent on
+this follow-up branch; `34443650353` retains that work for the same production
+source. The later `e683291` changes only documentation. Complete logs, run
+metadata, build hashes and original test receipts are retained in
+`linux-followup-complete.log`, `linux-followup-run.json` and
+`linux-followup-artifacts` under the scratch root.
