@@ -92,7 +92,7 @@ impl Interpreter {
     /// these from the process once as GNU's `init_*' functions do; after
     /// a load the image's dump-time values have replaced them, and this
     /// is the second application GNU makes in an initialized process.
-    pub(crate) fn init_after_pdump_load(&mut self) {
+    pub(crate) fn init_after_pdump_load(&mut self) -> Result<(), LispError> {
         // callproc.c:set_initial_environment fills both lists from
         // environ (Fdump_emacs_portable dumped `process-environment' as
         // nil for exactly this).
@@ -106,10 +106,61 @@ impl Interpreter {
         };
         self.set_global_binding("initial-environment", environment());
         self.set_global_binding("process-environment", environment());
+        // buffer.c:init_buffer selects *scratch* and initializes its and
+        // the first minibuffer's directory from this process's cwd. Other
+        // saved buffers retain their own directories.
+        let scratch = self
+            .find_buffer("*scratch*")
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| self.create_buffer("*scratch*").0);
+        self.set_current_buffer_id(scratch)?;
+        let mut directory =
+            primitives::bytes_to_shared_unibyte_value(primitives::default_directory().as_bytes());
+        let handler = primitives::call(
+            self,
+            "find-file-name-handler",
+            &[directory.clone(), Value::T],
+            &mut Vec::new(),
+        )?;
+        if handler.is_truthy() && primitives::string_text(&directory)? != "/" {
+            directory = primitives::call(
+                self,
+                "concat",
+                &[Value::string("/:"), directory],
+                &mut Vec::new(),
+            )?;
+        }
+        self.set_buffer_local_value(scratch, "default-directory", directory.clone());
+        let minibuffer = self
+            .find_buffer(" *Minibuf-0*")
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| self.create_buffer(" *Minibuf-0*").0);
+        self.set_buffer_local_value(minibuffer, "default-directory", directory);
         // emacs.c:init_cmdargs.
         self.set_global_binding("command-line-args", primitives::command_line_args_value());
+        for name in [
+            "invocation-name",
+            "invocation-directory",
+            "installation-directory",
+        ] {
+            if let Some(value) = self.builtin_var_value(name) {
+                self.set_global_binding(name, value);
+            }
+        }
         // callproc.c:init_callproc.
         self.set_global_binding("exec-path", current_exec_path());
+        for name in ["shell-file-name", "data-directory", "doc-directory"] {
+            if let Some(value) = self.builtin_var_value(name) {
+                self.set_global_binding(name, value);
+            }
+        }
+        self.set_global_binding(
+            "exec-directory",
+            Value::string(
+                &primitives::current_invocation_directory()
+                    .unwrap_or_else(primitives::default_directory),
+            ),
+        );
         // timefns.c:init_timefns takes the new process's TZ.
         self.local_time_zone_rule = std::env::var("TZ")
             .map(|value| Value::String(value.into()))
@@ -122,6 +173,7 @@ impl Interpreter {
             let end = buffer.point_max();
             let _ = buffer.delete_region(1, end);
         }
+        Ok(())
     }
 
     /// One symbol record: the value cell with its redirect and flags, the
@@ -254,5 +306,63 @@ impl Interpreter {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restored_process_replaces_build_paths_and_preserves_other_buffers() {
+        // emacs.c:init_cmdargs, callproc.c:init_callproc and
+        // buffer.c:init_buffer recreate these values after loading an image.
+        let mut interpreter = Interpreter::new();
+        let names = [
+            "invocation-name",
+            "invocation-directory",
+            "installation-directory",
+            "shell-file-name",
+            "data-directory",
+            "doc-directory",
+            "exec-directory",
+        ];
+        let expected = names.map(|name| {
+            interpreter
+                .symbol_value_cell(name)
+                .expect("the process initializer installed the variable")
+        });
+        for name in names {
+            interpreter.set_global_binding(name, Value::string("/dump-builder/"));
+        }
+        let other = interpreter.create_buffer("saved-other-buffer").0;
+        interpreter.set_buffer_local_value(other, "default-directory", Value::string("/saved/"));
+        interpreter
+            .set_current_buffer_id(other)
+            .expect("select saved buffer");
+        interpreter
+            .init_after_pdump_load()
+            .expect("initialize the restored process");
+        for (name, expected) in names.into_iter().zip(expected) {
+            assert_eq!(
+                interpreter
+                    .symbol_value_cell(name)
+                    .expect("restored variable"),
+                expected,
+                "{name} retained the builder's value"
+            );
+        }
+        assert_eq!(interpreter.buffer.name, "*scratch*");
+        assert_eq!(
+            interpreter.lookup_var("default-directory", &Vec::new()),
+            Some(Value::string(&primitives::default_directory()))
+        );
+        interpreter
+            .set_current_buffer_id(other)
+            .expect("select the retained buffer");
+        assert_eq!(
+            interpreter.lookup_var("default-directory", &Vec::new()),
+            Some(Value::string("/saved/"))
+        );
     }
 }

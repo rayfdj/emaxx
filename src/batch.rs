@@ -491,7 +491,9 @@ fn initialize_interpreter(
     )
     .is_some();
     if initialized {
-        interpreter.init_after_pdump_load();
+        interpreter
+            .init_after_pdump_load()
+            .map_err(|error| format!("initialize restored process: {error}"))?;
     }
     let before_init_time =
         lisp::primitives::system_time_list_value(std::time::SystemTime::now())
@@ -819,11 +821,16 @@ fn call_safe_hook_function(
         };
         let local = interpreter.lookup_var(hook, env).unwrap_or(Value::Nil);
         if let Some(rest) = without_function(interpreter, local) {
-            interpreter.set_variable(hook, rest, env);
+            lisp::primitives::call(interpreter, "set", &[Value::symbol(hook), rest], env)?;
         } else {
             let global = interpreter.default_value(hook).unwrap_or(Value::Nil);
             if let Some(rest) = without_function(interpreter, global) {
-                interpreter.set_default_toplevel_value(hook, rest);
+                lisp::primitives::call(
+                    interpreter,
+                    "set-default",
+                    &[Value::symbol(hook), rest],
+                    env,
+                )?;
             }
         }
         Ok(())
@@ -1264,10 +1271,23 @@ mod tests {
              (make-local-variable 'zz-hook)
              (setq zz-hook '(zz-ok t)))"#;
         crate::test_support::eval_lisp(&mut interpreter, &mut env, program).expect("set up");
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(progn (setq zz-watcher-seen nil) \
+             (add-variable-watcher 'zz-hook \
+               (lambda (_symbol value operation where) \
+                 (setq zz-watcher-seen (list value operation where)))))",
+        )
+        .expect("watch the hook removal");
         let handlers =
             interpreter.push_handler_bindings(&[(vec!["error".into()], Value::symbol("zz-outer"))]);
         super::safe_run_hooks(&mut interpreter, "zz-hook").expect("run the local and global hook");
         interpreter.pop_handler_bindings(handlers);
+        let watched = interpreter
+            .lookup_var("zz-watcher-seen", &env)
+            .expect("watcher observation");
+        assert_eq!(watched.to_string(), "((zz-ok2) set nil)");
         assert_eq!(
             interpreter.lookup_var("zz-outer-ran", &env),
             Some(Value::Nil)

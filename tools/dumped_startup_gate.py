@@ -29,12 +29,12 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def run(command, environment, directory, label, timeout=600):
+def run(command, environment, directory, label, timeout=600, working_directory=None):
     started = time.monotonic()
     with (directory / f"{label}.stdout").open("wb") as out:
         with (directory / f"{label}.stderr").open("wb") as err:
             child = subprocess.Popen(command, env=environment, stdout=out, stderr=err,
-                                     cwd=directory, start_new_session=True)
+                                     cwd=working_directory or directory, start_new_session=True)
             try:
                 status = child.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -42,6 +42,7 @@ def run(command, environment, directory, label, timeout=600):
                 child.wait()
                 status = 124
     result = {"exit_code": status, "elapsed_seconds": time.monotonic() - started,
+              "working_directory": str(working_directory or directory),
               "command": [str(arg) for arg in command]}
     (directory / f"{label}.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
@@ -113,7 +114,8 @@ def main():
         expression = ("(progn (defvar dumped-startup-gate-marker 'saved) "
                       f"(dump-emacs-portable {json.dumps(str(image))}))")
         build = run([str(original), "-Q", "--batch", "--eval", expression],
-                    environment, directory, "build-image")
+                    environment, directory, "build-image",
+                    working_directory=directory / "build-home")
         result = {"binary_sha256": digest(binary), "build": build,
                   "image_built": build["exit_code"] == 0 and image.is_file()
                   and image.stat().st_size > 0}
@@ -125,11 +127,14 @@ def main():
             probe = run([str(binary), "-Q", "--batch", "--eval",
                          "(prin1 (list (cdr (assq 'dumped-with-pdumper (pdumper-stats))) "
                          "dumped-startup-gate-marker command-line-processed "
-                         "(getenv \"EMAXX_DUMP_PROBE\")))"],
+                         "(getenv \"EMAXX_DUMP_PROBE\") "
+                         "(expand-file-name invocation-name invocation-directory) "
+                         "default-directory))"],
                         environment, directory, "startup-probe")
             result["startup_probe_passed"] = (
                 probe["exit_code"] == 0 and (directory / "startup-probe.stdout").read_text()
-                == '(t saved t "restored")')
+                == f'(t saved t "restored" {json.dumps(str(binary))} '
+                   f'{json.dumps(str(directory) + "/")})')
             result["outcomes"] = {}
             result["test_exit_codes"] = []
             if result["startup_probe_passed"]:

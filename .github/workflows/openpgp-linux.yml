@@ -121,7 +121,7 @@ jobs:
           cargo +1.97.1 test --locked --profile gate --lib \
             -- anti_cheat::gate_tests multibyte byte_conversions terminal_frames \
             pdumper dump_roots dump_emacs_portable loads_libgccjit_and_executes_a_smoke_test_function \
-            batch_startup_image safe_startup_hooks safe_run_hooks \
+            batch_startup_image safe_startup_hooks safe_run_hooks restored_process_replaces_build_paths \
             cl_old_struct_compat_mode_types_tagged_vectors \
             cl_struct_define_legacy_type_enables_old_struct_mode \
             upstream_semantic_format_loads_with_complete_eieio_slots --test-threads=1

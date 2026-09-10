@@ -23,6 +23,16 @@ with main `08a4004`. Validation is in progress; this is not a new frozen
 - GNU `lread.c:init_lread` reconstructs the process load path from the configured
   build/installation paths; keeping a customized saved `load-path` instead would
   not reproduce GNU's initialization.
+- Further review found saved invocation/shell paths and scratch-buffer directory
+  were not replaced. GNU `init_cmdargs`, `init_callproc` and `init_buffer` do
+  replace them. The integration now selects scratch, resets its and the first
+  minibuffer's directory, and reapplies the existing process path initializers;
+  other saved buffers retain their own directories. The positive probe now
+  changes cwd between building and loading, and requires invocation variables
+  to name the relocated executable. This prevents children silently launching
+  the original executable without the new sibling image.
+- Failing safe-hook removal calls the existing `set`/`set-default` primitives,
+  preserving variable watcher notifications and assignment errors as GNU does.
 
 ## Native-image limit and test honesty
 

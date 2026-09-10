@@ -1174,7 +1174,9 @@ mod tests {
         // image's environment is replaced without rereading driver changes.
         after.set_global_binding("initial-environment", crate::lisp::types::Value::Nil);
         after.set_global_binding("process-environment", crate::lisp::types::Value::Nil);
-        after.init_after_pdump_load();
+        after
+            .init_after_pdump_load()
+            .expect("initialize restored process");
         assert_eq!(after.default_value("initial-environment"), initial);
         assert_eq!(after.default_value("process-environment"), process);
     }
