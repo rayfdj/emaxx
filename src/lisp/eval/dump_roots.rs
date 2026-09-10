@@ -21,6 +21,10 @@ use crate::lisp::primitives::pdumper::image::RootSlot;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "stack_roots",
+        "eval.c:init_eval_once_for_pdumper recreates the specpdl and bytecode stacks; scoped Rust execution roots belong to live call frames, not the image; Fdump_emacs_portable refuses other live Lisp threads",
+    ),
+    (
         "frame_states",
         "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),

@@ -6,8 +6,7 @@
   (puthash key t nil-signal-table)
   (thread-signal nil-signal-thread nil (list key)))
 (garbage-collect)
-(let ((retained (hash-table-count nil-signal-table)))
-  (setq nil-signal-thread nil)
-  (garbage-collect)
-  (prin1 (list retained (hash-table-count nil-signal-table))))
-(terpri)
+(defvar nil-signal-retained (hash-table-count nil-signal-table))
+(setq nil-signal-thread nil)
+;; Observe release after this file returns: GNU's conservative collector can
+;; retain the dead thread through values still present in active loader frames.

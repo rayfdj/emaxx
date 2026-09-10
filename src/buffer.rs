@@ -230,38 +230,6 @@ pub struct UndoState {
     view: Option<UndoListView>,
 }
 
-/// A buffer's fields as pdumper.c's `dump_buffer' copies them from the
-/// `struct buffer': the text and the positions, counters, file
-/// metadata, undo entries and property spans that are the buffer's own
-/// state.  The overlays are not here (GNU refuses to dump a buffer that
-/// has any; the writer checks `overlays' itself), and neither are the
-/// derived caches, which a restored buffer rebuilds.
-pub(crate) struct BufferImage {
-    pub(crate) name: String,
-    pub(crate) text: String,
-    pub(crate) pt: usize,
-    pub(crate) mark: Option<usize>,
-    pub(crate) mark_active: bool,
-    pub(crate) modiff: ModCount,
-    pub(crate) chars_modiff: ModCount,
-    pub(crate) save_modiff: ModCount,
-    pub(crate) saved_text: String,
-    pub(crate) forced_modified: bool,
-    pub(crate) autosaved: bool,
-    pub(crate) begv: usize,
-    pub(crate) zv: usize,
-    pub(crate) file: Option<String>,
-    pub(crate) file_truename: Option<String>,
-    pub(crate) visited_file_modtime: Option<FileModTime>,
-    pub(crate) undo_list: Vec<UndoEntry>,
-    pub(crate) undo_disabled: bool,
-    pub(crate) point_before_last_boundary: Option<usize>,
-    pub(crate) text_properties: Vec<TextPropertySpan>,
-    pub(crate) extended_chars: Vec<(usize, u32)>,
-    pub(crate) inhibit_hooks: bool,
-    pub(crate) multibyte: bool,
-}
-
 impl UndoState {
     /// Trace the actual saved undo payload, including values not materialized
     /// into its Lisp list view yet. A dynamically bound undo list can be the
@@ -294,6 +262,38 @@ impl UndoState {
             visit(&view.value);
         }
     }
+}
+
+/// A buffer's fields as pdumper.c's `dump_buffer' copies them from the
+/// `struct buffer': the text and the positions, counters, file
+/// metadata, undo entries and property spans that are the buffer's own
+/// state.  The overlays are not here (GNU refuses to dump a buffer that
+/// has any; the writer checks `overlays' itself), and neither are the
+/// derived caches, which a restored buffer rebuilds.
+pub(crate) struct BufferImage {
+    pub(crate) name: String,
+    pub(crate) text: String,
+    pub(crate) pt: usize,
+    pub(crate) mark: Option<usize>,
+    pub(crate) mark_active: bool,
+    pub(crate) modiff: ModCount,
+    pub(crate) chars_modiff: ModCount,
+    pub(crate) save_modiff: ModCount,
+    pub(crate) saved_text: String,
+    pub(crate) forced_modified: bool,
+    pub(crate) autosaved: bool,
+    pub(crate) begv: usize,
+    pub(crate) zv: usize,
+    pub(crate) file: Option<String>,
+    pub(crate) file_truename: Option<String>,
+    pub(crate) visited_file_modtime: Option<FileModTime>,
+    pub(crate) undo_list: Vec<UndoEntry>,
+    pub(crate) undo_disabled: bool,
+    pub(crate) point_before_last_boundary: Option<usize>,
+    pub(crate) text_properties: Vec<TextPropertySpan>,
+    pub(crate) extended_chars: Vec<(usize, u32)>,
+    pub(crate) inhibit_hooks: bool,
+    pub(crate) multibyte: bool,
 }
 
 #[derive(Clone, Debug)]

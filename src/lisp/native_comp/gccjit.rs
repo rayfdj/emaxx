@@ -500,6 +500,9 @@ impl Api {
     }
 
     pub(crate) fn context(&'static self) -> Result<Context, String> {
+        // Capture before the GCC driver can change its host environment.
+        // Lisp children use the startup snapshot, as GNU callproc.c does.
+        crate::lisp::eval::initial_process_environment();
         // SAFETY: `self` owns the loaded function and the returned context is
         // uniquely owned by the RAII guard below.
         let raw = unsafe { (self.acquire)() };
@@ -559,37 +562,6 @@ pub(crate) fn version() -> Option<(i32, i32, i32)> {
 pub(crate) struct Context {
     api: &'static Api,
     raw: *mut ContextOpaque,
-}
-
-/// libgccjit's driver exports GCC_EXEC_PREFIX into this process's
-/// environment for the gcc it runs.  GNU's children never see that:
-/// callproc.c builds a child's environment from `process-environment',
-/// which init_callproc took from the startup environment.  Emaxx reads
-/// the process environment when it makes an interpreter, so the
-/// compiler leaves the variable as it found it.
-struct ProcessEnvironmentGuard {
-    gcc_exec_prefix: Option<std::ffi::OsString>,
-}
-
-impl ProcessEnvironmentGuard {
-    fn new() -> Self {
-        Self {
-            gcc_exec_prefix: std::env::var_os("GCC_EXEC_PREFIX"),
-        }
-    }
-}
-
-impl Drop for ProcessEnvironmentGuard {
-    fn drop(&mut self) {
-        // SAFETY: the process environment is only read and written from the
-        // Lisp thread that owns the compiler; no other thread reads it here.
-        unsafe {
-            match &self.gcc_exec_prefix {
-                Some(value) => std::env::set_var("GCC_EXEC_PREFIX", value),
-                None => std::env::remove_var("GCC_EXEC_PREFIX"),
-            }
-        }
-    }
 }
 
 impl Context {
@@ -1041,7 +1013,6 @@ impl Context {
 
     #[cfg(test)]
     pub(crate) fn compile(&self) -> Result<Compiled, String> {
-        let _environment = ProcessEnvironmentGuard::new();
         // SAFETY: The context is complete and remains alive during compile.
         let raw = unsafe { (self.api.compile)(self.raw) };
         if raw.is_null() {
@@ -1054,7 +1025,6 @@ impl Context {
     }
 
     pub(crate) fn compile_to_file(&self, kind: OutputKind, path: &CStr) -> Result<(), String> {
-        let _environment = ProcessEnvironmentGuard::new();
         // SAFETY: libgccjit copies/consumes PATH during this call; the context
         // remains live for the complete compilation.
         unsafe { (self.api.compile_to_file)(self.raw, kind as c_int, path.as_ptr()) };
@@ -1161,6 +1131,9 @@ mod tests {
 
     #[test]
     fn loads_libgccjit_and_executes_a_smoke_test_function() {
+        let before = crate::lisp::eval::Interpreter::new();
+        let initial = before.default_value("initial-environment");
+        let process = before.default_value("process-environment");
         let api = api().expect("the native compiler test host must provide libgccjit");
         // Every entry point the binding resolves exists from GCC 9 onward.
         assert!(api.version().0 >= 9, "libgccjit {:?}", api.version());
@@ -1192,5 +1165,10 @@ mod tests {
         let function: unsafe extern "C" fn(c_long) -> c_long = unsafe { std::mem::transmute(code) };
         // SAFETY: The result guard owns the code for the duration of the call.
         assert_eq!(unsafe { function(41) }, 42);
+        // A real GCC compile may update host GCC_EXEC_PREFIX. Fresh Lisp
+        // instances still start from the process's original environment.
+        let after = crate::lisp::eval::Interpreter::new();
+        assert_eq!(after.default_value("initial-environment"), initial);
+        assert_eq!(after.default_value("process-environment"), process);
     }
 }

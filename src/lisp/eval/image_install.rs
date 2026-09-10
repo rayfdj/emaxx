@@ -97,12 +97,15 @@ impl Interpreter {
     /// a load the image's dump-time values have replaced them, and this
     /// is the second application GNU makes in an initialized process.
     pub(crate) fn init_after_pdump_load(&mut self) {
-        // callproc.c:set_initial_environment fills both lists from
-        // environ (Fdump_emacs_portable dumped `process-environment' as
-        // nil for exactly this).
+        // callproc.c:set_initial_environment fills both lists from the
+        // environ of process startup (Fdump_emacs_portable dumped
+        // `process-environment' as nil for exactly this); the startup
+        // snapshot, as the constructor uses, not what a library driver
+        // exported since.
         let environment = || {
             Value::list(
-                std::env::vars()
+                initial_process_environment()
+                    .iter()
                     .map(|(name, value)| Value::String(format!("{name}={value}").into()))
                     .collect::<Vec<_>>(),
             )

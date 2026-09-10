@@ -8720,3 +8720,50 @@ failed), `cargo fmt --check' and strict clippy exit 0 before and after.
 Wall time 07:12 to 07:52, forty minutes, against 2h20m for the gate of
 checkpoint 15; the library groups took 41, 11, 148, 138, 300, 80, 323,
 9, 682 and 11 seconds.
+
+## 2026-09-10 Merge of main 08a4004 into native-comp
+
+*What came in.*  Main merged native-comp 7a87362 (the state before
+checkpoint 15) and validated it over seventeen commits: the completed
+startup image control became a context-and-capability boundary
+control (on Darwin the ordinary startup loads native functions and the
+writer refuses them, the D14/D15 gap this branch's next checkpoints
+close), `tools/serial_grouped_gate.py', the Linux oracle built with
+the exact reference native ABI configuration, the dead-thread GC
+release observed after the GNU loader returns, the public native
+diagnostics, and the OpenPGP workflow.  The remote history was
+rewritten in the meantime (every commit re-hashed with its tree,
+author and date kept); the local branch was moved onto the rewritten
+native-comp tip without a file changing, which a tree diff confirmed
+empty.
+
+*Resolution.*  Two textual conflicts, both kept in main's shape: the
+buffer image follows the undo root visitor in buffer.rs, and the
+honesty audit keeps its sections in order with the record of the
+85f0c28 merge once.  The line check found 30 lines main has that the
+merged tree lacks, all this branch's own pre-checkpoint-15 code that
+main received through its merge of the older native-comp and that
+checkpoints 15 and 16 replaced (the old loader's symbol creation, the
+old dead-frame install by id, the old record install, the old
+inventory match, the old handover pointer).
+
+*The merged gate's one failure.*  The primitives group stopped in
+`module_load_validates_real_libraries_without_fabricating_the_gnu_value_abi':
+its C probe did not compile.  Main replaced this branch's
+`ProcessEnvironmentGuard' (which put GCC_EXEC_PREFIX back after every
+in-process libgccjit compile) with callproc.c's own approach, a
+startup snapshot of environ that every interpreter's environment
+lists are built from; the host environment itself now keeps what the
+GCC driver exported, as GNU's does, and the test spawned the system
+cc with `Command' inheriting that host environment (an earlier test in
+the same two-worker process had compiled a trampoline).  The probe's
+compiler now gets the startup snapshot, as a GNU child built from
+`process-environment' would, and `init_after_pdump_load' takes the
+same snapshot for the lists it rebuilds after a load.  Main's
+serial gate had not met this because it runs one worker.
+
+*Merge gate.*  Alone on the machine, on the merged tree as committed,
+with the shared image on: grouped gate run-1789029688488327082-23803,
+GROUPED GATE PASSED (2602 library tests across the ten groups and the
+integration binaries, every group 0 failed), `cargo fmt --check' and
+strict clippy exit 0 before and after; 08:41 to 09:20.

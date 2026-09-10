@@ -3151,6 +3151,15 @@ impl LiveObjectCensus {
     }
 }
 
+/// callproc.c:set_initial_environment reads environ once at process startup.
+/// Keep host strings rather than Lisp objects so each interpreter owns its
+/// ordinary mutable lists, without inheriting later library driver changes.
+/// Low-level compiler users also capture this before entering libgccjit.
+pub(crate) fn initial_process_environment() -> &'static [(String, String)] {
+    static INITIAL: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    INITIAL.get_or_init(|| std::env::vars().collect())
+}
+
 impl Interpreter {
     /// Mark Lisp objects from the interpreter's actual roots, then apply
     /// GNU's iterative weak-hash rule.  Hash entries are deliberately not
@@ -5177,7 +5186,8 @@ impl Interpreter {
                 (
                     "initial-environment".into(),
                     Value::list(
-                        std::env::vars()
+                        initial_process_environment()
+                            .iter()
                             .map(|(name, value)| Value::String(format!("{name}={value}").into()))
                             .collect::<Vec<_>>(),
                     ),
@@ -5185,7 +5195,8 @@ impl Interpreter {
                 (
                     "process-environment".into(),
                     Value::list(
-                        std::env::vars()
+                        initial_process_environment()
+                            .iter()
                             .map(|(name, value)| Value::String(format!("{name}={value}").into()))
                             .collect::<Vec<_>>(),
                     ),

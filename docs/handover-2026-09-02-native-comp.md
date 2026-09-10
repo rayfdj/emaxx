@@ -5,6 +5,18 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
+## Main integration validation — 2026-09-09
+
+The integration of native-comp `7a87362` with main `4311aa6` is recorded in
+[`native-comp-merge-audit-2026-09-09.md`](native-comp-merge-audit-2026-09-09.md).
+It preserves main's thread continuations, scoped GC roots and shared native
+heap ownership. The 14 MB completed-image checkpoint below describes the
+non-AOT Linux fixture. Ordinary Darwin startup includes native functions:
+GNU dumps those successfully, while this writer still refuses them until
+D14/D15. The loader remains test-only until D12/D13. Neither a supported
+graph round trip nor the explicit native-image refusal closes startup
+compatibility. See the integration audit for validation receipts and scope.
+
 ## Resume here — symbol cells (V02/V03 stage 1) after checkpoint 2 (2026-09-07)
 
 Checkpoint 2 (`732f48b`) carried R02c's first boundary (a symbol carries its
@@ -75,9 +87,12 @@ merged after checkpoint 15 and the full gate ran on the merged tree.
 Checkpoint 16 (D16b) makes the harness boot from a shared loadup image:
 `EMAXX_FIXTURE_IMAGE_DIR` names a directory where the first startup dumps
 the loadup state and every later startup, in any process, loads it (the
-grouped gate sets it; the compat harness passes it to every emaxx runner).
-Next: D14/D15, native units and native subrs in the image, the last open
-rows.
+grouped gate sets it; the compat harness passes it to every emaxx runner);
+the full gate runs in forty minutes where it took 2h20m. Main `08a4004`
+(its validation of the earlier native-comp merge) is merged after
+checkpoint 16, and `EMAXX_FIXTURE_IMAGE_DIR` is the operator's knob for
+the corpus runs. Next: D14/D15, native units and native subrs in the
+image, the last open rows.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
