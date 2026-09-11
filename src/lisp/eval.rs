@@ -5139,7 +5139,17 @@ struct SourceFormAnalysis {
     /// Generation-stamped function-cell resolution for this exact callsite.
     /// Local cl-flet/cl-labels frames bypass it before lookup.
     function_call: Rc<RefCell<Option<SourceFunctionCallCacheEntry>>>,
+    /// Whether a bare-symbol head names a function alias of a special form
+    /// (`(defalias 'inline 'progn)'), stamped with the function-binding
+    /// generation: deciding it on every evaluation resolved the head's
+    /// function cell and searched the C manifest for every ordinary call.
+    special_alias: SpecialAliasVerdict,
 }
+
+/// The cached alias-of-a-special-form verdict of a call site: the
+/// function-binding generation it was decided under, and the special form
+/// the head resolved to, if any.
+type SpecialAliasVerdict = Rc<Cell<Option<(u64, Option<core::NativeForm>)>>>;
 
 #[derive(Clone)]
 struct LambdaSourceBodyCacheEntry {

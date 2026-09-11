@@ -1899,34 +1899,29 @@ impl Buffer {
             return;
         }
 
-        let original = self.text_properties.clone();
-        let mut updated = Vec::new();
-        for span in &original {
-            if span.end <= start || span.start >= end {
-                updated.push(span.clone());
-            } else {
-                if span.start < start {
-                    updated.push(TextPropertySpan {
-                        start: span.start,
-                        end: start,
-                        props: span.props.clone(),
-                    });
-                }
-                if span.end > end {
-                    updated.push(TextPropertySpan {
-                        start: end,
-                        end: span.end,
-                        props: span.props.clone(),
-                    });
-                }
-            }
-        }
+        // The spans are sorted by start and disjoint: only those meeting
+        // [start, end), and the neighbour on either side for the merge,
+        // are read or rewritten.  Cloning and rebuilding the whole list
+        // per write cost dired's listing of 12,000 files half a
+        // millisecond per `put-text-property' (textprop.c splits and
+        // merges the intervals at the edges alone).
+        let spans = &self.text_properties;
+        let lo = spans.partition_point(|span| span.end <= start);
+        let hi = spans.partition_point(|span| span.start < end);
+        let affected = &spans[lo..hi];
 
+        let mut pieces = Vec::with_capacity(affected.len() + 3);
+        if let Some(first) = affected.first()
+            && first.start < start
+        {
+            pieces.push(TextPropertySpan {
+                start: first.start,
+                end: start,
+                props: first.props.clone(),
+            });
+        }
         let mut boundaries = vec![start, end];
-        for span in &original {
-            if span.end <= start || span.start >= end {
-                continue;
-            }
+        for span in affected {
             boundaries.push(span.start.max(start));
             boundaries.push(span.end.min(end));
         }
@@ -1934,53 +1929,64 @@ impl Buffer {
         boundaries.dedup();
 
         let mut undo_records = Vec::new();
+        let mut changed = false;
         for window in boundaries.windows(2) {
             let seg_start = window[0];
             let seg_end = window[1];
             if seg_start >= seg_end {
                 continue;
             }
-            let current = properties_at_from(&original, seg_start);
+            let current = properties_at_from(affected, seg_start);
             let next = f(current.clone());
-            if record_undo && !self.undo_disabled && !text_property_plists_eq(&current, &next) {
-                for (name, old_value) in &current {
-                    let changed = next
-                        .iter()
-                        .find(|(candidate, _)| candidate == name)
-                        .is_none_or(|(_, new_value)| {
-                            !text_property_values_eq(old_value, new_value)
-                        });
-                    if changed {
-                        undo_records.push(property_undo_entry(
-                            name,
-                            old_value.clone(),
-                            seg_start,
-                            seg_end,
-                        ));
+            if !text_property_plists_eq(&current, &next) {
+                changed = true;
+                if record_undo && !self.undo_disabled {
+                    for (name, old_value) in &current {
+                        let value_changed = next
+                            .iter()
+                            .find(|(candidate, _)| candidate == name)
+                            .is_none_or(|(_, new_value)| {
+                                !text_property_values_eq(old_value, new_value)
+                            });
+                        if value_changed {
+                            undo_records.push(property_undo_entry(
+                                name,
+                                old_value.clone(),
+                                seg_start,
+                                seg_end,
+                            ));
+                        }
                     }
-                }
-                for (name, _) in &next {
-                    if !current.iter().any(|(candidate, _)| candidate == name) {
-                        undo_records.push(property_undo_entry(
-                            name,
-                            Value::Nil,
-                            seg_start,
-                            seg_end,
-                        ));
+                    for (name, _) in &next {
+                        if !current.iter().any(|(candidate, _)| candidate == name) {
+                            undo_records.push(property_undo_entry(
+                                name,
+                                Value::Nil,
+                                seg_start,
+                                seg_end,
+                            ));
+                        }
                     }
                 }
             }
             if !next.is_empty() {
-                updated.push(TextPropertySpan {
+                pieces.push(TextPropertySpan {
                     start: seg_start,
                     end: seg_end,
                     props: next,
                 });
             }
         }
-
-        let updated = merge_adjacent_spans(updated);
-        if updated == original {
+        if let Some(last) = affected.last()
+            && last.end > end
+        {
+            pieces.push(TextPropertySpan {
+                start: end,
+                end: last.end,
+                props: last.props.clone(),
+            });
+        }
+        if !changed {
             return;
         }
         if record_undo && !self.undo_disabled {
@@ -1989,7 +1995,15 @@ impl Buffer {
                 self.push_undo_entry(UndoEntry::Opaque(entry));
             }
         }
-        self.text_properties = updated;
+        // Merge with the untouched neighbours on either side, as the
+        // whole-list merge did, by taking them into the rewritten window.
+        let splice_lo = lo.saturating_sub(1);
+        let splice_hi = (hi + 1).min(self.text_properties.len());
+        let mut window: Vec<TextPropertySpan> = self.text_properties[splice_lo..lo].to_vec();
+        window.extend(pieces);
+        window.extend(self.text_properties[hi..splice_hi].iter().cloned());
+        let window = merge_adjacent_spans(window);
+        self.text_properties.splice(splice_lo..splice_hi, window);
         self.modiff = self.modiff.saturating_add(1);
         self.autosaved = false;
     }

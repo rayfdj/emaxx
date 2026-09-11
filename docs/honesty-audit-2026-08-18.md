@@ -9292,3 +9292,100 @@ lock, regexp and inventory controls passed; two of the five new
 controls failed once on their own use of a bare interpreter (no
 `lambda' macro, no coding systems for `write-region') and run on the
 initialized interpreters the neighbouring file tests use.
+
+## 2026-09-11 Checkpoint 19a: a symbol inside a vector under the positioning reader
+
+*What prompted it.*  The Mac frozen run of checkpoint 18b left one
+Emaxx-only failure, `context-menu-map-remove-consecutive-separators',
+whose record shows `context-menu-map' answering `(keymap (foo-item ...)
+"Context Menu")': the separator and the bar item were gone.  The test
+passes on Linux.  On the Mac the startup loads native units Emaxx
+compiled itself from the preloaded sources, mouse.el among them.
+
+*What was found.*  Native-compiling mouse.el on Linux produced a unit
+whose data could not be read back ("Invalid read syntax #<"): its
+constants held `[#<reader-form>]' wherever the source had a key
+sequence such as `[mouse-1]', and byte-compiling mouse.el with Emaxx
+wrote 36 such placeholders into the `.elc'.  Under
+`read-positioning-symbols' (the byte compiler's reader) lread.c reads
+a symbol inside a vector as a symbol with position, as it does inside
+a list; Emaxx's pass that turns the reader's positioned-symbol
+placeholders into `symbol-with-pos' objects walked conses, records and
+hash tables and not vectors, so the placeholder stayed in the vector:
+`type-of' on the element signalled "reader form escaped object
+materialization", `symbol-with-pos-p' could not answer, and the
+printer wrote `#<reader-form>'.  GNU does not strip positions out of
+vectors either (byte-run.el's `byte-run--strip-vector/record' stores a
+positioned element back unchanged); its `.elc' is correct because the
+compiler prints under `print-symbols-bare'.  The pass now walks
+vectors in place, cycle-safe, and the byte compiler's constants print
+bare: `[mouse-1]'.  A mouse.elc compiled by Emaxx now loads and both
+context-menu tests pass under it.  The Mac failure is inferred to be
+this defect through the preloaded native unit, not observed here; the
+next Mac run is the receipt.  Control:
+`read_positioning_symbols_positions_the_symbols_inside_vectors'
+(`symbol-with-pos-p' and `bare-symbol' on the vector's element as GNU
+answers them; a byte-compiled `define-key' with `[mouse-1]' prints the
+key bare and no placeholder reaches the file).
+
+*Observed beside it, not corrected.*  A native compilation whose C
+side runs in a child Emacs printed the compilation context with a
+`#<' object before this fix; the in-process path (a batch or
+asynchronous compilation) showed the same placeholders in the unit's
+data.  Both come from the same vectors and are gone with it; no
+separate change was made to the context's printing.
+
+*Text property writes.*  `put-text-property' and `add-text-properties'
+cost 0.5 to 1 ms a call in a dired listing of 12,000 files (the ls-lisp
+and dired tests, and auto-revert's dired test reverting such a
+listing): every write cloned the buffer's whole span list and rebuilt
+it.  textprop.c splits and merges the intervals at the edges of the
+write and leaves the rest alone; the write path now finds the spans
+meeting the range by binary search, rewrites those, and merges only
+with the neighbour on either side.  The observable results are the old
+path's exactly: a sequence of 22 overlapping writes, removals and
+undos over a 60-character buffer prints the same `text-properties-at'
+answers under the old and the new path (and matches GNU's except that
+Emaxx merges a split interval back into an equal neighbour eagerly,
+which shows as the neighbour's plist order; GNU keeps the split until
+a later merge -- an order-only difference that predates this change
+and remains).  `dired-test-bug25609' 20.2 to 9.5 s, `ls-lisp-test-bug70271'
+26.8 to 11.5 s (GNU 0.39 and 0.47 s; the remainder is
+`insert-directory' and the per-call floor).  Control:
+`text_property_writes_touch_only_the_spans_they_cover' (the answer is
+GNU's for the same program).  Found while writing that control and
+not corrected: GNU's `text-properties-at' returns the interval's own
+plist, and a later `put-text-property' over the interval changes that
+list in place (`add_properties' does `Fsetcar' on the plist cell), so
+a plist taken before the write reads the new value afterwards and is
+`eq' to the one taken after; Emaxx builds a fresh list per call, so
+the earlier plist keeps the old value and the two are not `eq'.  A
+probe over a six-character buffer shows `((face italic) t t)' in GNU
+and `((face bold) nil nil)' here.  Recorded here as a divergence of
+plist identity; the property values agree.
+
+*The interpreted call floor.*  `semantic-fmt-utest' runs 6.9 million
+`looking-at' calls that GNU finishes in 2.3 s; at 25 us a call here
+they took 169 s.  In a tight interpreted loop a call to `eq' cost
+5.3 us and `looking-at' 8.6 us (GNU 0.05 and 0.3 us).  Three fixed
+costs are gone: the interned-name table and the process symbol
+registry hashed each name-to-id resolution with SipHash (FNV now, as
+the interpreter's other name tables); the resolution scanned each name
+byte by byte for the uninterned marker (a one-character `contains'
+uses memchr); and every ordinary call resolved its head's function
+cell and searched the 1,700-entry C manifest to ask whether the head
+is an alias of a special form (`(defalias 'inline 'progn)'), an answer
+now kept per call site under the function-binding generation, for a
+bare-symbol head when no local function frame is in force.  `eq' 5.3
+to 3.5 us, `looking-at' 8.6 to 6.4 us.  What remains is the
+name-keyed variable path (`set_global_binding' and the lookups resolve
+a name to its cell by hashing it on each access, R02c) and the
+allocation of every call's argument vector; recorded in D20.
+
+*Gate.*  The full grouped gate on this tree passed: eval_01 351,
+eval_02 284, eval_03 320, eval_04 251, eval_05 351, primitives 457,
+tty 56 (2 ignored), compat_runtime 84, batch 49, lightweight 414, the
+binaries, the integration group (1,332 s); `cargo fmt --check' and
+`cargo clippy --profile gate --all-targets --all-features -D warnings'
+clean before and after.  The Mac receipt for the vector fix is the
+next frozen run's `context-menu-map-remove-consecutive-separators'.

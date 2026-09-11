@@ -15,6 +15,10 @@ use std::{
 };
 
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
+/// The marker as a character: `str::contains' with a one-character pattern
+/// scans with memchr, where the string pattern walked the bytes one by one
+/// on every name-to-id resolution (a tenth of a tight interpreted loop).
+const UNINTERNED_SYMBOL_MARKER_CHAR: char = '\u{1F}';
 const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -622,7 +626,10 @@ struct SymbolNameState {
 pub struct SymbolName(Rc<SymbolNameState>);
 
 thread_local! {
-    static INTERNED_SYMBOL_NAMES: RefCell<HashSet<SymbolName>> = RefCell::new(HashSet::new());
+    /// Keyed by the symbol's text; FNV, as the interpreter's other
+    /// name-keyed tables, since every name-to-id resolution hashes here
+    /// (SipHash was a tenth of a tight interpreted loop).
+    static INTERNED_SYMBOL_NAMES: RefCell<HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>> = RefCell::new(HashSet::default());
     /// Live uninterned states by their private internal text.  Two
     /// `SymbolName's with equal internal text compare equal, so a text
     /// that names a live uninterned symbol must resolve to that very
@@ -638,8 +645,8 @@ thread_local! {
 /// interned text keeps its id forever; an uninterned text keeps it while
 /// any state with that text is alive (the count), so a private name that
 /// dies and is minted again gets a fresh id.
-static SYMBOL_IDS: std::sync::Mutex<Option<HashMap<String, (u32, usize)>>> =
-    std::sync::Mutex::new(None);
+type SymbolIdTable = HashMap<String, (u32, usize), crate::lisp::primitives::FnvBuildHasher>;
+static SYMBOL_IDS: std::sync::Mutex<Option<SymbolIdTable>> = std::sync::Mutex::new(None);
 static NEXT_SYMBOL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static NEXT_UNINTERNED_SYMBOL_ID: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
@@ -653,7 +660,7 @@ fn symbol_id_for(text: &str, uninterned: bool) -> u32 {
     let mut registry = SYMBOL_IDS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let registry = registry.get_or_insert_with(HashMap::new);
+    let registry = registry.get_or_insert_with(HashMap::default);
     if let Some((id, states)) = registry.get_mut(text) {
         if uninterned {
             *states += 1;
@@ -688,7 +695,11 @@ impl Drop for SymbolNameState {
         // Only uninterned states ever drop (the interned table owns its
         // entries for the thread's lifetime); release the text's id when the
         // last state with that text is gone.
-        if !self.internal.as_str().contains(UNINTERNED_SYMBOL_MARKER) {
+        if !self
+            .internal
+            .as_str()
+            .contains(UNINTERNED_SYMBOL_MARKER_CHAR)
+        {
             return;
         }
         let mut registry = SYMBOL_IDS
@@ -715,7 +726,7 @@ impl SymbolName {
     /// the supplied Lisp string; internal C-string callers create that name
     /// only when the symbol is first allocated.
     pub(crate) fn intern_with_lisp_name(text: String, lisp_name: Option<Value>) -> Self {
-        if text.contains(UNINTERNED_SYMBOL_MARKER) {
+        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
             if let Some(existing) = Self::live_uninterned(text.as_str()) {
                 return existing;
             }
@@ -757,7 +768,7 @@ impl SymbolName {
 
     /// The interned state for TEXT, without allocating when it exists.
     pub(crate) fn intern_str(text: &str) -> Self {
-        if !text.contains(UNINTERNED_SYMBOL_MARKER)
+        if !text.contains(UNINTERNED_SYMBOL_MARKER_CHAR)
             && let Some(name) = INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).cloned())
         {
             return name;
@@ -770,7 +781,7 @@ impl SymbolName {
     /// died, has no cell anywhere.  This thread's tables answer first; the
     /// process registry covers a name another thread interned.
     pub(crate) fn id_of(text: &str) -> Option<u32> {
-        if text.contains(UNINTERNED_SYMBOL_MARKER)
+        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR)
             && let Some(name) = Self::live_uninterned(text)
         {
             return Some(name.id());
@@ -2287,7 +2298,7 @@ pub(crate) fn make_fresh_obarray_symbol_name(base: &str, obarray_id: u64) -> Str
 }
 
 pub(crate) fn is_uninterned_symbol(symbol: &str) -> bool {
-    symbol.contains(UNINTERNED_SYMBOL_MARKER)
+    symbol.contains(UNINTERNED_SYMBOL_MARKER_CHAR)
 }
 
 /// A symbol interned in a private obarray (or an abbrev table): its own

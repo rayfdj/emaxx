@@ -23641,3 +23641,127 @@ fn load_history_lists_a_repeated_definition_twice_as_gnu_does() {
     );
     std::fs::remove_file(&path).expect("remove the fixture file");
 }
+
+/// lread.c reads a symbol inside a vector as a symbol with position under
+/// `read-positioning-symbols' just as it does inside a list; the reader's
+/// placeholder used to stay in the vector, so `type-of' on the element
+/// signalled and the byte compiler printed `#<reader-form>' into every
+/// constants vector holding a key sequence such as `[mouse-1]'.
+#[test]
+fn read_positioning_symbols_positions_the_symbols_inside_vectors() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let form = call(
+        &mut interp,
+        "read-positioning-symbols",
+        &[Value::String("(foo [bar] (baz))".into())],
+        &mut env,
+    )
+    .expect("read with positions");
+    let rest = call(&mut interp, "cdr", &[form], &mut env).expect("the rest");
+    let vector = call(&mut interp, "car", &[rest], &mut env).expect("the vector");
+    let element = call(&mut interp, "aref", &[vector, Value::Integer(0)], &mut env)
+        .expect("the vector's element");
+    assert_eq!(
+        call(
+            &mut interp,
+            "symbol-with-pos-p",
+            std::slice::from_ref(&element),
+            &mut env
+        )
+        .expect("symbol-with-pos-p"),
+        Value::T
+    );
+    assert_eq!(
+        call(&mut interp, "bare-symbol", &[element], &mut env).expect("bare-symbol"),
+        Value::symbol("bar")
+    );
+
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-vector-constants-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create the fixture directory");
+    let source = directory.join("keys.el");
+    std::fs::write(
+        &source,
+        ";;; -*- lexical-binding: t -*-\n(defun zz-keys (m) (define-key m [mouse-1] 'ignore) [a \"s\" 1])\n",
+    )
+    .expect("write the fixture file");
+    call_via_lisp(
+        &mut interp,
+        "byte-compile-file",
+        &[Value::String(source.to_string_lossy().into_owned().into())],
+        &mut env,
+    )
+    .expect("byte-compile the file");
+    let compiled =
+        String::from_utf8_lossy(&std::fs::read(directory.join("keys.elc")).expect("the .elc"))
+            .into_owned();
+    assert!(
+        compiled.contains("[mouse-1]") && compiled.contains("[a \"s\" 1]"),
+        "the constants vector prints the symbols bare: {compiled}"
+    );
+    assert!(
+        !compiled.contains("reader-form"),
+        "no placeholder reaches the .elc: {compiled}"
+    );
+    std::fs::remove_dir_all(&directory).expect("remove the fixture directory");
+}
+
+/// textprop.c splits and merges the intervals at the edges of a write and
+/// leaves the rest of the buffer's intervals alone; the write path used to
+/// clone and rebuild every span of the buffer per call (half a millisecond
+/// in a 12,000-file dired listing).  The local rewrite keeps the observable
+/// results: the neighbours are untouched, an equal neighbour merges, a
+/// partly covered span splits, and undo restores the previous plists
+/// (the answer is GNU's; the plists are copied because GNU hands out the
+/// interval's live plist, which the later write would change in place).
+#[test]
+fn text_property_writes_touch_only_the_spans_they_cover() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let program = r#"
+(with-temp-buffer
+  (buffer-enable-undo)
+  (dotimes (i 2000) (insert "abcd"))
+  ;; 1000 disjoint spans: every other four-character group.
+  (dotimes (i 1000) (put-text-property (+ 1 (* 8 i)) (+ 5 (* 8 i)) 'face 'bold))
+  (undo-boundary)
+  ;; A write across the middle: covers the tail of span 500, the gap, and
+  ;; the head of span 501.
+  (put-text-property 4003 4011 'face 'italic)
+  (let ((around (mapcar (lambda (p) (copy-sequence (text-properties-at p))) '(3993 4001 4002 4003 4010 4011 4012 4013 8000)))
+        (before (text-properties-at 1))
+        (last (text-properties-at 7997)))
+    (primitive-undo 1 buffer-undo-list)
+    (list around before last
+          (mapcar (lambda (p) (copy-sequence (text-properties-at p))) '(4001 4003 4006 4010 4013))
+          ;; An equal write merges with its neighbour: the span's extent grows.
+          (progn (put-text-property 4005 4009 'face 'bold)
+                 (list (next-single-property-change 4001 'face) (previous-single-property-change 4013 'face))))))
+"#;
+    let read = call(
+        &mut interp,
+        "read-from-string",
+        &[Value::String(program.into())],
+        &mut env,
+    )
+    .expect("read the program");
+    let form = call(&mut interp, "car", &[read], &mut env).expect("the form");
+    let result =
+        call_via_lisp(&mut interp, "eval", &[form, Value::T], &mut env).expect("run the program");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print")
+        .as_string()
+        .expect("a string")
+        .to_owned();
+    assert_eq!(
+        printed,
+        "(((face bold) (face bold) (face bold) (face italic) (face italic) (face bold) (face bold) nil nil) (face bold) nil ((face bold) (face bold) (face nil) (face bold) nil) (4013 4001))"
+    );
+}

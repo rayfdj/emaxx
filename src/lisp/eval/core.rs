@@ -280,6 +280,7 @@ impl Interpreter {
             items,
             native_form,
             macro_calls: Rc::new(RefCell::new(SourceMacroCallCache::default())),
+            special_alias: Rc::new(Cell::new(None)),
             function_call: Rc::new(RefCell::new(None)),
         };
         if self.source_form_items_cache.len() >= SOURCE_FORM_ITEMS_CACHE_LIMIT {
@@ -448,6 +449,7 @@ impl Interpreter {
                     native_form,
                     macro_calls,
                     function_call,
+                    special_alias,
                 } = self.source_form_analysis(expr)?;
                 if items.is_empty() {
                     return Ok(Value::Nil);
@@ -473,14 +475,29 @@ impl Interpreter {
                     // INLINE as an ordinary function evaluates its forms and
                     // then attempts an invalid funcall of PROGN.
                     let effective_native_form = direct_native_form.or_else(|| {
-                        let Value::BuiltinFunc(target) = self.lookup_function(name, env).ok()?
-                        else {
-                            return None;
-                        };
-                        if !is_special_form_name(&target) {
-                            return None;
+                        let cacheable = matches!(items[0], Value::Symbol(_))
+                            && !Self::env_may_affect_function_resolution(env);
+                        if cacheable
+                            && let Some((generation, verdict)) = special_alias.get()
+                            && generation == self.function_binding_generation
+                        {
+                            return verdict;
                         }
-                        NativeForm::for_name(&target)
+                        let verdict = (|| {
+                            let Value::BuiltinFunc(target) =
+                                self.lookup_function(name, env).ok()?
+                            else {
+                                return None;
+                            };
+                            if !is_special_form_name(&target) {
+                                return None;
+                            }
+                            NativeForm::for_name(&target)
+                        })();
+                        if cacheable {
+                            special_alias.set(Some((self.function_binding_generation, verdict)));
+                        }
+                        verdict
                     });
                     if let Some(native_form) = effective_native_form {
                         match native_form {

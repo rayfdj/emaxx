@@ -135,6 +135,12 @@ category generation, the compiled-regexp cache holds 1024 patterns,
 function redefinition and load-history recording are constant-time and
 load-history lists repeated definitions as GNU does.  The remaining slow
 files are measured in the audit and listed open in D20.
+Checkpoint 19a (2026-09-11, prepared for main): the positioning reader's
+symbols inside vectors become `symbol-with-pos` objects (a byte-compiled
+`[mouse-1]` printed `#<reader-form>`; the Mac's context-menu failure),
+text property writes rewrite only the spans they cover, and three fixed
+costs of every interpreted call are gone (`eq` 5.3 to 3.5 us).  The
+per-call costs measured after it are in D20.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

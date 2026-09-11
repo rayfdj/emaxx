@@ -1610,6 +1610,24 @@ fn materialize_positioned_symbols(
             }
             Value::Cons(cell)
         }
+        // lread.c's read_positioning_symbols reads a symbol inside a vector
+        // as a symbol with position too (byte-run.el's
+        // `byte-run--strip-vector/record' walks vectors for them); the
+        // placeholder left here reached the byte compiler's constants
+        // vector and was printed as `#<reader-form>' into every `.elc'
+        // and `.eln' holding a key sequence such as `[mouse-1]'.
+        Value::Vector(vector) => {
+            let pointer = std::rc::Rc::as_ptr(&vector).cast::<crate::lisp::types::ConsCell>();
+            if seen.insert(pointer) {
+                let slots = vector.slots().clone();
+                let slots = slots
+                    .into_iter()
+                    .map(|slot| materialize_positioned_symbols(interp, slot, seen))
+                    .collect::<Vec<_>>();
+                *vector.slots_mut() = slots;
+            }
+            Value::Vector(vector)
+        }
         other => other,
     }
 }
