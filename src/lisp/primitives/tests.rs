@@ -6186,6 +6186,165 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
     );
 }
 
+/// A rendering keys on the tables it read, the current syntax table and
+/// its parents, not on every syntax table in the process: cc-mode writes
+/// tables of its own while its largest patterns run under another.
+#[test]
+fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let word_match = |interp: &mut Interpreter, env: &mut Env, text: &str| {
+        call(
+            interp,
+            "string-match",
+            &[Value::String("\\w".into()), Value::String(text.into())],
+            env,
+        )
+        .expect("match a syntax-table-dependent regexp")
+    };
+
+    regexp::reset_regexp_syntax_class_render_count();
+    assert_eq!(
+        word_match(&mut interp, &mut env, "word!"),
+        Value::Integer(0)
+    );
+    assert_eq!(regexp::regexp_syntax_class_render_count(), 1);
+
+    // subr.el's `make-syntax-table' is not loaded in a bare interpreter:
+    // the same char table with the standard table as parent.
+    let standard = call(&mut interp, "standard-syntax-table", &[], &mut env)
+        .expect("the standard syntax table");
+    let make_syntax_table = |interp: &mut Interpreter, env: &mut Env| {
+        let table = call(
+            interp,
+            "make-char-table",
+            &[Value::symbol("syntax-table"), Value::Nil],
+            env,
+        )
+        .expect("make a syntax table");
+        call(
+            interp,
+            "set-char-table-parent",
+            &[table.clone(), standard.clone()],
+            env,
+        )
+        .expect("inherit from the standard syntax table");
+        table
+    };
+    let other = make_syntax_table(&mut interp, &mut env);
+    call(
+        &mut interp,
+        "modify-syntax-entry",
+        &[
+            Value::Integer('!' as i64),
+            Value::String("w".into()),
+            other.clone(),
+        ],
+        &mut env,
+    )
+    .expect("write a table the current one does not inherit from");
+    assert_eq!(word_match(&mut interp, &mut env, "!"), Value::Nil);
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        1,
+        "a write to a table outside the current chain must not re-render"
+    );
+
+    let child = make_syntax_table(&mut interp, &mut env);
+    call(&mut interp, "set-syntax-table", &[child], &mut env).expect("select the child table");
+    assert_eq!(word_match(&mut interp, &mut env, "word"), Value::Integer(0));
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        2,
+        "another current table renders once"
+    );
+    call(
+        &mut interp,
+        "modify-syntax-entry",
+        &[
+            Value::Integer('!' as i64),
+            Value::String("w".into()),
+            standard.clone(),
+        ],
+        &mut env,
+    )
+    .expect("write the parent of the current table");
+    assert_eq!(
+        word_match(&mut interp, &mut env, "!"),
+        Value::Integer(0),
+        "the child inherits the parent's new entry"
+    );
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        3,
+        "a write to a parent in the chain must re-render"
+    );
+}
+
+/// GNU runs `X\{m,n\}' as a counted loop; a large bound over one bracket
+/// expression is translated so fancy-regex loops too instead of the regex
+/// crate unrolling n copies of the class (see loop_large_bounded_repeat).
+#[test]
+fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
+    let looped = regexp::translate_elisp_regex("[a-z]\\{,1000\\}");
+    assert!(
+        looped.starts_with("(?>[") && looped.ends_with("){0,1000}"),
+        "a large bound over a class wraps the class atomically: {looped}"
+    );
+    let exact = regexp::translate_elisp_regex("[a-z]\\{64\\}");
+    assert!(
+        exact.starts_with("(?>[") && exact.ends_with("){64}"),
+        "{exact}"
+    );
+    for unchanged in [
+        "[a-z]\\{,8\\}",
+        "\\(?:ab\\)\\{,1000\\}",
+        "a\\{,1000\\}",
+        "[a-z]\\{4,\\}",
+    ] {
+        let translated = regexp::translate_elisp_regex(unchanged);
+        assert!(
+            !translated.contains("(?>"),
+            "{unchanged} must keep the regex crate's form: {translated}"
+        );
+    }
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (pattern, text, expected) in [
+        (
+            "\\([[:alnum:]_$]\\{,1000\\}\\)x",
+            "aaaaax",
+            vec![0, 6, 0, 5],
+        ),
+        ("\\([a-z]\\{,40\\}?\\)ab", "aaaaaaab", vec![0, 8, 0, 6]),
+        (
+            "\\([a-z]\\{3,40\\}\\)\\(a*\\)",
+            "aaaaaaab",
+            vec![0, 8, 0, 8, 8, 8],
+        ),
+        ("\\([[:alpha:]]\\{,100\\}\\)\\1", "abcabc", vec![0, 6, 0, 3]),
+    ] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-match",
+                &[Value::String(pattern.into()), Value::String(text.into())],
+                &mut env,
+            )
+            .expect("match a bounded repeat"),
+            Value::Integer(0),
+            "{pattern}"
+        );
+        let data = call(&mut interp, "match-data", &[], &mut env).expect("match data");
+        assert_eq!(
+            data,
+            Value::list(expected.into_iter().map(Value::Integer)),
+            "{pattern} against {text}"
+        );
+    }
+}
+
 #[test]
 fn equal_string_hash_tables_scale_without_losing_public_semantics() {
     let mut interp = Interpreter::new();

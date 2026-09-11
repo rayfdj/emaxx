@@ -951,36 +951,55 @@ impl Interpreter {
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
-        let mut names = Vec::new();
-        let mut seen = HashSet::new();
-        let mut push_name = |name: &str| {
+        self.for_each_known_symbol_name(|name| name.to_string())
+    }
+
+    /// The initial obarray's symbols, in `known_symbol_names' order, as
+    /// symbol objects: what `mapatoms' hands its function.  Each name is
+    /// resolved once through the interned-name table; no per-symbol string
+    /// is allocated (the loadup obarray holds twenty thousand names, and
+    /// ERT's test selection walks it on every batch run).
+    pub(crate) fn known_symbols(&self) -> Vec<crate::lisp::types::SymbolName> {
+        self.for_each_known_symbol_name(crate::lisp::types::SymbolName::intern_str)
+    }
+
+    fn for_each_known_symbol_name<T>(&self, mut make: impl FnMut(&str) -> T) -> Vec<T> {
+        let candidates = ["nil", "t"]
+            .into_iter()
+            .chain(
+                self.globals
+                    .iter()
+                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
+            )
+            .chain(
+                self.variable_aliases
+                    .iter()
+                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
+            )
+            .chain(
+                self.functions
+                    .iter()
+                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
+            )
+            .chain(
+                self.symbol_properties
+                    .iter()
+                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
+            )
+            .chain(self.interned_symbols.iter().map(String::as_str));
+        let mut items = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for name in candidates {
             if crate::lisp::types::visible_symbol_name(name) != name
                 || self.uninterned_standard_symbol_names.contains(name)
             {
-                return;
+                continue;
             }
-            if seen.insert(name.to_string()) {
-                names.push(name.to_string());
+            if seen.insert(name) {
+                items.push(make(name));
             }
-        };
-        push_name("nil");
-        push_name("t");
-        for (name, _) in &self.globals {
-            push_name(name);
         }
-        for (name, _) in &self.variable_aliases {
-            push_name(name);
-        }
-        for (name, _) in &self.functions {
-            push_name(name);
-        }
-        for (name, _) in &self.symbol_properties {
-            push_name(name);
-        }
-        for name in &self.interned_symbols {
-            push_name(name);
-        }
-        names
+        items
     }
 
     /// O(1) membership probe for GNU's standard obarray.  Enumeration keeps
@@ -1007,6 +1026,13 @@ impl Interpreter {
     /// function or macro (re)definition.
     pub(crate) fn note_definition_changed(&mut self) {
         self.definition_generation = self.definition_generation.wrapping_add(1);
+    }
+
+    /// A function cell was bound, rebound or voided: every cached funcall
+    /// resolution and every macro verdict is stale.
+    pub(crate) fn note_function_binding_changed(&mut self) {
+        self.note_definition_changed();
+        self.function_binding_generation = self.function_binding_generation.wrapping_add(1);
     }
 
     pub(crate) fn current_definition_generation(&self) -> u64 {
@@ -1251,7 +1277,7 @@ impl Interpreter {
         self.functions_index
             .insert(name.to_string(), function.clone());
         self.functions.push((name.to_string(), function));
-        self.note_definition_changed();
+        self.note_function_binding_changed();
     }
 
     /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
@@ -1266,7 +1292,7 @@ impl Interpreter {
                 self.functions_index.remove(name);
             }
         }
-        self.note_definition_changed();
+        self.note_function_binding_changed();
     }
 
     pub fn function_binding_name(&self, function: &Value) -> Option<String> {
@@ -1291,7 +1317,7 @@ impl Interpreter {
     pub fn remove_all_function_bindings(&mut self, name: &str) {
         self.functions.retain(|(fname, _)| fname != name);
         self.functions_index.remove(name);
-        self.note_definition_changed();
+        self.note_function_binding_changed();
     }
 
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {

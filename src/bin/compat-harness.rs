@@ -1195,6 +1195,27 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
     )
 }
 
+/// The spellings of a directory a test's message can carry: the path as
+/// given, its resolved form (symlinks followed), and the downcased form
+/// of each, without a trailing separator.
+fn path_spellings(path: &Path) -> Vec<String> {
+    fn push(forms: &mut Vec<String>, text: String) {
+        let text = text.trim_end_matches('/').to_string();
+        if !text.is_empty() && !forms.contains(&text) {
+            forms.push(text);
+        }
+    }
+    let mut forms = Vec::new();
+    push(&mut forms, path.display().to_string());
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        push(&mut forms, resolved.display().to_string());
+    }
+    for form in forms.clone() {
+        push(&mut forms, form.to_lowercase());
+    }
+    forms
+}
+
 fn compare_subject_artifacts(args: CompareSubjectsArgs) -> Result<u8, String> {
     let baseline_root = compat::canonicalize_path(&args.baseline)?;
     let candidate_root = compat::canonicalize_path(&args.candidate)?;
@@ -1891,17 +1912,31 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         };
         // Erase only environmental variance from failure messages before
         // equality: each runner's isolated checkout root and the shared
-        // temp directory.  Anything else that differs is a real divergence.
-        let oracle_root = oracle_checkout.checkout.display().to_string();
-        let emaxx_root = emaxx_checkout.checkout.display().to_string();
-        let temp_root = std::env::temp_dir().display().to_string();
+        // temp directory, in every spelling a test can print them in --
+        // as given, resolved (Darwin's `/var' is a link to `/private/var',
+        // and `file-truename' or getcwd answers the latter), and
+        // downcased (a test comparing case-folded names prints them so).
+        // Anything else that differs is a real divergence.
+        let mut replacements = Vec::new();
+        for (root, placeholder) in [
+            (&oracle_checkout.checkout, "<checkout>"),
+            (&emaxx_checkout.checkout, "<checkout>"),
+            (&std::env::temp_dir(), "<tmp>"),
+        ] {
+            for form in path_spellings(root) {
+                replacements.push((form, placeholder));
+            }
+        }
+        // Longest spelling first, so a resolved root is not left half
+        // replaced by its shorter unresolved prefix.
+        replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
+        replacements.dedup();
         let normalize = move |text: &str| {
-            canonicalize_temp_randomness(
-                &text
-                    .replace(&oracle_root, "<checkout>")
-                    .replace(&emaxx_root, "<checkout>")
-                    .replace(&temp_root, "<tmp>"),
-            )
+            let mut text = text.to_string();
+            for (form, placeholder) in &replacements {
+                text = text.replace(form, placeholder);
+            }
+            canonicalize_temp_randomness(&text)
         };
         let mut comparison =
             compat::compare_reports_normalized(&oracle_report, &emaxx_report, &normalize);
@@ -3422,6 +3457,31 @@ fn cargo_profile_for_binary_directory(bin_dir: &Path) -> Result<String, String> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn path_spellings_cover_resolved_and_downcased_forms() {
+        // Darwin's temporary directory is `/var/folders/...', a link to
+        // `/private/var/...'; a test comparing case-folded file names
+        // prints the root downcased.  Every spelling maps to one placeholder.
+        let directory = std::env::temp_dir().join("Emaxx-Spellings-Test");
+        std::fs::create_dir_all(&directory).expect("create the directory");
+        let forms = super::path_spellings(&directory);
+        let _ = std::fs::remove_dir(&directory);
+        let given = directory.display().to_string();
+        assert_eq!(forms[0], given.trim_end_matches('/'));
+        assert!(forms.contains(&given.to_lowercase()), "{forms:?}");
+        let resolved = std::fs::canonicalize(std::env::temp_dir())
+            .expect("the temporary directory resolves")
+            .join("Emaxx-Spellings-Test")
+            .display()
+            .to_string();
+        assert!(forms.contains(&resolved), "{forms:?}");
+        assert!(forms.contains(&resolved.to_lowercase()), "{forms:?}");
+        assert_eq!(
+            forms.len(),
+            forms.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+    }
+
     use super::*;
 
     #[test]

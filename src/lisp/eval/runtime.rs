@@ -2156,37 +2156,112 @@ impl Interpreter {
         {
             return None;
         }
-        // This is the sole native door to mutable table contents.  Bump one
-        // shared generation here so derived views over parent chains cannot
-        // survive a write through an otherwise unrelated public operation.
-        self.char_table_mutation_generation = self.char_table_mutation_generation.wrapping_add(1);
-        self.char_tables
-            .get_mut(index)
-            .filter(|table| table.id == id)
+        // This is the sole native door to mutable table contents, so a
+        // derived view cannot survive a write through an otherwise
+        // unrelated public operation.
+        // The derived caches key on what they read: a syntax rendering on
+        // the stamps of the tables in its parent chain (each table takes a
+        // fresh stamp here), a `\\c' pattern on the category table
+        // generation (characters.el writes that table two hundred thousand
+        // times, so syntax renderings must not observe it), a case-folded
+        // pattern on the case tables only.
+        match self.char_tables[index].subtype.as_deref() {
+            Some("syntax-table") => {}
+            Some("category-table") => {
+                self.category_context_generation = self.category_context_generation.wrapping_add(1);
+            }
+            _ => {
+                self.case_context_generation = self.case_context_generation.wrapping_add(1);
+            }
+        }
+        let table = &mut self.char_tables[index];
+        table.note_written();
+        Some(table)
+    }
+
+    /// The (id, stamp) of TABLE_ID and of every table it inherits from,
+    /// the table first: the identity of everything a syntax rendering of
+    /// the table reads.  A write to any of them, including a change of a
+    /// parent link, passes through `find_char_table_mut' and changes the
+    /// stamp of the table written.  A missing table contributes a stamp of
+    /// zero, which no live table ever carries.
+    pub(crate) fn syntax_table_chain_signature(&self, table_id: u64) -> SyntaxChainSignature {
+        let mut chain = SyntaxChainSignature::with_capacity(2);
+        let mut current = Some(table_id);
+        while let Some(id) = current {
+            if chain.iter().any(|(seen, _)| *seen == id) {
+                break;
+            }
+            let Some(table) = self.find_char_table(id) else {
+                chain.push((id, 0));
+                break;
+            };
+            chain.push((id, table.generation()));
+            current = table.parent;
+        }
+        chain
     }
 
     pub(crate) fn cached_regexp_syntax_classes(&self, table_id: u64) -> Option<[String; 16]> {
+        let chain = self.syntax_table_chain_signature(table_id);
         self.regexp_syntax_class_cache
             .borrow()
-            .as_ref()
-            .filter(|cache| {
-                cache.table_id == table_id
-                    && cache.char_table_generation == self.char_table_mutation_generation
-            })
+            .iter()
+            .find(|cache| cache.table_id == table_id && cache.chain == chain)
             .map(|cache| cache.rendered.clone())
+    }
+
+    /// Whether TABLE_ID or a table it inherits from holds an entry (or
+    /// default) that is a cons or a mutable string: an object whose in-place
+    /// mutation no table write observes.  Answered once per table and chain
+    /// signature; a change of what a table holds passes through the table
+    /// door and so changes that signature.
+    pub(crate) fn syntax_table_chain_has_mutable_entries(&self, table_id: u64) -> bool {
+        let chain = self.syntax_table_chain_signature(table_id);
+        if let Some((_, _, answer)) = self
+            .syntax_table_mutable_entries_cache
+            .borrow()
+            .iter()
+            .find(|(id, cached_chain, _)| *id == table_id && *cached_chain == chain)
+        {
+            return *answer;
+        }
+        let mutable = |value: &Value| matches!(value, Value::Cons(_) | Value::StringObject(_));
+        let mut answer = false;
+        let mut current = Some(table_id);
+        let mut seen = HashSet::new();
+        while let Some(id) = current {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some(table) = self.find_char_table(id) else {
+                answer = true;
+                break;
+            };
+            if mutable(&table.default) || table.entries.iter().any(|entry| mutable(&entry.value)) {
+                answer = true;
+                break;
+            }
+            current = table.parent;
+        }
+        let mut cache = self.syntax_table_mutable_entries_cache.borrow_mut();
+        cache.retain(|(id, _, _)| *id != table_id);
+        if cache.len() >= 16 {
+            cache.remove(0);
+        }
+        cache.push((table_id, chain, answer));
+        answer
     }
 
     pub(crate) fn cached_syntax_segments(
         &self,
         table_id: u64,
     ) -> Option<std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>> {
+        let chain = self.syntax_table_chain_signature(table_id);
         self.syntax_segment_cache
             .borrow()
             .as_ref()
-            .filter(|cache| {
-                cache.table_id == table_id
-                    && cache.char_table_generation == self.char_table_mutation_generation
-            })
+            .filter(|cache| cache.table_id == table_id && cache.chain == chain)
             .map(|cache| cache.segments.clone())
     }
 
@@ -2197,15 +2272,23 @@ impl Interpreter {
     ) {
         *self.syntax_segment_cache.borrow_mut() = Some(crate::lisp::eval::SyntaxSegmentCache {
             table_id,
-            char_table_generation: self.char_table_mutation_generation,
+            chain: self.syntax_table_chain_signature(table_id),
             segments,
         });
     }
 
     pub(crate) fn cache_regexp_syntax_classes(&self, table_id: u64, rendered: [String; 16]) {
-        *self.regexp_syntax_class_cache.borrow_mut() = Some(RegexpSyntaxClassCache {
+        // A few tables at a time: a mode that swaps its syntax table around
+        // a scan (cc-mode's `c-with-syntax-table') keeps both renderings.
+        let chain = self.syntax_table_chain_signature(table_id);
+        let mut cache = self.regexp_syntax_class_cache.borrow_mut();
+        cache.retain(|entry| entry.table_id != table_id);
+        if cache.len() >= 8 {
+            cache.remove(0);
+        }
+        cache.push(RegexpSyntaxClassCache {
             table_id,
-            char_table_generation: self.char_table_mutation_generation,
+            chain,
             rendered,
         });
     }
@@ -2240,12 +2323,14 @@ impl Interpreter {
         Ok(())
     }
 
-    /// The shared char-table write generation (see find_char_table_mut):
-    /// caches derived from any char table key on this to observe every
-    /// mutation, exactly as GNU's compile_pattern re-checks its cached
-    /// entry's syntax table with EQ before reuse.
-    pub(crate) fn char_table_generation(&self) -> u64 {
-        self.char_table_mutation_generation
+    pub(crate) fn category_context_generation(&self) -> u64 {
+        self.category_context_generation
+    }
+
+    /// The generation of the tables case folding reads (the case tables
+    /// among every table that is neither a syntax nor a category table).
+    pub(crate) fn case_context_generation(&self) -> u64 {
+        self.case_context_generation
     }
 
     pub fn char_table_get(&self, id: u64, key: u32) -> Option<Value> {
@@ -2403,10 +2488,12 @@ impl Interpreter {
         let new_id = self.next_char_table_id;
         self.next_char_table_id += 1;
         let index = self.char_table_index_for(new_id);
-        self.char_tables[index] = CharTableState {
+        let mut copy = CharTableState {
             id: new_id,
             ..source
         };
+        copy.note_written();
+        self.char_tables[index] = copy;
         if self.is_ascii_case_table(id) {
             self.mark_ascii_case_table(new_id);
         }

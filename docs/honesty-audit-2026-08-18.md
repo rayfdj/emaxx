@@ -8989,3 +8989,163 @@ never dumps a cache unit beside the preloaded ones).  The control now
 names an eln destination holding no units, so every unit resolves
 through its build path.  The Linux run of both remains at a unit
 count of zero.
+
+## 2026-09-11 Checkpoint 18: the harness's checkout roots, the per-run floor, the cc-mode hot paths
+
+*What prompted it.*  The Mac frozen run of checkpoint 17 showed three
+things worth a patch before a re-run: a per-run floor of about 25 ms
+in every ERT batch process, `csharp-mode-tests' at 361 times GNU's
+time (one indentation test, 86.6 s on the Linux gate build against
+GNU's 0.06 s), and `elisp-mode-tests' failing on nothing but the two
+editors' checkout roots printed in a failure message.
+
+*The harness.*  `compat-harness' now normalizes, before it compares
+the two reports, each runner's isolated checkout root and the shared
+temporary directory to `<checkout>' and `<tmp>', in the three
+spellings a test can print a path in: as given, resolved through the
+file system (Darwin's `/var' is a link to `/private/var', which
+`file-truename' and getcwd answer), and downcased (a test comparing
+case-folded names prints them so), longest spelling first so a
+resolved root is not left half replaced by its unresolved prefix.
+This is a harness rule, not editor behavior: it makes the two
+editors' different working directories equal in the comparison and
+nothing else; a path that differs in any other way remains a
+divergence.  Control: `path_spellings_cover_resolved_and_downcased_forms'.
+
+*The compiled-regexp cache handed out clones.*  The largest cost
+found was not in cc-mode's patterns but in every regexp call: the
+thread-local cache of compiled patterns returned a clone of the
+compiled object, and a clone of a regex-automata regex (fancy-regex's
+delegates included) starts with an empty cache pool, so every search
+through the clone determinized its pattern's lazy DFA from nothing.
+The cache now hands out an `Rc' to the one compiled object.  Measured
+under `looking-at' on the Linux gate build, warm: `\(?:\sw\|\s_\)+'
+25.6 to 8.1 us a call, a literal 7.9 to 7.0 us, `[[:alnum:]_$]\{,8\}'
+305 to 8.9 us, cc-mode's 954-character keyword alternation 75 to 13 us
+(GNU: 1 us for each).
+
+*Large bounded repeats.*  cc-mode's `c-identifier-key' repeats a
+Unicode class with `\{,1000\}'.  GNU's regex.c runs `X\{m,n\}' as a
+counted loop (succeed_n, jump_n); the regex crate unrolls it into n
+copies of X, which for that class cost hundreds of milliseconds to
+compile and, matched through the unrolled automaton, 190 ms for one
+`looking-at' (4.8 s the first).  The translation now wraps a bracket
+expression under a bound of 16 or more in an atomic group, `(?>[..])
+{0,1000}': one character with nothing to backtrack into, so the
+language is unchanged, and a body fancy-regex runs itself compiles
+as its counted loop (RepeatGr) instead of the delegate's unrolling.
+Only a bracket expression immediately before the interval is
+wrapped; a group, a literal, an unbounded `\{n,\}' keep the regex
+crate's form.  Measured on `[[:alpha:]_@][[:alnum:]_$]\{,N\}': the
+unrolled form compiles in 3 ms at N=4, 7.5 ms at N=16, 12.7 ms at
+N=31 and matches in 9 us warm; the loop compiles in 2 ms at every N
+and matches in 11 us (13 us at N=1000).  The match data of seven
+bounded patterns (greedy, lazy, exact count, nested, with a
+backreference) is the same as GNU's, pinned by
+`large_bounded_repeats_over_a_bracket_expression_become_counted_loops'.
+Not GNU: a pattern whose bounded repeat is looped has no
+linear-boundary prefilter (the regex crate cannot parse the atomic
+group; the coarse prefilter is an optimization, not a semantic).
+
+*Syntax renderings key on the tables they read.*  A pattern with a
+syntax class was keyed on one generation bumped by a write to any
+syntax table (and any table that is neither a syntax nor a category
+table), so a mode creating or writing tables of its own recompiled
+every such pattern under the current table: 465 recompilations in
+the csharp run, the largest patterns five times each.  Every char
+table now carries a stamp taken from one process-wide counter when
+it is made and again at each write through `find_char_table_mut';
+the compiled-regexp key, the rendered syntax classes, the
+syntax-segment cache and the mutable-entries answer key on the
+signature of the current table's chain (the table and its parents,
+each with its stamp).  A write to a table outside the chain changes
+nothing; a write to a parent, or a change of a parent link, changes
+the signature.  The category and case generations remain as they
+were.  Disclosed and corrected beside it: the thread-local cache
+outlives an interpreter, and a table of a later interpreter, or one
+an image installs, under the same id could have met a stale entry
+keyed on the same id and generation; the stamps are unique across
+the process.  Controls: `syntax_class_rendering_survives_writes_to_tables_outside_its_chain'
+(an unrelated table's write does not re-render; a parent's write
+does) beside the existing invalidation and cache-hit controls.
+
+*Function resolution keyed on the definition generation.*  The two
+source-function resolution caches were keyed on `definition_generation',
+which every `setcar', `setcdr' and plist write bumps, so cc-mode's
+cons writes emptied them; they key on a function-binding generation
+bumped where a function cell is bound, rebound or voided
+(`note_function_binding_changed': the definition generation still
+moves with it, the macro verdicts depending on both).  `looking-at'
+after a `setcar' each call: 368 to 29 us then, 11 us now.
+
+*`parse-sexp-lookup-properties'.*  With the variable set (cc-mode
+sets it), every syntax-dependent match encoded the haystack for
+`syntax-table' properties by walking the whole buffer; the encoding
+is now skipped when no `syntax-table' property lies in the searched
+range (144 to 29 us for a 2.8 KB buffer, 9 us now; with one such
+property in range the encoding still runs, 132 us).
+
+*The result.*  The csharp indentation test runs in 1.87 s on the
+Linux gate build, 86.6 s before this checkpoint, GNU 0.061 s: 31
+times GNU where it was 1400.  `looking-at' remains at 7 to 13 us a
+call against GNU's 1 us; that floor is the per-call dispatch and
+argument path, not the engine.
+
+*The per-run floor, measured.*  On the Linux gate build booted from
+the harness image, against GNU on the same machine: `ert-run-tests-batch'
+on a trivial test 66 ms (GNU 9 ms), of which `mapatoms' over the
+17,700 interned symbols costs 78 ms a pass (GNU 2 ms; the enumeration
+now yields the interned symbols rather than their names, kept though
+it gained nothing measurable: the cost is the per-symbol call, R02c's
+dispatch by name); `garbage-collect' 132 ms (GNU 13 ms);
+`ert-run-test' 0.33 ms a run (GNU 0.03); `message' 36 us (GNU 16 us).
+The image load, `pdumper-stats' load-time, was 1.73 s (GNU 0.013 s, a
+mapping): the loader's tables, one per image offset, hashed with
+SipHash, were a third of it.  They hash by one multiplication now and
+are sized from the header: load-time 0.45 to 0.51 s in three runs.  A
+batch process that only exits takes about 1.3 s of wall time under
+strace, GNU 0.05 s: 0.22 s before the image is opened (the reading and
+SHA-256 of the 22 MB executable for the fingerprint check, where GNU
+embeds its fingerprint at link time, and the interpreter's
+construction), the load, and 0.6 s of startup after it.  The rest of
+the load is the materialization of every object (a fifth of the
+boot's CPU is the allocator's fresh pages) and the reading of the
+image; a collection runs during startup.  Each is recorded in the ledger's D20 row;
+none is closed.
+
+*cperl-mode and perl-mode.*  `cperl-mode-tests' 23 s against GNU's
+1.1 s, `perl-mode-tests' 12.8 s against 0.9 s, and in both one test,
+`cperl-test-bug-37127', at 13 s and 10.8 s (GNU 0.84 s).  The test
+advises `message' through `ert-with-message-capture'; an advised
+primitive needs a native trampoline; `ert-run-tests-batch-and-exit'
+redirects the eln cache to a fresh temporary directory, so the
+trampoline is compiled in every such process; and comp.el's
+`comp--final' runs the C side of a compilation in a child Emacs
+unless the compilation is a batch or asynchronous one.  Emaxx
+follows the same rule with the same comp.el, and its child is a full
+boot: one trampoline cost 2.2 to 3.5 s before the loader change and
+1.9 to 2.7 s after it (GNU 0.21 s), the libgccjit work itself under
+1% of it.  Run directly,
+without the redirected cache, the test takes 0.07 s.  The trampoline's
+cost is the boot's; it is not corrected here.  `cperl-test-bug-10483'
+fails on this Linux build: it starts a child Emacs under a two-second
+timeout, and an Emaxx child's boot and indentation exceed it.
+
+*Observed, not investigated.*  `elp-instrument-list' over a list
+containing the autoloaded macro `cl-loop' after `(require 'comp)'
+raised GNU's "ELP cannot profile the function" in GNU and not in
+Emaxx; `elp-profilable-p' answers nil for it in both when asked
+alone.  Whatever loads `cl-macs' earlier in Emaxx is not identified.
+
+*Gate.*  Alone on the machine, on the tree as committed, with the
+shared image on: grouped gate run-1789099214491500278-2818, GROUPED
+GATE PASSED -- 2610 library tests across the ten groups (batch 49,
+compat_runtime 84, eval_01 351, eval_02 284, eval_03 320, eval_04 251,
+eval_05 351, lightweight 414, primitives 450, tty 56, every group 0
+failed) and 69 in the binaries and integration tests; `cargo fmt
+--check' and strict clippy exit 0 before and after; 04:00 to 04:49.
+The focused run before it: 186 of the regexp, syntax-table, macro,
+function-binding, image and startup controls passed and the new
+chain-signature control failed once on its own use of subr.el's
+`make-syntax-table' in a bare interpreter, rewritten to the primitives
+it wraps; the harness control passed.
