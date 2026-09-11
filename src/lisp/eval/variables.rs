@@ -1407,6 +1407,34 @@ impl Interpreter {
         }
     }
 
+    /// `active_special_assignment_scope' for a symbol in hand: the
+    /// restore records carry symbols, so the match is by identity first,
+    /// and the auto-local flag is read by id.
+    pub(super) fn active_special_assignment_scope_symbol(
+        &self,
+        symbol: &SymbolName,
+    ) -> Option<SpecialBindingScope> {
+        let index = self
+            .active_special_restores
+            .iter()
+            .rposition(|restore| !restore.local_binding_killed && restore.name == *symbol)?;
+        let restore = &self.active_special_restores[index];
+        let auto_local = || self.globals.has_flag(symbol, LOCAL_IF_SET);
+        match restore.scope {
+            SpecialBindingScope::Global
+                if auto_local() && restore.binding_buffer_id != Some(self.current_buffer_id()) =>
+            {
+                None
+            }
+            SpecialBindingScope::BufferLocal(id)
+                if auto_local() && id != self.current_buffer_id() =>
+            {
+                None
+            }
+            _ => Some(restore.scope.clone()),
+        }
+    }
+
     /// Return the active global special binding as seen from the current
     /// buffer.  GNU's ordinary SPECPDL_LET already lives in the symbol's
     /// current value cell, so looking through the restore stack would only
@@ -1583,7 +1611,7 @@ impl Interpreter {
         {
             return Some(SpecialBindingScope::BufferLocal(buffer_id));
         }
-        if let Some(scope) = self.active_special_assignment_scope(resolved.as_str()) {
+        if let Some(scope) = self.active_special_assignment_scope_symbol(resolved) {
             return Some(scope);
         }
         if self.globals.has_flag(resolved, LOCAL_IF_SET) {
@@ -2064,9 +2092,14 @@ impl Interpreter {
     /// to the real lookup, buffer-local bindings included.
     fn edebug_entered_active(&self, env: &Env) -> bool {
         // `edebug-entered' can only carry a binding once edebug's defvar
-        // has marked it special, so this single set probe is the whole
-        // cost until edebug is actually loaded.
-        self.globals.has_flag_by_name("edebug-entered", SPECIAL)
+        // has marked it special, so this single flag read, by the id of
+        // the symbol interned once per thread, is the whole cost until
+        // edebug is actually loaded (it ran on every function call, and
+        // hashed the name each time).
+        thread_local! {
+            static EDEBUG_ENTERED: SymbolName = SymbolName::intern_str("edebug-entered");
+        }
+        EDEBUG_ENTERED.with(|symbol| self.globals.has_flag(symbol, SPECIAL))
             && self
                 .lookup_var("edebug-entered", env)
                 .is_some_and(|value| value.is_truthy())

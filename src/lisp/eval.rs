@@ -8035,22 +8035,28 @@ fn env_has_truthy_binding(env: &Env, name: &str) -> bool {
         .is_some_and(|(_, value)| value.is_truthy())
 }
 
+/// Whether VALUE is a proper list whose head is the symbol NAME.  The
+/// head is read in place; the list is walked only when the head matches
+/// (these checks run on every function call and `let', and used to copy
+/// the whole form into a vector to look at its first element).
+fn proper_list_headed_by(value: &Value, name: &str) -> bool {
+    let Some((car, _)) = value.cons_cells() else {
+        return false;
+    };
+    let head_matches = matches!(&*car.borrow(), Value::Symbol(head) if head == name);
+    head_matches && value.to_vec().is_ok()
+}
+
 fn is_function_declare_form(form: &Value) -> bool {
-    form.to_vec().ok().is_some_and(
-        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "declare"),
-    )
+    proper_list_headed_by(form, "declare")
 }
 
 fn is_function_interactive_form(form: &Value) -> bool {
-    form.to_vec().ok().is_some_and(
-        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive"),
-    )
+    proper_list_headed_by(form, "interactive")
 }
 
 fn is_vector_literal(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(
-        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal"),
-    )
+    proper_list_headed_by(value, "vector-literal")
 }
 
 fn is_lambda_form(interp: &Interpreter, value: &Value, env: &Env) -> bool {

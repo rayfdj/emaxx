@@ -1335,7 +1335,7 @@ impl Interpreter {
                         let mut restores = Vec::with_capacity(frame.len());
                         let setup = frame.iter().try_for_each(|(name, value)| {
                             interp
-                                .bind_special_variable(name, value.clone(), &mut call_env)
+                                .bind_special_symbol(name, value.clone(), &mut call_env)
                                 .map(|restore| restores.push(restore))
                         });
                         let previous_floor = interp.special_scan_floor;

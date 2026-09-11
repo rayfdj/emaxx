@@ -9628,3 +9628,40 @@ binaries, the integration group (1,203 s); `cargo fmt --check' and
 clippy clean before and after.  The focused run before it: 354 tests
 over `let', `let*', dynamic bindings, threads, buffer-local values,
 watchers, aliases and `setq', all passing.
+
+## 2026-09-11 Checkpoint 19e: the call itself
+
+*What prompted it.*  With `setq' and `let' keyed by symbol the
+million-call loop's profile flattened; four fixed costs of every call
+remained visible.  (1) `function_executable_body' skipped a docstring,
+`declare' and `interactive' forms by copying each candidate form into
+a vector to look at its head, and `let' asked whether its binding list
+was a vector literal the same way (`is_vector_literal'), a Vec per call
+each.  (2) A dynamic lambda bound its parameters through the name-keyed
+`bind_special_variable' although the parameter list holds the symbols.
+(3) `capture_current_backtrace_context' ran on every call and asked,
+by name, whether `edebug-entered' is special.  (4) `assignment_scope'
+searched the active bindings by name.  Each is by symbol now: the head
+checks read the car in place and walk the list only on a match
+(`proper_list_headed_by'), the parameters go through
+`bind_special_symbol', the `edebug-entered' flag is read by the id of
+a symbol interned once per thread, and the active-binding search
+compares symbols (`active_special_assignment_scope_symbol').  The loop
+6.45 to 5.94 s (GNU 0.56); `macroexpand-all' of a small form 111 to
+94 us (GNU 12); a `cl-defstruct' copy with two `setf's 15.4 to 11.8 us
+(GNU 1.8).
+
+*Measured after it and open.*  The profile is flat now: `eval_inner'
+itself, the copying of argument and frame vectors, the buffer-local
+and symbol-cell reads, the watcher check, the backtrace frame.  The
+loop remains at 10x; the next step is structural (a call that does
+not clone its environment or record a frame it will not inspect),
+which is the ledger's per-call floor item.
+
+*Gate.*  The full grouped gate on this tree passed: eval_01 351,
+eval_02 284, eval_03 320, eval_04 251, eval_05 351, primitives 458,
+tty 56 (2 ignored), compat_runtime 84, batch 49, lightweight 414, the
+binaries, the integration group (1,042 s); `cargo fmt --check' and
+clippy clean before and after.  The focused run before it: 268 tests
+over `declare', `interactive', vector literals, lambdas, `funcall',
+backtraces, edebug, dynamic bindings, `let' and closures, all passing.
