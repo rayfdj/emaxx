@@ -1235,6 +1235,10 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 2)?;
                 let symbol = args[0].as_symbol()?;
                 interp.mark_special_variable(symbol);
+                // eval.c:Finternal__define_uninitialized_variable attaches
+                // the symbol to the load history (`defcustom' reaches it
+                // through custom-declare-variable).
+                interp.record_definition_in_load_history("defvar", symbol);
                 if let Some(doc) = args.get(1).filter(|value| !value.is_nil()) {
                     let doc = purecopy_value(interp, doc, env)?;
                     interp.put_symbol_property(symbol, "variable-documentation", doc);

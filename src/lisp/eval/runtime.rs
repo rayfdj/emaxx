@@ -2974,15 +2974,12 @@ impl Interpreter {
                 Value::Symbol(name.to_string().into()),
             )
         };
-        if current_load_list
-            .to_vec()
-            .is_ok_and(|items| items.iter().any(|item| item == &entry))
-        {
-            return;
-        }
-        // GNU's LOADHIST_ATTACH conses definitions onto the front.  The
-        // source-file string therefore remains last until build_load_history
-        // reverses the completed entry.
+        // GNU's LOADHIST_ATTACH conses definitions onto the front, a second
+        // definition of the same name in one file included (a file defining
+        // `f' twice lists `(defun . f)' twice), so the source-file string
+        // remains last until build_load_history reverses the completed
+        // entry.  A membership walk of the list here made each definition
+        // cost the length of the file's list so far.
         self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
     }
 

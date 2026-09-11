@@ -407,13 +407,26 @@ pub(crate) fn make_temp_file_internal(
             match options.open(&candidate) {
                 Ok(mut file) => {
                     if let Some(text) = text.and_then(string_like) {
-                        file.write_all(text.text.as_bytes())
-                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                        file.write_all(text.text.as_bytes()).map_err(|error| {
+                            LispError::SignalValue(file_operation_error_value(
+                                "Creating file with prefix",
+                                &error,
+                                prefix,
+                            ))
+                        })?;
                     }
                     return Ok(last);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(LispError::Signal(error.to_string())),
+                // Fmake_temp_file_internal: report_file_error with the
+                // kind's message and PREFIX as the file.
+                Err(error) => {
+                    return Err(LispError::SignalValue(file_operation_error_value(
+                        "Creating file with prefix",
+                        &error,
+                        prefix,
+                    )));
+                }
             }
         }
         let mut builder = fs::DirBuilder::new();
@@ -425,7 +438,13 @@ pub(crate) fn make_temp_file_internal(
         match builder.create(&candidate) {
             Ok(()) => return Ok(last),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(LispError::Signal(error.to_string())),
+            Err(error) => {
+                return Err(LispError::SignalValue(file_operation_error_value(
+                    "Creating directory with prefix",
+                    &error,
+                    prefix,
+                )));
+            }
         }
     }
     Ok(last)
@@ -1715,17 +1734,19 @@ pub(crate) fn lock_file_path(
     if !lock_enabled {
         return Ok(());
     }
-    match fs::OpenOptions::new()
+    // filelock.c:lock_file: "FIXME: This ignores errors when lock_if_free
+    // returns an errno value."  A lock that cannot be created (the
+    // directory is not writable: bytecomp's Bug#44631 case) or written
+    // leaves the file unlocked and the operation goes on; only another
+    // owner's lock is reported.
+    if let Ok(mut lock) = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(lock_path)
     {
-        Ok(mut lock) => lock
-            .write_all(current_lock_info().as_bytes())
-            .map_err(|error| LispError::Signal(error.to_string())),
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(LispError::Signal(error.to_string())),
+        let _ = lock.write_all(current_lock_info().as_bytes());
     }
+    Ok(())
 }
 
 pub(crate) fn unlock_current_buffer(

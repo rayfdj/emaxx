@@ -9149,3 +9149,146 @@ function-binding, image and startup controls passed and the new
 chain-signature control failed once on its own use of subr.el's
 `make-syntax-table' in a bare interpreter, rewritten to the primitives
 it wraps; the harness control passed.
+
+## 2026-09-11 Checkpoint 18b: the Mac frozen run's failures and slow files
+
+*What prompted it.*  The Mac frozen run of checkpoint 18 reported
+three Emaxx-only failures (`bytecomp-tests--not-writable-directory',
+`bytecomp-tests--target-file-no-directory', `multi-test-files-simple'),
+`context-menu-map-remove-consecutive-separators' later, two
+environment mismatches (`shr-test/zoom-image' failing on the oracle
+only; five eglot rust-analyzer tests failing with different condition
+types on both sides), twenty-six files at 10 to 39 times GNU's test
+time, and a stall after `ps-mode-tests'.
+
+*The lock a byte compiler cannot create.*  Reproduced as an
+unprivileged user (this container's root can write anywhere): the
+byte compiler writes into a directory whose mode is 0500 (Bug#44631's
+case), `write-region' locks the file first, and `lock-file' signalled
+"Permission denied (os error 13)" when the lock file could not be
+created there.  filelock.c:lock_file ignores the errno of a lock it
+cannot create ("FIXME: This ignores errors when lock_if_free returns
+an errno value"); the file stays unlocked and the write goes on.
+Emaxx now does the same, and the test passes as `nobody'.  Beside it,
+`make-temp-file-internal' reported a failed creation as a bare `error'
+with Rust's text; it is report_file_error's `(file-missing "Creating
+file with prefix" "No such file or directory" PREFIX)' now, with
+"Creating directory with prefix" for a directory, as
+Fmake_temp_file_internal names them.  Controls:
+`lock_file_ignores_a_lock_it_cannot_create' (a lock under a plain
+file, ENOTDIR for root too, is not an error and the write reaches the
+file), `make_temp_file_internal_reports_a_failed_creation_as_a_file_error'.
+The other three Emaxx-only failures pass here as root and as `nobody';
+their Mac conditions are not in hand (the report's per-file
+`comparison.json' carries them) and they remain open.
+
+*A timed wait on an exited process.*  `(accept-process-output PROC
+10)' waited its ten seconds after PROC had exited: the exited-process
+return was applied only to the wait without a timeout.
+process.c:wait_reading_process_output does not wait for output from a
+process that is not running whichever the timeout ("Just read
+whatever data has already been received"), so a loop
+`(while (accept-process-output proc 10))' ends with the process.  Every
+erc test that runs a child Emacs paid the ten seconds (`erc--find-mode'
+12.8 s to 2.7 s, `erc--essential-hook-ordering' 12.6 s to 2.3 s), and
+python-tests, which polls its inferior Python with timed waits, is
+the file the Mac run stalled in.  Control:
+`accept_process_output_with_a_timeout_returns_once_the_process_has_exited'.
+
+*Backward regexp search.*  `re-search-backward' enumerated every match
+start from the beginning of the accessible text and kept the latest,
+a whole-buffer scan per call: 2.8 ms for a 6 KB buffer, 83 ms a call
+in track-changes' buffers, 75 ms for fill.el's one call per line,
+GNU under a microsecond.  re_search_2 with a negative range tries the
+starts from point downward and stops at the first that matches; the
+starts are now visited through windows growing backward from point
+(64 characters, then four times as many), the latest start in a
+window that holds any being the answer since every later start was
+enumerated with it.  The same twelve patterns over a buffer of 300
+`a', a `b' and 100 `c' answer as GNU does (start, match-beginning,
+match-end), pinned by `backward_regexp_search_takes_the_latest_start_as_gnu_does';
+6 KB buffer: 2849 to 19 us.  `subr-string-fill' 0.41 to 0.13 s,
+`track-changes-tests--random' 18.1 to 7.2 s (GNU 0.67 s).
+
+*Positions in a large haystack.*  Every buffer search converted point
+to a byte offset and the match back to a position by walking the
+haystack from its start: 410 us per `re-search-forward' in a
+12,000-line dired listing (`ls-lisp-test-bug70271': 105,534 calls,
+43 s).  The haystack keeps a sampled byte-to-character index now,
+one entry per kilobyte, and the forward and backward searches and
+their match data convert through it (an ASCII haystack needs no
+table).  The match data of forward and backward searches over a
+buffer mixing ASCII, Latin and CJK text equals GNU's; the dired test
+68.5 s to 26.8 s (GNU 0.47 s), the rest of it below.
+
+*Category patterns.*  A `\\c' pattern was keyed on the cons-mutation
+generation, so fill.el's `[ \\t]\\|\\c|.\\|.\\c|' recompiled after every
+`setcar' (89 ms each; the first compile 167 ms).  Category sets change
+through `modify-category-entry', which writes the table (category.c
+stores a fresh set), so the category generation covers them and the
+pattern keys on that alone; the class renderer reads the table's
+resolved ranges (54,000 for the standard table) once instead of
+walking the quarter-million-entry write log with a lookup per
+boundary: 167 to 120 ms for `\\c|', 22 to 8 ms for `\\cl', and no
+recompilation after a cons write.  Not GNU: the first compile of
+`\\c|' remains 120 ms (GNU 12 us), the class being handed to the regex
+crate as tens of thousands of ranges.
+
+*The compiled-regexp cache.*  icalendar's real-world test cycles
+through 351 distinct patterns; with 256 entries every call recompiled
+(`string-match' 69 us a call, `looking-at' 500 us).  The cache holds
+1024 now (search.c holds twenty and compiles in microseconds; a
+compilation here is tens of microseconds, a category class tens of
+milliseconds): `icalendar-real-world' 15.3 s to 0.69 s, the file 35 s
+to 3.5 s (GNU 0.36 s).
+
+*Loading byte-compiled libraries.*  `org.elc' loaded in 1.10 s (GNU
+0.09 s), `gnus-sum.elc' in 1.66 s (0.08 s): a redefinition scanned the
+function list for the name and shifted its tail (`set_function_binding'
+a tenth of a load), and each definition walked the file's
+`current-load-list' for a duplicate.  A name's entry is found by
+position and replaced in place; the load-history walk is gone, since
+LOADHIST_ATTACH conses every definition, a repeated one included (a
+file defining `f' twice lists `(defun . f)' twice in GNU, and Emaxx
+listed it once: a divergence from the compat-3125 correction, now
+removed).  `internal--define-uninitialized-variable' attaches its
+symbol as Finternal__define_uninitialized_variable does, which Emaxx
+omitted: a `defcustom' was missing from the file's load history.
+`org.elc' 425 ms, `gnus-sum.elc' 755 ms, `erc.elc' 261 ms after; the
+remaining five to nine times GNU are the interpretation of the
+top-level forms, the load-path probing with its file-name-handler
+matching, and the reader.  Control:
+`load_history_lists_a_repeated_definition_twice_as_gnu_does'; the
+load-history of a file with fifteen definition forms (defun, defmacro,
+defvar, defcustom, defconst, defalias, defsubst, cl-defstruct,
+define-minor-mode, defvar-local, defgroup, defface, autoload,
+provide) is GNU's exactly.
+
+*Measured, not corrected.*  The per-call floor decides the rest of the
+list: bindat's signed-integer test (7.2 s, GNU 0.7) is `logand' and
+`ash' at 3 us a call and `mapcar' at 10 us; comp-cstr (7.7 s, GNU 0.4)
+and electric-tests (10.3 s over 874 tests, GNU 0.75) are ordinary
+Lisp at that floor; mule's `ucs-names' tests (16.8 s, GNU 1.2) call
+`get-char-code-property' over the code space; ls-lisp's remaining
+27 s are `put-text-property' and `add-text-properties' at 0.7 ms a
+call in a buffer of 12,000 intervals, `sort' with a Lisp predicate
+(4 s for 13 calls), `indent-to' at 234 us and `time-less-p' at 7 us;
+gnutls-tests (57 s, GNU 0.85) are `gnutls-ciphers' and
+`gnutls-symmetric-encrypt' at 1.1 to 1.2 ms a call and the test's own
+hex comparison in Lisp.  Each remains open in the ledger's D20 row.
+`shr-test/zoom-image' fails on the Mac oracle alone and the eglot
+rust-analyzer tests fail on both sides with different conditions:
+environment, not editor divergences, and not corrected here.
+
+*Gate.*  Alone on the machine, on the tree as committed, with the
+shared image on: grouped gate run-1789124693509254921-11394, GROUPED
+GATE PASSED -- 2615 library tests across the ten groups (batch 49,
+compat_runtime 84, eval_01 351, eval_02 284, eval_03 320, eval_04 251,
+eval_05 351, lightweight 414, primitives 455, tty 56, every group 0
+failed) and 69 in the binaries and integration tests; `cargo fmt
+--check' and strict clippy exit 0 before and after; 11:04 to 11:43.
+The focused run before it: 126 of the process, search, load-history,
+lock, regexp and inventory controls passed; two of the five new
+controls failed once on their own use of a bare interpreter (no
+`lambda' macro, no coding systems for `write-region') and run on the
+initialized interpreters the neighbouring file tests use.

@@ -255,6 +255,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("category_context_generation", "a cache generation"),
     ("case_context_generation", "a cache generation"),
     ("regexp_syntax_class_cache", "a cache"),
+    (
+        "functions_position",
+        "an index over functions, rebuilt as they are installed",
+    ),
     ("syntax_segment_cache", "a cache"),
     ("syntax_table_mutable_entries_cache", "a cache"),
     ("equal_hash_tables", "thawed from the hash list"),
