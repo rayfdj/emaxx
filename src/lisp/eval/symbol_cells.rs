@@ -201,6 +201,17 @@ impl SymbolCells {
         self.insert(&SymbolName::intern_str(name), value)
     }
 
+    pub(crate) fn remove(&mut self, symbol: &SymbolName) -> Option<Value> {
+        let cell = self.existing_cell_mut(symbol.id())?;
+        cell.native.set((0, 0));
+        let previous = cell.value.take();
+        if previous.is_some() {
+            cell.position = None;
+            self.bound -= 1;
+        }
+        previous
+    }
+
     pub(crate) fn remove_by_name(&mut self, name: &str) -> Option<Value> {
         let id = SymbolName::id_of(name)?;
         let cell = self.existing_cell_mut(id)?;

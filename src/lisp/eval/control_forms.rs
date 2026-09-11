@@ -199,8 +199,8 @@ impl Interpreter {
             match binding {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
-                    if self.binding_is_dynamic(name, env) {
-                        special_bindings.push((name.to_string(), Value::Nil));
+                    if self.binding_is_dynamic_symbol(name, env) {
+                        special_bindings.push((name.clone(), Value::Nil));
                     } else {
                         frame.push((name.clone(), Value::Nil));
                     }
@@ -213,8 +213,8 @@ impl Interpreter {
                     let name =
                         crate::lisp::primitives::checked_symbol_identity(self, binding, env)?;
                     Self::check_let_binding_name(&name)?;
-                    if self.binding_is_dynamic(&name, env) {
-                        special_bindings.push((name.to_string(), Value::Nil));
+                    if self.binding_is_dynamic_symbol(&name, env) {
+                        special_bindings.push((name, Value::Nil));
                     } else {
                         frame.push((name, Value::Nil));
                     }
@@ -232,10 +232,10 @@ impl Interpreter {
                     } else {
                         Value::Nil
                     };
-                    if self.binding_is_dynamic(&name, env) {
-                        special_bindings.push((name.to_string(), val));
+                    if self.binding_is_dynamic_symbol(&name, env) {
+                        special_bindings.push((name, val));
                     } else {
-                        frame.push((name.clone(), Self::stored_value(val)));
+                        frame.push((name, Self::stored_value(val)));
                     }
                 }
                 _ => return Err(wrong_type_argument("listp", binding.clone())),
@@ -244,7 +244,7 @@ impl Interpreter {
 
         let mut restores = Vec::new();
         for (name, value) in special_bindings {
-            restores.push(self.bind_special_variable(&name, value, env)?);
+            restores.push(self.bind_special_symbol(&name, value, env)?);
         }
         // GNU evaluates all parallel initializers before saving the lexical
         // environment for the `let'.  Bare defvars in those initializers
@@ -314,8 +314,8 @@ impl Interpreter {
                     }
                     _ => return Err(wrong_type_argument("listp", binding.clone())),
                 };
-                if self.binding_is_dynamic(&name, env) {
-                    restores.push(self.bind_special_variable(&name, value, env)?);
+                if self.binding_is_dynamic_symbol(&name, env) {
+                    restores.push(self.bind_special_symbol(&name, value, env)?);
                 } else {
                     // FletX saves the original interpreter environment only
                     // when its first lexical binding is installed before an

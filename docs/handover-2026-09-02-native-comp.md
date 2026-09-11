@@ -152,6 +152,9 @@ Checkpoint 19c (2026-09-11, for main): `setq`, Bvarset and `set` assign
 by symbol id instead of resolving the name seven times (a setq loop 10.8
 to 8.0 s), and mimalloc no longer purges freed pages (4.2 to 2.8 s on a
 `macroexpand-all` loop; a host-allocator policy, disclosed in the audit).
+Checkpoint 19d (2026-09-11, for main): `let` binds and restores special
+variables by symbol id (the setq loop 8.0 to 6.5 s; tramp-tests.el loads
+in 9.9 s).  The per-call floor proper is what remains, in D20.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

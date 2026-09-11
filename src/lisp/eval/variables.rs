@@ -446,14 +446,33 @@ impl Interpreter {
         self.dlet_active_names.contains_key(name) || self.is_special_variable(name)
     }
 
+    /// `is_special_variable' for a symbol in hand: the flag by id, the
+    /// C-slot registry by name.
+    pub(crate) fn is_special_variable_symbol(&self, symbol: &SymbolName) -> bool {
+        if self.globals.has_flag(symbol, SPECIAL)
+            || self.builtin_var_value(symbol.as_str()).is_some()
+        {
+            return true;
+        }
+        if !self.globals.has_aliases() {
+            return false;
+        }
+        let resolved = self
+            .resolve_variable_symbol(symbol)
+            .unwrap_or_else(|_| symbol.clone());
+        self.globals.has_flag(&resolved, SPECIAL)
+            || self.builtin_var_value(resolved.as_str()).is_some()
+    }
+
     /// Whether a binding form must use GNU's dynamic value-cell semantics.
     /// `(eval FORM)' supplies a nil lexical environment, so bindings made
     /// directly by FORM are dynamic even for undeclared symbols.  Existing
     /// lexical functions called by FORM mask this override at their boundary.
-    pub(crate) fn binding_is_dynamic(&self, name: &str, env: &Env) -> bool {
+    pub(crate) fn binding_is_dynamic_symbol(&self, symbol: &SymbolName, env: &Env) -> bool {
         self.lambda_capture_override() == Some(false)
-            || self.is_dynamic_binding_name(name)
-            || self.local_special_active(name, env)
+            || self.dlet_active_names.contains_key(symbol.as_str())
+            || self.is_special_variable_symbol(symbol)
+            || self.local_special_active(symbol.as_str(), env)
     }
 
     pub fn is_special_variable(&self, name: &str) -> bool {
@@ -1129,6 +1148,14 @@ impl Interpreter {
         if self.globals.remove_by_name(name).is_some() {}
     }
 
+    /// `remove_global_binding' for a symbol in hand.
+    pub(crate) fn remove_global_binding_symbol(&mut self, symbol: &SymbolName) {
+        for terminal in &mut self.terminals {
+            terminal.keyboard.remove(symbol.as_str());
+        }
+        self.globals.remove(symbol);
+    }
+
     /// The native word of SYMBOL's plain value, if the cell still holds
     /// one produced under STAMP (see `SymbolCells::native_word').
     pub(crate) fn cached_native_symbol_word(
@@ -1677,19 +1704,32 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<SpecialBindingRestore, LispError> {
-        let name = self.resolve_variable_name(name)?;
-        let value = self.prepare_variable_assignment(&name, value)?;
+        self.bind_special_symbol(&SymbolName::intern_str(name), value, env)
+    }
+
+    /// eval.c:specbind for the symbol in hand: the alias chain, the
+    /// forwarding flags, the buffer-local cell and the global cell are
+    /// read and written by id; the restore record keeps the symbol.
+    pub(crate) fn bind_special_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<SpecialBindingRestore, LispError> {
+        let resolved = self.resolve_variable_symbol(symbol)?;
+        let value = self.prepare_variable_assignment_symbol(&resolved, value)?;
+        let name = resolved.as_str();
         let buffer_id = self.current_buffer_id();
         let binding_id = self.next_special_binding_id;
         self.next_special_binding_id += 1;
         if name == "buffer-undo-list" {
             let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer);
-            self.notify_variable_watchers(&name, value.clone(), "let", Some(buffer_id), env)?;
+            self.notify_variable_watchers(name, value.clone(), "let", Some(buffer_id), env)?;
             let previous_undo_state = self.buffer.take_undo_state();
-            self.set_symbol_value_cell(&name, value);
+            self.set_symbol_value_cell_resolved(&resolved, value);
             let restore = SpecialBindingRestore {
                 binding_id,
-                name,
+                name: resolved,
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
@@ -1702,13 +1742,13 @@ impl Interpreter {
         }
         // eval.c:specbind SYMBOL_LOCALIZED: a binding cell in this buffer,
         // bound or void, makes the let SPECPDL_LET_LOCAL.
-        let restore = if let Some(local) = self.buffer_local_binding(buffer_id, &name) {
+        let restore = if let Some(local) = self.buffer_local_binding_symbol(buffer_id, &resolved) {
             let previous = Some(local.unwrap_or(Value::Unbound));
-            self.notify_variable_watchers(&name, value.clone(), "let", Some(buffer_id), env)?;
-            self.set_buffer_local_value(buffer_id, &name, value);
+            self.notify_variable_watchers(name, value.clone(), "let", Some(buffer_id), env)?;
+            self.set_buffer_local_value(buffer_id, name, value);
             SpecialBindingRestore {
                 binding_id,
-                name,
+                name: resolved,
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
@@ -1717,18 +1757,18 @@ impl Interpreter {
                 local_binding_killed: false,
             }
         } else {
-            let previous = self.global_value(&name);
-            let binding_buffer_id = if self.is_auto_buffer_local(&name) {
+            let previous = self.global_binding_value_symbol(&resolved);
+            let binding_buffer_id = if self.globals.has_flag(&resolved, LOCAL_IF_SET) {
                 Some(buffer_id)
             } else {
                 None
             };
-            self.notify_variable_watchers(&name, value.clone(), "let", None, env)?;
-            self.set_global_binding(&name, value);
+            self.notify_variable_watchers(name, value.clone(), "let", None, env)?;
+            self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 binding_id,
-                keyboard_terminal_id: self.keyboard_binding_terminal(&name),
-                name,
+                keyboard_terminal_id: self.keyboard_binding_terminal(name),
+                name: resolved,
                 scope: SpecialBindingScope::Global,
                 binding_buffer_id,
                 previous,
@@ -1927,9 +1967,9 @@ impl Interpreter {
                         restore.previous.unwrap_or(Value::Unbound),
                     );
                 } else if let Some(value) = restore.previous {
-                    self.set_global_binding(&restore.name, value);
+                    self.set_global_binding_resolved(&restore.name, value);
                 } else {
-                    self.remove_global_binding(&restore.name);
+                    self.remove_global_binding_symbol(&restore.name);
                 }
             }
             SpecialBindingScope::BufferLocal(buffer_id) => {

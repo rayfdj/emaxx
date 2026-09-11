@@ -1615,7 +1615,9 @@ enum SpecialBindingScope {
 #[derive(Clone, Debug)]
 pub(crate) struct SpecialBindingRestore {
     binding_id: u64,
-    name: String,
+    /// The bound symbol, its alias chain resolved; the cells are read
+    /// and written by its id on the way out as on the way in.
+    name: SymbolName,
     scope: SpecialBindingScope,
     binding_buffer_id: Option<u64>,
     keyboard_terminal_id: Option<u64>,

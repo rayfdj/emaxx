@@ -9584,3 +9584,47 @@ binaries, the integration group (1,104 s); `cargo fmt --check' and
 clippy clean before and after.  The focused run before it: 327 tests
 over `setq', `set', `let', aliases, buffer-local values, watchers and
 the forwarded variables, all passing.
+
+## 2026-09-11 Checkpoint 19d: `let' by symbol
+
+*What prompted it.*  After checkpoint 19c the profile of the same
+million-call loop put a fifth of its time under
+`bind_special_variable' and its unwinding: the `let' of a dynamic
+variable resolved the name (hashing it), prepared the value by name
+(two more), read the buffer-local cell and the global cell by name,
+wrote the global by name (resolving again), kept the name as a fresh
+String in the restore record, and on the way out set or removed the
+cell by name once more.
+
+*What changed.*  `SpecialBindingRestore' carries the bound
+`SymbolName', resolved, and `bind_special_symbol' does eval.c's
+specbind by id: the alias chain (`resolve_variable_symbol'), the
+forwarding flags (`prepare_variable_assignment_symbol'), the
+buffer-local cell (`buffer_local_binding_symbol'), the global cell
+(`global_binding_value_symbol', `set_global_binding_resolved'), the
+auto-local flag (`has_flag'); `restore_special_binding' puts the
+previous value back through `set_global_binding_resolved' or removes
+the cell through `remove_global_binding_symbol'.  `let' and `let*'
+keep the symbols they read from the form and decide dynamic against
+lexical through `binding_is_dynamic_symbol' (the SPECIAL flag by id,
+the C-slot registry and the local-special set by name as before).
+The name-keyed `bind_special_variable' interns once and delegates.  The
+loop 8.0 to 6.5 s (GNU 0.56); a `macroexpand-all' loop 2.8 to 2.5 s;
+tramp-tests.el loads in 9.9 s (12.4 before, GNU 1.0); bindat-tests
+7.0 s (GNU 0.7), comp-cstr-tests 8.5 s (GNU 0.6): the per-call floor
+proper, still 10x, remains the theme.
+
+*Measured after it and open.*  The call itself: the argument vector
+(`Value::to_vec' of the argument list), the backtrace frame push and
+pop, `function_executable_body', the lexical scan of
+`set_lexical_variable_checked' comparing names frame by frame, and the
+reads through `lookup_var' for names the source analysis has not
+resolved.
+
+*Gate.*  The full grouped gate on this tree passed: eval_01 351,
+eval_02 284, eval_03 320, eval_04 251, eval_05 351, primitives 458,
+tty 56 (2 ignored), compat_runtime 84, batch 49, lightweight 414, the
+binaries, the integration group (1,203 s); `cargo fmt --check' and
+clippy clean before and after.  The focused run before it: 354 tests
+over `let', `let*', dynamic bindings, threads, buffer-local values,
+watchers, aliases and `setq', all passing.
