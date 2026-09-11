@@ -8950,3 +8950,23 @@ was stopped for the correction.  Main's `8b6ff8a' is the merge of
 checkpoint 16 into main with a tree identical to `63e6a42'; it is
 merged after this commit for the ancestry, and the merged tree is
 this gated tree.
+
+*The Darwin receipt, first part (2026-09-11).*  On the Mac, from the
+checkpoint 17 tree, `batch_startup_image_round_trip_or_explicit_native_image_limit'
+passed: temacs with the preloaded native units dumped under the
+fixup, a process started from the image reopened the units, resolved
+3845 native functions and answered the ordinary startup's answers,
+the native count and `string-trim' included.  The CLI control's
+restored process did the same (3845, `a') and failed only on the
+test's own expectation of its working directory: the process answers
+getcwd's physical path, `/private/var/...' where the temporary
+directory is named through Darwin's `/var' link (GNU's init_buffer
+answers the same there, PWD not being updated for the child), and the
+expectation now canonicalizes the directory it compares against.
+The two in-process controls, run three to a process in parallel
+threads, failed while building their loadup states ("unknown native
+cons address" in `load("emacs-lisp/debug-early")'): the saved-unit
+word of a shared object is process-global (D18), which is why the
+grouped gate runs the image consumers serially; their serial run is
+the receipt still to be taken, with the frozen run from an image
+carrying the units.

@@ -68,6 +68,13 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
     let load_directory = unique_temp_path("emaxx-cli-load-in");
     std::fs::create_dir_all(&dump_directory).unwrap();
     std::fs::create_dir_all(&load_directory).unwrap();
+    // The restored process answers its working directory as getcwd
+    // names it: the physical path (on Darwin `/var' is a link to
+    // `/private/var', and PWD is not updated for the child).
+    let load_directory_name = format!(
+        "{}/",
+        std::fs::canonicalize(&load_directory).unwrap().display()
+    );
     let dump = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .current_dir(&dump_directory)
         .args([
@@ -127,7 +134,6 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
         String::from_utf8_lossy(&started.stdout),
         String::from_utf8_lossy(&started.stderr)
     );
-    let load_directory_name = format!("{}/", load_directory.display());
     assert_eq!(
         String::from_utf8_lossy(&started.stdout),
         format!(
