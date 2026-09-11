@@ -100,22 +100,33 @@ impl Interpreter {
         let mut result = Value::Nil;
         let mut i = 1;
         while i + 1 < items.len() {
-            let name = assignment_target_name(&items[i])?;
-            let resolved = self.resolve_variable_name(&name)?;
+            // The symbol itself, resolved and assigned by its id.
+            let symbol = match &items[i] {
+                Value::Symbol(symbol) => symbol.clone(),
+                Value::Nil => SymbolName::intern_str("nil"),
+                Value::T => SymbolName::intern_str("t"),
+                other => {
+                    return Err(LispError::WrongTypeArgument(
+                        "symbolp".into(),
+                        other.clone(),
+                    ));
+                }
+            };
+            let resolved = self.resolve_variable_symbol(&symbol)?;
             let evaluated = self.eval(&items[i + 1], env)?;
-            let val = self.prepare_variable_assignment(&resolved, evaluated)?;
+            let val = self.prepare_variable_assignment_symbol(&resolved, evaluated)?;
             result = val.clone();
             if local_only {
                 self.notify_variable_watchers(
-                    &resolved,
+                    resolved.as_str(),
                     val.clone(),
                     "set",
                     Some(self.current_buffer_id()),
                     env,
                 )?;
-                self.set_buffer_local_value(self.current_buffer_id(), &resolved, val);
+                self.set_buffer_local_value(self.current_buffer_id(), resolved.as_str(), val);
             } else {
-                self.setq_variable(&resolved, val, env)?;
+                self.setq_variable_symbol(&resolved, val, env)?;
             }
             i += 2;
         }

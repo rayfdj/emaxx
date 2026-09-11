@@ -939,6 +939,33 @@ impl Interpreter {
         Ok(current)
     }
 
+    /// `resolve_variable_name' for a symbol in hand: the alias chain is
+    /// followed by the symbols' ids, no name hashed and no text copied.
+    /// An assignment used to resolve its variable's name to its id seven
+    /// times over, hashing the text each time, and copy the name three
+    /// times; the symbol-keyed path below reads every cell by id.
+    pub(crate) fn resolve_variable_symbol(
+        &self,
+        symbol: &SymbolName,
+    ) -> Result<SymbolName, LispError> {
+        let Some(first) = self.globals.alias(symbol) else {
+            return Ok(symbol.clone());
+        };
+        let mut seen = vec![symbol.clone(), first.clone()];
+        let mut current = first.clone();
+        while let Some(target) = self.globals.alias(&current) {
+            if seen.contains(target) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("cyclic-variable-indirection".into()),
+                    Value::Symbol(symbol.clone()),
+                ])));
+            }
+            seen.push(target.clone());
+            current = target.clone();
+        }
+        Ok(current)
+    }
+
     /// eval.c:Fdefvaralias's non-circularity loop: walk BASE's redirect
     /// chain, and signal with BASE if it reaches ALIAS.
     pub(crate) fn check_variable_alias_cycle(
@@ -1277,8 +1304,16 @@ impl Interpreter {
         let name = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        let value = Self::stored_value(self.normalize_forwarded_eval_cell(&name, value));
-        if self.set_terminal_keyboard_value(&name, &value) {
+        let symbol = SymbolName::intern_str(&name);
+        self.set_global_binding_resolved(&symbol, value);
+    }
+
+    /// `set_global_binding' for a symbol whose alias chain is resolved:
+    /// the buffer-local and global cells are read and written by id.
+    pub(crate) fn set_global_binding_resolved(&mut self, symbol: &SymbolName, value: Value) {
+        let name = symbol.as_str();
+        let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
+        if self.set_terminal_keyboard_value(name, &value) {
             return;
         }
         if name == "features" {
@@ -1295,15 +1330,18 @@ impl Interpreter {
             self.mark_ascii_case_table(*id);
         }
         if self
-            .buffer_local_value(self.current_buffer_id(), &name)
+            .buffer_locals
+            .get(&self.current_buffer_id())
+            .and_then(|locals| locals.binding(symbol))
+            .flatten()
             .is_none()
         {
-            self.update_forwarded_eval_cell(&name, &value);
+            self.update_forwarded_eval_cell(name, &value);
         }
-        if let Some(existing) = self.globals.value_by_name_mut(&name) {
+        if let Some(existing) = self.globals.value_mut(symbol) {
             *existing = value;
         } else {
-            self.globals.insert_by_name(&name, value);
+            self.globals.insert(symbol, value);
         }
     }
 
@@ -1504,6 +1542,37 @@ impl Interpreter {
         None
     }
 
+    /// `assignment_scope' for a symbol whose alias chain is resolved: the
+    /// buffer-local cell and the auto-local flag are read by id.
+    pub(super) fn assignment_scope_symbol(
+        &self,
+        resolved: &SymbolName,
+    ) -> Option<SpecialBindingScope> {
+        let buffer_id = self.current_buffer_id();
+        if self
+            .buffer_locals
+            .get(&buffer_id)
+            .is_some_and(|locals| locals.binding(resolved).is_some())
+        {
+            return Some(SpecialBindingScope::BufferLocal(buffer_id));
+        }
+        if let Some(scope) = self.active_special_assignment_scope(resolved.as_str()) {
+            return Some(scope);
+        }
+        if self.globals.has_flag(resolved, LOCAL_IF_SET) {
+            return Some(SpecialBindingScope::BufferLocal(buffer_id));
+        }
+        None
+    }
+
+    /// `assignment_buffer_id' for a resolved symbol.
+    pub(crate) fn assignment_buffer_id_symbol(&self, resolved: &SymbolName) -> Option<u64> {
+        match self.assignment_scope_symbol(resolved) {
+            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
+            _ => None,
+        }
+    }
+
     pub fn assignment_buffer_id(&self, name: &str) -> Option<u64> {
         match self.assignment_scope(name) {
             Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
@@ -1515,6 +1584,29 @@ impl Interpreter {
         &self,
         name: &str,
         value: Value,
+    ) -> Result<Value, LispError> {
+        self.prepare_variable_assignment_with(name, value, |flag| {
+            self.globals.has_flag_by_name(name, flag)
+        })
+    }
+
+    /// `prepare_variable_assignment' for a symbol in hand: the forwarding
+    /// flags are read by id.
+    pub(crate) fn prepare_variable_assignment_symbol(
+        &self,
+        symbol: &SymbolName,
+        value: Value,
+    ) -> Result<Value, LispError> {
+        self.prepare_variable_assignment_with(symbol.as_str(), value, |flag| {
+            self.globals.has_flag(symbol, flag)
+        })
+    }
+
+    fn prepare_variable_assignment_with(
+        &self,
+        name: &str,
+        value: Value,
+        has_flag: impl Fn(u8) -> bool,
     ) -> Result<Value, LispError> {
         if matches!(
             name,
@@ -1542,7 +1634,7 @@ impl Interpreter {
         }
         // data.c:store_symval_forwarding by the slot's kind.  Lisp_Fwd_Int:
         // CHECK_INTEGER, then integer_to_intmax or `overflow-error'.
-        if self.globals.has_flag_by_name(name, FWD_INT) {
+        if has_flag(FWD_INT) {
             return match value.as_integer() {
                 Ok(_) => Ok(value),
                 Err(_) if value.is_integer() => Err(LispError::SignalValue(Value::list([
@@ -1554,7 +1646,7 @@ impl Interpreter {
         }
         // Lisp_Fwd_Bool: `!NILP (newval)', so every store path (setq, set,
         // set-default, let) reads back t or nil.
-        if self.globals.has_flag_by_name(name, FWD_BOOL) {
+        if has_flag(FWD_BOOL) {
             return Ok(if value.is_nil() { Value::Nil } else { Value::T });
         }
         match name {

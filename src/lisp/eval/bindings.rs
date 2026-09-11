@@ -1128,18 +1128,23 @@ impl Interpreter {
     /// lexical assignment therefore neither invokes variable watchers nor
     /// reaches a buffer/global value cell, and a malformed alist errors before
     /// either side effect.  Keep that ordering at this boundary.
-    pub(super) fn setq_variable(
+    /// The symbol's alias chain is resolved; the scope and the cells are
+    /// read by id (see `resolve_variable_symbol').
+    pub(super) fn setq_variable_symbol(
         &mut self,
-        name: &str,
+        resolved: &SymbolName,
         value: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        if self.set_lexical_variable_checked(name, value.clone(), env)? {
+        if self.set_lexical_variable_checked(resolved.as_str(), value.clone(), env)? {
             return Ok(());
         }
-        let buffer_id = self.assignment_buffer_id(name);
-        self.notify_variable_watchers(name, value.clone(), "set", buffer_id, env)?;
-        self.set_symbol_value_cell(name, value);
+        let buffer_id = match self.assignment_scope_symbol(resolved) {
+            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
+            _ => None,
+        };
+        self.notify_variable_watchers(resolved.as_str(), value.clone(), "set", buffer_id, env)?;
+        self.set_symbol_value_cell_resolved(resolved, value);
         Ok(())
     }
 
@@ -1147,6 +1152,13 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
+        let symbol = SymbolName::intern_str(&resolved);
+        self.set_symbol_value_cell_resolved(&symbol, value);
+    }
+
+    /// `set_symbol_value_cell' for a symbol whose alias chain is resolved.
+    pub(crate) fn set_symbol_value_cell_resolved(&mut self, symbol: &SymbolName, value: Value) {
+        let resolved = symbol.as_str();
         let value = Self::stored_value(value);
         if resolved == "buffer-file-name" {
             let file = match value {
@@ -1206,18 +1218,18 @@ impl Interpreter {
             }
             return;
         }
-        if let Some(scope) = self.assignment_scope(&resolved) {
+        if let Some(scope) = self.assignment_scope_symbol(symbol) {
             match scope {
                 SpecialBindingScope::Global => {
-                    self.set_global_binding(&resolved, value);
+                    self.set_global_binding_resolved(symbol, value);
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    self.set_buffer_local_value(buffer_id, &resolved, value);
+                    self.set_buffer_local_value(buffer_id, resolved, value);
                 }
             }
             return;
         }
-        self.set_global_binding(&resolved, value);
+        self.set_global_binding_resolved(symbol, value);
     }
 
     // GNU stores a macro in the function cell as (macro . EXPANDER); emaxx

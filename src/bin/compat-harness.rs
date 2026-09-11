@@ -926,6 +926,7 @@ fn main() -> std::process::ExitCode {
 }
 
 fn try_main() -> Result<u8, String> {
+    emaxx::tune_allocator();
     match Cli::parse().command {
         Commands::Oracle(oracle) => match oracle.command {
             OracleCommand::Pin(args) => {

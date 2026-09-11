@@ -71,6 +71,7 @@ fn main() -> ExitCode {
 }
 
 fn try_main() -> Result<u8, String> {
+    emaxx::tune_allocator();
     // GNU checks for a Seccomp filter at the very beginning of main(),
     // before any other startup work, so the filter protects the whole
     // initialization phase.

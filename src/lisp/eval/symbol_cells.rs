@@ -135,9 +135,16 @@ impl SymbolCells {
         self.cell(id).and_then(|cell| cell.value.as_ref())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn value_by_name_mut(&mut self, name: &str) -> Option<&mut Value> {
         let id = SymbolName::id_of(name)?;
         let cell = self.existing_cell_mut(id)?;
+        cell.native.set((0, 0));
+        cell.value.as_mut()
+    }
+
+    pub(crate) fn value_mut(&mut self, symbol: &SymbolName) -> Option<&mut Value> {
+        let cell = self.existing_cell_mut(symbol.id())?;
         cell.native.set((0, 0));
         cell.value.as_mut()
     }

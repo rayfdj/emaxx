@@ -332,14 +332,30 @@ pub(crate) fn set_internal(
     value: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let symbol = interp.resolve_variable_name(name)?;
+    set_internal_symbol(
+        interp,
+        &crate::lisp::types::SymbolName::intern_str(name),
+        value,
+        env,
+    )
+}
+
+/// data.c:set_internal for the symbol in hand: its alias chain, flags,
+/// scope and cells are read by id (see `resolve_variable_symbol').
+pub(crate) fn set_internal_symbol(
+    interp: &mut Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+    value: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let resolved = interp.resolve_variable_symbol(symbol)?;
     // data.c:set_internal notifies with NEWVAL before the forwarded C slot
     // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
     // the watcher must receive the caller's original object.
-    let stored = interp.prepare_variable_assignment(&symbol, value.clone())?;
-    let buffer_id = interp.assignment_buffer_id(&symbol);
-    interp.notify_variable_watchers(&symbol, value, "set", buffer_id, env)?;
-    interp.set_symbol_value_cell(&symbol, stored);
+    let stored = interp.prepare_variable_assignment_symbol(&resolved, value.clone())?;
+    let buffer_id = interp.assignment_buffer_id_symbol(&resolved);
+    interp.notify_variable_watchers(resolved.as_str(), value, "set", buffer_id, env)?;
+    interp.set_symbol_value_cell_resolved(&resolved, stored);
     Ok(())
 }
 

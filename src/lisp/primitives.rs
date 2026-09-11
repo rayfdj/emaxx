@@ -285,7 +285,7 @@ pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
-pub(crate) use dispatch::set_internal;
+pub(crate) use dispatch::set_internal_symbol;
 pub(crate) use dispatch::{
     EchoSpans, echo_area_message_tick, echo_area_print, echo_display_message,
     expire_echo_area_message, set_echo_area_message, set_echo_area_message_with_spans,

@@ -148,6 +148,10 @@ by slot with stored hash codes (`remhash` no longer rehashes the table),
 span adjustment on edits in place, `looking-at` over the shared haystack,
 `expand-file-name` without a walk of `process-environment`.  The audit's
 19b section has the numbers; D20 lists what is still open.
+Checkpoint 19c (2026-09-11, for main): `setq`, Bvarset and `set` assign
+by symbol id instead of resolving the name seven times (a setq loop 10.8
+to 8.0 s), and mimalloc no longer purges freed pages (4.2 to 2.8 s on a
+`macroexpand-all` loop; a host-allocator policy, disclosed in the audit).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

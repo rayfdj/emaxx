@@ -7867,18 +7867,6 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
     }
 }
 
-fn assignment_target_name(value: &Value) -> Result<String, LispError> {
-    match value {
-        Value::Symbol(name) => Ok(name.to_string()),
-        Value::Nil => Ok("nil".into()),
-        Value::T => Ok("t".into()),
-        other => Err(LispError::WrongTypeArgument(
-            "symbolp".into(),
-            other.clone(),
-        )),
-    }
-}
-
 fn unquote(value: &Value) -> Value {
     match value {
         Value::Cons(_) => {

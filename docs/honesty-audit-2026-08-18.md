@@ -9520,3 +9520,67 @@ clippy clean before and after.  The focused runs before it: 349 tests
 over the loader, the hash tables, the text properties, the searches
 and the coding regions, then 38 over `looking-at', POSIX matching and
 the match data, all passing.
+
+## 2026-09-11 Checkpoint 19c: the assignment path by symbol, the allocator's purging
+
+*What prompted it.*  With checkpoint 19b in place, the interpreted
+call floor remained the theme behind most of the sweep's ratios: a
+loop of a million calls of a three-line function with a `setq' of a
+dynamic variable took 10.8 s (GNU 0.56).  Its profile put a fifth of
+the time in `SymbolName::id_of' and the string hashing and comparison
+under it, called from the assignment path; and a quarter of a
+`macroexpand-all' loop's time was system time.
+
+*The assignment path.*  A `setq' of a global resolved its variable's
+name to its id seven times over -- `resolve_variable_name' through
+`direct_variable_alias', the two forwarding-flag reads of
+`prepare_variable_assignment', the buffer-local and auto-local reads of
+`assignment_scope', and the value cell's read and write in
+`set_global_binding' -- hashing the text each time, and copied the name
+into a fresh String three times, where GNU's set_internal has the
+symbol object in hand and reads its cells directly.  The evaluator's
+`setq', the byte code's Bvarset and `set' now keep the `SymbolName'
+(which carries its id) and go through symbol-keyed variants:
+`resolve_variable_symbol' follows the alias chain by id,
+`prepare_variable_assignment_symbol' reads the flags by id,
+`assignment_scope_symbol' and `assignment_buffer_id_symbol' read the
+buffer-local cell and the auto-local flag by id, and
+`set_symbol_value_cell_resolved' and `set_global_binding_resolved'
+write the cells by id; the name-keyed entry points resolve once and
+delegate to them, and the shared bodies (the constant checks, the
+forwarded-slot normalizations, the special names) are one copy each.
+The loop 10.8 to 8.0 s.  The remaining floor is the call itself
+(argument vectors, backtrace frames, the lexical scan) and the reads,
+which still take the name-keyed `lookup_var' for names the source
+analysis has not resolved; both stay in D20.  Controls: the 327
+existing tests over `setq', `set', `let', aliases, buffer-local
+values, watchers and the forwarded variables pass unchanged.
+
+*The allocator's purging.*  mimalloc gives freed pages back to the
+host after `purge_delay' (a second in the bundled mimalloc 3), so a
+Lisp workload that frees and refills its working set paid a page fault
+and a zeroed page for memory it had just released: 303 purges of
+196 MB during a 3 s `macroexpand-all' loop, a quarter of its time in
+the kernel, 0.4 s of the `setq' loop's 8.  glibc's malloc keeps GNU's
+heap.  `tune_allocator', called first thing by both binaries, turns
+purging off when the option reads a bundled default (the numeric
+option identifier is guarded by that read, and an environment setting
+is left alone): the `macroexpand-all' loop 4.2 to 2.8 s, the `setq'
+loop 8.0 to 7.8 s, both with 0.05 s of system time; `mimalloc's
+statistics report no purge.  The cost is that memory a Lisp program
+frees stays with the process, as most of it does under GNU.  This is a
+host-allocator policy, not GNU behaviour, and is disclosed as such.
+
+*Measured after these and open.*  The `setq' loop's 7.8 s against
+0.56 (14x): the per-call floor proper.  `macroexpand-all' of a small
+form 111 us (GNU 12).  tramp-tests.el loads in 12.4 s (GNU 1.0), the
+`ert-deftest' expansions most of it.  `dired-test-bug30624' 4.0 s
+(GNU 0.33).  The boot 0.53 s (GNU 0.039).
+
+*Gate.*  The full grouped gate on this tree passed: eval_01 351,
+eval_02 284, eval_03 320, eval_04 251, eval_05 351, primitives 458,
+tty 56 (2 ignored), compat_runtime 84, batch 49, lightweight 414, the
+binaries, the integration group (1,104 s); `cargo fmt --check' and
+clippy clean before and after.  The focused run before it: 327 tests
+over `setq', `set', `let', aliases, buffer-local values, watchers and
+the forwarded variables, all passing.

@@ -792,11 +792,8 @@ fn run_with_stack(
                         Value::Symbol(symbol) => {
                             vm_call!(
                                 interp,
-                                crate::lisp::primitives::set_internal(
-                                    interp,
-                                    symbol.as_str(),
-                                    value,
-                                    env,
+                                crate::lisp::primitives::set_internal_symbol(
+                                    interp, symbol, value, env,
                                 )
                             )?;
                         }
