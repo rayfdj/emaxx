@@ -2429,6 +2429,19 @@ fn dump_emacs_portable_prelude_follows_pdumper_c() {
     assert_oracle_contract_matches_interpreter(program, expected, "dump-emacs-portable prelude");
 }
 
+/// The printed RememberedScalars group without its `(next-record-id . N)'
+/// entry, and N.
+fn without_next_record_id(text: &str) -> (String, i64) {
+    let start = text
+        .find("(next-record-id . ")
+        .expect("the group names next-record-id");
+    let end = start + text[start..].find(')').expect("the entry closes") + 1;
+    let value = text[start + "(next-record-id . ".len()..end - 1]
+        .parse::<i64>()
+        .expect("next-record-id is an integer");
+    (format!("{}{}", &text[..start], &text[end..]), value)
+}
+
 #[test]
 fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     // Runtime boundary control, not a claim of full GNU image parity.
@@ -2566,6 +2579,7 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     assert!(image.symbols.len() >= image.obarray.len());
     assert_eq!(image.native_units.is_empty(), !has_native_functions);
     assert_eq!(image.native_functions.is_empty(), !has_native_functions);
+    let native_unit_count = image.native_units.len() as i64;
     drop(target);
 
     // pdumper_load: the same image into a fresh process-state interpreter
@@ -2603,11 +2617,23 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
             &mut env_restored,
         )
         .expect("print the restored group");
-        assert_eq!(
-            source_text,
-            &string_like(&target_text).expect("printed").text,
-            "root group {slot:?}"
-        );
+        let target_text = string_like(&target_text).expect("printed").text;
+        if *slot == RootSlot::RememberedScalars {
+            // The late phase gives every reopened unit a fresh
+            // `lambda_gc_guard_h' (dump_do_dump_relocation's
+            // Fmake_hash_table), one record each: the remembered
+            // allocator restored, then advanced by exactly the unit count.
+            let (source_rest, source_next) = without_next_record_id(source_text);
+            let (target_rest, target_next) = without_next_record_id(&target_text);
+            assert_eq!(source_rest, target_rest, "root group {slot:?}");
+            assert_eq!(
+                target_next - source_next,
+                native_unit_count,
+                "next-record-id"
+            );
+        } else {
+            assert_eq!(source_text, &target_text, "root group {slot:?}");
+        }
         compared += 1;
     }
     assert!(compared > 30);
@@ -2903,7 +2929,6 @@ fn native_units_and_functions_round_trip_through_the_image() {
             source_directory.display()
         ),
     );
-    let _ = std::fs::remove_dir_all(&source_directory);
     assert_eq!(compiled, "(t t 3 15 t t \"Add A and B.\n\n(fn A B)\")");
     let path = std::env::temp_dir().join(format!("emaxx-d14-native-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -2923,17 +2948,25 @@ fn native_units_and_functions_round_trip_through_the_image() {
     assert_eq!(refused, "(error \"trying to dump non fixed-up eln file\")");
     assert_eq!(std::fs::metadata(&path).expect("refused output").len(), 0);
     // loadup.el under `--bin-dest DIR --eln-dest DIR': the fixup runs
-    // inside dump-emacs-portable and the dump completes.
+    // inside dump-emacs-portable and the dump completes.  The eln
+    // destination is a directory holding no units: dump_do_dump_relocation
+    // decides installed-or-local once, by the first unit, and a session
+    // holding the preloaded units of the source tree beside this unit of
+    // its cache (the Darwin startup) has no single installed root, so
+    // every unit resolves through its build path here.
+    let eln_destination = source_directory.join("eln-dest");
+    std::fs::create_dir_all(&eln_destination).expect("create the eln destination");
     let dumped = eval(
         &mut interp,
         &mut env,
         &format!(
             "(let ((load--bin-dest-dir invocation-directory)
-                   (load--eln-dest-dir source-directory))
+                   (load--eln-dest-dir {:?}))
                (list (dump-emacs-portable {:?})
                      (consp (native-comp-unit-file
                              (subr-native-comp-unit (symbol-function 'zz-native-add))))
                      (consp (native-comp-unit-file (subr-native-comp-unit zz-native-lambda)))))",
+            format!("{}/", eln_destination.display()),
             path.display()
         ),
     );
@@ -2945,6 +2978,7 @@ fn native_units_and_functions_round_trip_through_the_image() {
     );
     let unit_file = std::path::PathBuf::from(unit_file.trim_matches('"'));
     assert!(unit_file.is_file(), "{}", unit_file.display());
+    let _ = std::fs::remove_dir_all(&source_directory);
     // The writer's process closes its units before the image is loaded
     // here: dlopen hands the same handle back while a unit is open, and
     // GNU never loads a dump into the process that wrote it.

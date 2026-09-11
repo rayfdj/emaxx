@@ -8970,3 +8970,22 @@ word of a shared object is process-global (D18), which is why the
 grouped gate runs the image consumers serially; their serial run is
 the receipt still to be taken, with the frozen run from an image
 carrying the units.
+
+*The Darwin receipt, second part (2026-09-11).*  The two in-process
+controls, run serially on the Mac, failed on two expectations of the
+Linux-written tests, neither on the loader.  The startup control's
+comparison of the RememberedScalars group found `next-record-id' 87
+higher in the restored process than in the writer: the late phase
+gives each of the 87 reopened units a fresh `lambda_gc_guard_h'
+(dump_do_dump_relocation's Fmake_hash_table), one record each, after
+the remembered allocator was restored; the control now compares the
+group without that entry and requires the difference to equal the
+unit count.  The native round trip's own unit could not be reopened:
+dump_do_dump_relocation decides installed-or-local once, by the first
+unit, and on the Mac the first unit is a preloaded one whose installed
+path under the source tree exists, so the control's cache unit was
+sought there too and not found (GNU has the one-state rule; loadup
+never dumps a cache unit beside the preloaded ones).  The control now
+names an eln destination holding no units, so every unit resolves
+through its build path.  The Linux run of both remains at a unit
+count of zero.
