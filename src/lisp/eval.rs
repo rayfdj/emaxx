@@ -2612,6 +2612,7 @@ type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::Fnv
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 type OrderedNameIndex = HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>;
+type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::FnvBuildHasher>;
 
 /// Build a last-wins index over an ordered symbol/value registry.
 ///
@@ -3642,7 +3643,7 @@ impl Interpreter {
             colors: 0,
             terminal_coding: None,
             keyboard_coding: None,
-            keyboard: HashMap::new(),
+            keyboard: HashMap::default(),
             pending_input: Vec::new(),
             parameters: Vec::new(),
             top_frame: 0,
@@ -4597,7 +4598,8 @@ pub struct InterpreterState {
     /// variable while native readers still use the C slot. The direct
     /// evaluator fields above own their values and use nil markers here;
     /// other forwarded slots retain their detached values in this map.
-    pub(crate) detached_forwarded_variables: HashMap<String, Value>,
+    pub(crate) detached_forwarded_variables:
+        HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
     /// THREAD_EVENTs `thread-signal' queued for the main thread
     /// (keyboard.c kbd_buffer_store_event), delivered by the input reader
     /// through `special-event-map'.
@@ -4610,11 +4612,11 @@ pub struct InterpreterState {
     special_variables: Vec<String>,
     /// Names ever declared locally special via a non-top-level one-arg
     /// `defvar`; lets of other names skip the env marker scan entirely.
-    local_special_names: HashSet<String>,
+    local_special_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Names currently bound by an active `dlet': treated as dynamic for
     /// binding and reference resolution while the dlet body runs (counted,
     /// since dlets nest).
-    dlet_active_names: HashMap<String, u32>,
+    dlet_active_names: HashMap<String, u32, crate::lisp::primitives::FnvBuildHasher>,
     /// Env index below which SPECIAL variable references must not resolve
     /// through lexical frames: set to the caller boundary when a function
     /// body runs on the caller's env chain, so a callee's reference to a
@@ -4848,7 +4850,7 @@ pub struct InterpreterState {
     /// every byte-code function, hash table, and EIEIO object when a caller
     /// needs one runtime class (notably windows during buffer teardown).
     /// `create_record` and `retag_record` are the only mutation points.
-    record_ids_by_type_index: HashMap<String, BTreeSet<u64>>,
+    record_ids_by_type_index: RecordIdsByType,
     /// Record mark bits from the most recent real reachability pass.  Dense
     /// host storage keeps IDs stable, but dead records must not contribute to
     /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
@@ -4957,7 +4959,7 @@ pub struct InterpreterState {
     /// generation that verdict was computed at.  Skips the whole probe on
     /// the hot per-form path while any definition change invalidates all
     /// verdicts at once.
-    not_macro_names: HashMap<String, u64>,
+    not_macro_names: HashMap<String, u64, crate::lisp::primitives::FnvBuildHasher>,
     /// Flattened source forms keyed by their car-cell identity.  Entries are
     /// derived snapshots stamped with the global cons-mutation epoch and a
     /// weak source witness, never a second syntax authority.
@@ -5294,7 +5296,7 @@ impl Interpreter {
             .collect();
         let state = InterpreterState {
             image_template_token: None,
-            detached_forwarded_variables: HashMap::new(),
+            detached_forwarded_variables: HashMap::default(),
             pending_thread_events: Vec::new(),
             pending_funcalls: Vec::new(),
             globals: SymbolCells::from_bindings(vec![
@@ -5467,8 +5469,8 @@ impl Interpreter {
             debug_on_next_call: false,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
             variable_aliases: Vec::new(),
-            local_special_names: HashSet::new(),
-            dlet_active_names: HashMap::new(),
+            local_special_names: HashSet::default(),
+            dlet_active_names: HashMap::default(),
             special_scan_floor: 0,
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
@@ -5817,10 +5819,12 @@ impl Interpreter {
                     kind: RecordKind::Obarray,
                 },
             ],
-            record_ids_by_type_index: HashMap::from([
+            record_ids_by_type_index: [
                 ("thread".into(), BTreeSet::from([main_thread_id])),
                 ("obarray".into(), BTreeSet::from([standard_obarray_id])),
-            ]),
+            ]
+            .into_iter()
+            .collect(),
             gc_live_record_ids: HashSet::new(),
             gc_record_high_water: 0,
             gc_has_record_census: false,
@@ -5856,7 +5860,7 @@ impl Interpreter {
             definition_generation: 0,
             function_binding_generation: 0,
             function_resolution_cache: HashMap::default(),
-            not_macro_names: HashMap::new(),
+            not_macro_names: HashMap::default(),
             source_form_items_cache: HashMap::default(),
             lambda_source_bodies: HashMap::new(),
             provided_features: STARTUP_FEATURES

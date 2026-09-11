@@ -9665,3 +9665,34 @@ binaries, the integration group (1,042 s); `cargo fmt --check' and
 clippy clean before and after.  The focused run before it: 268 tests
 over `declare', `interactive', vector literals, lambdas, `funcall',
 backtraces, edebug, dynamic bindings, `let' and closures, all passing.
+
+## 2026-09-11 Checkpoint 19f: the last SipHash tables on the call path
+
+*What prompted it.*  The flat profile of checkpoint 19e still showed
+`RandomState::hash_one::<&str>' and SipHash's `write' at 4.5% of the
+million-call loop: name-keyed tables consulted on every assignment and
+binding that still used std's default hasher, where the interpreter's
+other name tables hash with FNV -- `detached_forwarded_variables' (read
+by every `prepare_variable_assignment'), `local_special_names' and
+`dlet_active_names' (every `let'), each terminal's keyboard-local
+values (every global store), `record_ids_by_type_index' (every record
+creation) and `not_macro_names'.  Each is FNV now (the thread context
+that swaps `dlet_active_names' with it as well); no behaviour depends
+on the hasher.  The loop 5.94 to 5.43 s (GNU 0.56): 10.8 s at the
+start of the day's work, half of it gone across checkpoints 19c to
+19f, ten times GNU still.
+
+*Measured after it and open.*  As after 19e: the call's structure.
+`macroexpand-all' of a small form 93 us (GNU 12); tramp-tests.el loads
+in 10 to 10.6 s (GNU 1.0); the boot 0.53 s (GNU 0.039).
+
+*Gate.*  The first full grouped gate on this tree failed one test in the
+lightweight group after eval_01 351, eval_02 284, eval_03 320, eval_04
+251, eval_05 351, primitives 458, tty 56 (2 ignored), compat_runtime 84
+and batch 49 had passed: `every_reset_root_is_a_mark_phase_root', the
+dump-root inventory's textual check that every documented field is
+declared, because rustfmt wrapped the record index's FNV-typed
+declaration onto two lines.  The declaration uses a type alias
+(`RecordIdsByType') now, one line as before; no behaviour changed.  The
+tree was then gated together with checkpoint 19g, whose section below
+records that run.

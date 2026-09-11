@@ -159,6 +159,9 @@ Checkpoint 19e (2026-09-11, for main): the per-call form-head checks no
 longer copy the form, dynamic parameters bind by symbol, the edebug flag
 is read by id (the setq loop 6.45 to 5.94 s).  The call's structure is
 what remains, in D20.
+Checkpoint 19f (2026-09-11, for main): the last SipHash tables on the
+call path hash with FNV (the setq loop 5.94 to 5.43 s; 10.8 s at the
+start of the day).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

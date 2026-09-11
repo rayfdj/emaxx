@@ -12,7 +12,7 @@ pub(crate) struct TerminalState {
     pub colors: i64,
     pub terminal_coding: Option<String>,
     pub keyboard_coding: Option<String>,
-    pub keyboard: std::collections::HashMap<String, Value>,
+    pub keyboard: std::collections::HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
     pub pending_input: Vec<u8>,
     pub parameters: Vec<(Value, Value)>,
     pub top_frame: u64,
@@ -472,7 +472,11 @@ impl Interpreter {
                 .max()
                 .unwrap_or(0)
                 + 1;
-            let mut keyboard = std::collections::HashMap::new();
+            let mut keyboard = std::collections::HashMap::<
+                String,
+                Value,
+                crate::lisp::primitives::FnvBuildHasher,
+            >::default();
             // keyboard.c:init_kboard initializes these DEFVAR_KBOARD slots.
             for name in [
                 "overriding-terminal-local-map",

@@ -7,7 +7,7 @@ use super::*;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ThreadExecutionContext {
-    dlet_active_names: HashMap<String, u32>,
+    dlet_active_names: HashMap<String, u32, crate::lisp::primitives::FnvBuildHasher>,
     special_scan_floor: usize,
     lisp_eval_depth: usize,
     current_load_file: Option<String>,
