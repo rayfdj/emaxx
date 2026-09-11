@@ -168,6 +168,44 @@ fn category_set_contains(interp: &Interpreter, value: &Value, category: char) ->
 
 fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) -> Vec<(u32, u32)> {
     const SCALAR_END: u32 = char::MAX as u32 + 1;
+    let mut ranges = Vec::<(u32, u32)>::new();
+    let mut push = |start: u32, end: u32| {
+        if let Some((_, previous_end)) = ranges.last_mut()
+            && previous_end.saturating_add(1) == start
+        {
+            *previous_end = end;
+        } else {
+            ranges.push((start, end));
+        }
+    };
+    let Some(state) = interp.find_char_table(table_id) else {
+        return ranges;
+    };
+    // The resolved view of the table, one entry per effective range (the
+    // standard category table's write log holds a quarter of a million
+    // `modify-category-entry' writes for 54,000 ranges), read once each.
+    // Walking the log's boundaries and looking every window up again took
+    // 170 ms for `\\c|'.  A table with a parent reads through both.
+    if state.parent.is_none() && state.default.is_nil() {
+        for entry in state.effective_ranges() {
+            if !category_set_contains(interp, &entry.value, category) {
+                continue;
+            }
+            let end = entry.end.min(char::MAX as u32);
+            let mut start = entry.start;
+            // The surrogate gap is no character.
+            if start < 0xe000 && end >= 0xd800 {
+                if start < 0xd800 {
+                    push(start, end.min(0xd7ff));
+                }
+                start = 0xe000;
+            }
+            if start <= end {
+                push(start, end);
+            }
+        }
+        return ranges;
+    }
     let mut boundaries = vec![0, 0xd800, 0xe000, SCALAR_END];
     let mut table = Some(table_id);
     let mut seen = HashSet::new();
@@ -178,20 +216,11 @@ fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) ->
         let Some(state) = interp.find_char_table(id) else {
             break;
         };
-        for entry in &state.entries {
-            if entry.start < SCALAR_END {
-                boundaries.push(entry.start);
-            }
-            if entry.end < char::MAX as u32 {
-                boundaries.push(entry.end + 1);
-            }
-        }
+        state.append_change_boundaries(0, char::MAX as u32, &mut boundaries);
         table = state.parent;
     }
     boundaries.sort_unstable();
     boundaries.dedup();
-
-    let mut ranges = Vec::<(u32, u32)>::new();
     for window in boundaries.windows(2) {
         let start = window[0];
         let end = window[1] - 1;
@@ -202,13 +231,7 @@ fn category_regex_ranges(interp: &Interpreter, table_id: u64, category: char) ->
         {
             continue;
         }
-        if let Some((_, previous_end)) = ranges.last_mut()
-            && previous_end.saturating_add(1) == start
-        {
-            *previous_end = end;
-        } else {
-            ranges.push((start, end));
-        }
+        push(start, end);
     }
     ranges
 }
@@ -2032,7 +2055,12 @@ struct CompiledElispRegexKey {
     case_fold: bool,
 }
 
-const COMPILED_ELISP_REGEX_CACHE_LIMIT: usize = 256;
+/// search.c keeps twenty compiled patterns and compiles one in
+/// microseconds; a compilation here is tens of microseconds and, for a
+/// category class, tens of milliseconds, so the cache is deep enough for
+/// a library that cycles through hundreds of distinct patterns (icalendar's
+/// real-world test uses 351: with 256 entries every call recompiled).
+const COMPILED_ELISP_REGEX_CACHE_LIMIT: usize = 1024;
 
 #[derive(Default)]
 struct CompiledElispRegexCache {
@@ -2105,7 +2133,7 @@ fn encode_syntax_property_haystack(
     interp: &Interpreter,
     env: &Env,
     start: usize,
-    haystack: &str,
+    haystack: &std::rc::Rc<str>,
     pattern: &str,
 ) -> Option<SyntaxPropertyEncoding> {
     if !pattern_depends_on_syntax_table(pattern)
@@ -2121,7 +2149,11 @@ fn encode_syntax_property_haystack(
     // that per interval spares the per-character walk that made every
     // syntax-class `looking-at' of a cc-mode buffer (which sets
     // `parse-sexp-lookup-properties') cost the length of the buffer.
-    if !haystack_has_syntax_property(interp, start, start + haystack.chars().count()) {
+    if !haystack_has_syntax_property(
+        interp,
+        start,
+        start + haystack_char_at_byte(haystack, haystack.len()),
+    ) {
         return None;
     }
 
@@ -2240,6 +2272,128 @@ fn buffer_regexp_haystack(
         cache.push((key, built.clone()));
     });
     Ok(built)
+}
+
+/// Byte-to-character positions of a haystack, sampled every
+/// `HAYSTACK_INDEX_BLOCK' bytes: `chars_before_block[i]' is the number of
+/// characters starting before byte `i * HAYSTACK_INDEX_BLOCK'.  A search
+/// over a large buffer converted its point to a byte offset and its match
+/// back to a position by walking the haystack from its start on every
+/// call (410 us per `re-search-forward' in a 12,000-line dired listing,
+/// GNU's search.c knowing both positions as it scans); with the index a
+/// conversion walks at most one block.  An all-ASCII haystack needs no
+/// table.
+struct HaystackCharIndex {
+    ascii: bool,
+    chars_before_block: Vec<u32>,
+}
+
+const HAYSTACK_INDEX_BLOCK: usize = 1024;
+
+impl HaystackCharIndex {
+    fn new(text: &str) -> Self {
+        if text.is_ascii() {
+            return Self {
+                ascii: true,
+                chars_before_block: Vec::new(),
+            };
+        }
+        let mut chars_before_block = Vec::with_capacity(text.len() / HAYSTACK_INDEX_BLOCK + 2);
+        let mut count = 0u32;
+        let mut next_block = 0usize;
+        for (byte, _) in text.char_indices() {
+            while byte >= next_block {
+                chars_before_block.push(count);
+                next_block += HAYSTACK_INDEX_BLOCK;
+            }
+            count += 1;
+        }
+        while chars_before_block.len() <= text.len() / HAYSTACK_INDEX_BLOCK {
+            chars_before_block.push(count);
+        }
+        Self {
+            ascii: false,
+            chars_before_block,
+        }
+    }
+
+    /// The number of characters before BYTE (a character boundary).
+    fn char_at_byte(&self, text: &str, byte: usize) -> usize {
+        if self.ascii {
+            return byte;
+        }
+        let block = byte / HAYSTACK_INDEX_BLOCK;
+        let mut from = block * HAYSTACK_INDEX_BLOCK;
+        while from < byte && !text.is_char_boundary(from) {
+            from += 1;
+        }
+        self.chars_before_block[block] as usize + text[from..byte].chars().count()
+    }
+
+    /// The byte at which the character numbered CHARS begins (the text's
+    /// length past its end).
+    fn byte_at_char(&self, text: &str, chars: usize) -> usize {
+        if self.ascii {
+            return chars.min(text.len());
+        }
+        let block = self
+            .chars_before_block
+            .partition_point(|&before| before as usize <= chars)
+            .saturating_sub(1);
+        let mut from = block * HAYSTACK_INDEX_BLOCK;
+        while from < text.len() && !text.is_char_boundary(from) {
+            from += 1;
+        }
+        let mut remaining = chars - self.chars_before_block[block] as usize;
+        for (offset, _) in text[from..].char_indices() {
+            if remaining == 0 {
+                return from + offset;
+            }
+            remaining -= 1;
+        }
+        text.len()
+    }
+}
+
+const HAYSTACK_INDEX_CACHE_LIMIT: usize = 8;
+
+thread_local! {
+    /// The index of each recently searched haystack, keyed by the
+    /// haystack's identity; the entry keeps the haystack alive, so its
+    /// address cannot name another text while the entry exists.
+    static HAYSTACK_INDEX_CACHE: RefCell<Vec<(std::rc::Rc<str>, std::rc::Rc<HaystackCharIndex>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn haystack_char_index(haystack: &std::rc::Rc<str>) -> std::rc::Rc<HaystackCharIndex> {
+    HAYSTACK_INDEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(position) = cache
+            .iter()
+            .position(|(text, _)| std::rc::Rc::ptr_eq(text, haystack))
+        {
+            let entry = cache.remove(position);
+            let index = std::rc::Rc::clone(&entry.1);
+            cache.push(entry);
+            return index;
+        }
+        let index = std::rc::Rc::new(HaystackCharIndex::new(haystack));
+        if cache.len() >= HAYSTACK_INDEX_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push((std::rc::Rc::clone(haystack), std::rc::Rc::clone(&index)));
+        index
+    })
+}
+
+/// The number of characters before BYTE of HAYSTACK.
+fn haystack_char_at_byte(haystack: &std::rc::Rc<str>, byte: usize) -> usize {
+    haystack_char_index(haystack).char_at_byte(haystack, byte)
+}
+
+/// The byte at which character CHARS of HAYSTACK begins.
+fn haystack_byte_at_char(haystack: &std::rc::Rc<str>, chars: usize) -> usize {
+    haystack_char_index(haystack).byte_at_char(haystack, chars)
 }
 
 fn build_buffer_regexp_haystack(
@@ -2389,10 +2543,14 @@ fn compile_elisp_regex_with_case_fold(
         // strings, and its patterns key on the table generation alone.
         // Keying every table-dependent pattern on it recompiled cc-mode's
         // `looking-at' regexps after each of its cons writes: 4 ms a call,
-        // csharp-mode's indentation test 900 times GNU's.
+        // csharp-mode's indentation test 900 times GNU's.  A category
+        // pattern keys on the category generation alone: category sets
+        // change through `modify-category-entry', which writes the table
+        // (category.c stores a fresh set; the door bumps the generation),
+        // and keying `\c' patterns on the cons generation recompiled
+        // fill.el's `\c|' pattern (170 ms) after every `setcar'.
         definition_generation: if depends_on_tables
-            && (pattern_depends_on_category_table(&pattern_text)
-                || interp.syntax_table_chain_has_mutable_entries(interp.current_syntax_table_id()))
+            && interp.syntax_table_chain_has_mutable_entries(interp.current_syntax_table_id())
         {
             interp.current_definition_generation()
         } else {
@@ -2637,24 +2795,49 @@ pub(super) fn match_data_from_captures(
     captures: &fancy_regex::Captures<'_>,
     capture_mapping: &[usize],
 ) -> Vec<Option<(usize, usize)>> {
-    let mut match_data = vec![None; capture_mapping.iter().copied().max().unwrap_or(0) + 1];
     let ascii = haystack.is_ascii();
+    match_data_from_captures_with(start_pos, captures, capture_mapping, |byte| {
+        if ascii {
+            byte
+        } else {
+            haystack[..byte].chars().count()
+        }
+    })
+}
+
+/// The match data of a buffer search, the byte offsets converted through
+/// the haystack's index.
+fn set_match_data_in_haystack(
+    interp: &mut Interpreter,
+    start_pos: usize,
+    haystack: &std::rc::Rc<str>,
+    captures: &fancy_regex::Captures<'_>,
+    capture_mapping: &[usize],
+    source_buffer_id: Option<u64>,
+) {
+    let index = haystack_char_index(haystack);
+    interp.last_match_data = Some(match_data_from_captures_with(
+        start_pos,
+        captures,
+        capture_mapping,
+        |byte| index.char_at_byte(haystack, byte),
+    ));
+    interp.last_match_data_buffer_id = source_buffer_id;
+}
+
+fn match_data_from_captures_with(
+    start_pos: usize,
+    captures: &fancy_regex::Captures<'_>,
+    capture_mapping: &[usize],
+    char_at_byte: impl Fn(usize) -> usize,
+) -> Vec<Option<(usize, usize)>> {
+    let mut match_data = vec![None; capture_mapping.iter().copied().max().unwrap_or(0) + 1];
     for index in 0..captures.len() {
         let Some(matched) = captures.get(index) else {
             continue;
         };
-        let start = start_pos
-            + if ascii {
-                matched.start()
-            } else {
-                haystack[..matched.start()].chars().count()
-            };
-        let end = start_pos
-            + if ascii {
-                matched.end()
-            } else {
-                haystack[..matched.end()].chars().count()
-            };
+        let start = start_pos + char_at_byte(matched.start());
+        let end = start_pos + char_at_byte(matched.end());
         let target_index = if index == 0 {
             0
         } else {
@@ -3512,11 +3695,7 @@ pub(super) fn buffer_regex_search(
             .unwrap_or(haystack);
         // `captures_from_pos' takes a BYTE offset; positions are chars.
         let start_chars = start.saturating_sub(haystack_start);
-        let mut search_offset = haystack
-            .char_indices()
-            .nth(start_chars)
-            .map(|(byte, _)| byte)
-            .unwrap_or(haystack.len());
+        let mut search_offset = haystack_byte_at_char(&haystack, start_chars);
         for _ in 0..count {
             if posix {
                 let Some(selected) = posix_longest_match(
@@ -3572,8 +3751,8 @@ pub(super) fn buffer_regex_search(
             let Some(matched) = captures.get(0) else {
                 break;
             };
-            let pos = haystack_start + haystack[..matched.end()].chars().count();
-            set_match_data(
+            let pos = haystack_start + haystack_char_at_byte(&haystack, matched.end());
+            set_match_data_in_haystack(
                 interp,
                 haystack_start,
                 &haystack,
@@ -3788,71 +3967,95 @@ pub(super) fn buffer_regex_search(
             // hard backward-search bound and must be recaptured on the
             // bounded prefix below.
             let mut best_match: Option<(usize, usize, usize, bool)> = None;
-            let mut search_byte = 0usize;
-            while search_byte <= prefix.len() {
-                let Some(captures) = regex
-                    .captures_from_pos(&prefix, search_byte)
-                    .map_err(|error| LispError::Signal(error.to_string()))?
-                else {
-                    break;
-                };
-                let Some(matched) = captures.get(0) else {
-                    break;
-                };
-                let full_match_start_byte = matched.start();
-                let (candidate_haystack, candidate_match, shortened) =
-                    if matched.end() <= boundary_byte {
-                        (&*prefix, matched, false)
-                    } else if let Some(bounded_regex) = &bounded_regex
-                        && let Some(bounded_captures) = bounded_regex
-                            .captures_from_pos(bounded_prefix, full_match_start_byte)
-                            .map_err(|error| LispError::Signal(error.to_string()))?
-                        && let Some(bounded_match) = bounded_captures.get(0)
-                        && bounded_match.start() == full_match_start_byte
-                    {
-                        (bounded_prefix, bounded_match, true)
-                    } else {
-                        let Some(next) = prefix[full_match_start_byte..].chars().next() else {
-                            break;
-                        };
-                        search_byte = full_match_start_byte + next.len_utf8();
-                        continue;
+            // GNU's re_search_2 with a negative range tries the start
+            // positions from point downward and stops at the first that
+            // matches.  Enumerating every match start from the beginning of
+            // the accessible text and keeping the latest cost a scan of the
+            // whole prefix per call (2.8 ms for a 6 KB buffer, 83 ms a call
+            // in track-changes' buffers, GNU under a microsecond).  The
+            // starts are visited through windows growing backward from
+            // point instead: the latest start in a window that holds any is
+            // the answer, every later start having been enumerated with it,
+            // and a window is widened only when it holds none.
+            let chars_to_limit = search_point.saturating_sub(limit);
+            let mut window_chars = 64usize;
+            loop {
+                let (window_start_byte, walked) =
+                    chars_before(&prefix, boundary_byte, window_chars.min(chars_to_limit));
+                let mut search_byte = window_start_byte;
+                while search_byte <= prefix.len() {
+                    let Some(captures) = regex
+                        .captures_from_pos(&prefix, search_byte)
+                        .map_err(|error| LispError::Signal(error.to_string()))?
+                    else {
+                        break;
                     };
-                let Some(match_start) = backward_match_position(
-                    absolute_start,
-                    candidate_haystack,
-                    candidate_match.start(),
-                    empty_line_pattern,
-                ) else {
-                    break;
-                };
-                let Some(match_end) = backward_match_position(
-                    absolute_start,
-                    candidate_haystack,
-                    candidate_match.end(),
-                    empty_line_pattern,
-                ) else {
-                    break;
-                };
-                if match_start >= limit
-                    && match_end <= search_point
-                    && best_match.is_none_or(|(best_start, best_end, _, _)| {
-                        match_start > best_start
-                            || (match_start == best_start && match_end > best_end)
-                    })
-                {
-                    best_match = Some((match_start, match_end, full_match_start_byte, shortened));
-                }
+                    let Some(matched) = captures.get(0) else {
+                        break;
+                    };
+                    let full_match_start_byte = matched.start();
+                    let (candidate_haystack, candidate_match, shortened) =
+                        if matched.end() <= boundary_byte {
+                            (&*prefix, matched, false)
+                        } else if let Some(bounded_regex) = &bounded_regex
+                            && let Some(bounded_captures) = bounded_regex
+                                .captures_from_pos(bounded_prefix, full_match_start_byte)
+                                .map_err(|error| LispError::Signal(error.to_string()))?
+                            && let Some(bounded_match) = bounded_captures.get(0)
+                            && bounded_match.start() == full_match_start_byte
+                        {
+                            (bounded_prefix, bounded_match, true)
+                        } else {
+                            let Some(next) = prefix[full_match_start_byte..].chars().next() else {
+                                break;
+                            };
+                            search_byte = full_match_start_byte + next.len_utf8();
+                            continue;
+                        };
+                    // The bounded prefix is a prefix of `prefix': the same
+                    // byte offsets, converted through the same index.
+                    let _ = candidate_haystack;
+                    let Some(match_start) = backward_match_position(
+                        absolute_start,
+                        &prefix,
+                        candidate_match.start(),
+                        empty_line_pattern,
+                    ) else {
+                        break;
+                    };
+                    let Some(match_end) = backward_match_position(
+                        absolute_start,
+                        &prefix,
+                        candidate_match.end(),
+                        empty_line_pattern,
+                    ) else {
+                        break;
+                    };
+                    if match_start >= limit
+                        && match_end <= search_point
+                        && best_match.is_none_or(|(best_start, best_end, _, _)| {
+                            match_start > best_start
+                                || (match_start == best_start && match_end > best_end)
+                        })
+                    {
+                        best_match =
+                            Some((match_start, match_end, full_match_start_byte, shortened));
+                    }
 
-                // Move from the match's START, not its end: backward search
-                // must notice overlapping candidates and ultimately select
-                // the rightmost start.  Each iteration nevertheless moves
-                // monotonically, unlike the former per-character loop that
-                // restarted an unanchored search at every buffer position.
-                let Some(next) = prefix[full_match_start_byte..].chars().next() else {
+                    // Move from the match's START, not its end: backward search
+                    // must notice overlapping candidates and ultimately select
+                    // the rightmost start.  Each iteration nevertheless moves
+                    // monotonically, unlike the former per-character loop that
+                    // restarted an unanchored search at every buffer position.
+                    let Some(next) = prefix[full_match_start_byte..].chars().next() else {
+                        break;
+                    };
+                    search_byte = full_match_start_byte + next.len_utf8();
+                }
+                if best_match.is_some() || walked >= chars_to_limit {
                     break;
-                };
-                search_byte = full_match_start_byte + next.len_utf8();
+                }
+                window_chars = window_chars.saturating_mul(4);
             }
             if let Some((match_start, _, start_byte, shortened)) = best_match
                 && let Some(captures) = if shortened {
@@ -3871,7 +4074,7 @@ pub(super) fn buffer_regex_search(
                 set_backward_match_data(
                     interp,
                     absolute_start,
-                    if shortened { bounded_prefix } else { &prefix },
+                    &prefix,
                     &captures,
                     if shortened {
                         bounded_regex
@@ -3898,6 +4101,24 @@ pub(super) fn buffer_regex_search(
         }
         Ok(Value::Integer(interp.buffer.point() as i64))
     }
+}
+
+/// The byte at which the character COUNT characters before END_BYTE of
+/// HAYSTACK begins (END_BYTE itself on a character boundary), and how many
+/// characters were actually walked (fewer than COUNT at the start of the
+/// text).
+fn chars_before(haystack: &str, end_byte: usize, count: usize) -> (usize, usize) {
+    let mut byte = end_byte;
+    let mut walked = 0;
+    let mut chars = haystack[..end_byte].char_indices().rev();
+    while walked < count {
+        let Some((start, _)) = chars.next() else {
+            break;
+        };
+        byte = start;
+        walked += 1;
+    }
+    (byte, walked)
 }
 
 fn buffer_regex_search_failure(
@@ -4050,7 +4271,7 @@ fn last_empty_line_match_position(
 fn set_backward_match_data(
     interp: &mut Interpreter,
     absolute_start: usize,
-    haystack: &str,
+    haystack: &std::rc::Rc<str>,
     captures: &fancy_regex::Captures<'_>,
     capture_mapping: &[usize],
     source_buffer_id: Option<u64>,
@@ -4090,18 +4311,18 @@ fn set_backward_match_data(
 
 fn backward_match_position(
     absolute_start: usize,
-    haystack: &str,
+    haystack: &std::rc::Rc<str>,
     byte_index: usize,
     empty_line_pattern: bool,
 ) -> Option<usize> {
     if empty_line_pattern && byte_index > 0 && haystack[..byte_index].ends_with('\n') {
         let newline_byte = haystack[..byte_index].rfind('\n')?;
         if newline_byte == 0 || haystack[..newline_byte].ends_with('\n') {
-            return Some(absolute_start + haystack[..newline_byte].chars().count());
+            return Some(absolute_start + haystack_char_at_byte(haystack, newline_byte));
         }
         return None;
     }
-    Some(absolute_start + haystack[..byte_index].chars().count())
+    Some(absolute_start + haystack_char_at_byte(haystack, byte_index))
 }
 
 pub(super) fn expand_replace_match(

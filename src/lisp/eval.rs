@@ -4860,6 +4860,10 @@ pub struct InterpreterState {
     /// Last-wins index over `functions` so the hot function-lookup path is
     /// O(1); every mutation of `functions` keeps this in sync.
     functions_index: HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
+    /// The position in `functions` of each name's entry (one entry per
+    /// name), so a redefinition replaces it in place: finding it by a scan
+    /// and shifting the tail cost a load of org.el a tenth of its time.
+    functions_position: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
@@ -5768,6 +5772,7 @@ impl Interpreter {
             change_hooks_running: 0,
             functions: Vec::new(),
             functions_index: HashMap::default(),
+            functions_position: HashMap::default(),
             network_connect_counter: 0,
             definition_generation: 0,
             function_binding_generation: 0,

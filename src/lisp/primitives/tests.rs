@@ -23363,3 +23363,281 @@ fn assert_oracle_file_contract_with_observer(
     fs::remove_file(&path).expect("remove owned contract fixture");
     assert_eq!(result.to_string(), expected);
 }
+
+/// filelock.c:lock_file ignores the errno of a lock it cannot create
+/// ("FIXME: This ignores errors when lock_if_free returns an errno
+/// value"): the file stays unlocked and the caller's write goes on, which
+/// is how the byte compiler writes into a directory it cannot create the
+/// lock in (bytecomp's Bug#44631 test).  A lock under a plain file fails
+/// with ENOTDIR for every user, root included.
+#[test]
+fn lock_file_ignores_a_lock_it_cannot_create() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-lock-enotdir-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("create the fixture directory");
+    let blocker = directory.join("x");
+    std::fs::write(&blocker, b"").expect("create the blocking file");
+    let under_a_file = blocker.join("y").to_string_lossy().into_owned();
+    assert_eq!(
+        call(
+            &mut interp,
+            "lock-file",
+            &[Value::String(under_a_file.clone().into())],
+            &mut env,
+        )
+        .expect("a lock that cannot be created is not an error"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "write-region",
+            &[
+                Value::String("abc".into()),
+                Value::Nil,
+                Value::String(blocker.to_string_lossy().into_owned().into()),
+                Value::Nil,
+                Value::Integer(1),
+            ],
+            &mut env,
+        )
+        .expect("write-region locks first; a lock it cannot create does not stop it"),
+        Value::Nil
+    );
+    assert_eq!(
+        std::fs::read(&blocker).expect("the written file"),
+        b"abc",
+        "the write reached the file"
+    );
+    std::fs::remove_dir_all(&directory).expect("remove the fixture directory");
+}
+
+/// Fmake_temp_file_internal reports a failed creation with
+/// report_file_error: the kind's message, the errno text and PREFIX as the
+/// file, under the errno's condition (file-missing for ENOENT).
+#[test]
+fn make_temp_file_internal_reports_a_failed_creation_as_a_file_error() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let prefix = "/nonexistent-dir-emaxx-zz/prefix";
+    for (dir_flag, message) in [
+        (Value::Nil, "Creating file with prefix"),
+        (Value::T, "Creating directory with prefix"),
+    ] {
+        let result = call(
+            &mut interp,
+            "make-temp-file-internal",
+            &[
+                Value::String(prefix.into()),
+                dir_flag,
+                Value::String("".into()),
+                Value::Nil,
+            ],
+            &mut env,
+        );
+        let Err(LispError::SignalValue(data)) = result else {
+            panic!("a creation under a missing directory signals: {result:?}");
+        };
+        assert_eq!(
+            data,
+            Value::list([
+                Value::symbol("file-missing"),
+                Value::String(message.into()),
+                Value::String("No such file or directory".into()),
+                Value::String(prefix.into()),
+            ])
+        );
+    }
+    assert!(
+        call(
+            &mut interp,
+            "make-temp-file-internal",
+            &[
+                Value::String(prefix.into()),
+                Value::Integer(0),
+                Value::String("".into()),
+                Value::Nil,
+            ],
+            &mut env,
+        )
+        .expect("naming only never touches the file system")
+        .as_string()
+        .is_ok_and(|name| name.starts_with(prefix)),
+        "dir-flag 0 only names the file"
+    );
+}
+
+/// process.c:wait_reading_process_output does not wait for output from a
+/// process that is no longer running, timeout or not: a loop of
+/// `(accept-process-output PROC 10)' ends when PROC exits.  The timed wait
+/// used to run to its deadline after the exit.
+#[test]
+fn accept_process_output_with_a_timeout_returns_once_the_process_has_exited() {
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let buffer = Value::buffer(interp.current_buffer_id(), String::new());
+    let process = call_via_lisp(
+        &mut interp,
+        "start-process",
+        &[
+            Value::String("accept-output-exited".into()),
+            buffer,
+            Value::String("sh".into()),
+            Value::String("-c".into()),
+            Value::String("printf ready; exit 0".into()),
+        ],
+        &mut env,
+    )
+    .expect("start-process should launch a writer");
+    let started = std::time::Instant::now();
+    loop {
+        let more = call(
+            &mut interp,
+            "accept-process-output",
+            &[process.clone(), Value::Integer(10)],
+            &mut env,
+        )
+        .expect("accept-process-output with a timeout");
+        if more.is_nil() {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "the loop must end with the process, not with the timeout"
+        );
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(8),
+        "the loop must end with the process, not with the timeout"
+    );
+    let text = interp.buffer.full_buffer_string();
+    assert!(text.starts_with("ready"), "the output was read: {text:?}");
+}
+
+/// re_search_2 with a negative range takes the latest start position at
+/// or before point whose match ends at or before point, the leftmost-first
+/// match from that start; GNU's answers for a buffer of 300 `a', one `b'
+/// and 100 `c', searched from the end.  The windowed enumeration must give
+/// the same answers whether the match lies in the first window or beyond
+/// it.
+#[test]
+fn backward_regexp_search_takes_the_latest_start_as_gnu_does() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let text = format!("{}b{}\n", "a".repeat(300), "c".repeat(100));
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String(text.into())],
+        &mut env,
+    )
+    .expect("insert");
+    let end = interp.buffer.point_max() as i64;
+    for (pattern, bound, expected) in [
+        ("a+", Value::Nil, Some((300, 300, 301))),
+        ("a+b", Value::Nil, Some((300, 300, 302))),
+        ("a\\{2,5\\}", Value::Nil, Some((299, 299, 301))),
+        ("^a", Value::Nil, Some((1, 1, 2))),
+        ("c$", Value::Nil, Some((401, 401, 402))),
+        ("a+", Value::Integer(200), Some((300, 300, 301))),
+        ("[ab]+c", Value::Nil, Some((301, 301, 303))),
+        ("\\(a\\)\\1", Value::Nil, Some((299, 299, 301))),
+        ("x*", Value::Nil, Some((403, 403, 403))),
+        ("b\\|a", Value::Integer(100), Some((301, 301, 302))),
+        ("zz", Value::Nil, None),
+        ("a+", Value::Integer(350), None),
+    ] {
+        call(&mut interp, "goto-char", &[Value::Integer(end)], &mut env).expect("goto-char");
+        let found = call(
+            &mut interp,
+            "re-search-backward",
+            &[Value::String(pattern.into()), bound.clone(), Value::T],
+            &mut env,
+        )
+        .expect("re-search-backward");
+        match expected {
+            None => assert_eq!(found, Value::Nil, "{pattern} bound {bound:?}"),
+            Some((point, start, finish)) => {
+                assert_eq!(found, Value::Integer(point), "{pattern} bound {bound:?}");
+                let beginning = call(
+                    &mut interp,
+                    "match-beginning",
+                    &[Value::Integer(0)],
+                    &mut env,
+                )
+                .expect("match-beginning");
+                let ending = call(&mut interp, "match-end", &[Value::Integer(0)], &mut env)
+                    .expect("match-end");
+                assert_eq!(
+                    (beginning, ending),
+                    (Value::Integer(start), Value::Integer(finish)),
+                    "{pattern} bound {bound:?}"
+                );
+            }
+        }
+    }
+}
+
+/// LOADHIST_ATTACH conses every definition onto `current-load-list': a
+/// file that defines a name twice lists it twice, as GNU's load-history
+/// shows `((defun . zz-a) (defun . zz-a) zz-v zz-v)' for such a file.
+#[test]
+fn load_history_lists_a_repeated_definition_twice_as_gnu_does() {
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-load-history-{}-{}.el",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos()
+    ));
+    std::fs::write(
+        &path,
+        "(defalias 'zz-lh-a 'car)\n(defalias 'zz-lh-a 'cdr)\n(defvar zz-lh-v 1)\n(defvar zz-lh-v 2)\n(defvar zz-lh-w)\n",
+    )
+    .expect("write the fixture file");
+    let file = path.to_string_lossy().into_owned();
+    call(
+        &mut interp,
+        "load",
+        &[Value::String(file.clone().into()), Value::Nil, Value::T],
+        &mut env,
+    )
+    .expect("load the fixture file");
+    let history = call(
+        &mut interp,
+        "symbol-value",
+        &[Value::symbol("load-history")],
+        &mut env,
+    )
+    .expect("load-history");
+    let entry = call(
+        &mut interp,
+        "assoc",
+        &[Value::String(file.into()), history],
+        &mut env,
+    )
+    .expect("the file's entry");
+    let definitions = call(&mut interp, "cdr", &[entry], &mut env).expect("cdr");
+    let defun = |name: &str| Value::cons(Value::symbol("defun"), Value::symbol(name));
+    assert_eq!(
+        definitions,
+        Value::list([
+            defun("zz-lh-a"),
+            defun("zz-lh-a"),
+            Value::symbol("zz-lh-v"),
+            Value::symbol("zz-lh-v"),
+        ])
+    );
+    std::fs::remove_file(&path).expect("remove the fixture file");
+}

@@ -124,6 +124,17 @@ the image loader's tables hash by offset: csharp-mode's indentation test
 86.6 s to 1.87 s (GNU 0.061 s), the image load 1.73 s to 0.5 s.  The
 per-run floor is measured, not closed: the ledger's D20 row carries the
 numbers (mapatoms, GC, the 1.3 s boot, the trampoline's child boot).
+Checkpoint 18b (2026-09-11) answers the Mac frozen run of checkpoint 18:
+`lock-file` ignores a lock it cannot create as filelock.c does (the
+bytecomp unwritable-directory failure), `make-temp-file-internal`
+reports a file error, a timed `accept-process-output` returns when the
+process has exited (the erc child-Emacs tests, the python-tests stall),
+`re-search-backward` and the buffer searches' position conversions no
+longer scan the whole buffer per call, category patterns key on the
+category generation, the compiled-regexp cache holds 1024 patterns,
+function redefinition and load-history recording are constant-time and
+load-history lists repeated definitions as GNU does.  The remaining slow
+files are measured in the audit and listed open in D20.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

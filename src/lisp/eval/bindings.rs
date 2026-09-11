@@ -1276,8 +1276,19 @@ impl Interpreter {
     pub fn push_function_binding(&mut self, name: &str, function: Value) {
         self.functions_index
             .insert(name.to_string(), function.clone());
+        let position = self.functions.len();
+        self.functions_position.insert(name.to_string(), position);
         self.functions.push((name.to_string(), function));
         self.note_function_binding_changed();
+    }
+
+    /// Recompute `functions_position' for the entries at and after INDEX
+    /// once an entry was removed there.
+    fn reposition_function_bindings_from(&mut self, index: usize) {
+        let state = &mut **self;
+        for (position, (name, _)) in state.functions.iter().enumerate().skip(index) {
+            state.functions_position.insert(name.clone(), position);
+        }
     }
 
     /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
@@ -1308,25 +1319,40 @@ impl Interpreter {
     }
 
     pub fn pop_function_binding(&mut self, name: &str) {
-        if let Some(index) = self.functions.iter().rposition(|(fname, _)| fname == name) {
+        if let Some(index) = self.functions_position.remove(name) {
             self.functions.remove(index);
+            self.reposition_function_bindings_from(index);
             self.reindex_function_binding(name);
         }
     }
 
     pub fn remove_all_function_bindings(&mut self, name: &str) {
-        self.functions.retain(|(fname, _)| fname != name);
+        if let Some(index) = self.functions_position.remove(name) {
+            self.functions.remove(index);
+            self.reposition_function_bindings_from(index);
+        }
         self.functions_index.remove(name);
         self.note_function_binding_changed();
     }
 
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
-        if let Some(index) = self.functions.iter().rposition(|(fname, _)| fname == name) {
-            self.functions.remove(index);
-        }
         match function {
-            Some(function) => self.push_function_binding(name, function),
-            None => self.reindex_function_binding(name),
+            Some(function) => {
+                if let Some(&index) = self.functions_position.get(name) {
+                    self.functions[index].1 = function.clone();
+                    self.functions_index.insert(name.to_string(), function);
+                    self.note_function_binding_changed();
+                } else {
+                    self.push_function_binding(name, function);
+                }
+            }
+            None => {
+                if let Some(index) = self.functions_position.remove(name) {
+                    self.functions.remove(index);
+                    self.reposition_function_bindings_from(index);
+                }
+                self.reindex_function_binding(name);
+            }
         }
     }
 

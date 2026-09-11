@@ -2505,19 +2505,21 @@ pub(crate) fn wait_pumping_processes(
             delivered |= final_progress;
             break;
         }
-        // With no explicit timeout GNU waits for PROCESS, but returns once a
-        // subprocess has exited even if it produced no bytes.  Pending bytes
-        // keep the id live until the pump above has delivered them.
-        if deadline.is_none()
-            && target_process_id.is_some_and(|process_id| {
-                !interp.live_external_process_ids().contains(&process_id)
-                    && !matches!(
-                        interp.process_status_value(process_id),
-                        Some(Value::Symbol(status))
-                            if matches!(status.as_str(), "run" | "open" | "connect" | "listen")
-                    )
-            })
-        {
+        // process.c:wait_reading_process_output: "Don't wait for output
+        // from a non-running process.  Just read whatever data has already
+        // been received" -- with or without a timeout, so a loop of
+        // `(accept-process-output PROC 10)' ends when PROC exits, not ten
+        // seconds later (erc's subprocess tests spent that on every child).
+        // Pending bytes keep the id live until the pump above has
+        // delivered them.
+        if target_process_id.is_some_and(|process_id| {
+            !interp.live_external_process_ids().contains(&process_id)
+                && !matches!(
+                    interp.process_status_value(process_id),
+                    Some(Value::Symbol(status))
+                        if matches!(status.as_str(), "run" | "open" | "connect" | "listen")
+                )
+        }) {
             break;
         }
         if progressed {

@@ -1359,6 +1359,10 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
             "an index over `functions', which is marked",
         ),
         (
+            "functions_position",
+            "the positions of `functions' entries, no Lisp object",
+        ),
+        (
             "dispatched_signal",
             "identity memo of the last dispatched signal; thread.c marks handler->val only while its handler runs",
         ),
