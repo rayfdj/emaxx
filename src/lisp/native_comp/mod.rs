@@ -22,7 +22,7 @@ mod loader;
 mod runtime;
 mod state;
 
-pub(crate) use loader::{RegistrationKind, UnitLibrary, open_unit};
+pub(crate) use loader::{DumpedNativeFunction, RegistrationKind, UnitLibrary, open_unit};
 pub(crate) use runtime::with_thread_suspended;
 pub(crate) use runtime::{
     NativeMark, decode_active_backtrace_arguments, garbage_collection_maybe_due, gc_tuning,
@@ -216,6 +216,30 @@ pub(crate) fn function_name(interpreter: &Interpreter, record_id: u64) -> Option
             .function_name(record_id)
             .map(str::to_owned)
     })
+}
+
+/// Lisp_Subr.native_c_name of a registered native function.
+pub(crate) fn function_c_name(interpreter: &Interpreter, record_id: u64) -> Option<String> {
+    loader::active_function_c_name(record_id).or_else(|| {
+        interpreter
+            .native_compiler
+            .function_c_name(record_id)
+            .map(str::to_owned)
+    })
+}
+
+/// pdumper.c:pdumper_load's late and very-late relocation phases for the
+/// native compilation units and native functions of a loaded image.
+pub(crate) fn load_dumped_code(
+    interpreter: &mut Interpreter,
+    units: &[u64],
+    functions: &[loader::DumpedNativeFunction],
+) -> Result<(), LispError> {
+    let mut environment = Env::new();
+    let mut state = std::mem::take(&mut interpreter.native_compiler);
+    let result = state.load_dumped_code(interpreter, &mut environment, units, functions);
+    interpreter.native_compiler = state;
+    result
 }
 
 pub(crate) fn register(

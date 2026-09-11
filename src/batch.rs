@@ -967,6 +967,23 @@ impl FixtureImage {
         let temporary = self.path.with_extension("pdmp.tmp");
         let _ = fs::remove_file(&temporary);
         let _quiet = lisp::primitives::pdumper::QuietDumpMessages::hold();
+        // src/Makefile.in runs loadup with `--bin-dest $(BIN_DESTDIR)
+        // --eln-dest $(ELN_DESTDIR)', from which loadup.el sets these two
+        // variables so that `load--fixup-all-elns' (called by
+        // dump-emacs-portable) records each loaded native unit's file as
+        // the pair of paths relative to the executable's directory that
+        // the loader resolves again.  Emaxx has no installation layout:
+        // the binary's own directory stands for bindir, and the source
+        // tree, whose `native-lisp/' holds the preloaded units, for the
+        // directory the installed `native-lisp/' would be under.
+        let invocation_directory = interpreter
+            .lookup_var("invocation-directory", &Vec::new())
+            .unwrap_or(Value::Nil);
+        let source_directory = interpreter
+            .lookup_var("source-directory", &Vec::new())
+            .unwrap_or(Value::Nil);
+        interpreter.set_global_binding("load--bin-dest-dir", invocation_directory);
+        interpreter.set_global_binding("load--eln-dest-dir", source_directory);
         lisp::primitives::call(
             interpreter,
             "dump-emacs-portable",

@@ -24,6 +24,10 @@ pub(crate) const DUMP_OFF_MAX: usize = i32::MAX as usize;
 pub(crate) const HEADER_LEN: usize = 100;
 pub(crate) const RELOC_NUM_PHASES: usize = 3;
 pub(crate) const EARLY_RELOCS: usize = 0;
+/// pdumper.c:reloc_phase: the native compilation units are loaded in
+/// LATE_RELOCS, the native functions resolved in VERY_LATE_RELOCS.
+pub(crate) const LATE_RELOCS: usize = 1;
+pub(crate) const VERY_LATE_RELOCS: usize = 2;
 
 /// The fingerprint "unique to each build of Emacs": the SHA-256 of this
 /// executable, computed once per process.  `pdumper-fingerprint' prints
@@ -252,6 +256,12 @@ pub(crate) enum DumpRelocKind {
     DumpToDumpPtrRaw,
     /// Rebuild a bignum from its cold limbs.
     Bignum,
+    /// RELOC_NATIVE_COMP_UNIT: reopen and link the unit's shared object
+    /// (the late phase).
+    NativeCompUnit,
+    /// RELOC_NATIVE_SUBR: resolve the function in its unit (the very
+    /// late phase).
+    NativeSubr,
     /// A Lisp word that names an object in the dump, by dump offset.
     DumpToDumpLv(DumpType),
     /// A Lisp word that names an object of the Emacs image (a built-in
@@ -264,6 +274,8 @@ impl DumpRelocKind {
         match self {
             Self::DumpToDumpPtrRaw => 1,
             Self::Bignum => 4,
+            Self::NativeCompUnit => 5,
+            Self::NativeSubr => 6,
             Self::DumpToDumpLv(kind) => 0x100 | kind as u32,
             Self::DumpToEmacsLv(kind) => 0x200 | kind as u32,
         }
@@ -274,6 +286,8 @@ impl DumpRelocKind {
         Some(match value {
             1 => Self::DumpToDumpPtrRaw,
             4 => Self::Bignum,
+            5 => Self::NativeCompUnit,
+            6 => Self::NativeSubr,
             0x100..=0x1FF => Self::DumpToDumpLv(DumpType::from_u32(value & 0xFF)?),
             0x200..=0x2FF => Self::DumpToEmacsLv(DumpType::from_u32(value & 0xFF)?),
             _ => return None,

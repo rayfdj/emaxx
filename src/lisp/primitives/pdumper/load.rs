@@ -53,6 +53,12 @@ pub(crate) struct LoadedImage {
     pub(crate) obarray: Vec<SymbolName>,
     /// The cells of `nil' and `t'.
     pub(crate) builtin_cells: Vec<LoadedSymbol>,
+    /// RELOC_NATIVE_COMP_UNIT: the native compilation unit records, in
+    /// image order, for the late phase that reopens each unit.
+    pub(crate) native_units: Vec<u64>,
+    /// RELOC_NATIVE_SUBR: the native function records with their names,
+    /// for the very late phase that resolves each in its unit.
+    pub(crate) native_functions: Vec<crate::lisp::native_comp::DumpedNativeFunction>,
 }
 
 struct Reader<'a> {
@@ -197,6 +203,8 @@ impl Loader<'_> {
         let mut markers = Vec::new();
         let mut overlays = Vec::new();
         let mut finalizers = Vec::new();
+        let mut native_units = Vec::new();
+        let mut native_function_records = Vec::new();
         for &(offset, kind) in &object_starts {
             match kind {
                 DumpType::Symbol => {
@@ -238,6 +246,28 @@ impl Loader<'_> {
                     }
                     if kind == DumpType::HashTable {
                         hash_table_records.push((offset, id, nslots));
+                    }
+                    // The native kinds carry their late relocations; a
+                    // record of either kind without one is not this
+                    // writer's.
+                    match record_kind {
+                        RecordKind::NativeCompUnit => {
+                            if self.relocs.get(&offset) != Some(&DumpRelocKind::NativeCompUnit) {
+                                return Err(LoadError::Error(format!(
+                                    "native compilation unit {id} has no late relocation"
+                                )));
+                            }
+                            native_units.push(id);
+                        }
+                        RecordKind::NativeCompiledFunction => {
+                            if self.relocs.get(&offset) != Some(&DumpRelocKind::NativeSubr) {
+                                return Err(LoadError::Error(format!(
+                                    "native function {id} has no very late relocation"
+                                )));
+                            }
+                            native_function_records.push((offset, id, nslots));
+                        }
+                        _ => {}
                     }
                 }
                 DumpType::CharTable => {
@@ -381,6 +411,24 @@ impl Loader<'_> {
             if !mutable {
                 self.interp.mark_hash_table_immutable(id);
             }
+        }
+        let mut native_functions = Vec::new();
+        for (offset, id, nslots) in native_function_records {
+            let names_at = offset + 32 + 8 * nslots as u32;
+            let name = self.value_at(names_at)?;
+            let c_name = self.value_at(names_at + 8)?;
+            let text = |value: Value, what: &str| {
+                string_like(&value)
+                    .map(|string| string.text)
+                    .ok_or_else(|| {
+                        LoadError::Error(format!("native function {id}'s {what} is not a string"))
+                    })
+            };
+            native_functions.push(crate::lisp::native_comp::DumpedNativeFunction {
+                record_id: id,
+                name: text(name, "name")?,
+                c_name: text(c_name, "C name")?,
+            });
         }
         for (offset, id, nslots) in obarray_records {
             let count_at = offset + 32 + 8 * nslots as u32;
@@ -549,6 +597,8 @@ impl Loader<'_> {
             symbols,
             obarray,
             builtin_cells,
+            native_units,
+            native_functions,
         })
     }
 

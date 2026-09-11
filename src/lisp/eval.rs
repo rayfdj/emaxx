@@ -7096,6 +7096,9 @@ impl Interpreter {
                 }
             }
         }
+        // editfns.c:init_editfns: emacs.c:main computes the user names
+        // once in every process.
+        interp.init_editfns();
         crate::lisp::native_comp::initialize_runtime(&mut interp);
         interp
     }

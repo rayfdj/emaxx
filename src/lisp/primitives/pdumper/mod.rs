@@ -422,6 +422,16 @@ pub(crate) fn pdumper_load(
     interp
         .install_image(&image, record.clone())
         .map_err(PdumperLoadError::Error)?;
+    // pdumper_set_emacs_execdir, then LATE_RELOCS (the native compilation
+    // units) and VERY_LATE_RELOCS (the native functions), after the Emacs
+    // relocations gave the process its variables (`comp-abi-hash',
+    // `native-comp-eln-load-path', `comp-loaded-comp-units-h').
+    crate::lisp::native_comp::load_dumped_code(
+        interp,
+        &image.native_units,
+        &image.native_functions,
+    )
+    .map_err(|error| PdumperLoadError::Error(error.to_string()))?;
     Ok(record)
 }
 

@@ -8838,3 +8838,115 @@ four are the OpenPGP decryption platform residual of mml-sec-tests
 audits); erc, server, simple and both thread files are at 0, and
 gv-tests is back at 0 with the init_buffer correction.  One hour and
 three minutes for the run that took five hours and forty-one.
+
+## 2026-09-10 D14/D15: native compilation units and native functions in the image
+
+*What was built.*  The last two open rows of the dump program.  The
+writer no longer refuses a native compilation unit or a native
+function: a unit is written as pdumper.c:dump_native_comp_unit writes
+it (the Lisp fields with the file as the pair `load--fixup-all-elns'
+made of it, the documentation vector nil, nothing for the handle, a
+late relocation entry), a native function as dump_subr writes one
+(no function pointer, the Lisp fields, the symbol name and the C
+name GNU keeps as C strings, a very late relocation entry).  The
+registry keeps each function's C name (Lisp_Subr.native_c_name) from
+`comp--register-subr' on.  The process-level loader runs the two
+phases pdumper_load runs after the Emacs relocations: the late one
+reopens each unit (comp.c:load_comp_unit with loading_dump: the file
+resolved against the executable's directory, installed or local
+decided once by the first unit, `fixup_eln_load_path', dlopen, the
+ABI hash and relocation symbols checked, the runtime pointers
+linked, the data and impure relocations filled from the dumped data
+vectors, no top-level run, the unit registered under its resolved
+file), the very late one resolves each function by its C name in its
+unit and, for an anonymous lambda, replaces the `lambda-fixup'
+placeholder in the impure relocations and enters the function in the
+unit's fresh GC guard.  The harness image dumps under loadup.el's
+`load--bin-dest-dir' and `load--eln-dest-dir' (the binary's
+directory and the source tree, Emaxx having no installation layout),
+so a startup that loaded native units -- the Darwin case -- dumps
+them as `make' dumps GNU's preloaded ones.
+
+*What is disclosed.*  A unit whose file is still a string is refused
+with GNU's "trying to dump non fixed-up eln file": a session dumps its
+native units only under the two loadup variables, and a form
+`native-compile' compiled into `temporary-file-directory' cannot be
+fixed up there in GNU either (the ten-character `substring' of the
+short directory name signals).  The documentation vector is written
+nil without clearing the dumping process's own slot.  A dumped unit
+the process already holds is refused where GNU's eassert fires (GNU
+never loads a dump into the process that wrote it; the in-process
+controls drop the writer first).  A failure in the native phases is
+the startup's fatal "could not load dump file", where GNU's `error'
+unwinds a process that has no handler yet; dlopen's failure is
+preceded by GNU's "Error using execdir" line on stderr.  The function
+pointer lives in the registry, not in the object, and the relocation
+entries are consumed by kind rather than applied to mapped memory.
+The template interpreter of `test_support' cannot be cloned once a
+process holds native units (the runtime's permanent root ranges), so
+an image-booted test process with native units reconstructs each
+interpreter from the image instead; no Linux fixture has native
+units, so the Linux gate is unchanged.
+
+*Controls.*  `native_units_and_functions_round_trip_through_the_image'
+compiles a file into the eln cache (a named function with a
+docstring, a lambda returned by a function), refuses the dump with
+the two loadup variables bound to nil (a process that started from
+the harness image carries the values the image was dumped under, as
+GNU's emacs.pdmp carries the build's; the gate found the control
+dumping where it expected the refusal) and asserts the empty output,
+dumps under them, drops the
+writer, loads the image into a fresh process-state interpreter and
+calls both functions, checks the arities, the unit's resolved file on
+disk and in `comp-loaded-comp-units-h', the lazily loaded
+documentation and a wrong-number-of-arguments, then moves the unit
+away and asserts the load fails naming it.  The three startup
+controls (in-process, batch startup, CLI) no longer branch into a
+"native image refused" exit: they dump under the fixup when the
+startup loaded native code and compare the native function count,
+the first native function and its arity, and a preloaded call
+(`string-trim') across the round trip; on Linux, whose startup loads
+no native units, they run as before with a count of 0.  The
+in-process control now takes every expectation from the writer
+before dropping it, and the batch startup control its reference
+answers before the restored startup, since a loaded image reopens the
+units a live session in the same process would still hold.  The
+Linux run of the three controls exercises only their count-of-zero
+branch; the Darwin run, where the startup loads the preloaded units,
+is the receipt still to be taken.
+
+*What the gate found beside it.*  The second full run failed one
+unrelated test once: `process_attributes_follows_sysdep_procfs' saw
+`(user-login-name)' differ from the `user' field of the child's
+attributes, both strings, in a process booted from the harness image
+under the gate's load; the test passed in the first run and three
+times alone.  The cause is a divergence from editfns.c:init_editfns,
+which emacs.c:main runs once in every process (after load_pdump in a
+dumped one) to set `user-login-name', `user-real-login-name' and
+`user-full-name' from the environment and the account database, with
+"unknown" where no account answers.  Emaxx synthesized the three on
+every reference through `builtin_var_value', with a fabricated
+"user" where a lookup failed, so one failed `getpwuid_r' under load
+changed the answer between two references.  `Interpreter::init_editfns'
+now computes the three once, at startup and in
+`init_after_pdump_load', and keeps them in their variables; the
+fallbacks are GNU's "unknown".  Control:
+`init_editfns_computes_the_user_names_once_per_process' (LOGNAME set
+at startup names the user after the variable is gone; the real name
+is the account's; the process's initialization computes them again).
+
+*Gate.*  Alone on the machine, on the tree as committed, with the
+shared image on: grouped gate run-1789054270916670663-3315, GROUPED
+GATE PASSED -- 2608 library tests across the ten groups (batch 49,
+compat_runtime 84, eval_01 351, eval_02 284, eval_03 320, eval_04 251,
+eval_05 351, lightweight 414, primitives 448, tty 56, every group 0
+failed) and 68 in the binaries and integration tests; `cargo fmt
+--check' and strict clippy exit 0 before and after; 15:31 to 16:20.
+Two earlier full runs on this checkpoint's tree each failed one test:
+the first the new native control (the refusal branch, corrected as
+recorded above), the second the process-attributes test (the
+init_editfns divergence, corrected as recorded above); a third run
+was stopped for the correction.  Main's `8b6ff8a' is the merge of
+checkpoint 16 into main with a tree identical to `63e6a42'; it is
+merged after this commit for the ancestry, and the merged tree is
+this gated tree.

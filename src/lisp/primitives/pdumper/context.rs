@@ -1318,9 +1318,13 @@ impl DumpContext {
             }
             RecordKind::Mutex => Err(self.unsupported(object, "mutex")),
             RecordKind::ConditionVariable => Err(self.unsupported(object, "condition variable")),
-            RecordKind::NativeCompUnit => Err(self.unsupported(object, "native compilation unit")),
+            RecordKind::NativeCompUnit => {
+                let offset = self.dump_native_comp_unit(id, &type_tag, &slots)?;
+                Ok((offset, DumpType::Record))
+            }
             RecordKind::NativeCompiledFunction => {
-                Err(self.unsupported(object, "native compiled function"))
+                let offset = self.dump_native_function(interp, id, object, &type_tag, &slots)?;
+                Ok((offset, DumpType::Record))
             }
             RecordKind::TreeSitterParser => Err(self.unsupported(object, "tree-sitter parser")),
             RecordKind::TreeSitterNode => Err(self.unsupported(object, "tree-sitter node")),
@@ -1329,6 +1333,84 @@ impl DumpContext {
             }
             RecordKind::Sqlite => Err(self.unsupported(object, "sqlite")),
         }
+    }
+
+    /// dump_native_comp_unit: the unit's Lisp fields with the file as the
+    /// pair `load--fixup-all-elns' made of it (a string is refused as GNU
+    /// refuses it), the documentation vector nil so it is loaded lazily,
+    /// the handle left to the late relocation that reopens the unit.
+    fn dump_native_comp_unit(
+        &mut self,
+        id: u64,
+        type_tag: &Value,
+        slots: &[Value],
+    ) -> Result<u32, DumpError> {
+        if !matches!(slots.first(), Some(Value::Cons(_))) {
+            return Err(DumpError::Lisp(LispError::Signal(
+                "trying to dump non fixed-up eln file".into(),
+            )));
+        }
+        let mut slots = slots.to_vec();
+        if let Some(docs) = slots.get_mut(4) {
+            *docs = Value::Nil;
+        }
+        let offset =
+            self.dump_record_slots(id, RecordKind::NativeCompUnit, type_tag, &slots, false)?;
+        if self.flags.dump_object_contents {
+            self.dump_relocs[LATE_RELOCS].push((offset, DumpRelocKind::NativeCompUnit));
+        }
+        Ok(offset)
+    }
+
+    /// dump_subr for a native function: the function pointer is not
+    /// written, the Lisp fields are, and after the slots the two names GNU
+    /// keeps as C strings (symbol_name, and native_c_name through
+    /// COLD_OP_NATIVE_SUBR), for the very late relocation that resolves
+    /// the function in its reopened unit.
+    fn dump_native_function(
+        &mut self,
+        interp: &Interpreter,
+        id: u64,
+        object: &Value,
+        type_tag: &Value,
+        slots: &[Value],
+    ) -> Result<u32, DumpError> {
+        let Some(c_name) = crate::lisp::native_comp::function_c_name(interp, id) else {
+            return Err(self.unsupported(object, "native compiled function without a C name"));
+        };
+        let name = crate::lisp::native_comp::function_name(interp, id).unwrap_or_default();
+        let start = self.object_start()?;
+        let mut words = vec![
+            id,
+            u64::from(record_kind_code(RecordKind::NativeCompiledFunction)),
+            0,
+            slots.len() as u64,
+        ];
+        words.resize(slots.len() + 6, WORD_NIL);
+        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        for (index, slot) in slots.iter().enumerate() {
+            self.field_lv(start, &mut words, index + 4, slot, WEIGHT_STRONG);
+        }
+        let name_index = slots.len() + 4;
+        self.field_lv(
+            start,
+            &mut words,
+            name_index,
+            &Value::string(&name),
+            WEIGHT_STRONG,
+        );
+        self.field_lv(
+            start,
+            &mut words,
+            name_index + 1,
+            &Value::string(&c_name),
+            WEIGHT_STRONG,
+        );
+        let offset = self.object_finish(&words)?;
+        if self.flags.dump_object_contents {
+            self.dump_relocs[VERY_LATE_RELOCS].push((offset, DumpRelocKind::NativeSubr));
+        }
+        Ok(offset)
     }
 
     /// A record's id, kind, type tag and slots (nil for a nilled

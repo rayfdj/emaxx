@@ -532,7 +532,7 @@ define_dispatch!(
                         .unwrap_or_else(|| {
                             Value::String(
                                 current_user_login_name()
-                                    .unwrap_or_else(|| "user".into())
+                                    .unwrap_or_else(|| "unknown".into())
                                     .into(),
                             )
                         }));
@@ -549,7 +549,7 @@ define_dispatch!(
                     .unwrap_or_else(|| {
                         Value::String(
                             current_real_user_login_name()
-                                .unwrap_or_else(|| "user".into())
+                                .unwrap_or_else(|| "unknown".into())
                                 .into(),
                         )
                     }))
