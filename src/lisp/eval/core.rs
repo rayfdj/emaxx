@@ -828,7 +828,7 @@ impl Interpreter {
         let local_context = Self::env_may_affect_function_resolution(env);
         if !local_context
             && let Some(cached) = source_resolution.borrow().as_ref()
-            && cached.definition_generation == self.definition_generation
+            && cached.function_binding_generation == self.function_binding_generation
         {
             return Ok(cached.resolution.clone());
         }
@@ -836,7 +836,7 @@ impl Interpreter {
         let resolution = self.resolve_symbol_call_with_frame_state(name, env, local_context)?;
         if !local_context {
             *source_resolution.borrow_mut() = Some(SourceFunctionCallCacheEntry {
-                definition_generation: self.definition_generation,
+                function_binding_generation: self.function_binding_generation,
                 resolution: resolution.clone(),
             });
         }
@@ -852,7 +852,7 @@ impl Interpreter {
         if !local_context
             && let Some((generation, resolution)) =
                 self.function_resolution_cache.get(name.as_str())
-            && *generation == self.definition_generation
+            && *generation == self.function_binding_generation
         {
             return Ok(resolution.clone());
         }
@@ -871,7 +871,7 @@ impl Interpreter {
             let state = &mut **self;
             state.function_resolution_cache.insert(
                 name.to_string(),
-                (state.definition_generation, resolution.clone()),
+                (state.function_binding_generation, resolution.clone()),
             );
         }
         Ok(resolution)

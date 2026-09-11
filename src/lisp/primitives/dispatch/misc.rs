@@ -1509,9 +1509,9 @@ define_dispatch!(
                 let obarray = args.get(1).cloned().unwrap_or(Value::Nil);
                 let symbols = if obarray.is_nil() {
                     interp
-                        .known_symbol_names()
+                        .known_symbols()
                         .into_iter()
-                        .map(|value| Value::Symbol(value.into()))
+                        .map(Value::Symbol)
                         .collect()
                 } else {
                     obarray_symbols(interp, &obarray)?

@@ -359,6 +359,11 @@ fn translate_elisp_regex_with_point(
     let mut can_repeat_previous = false;
     let mut last_was_quantifier = false;
     let mut inside_interval = false;
+    // The span in `translated' of the last bracket expression and the
+    // index of the `{' of the interval being copied, for
+    // `loop_large_bounded_repeat'.
+    let mut last_bracket_expression: Option<(usize, usize)> = None;
+    let mut interval_start = 0;
     while let Some(ch) = chars.next() {
         // The digits and comma between Emacs `\{' and `\}' are repeat
         // metadata, not searchable literals.  Keep them under the grammar
@@ -369,6 +374,7 @@ fn translate_elisp_regex_with_point(
             continue;
         }
         if ch == '[' {
+            let start = translated.len();
             translated.push_str(&translate_bracket_expression(
                 &mut chars,
                 encoding,
@@ -376,6 +382,7 @@ fn translate_elisp_regex_with_point(
                 interp,
                 rendered_syntax_classes.as_ref(),
             ));
+            last_bracket_expression = Some((start, translated.len()));
             at_branch_start = false;
             can_repeat_previous = true;
             last_was_quantifier = false;
@@ -442,6 +449,7 @@ fn translate_elisp_regex_with_point(
                     last_was_quantifier = false;
                 }
                 Some('{') => {
+                    interval_start = translated.len();
                     translated.push('{');
                     // Emacs `\{,N\}' means `{0,N}'; the Rust regex parser
                     // rejects an empty lower bound.
@@ -454,6 +462,13 @@ fn translate_elisp_regex_with_point(
                     last_was_quantifier = false;
                 }
                 Some('}') => {
+                    if inside_interval {
+                        loop_large_bounded_repeat(
+                            &mut translated,
+                            interval_start,
+                            last_bracket_expression,
+                        );
+                    }
                     translated.push('}');
                     inside_interval = false;
                     if chars.peek() == Some(&'?') {
@@ -1755,6 +1770,52 @@ pub(super) fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
     Ok(())
 }
 
+/// The bounded repeat count from which the translation asks fancy-regex
+/// for a counted loop instead of the regex crate's unrolling (see
+/// `loop_large_bounded_repeat').  Measured on `[[:alpha:]_@][[:alnum:]_$]
+/// \{,N\}' under `looking-at': the unrolled form compiles in 3 ms at N=4,
+/// 7.5 ms at N=16 and 12.7 ms at N=31, growing with N, and matches in
+/// 9 us a call once its lazy DFA is warm; the loop compiles in 2 ms at
+/// every N and matches in 11 us (13 us at N=1000).
+const LOOPED_REPEAT_COUNT: usize = 16;
+
+/// GNU's regex.c runs `X\{m,n\}' as a counted loop (succeed_n and
+/// jump_n); the regex crate unrolls it into n copies of X, so cc-mode's
+/// `[[:alnum:]_$]\{,1000\}' over a Unicode class became a thousand-copy
+/// automaton whose compilation took hundreds of milliseconds and whose
+/// every match walked the unrolled copies (190 ms for one `looking-at' of
+/// c-identifier-key).  fancy-regex compiles a repeat whose body it runs
+/// itself (RepeatGr) as a counted loop, and an atomic group is a body it
+/// runs itself.  For a large bound over a single bracket expression -- one
+/// character, nothing to backtrack into, so `(?>[..])' matches exactly
+/// what `[..]' matches -- wrap the class in an atomic group: the same
+/// language, matched by GNU's kind of loop.  `interval_start' is the index
+/// of the `{' in `translated' (its body is copied so far), `last_bracket'
+/// the span of the last bracket expression; the wrap happens only when
+/// that expression is what the interval quantifies.
+fn loop_large_bounded_repeat(
+    translated: &mut String,
+    interval_start: usize,
+    last_bracket: Option<(usize, usize)>,
+) {
+    let Some((class_start, class_end)) = last_bracket else {
+        return;
+    };
+    if class_end != interval_start || translated.as_bytes().get(interval_start) != Some(&b'{') {
+        return;
+    }
+    let body = &translated[interval_start + 1..];
+    let upper = match body.split_once(',') {
+        Some((_, upper)) => upper.parse::<usize>().ok(),
+        None => body.parse::<usize>().ok(),
+    };
+    if upper.is_none_or(|upper| upper < LOOPED_REPEAT_COUNT) {
+        return;
+    }
+    translated.insert(interval_start, ')');
+    translated.insert_str(class_start, "(?>");
+}
+
 fn enforce_elisp_repeat_limit(pattern: &str) -> Result<(), LispError> {
     static REPEAT_PATTERN: OnceLock<Regex> = OnceLock::new();
     let regex = REPEAT_PATTERN.get_or_init(|| {
@@ -1820,14 +1881,18 @@ fn elisp_capture_mapping(pattern: &str) -> Result<Vec<usize>, LispError> {
     Ok(mapping)
 }
 
-#[derive(Clone)]
+/// Shared, never cloned: cloning a regex-automata regex (fancy-regex's
+/// delegates included) gives the clone an empty cache pool, so a search
+/// through a clone rebuilds the lazy DFA from scratch.  Handing out one
+/// clone per `looking-at' made every call redetermine its pattern (300
+/// microseconds for an eight-repeat class); the cache hands out an `Rc' to
+/// the one compiled object and its warm caches.
 pub(super) struct CompiledElispRegex {
     regex: FancyRegex,
     linear_boundary_prefilter: Option<LinearBoundaryPrefilter>,
     capture_mapping: Vec<usize>,
 }
 
-#[derive(Clone)]
 struct LinearBoundaryPrefilter {
     regex: Regex,
     exact_at_start: FancyRegex,
@@ -1949,15 +2014,18 @@ struct CompiledElispRegexKey {
     syntax_property_sentinels: Vec<SyntaxPropertySentinel>,
     // search.c compile_pattern re-checks its cached entry with EQ against
     // the current syntax table before reuse; the analog here is the pair
-    // of table identities plus two write generations, so a hit costs a
-    // hash instead of re-running the whole translation.  The char-table
-    // generation observes writes through the table door; the definition
-    // generation observes interior mutation of shared structure (setcar
-    // on a cons stored as a table entry bumps it), so no route to
-    // changing what a class renders as escapes the key.
+    // of table identities plus the write stamps of what each rendering
+    // read, so a hit costs a hash instead of re-running the whole
+    // translation.  The syntax chain signature observes writes through
+    // the table door to the syntax table or any table it inherits from;
+    // the definition generation observes interior mutation of shared
+    // structure (setcar on a cons stored as a table entry bumps it), so
+    // no route to changing what a class renders as escapes the key.
     syntax_table_id: u64,
     category_table_id: u64,
-    char_table_generation: u64,
+    syntax_chain: crate::lisp::eval::SyntaxChainSignature,
+    category_generation: u64,
+    case_generation: u64,
     definition_generation: u64,
     point_assertion: String,
     at_absolute_start: bool,
@@ -1968,19 +2036,19 @@ const COMPILED_ELISP_REGEX_CACHE_LIMIT: usize = 256;
 
 #[derive(Default)]
 struct CompiledElispRegexCache {
-    entries: std::collections::HashMap<CompiledElispRegexKey, (CompiledElispRegex, u64)>,
+    entries: std::collections::HashMap<CompiledElispRegexKey, (Rc<CompiledElispRegex>, u64)>,
     use_counter: u64,
 }
 
 impl CompiledElispRegexCache {
-    fn get(&mut self, key: &CompiledElispRegexKey) -> Option<CompiledElispRegex> {
+    fn get(&mut self, key: &CompiledElispRegexKey) -> Option<Rc<CompiledElispRegex>> {
         self.use_counter = self.use_counter.wrapping_add(1);
         let (compiled, last_used) = self.entries.get_mut(key)?;
         *last_used = self.use_counter;
-        Some(compiled.clone())
+        Some(Rc::clone(compiled))
     }
 
-    fn insert(&mut self, key: CompiledElispRegexKey, compiled: CompiledElispRegex) {
+    fn insert(&mut self, key: CompiledElispRegexKey, compiled: Rc<CompiledElispRegex>) {
         self.use_counter = self.use_counter.wrapping_add(1);
         if self.entries.len() >= COMPILED_ELISP_REGEX_CACHE_LIMIT
             && !self.entries.contains_key(&key)
@@ -2014,6 +2082,25 @@ pub(super) fn regexp_syntax_class_render_count() -> usize {
     REGEXP_SYNTAX_CLASS_RENDER_COUNT.with(std::cell::Cell::get)
 }
 
+/// Whether any character of [START, END) carries a `syntax-table' text
+/// property, directly or through its `category' (syntax.c:374's textget),
+/// judged per text-property interval.
+fn haystack_has_syntax_property(interp: &Interpreter, start: usize, end: usize) -> bool {
+    let buffer = &interp.buffer;
+    let mut pos = start.max(buffer.point_min());
+    let end = end.min(buffer.point_max());
+    while pos < end {
+        let (_, interval_end) = buffer.text_property_interval_around(pos);
+        if super::strings::buffer_property_at_with_category(interp, buffer, pos, "syntax-table")
+            .is_some_and(|value| !value.is_nil())
+        {
+            return true;
+        }
+        pos = interval_end.max(pos + 1);
+    }
+    false
+}
+
 fn encode_syntax_property_haystack(
     interp: &Interpreter,
     env: &Env,
@@ -2026,6 +2113,15 @@ fn encode_syntax_property_haystack(
             .lookup_var("parse-sexp-lookup-properties", env)
             .is_some_and(|value| value.is_truthy())
     {
+        return None;
+    }
+    // syntax.c consults the property only at the characters a match
+    // examines; a haystack carrying none renders every character with its
+    // table class, which is the encoding below with no sentinel.  Deciding
+    // that per interval spares the per-character walk that made every
+    // syntax-class `looking-at' of a cc-mode buffer (which sets
+    // `parse-sexp-lookup-properties') cost the length of the buffer.
+    if !haystack_has_syntax_property(interp, start, start + haystack.chars().count()) {
         return None;
     }
 
@@ -2190,7 +2286,7 @@ pub(super) fn compile_elisp_regex(
     env: &Env,
     point_assertion: &str,
     at_absolute_start: bool,
-) -> Result<CompiledElispRegex, LispError> {
+) -> Result<Rc<CompiledElispRegex>, LispError> {
     compile_elisp_regex_with_syntax_properties(
         interp,
         pattern,
@@ -2210,7 +2306,7 @@ fn compile_elisp_regex_with_syntax_properties(
     at_absolute_start: bool,
     encoding: Option<&SyntaxPropertyEncoding>,
     category_scope: RegexpCategoryScope,
-) -> Result<CompiledElispRegex, LispError> {
+) -> Result<Rc<CompiledElispRegex>, LispError> {
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
@@ -2233,7 +2329,7 @@ fn compile_elisp_regex_with_case_fold(
     encoding: Option<&SyntaxPropertyEncoding>,
     category_scope: RegexpCategoryScope,
     case_fold: bool,
-) -> Result<CompiledElispRegex, LispError> {
+) -> Result<Rc<CompiledElispRegex>, LispError> {
     let pattern_text = pattern.text.clone();
     let category_table_id = category_scope.table_id(interp);
     // Translation is the single owner of Emacs regexp grammar.  A pattern
@@ -2264,14 +2360,40 @@ fn compile_elisp_regex_with_case_fold(
         } else {
             0
         },
-        // case-folded rendering reads the case tables, so it shares the
-        // generation guard.
-        char_table_generation: if depends_on_tables || case_fold {
-            interp.char_table_generation()
+        // Each guard observes exactly what its rendering reads: the syntax
+        // classes the current syntax table and its parents, `\\c' the
+        // category table, case folding the case tables.  One shared
+        // generation made a category or syntax write recompile every
+        // case-folded pattern, and one generation over every syntax table
+        // recompiled cc-mode's largest patterns (hundreds of milliseconds
+        // each under the regex crate's unrolling of `\\{,1000\\}') each
+        // time any mode wrote any syntax table.
+        syntax_chain: if pattern_depends_on_syntax_table(&pattern_text) {
+            interp.syntax_table_chain_signature(interp.current_syntax_table_id())
+        } else {
+            Vec::new()
+        },
+        category_generation: if pattern_depends_on_category_table(&pattern_text) {
+            interp.category_context_generation()
         } else {
             0
         },
-        definition_generation: if depends_on_tables {
+        case_generation: if case_fold {
+            interp.case_context_generation()
+        } else {
+            0
+        },
+        // The cons-mutation generation (every `setcar' bumps it) guards a
+        // pattern only when its tables hold objects that can change in
+        // place; a table built by `modify-syntax-entry' holds immutable
+        // strings, and its patterns key on the table generation alone.
+        // Keying every table-dependent pattern on it recompiled cc-mode's
+        // `looking-at' regexps after each of its cons writes: 4 ms a call,
+        // csharp-mode's indentation test 900 times GNU's.
+        definition_generation: if depends_on_tables
+            && (pattern_depends_on_category_table(&pattern_text)
+                || interp.syntax_table_chain_has_mutable_entries(interp.current_syntax_table_id()))
+        {
             interp.current_definition_generation()
         } else {
             0
@@ -2283,7 +2405,6 @@ fn compile_elisp_regex_with_case_fold(
     if let Some(compiled) = COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().get(&key)) {
         return Ok(compiled);
     }
-
     validate_elisp_regex(&pattern.text)?;
     enforce_elisp_repeat_limit(&pattern.text)?;
     let translated = translate_elisp_regex_with_point(
@@ -2300,13 +2421,13 @@ fn compile_elisp_regex_with_case_fold(
     } else {
         format!("(?m:{translated})")
     };
-    let compiled = CompiledElispRegex {
+    let compiled = Rc::new(CompiledElispRegex {
         regex: build_fancy_regex(&rendered)
             .map_err(|error| invalid_regexp_error(error.to_string()))?,
         linear_boundary_prefilter: linear_boundary_prefilter(&rendered),
         capture_mapping: elisp_capture_mapping(&pattern.text)?,
-    };
-    COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().insert(key, compiled.clone()));
+    });
+    COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().insert(key, Rc::clone(&compiled)));
     Ok(compiled)
 }
 

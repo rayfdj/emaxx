@@ -2429,6 +2429,19 @@ fn dump_emacs_portable_prelude_follows_pdumper_c() {
     assert_oracle_contract_matches_interpreter(program, expected, "dump-emacs-portable prelude");
 }
 
+/// The printed RememberedScalars group without its `(next-record-id . N)'
+/// entry, and N.
+fn without_next_record_id(text: &str) -> (String, i64) {
+    let start = text
+        .find("(next-record-id . ")
+        .expect("the group names next-record-id");
+    let end = start + text[start..].find(')').expect("the entry closes") + 1;
+    let value = text[start + "(next-record-id . ".len()..end - 1]
+        .parse::<i64>()
+        .expect("next-record-id is an integer");
+    (format!("{}{}", &text[..start], &text[end..]), value)
+}
+
 #[test]
 fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     // Runtime boundary control, not a claim of full GNU image parity.
@@ -2566,6 +2579,7 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     assert!(image.symbols.len() >= image.obarray.len());
     assert_eq!(image.native_units.is_empty(), !has_native_functions);
     assert_eq!(image.native_functions.is_empty(), !has_native_functions);
+    let native_unit_count = image.native_units.len() as i64;
     drop(target);
 
     // pdumper_load: the same image into a fresh process-state interpreter
@@ -2603,11 +2617,23 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
             &mut env_restored,
         )
         .expect("print the restored group");
-        assert_eq!(
-            source_text,
-            &string_like(&target_text).expect("printed").text,
-            "root group {slot:?}"
-        );
+        let target_text = string_like(&target_text).expect("printed").text;
+        if *slot == RootSlot::RememberedScalars {
+            // The late phase gives every reopened unit a fresh
+            // `lambda_gc_guard_h' (dump_do_dump_relocation's
+            // Fmake_hash_table), one record each: the remembered
+            // allocator restored, then advanced by exactly the unit count.
+            let (source_rest, source_next) = without_next_record_id(source_text);
+            let (target_rest, target_next) = without_next_record_id(&target_text);
+            assert_eq!(source_rest, target_rest, "root group {slot:?}");
+            assert_eq!(
+                target_next - source_next,
+                native_unit_count,
+                "next-record-id"
+            );
+        } else {
+            assert_eq!(source_text, &target_text, "root group {slot:?}");
+        }
         compared += 1;
     }
     assert!(compared > 30);
@@ -2903,7 +2929,6 @@ fn native_units_and_functions_round_trip_through_the_image() {
             source_directory.display()
         ),
     );
-    let _ = std::fs::remove_dir_all(&source_directory);
     assert_eq!(compiled, "(t t 3 15 t t \"Add A and B.\n\n(fn A B)\")");
     let path = std::env::temp_dir().join(format!("emaxx-d14-native-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -2923,17 +2948,25 @@ fn native_units_and_functions_round_trip_through_the_image() {
     assert_eq!(refused, "(error \"trying to dump non fixed-up eln file\")");
     assert_eq!(std::fs::metadata(&path).expect("refused output").len(), 0);
     // loadup.el under `--bin-dest DIR --eln-dest DIR': the fixup runs
-    // inside dump-emacs-portable and the dump completes.
+    // inside dump-emacs-portable and the dump completes.  The eln
+    // destination is a directory holding no units: dump_do_dump_relocation
+    // decides installed-or-local once, by the first unit, and a session
+    // holding the preloaded units of the source tree beside this unit of
+    // its cache (the Darwin startup) has no single installed root, so
+    // every unit resolves through its build path here.
+    let eln_destination = source_directory.join("eln-dest");
+    std::fs::create_dir_all(&eln_destination).expect("create the eln destination");
     let dumped = eval(
         &mut interp,
         &mut env,
         &format!(
             "(let ((load--bin-dest-dir invocation-directory)
-                   (load--eln-dest-dir source-directory))
+                   (load--eln-dest-dir {:?}))
                (list (dump-emacs-portable {:?})
                      (consp (native-comp-unit-file
                              (subr-native-comp-unit (symbol-function 'zz-native-add))))
                      (consp (native-comp-unit-file (subr-native-comp-unit zz-native-lambda)))))",
+            format!("{}/", eln_destination.display()),
             path.display()
         ),
     );
@@ -2945,6 +2978,7 @@ fn native_units_and_functions_round_trip_through_the_image() {
     );
     let unit_file = std::path::PathBuf::from(unit_file.trim_matches('"'));
     assert!(unit_file.is_file(), "{}", unit_file.display());
+    let _ = std::fs::remove_dir_all(&source_directory);
     // The writer's process closes its units before the image is loaded
     // here: dlopen hands the same handle back while a unit is open, and
     // GNU never loads a dump into the process that wrote it.
@@ -6150,6 +6184,165 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
         2,
         "any table mutation must invalidate the derived rendering"
     );
+}
+
+/// A rendering keys on the tables it read, the current syntax table and
+/// its parents, not on every syntax table in the process: cc-mode writes
+/// tables of its own while its largest patterns run under another.
+#[test]
+fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let word_match = |interp: &mut Interpreter, env: &mut Env, text: &str| {
+        call(
+            interp,
+            "string-match",
+            &[Value::String("\\w".into()), Value::String(text.into())],
+            env,
+        )
+        .expect("match a syntax-table-dependent regexp")
+    };
+
+    regexp::reset_regexp_syntax_class_render_count();
+    assert_eq!(
+        word_match(&mut interp, &mut env, "word!"),
+        Value::Integer(0)
+    );
+    assert_eq!(regexp::regexp_syntax_class_render_count(), 1);
+
+    // subr.el's `make-syntax-table' is not loaded in a bare interpreter:
+    // the same char table with the standard table as parent.
+    let standard = call(&mut interp, "standard-syntax-table", &[], &mut env)
+        .expect("the standard syntax table");
+    let make_syntax_table = |interp: &mut Interpreter, env: &mut Env| {
+        let table = call(
+            interp,
+            "make-char-table",
+            &[Value::symbol("syntax-table"), Value::Nil],
+            env,
+        )
+        .expect("make a syntax table");
+        call(
+            interp,
+            "set-char-table-parent",
+            &[table.clone(), standard.clone()],
+            env,
+        )
+        .expect("inherit from the standard syntax table");
+        table
+    };
+    let other = make_syntax_table(&mut interp, &mut env);
+    call(
+        &mut interp,
+        "modify-syntax-entry",
+        &[
+            Value::Integer('!' as i64),
+            Value::String("w".into()),
+            other.clone(),
+        ],
+        &mut env,
+    )
+    .expect("write a table the current one does not inherit from");
+    assert_eq!(word_match(&mut interp, &mut env, "!"), Value::Nil);
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        1,
+        "a write to a table outside the current chain must not re-render"
+    );
+
+    let child = make_syntax_table(&mut interp, &mut env);
+    call(&mut interp, "set-syntax-table", &[child], &mut env).expect("select the child table");
+    assert_eq!(word_match(&mut interp, &mut env, "word"), Value::Integer(0));
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        2,
+        "another current table renders once"
+    );
+    call(
+        &mut interp,
+        "modify-syntax-entry",
+        &[
+            Value::Integer('!' as i64),
+            Value::String("w".into()),
+            standard.clone(),
+        ],
+        &mut env,
+    )
+    .expect("write the parent of the current table");
+    assert_eq!(
+        word_match(&mut interp, &mut env, "!"),
+        Value::Integer(0),
+        "the child inherits the parent's new entry"
+    );
+    assert_eq!(
+        regexp::regexp_syntax_class_render_count(),
+        3,
+        "a write to a parent in the chain must re-render"
+    );
+}
+
+/// GNU runs `X\{m,n\}' as a counted loop; a large bound over one bracket
+/// expression is translated so fancy-regex loops too instead of the regex
+/// crate unrolling n copies of the class (see loop_large_bounded_repeat).
+#[test]
+fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
+    let looped = regexp::translate_elisp_regex("[a-z]\\{,1000\\}");
+    assert!(
+        looped.starts_with("(?>[") && looped.ends_with("){0,1000}"),
+        "a large bound over a class wraps the class atomically: {looped}"
+    );
+    let exact = regexp::translate_elisp_regex("[a-z]\\{64\\}");
+    assert!(
+        exact.starts_with("(?>[") && exact.ends_with("){64}"),
+        "{exact}"
+    );
+    for unchanged in [
+        "[a-z]\\{,8\\}",
+        "\\(?:ab\\)\\{,1000\\}",
+        "a\\{,1000\\}",
+        "[a-z]\\{4,\\}",
+    ] {
+        let translated = regexp::translate_elisp_regex(unchanged);
+        assert!(
+            !translated.contains("(?>"),
+            "{unchanged} must keep the regex crate's form: {translated}"
+        );
+    }
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    for (pattern, text, expected) in [
+        (
+            "\\([[:alnum:]_$]\\{,1000\\}\\)x",
+            "aaaaax",
+            vec![0, 6, 0, 5],
+        ),
+        ("\\([a-z]\\{,40\\}?\\)ab", "aaaaaaab", vec![0, 8, 0, 6]),
+        (
+            "\\([a-z]\\{3,40\\}\\)\\(a*\\)",
+            "aaaaaaab",
+            vec![0, 8, 0, 8, 8, 8],
+        ),
+        ("\\([[:alpha:]]\\{,100\\}\\)\\1", "abcabc", vec![0, 6, 0, 3]),
+    ] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-match",
+                &[Value::String(pattern.into()), Value::String(text.into())],
+                &mut env,
+            )
+            .expect("match a bounded repeat"),
+            Value::Integer(0),
+            "{pattern}"
+        );
+        let data = call(&mut interp, "match-data", &[], &mut env).expect("match data");
+        assert_eq!(
+            data,
+            Value::list(expected.into_iter().map(Value::Integer)),
+            "{pattern} against {text}"
+        );
+    }
 }
 
 #[test]

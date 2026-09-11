@@ -113,6 +113,17 @@ them (the statement above that D14/D15 block ordinary native images is
 superseded; the Darwin run of the three startup controls is the receipt
 still to be taken on that platform). Every row of the dump program is
 closed; the ledger's D14 and D15 rows carry the disclosures.
+Checkpoint 18 (2026-09-11) answers the Mac frozen run of checkpoint 17:
+the compat harness normalizes the two editors' checkout roots and the
+temporary directory in the reports it compares (the `elisp-mode-tests`
+artifact); the compiled-regexp cache hands out shared objects instead of
+clones (a clone's empty cache pool redetermined every pattern on every
+search), large bounded repeats over a bracket expression run as counted
+loops, syntax renderings key on the stamps of the tables they read, and
+the image loader's tables hash by offset: csharp-mode's indentation test
+86.6 s to 1.87 s (GNU 0.061 s), the image load 1.73 s to 0.5 s.  The
+per-run floor is measured, not closed: the ledger's D20 row carries the
+numbers (mapatoms, GC, the 1.3 s boot, the trampoline's child boot).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

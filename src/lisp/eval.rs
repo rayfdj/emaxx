@@ -1146,6 +1146,15 @@ pub struct CharTableState {
     pub entries: Vec<CharTableEntry>,
     pub category_docs: Vec<(u32, String)>,
     ascii_entry_indices: Option<Box<[usize; 128]>>,
+    /// A stamp no other table in the process ever carries: taken from one
+    /// process-wide counter when the table is made and again on every
+    /// write through the table door (`find_char_table_mut'), so a cache
+    /// derived from a table's contents can key on (id, stamp) and stay
+    /// valid across writes to every other table.  The process-wide counter
+    /// keeps a table an image installs, or a second interpreter allocates,
+    /// under the same id from ever repeating a stamp a cache may still
+    /// hold for its predecessor.
+    generation: u64,
     /// Lazily-built non-overlapping view of `entries': each map key is a
     /// range start, the payload its inclusive end plus the index of the
     /// newest log entry covering it.  The log itself must stay append-only
@@ -1165,21 +1174,36 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
+/// The (id, stamp) of every table in a syntax table's parent chain, the
+/// table itself first: everything a syntax rendering of that table reads.
+/// A cache keyed on it survives a write to any table outside the chain,
+/// where one process-wide generation recompiled cc-mode's largest patterns
+/// (hundreds of milliseconds each) whenever any mode touched any table.
+pub(crate) type SyntaxChainSignature = Vec<(u64, u64)>;
+
 #[derive(Clone, Debug)]
 struct RegexpSyntaxClassCache {
     table_id: u64,
-    char_table_generation: u64,
+    chain: SyntaxChainSignature,
     rendered: [String; 16],
 }
 
 /// Range segments of the syntax table, resolved once for the scanners that
 /// cannot hold an interpreter borrow (`skip-chars-forward' and friends).
-/// Keyed like the rendered-class cache so a table mutation invalidates it.
+/// Keyed like the rendered-class cache so a chain write invalidates it.
 #[derive(Clone)]
 pub(crate) struct SyntaxSegmentCache {
     table_id: u64,
-    char_table_generation: u64,
+    chain: SyntaxChainSignature,
     pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
+}
+
+/// The process-wide source of char-table stamps (see CharTableState).
+static NEXT_CHAR_TABLE_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+fn next_char_table_generation() -> u64 {
+    NEXT_CHAR_TABLE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl CharTableState {
@@ -1204,8 +1228,19 @@ impl CharTableState {
             entries,
             category_docs: Vec::new(),
             ascii_entry_indices,
+            generation: next_char_table_generation(),
             resolved_ranges: std::cell::RefCell::new(None),
         }
+    }
+
+    /// The table's current stamp (see the field).
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// A write is about to reach the table's contents: take a fresh stamp.
+    pub(crate) fn note_written(&mut self) {
+        self.generation = next_char_table_generation();
     }
 
     fn build_ascii_entry_indices(entries: &[CharTableEntry]) -> Option<Box<[usize; 128]>> {
@@ -3270,7 +3305,8 @@ impl Interpreter {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_char_table(&mut self, state: CharTableState) {
         self.next_char_table_id = self.next_char_table_id.max(state.id + 1);
-        self.char_table_mutation_generation += 1;
+        self.category_context_generation += 1;
+        self.case_context_generation += 1;
         let index = self.char_table_index_for(state.id);
         self.char_tables[index] = state;
     }
@@ -4320,8 +4356,9 @@ impl Interpreter {
         clone.file_name_handler_match_cache.clear();
         clone.bytecode_program_cache.clear();
         clone.keymap_bindings_cache.get_mut().clear();
-        *clone.regexp_syntax_class_cache.get_mut() = None;
+        clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
+        clone.syntax_table_mutable_entries_cache.get_mut().clear();
         clone.vm_stack_pool.clear();
         clone.backtrace_args_pool.clear();
 
@@ -4638,19 +4675,25 @@ pub struct InterpreterState {
     buffer_mark_marker_ids: HashMap<u64, u64>,
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
-    /// Monotonic stamp for every mutable character-table access.  Regexp
-    /// syntax-class rendering is derived from a whole parent chain, so a
-    /// single generation owned by the character-table mutation door avoids
-    /// duplicating descendant invalidation logic at every Lisp operation.
-    char_table_mutation_generation: u64,
+    /// Write generations per kind of table, bumped by the character-table
+    /// mutation door (see find_char_table_mut) for the caches derived from
+    /// the category and the case tables.  Syntax renderings use none: they
+    /// key on the stamps of the tables in the chain they read
+    /// (`syntax_table_chain_signature').
+    category_context_generation: u64,
+    case_context_generation: u64,
     /// The rendered current-table syntax classes are expensive to derive and
-    /// are reused by many different compiled patterns.  This one-entry cache
-    /// is stamped with both table identity and the mutation generation;
-    /// regexp code declines to populate it for tables containing mutable
-    /// Lisp entry objects whose in-place changes bypass the table mutation
-    /// door.
-    regexp_syntax_class_cache: RefCell<Option<RegexpSyntaxClassCache>>,
+    /// are reused by many different compiled patterns.  This small cache
+    /// is stamped with the table identity and its chain signature; regexp
+    /// code declines to populate it for tables containing mutable Lisp
+    /// entry objects whose in-place changes bypass the table mutation door.
+    regexp_syntax_class_cache: RefCell<Vec<RegexpSyntaxClassCache>>,
     syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
+    /// Whether a syntax table chain holds entries whose in-place mutation
+    /// bypasses the table door (a cons or mutable string), per table id and
+    /// chain signature: the compiled-regexp cache keys a pattern on the
+    /// cons-mutation generation only for such a chain.
+    syntax_table_mutable_entries_cache: RefCell<Vec<(u64, SyntaxChainSignature, bool)>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
@@ -4820,9 +4863,16 @@ pub struct InterpreterState {
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
-    /// Bumped on every function/macro (re)definition; validates the
-    /// `not_macro_names` verdicts below.
+    /// Bumped on every function/macro (re)definition, plist write and cons
+    /// mutation; validates the `not_macro_names' verdicts below, which a
+    /// `(macro . f)' cell changed in place would otherwise outlive.
     definition_generation: u64,
+    /// Bumped only when a function cell is bound, rebound or voided: what
+    /// the funcall resolutions below depend on.  A cons mutation cannot
+    /// change a resolution (the cached value shares the cell's object), so
+    /// it does not cost them, as it did when they shared the generation
+    /// above (cc-mode's constant `setcar's kept every call site cold).
+    function_binding_generation: u64,
     /// Per-name funcall resolutions stamped with the generation they were
     /// computed at; consulted only when the env carries no
     /// cl-flet/cl-labels frames, so repeat calls skip name-facts probes
@@ -5053,7 +5103,7 @@ impl<T> ConsMutationStamped<T> {
 }
 
 struct SourceFunctionCallCacheEntry {
-    definition_generation: u64,
+    function_binding_generation: u64,
     resolution: FunctionResolution,
 }
 
@@ -5557,9 +5607,11 @@ impl Interpreter {
                     }],
                 ),
             ],
-            char_table_mutation_generation: 0,
-            regexp_syntax_class_cache: RefCell::new(None),
+            category_context_generation: 0,
+            case_context_generation: 0,
+            regexp_syntax_class_cache: RefCell::new(Vec::new()),
             syntax_segment_cache: RefCell::new(None),
+            syntax_table_mutable_entries_cache: RefCell::new(Vec::new()),
             equal_hash_tables: HashMap::default(),
             custom_hash_tables: HashMap::default(),
             hash_tables_under_test: HashSet::default(),
@@ -5718,6 +5770,7 @@ impl Interpreter {
             functions_index: HashMap::default(),
             network_connect_counter: 0,
             definition_generation: 0,
+            function_binding_generation: 0,
             function_resolution_cache: HashMap::default(),
             not_macro_names: HashMap::new(),
             source_form_items_cache: HashMap::default(),

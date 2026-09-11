@@ -114,39 +114,78 @@ pub(crate) fn load_image(bytes: &[u8], interp: &mut Interpreter) -> Result<Loade
     let header = validate_header(bytes)?;
     let mut loader = Loader {
         reader: Reader { bytes },
-        relocs: HashMap::new(),
-        types: HashMap::new(),
-        objects: HashMap::new(),
-        params: HashMap::new(),
-        bodies: HashMap::new(),
-        envs: HashMap::new(),
-        envs_filled: HashSet::new(),
-        frames: HashMap::new(),
-        closures_in_progress: HashSet::new(),
+        relocs: OffsetMap::default(),
+        types: OffsetMap::default(),
+        objects: OffsetMap::default(),
+        params: OffsetMap::default(),
+        bodies: OffsetMap::default(),
+        envs: OffsetMap::default(),
+        envs_filled: OffsetSet::default(),
+        frames: OffsetMap::default(),
+        closures_in_progress: OffsetSet::default(),
         interp,
     };
     loader.load(header)
 }
 
+/// The hasher of every loader table.  Their keys are image offsets:
+/// 8-byte aligned positions in a 40 MB file, a few million of them, each
+/// inserted once and read a few times.  SipHash on those inserts and reads
+/// was a third of the load (0.9 s of 2.4 s CPU); one multiplication by the
+/// golden-ratio constant, its high half folded into the low bits hashbrown
+/// indexes by (an aligned key would otherwise leave the low bits of the
+/// product constant), costs nothing measurable.
+#[derive(Default)]
+struct OffsetHasher(u64);
+
+impl std::hash::Hasher for OffsetHasher {
+    fn finish(&self) -> u64 {
+        self.0 ^ (self.0 >> 32)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    fn write_u32(&mut self, offset: u32) {
+        self.0 = u64::from(offset).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type OffsetMap<V> = HashMap<u32, V, std::hash::BuildHasherDefault<OffsetHasher>>;
+type OffsetSet = HashSet<u32, std::hash::BuildHasherDefault<OffsetHasher>>;
+
 struct Loader<'a> {
     reader: Reader<'a>,
-    relocs: HashMap<u32, DumpRelocKind>,
+    relocs: OffsetMap<DumpRelocKind>,
     /// Object type by start offset.
-    types: HashMap<u32, DumpType>,
-    objects: HashMap<u32, Value>,
-    params: HashMap<u32, Rc<Vec<SymbolName>>>,
-    bodies: HashMap<u32, Rc<Vec<Value>>>,
-    envs: HashMap<u32, SharedEnv>,
-    envs_filled: HashSet<u32>,
-    frames: HashMap<u32, EnvFrame>,
-    closures_in_progress: HashSet<u32>,
+    types: OffsetMap<DumpType>,
+    objects: OffsetMap<Value>,
+    params: OffsetMap<Rc<Vec<SymbolName>>>,
+    bodies: OffsetMap<Rc<Vec<Value>>>,
+    envs: OffsetMap<SharedEnv>,
+    envs_filled: OffsetSet,
+    frames: OffsetMap<EnvFrame>,
+    closures_in_progress: OffsetSet,
     interp: &'a mut Interpreter,
 }
 
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
-        // The tables.
-        let mut object_starts = Vec::new();
+        // The tables, each map sized once for what the header counts.
+        let object_count = header.object_starts.nr_entries as usize;
+        let mut object_starts = Vec::with_capacity(object_count);
+        self.types.reserve(object_count);
+        self.objects.reserve(object_count);
+        self.relocs.reserve(
+            header
+                .dump_relocs
+                .iter()
+                .map(|locator| locator.nr_entries as usize)
+                .sum(),
+        );
         for index in 0..header.object_starts.nr_entries {
             let at = header.object_starts.offset + index * TABLE_ENTRY_LEN as u32;
             let offset = self.reader.u32(at)?;
