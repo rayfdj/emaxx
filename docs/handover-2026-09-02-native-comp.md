@@ -162,6 +162,10 @@ what remains, in D20.
 Checkpoint 19f (2026-09-11, for main): the last SipHash tables on the
 call path hash with FNV (the setq loop 5.94 to 5.43 s; 10.8 s at the
 start of the day).
+Checkpoint 19g (2026-09-11, for main): the file-name-handler scan cache
+is keyed on the authorities the scan reads under one shared watch per
+alist state, not on the process-wide cons epoch (a lookup after an
+unrelated `setcar` 76 to 6.9 us; tramp-tests.el loads in 7.0 s from 8.9).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

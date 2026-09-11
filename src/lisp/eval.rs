@@ -2478,13 +2478,59 @@ struct PendingFileNotification {
     raw_event: Option<Value>,
 }
 
+/// Every authority a scan of `file-name-handler-alist' reads, as of one
+/// state of the alist: its identity, every cons cell of the alist and of the
+/// handlers' plists (a mutation watch), each pattern's text (a mutable string
+/// can change without replacing its cell), and each handler symbol's plist
+/// slot (`setplist' or a first `put' replace the slot without mutating a
+/// watched cell).  The scanned plists are held so their cells' identities
+/// cannot be reused while the watch lives.  One watch serves every cached
+/// scan of the same alist state; the interpreter keeps the latest one.
+pub(crate) struct FileNameHandlerAlistWatch {
+    pub(crate) handler_alist: Value,
+    pub(crate) cons_mutations: crate::lisp::types::ConsMutationSnapshot,
+    pub(crate) pattern_snapshots: Vec<(Value, String)>,
+    pub(crate) plist_snapshots: Vec<(String, Value)>,
+    /// The definition generation at which the plist slots were last seen
+    /// in place.  Every slot replacement (`put', `setplist', the removal
+    /// of a property) advances that generation, so an unchanged generation
+    /// stands for the slot comparisons.
+    pub(crate) plists_checked_at: std::cell::Cell<u64>,
+}
+
+impl FileNameHandlerAlistWatch {
+    /// Whether a scan made under this watch would read the same alist,
+    /// patterns and handler plists now.
+    pub(crate) fn is_current(&self, interp: &Interpreter, handler_alist_id: Option<usize>) -> bool {
+        self.handler_alist.cons_id() == handler_alist_id
+            && self.cons_mutations.is_current()
+            && self.pattern_snapshots.iter().all(|(pattern, snapshot)| {
+                crate::lisp::primitives::string_like(pattern)
+                    .is_some_and(|pattern| pattern.text == *snapshot)
+            })
+            && self.plist_slots_in_place(interp)
+    }
+
+    fn plist_slots_in_place(&self, interp: &Interpreter) -> bool {
+        let generation = interp.current_definition_generation();
+        if self.plists_checked_at.get() == generation {
+            return true;
+        }
+        let in_place = self
+            .plist_snapshots
+            .iter()
+            .all(|(symbol, plist)| interp.symbol_plist(symbol).cons_id() == plist.cons_id());
+        if in_place {
+            self.plists_checked_at.set(generation);
+        }
+        in_place
+    }
+}
+
+/// One scan of `file-name-handler-alist' for a (file, operation) pair.
 #[derive(Clone)]
 pub(crate) struct FileNameHandlerMatchCacheEntry {
-    pub(crate) handler_alist: Value,
-    pub(crate) cons_epoch: crate::lisp::types::ConsMutationEpoch,
-    pub(crate) cons_mutations: crate::lisp::types::ConsMutationSnapshot,
-    pub(crate) definition_generation: u64,
-    pub(crate) pattern_snapshots: Vec<(Value, String)>,
+    pub(crate) watch: std::rc::Rc<FileNameHandlerAlistWatch>,
     pub(crate) matches: Vec<(usize, Value)>,
 }
 
@@ -4427,6 +4473,7 @@ impl Interpreter {
         clone.lambda_source_bodies.clear();
         clone.function_resolution_cache.clear();
         clone.file_name_handler_match_cache.clear();
+        clone.file_name_handler_alist_watch = None;
         clone.bytecode_program_cache.clear();
         clone.keymap_bindings_cache.get_mut().clear();
         clone.regexp_syntax_class_cache.get_mut().clear();
@@ -5111,6 +5158,9 @@ pub struct InterpreterState {
         FileNameHandlerMatchCacheEntry,
         crate::lisp::primitives::FnvBuildHasher,
     >,
+    /// The watch the next cached handler scan shares when the alist state
+    /// it describes is still current.
+    pub(crate) file_name_handler_alist_watch: Option<std::rc::Rc<FileNameHandlerAlistWatch>>,
     main_thread_id: u64,
     active_thread_id: u64,
     last_thread_error: Option<Value>,
@@ -5956,6 +6006,7 @@ impl Interpreter {
             #[cfg(target_os = "linux")]
             file_notify_inotify: None,
             file_name_handler_match_cache: HashMap::default(),
+            file_name_handler_alist_watch: None,
             main_thread_id,
             active_thread_id: main_thread_id,
             last_thread_error: None,

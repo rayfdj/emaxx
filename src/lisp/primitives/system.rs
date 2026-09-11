@@ -1549,33 +1549,31 @@ pub(crate) fn find_file_name_handler(
         Vec::new()
     };
     let cache_key = (file.to_string(), operation.as_symbol()?.to_string());
-    let cons_epoch = crate::lisp::types::cons_mutation_epoch();
-    let definition_generation = interp.current_definition_generation();
     let handler_alist_id = handlers.cons_id();
     let cached_matches = interp
         .file_name_handler_match_cache
         .get(&cache_key)
-        .filter(|entry| {
-            entry.cons_epoch == cons_epoch
-                && entry.cons_mutations.is_current()
-                && entry.definition_generation == definition_generation
-                && entry.handler_alist.cons_id() == handler_alist_id
-                && entry.pattern_snapshots.iter().all(|(pattern, snapshot)| {
-                    string_like(pattern).is_some_and(|pattern| pattern.text == *snapshot)
-                })
-        })
+        .filter(|entry| entry.watch.is_current(interp, handler_alist_id))
         .map(|entry| entry.matches.clone());
     let matches = if let Some(matches) = cached_matches {
         matches
     } else {
         #[cfg(test)]
         FILE_NAME_HANDLER_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+        // A watch made for this alist state serves every scan of it; the
+        // authorities are collected only when a new watch is needed.
+        let shared_watch = interp
+            .file_name_handler_alist_watch
+            .clone()
+            .filter(|watch| watch.is_current(interp, handler_alist_id));
+        let collect_authorities = shared_watch.is_none();
+        let generation_before_scan = interp.current_definition_generation();
         let entries = handlers.to_vec()?;
         let mut regexp_env = env.clone();
         regexp_env.push(vec![("case-fold-search".into(), Value::Nil)].into());
         let mut cacheable = handler_alist_id.is_some();
         let mut pattern_snapshots = Vec::new();
-        let mut property_dependencies = Vec::new();
+        let mut plist_snapshots: Vec<(String, Value)> = Vec::new();
         let mut matches = Vec::new();
         for entry in entries {
             let Some((pattern, handler)) = (entry).cons_cells() else {
@@ -1586,10 +1584,16 @@ pub(crate) fn find_file_name_handler(
             let Some(pattern_text) = string_like(&pattern) else {
                 continue;
             };
-            cacheable &= !regexp::pattern_depends_on_syntax_table(&pattern_text.text);
-            pattern_snapshots.push((pattern, pattern_text.text.clone()));
-            if let Value::Symbol(symbol) = &handler {
-                property_dependencies.push(interp.symbol_plist(symbol));
+            if collect_authorities {
+                // A pattern that reads the syntax or category table has an
+                // authority no watch here covers: such an alist is scanned
+                // on every call, as GNU scans every alist.
+                cacheable &= !regexp::pattern_depends_on_syntax_table(&pattern_text.text)
+                    && !regexp::pattern_depends_on_category_table(&pattern_text.text);
+                pattern_snapshots.push((pattern, pattern_text.text.clone()));
+                if let Value::Symbol(symbol) = &handler {
+                    plist_snapshots.push((symbol.to_string(), interp.symbol_plist(symbol)));
+                }
             }
             if let Value::Symbol(symbol) = &handler
                 && let Some(operations) = interp.get_symbol_property(symbol, "operations")
@@ -1611,26 +1615,37 @@ pub(crate) fn find_file_name_handler(
                 .start();
             matches.push((position, handler));
         }
-        if cacheable {
+        // Regexp compilation may lazily initialize Lisp-visible tables.
+        // The watch describes the alist graph after that work, including
+        // writes made directly by native code: a shared watch is kept only
+        // if it is still current, a new one is built now.
+        let watch = if let Some(watch) = shared_watch {
+            watch.is_current(interp, handler_alist_id).then_some(watch)
+        } else if cacheable {
             let mut cons_mutations = crate::lisp::types::ConsMutationSnapshot::tree(&handlers);
-            for plist in property_dependencies {
-                cons_mutations.include_tree(&plist);
+            for (_, plist) in &plist_snapshots {
+                cons_mutations.include_tree(plist);
             }
+            let watch = std::rc::Rc::new(crate::lisp::eval::FileNameHandlerAlistWatch {
+                handler_alist: handlers,
+                cons_mutations,
+                pattern_snapshots,
+                plist_snapshots,
+                plists_checked_at: std::cell::Cell::new(generation_before_scan),
+            });
+            interp.file_name_handler_alist_watch = Some(watch.clone());
+            Some(watch)
+        } else {
+            None
+        };
+        if let Some(watch) = watch {
             if interp.file_name_handler_match_cache.len() >= 4096 {
                 interp.file_name_handler_match_cache.clear();
             }
-            let definition_generation = interp.current_definition_generation();
             interp.file_name_handler_match_cache.insert(
                 cache_key,
                 crate::lisp::eval::FileNameHandlerMatchCacheEntry {
-                    // Regexp compilation may lazily initialize Lisp-visible
-                    // tables. Watch the actual alist graph after that work,
-                    // including writes made directly by native code.
-                    cons_mutations,
-                    cons_epoch: crate::lisp::types::cons_mutation_epoch(),
-                    handler_alist: handlers,
-                    definition_generation,
-                    pattern_snapshots,
+                    watch,
                     matches: matches.clone(),
                 },
             );

@@ -3369,6 +3369,95 @@ fn file_name_handler_match_cache_tracks_every_mutable_authority() {
 }
 
 #[test]
+fn file_name_handler_match_cache_survives_unrelated_writes() {
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    crate::lisp::primitives::reset_file_name_handler_scan_count();
+    let handler = Value::symbol("emaxx-cache-keep-handler");
+    // Cons mutations elsewhere, a new definition and a plist write on an
+    // unrelated symbol are not authorities of the scan: no rescan.
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (setq file-name-handler-alist
+                       (list (cons "cache-keep" 'emaxx-cache-keep-handler)))
+                 (let ((unrelated (list 1 2 3)))
+                   (list (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)
+                         (progn
+                           (setcar unrelated 4)
+                           (setq unrelated (nreverse unrelated))
+                           (defun emaxx-cache-keep-unrelated () nil)
+                           (put 'emaxx-cache-keep-unrelated 'operations '(copy-file))
+                           (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))))"#,
+        ),
+        Value::list([handler.clone(), handler.clone()])
+    );
+    assert_eq!(crate::lisp::primitives::file_name_handler_scan_count(), 1);
+
+    // Every way a handler's plist slot is replaced rescans: the first `put'
+    // (nil to a list), `setplist' in both directions, and the removal of
+    // the head pair as `cl-remprop' does it.
+    let mut step = |form: &str, expected: Value, scans: usize| {
+        assert_eq!(eval_str_with(&mut interp, form), expected, "{form}");
+        assert_eq!(
+            crate::lisp::primitives::file_name_handler_scan_count(),
+            scans,
+            "{form}"
+        );
+    };
+    step(
+        r#"(progn (put 'emaxx-cache-keep-handler 'operations '(copy-file))
+                  (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
+        Value::Nil,
+        2,
+    );
+    step(
+        r#"(progn (setplist 'emaxx-cache-keep-handler nil)
+                  (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
+        handler.clone(),
+        3,
+    );
+    step(
+        r#"(progn (setplist 'emaxx-cache-keep-handler '(operations (file-exists-p)))
+                  (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
+        handler.clone(),
+        4,
+    );
+    step(
+        r#"(find-file-name-handler "/tmp/cache-keep" 'file-exists-p)"#,
+        handler.clone(),
+        4,
+    );
+    step(
+        r#"(progn (setplist 'emaxx-cache-keep-handler
+                            (cddr (symbol-plist 'emaxx-cache-keep-handler)))
+                  (find-file-name-handler "/tmp/cache-keep" 'file-exists-p))"#,
+        handler.clone(),
+        5,
+    );
+
+    // A pattern that reads the syntax or category table is never cached:
+    // every call scans, as GNU's does.  (The optional group keeps the
+    // match independent of the tables the early-Lisp fixture defines.)
+    step(
+        r#"(let ((file-name-handler-alist
+                  (list (cons "\\(?:\\cl\\)?" 'emaxx-cache-keep-handler))))
+             (list (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)
+                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))"#,
+        Value::list([handler.clone(), handler.clone()]),
+        7,
+    );
+    step(
+        r#"(let ((file-name-handler-alist
+                  (list (cons "\\(?:\\sw\\)?" 'emaxx-cache-keep-handler))))
+             (list (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)
+                   (find-file-name-handler "/tmp/cache-keep" 'file-exists-p)))"#,
+        Value::list([handler.clone(), handler]),
+        9,
+    );
+}
+
+#[test]
 fn autoloaded_file_name_handlers_keep_their_symbol_identity() {
     let unique = format!(
         "{}-{}",

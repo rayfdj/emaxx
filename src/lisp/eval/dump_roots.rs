@@ -331,6 +331,8 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("function_binding_generation", "a cache generation"),
     ("not_macro_names", "a cache"),
     ("lambda_source_bodies", "a cache"),
+    ("file_name_handler_match_cache", "a cache"),
+    ("file_name_handler_alist_watch", "a cache"),
     ("current_load_file", "nil at top level, where the dump runs"),
     (
         "load_source_provenance_remap",

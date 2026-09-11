@@ -137,7 +137,7 @@ impl RegexpCategoryScope {
     }
 }
 
-fn pattern_depends_on_category_table(pattern: &str) -> bool {
+pub(super) fn pattern_depends_on_category_table(pattern: &str) -> bool {
     let mut chars = pattern.chars();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
@@ -2492,8 +2492,9 @@ fn compile_elisp_regex_with_case_fold(
     // pattern keys the same either way), so a regexp compiled under one
     // syntax or category table can never leak into another table's search
     // -- and a cache hit no longer pays the translation it cached.
-    let depends_on_tables = pattern_depends_on_syntax_table(&pattern_text)
-        || pattern_depends_on_category_table(&pattern_text);
+    let depends_on_syntax_table = pattern_depends_on_syntax_table(&pattern_text);
+    let depends_on_category_table = pattern_depends_on_category_table(&pattern_text);
+    let depends_on_tables = depends_on_syntax_table || depends_on_category_table;
     let key = CompiledElispRegexKey {
         pattern: pattern_text.clone(),
         // Bracket expressions, line anchors, dot, and ordinary literals all
@@ -2522,12 +2523,12 @@ fn compile_elisp_regex_with_case_fold(
         // recompiled cc-mode's largest patterns (hundreds of milliseconds
         // each under the regex crate's unrolling of `\\{,1000\\}') each
         // time any mode wrote any syntax table.
-        syntax_chain: if pattern_depends_on_syntax_table(&pattern_text) {
+        syntax_chain: if depends_on_syntax_table {
             interp.syntax_table_chain_signature(interp.current_syntax_table_id())
         } else {
             Vec::new()
         },
-        category_generation: if pattern_depends_on_category_table(&pattern_text) {
+        category_generation: if depends_on_category_table {
             interp.category_context_generation()
         } else {
             0

@@ -9696,3 +9696,75 @@ declaration onto two lines.  The declaration uses a type alias
 (`RecordIdsByType') now, one line as before; no behaviour changed.  The
 tree was then gated together with checkpoint 19g, whose section below
 records that run.
+
+## 2026-09-11 Checkpoint 19g: the file-name-handler scan cache keyed on its authorities
+
+*What prompted it.*  A profile of the tramp-tests.el load (its 8.9 s
+against GNU's 1.0) put 13.8% in `find_file_name_handler', nearly all of
+it in `ConsMutationSnapshot::tree' and `include_tree': the cache of
+handler scans (emaxx's; GNU's `Ffind_file_name_handler' in fileio.c
+walks `Vfile_name_handler_alist' with `fast_string_match' and `Fget
+(handler, Qoperations)' on every call) was keyed on the process-wide
+cons-mutation epoch and on the definition generation, so any `setcar'
+or `defun' anywhere emptied it, and each miss rescanned the alist,
+tested every pattern for syntax-table dependence, and built its own
+watch over the alist graph and the handlers' plists, registering a weak
+watcher per cell (a 4,096-entry cache held 4,096 watchers per cell; a
+loop of distinct names spent 26% of its time in the kernel zeroing the
+pages that growth touched).
+
+*What changed.*  A scan's authorities are enumerated and nothing else
+invalidates it: the alist's identity (`file-name-handler-alist' rebound
+or `setq'd), every cons cell of the alist and of the handlers' plists
+(the mutation watch, which also inspects cells generated code writes),
+each pattern's text (a mutable string changes under `aset' without
+replacing its cell), and each handler symbol's plist slot (`setplist',
+a first `put' and the removal of the head pair replace the slot without
+mutating a watched cell; the slot identities are compared, and since
+every slot replacement advances the definition generation, an unchanged
+generation stands for the comparison).  An alist holding a pattern that
+reads the syntax table or the category table (`\\s', `\\c') is scanned
+on every call, since no authority here covers those tables (the syntax
+case was excluded before; the category case was cacheable and is not
+now).  One watch (`FileNameHandlerAlistWatch')
+describes an alist state and every cached scan of that state shares it;
+the interpreter keeps the latest and a miss reuses it when it is still
+current, so the alist graph is walked once per alist state, not once
+per name.  The regexp cache key computes a pattern's syntax-table and
+category-table dependence once each instead of twice (both `string-match'
+and the handler scan build that key).  The control
+`file_name_handler_match_cache_survives_unrelated_writes' asserts no
+rescan across an unrelated `setcar', `nreverse', `defun' and `put', and
+a rescan for each way a handler's plist slot is replaced; the existing
+authority test (`setcar' on an alist entry, rebinding, `put' of
+`operations', `aset' on a pattern) is unchanged.
+
+*Measured.*  With tramp loaded, per call: the same local name 4.4 to
+4.5 us (GNU 1.5); the same name after an unrelated `setcar' 76 to 6.9
+us (GNU 1.5); distinct names, a miss each, 73 to 18 us (GNU 2.3); a
+remote name 3.7 to 3.8 us (GNU 2.5).  tramp-tests.el loads in 6.9 to
+7.2 s (8.9 to 9.1 before; GNU 1.0).
+
+*Measured after it and open.*  A `defalias' followed by the same lookup
+costs 300 us against GNU's 28 (the definition itself, not the lookup:
+what a redefinition invalidates is the next theme); the miss at 18 us
+(the regexp cache key clones and hashes each pattern with SipHash); the
+load at 7x.
+
+*Gate.*  Two full runs on the tree with 19f and 19g applied stopped in
+the lightweight group after every earlier group had passed.  The first
+was stopped by hand when the self-audit found that an alist pattern
+reading the category table was cacheable (excluded now, above).  The
+second failed `interpreter_fields_are_carried_or_documented': the new
+`file_name_handler_alist_watch' field was neither carried by the image
+nor listed as re-created state.  It is listed as a cache (as is the
+match cache beside it, whose two-line declaration that check had not
+been reading); nothing else changed.  The third full grouped gate
+passed: eval_01 352, eval_02 284, eval_03 320, eval_04 251, eval_05
+351, primitives 458, tty 56 (2 ignored), compat_runtime 84, batch 49,
+lightweight 414, the binaries, the integration group (1,124 s); `cargo
+fmt --check' and clippy clean before and after.  The focused runs
+before it: the handler-cache, dump-root and field-inventory tests, and
+the new control run against the pre-change code in a worktree, where
+it fails on the first unrelated `setcar' (a rescan: 2 scans, 1
+expected).
