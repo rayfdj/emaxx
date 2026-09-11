@@ -1798,7 +1798,77 @@ struct EqualHashTableState {
     slot_indices: Vec<usize>,
     free_slots: Vec<usize>,
     next_slot: usize,
+    /// The bucket key of each entry, beside it (fns.c keeps the hash codes
+    /// in `hash' beside `key_and_value' for the same reason): a removal
+    /// or a reused slot never hashes the other keys again.
+    hashes: Vec<Option<i64>>,
+    /// Bucket key to the slots of the entries with that key.  Slots are
+    /// stable across removals and reused-slot insertions, where an index
+    /// into the compact vectors shifts; `index_of_slot' translates.
     key_index: HashMap<Option<i64>, Vec<usize>, crate::lisp::primitives::FnvBuildHasher>,
+}
+
+impl EqualHashTableState {
+    /// The entry index of a live slot.
+    fn index_of_slot(&self, slot: usize) -> Option<usize> {
+        self.slot_indices.binary_search(&slot).ok()
+    }
+
+    /// The first entry of the bucket whose key `matches' (the table's test
+    /// decides; the bucket only narrows the candidates).
+    fn bucket_entry(&self, hash: Option<i64>, matches: impl Fn(&Value) -> bool) -> Option<usize> {
+        self.key_index
+            .get(&hash)?
+            .iter()
+            .filter_map(|slot| self.index_of_slot(*slot))
+            .find(|index| matches(&self.entries[*index].0))
+    }
+
+    /// A new entry in the slot fns.c would use (the free list is LIFO,
+    /// else the next unused slot), kept in slot order; its slot joins
+    /// the bucket.  O(bucket) beyond the vector insertion.
+    fn insert_new(&mut self, key: Value, value: Value, hash: Option<i64>) {
+        let slot = self.free_slots.pop().unwrap_or_else(|| {
+            let slot = self.next_slot;
+            self.next_slot += 1;
+            slot
+        });
+        let index = self
+            .slot_indices
+            .binary_search(&slot)
+            .unwrap_or_else(|index| index);
+        self.slot_indices.insert(index, slot);
+        self.entries.insert(index, (key, value));
+        self.hashes.insert(index, hash);
+        self.key_index.entry(hash).or_default().push(slot);
+    }
+
+    /// Remove the entry at `index': its slot goes onto the free list and
+    /// leaves its bucket.  O(bucket) beyond the vector removal; the
+    /// rebuild this replaces hashed every remaining key (2 ms a `remhash'
+    /// on tramp's 5,000-entry cache).
+    fn remove_at(&mut self, index: usize) {
+        self.entries.remove(index);
+        let hash = self.hashes.remove(index);
+        let slot = self.slot_indices.remove(index);
+        self.free_slots.push(slot);
+        if let Some(bucket) = self.key_index.get_mut(&hash) {
+            if let Some(position) = bucket.iter().position(|candidate| *candidate == slot) {
+                bucket.swap_remove(position);
+            }
+            if bucket.is_empty() {
+                self.key_index.remove(&hash);
+            }
+        }
+    }
+
+    /// The buckets from the stored hashes, after those were recomputed.
+    fn rebuild_index(&mut self) {
+        self.key_index.clear();
+        for (hash, slot) in self.hashes.iter().zip(&self.slot_indices) {
+            self.key_index.entry(*hash).or_default().push(*slot);
+        }
+    }
 }
 
 /// Indexed storage for hash tables with an Elisp-defined test.  GNU fns.c
@@ -4431,17 +4501,14 @@ impl Interpreter {
         // bucket index from the rewritten entries.
         let mut tables = std::mem::take(&mut clone.equal_hash_tables);
         for table in tables.values_mut() {
-            let mut key_index: HashMap<
-                Option<i64>,
-                Vec<usize>,
-                crate::lisp::primitives::FnvBuildHasher,
-            > = HashMap::default();
-            for (index, (key, _)) in table.entries.iter().enumerate() {
-                let bucket =
-                    crate::lisp::primitives::runtime_hash_bucket_key(&clone, table.test, key);
-                key_index.entry(bucket).or_default().push(index);
-            }
-            table.key_index = key_index;
+            table.hashes = table
+                .entries
+                .iter()
+                .map(|(key, _)| {
+                    crate::lisp::primitives::runtime_hash_bucket_key(&clone, table.test, key)
+                })
+                .collect();
+            table.rebuild_index();
         }
         clone.equal_hash_tables = tables;
 

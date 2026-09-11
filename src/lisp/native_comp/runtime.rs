@@ -1030,6 +1030,12 @@ impl NativeRuntime {
         self.heap.collection_might_be_due()
     }
 
+    /// The counters of a process that starts from a dump, once the image
+    /// is loaded (see `NativeGcState::baseline_after_image_load').
+    pub(crate) fn garbage_collection_baseline_after_image_load(&mut self) {
+        self.heap.baseline_after_image_load();
+    }
+
     /// alloc.c:maybe_garbage_collect's retuned test for the ordinary
     /// interpreter.
     pub(crate) fn garbage_collection_due(
@@ -3734,6 +3740,19 @@ impl NativeGcState {
         self.tally_consing(usize::try_from(allocated).unwrap_or(usize::MAX));
     }
 
+    /// alloc.c's state in a process that starts from a dump:
+    /// `consing_until_gc', `gc_threshold' and `gcstat' are plain globals
+    /// the image does not carry, zero until the first
+    /// `maybe_garbage_collect' retunes the counters from the Lisp
+    /// variables, and pdumper's objects are not consing.  The bytes the
+    /// loader allocated are the baseline from here on.
+    fn baseline_after_image_load(&mut self) {
+        self.consing_until_gc = 0;
+        self.gc_threshold = 0;
+        self.live_bytes = 0;
+        self.observed_allocated_bytes = lisp_allocated_bytes();
+    }
+
     /// lisp.h:maybe_gc's inline fast guard.  Threshold Lisp variables are
     /// consulted only after this counter becomes negative.
     fn collection_might_be_due(&self) -> bool {
@@ -4168,6 +4187,10 @@ impl NativeHeap {
     fn collection_might_be_due(&mut self) -> bool {
         self.gc.synchronize_allocations();
         self.gc.collection_might_be_due()
+    }
+
+    fn baseline_after_image_load(&mut self) {
+        self.gc.baseline_after_image_load();
     }
 
     /// alloc.c:Fgarbage_collect_maybe reads `gc_threshold' and

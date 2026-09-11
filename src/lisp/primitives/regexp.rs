@@ -3472,8 +3472,11 @@ pub(super) fn looking_at_impl(
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), pattern_value.clone()))?;
     let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let pos = interp.buffer.point();
-    let tail = buffer_regexp_haystack(interp, pos, interp.buffer.point_max())?;
     if posix {
+        // The POSIX matcher takes the text from point; built for every
+        // `looking-at' before, POSIX or not, it copied the rest of the
+        // buffer on each call.
+        let tail = buffer_regexp_haystack(interp, pos, interp.buffer.point_max())?;
         let Some(selected) = posix_longest_match(
             interp,
             &pattern,
@@ -3505,9 +3508,22 @@ pub(super) fn looking_at_impl(
     // Keep exactly that one character as context and translate `\=' to the
     // boundary after it.  This also preserves `\=' in the middle of a
     // pattern: it becomes false after the regexp has consumed anything.
-    let haystack_start = pos.saturating_sub(1).max(interp.buffer.point_min());
+    //
+    // Without `\=' the haystack is the whole accessible region, the one
+    // every search of the unchanged buffer shares through the cache, and
+    // the match is required at point's byte offset in it: a `looking-at'
+    // used to copy the text from point to the end of the buffer on every
+    // call (0.22 ms a call in a 400 KB dired listing, once per line from
+    // `dired-move-to-filename', GNU's re_match_2 reading the buffer in
+    // place).
+    let point_asserted = contains_point_assertion(&pattern.text);
+    let haystack_start = if point_asserted {
+        pos.saturating_sub(1).max(interp.buffer.point_min())
+    } else {
+        interp.buffer.point_min()
+    };
     let haystack = buffer_regexp_haystack(interp, haystack_start, interp.buffer.point_max())?;
-    let has_left_context = haystack_start < pos;
+    let has_left_context = point_asserted && haystack_start < pos;
     let point_assertion = if has_left_context {
         r"(?<=\A[\s\S])"
     } else {
@@ -3534,8 +3550,10 @@ pub(super) fn looking_at_impl(
     // final haystack, never from the pre-encoding string.
     let search_offset = if has_left_context {
         haystack.chars().next().map(char::len_utf8).unwrap_or(0)
-    } else {
+    } else if point_asserted {
         0
+    } else {
+        haystack_byte_at_char(&haystack, pos - haystack_start)
     };
     if let Some(captures) = regex
         .captures_from_pos(&haystack, search_offset)
@@ -3544,7 +3562,7 @@ pub(super) fn looking_at_impl(
         && matched.start() == search_offset
     {
         if update_match_data {
-            set_match_data(
+            set_match_data_in_haystack(
                 interp,
                 haystack_start,
                 &haystack,

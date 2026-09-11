@@ -141,6 +141,13 @@ symbols inside vectors become `symbol-with-pos` objects (a byte-compiled
 text property writes rewrite only the spans they cover, and three fixed
 costs of every interpreted call are gone (`eq` 5.3 to 3.5 us).  The
 per-call costs measured after it are in D20.
+Checkpoint 19b (2026-09-11, for main): the batch boot 1.4 to 0.53 s
+(dense loader tables by image offset, the image mapped, the fingerprint
+streamed, no collection on the first evaluation), `equal` tables bucket
+by slot with stored hash codes (`remhash` no longer rehashes the table),
+span adjustment on edits in place, `looking-at` over the shared haystack,
+`expand-file-name` without a walk of `process-environment`.  The audit's
+19b section has the numbers; D20 lists what is still open.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

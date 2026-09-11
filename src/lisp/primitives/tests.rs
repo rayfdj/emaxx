@@ -2595,6 +2595,15 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         .unwrap_or_else(|error| panic!("pdumper_load: {error:?}"));
     assert_eq!(record.dump_size, bytes.len() as u64);
     assert!(restored.dump_loaded_p());
+    // alloc.c: the loaded objects are not consing, and `consing_until_gc'
+    // is zero in a process that starts from a dump, so the first
+    // collection comes after `gc-cons-threshold' bytes of the process's
+    // own consing; the loader's allocations used to count, and every
+    // booted process collected on its first evaluation.
+    assert!(
+        !restored.native_compiler.garbage_collection_might_be_due(),
+        "the image's objects counted as consing"
+    );
     assert_eq!(
         pdumper_load(&loaded_path, &mut restored),
         Err(PdumperLoadError::Error("a dump is already loaded".into()))
@@ -23763,5 +23772,56 @@ fn text_property_writes_touch_only_the_spans_they_cover() {
     assert_eq!(
         printed,
         "(((face bold) (face bold) (face bold) (face italic) (face italic) (face bold) (face bold) nil nil) (face bold) nil ((face bold) (face bold) (face nil) (face bold) nil) (4013 4001))"
+    );
+}
+
+/// fns.c keeps an entry's hash code beside it and frees its slot onto a
+/// LIFO list, so a `remhash', or a `puthash' into a freed slot, touches
+/// one bucket; the runtime used to rebuild its whole bucket index by
+/// hashing every remaining key on both (2 ms a `remhash' on tramp's
+/// 5,000-entry cache).  The answers, the count and the `maphash' order
+/// (slot order, freed slots reused last-in first-out) are GNU's for the
+/// same program.
+#[test]
+fn equal_hash_table_answers_survive_removals_and_slot_reuse() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Vec::new();
+    let program = r#"
+(let ((table (make-hash-table :test 'equal)) (log nil))
+  (dotimes (i 40) (puthash (list "key" i (* i i)) i table))
+  (dotimes (i 40) (when (= (% i 3) 0) (push (remhash (list "key" i (* i i)) table) log)))
+  (push (hash-table-count table) log)
+  (dotimes (i 8) (puthash (format "fresh-%d" i) (- i) table))
+  (push (list (gethash (list "key" 3 9) table 'missing)
+              (gethash (list "key" 4 16) table 'missing)
+              (gethash "fresh-2" table 'missing)
+              (gethash (list "key" 39 1521) table 'missing))
+        log)
+  (puthash (list "key" 5 25) 'replaced table)
+  (push (list (remhash "fresh-1" table) (remhash "never" table) (gethash (list "key" 5 25) table)) log)
+  (let ((walk nil))
+    (maphash (lambda (k v) (push (cons (if (consp k) (nth 1 k) k) v) walk)) table)
+    (push (nreverse walk) log))
+  (push (hash-table-count table) log)
+  (nreverse log))
+"#;
+    let read = call(
+        &mut interp,
+        "read-from-string",
+        &[Value::String(program.into())],
+        &mut env,
+    )
+    .expect("read the program");
+    let form = call(&mut interp, "car", &[read], &mut env).expect("the form");
+    let result =
+        call_via_lisp(&mut interp, "eval", &[form, Value::T], &mut env).expect("run the program");
+    let printed = call(&mut interp, "prin1-to-string", &[result], &mut env)
+        .expect("print")
+        .as_string()
+        .expect("a string")
+        .to_owned();
+    assert_eq!(
+        printed,
+        "(nil nil nil nil nil nil nil nil nil nil nil nil nil nil 26 (missing 4 -2 missing) (nil nil replaced) ((1 . 1) (2 . 2) (4 . 4) (5 . replaced) (7 . 7) (8 . 8) (10 . 10) (11 . 11) (13 . 13) (14 . 14) (16 . 16) (17 . 17) (\"fresh-7\" . -7) (19 . 19) (20 . 20) (\"fresh-6\" . -6) (22 . 22) (23 . 23) (\"fresh-5\" . -5) (25 . 25) (26 . 26) (\"fresh-4\" . -4) (28 . 28) (29 . 29) (\"fresh-3\" . -3) (31 . 31) (32 . 32) (\"fresh-2\" . -2) (34 . 34) (35 . 35) (37 . 37) (38 . 38) (\"fresh-0\" . 0)) 33)"
     );
 }

@@ -1212,7 +1212,15 @@ pub(crate) fn expand_file_name_in_env(
     path: &str,
     base: Option<&str>,
 ) -> String {
-    let home = lisp_environment_string(interp, env, "HOME");
+    // fileio.c reads the home directory only for a `~' (get_homedir in
+    // the `~' branch); reading `process-environment' for every expansion
+    // walked and copied the whole list (45 us an `expand-file-name').
+    let needs_home = path.starts_with('~') || base.is_some_and(|base| base.starts_with('~'));
+    let home = if needs_home {
+        lisp_environment_string(interp, env, "HOME")
+    } else {
+        None
+    };
     expand_file_name_with_home(path, base, home.as_deref())
 }
 

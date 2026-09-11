@@ -1586,27 +1586,22 @@ impl Interpreter {
             }
         };
         self.custom_hash_tables.remove(&id);
-        let mut key_index: HashMap<
-            Option<i64>,
-            Vec<usize>,
-            crate::lisp::primitives::FnvBuildHasher,
-        > = HashMap::default();
-        for (index, (key, _)) in entries.iter().enumerate() {
-            let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, test, key);
-            key_index.entry(hash).or_default().push(index);
-        }
-        self.equal_hash_tables.insert(
-            id,
-            EqualHashTableState {
-                test,
-                capacity,
-                slot_indices: (0..entries.len()).collect(),
-                next_slot: entries.len(),
-                entries,
-                free_slots: Vec::new(),
-                key_index,
-            },
-        );
+        let hashes = entries
+            .iter()
+            .map(|(key, _)| crate::lisp::primitives::runtime_hash_bucket_key(self, test, key))
+            .collect::<Vec<_>>();
+        let mut state = EqualHashTableState {
+            test,
+            capacity,
+            slot_indices: (0..entries.len()).collect(),
+            next_slot: entries.len(),
+            entries,
+            free_slots: Vec::new(),
+            hashes,
+            key_index: HashMap::default(),
+        };
+        state.rebuild_index();
+        self.equal_hash_tables.insert(id, state);
     }
 
     /// fns.c:hash_table_thaw: the index is recomputed from the compact
@@ -1793,20 +1788,12 @@ impl Interpreter {
         entries: Vec<(Value, Value)>,
         keep: &[bool],
     ) {
-        if let Some(mut state) = self.equal_hash_tables.remove(&id) {
+        if let Some(state) = self.equal_hash_tables.get_mut(&id) {
             for index in (0..state.entries.len()).rev() {
                 if !keep.get(index).copied().unwrap_or(false) {
-                    state.entries.remove(index);
-                    let freed_slot = state.slot_indices.remove(index);
-                    state.free_slots.push(freed_slot);
+                    state.remove_at(index);
                 }
             }
-            state.key_index.clear();
-            for (index, (key, _)) in state.entries.iter().enumerate() {
-                let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
-                state.key_index.entry(hash).or_default().push(index);
-            }
-            self.equal_hash_tables.insert(id, state);
             return;
         }
         if let Some(mut state) = self.custom_hash_tables.remove(&id) {
@@ -1908,18 +1895,12 @@ impl Interpreter {
                 }
             })
             .collect::<Vec<_>>();
-        let mut key_index: HashMap<
-            Option<i64>,
-            Vec<usize>,
-            crate::lisp::primitives::FnvBuildHasher,
-        > = HashMap::default();
-        for (index, hash) in hashes.into_iter().enumerate() {
-            key_index.entry(hash).or_default().push(index);
-        }
-        self.equal_hash_tables
+        let state = self
+            .equal_hash_tables
             .get_mut(&id)
-            .expect("hash table disappeared while reindexing")
-            .key_index = key_index;
+            .expect("hash table disappeared while reindexing");
+        state.hashes = hashes;
+        state.rebuild_index();
     }
 
     fn runtime_hash_keys_match(
@@ -1965,13 +1946,10 @@ impl Interpreter {
         let hash = crate::lisp::primitives::runtime_hash_bucket_key(self, state.test, key);
         Some(
             state
-                .key_index
-                .get(&hash)
-                .into_iter()
-                .flatten()
-                .filter_map(|index| state.entries.get(*index))
-                .find(|(existing, _)| self.runtime_hash_keys_match(state.test, existing, key, env))
-                .map(|(_, value)| value.clone()),
+                .bucket_entry(hash, |existing| {
+                    self.runtime_hash_keys_match(state.test, existing, key, env)
+                })
+                .map(|index| state.entries[index].1.clone()),
         )
     }
 
@@ -1996,77 +1974,19 @@ impl Interpreter {
                 .iter()
                 .position(|(existing, _)| self.runtime_hash_keys_match(test, existing, &key, env))
         } else {
-            state
-                .key_index
-                .get(&hash)
-                .into_iter()
-                .flatten()
-                .copied()
-                .find(|index| {
-                    state.entries.get(*index).is_some_and(|(existing, _)| {
-                        self.runtime_hash_keys_match(test, existing, &key, env)
-                    })
-                })
+            state.bucket_entry(hash, |existing| {
+                self.runtime_hash_keys_match(test, existing, &key, env)
+            })
         };
 
-        let inserted_in_middle = {
-            let state = self
-                .equal_hash_tables
-                .get_mut(&id)
-                .expect("equal hash table disappeared during lookup");
-            if let Some(index) = existing_index {
-                state.entries[index].1 = value;
-                false
-            } else {
-                let slot = state.free_slots.pop().unwrap_or_else(|| {
-                    let slot = state.next_slot;
-                    state.next_slot += 1;
-                    slot
-                });
-                let index = state
-                    .slot_indices
-                    .binary_search(&slot)
-                    .unwrap_or_else(|i| i);
-                let inserted_in_middle = index != state.entries.len();
-                state.slot_indices.insert(index, slot);
-                state.entries.insert(index, (key, value));
-                if !inserted_in_middle {
-                    state.key_index.entry(hash).or_default().push(index);
-                }
-                inserted_in_middle
-            }
-        };
-
-        // Inserting into a reused slot can shift compact-vector indexes, so
-        // rebuild the acceleration index from the authoritative slot order.
-        // The normal append path remains O(1).  GNU likewise only rebuilds
-        // bucket links when storage moves.
-        if inserted_in_middle {
-            let mut key_index: HashMap<
-                Option<i64>,
-                Vec<usize>,
-                crate::lisp::primitives::FnvBuildHasher,
-            > = HashMap::default();
-            let state = self
-                .equal_hash_tables
-                .get(&id)
-                .expect("equal hash table disappeared after insertion");
-            for (index, (entry_key, _)) in state.entries.iter().enumerate() {
-                let hash = if positioned_equal
-                    && self.value_contains_positioned_symbol(
-                        entry_key,
-                        &mut std::collections::HashSet::new(),
-                    ) {
-                    Some(i64::MIN)
-                } else {
-                    crate::lisp::primitives::runtime_hash_bucket_key(self, test, entry_key)
-                };
-                key_index.entry(hash).or_default().push(index);
-            }
-            self.equal_hash_tables
-                .get_mut(&id)
-                .expect("equal hash table disappeared after index rebuild")
-                .key_index = key_index;
+        let state = self
+            .equal_hash_tables
+            .get_mut(&id)
+            .expect("equal hash table disappeared during lookup");
+        if let Some(index) = existing_index {
+            state.entries[index].1 = value;
+        } else {
+            state.insert_new(key, value, hash);
         }
         if let Some(state) = self.equal_hash_tables.get_mut(&id) {
             state.capacity = super::gnu_hash_grown_capacity(capacity_before, state.next_slot);
@@ -2088,57 +2008,17 @@ impl Interpreter {
                 .iter()
                 .position(|(existing, _)| self.runtime_hash_keys_match(test, existing, key, env))
         } else {
-            state
-                .key_index
-                .get(&hash)
-                .into_iter()
-                .flatten()
-                .copied()
-                .find(|index| {
-                    state.entries.get(*index).is_some_and(|(existing, _)| {
-                        self.runtime_hash_keys_match(test, existing, key, env)
-                    })
-                })
+            state.bucket_entry(hash, |existing| {
+                self.runtime_hash_keys_match(test, existing, key, env)
+            })
         };
         let Some(existing_index) = existing_index else {
             return Some(false);
         };
-        let state = self
-            .equal_hash_tables
-            .get_mut(&id)
-            .expect("equal hash table disappeared during removal");
-        state.entries.remove(existing_index);
-        let freed_slot = state.slot_indices.remove(existing_index);
-        state.free_slots.push(freed_slot);
-
-        let mut key_index: HashMap<
-            Option<i64>,
-            Vec<usize>,
-            crate::lisp::primitives::FnvBuildHasher,
-        > = HashMap::default();
-        for (index, (entry_key, _)) in self
-            .equal_hash_tables
-            .get(&id)
-            .expect("equal hash table disappeared while rebuilding")
-            .entries
-            .iter()
-            .enumerate()
-        {
-            let hash = if positioned_equal
-                && self.value_contains_positioned_symbol(
-                    entry_key,
-                    &mut std::collections::HashSet::new(),
-                ) {
-                Some(i64::MIN)
-            } else {
-                crate::lisp::primitives::runtime_hash_bucket_key(self, test, entry_key)
-            };
-            key_index.entry(hash).or_default().push(index);
-        }
         self.equal_hash_tables
             .get_mut(&id)
-            .expect("equal hash table disappeared after rebuilding")
-            .key_index = key_index;
+            .expect("equal hash table disappeared during removal")
+            .remove_at(existing_index);
         Some(true)
     }
 

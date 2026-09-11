@@ -61,6 +61,92 @@ pub(crate) struct LoadedImage {
     pub(crate) native_functions: Vec<crate::lisp::native_comp::DumpedNativeFunction>,
 }
 
+/// The image file's bytes, mapped read-only as pdumper.c:pdumper_load
+/// maps the file (dump_mmap_contiguous): the pages are the page cache's,
+/// nothing is copied or zeroed for them, where reading the 37 MB file
+/// into a fresh vector cost the copy and the first touch of every page
+/// on each boot.
+pub(crate) enum ImageBytes {
+    #[cfg(unix)]
+    Mapped {
+        address: std::ptr::NonNull<u8>,
+        len: usize,
+    },
+    Owned(Vec<u8>),
+}
+
+impl ImageBytes {
+    pub(crate) fn open(path: &std::path::Path) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let file = std::fs::File::open(path)?;
+            let len = usize::try_from(file.metadata()?.len())
+                .map_err(|_| std::io::Error::other("the image is too large to map"))?;
+            if len == 0 {
+                return Ok(Self::Owned(Vec::new()));
+            }
+            #[cfg(target_os = "linux")]
+            let flags = libc::MAP_PRIVATE | libc::MAP_POPULATE;
+            #[cfg(not(target_os = "linux"))]
+            let flags = libc::MAP_PRIVATE;
+            // SAFETY: a fresh private read-only mapping of the open file's
+            // `len' bytes at an address of the kernel's choosing, unmapped
+            // by Drop and never written through.
+            let address = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ,
+                    flags,
+                    file.as_raw_fd(),
+                    0,
+                )
+            };
+            if address == libc::MAP_FAILED {
+                // A file the host cannot map (a directory, a filesystem
+                // without mmap): read it, and report what the read does.
+                return std::fs::read(path).map(Self::Owned);
+            }
+            let address = std::ptr::NonNull::new(address.cast::<u8>())
+                .ok_or_else(|| std::io::Error::other("mmap returned a null address"))?;
+            Ok(Self::Mapped { address, len })
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::read(path).map(Self::Owned)
+        }
+    }
+}
+
+impl std::ops::Deref for ImageBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            #[cfg(unix)]
+            // SAFETY: the mapping covers `len' readable bytes for the life
+            // of this value.
+            Self::Mapped { address, len } => unsafe {
+                std::slice::from_raw_parts(address.as_ptr(), *len)
+            },
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
+impl Drop for ImageBytes {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Self::Mapped { address, len } = self {
+            // SAFETY: the mapping this value made, released once.
+            unsafe {
+                libc::munmap(address.as_ptr().cast(), *len);
+            }
+        }
+    }
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
 }
@@ -114,9 +200,9 @@ pub(crate) fn load_image(bytes: &[u8], interp: &mut Interpreter) -> Result<Loade
     let header = validate_header(bytes)?;
     let mut loader = Loader {
         reader: Reader { bytes },
-        relocs: OffsetMap::default(),
-        types: OffsetMap::default(),
-        objects: OffsetMap::default(),
+        relocs: OffsetTable::for_image(bytes.len()),
+        types: OffsetTable::for_image(bytes.len()),
+        objects: ObjectTable::for_image(bytes.len()),
         params: OffsetMap::default(),
         bodies: OffsetMap::default(),
         envs: OffsetMap::default(),
@@ -128,13 +214,15 @@ pub(crate) fn load_image(bytes: &[u8], interp: &mut Interpreter) -> Result<Loade
     loader.load(header)
 }
 
-/// The hasher of every loader table.  Their keys are image offsets:
-/// 8-byte aligned positions in a 40 MB file, a few million of them, each
-/// inserted once and read a few times.  SipHash on those inserts and reads
-/// was a third of the load (0.9 s of 2.4 s CPU); one multiplication by the
-/// golden-ratio constant, its high half folded into the low bits hashbrown
-/// indexes by (an aligned key would otherwise leave the low bits of the
-/// product constant), costs nothing measurable.
+/// The hasher of the loader's small tables (closure parameters, bodies,
+/// environments, frames).  Their keys are image offsets: 8-byte aligned
+/// positions in a 40 MB file, each inserted once and read a few times.
+/// SipHash on those inserts and reads was a third of the load (0.9 s of
+/// 2.4 s CPU); one multiplication by the golden-ratio constant, its high
+/// half folded into the low bits hashbrown indexes by (an aligned key
+/// would otherwise leave the low bits of the product constant), costs
+/// nothing measurable.  The three large tables (relocations, object
+/// types, objects) are dense: see `OffsetTable' and `ObjectTable'.
 #[derive(Default)]
 struct OffsetHasher(u64);
 
@@ -157,12 +245,112 @@ impl std::hash::Hasher for OffsetHasher {
 type OffsetMap<V> = HashMap<u32, V, std::hash::BuildHasherDefault<OffsetHasher>>;
 type OffsetSet = HashSet<u32, std::hash::BuildHasherDefault<OffsetHasher>>;
 
+/// A table keyed by image offset with one slot per aligned position of
+/// the image: the relocation kinds (a million entries) and the object
+/// types (half a million).  Every key the writer emits is a multiple of
+/// `DUMP_ALIGNMENT' (an object start or a word inside an object), so the
+/// slot number is the offset divided by it, and a read is one indexed
+/// load.  The hash tables these replace cost a quarter of the load: the
+/// inserts alone, each a probe into a table too large for the cache and
+/// a first touch of its pages, took 250 ms of a 1.4 s boot.
+struct OffsetTable<V> {
+    slots: Vec<Option<V>>,
+}
+
+impl<V: Copy> OffsetTable<V> {
+    /// A table for an image of `image_len' bytes.
+    fn for_image(image_len: usize) -> Self {
+        Self {
+            slots: vec![None; image_len / DUMP_ALIGNMENT + 1],
+        }
+    }
+
+    fn insert(&mut self, offset: u32, value: V) {
+        let slot = offset as usize / DUMP_ALIGNMENT;
+        if slot >= self.slots.len() {
+            self.slots.resize(slot + 1, None);
+        }
+        self.slots[slot] = Some(value);
+    }
+
+    fn get(&self, offset: &u32) -> Option<&V> {
+        self.slots
+            .get(*offset as usize / DUMP_ALIGNMENT)
+            .and_then(|slot| slot.as_ref())
+    }
+
+    fn contains_key(&self, offset: &u32) -> bool {
+        self.get(offset).is_some()
+    }
+}
+
+/// The reconstructed objects by start offset.  An object's number is
+/// looked up through a dense index by image position (as `OffsetTable'),
+/// and the values sit in a vector of the object count, so a value read
+/// through a relocation is two indexed loads.  A number is assigned when
+/// an offset is first inserted, so a closure materialized out of order
+/// gets one as well.
+struct ObjectTable {
+    /// Object number plus one by slot; zero is no object.
+    index: Vec<u32>,
+    values: Vec<Option<Value>>,
+}
+
+impl ObjectTable {
+    fn for_image(image_len: usize) -> Self {
+        Self {
+            index: vec![0; image_len / DUMP_ALIGNMENT + 1],
+            values: Vec::new(),
+        }
+    }
+
+    fn reserve(&mut self, objects: usize) {
+        self.values.reserve(objects);
+    }
+
+    fn insert(&mut self, offset: u32, value: Value) {
+        let slot = offset as usize / DUMP_ALIGNMENT;
+        if slot >= self.index.len() {
+            self.index.resize(slot + 1, 0);
+        }
+        let number = match self.index[slot] {
+            0 => {
+                self.values.push(None);
+                let number = self.values.len();
+                self.index[slot] = u32::try_from(number).expect("object count fits the index");
+                number
+            }
+            number => number as usize,
+        };
+        self.values[number - 1] = Some(value);
+    }
+
+    fn get(&self, offset: &u32) -> Option<&Value> {
+        match self.index.get(*offset as usize / DUMP_ALIGNMENT) {
+            None | Some(0) => None,
+            Some(&number) => self.values[number as usize - 1].as_ref(),
+        }
+    }
+}
+
+impl std::ops::Index<&u32> for ObjectTable {
+    type Output = Value;
+
+    /// The object at a start offset the object table listed (a phase-2
+    /// placeholder or a phase-1 value); a missing one is the writer's
+    /// error, as a missing key is for a map.
+    fn index(&self, offset: &u32) -> &Value {
+        self.get(offset)
+            .unwrap_or_else(|| panic!("no object was reconstructed at offset {offset}"))
+    }
+}
+
 struct Loader<'a> {
     reader: Reader<'a>,
-    relocs: OffsetMap<DumpRelocKind>,
+    relocs: OffsetTable<DumpRelocKind>,
     /// Object type by start offset.
-    types: OffsetMap<DumpType>,
-    objects: OffsetMap<Value>,
+    types: OffsetTable<DumpType>,
+    objects: ObjectTable,
     params: OffsetMap<Rc<Vec<SymbolName>>>,
     bodies: OffsetMap<Rc<Vec<Value>>>,
     envs: OffsetMap<SharedEnv>,
@@ -174,18 +362,11 @@ struct Loader<'a> {
 
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
-        // The tables, each map sized once for what the header counts.
+        // The object list sized once for what the header counts; the
+        // dense tables were sized for the image.
         let object_count = header.object_starts.nr_entries as usize;
         let mut object_starts = Vec::with_capacity(object_count);
-        self.types.reserve(object_count);
         self.objects.reserve(object_count);
-        self.relocs.reserve(
-            header
-                .dump_relocs
-                .iter()
-                .map(|locator| locator.nr_entries as usize)
-                .sum(),
-        );
         for index in 0..header.object_starts.nr_entries {
             let at = header.object_starts.offset + index * TABLE_ENTRY_LEN as u32;
             let offset = self.reader.u32(at)?;
@@ -1508,6 +1689,18 @@ pub(crate) fn decode_internal_bytes(
     bytes: &[u8],
     multibyte: bool,
 ) -> Result<(String, Vec<(usize, u32)>), LoadError> {
+    // The common cases decode to the bytes themselves: a unibyte string of
+    // ASCII, and a multibyte string that is valid UTF-8 (Emacs's internal
+    // encoding is UTF-8 for every Unicode character; the raw-byte forms
+    // C0/C1 xx, the five-byte forms and the surrogates, which need the
+    // loop below, are not valid UTF-8).
+    if !multibyte {
+        if bytes.is_ascii() {
+            return Ok((String::from_utf8_lossy(bytes).into_owned(), Vec::new()));
+        }
+    } else if let Ok(text) = std::str::from_utf8(bytes) {
+        return Ok((text.to_owned(), Vec::new()));
+    }
     let mut text = String::new();
     let mut extended_chars = Vec::new();
     if !multibyte {

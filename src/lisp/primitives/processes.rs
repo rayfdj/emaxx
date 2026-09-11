@@ -1017,9 +1017,27 @@ pub(crate) fn getenv_in_environment(
     environment: &Value,
     negative_entry_is_truthy: bool,
 ) -> Result<Option<Value>, LispError> {
-    let prefix = format!("{variable}=");
-    for entry in process_environment_entries(environment)? {
-        if let Some(value) = entry.strip_prefix(&prefix) {
+    // callproc.c:getenv_internal_1 walks the list comparing each entry in
+    // place; copying every entry into a vector first cost more than the
+    // lookup (a `getenv' of the last of 140 entries).
+    let environment = match environment.cons_values() {
+        Some((Value::Symbol(symbol), entries)) if symbol == "environment" => entries,
+        _ => environment.clone(),
+    };
+    let mut cursor = environment.clone();
+    while let Some((item, rest)) = cursor.cons_values() {
+        let owned;
+        let entry = match item.as_string() {
+            Ok(text) => text,
+            Err(_) => {
+                owned = string_text(&item)?;
+                owned.as_str()
+            }
+        };
+        if let Some(value) = entry
+            .strip_prefix(variable)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
             return Ok(Some(Value::String(value.to_string().into())));
         }
         if entry == variable {
@@ -1029,6 +1047,11 @@ pub(crate) fn getenv_in_environment(
                 Value::Nil
             }));
         }
+        cursor = rest;
+    }
+    if !cursor.is_nil() {
+        // An improper list: the error `to_vec' reports.
+        environment.to_vec()?;
     }
     Ok(None)
 }

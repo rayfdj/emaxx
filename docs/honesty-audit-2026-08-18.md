@@ -9389,3 +9389,134 @@ binaries, the integration group (1,332 s); `cargo fmt --check' and
 `cargo clippy --profile gate --all-targets --all-features -D warnings'
 clean before and after.  The Mac receipt for the vector fix is the
 next frozen run's `context-menu-map-remove-consecutive-separators'.
+
+## 2026-09-11 Checkpoint 19b: the batch boot, equal hash tables, span edits, the environment
+
+*What prompted it.*  A per-test timing sweep of the GNU test tree
+(6,765 tests, GNU against Emaxx, both from this box) ranked the excess seconds by file: tramp-tests 528 s over 44 tests,
+semantic's format test 146 s, autorevert 98 s, simple-tests 86 s,
+dired-aux 39 s, mule 35 s, dired 25 s, package 24 s.  Four themes
+account for most of it; each is measured, corrected and controlled
+below.  The numbers are this box's (a 4-core VM whose page zeroing is
+slow and variable); GNU's are from the same runs.
+
+*The batch boot.*  A process that only prints and exits took 1.4 to
+2.4 s of wall time and 0.92 s of user time (GNU 0.04 s).  Four costs,
+in the order the profile ranked them.  (1) The image loader kept its
+relocation kinds (939,000 entries), object types (489,000) and objects
+in hash tables keyed by image offset; the inserts alone, each a probe
+into a table too large for the cache and a first touch of its pages,
+were 250 ms of the boot, and every field read hashed twice.  Every key
+the writer emits is a multiple of `DUMP_ALIGNMENT', so the three tables
+are dense now: one slot per aligned position of the image (`OffsetTable'
+for the kinds and types, `ObjectTable' with a dense index into a vector
+of the objects), a read being one or two indexed loads.  (2) The
+executable's SHA-256 fingerprint read the 22 MB file into a vector
+(the copy and the first touch of every page, 10% of the boot) before
+hashing; it is streamed through the hasher's buffer.  The hash itself
+is 150 ms of software SHA-256 on this CPU, which has no SHA extensions
+(the crate uses them where the CPU has them).  (3) The image file was read into a vector (37 MB
+copied and zeroed); it is mapped read-only from the page cache, as
+pdumper.c's dump_mmap_contiguous maps it (`ImageBytes', MAP_POPULATE on
+Linux; the vector remains on non-Unix hosts).  (4) Every booted process
+ran a garbage collection on its first evaluation: the loader's
+allocations were counted as consing, so the first `maybe_gc' found the
+threshold long exceeded (a 100 ms mark of the whole heap in every child
+Emacs, every trampoline compilation, every fixture boot).  alloc.c's
+`consing_until_gc', `gc_threshold' and `gcstat' are plain globals the
+image does not carry, zero in a process that starts from a dump, and
+pdumper's objects are not consing: the loader's allocations are now the
+baseline (`baseline_after_image_load'), and the first collection comes
+after `gc-cons-threshold' bytes of the process's own consing, as in GNU
+(`gcs-done' is 0 after a GNU boot).  Beside these, the strings of the
+image decode straight from their bytes when they are ASCII (unibyte)
+or valid UTF-8 (multibyte), which every Unicode string is; the raw-byte
+forms, the five-byte forms and the surrogates take the loop.  Wall
+0.53 s (median of 7), user 0.47 s, system 0.06 s; GNU 0.039 s.  What
+remains is the loader itself (one Rust object per image object, 0.3 s)
+and the startup Lisp; a child that only exits still costs 13 GNU boots.
+`simple-tests-shell-command-39067', forty child boots, 67 to 36 s
+(GNU 2.4).  Control: the existing D12 load control asserts, after
+`pdumper_load', that no collection is due before the process conses
+(`garbage_collection_might_be_due' false).
+
+*Equal hash tables.*  Loading tramp-tests.el took 22.5 s (GNU 1.0);
+its `tramp-process-sentinel' flushed the connection cache with 4,375
+`remhash' calls at 2.2 ms each.  The runtime's `equal' tables kept a
+bucket index by entry position and rebuilt the whole index, hashing
+every remaining key, on every removal and on every `puthash' into a
+freed slot (fns.c removes an entry by unlinking it from its bucket and
+pushing its slot onto the free list).  The state now keeps each entry's
+hash code beside it, as fns.c keeps `hash' beside `key_and_value', and
+the buckets hold slot numbers, which are stable across removals and
+reused slots; a removal or a reused-slot insertion touches one bucket,
+and the index is rebuilt only from the stored codes (a thaw, a clone,
+the positioned-symbol reindex) without hashing.  The answers, the
+count and the `maphash' order (slot order, freed slots reused last-in
+first-out) are GNU's for the control's program.  tramp-tests.el loads
+in 12.7 s now, `tramp-test07-file-exists-p' 15.6 to 5.3 s (GNU 0.85);
+the rest of tramp's cost is its per-call floor, measured below.
+Control: `equal_hash_table_answers_survive_removals_and_slot_reuse'.
+
+*Buffer edits and the span list.*  `dired-test-bug30624' took 14.9 s
+(GNU 0.33) listing this box's /tmp of 4,000 entries: `insert-directory'
+decodes each file name and each gap between them with
+`decode-coding-region', 8,000 replacements of a few characters in a
+400 KB buffer carrying 4,000 property spans, and every insertion and
+deletion cloned the whole span list, plist by plist, rebuilt, sorted
+and re-merged it (0.36 ms an edit).  intervals.c adjusts the intervals
+the edit meets and offsets the rest; `adjust_text_properties_for_insert'
+and `_for_delete' now find the spans by binary search, split or cut
+the one or two at the edges, shift the rest in place and merge only
+at the cut, and `substring_property_spans' takes its spans by binary
+search as well.  The observable results are unchanged: the differential
+probe of checkpoint 19a prints the same, and the property controls
+pass.  8,000 `decode-coding-region' calls in that buffer 2.9 to 0.29 s
+(GNU 0.035; what remains is the replacement itself, 36 us a call);
+`dired-test-bug30624' 14.9 to 4.5 s, `dired-test-bug27496' 6.5 to
+1.5 s (GNU 0.19), `auto-revert-test04-auto-revert-mode-dired' 45 to
+17.5 s (GNU 1.5).
+
+*`looking-at' in a large buffer.*  70 us a call in a 300 KB buffer
+whatever the pattern and whether it matched (GNU 0.5 to 1.7 us):
+`looking-at' built its haystack from point to the end of the buffer on
+every call, twice -- once for the POSIX matcher, before the branch
+that decides whether POSIX matching is wanted at all, and once for the
+ordinary matcher with one character of left context for `\='.  GNU's
+re_match_2 reads the buffer in place.  The POSIX text is built on the
+POSIX branch only, and without a `\=' in the pattern the ordinary
+match now runs over the whole accessible region, the haystack every
+search of the unchanged buffer shares through the cache, anchored at
+point's byte offset (the match is required to start there, as
+before); a pattern with `\=' keeps the one-character context, whose
+lookbehind translation needs it.  The match data is converted through
+the haystack's index instead of a character walk from its start.  9 to
+14 us a call now; `dired-move-to-filename' calls it once per line.
+`dired-test-bug30624' 4.5 to 3.9 s.
+
+*The environment behind `expand-file-name'.*  45 us a call (GNU 3.6):
+every expansion read HOME from `process-environment' by copying the
+list's 140 entries into a vector of strings.  fileio.c reads the home
+directory only for a `~'; the expansion asks for HOME only when the
+name or the default directory starts with one, and `getenv' walks the
+list comparing each entry in place, as callproc.c:getenv_internal_1
+does.  7.4 us a call now.
+
+*Measured after these and open.*  `find-file-name-handler' 21 us on a
+name not in its match cache (GNU 1.8): a miss compiles every handler's
+pattern and snapshots the alist's cons cells for mutation tracking.  A
+`cl-defstruct' copy with two `setf's 17 us (GNU 1.8), `format' 5 us
+(0.6), `string-match' 5 us (0.4): the per-call floor.  `macroexpand-all'
+of a small form 116 us (GNU 12); loading tramp-tests.el spends 8.6 s
+of its 12.7 s in the `ert-deftest' expansions.  `tramp-file-name-unify'
+0.29 ms a call, 14,900 calls in one `directory-files' of the mock
+directory.  The per-kilobyte replacement in `decode-coding-region'.
+
+*Gate.*  The full grouped gate on this tree passed: eval_01 351,
+eval_02 284, eval_03 320, eval_04 251, eval_05 351, primitives 458,
+tty 56 (2 ignored), compat_runtime 84, batch 49, lightweight 414, the
+binaries, the integration group (1,287 s); `cargo fmt --check' and
+clippy clean before and after.  The focused runs before it: 349 tests
+over the loader, the hash tables, the text properties, the searches
+and the coding regions, then 38 over `looking-at', POSIX matching and
+the match data, all passing.

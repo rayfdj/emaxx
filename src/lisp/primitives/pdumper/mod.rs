@@ -393,7 +393,7 @@ pub(crate) fn pdumper_load(
         return Err(PdumperLoadError::Error("a dump is already loaded".into()));
     }
     let started = std::time::Instant::now();
-    let bytes = match std::fs::read(path) {
+    let bytes = match load::ImageBytes::open(path) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(match error.kind() {
@@ -432,6 +432,15 @@ pub(crate) fn pdumper_load(
         &image.native_functions,
     )
     .map_err(|error| PdumperLoadError::Error(error.to_string()))?;
+    // alloc.c: `consing_until_gc' and `gc_threshold' are plain globals
+    // the image does not carry, zero in a process that starts from a
+    // dump, and pdumper's objects are not consing.  The loader's
+    // allocations are the baseline, so the first collection comes after
+    // `gc-cons-threshold' bytes of the process's own consing, as in GNU,
+    // not on the first evaluation after the load.
+    interp
+        .native_compiler
+        .garbage_collection_baseline_after_image_load();
     Ok(record)
 }
 
