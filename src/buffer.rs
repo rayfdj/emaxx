@@ -6,6 +6,22 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::SystemTime;
 
+/// One edit of a buffer: the characters [START, OLD_END) became
+/// [START, NEW_END) (1-based positions after the edit for NEW_END, before
+/// it for OLD_END), by a text change (`text') or a text-property change
+/// (the range's characters unchanged, OLD_END == NEW_END).  SERIAL is the
+/// buffer's edit serial after the edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditRecord {
+    pub serial: u64,
+    pub start: usize,
+    pub old_end: usize,
+    pub new_end: usize,
+    pub text: bool,
+}
+
+const EDIT_LOG_LIMIT: usize = 64;
+
 /// Modification counter. Bumped on every edit, used to detect
 /// whether a buffer has changed since some snapshot (e.g. last save).
 pub type ModCount = i64;
@@ -61,6 +77,14 @@ pub struct Buffer {
     /// buffer starts both at zero in a process without cache entries.
     edit_serial: u64,
     text_edit_serial: u64,
+
+    /// The last `EDIT_LOG_LIMIT' edits, oldest first, one record per
+    /// serial: a cache holding a view of an earlier state replays the
+    /// records since its serial instead of reading the whole buffer
+    /// again.  Emptied wherever the text is replaced without a record
+    /// (a swap of buffer texts, a change of representation), which a
+    /// gap in the serials then reports as unreachable.  Not dumped.
+    edits: std::collections::VecDeque<EditRecord>,
 
     /// Value of modiff at last save.
     save_modiff: ModCount,
@@ -364,6 +388,7 @@ impl Buffer {
             save_modiff: 1,
             edit_serial: 0,
             text_edit_serial: 0,
+            edits: std::collections::VecDeque::new(),
             saved_text: String::new(),
             forced_modified: false,
             autosaved: false,
@@ -401,6 +426,7 @@ impl Buffer {
             save_modiff: 1,
             edit_serial: 0,
             text_edit_serial: 0,
+            edits: std::collections::VecDeque::new(),
             saved_text: s.to_string(),
             forced_modified: false,
             autosaved: false,
@@ -463,6 +489,57 @@ impl Buffer {
         self.edit_serial
     }
 
+    /// The edits after SERIAL, oldest first, or None when the log no
+    /// longer reaches back to SERIAL (more than `EDIT_LOG_LIMIT' edits
+    /// since, or a text replacement that emptied it): the records
+    /// SERIAL+1 ..= the current serial, each present.
+    pub fn edits_since(&self, serial: u64) -> Option<Vec<EditRecord>> {
+        if serial == self.edit_serial {
+            return Some(Vec::new());
+        }
+        if serial > self.edit_serial {
+            return None;
+        }
+        let first = self.edits.partition_point(|record| record.serial <= serial);
+        let records = self.edits.range(first..).copied().collect::<Vec<_>>();
+        let contiguous = records
+            .first()
+            .is_some_and(|record| record.serial == serial + 1)
+            && records
+                .last()
+                .is_some_and(|record| record.serial == self.edit_serial)
+            && records.len() as u64 == self.edit_serial - serial;
+        contiguous.then_some(records)
+    }
+
+    /// Advance the edit serial (and the text serial when TEXT) and record
+    /// the edit of [START, OLD_END) into [START, NEW_END).
+    fn log_edit(&mut self, start: usize, old_end: usize, new_end: usize, text: bool) {
+        self.edit_serial += 1;
+        if text {
+            self.text_edit_serial += 1;
+        }
+        if self.edits.len() >= EDIT_LOG_LIMIT {
+            self.edits.pop_front();
+        }
+        self.edits.push_back(EditRecord {
+            serial: self.edit_serial,
+            start,
+            old_end,
+            new_end,
+            text,
+        });
+    }
+
+    /// Advance both serials for a text replacement no record describes
+    /// and empty the log, so no view of an earlier state can be replayed
+    /// across it.
+    fn text_replaced_without_record(&mut self) {
+        self.edit_serial += 1;
+        self.text_edit_serial += 1;
+        self.edits.clear();
+    }
+
     pub fn chars_modification_count(&self) -> ModCount {
         self.chars_modiff
     }
@@ -508,6 +585,7 @@ impl Buffer {
         self.invalidate_char_cache();
         self.saved_text = saved_text;
         self.multibyte = enabled;
+        self.text_replaced_without_record();
     }
 
     /// Total characters in the buffer (ignoring narrowing).
@@ -1218,8 +1296,7 @@ impl Buffer {
 
         self.modiff += 1;
         self.chars_modiff = self.modiff;
-        self.edit_serial += 1;
-        self.text_edit_serial += 1;
+        self.log_edit(insert_at, insert_at, insert_at + nchars, true);
         self.autosaved = false;
         self.pt
     }
@@ -1255,8 +1332,7 @@ impl Buffer {
         self.invalidate_char_cache();
         self.modiff += 1;
         self.chars_modiff = self.modiff;
-        self.edit_serial += 1;
-        self.text_edit_serial += 1;
+        self.log_edit(from, to, to, true);
         self.autosaved = false;
     }
 
@@ -1328,8 +1404,7 @@ impl Buffer {
 
         self.modiff += 1;
         self.chars_modiff = self.modiff;
-        self.edit_serial += 1;
-        self.text_edit_serial += 1;
+        self.log_edit(from, to, from, true);
         self.autosaved = false;
         Ok(deleted)
     }
@@ -1727,6 +1802,7 @@ impl Buffer {
             chars_modiff: parts.chars_modiff,
             edit_serial: 0,
             text_edit_serial: 0,
+            edits: std::collections::VecDeque::new(),
             save_modiff: parts.save_modiff,
             saved_text: parts.saved_text,
             forced_modified: parts.forced_modified,
@@ -1780,6 +1856,11 @@ impl Buffer {
         std::mem::swap(&mut self.text_properties, &mut other.text_properties);
         std::mem::swap(&mut self.extended_chars, &mut other.extended_chars);
         std::mem::swap(&mut self.multibyte, &mut other.multibyte);
+        // Each buffer's serials stay its own and count on: the text behind
+        // them changed without an edit, so every view keyed on either
+        // buffer's serial is stale.
+        self.text_replaced_without_record();
+        other.text_replaced_without_record();
     }
 
     // ── Line/column helpers ──
@@ -2053,7 +2134,7 @@ impl Buffer {
         let window = merge_adjacent_spans(window);
         self.text_properties.splice(splice_lo..splice_hi, window);
         self.modiff = self.modiff.saturating_add(1);
-        self.edit_serial += 1;
+        self.log_edit(start, end, end, false);
         self.autosaved = false;
     }
 }

@@ -10061,3 +10061,71 @@ interpreter is created or installed from an image.
 
 *19k.*  Hashers only; the census and finalizer sets carry the same
 type.  No finding.
+
+## 2026-09-12 Checkpoint 19l: the syntax encoding follows the buffer's edits
+
+*What prompted it.*  With `parse-sexp-lookup-properties' and one
+`syntax-table' property in an 80 KB buffer, a syntax-class
+`looking-at' after an insertion and deletion cost 3,170 us, and after
+a `put-text-property' of an unrelated property 3,021 us (GNU 1.95 and
+1.32): every edit advanced the serial the shared encoding (19j) keys
+on, and the encoding was built again from the whole haystack.  Modes
+that edit and search by turns (cc-mode and cperl indentation,
+semantic's formatting) paid that per edit.
+
+*What changed.*  The buffer keeps a log of its last 64 edits
+(`EditRecord': the serial after the edit, the characters [start,
+old_end) that became [start, new_end), whether the text changed),
+written at the same four places the serials advance, and
+`edits_since' returns the records after a serial only when they are
+the contiguous run up to the current serial.  The encoding cache
+keeps each entry as the haystack offsets rendered with a sentinel and
+the sentinel table, and materializes the text the engine reads.  On a
+call whose key misses, an entry for the same buffer, range start,
+multibyte flag and syntax chain at an earlier serial, whose
+descriptor watch and category properties still hold, is brought to
+the current state by replaying the records: each edit drops the
+substitutions inside it and shifts those after it, and the edited
+characters are rendered again against the buffer as it is now, their
+descriptors joining the watch and their category symbols the checked
+list; the entry then carries the new key.  The replay is refused, and
+the encoding built afresh, when an edit reaches outside the entry's
+range, the range's end after the edits is not the requested end, an
+inserted character is one of the entry's sentinels, or the characters
+to render exceed half the haystack.  Sentinels already assigned keep
+their characters across replays, so the compiled-regexp entries keyed
+on them stay valid.
+
+*Authorities.*  Unchanged from 19j (the key, the descriptor watch, the
+category properties, `char-property-alias-alist' consulted per call),
+plus the log itself: a text replacement no record describes -- a swap
+of two buffers' texts (`buffer-swap-text'), a change of the
+multibyte representation -- advances both serials and empties the log,
+so a gap in the serials refuses every replay across it.  Found while
+naming that authority, and fixed here: `swap_text_state' swapped the
+texts, ticks and properties of two buffers but left each buffer's edit
+serials untouched, so after a `buffer-swap-text' the haystack and
+encoding caches of 19b and 19j could serve either buffer the other's
+text under an unchanged key.  Both serials advance on both buffers
+now.
+
+*Controls.*  `syntax_property_encoding_follows_edits_without_encoding_again':
+eight steps with GNU's match results, counting encodings and replays
+(an insertion, a `syntax-table' write, a deletion and an unrelated
+property write each replay; 100 edits since the entry encode afresh;
+a `buffer-swap-text' encodes afresh).
+`syntax_property_searches_after_random_edits_match_the_oracle': 400
+pseudo-random insertions, deletions and property writes with three
+syntax-class `looking-at's after each, the whole result list compared
+with the oracle's.  In test builds every replay is compared with an
+encoding built from nothing (`assert_replay_matches_a_fresh_encoding':
+the same (offset, character, class) at every substitution, the
+haystack's length), so those 1,200 searches also verify the replay
+against the full walk it replaces.
+
+*Measured.*  The same probes: `looking-at' after an insertion and
+deletion 3,170 to 48 us, after an unrelated `put-text-property' 3,021
+to 10 us (GNU 1.95 and 1.32).  The 48 us is the haystack copied again
+after a text edit (19b's shared haystack is per text state: 43 us for
+the same probe without the property machinery), against GNU's search
+over the buffer text in place -- open.

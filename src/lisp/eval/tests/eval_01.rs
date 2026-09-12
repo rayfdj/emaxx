@@ -3531,8 +3531,10 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
 fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
     // Under `parse-sexp-lookup-properties', every `looking-at' over the
     // same buffer state shares one encoding of the haystack; a
-    // `syntax-table' property write or a syntax-table change makes the
-    // next search encode again.  The match results are GNU's.
+    // syntax-table change makes the next search encode again, while a
+    // `syntax-table' property write or an edit is followed from the edit
+    // log (`syntax_property_encoding_follows_edits_without_encoding_again'
+    // counts those).  The match results are GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     crate::lisp::primitives::reset_syntax_encoding_scan_count();
     let mut step = |form: &str, expected: Value, scans: usize| {
@@ -3570,22 +3572,23 @@ fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
                   (goto-char 13)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         Value::list([Value::T, Value::Integer(17)]),
-        2,
+        1,
     );
-    step(r#"(progn (goto-char 1) (looking-at "\\sw+"))"#, Value::T, 2);
+    step(r#"(progn (goto-char 1) (looking-at "\\sw+"))"#, Value::T, 1);
     step(
         r#"(progn (modify-syntax-entry ?q "." (syntax-table))
                   (goto-char 14)
                   (looking-at "\\sw+"))"#,
         Value::Nil,
-        3,
+        2,
     );
 
     // `internal--set-buffer-modified-tick' moves the Lisp-visible tick
     // backwards; an edit then reuses an old tick value.  The cache keys on
-    // the buffer's monotonic edit serial, so the new text is encoded, not
-    // served from the entry the old tick named.  (buffer.c's primitive;
-    // `primitive-undo' and `restore-buffer-modified-p' use it.)
+    // the buffer's monotonic edit serial, so the new text is rendered (here
+    // by replaying the insertion), not served from the entry the old tick
+    // named.  (buffer.c's primitive; `primitive-undo' and
+    // `restore-buffer-modified-p' use it.)
     step(
         r#"(let ((tick (buffer-modified-tick)))
              (goto-char 5)
@@ -3594,9 +3597,108 @@ fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
              (goto-char 5)
              (looking-at "\\s("))"#,
         Value::T,
+        2,
+    );
+    step(r#"(progn (goto-char 5) (looking-at "\\s("))"#, Value::T, 2);
+}
+
+#[test]
+fn syntax_property_encoding_follows_edits_without_encoding_again() {
+    // After an edit, the encoding of the same range follows the buffer's
+    // edit log (the characters whose text or properties changed are
+    // rendered again, the rest shift) instead of being built from the
+    // whole buffer; a text-property write that is not `syntax-table' is
+    // an edit like any other.  The log holds 64 edits: more than that
+    // since the entry's state, or a swap of buffer texts (which no record
+    // describes), encodes afresh.  Every replay in a test build is
+    // compared with a fresh encoding by `replay_syntax_encoding' itself;
+    // the match results are GNU's.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    crate::lisp::primitives::reset_syntax_encoding_scan_count();
+    let mut step = |form: &str, expected: Value, scans: usize, replays: usize| {
+        let form =
+            format!("(with-current-buffer (get-buffer-create \"*syntax-replay-probe*\") {form})");
+        assert_eq!(eval_str_with(&mut interp, &form), expected, "{form}");
+        assert_eq!(
+            (
+                crate::lisp::primitives::syntax_encoding_scan_count(),
+                crate::lisp::primitives::syntax_encoding_replay_count()
+            ),
+            (scans, replays),
+            "(scans, replays) after {form}"
+        );
+    };
+    let matched = |end: i64| Value::list([Value::T, Value::Integer(end)]);
+    step(
+        r#"(progn
+             (erase-buffer)
+             (insert "foo(bar)baz (qux) quux")
+             (set-syntax-table (make-syntax-table))
+             (set (make-local-variable (quote parse-sexp-lookup-properties)) t)
+             (put-text-property 4 5 'syntax-table '(2))
+             (goto-char 1)
+             (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(8),
+        1,
+        0,
+    );
+    step(
+        r#"(progn (goto-char 1) (insert "x") (goto-char 1)
+                  (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(9),
+        1,
+        1,
+    );
+    step(
+        r#"(progn (put-text-property 14 15 'syntax-table '(2)) (goto-char 14)
+                  (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(18),
+        1,
+        2,
+    );
+    step(
+        r#"(progn (goto-char 1) (delete-char 1) (goto-char 13)
+                  (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(17),
+        1,
+        3,
+    );
+    // 100 edits since the entry's state: past the log.
+    step(
+        r#"(let ((i 0))
+             (while (< i 50) (insert "y") (delete-char -1) (setq i (1+ i)))
+             (goto-char 1)
+             (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(8),
+        2,
+        3,
+    );
+    step(
+        r#"(progn (put-text-property 1 3 'face 'bold) (goto-char 1)
+                  (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(8),
+        2,
         4,
     );
-    step(r#"(progn (goto-char 5) (looking-at "\\s("))"#, Value::T, 4);
+    step(
+        r#"(progn (put-text-property 4 5 'syntax-table '(1)) (goto-char 1)
+                  (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(4),
+        2,
+        5,
+    );
+    step(
+        r#"(progn (with-current-buffer (get-buffer-create "*syntax-replay-other*")
+                    (erase-buffer)
+                    (insert "(x")
+                    (put-text-property 1 2 'syntax-table '(2)))
+                  (buffer-swap-text (get-buffer "*syntax-replay-other*"))
+                  (goto-char 1)
+                  (list (looking-at "\\sw+") (match-end 0)))"#,
+        matched(3),
+        3,
+        5,
+    );
 }
 
 #[test]

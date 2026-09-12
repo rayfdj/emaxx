@@ -54,12 +54,35 @@ const SYNTAX_ENCODING_CACHE_LIMIT: usize = 4;
 /// property values and the values behind `category' symbols) and, for each
 /// category symbol, the `syntax-table' property it had (a `put' replaces
 /// that value without mutating a watched cell).
+///
+/// The encoding is kept as the positions whose character is rendered as a
+/// sentinel (`substitutions', haystack character offsets, ascending) over
+/// the haystack of the entry's state, and materialized as the text the
+/// engine reads (`encoding').  After an edit the buffer's edit log names
+/// the characters whose text or properties changed; the entry follows
+/// the edits (`replay_syntax_encoding'), rendering those characters again
+/// and shifting the rest, where encoding the whole range again cost the
+/// length of the buffer per edit.
 struct SyntaxEncodingCacheEntry {
     key: SyntaxEncodingKey,
     descriptors: crate::lisp::types::ConsMutationSnapshot,
     categories: Vec<(String, Value)>,
+    substitutions: Vec<(usize, char)>,
+    sentinels: Vec<SyntaxPropertySentinel>,
+    /// Every character the sentinels must differ from: those of the
+    /// haystack in each state the entry has described (a deleted
+    /// character stays, harmlessly) and of each pattern searched.
+    forbidden: HashSet<char>,
+    next_sentinel: u32,
     encoding: Option<std::rc::Rc<SyntaxPropertyEncoding>>,
 }
+
+/// The first private-use scalar tried as a sentinel (plane 15).
+const FIRST_SYNTAX_SENTINEL: u32 = 0xF0100;
+
+/// A replay whose rendered characters would exceed this share of the
+/// haystack builds the encoding afresh instead.
+const SYNTAX_REPLAY_SHARE_LIMIT: usize = 2;
 
 /// What the `syntax-table' properties of a range consist of: whether any
 /// character has one (through a `category' symbol included), the
@@ -203,11 +226,18 @@ pub(crate) fn forget_buffer_views() {
 #[cfg(test)]
 thread_local! {
     static SYNTAX_ENCODING_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SYNTAX_ENCODING_REPLAY_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn syntax_encoding_replay_count() -> usize {
+    SYNTAX_ENCODING_REPLAY_COUNT.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
 pub(crate) fn reset_syntax_encoding_scan_count() {
     SYNTAX_ENCODING_SCAN_COUNT.with(|count| count.set(0));
+    SYNTAX_ENCODING_REPLAY_COUNT.with(|count| count.set(0));
 }
 
 #[cfg(test)]
@@ -2349,6 +2379,14 @@ fn encode_syntax_property_haystack(
     // properties, whose changes the entry's authorities do not follow; a
     // buffer with it in force is encoded fresh each time, as before the
     // cache, decided on every call.
+    let key = SyntaxEncodingKey {
+        buffer_id: interp.current_buffer_id(),
+        start,
+        end,
+        edit_serial: interp.buffer.edit_serial(),
+        multibyte: interp.buffer.is_multibyte(),
+        syntax_chain: interp.syntax_table_chain_signature(interp.current_syntax_table_id()),
+    };
     if interp
         .buffer_local_value(interp.current_buffer_id(), "char-property-alias-alist")
         .is_some_and(|value| !value.is_nil())
@@ -2358,7 +2396,10 @@ fn encode_syntax_property_haystack(
         }
         #[cfg(test)]
         SYNTAX_ENCODING_SCAN_COUNT.with(|count| count.set(count.get() + 1));
-        return build_syntax_property_encoding(interp, start, haystack, pattern);
+        let mut entry = fresh_syntax_encoding_entry(key, haystack, pattern);
+        let length = haystack_char_at_byte(haystack, haystack.len());
+        render_syntax_substitutions(interp, &mut entry, haystack, 0..length);
+        return materialize_syntax_encoding(haystack, &entry);
     }
     // One encoding per buffer state, shared by every search over the same
     // range: syntax.c reads the property only at the characters a match
@@ -2368,28 +2409,11 @@ fn encode_syntax_property_haystack(
     // walked only to build an entry (cperl-mode's buffers carry thousands
     // of `syntax-table' properties, and a walk per call cost more than the
     // match).
-    let key = SyntaxEncodingKey {
-        buffer_id: interp.current_buffer_id(),
-        start,
-        end,
-        edit_serial: interp.buffer.edit_serial(),
-        multibyte: interp.buffer.is_multibyte(),
-        syntax_chain: interp.syntax_table_chain_signature(interp.current_syntax_table_id()),
-    };
     let cached = SYNTAX_ENCODING_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = cache.iter().position(|entry| {
-            entry.key == key
-                && entry.descriptors.is_current()
-                && entry.categories.iter().all(|(name, value)| {
-                    super::values::values_eql(
-                        &interp
-                            .get_symbol_property(name, "syntax-table")
-                            .unwrap_or(Value::Nil),
-                        value,
-                    )
-                })
-        })?;
+        let index = cache
+            .iter()
+            .position(|entry| entry.key == key && entry_authorities_current(interp, entry))?;
         let entry = cache.remove(index);
         let hit = entry.encoding.clone();
         cache.push(entry);
@@ -2402,80 +2426,145 @@ fn encode_syntax_property_haystack(
     {
         return cached;
     }
+    // An entry for an earlier state of the same range follows the edits
+    // since, when the log reaches back to it.
+    let replayed = SYNTAX_ENCODING_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let index = cache.iter().rposition(|entry| {
+            entry.key.buffer_id == key.buffer_id
+                && entry.key.start == key.start
+                && entry.key.multibyte == key.multibyte
+                && entry.key.syntax_chain == key.syntax_chain
+                && entry.key.edit_serial < key.edit_serial
+                && entry_authorities_current(interp, entry)
+        })?;
+        let records = interp.buffer.edits_since(cache[index].key.edit_serial)?;
+        let mut entry = cache.remove(index);
+        let replayed =
+            replay_syntax_encoding(interp, &mut entry, &records, &key, haystack, pattern);
+        if replayed {
+            #[cfg(test)]
+            {
+                SYNTAX_ENCODING_REPLAY_COUNT.with(|count| count.set(count.get() + 1));
+                assert_replay_matches_a_fresh_encoding(interp, &entry, haystack);
+            }
+            let hit = entry.encoding.clone();
+            cache.push(entry);
+            Some(hit)
+        } else {
+            None
+        }
+    });
+    if let Some(replayed) = replayed
+        && replayed
+            .as_ref()
+            .is_none_or(|encoding| !encoding.uses_sentinel_in(pattern))
+    {
+        return replayed;
+    }
     let authorities = syntax_property_authorities(interp, start, end);
-    let encoding = if authorities.present {
+    let mut entry = fresh_syntax_encoding_entry(key, haystack, pattern);
+    entry.categories = authorities.categories;
+    for descriptor in &authorities.descriptors {
+        entry.descriptors.include_tree(descriptor);
+    }
+    if authorities.present {
         #[cfg(test)]
         SYNTAX_ENCODING_SCAN_COUNT.with(|count| count.set(count.get() + 1));
-        build_syntax_property_encoding(interp, start, haystack, pattern)
-    } else {
-        // A range without the property renders every character with its
-        // table class: no encoding, remembered as such under the same
-        // authorities.
-        None
-    };
-    let mut descriptors = crate::lisp::types::ConsMutationSnapshot::tree(&Value::Nil);
-    for descriptor in &authorities.descriptors {
-        descriptors.include_tree(descriptor);
+        let length = haystack_char_at_byte(haystack, haystack.len());
+        render_syntax_substitutions(interp, &mut entry, haystack, 0..length);
+        entry.encoding = materialize_syntax_encoding(haystack, &entry);
     }
+    // A range without the property renders every character with its
+    // table class: no encoding, remembered as such under the same
+    // authorities.
+    let encoding = entry.encoding.clone();
     SYNTAX_ENCODING_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        cache.retain(|entry| entry.key != key);
+        cache.retain(|other| other.key != entry.key);
         if cache.len() >= SYNTAX_ENCODING_CACHE_LIMIT {
             cache.remove(0);
         }
-        cache.push(SyntaxEncodingCacheEntry {
-            key,
-            descriptors,
-            categories: authorities.categories,
-            encoding: encoding.clone(),
-        });
+        cache.push(entry);
     });
     encoding
 }
 
-/// Render the haystack with a sentinel for each character whose effective
-/// syntax class (under its `syntax-table' property) differs from its
-/// table class.
-fn build_syntax_property_encoding(
-    interp: &Interpreter,
-    start: usize,
+/// An entry for KEY with nothing rendered yet, its sentinels to differ
+/// from every character of HAYSTACK and PATTERN.
+fn fresh_syntax_encoding_entry(
+    key: SyntaxEncodingKey,
     haystack: &std::rc::Rc<str>,
     pattern: &str,
-) -> Option<std::rc::Rc<SyntaxPropertyEncoding>> {
-    let mut forbidden = haystack
-        .chars()
-        .chain(pattern.chars())
-        .collect::<HashSet<_>>();
-    let mut next_sentinel = 0xF0100u32;
-    let mut sentinels = Vec::<SyntaxPropertySentinel>::new();
-    let mut encoded = String::with_capacity(haystack.len());
+) -> SyntaxEncodingCacheEntry {
+    SyntaxEncodingCacheEntry {
+        key,
+        descriptors: crate::lisp::types::ConsMutationSnapshot::tree(&Value::Nil),
+        categories: Vec::new(),
+        substitutions: Vec::new(),
+        sentinels: Vec::new(),
+        forbidden: haystack.chars().chain(pattern.chars()).collect(),
+        next_sentinel: FIRST_SYNTAX_SENTINEL,
+        encoding: None,
+    }
+}
+
+/// Whether the authorities an entry names beyond its key still hold: no
+/// watched descriptor cell has been mutated, and each category symbol's
+/// `syntax-table' property is the value the entry saw.
+fn entry_authorities_current(interp: &Interpreter, entry: &SyntaxEncodingCacheEntry) -> bool {
+    entry.descriptors.is_current()
+        && entry.categories.iter().all(|(name, value)| {
+            super::values::values_eql(
+                &interp
+                    .get_symbol_property(name, "syntax-table")
+                    .unwrap_or(Value::Nil),
+                value,
+            )
+        })
+}
+
+/// Render the characters at haystack offsets RANGE: for each whose
+/// effective syntax class (under its `syntax-table' property) differs
+/// from its table class, record a sentinel in the entry's substitutions,
+/// reusing the sentinel of the same (character, class) pair and
+/// allocating a new one outside the entry's forbidden set otherwise.
+fn render_syntax_substitutions(
+    interp: &Interpreter,
+    entry: &mut SyntaxEncodingCacheEntry,
+    haystack: &std::rc::Rc<str>,
+    range: std::ops::Range<usize>,
+) {
+    let start = entry.key.start;
+    let from = haystack_byte_at_char(haystack, range.start);
+    let to = haystack_byte_at_char(haystack, range.end);
     // One scan for the whole walk: per-character cost drops to memoized
     // table lookups plus interval-crossing property refreshes.
     let mut scan = super::syntax::SyntaxScan::new(interp, interp.current_syntax_table_id());
-    for (offset, original) in haystack.chars().enumerate() {
+    for (index, original) in haystack[from..to].chars().enumerate() {
+        let offset = range.start + index;
         let position = start + offset;
         let Some((table_class, effective_class)) =
             super::syntax::syntax_class_chars_with_scan(interp, &mut scan, position)
         else {
-            encoded.push(original);
             continue;
         };
         if table_class == effective_class {
-            encoded.push(original);
             continue;
         }
-        let sentinel = sentinels
+        let sentinel = entry
+            .sentinels
             .iter()
-            .find(|entry| entry.original == original && entry.class == effective_class)
-            .map(|entry| entry.sentinel)
+            .find(|candidate| candidate.original == original && candidate.class == effective_class)
+            .map(|candidate| candidate.sentinel)
             .unwrap_or_else(|| {
                 loop {
-                    let candidate = char::from_u32(next_sentinel)
+                    let candidate = char::from_u32(entry.next_sentinel)
                         .expect("plane-15 private-use sentinel is a valid character");
-                    next_sentinel += 1;
-                    if !forbidden.contains(&candidate) {
-                        forbidden.insert(candidate);
-                        sentinels.push(SyntaxPropertySentinel {
+                    entry.next_sentinel += 1;
+                    if !entry.forbidden.contains(&candidate) {
+                        entry.forbidden.insert(candidate);
+                        entry.sentinels.push(SyntaxPropertySentinel {
                             original,
                             class: effective_class,
                             sentinel: candidate,
@@ -2484,14 +2573,189 @@ fn build_syntax_property_encoding(
                     }
                 }
             });
-        encoded.push(sentinel);
+        entry.substitutions.push((offset, sentinel));
     }
-    (!sentinels.is_empty()).then(|| {
-        std::rc::Rc::new(SyntaxPropertyEncoding {
-            haystack: encoded.into(),
-            sentinels,
-        })
-    })
+}
+
+/// The haystack with each substituted character replaced by its sentinel,
+/// or None when there is no substitution (every character keeps its
+/// table class, which the plain haystack renders).
+fn materialize_syntax_encoding(
+    haystack: &std::rc::Rc<str>,
+    entry: &SyntaxEncodingCacheEntry,
+) -> Option<std::rc::Rc<SyntaxPropertyEncoding>> {
+    if entry.substitutions.is_empty() {
+        return None;
+    }
+    let index = haystack_char_index(haystack);
+    let mut encoded = String::with_capacity(haystack.len() + 3 * entry.substitutions.len());
+    let mut byte = 0;
+    for &(offset, sentinel) in &entry.substitutions {
+        let at = index.byte_at_char(haystack, offset);
+        encoded.push_str(&haystack[byte..at]);
+        encoded.push(sentinel);
+        byte = at + haystack[at..].chars().next().map_or(0, char::len_utf8);
+    }
+    encoded.push_str(&haystack[byte..]);
+    Some(std::rc::Rc::new(SyntaxPropertyEncoding {
+        haystack: encoded.into(),
+        sentinels: entry.sentinels.clone(),
+    }))
+}
+
+/// Bring ENTRY, which describes an earlier state of its range, to the
+/// state KEY names by following RECORDS (the buffer's edits since the
+/// entry's serial, oldest first): each edit of [start, old_end) into
+/// [start, new_end) drops the substitutions inside it, shifts those after
+/// it, and marks the new characters to render; the marked characters are
+/// rendered against the buffer as it is now, and their syntax
+/// descriptors join the entry's authorities.  False (the entry left
+/// unusable, to be replaced by a fresh encoding) when an edit reaches
+/// outside the range, the range's end does not come to KEY's, an inserted
+/// character is one of the entry's sentinels, or the characters to render
+/// are too many for a replay to be cheaper than an encoding.
+fn replay_syntax_encoding(
+    interp: &Interpreter,
+    entry: &mut SyntaxEncodingCacheEntry,
+    records: &[crate::buffer::EditRecord],
+    key: &SyntaxEncodingKey,
+    haystack: &std::rc::Rc<str>,
+    pattern: &str,
+) -> bool {
+    let start = entry.key.start;
+    let mut end = entry.key.end;
+    // Haystack offset ranges to render, in the coordinates after the
+    // edits applied so far.
+    let mut dirty: Vec<(usize, usize)> = Vec::new();
+    for record in records {
+        if record.start < start || record.old_end > end || record.start > record.old_end {
+            return false;
+        }
+        let edit_start = record.start - start;
+        let old_end = record.old_end - start;
+        let new_end = record.new_end - start;
+        let shift = |offset: usize| offset + new_end - old_end;
+        for range in &mut dirty {
+            *range = if range.1 <= edit_start {
+                *range
+            } else if range.0 >= old_end {
+                (shift(range.0), shift(range.1))
+            } else {
+                (
+                    range.0.min(edit_start),
+                    if range.1 > old_end {
+                        shift(range.1)
+                    } else {
+                        new_end
+                    },
+                )
+            };
+        }
+        dirty.push((edit_start, new_end));
+        entry
+            .substitutions
+            .retain(|(offset, _)| *offset < edit_start || *offset >= old_end);
+        for (offset, _) in &mut entry.substitutions {
+            if *offset >= old_end {
+                *offset = shift(*offset);
+            }
+        }
+        end = end + record.new_end - record.old_end;
+    }
+    if end != key.end {
+        return false;
+    }
+    let length = haystack_char_at_byte(haystack, haystack.len());
+    dirty.sort_unstable();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for (from, to) in dirty {
+        let (from, to) = (from.min(length), to.min(length));
+        match ranges.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => ranges.push((from, to)),
+        }
+    }
+    if ranges.iter().map(|(from, to)| to - from).sum::<usize>() > length / SYNTAX_REPLAY_SHARE_LIMIT
+    {
+        return false;
+    }
+    entry.forbidden.extend(pattern.chars());
+    for &(from, to) in &ranges {
+        let bytes = haystack_byte_at_char(haystack, from)..haystack_byte_at_char(haystack, to);
+        for ch in haystack[bytes].chars() {
+            if entry
+                .sentinels
+                .iter()
+                .any(|sentinel| sentinel.sentinel == ch)
+            {
+                return false;
+            }
+            entry.forbidden.insert(ch);
+        }
+    }
+    for &(from, to) in &ranges {
+        entry
+            .substitutions
+            .retain(|(offset, _)| *offset < from || *offset >= to);
+        let authorities = syntax_property_authorities(interp, start + from, start + to);
+        for descriptor in &authorities.descriptors {
+            entry.descriptors.include_tree(descriptor);
+        }
+        for (name, value) in authorities.categories {
+            if !entry.categories.iter().any(|(known, _)| *known == name) {
+                entry.categories.push((name, value));
+            }
+        }
+        render_syntax_substitutions(interp, entry, haystack, from..to);
+    }
+    entry
+        .substitutions
+        .sort_unstable_by_key(|(offset, _)| *offset);
+    entry.key = key.clone();
+    entry.encoding = materialize_syntax_encoding(haystack, entry);
+    true
+}
+
+/// The control behind every replay in a test build: the replayed entry
+/// renders each character as an encoding built from nothing would
+/// (compared as (offset, character, effective class), since the sentinel
+/// characters themselves may be numbered differently).
+#[cfg(test)]
+fn assert_replay_matches_a_fresh_encoding(
+    interp: &Interpreter,
+    entry: &SyntaxEncodingCacheEntry,
+    haystack: &std::rc::Rc<str>,
+) {
+    let canonical = |entry: &SyntaxEncodingCacheEntry| {
+        entry
+            .substitutions
+            .iter()
+            .map(|(offset, sentinel)| {
+                let class = entry
+                    .sentinels
+                    .iter()
+                    .find(|candidate| candidate.sentinel == *sentinel)
+                    .map(|candidate| (candidate.original, candidate.class))
+                    .expect("every substitution names a sentinel of its entry");
+                (*offset, class.0, class.1)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut fresh = fresh_syntax_encoding_entry(entry.key.clone(), haystack, "");
+    let length = haystack_char_at_byte(haystack, haystack.len());
+    render_syntax_substitutions(interp, &mut fresh, haystack, 0..length);
+    assert_eq!(
+        canonical(entry),
+        canonical(&fresh),
+        "a replayed syntax encoding differs from a fresh one"
+    );
+    if let Some(encoding) = &entry.encoding {
+        assert_eq!(
+            haystack_char_at_byte(&encoding.haystack, encoding.haystack.len()),
+            length,
+            "a replayed syntax encoding has the haystack's length"
+        );
+    }
 }
 
 /// Project a buffer slice into the scalar representation used by the regexp

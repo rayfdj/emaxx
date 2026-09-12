@@ -736,6 +736,60 @@ fn make_string_follows_alloc_c_for_the_multibyte_flag() {
 }
 
 #[test]
+fn syntax_property_searches_after_random_edits_match_the_oracle() {
+    // A deterministic sequence of insertions, deletions and property
+    // writes (`syntax-table' and others) over a buffer with
+    // `parse-sexp-lookup-properties', a syntax-class `looking-at' after
+    // each: the edit log's replay of the syntax encoding (tests compare
+    // every replay with a fresh encoding) gives GNU's results throughout.
+    let body = r#"(save-current-buffer
+  (set-buffer (get-buffer-create "*syntax-replay-random*"))
+  (erase-buffer)
+  (set-syntax-table (make-syntax-table))
+  (set (make-local-variable 'parse-sexp-lookup-properties) t)
+  (let ((i 0)) (while (< i 12) (insert "foo(bar)baz (qux) quux\n") (setq i (1+ i))))
+  (let ((seed 12345) (step 0) (results nil))
+    (while (< step 400)
+      (setq seed (% (+ (* seed 1103515245) 12345) 2147483648))
+      (if (< (point-max) 8) (insert "foo(bar)baz (qux) quux\n"))
+      (let* ((op (% (/ seed 65536) 6))
+             (size (1- (point-max)))
+             (pos (1+ (% (/ seed 256) size)))
+             (to (min (point-max) (+ pos 1 (% seed 4)))))
+        (cond ((= op 0) (goto-char pos) (insert (nth (% seed 5) '("(" ")" "ab" " " "\n"))))
+              ((= op 1) (delete-region pos to))
+              ((= op 2) (put-text-property pos to 'syntax-table (if (= 0 (% seed 2)) '(2) '(0))))
+              ((= op 3) (put-text-property pos to 'syntax-table nil))
+              ((= op 4) (put-text-property pos to 'face 'bold))
+              (t (goto-char pos) (insert "(x)")))
+        (goto-char (min pos (point-max)))
+        (setq results (cons (list (if (looking-at "\\sw+") (match-end 0) 'no)
+                                  (if (looking-at "\\s(") (match-end 0) 'no)
+                                  (if (looking-at "\\s)\\|\\s-") (match-end 0) 'no))
+                            results)))
+      (setq step (1+ step)))
+    (list (buffer-size) (nreverse results))))"#;
+    let expected = upstream_oracle_stdout(&format!("(prin1 {body})"));
+    assert!(
+        expected.starts_with("(377 ((no no 120) (no 259 no) (103 no no)"),
+        "oracle output: {expected}"
+    );
+
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let form = Reader::new(body)
+        .read_all()
+        .expect("read the random-edit syntax contract")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate the random-edit syntax contract")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
 fn overlay_properties_accept_nil_keys_and_accessible_endpoints() {
     assert_upstream_primitive_contract(
         "(with-temp-buffer\
