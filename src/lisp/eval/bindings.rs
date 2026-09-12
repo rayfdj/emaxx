@@ -962,7 +962,7 @@ impl Interpreter {
     /// compilation.
     pub(crate) fn known_symbols_shared(&self) -> Rc<Vec<crate::lisp::types::SymbolName>> {
         let key = super::KnownSymbolsKey {
-            globals: self.globals.iter().count(),
+            globals: self.globals.bound_len(),
             variable_aliases: self.variable_aliases.len(),
             functions: self.functions.len(),
             symbol_properties: self.symbol_properties.len(),
