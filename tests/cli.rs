@@ -254,19 +254,30 @@ fn batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b() {
     // (`noninteractive_need_newline'), so the message starts a new line.
     assert_eq!(output.stderr, b"\nsingle-dash-stderr\n");
 
-    // `-b' is not a GNU option: the oracle exits 255 with "Unknown option".
+    // `-b' is not a GNU option: emacs.c leaves it to startup.el, whose
+    // command-line-1 signals "Unknown option" (the message on stderr, the
+    // batch backtrace on stdout) and the process exits 255 before any
+    // later action runs.
     let rejected = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .args(["-b", "-batch", "-eval", "(princ \"hi\")"])
         .output()
         .unwrap();
-    assert_ne!(
+    assert_eq!(
         rejected.status.code(),
-        Some(0),
-        "-b must be rejected as GNU rejects it:\nstdout: {}",
-        String::from_utf8_lossy(&rejected.stdout)
+        Some(255),
+        "-b must be rejected as GNU rejects it:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&rejected.stdout),
+        String::from_utf8_lossy(&rejected.stderr)
     );
     assert!(
-        rejected.stdout.is_empty(),
+        String::from_utf8_lossy(&rejected.stderr).starts_with("Unknown option `-b'\n"),
+        "stderr: {}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    // The batch backtrace on stdout quotes the unevaluated `-eval' form;
+    // its own output would have come first.
+    assert!(
+        !String::from_utf8_lossy(&rejected.stdout).starts_with("hi"),
         "a rejected invocation must not evaluate forms: {}",
         String::from_utf8_lossy(&rejected.stdout)
     );
@@ -627,4 +638,61 @@ fn batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor() {
         oracle.1
     );
     assert_eq!(subject, oracle);
+}
+
+#[test]
+fn make_fingerprint_replaces_the_default_pattern_with_the_file_s_digest() {
+    // lib-src/make-fingerprint.c: the digest is of the file as it is, the
+    // default pattern included; every occurrence of the pattern is then
+    // overwritten with it; `-r' prints the digest in upper-case hex; a
+    // file without the pattern is the "missing fingerprint" failure.
+    const DEFAULT: [u8; 32] = [
+        0xDE, 0x86, 0xBB, 0x99, 0xFF, 0xF5, 0x46, 0x9A, 0x9E, 0x3F, 0x9F, 0x5D, 0x9A, 0xDF, 0xF0,
+        0x91, 0xBD, 0xCD, 0xC1, 0xE8, 0x0C, 0x16, 0x1E, 0xAF, 0xB8, 0x6C, 0xE2, 0x2B, 0xB1, 0x24,
+        0xCE, 0xB0,
+    ];
+    let tool = env!("CARGO_BIN_EXE_make-fingerprint");
+    let file = unique_temp_path("emaxx-make-fingerprint");
+    let mut content = b"head bytes ".to_vec();
+    content.extend_from_slice(&DEFAULT);
+    content.extend_from_slice(b" middle ");
+    content.extend_from_slice(&DEFAULT);
+    content.extend_from_slice(b" tail");
+    std::fs::write(&file, &content).unwrap();
+    let digest: [u8; 32] = {
+        use sha2::Digest;
+        sha2::Sha256::digest(&content).into()
+    };
+    let raw = Command::new(tool)
+        .args(["-r", &file.display().to_string()])
+        .output()
+        .unwrap();
+    assert!(raw.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&raw.stdout).trim(),
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<String>()
+    );
+    let patched = Command::new(tool).arg(&file).output().unwrap();
+    assert!(
+        patched.status.success(),
+        "{}",
+        String::from_utf8_lossy(&patched.stderr)
+    );
+    let mut expected = b"head bytes ".to_vec();
+    expected.extend_from_slice(&digest);
+    expected.extend_from_slice(b" middle ");
+    expected.extend_from_slice(&digest);
+    expected.extend_from_slice(b" tail");
+    assert_eq!(std::fs::read(&file).unwrap(), expected);
+    let again = Command::new(tool).arg(&file).output().unwrap();
+    assert_eq!(again.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&again.stderr).ends_with("missing fingerprint\n"),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    let _ = std::fs::remove_file(&file);
 }

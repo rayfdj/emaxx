@@ -147,14 +147,13 @@ unchanged GNU test inputs from small to large and requires the complete `.eln`
 files produced by GNU Emacs and Emaxx to be byte-for-byte identical:
 
 ```bash
-cargo test --release --test native_comp_identity -- --ignored --nocapture --test-threads=1
+cargo test --release --test native_comp_identity -- --nocapture --test-threads=1
 ```
 
 The test invokes each editor through its ordinary `-f batch-native-compile`
 entry point.  It does not load helper Elisp, modify the upstream tests, or use
-the compatibility reporter.  It is ignored by the default `cargo test` run
-because it requires the sibling native-comp GNU build and runs two native
-compiler processes for every fixture.
+the compatibility reporter.  It requires the sibling native-comp GNU build
+and runs two native compiler processes for every fixture.
 
 The fixtures are deliberately ordered by size.  Each exact rung records the
 semantic ground already covered, so the first later mismatch identifies the
@@ -187,6 +186,26 @@ Native-runtime regression runs must use fresh images and serial execution
 live native compiler/runtime state cannot safely be cloned. The experimental
 grouped image-template schedule above is not an acceptance route for these
 native-enabled runs.
+
+## 3b. Command-Line Parity
+
+`emacs.c`'s command-line handling (`argmatch`, `sort_args`, the option
+sequence of `main`, `init_cmdargs`, the `--help` and `--version` texts) is
+ported into `src/main.rs`, and everything else on the command line reaches
+the unchanged `startup.el` through `command-line-args`.  The oracle-backed
+gate runs the same argument vectors on `../emacs/src/emacs` and on Emaxx and
+requires identical stdout, stderr and exit status:
+
+```bash
+cargo build --release && cargo test --release --test cli_parity
+```
+
+The test first runs `tools/build-image.sh` so that Emaxx, like the oracle,
+starts from a dumped image (the image is the `emaxx.pdmp` beside the release
+binary; the script is a no-op while it is current).  The one normalization
+beyond paths and addresses is documented in the test: the oracle's preloaded
+Lisp is native code and records no backtrace frame for the C primitives it
+calls, so those frames are dropped from both sides.
 
 ## 4. Authoritative Compatibility Harness
 

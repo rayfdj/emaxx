@@ -5,8 +5,20 @@ An Emacs reimplementation in Rust, aiming for 100% behavioral compatibility at t
 ## Building
 
 ```
-cargo build
+cargo build --release
+tools/build-image.sh target/release/emaxx
 ```
+
+The second step is GNU's `src/Makefile.in` recipe for `temacs` and
+`emacs.pdmp`: `make-fingerprint` writes the binary's SHA-256 over the
+fingerprint placeholder in it, the uninitialized binary runs the unchanged
+`loadup.el` under `--temacs=pdump`, which dumps the image, and the image is
+placed beside the binary as `emaxx.pdmp`, where `emacs.c`'s `load_pdump`
+looks for it.  A binary started
+without its image builds its Lisp state itself on every run (about 26 s);
+one started from the image boots in a fraction of a second.  Rebuilding the
+binary makes the image stale, and, as in GNU, the binary then refuses it:
+run the script again after `cargo build`.
 
 ## Testing
 

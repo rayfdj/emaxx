@@ -148,6 +148,8 @@ enum UserAccountQuery<'a> {
 struct UserAccount {
     login: String,
     full_name: Option<String>,
+    /// fileio.c:user_homedir: the passwd home directory when absolute.
+    home: Option<String>,
 }
 
 #[cfg(unix)]
@@ -212,7 +214,22 @@ fn user_account(query: UserAccountQuery<'_>) -> Option<UserAccount> {
                 }
                 Some(full)
             };
-            return Some(UserAccount { login, full_name });
+            let home = if account.pw_dir.is_null() {
+                None
+            } else {
+                // SAFETY: as above, a NUL-terminated field in SCRATCH.
+                Some(
+                    unsafe { std::ffi::CStr::from_ptr(account.pw_dir) }
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+                .filter(|directory| directory.starts_with('/'))
+            };
+            return Some(UserAccount {
+                login,
+                full_name,
+                home,
+            });
         }
         if status != libc::ERANGE || scratch_len >= 1024 * 1024 {
             return None;
@@ -1342,16 +1359,37 @@ pub(crate) fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> St
             .split_once('/')
             .map(|(user, suffix)| (user, Some(suffix)))
             .unwrap_or((rest, None));
-        if user_exists(user)
-            && let Some(home) = home
-        {
+        // fileio.c:Fexpand_file_name's `~user/': that user's passwd home
+        // directory; a name without one is kept as it is.
+        if let Some(home) = user_home_directory(user) {
             return suffix.map_or_else(
-                || home.to_string(),
-                |suffix| PathBuf::from(home).join(suffix).display().to_string(),
+                || home.clone(),
+                |suffix| PathBuf::from(&home).join(suffix).display().to_string(),
             );
         }
     }
     path.to_string()
+}
+
+/// fileio.c:user_homedir: the absolute home directory of the passwd
+/// entry NAME, or None for an unknown user or a relative directory.
+pub(crate) fn user_home_directory(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        std::ffi::CString::new(name)
+            .ok()
+            .and_then(|name| user_account(UserAccountQuery::Name(&name)))
+            .and_then(|account| account.home)
+    }
+    #[cfg(not(unix))]
+    {
+        current_user_login_name()
+            .filter(|login| login == name)
+            .and_then(|_| std::env::var("HOME").ok())
+    }
 }
 
 pub(crate) fn current_user_login_name() -> Option<String> {
@@ -1428,20 +1466,6 @@ pub(crate) fn system_configuration() -> String {
     env!("EMAXX_SYSTEM_CONFIGURATION").to_string()
 }
 
-pub(crate) fn user_exists(name: &str) -> bool {
-    #[cfg(unix)]
-    {
-        std::ffi::CString::new(name)
-            .ok()
-            .and_then(|name| user_account(UserAccountQuery::Name(&name)))
-            .is_some()
-    }
-    #[cfg(not(unix))]
-    {
-        current_user_login_name().is_some_and(|login| login == name)
-    }
-}
-
 pub(crate) fn user_full_name(name: Option<&str>) -> Option<String> {
     match name {
         None | Some("") => current_user_full_name(),
@@ -1493,8 +1517,10 @@ pub(crate) fn file_name_absolute_p(path: &str) -> bool {
         return true;
     }
     if let Some(rest) = path.strip_prefix('~') {
+        // fileio.c:file_name_absolute_p: `~user' is absolute when that
+        // user has a home directory.
         let user = rest.split('/').next().unwrap_or_default();
-        return user_exists(user);
+        return user_home_directory(user).is_some();
     }
     false
 }
@@ -2274,4 +2300,105 @@ pub(crate) fn file_executable_p(path: &str) -> bool {
     {
         fs::metadata(path).is_ok()
     }
+}
+
+/// emacs.c's `emacs_copyright': the C constant behind `emacs-copyright'
+/// and the `--version' report of a process without a dumped state.
+pub(crate) const EMACS_COPYRIGHT: &str = "Copyright (C) 2025 Free Software Foundation, Inc.";
+
+/// emacs.c's `build_details': false after `--no-build-details', when
+/// sysdep.c's init_system_name leaves `system-name' nil so that a
+/// build is deterministic (version.el then records no build time).
+static BUILD_DETAILS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_build_details(enabled: bool) {
+    BUILD_DETAILS.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// sysdep.c:init_system_name's value: the host name, or nil when the
+/// process was started with `--no-build-details'.
+pub(crate) fn system_name_lisp_value() -> Value {
+    if BUILD_DETAILS.load(std::sync::atomic::Ordering::Relaxed) {
+        Value::String(system_name_value().into())
+    } else {
+        Value::Nil
+    }
+}
+
+/// emacs.c's daemon state: `daemon_type' (1 foreground, 2 background,
+/// negated once `daemon-initialized' ran), `daemon_name' and the
+/// background daemon's synchronization pipe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaemonState {
+    pub background: bool,
+    pub name: Option<String>,
+    /// The writing end of `daemon_pipe' in the background child.
+    pub pipe_writer: Option<i32>,
+}
+
+struct DaemonCell {
+    state: DaemonState,
+    initialized: bool,
+}
+
+static DAEMON: std::sync::Mutex<Option<DaemonCell>> = std::sync::Mutex::new(None);
+
+pub fn set_daemon_state(state: DaemonState) {
+    let mut cell = DAEMON
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cell = Some(DaemonCell {
+        state,
+        initialized: false,
+    });
+}
+
+/// emacs.c:Fdaemonp.
+pub(crate) fn daemonp_value() -> Value {
+    let cell = DAEMON
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match cell.as_ref() {
+        Some(DaemonCell { state, .. }) => match &state.name {
+            Some(name) => Value::string(name),
+            None => Value::T,
+        },
+        None => Value::Nil,
+    }
+}
+
+/// emacs.c:Fdaemon_initialized after its Lisp-visible checks: a
+/// background daemon discards its standard descriptors and tells the
+/// waiting parent, through the pipe, that it can exit.  Returns false
+/// when the daemon was already initialized, and an I/O error as Err.
+pub(crate) fn daemon_initialized() -> Result<bool, ()> {
+    let mut cell = DAEMON
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(daemon) = cell.as_mut() else {
+        return Ok(false);
+    };
+    if daemon.initialized {
+        return Ok(false);
+    }
+    let mut err = false;
+    #[cfg(unix)]
+    if daemon.state.background {
+        // SAFETY: descriptor operations on the process's own standard
+        // descriptors and the pipe this process created before forking.
+        unsafe {
+            let nfd = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR, 0);
+            err |= nfd < 0;
+            err |= libc::dup2(nfd, libc::STDIN_FILENO) < 0;
+            err |= libc::dup2(nfd, libc::STDOUT_FILENO) < 0;
+            err |= libc::dup2(nfd, libc::STDERR_FILENO) < 0;
+            err |= libc::close(nfd) != 0;
+            if let Some(writer) = daemon.state.pipe_writer.take() {
+                err |= libc::write(writer, b"\n".as_ptr().cast(), 1) < 0;
+                err |= libc::close(writer) != 0;
+            }
+        }
+    }
+    daemon.initialized = true;
+    if err { Err(()) } else { Ok(true) }
 }

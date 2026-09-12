@@ -5,6 +5,211 @@
 useful history, but their statement that Emaxx models an Emacs build without
 native compilation is no longer the active design.
 
+## Command line and the dumped image — 2026-09-12 (native-comp branch)
+
+Ray asked for every switch, flag and argument GNU Emacs accepts to be
+accepted by Emaxx with exactly the same behaviour, and for the
+comp-tests.el gap (GNU 14.3 s test phase, Emaxx 1776 s) to close.  The
+gap's root cause is `comp--final` spawning a child
+`EMACS -no-comp-spawn -Q --batch -l TMPFILE` per compilation: a child
+that rebuilt its Lisp state took 26 s, one that starts from an image 0.3 s.
+
+### What changed
+
+- `src/main.rs` is emacs.c's `main` for the command line: `argmatch`
+  (exact short match, long-option abbreviation of at least `minlen`,
+  `=VALUE` or next-argument values), the leading scans for `--temacs`,
+  `--dump-file` and `--seccomp`, `sort_args` (unchanged port), then the
+  exact option sequence: `-version`, `-fingerprint`, `-chdir`, `-t`, `-nw`
+  and `--no-windows`, `-batch`, `-script` (rewritten to `-scriptload` and
+  re-sorted, the `--script=FILE` quirk included), `-help` (emacs.c's
+  `usage_message`, byte for byte), the daemon spellings, `-nl`, `-nsl`,
+  `-no-build-details`, `-module-assertions`, the `-Q`/`-quick` peek, `-x`
+  (rewritten to `-scripteval`), and `init_cmdargs` (argv[0] plus every
+  argument after `skip_args`) for `command-line-args`.  Clap is gone from
+  the editor binary; it stays in the two harness binaries.
+- `--version` prints what emacs.c prints: `GNU Emacs VERSION`, the
+  `Development version` line from the dumped `emacs-repository-version`,
+  `emacs-repository-branch` and `emacs-build-time` when all are set, then
+  the copyright block.  A process without an image prints the C constants,
+  as temacs does.  `--fingerprint` prints the executable's fingerprint
+  when an image loads, else `Not initialized` with status 1.
+- `--temacs=pdump` makes Emaxx the dumping process: no image is loaded,
+  `dump-mode` is the mode, `purify-flag` is t, and `top-level` is
+  `(load "loadup.el")`.  The unchanged loadup.el reads `--bin-dest` and
+  `--eln-dest` from `command-line-args`, dumps `emacs.pdmp` into
+  `invocation-directory` through the ordinary `dump-emacs-portable`, adds
+  the versioned names and kills Emacs.  No Rust sets `load--bin-dest-dir`
+  or `load--eln-dest-dir` on that path.  `-nl` on an uninitialized process
+  leaves `top-level` nil ("Bare Emacs"); a process that starts from an
+  image ignores it, as in GNU.
+- `tools/build-image.sh [BINARY]` is src/Makefile.in's recipe: copy the
+  binary to `emacs` beside itself (the Makefile's `cp -f temacs emacs`),
+  run `LC_ALL=C ./emacs -batch -l loadup --temacs=pdump --bin-dest DIR
+  --eln-dest GNU-TREE/`, then copy `emacs.pdmp` to `<binary>.pdmp`, the
+  name emacs.c's `load_pdump` looks for beside the executable.  It is a
+  no-op while `BINARY --fingerprint` succeeds, i.e. while the image beside
+  the binary still matches it; a rebuilt binary refuses the stale image
+  ("could not load dump file"), exactly as a GNU `emacs` refuses a stale
+  `emacs.pdmp`, so run the script after `cargo build`.  Measured on the
+  Linux box: the dump takes 28 s, and `emaxx -Q --batch --eval '(kill-emacs 0)'`
+  then takes 0.32 s (GNU 0.06 s) instead of 26 s.
+- `--no-build-details` clears `system-name` (sysdep.c's
+  `init_system_name`), which every process now re-initializes after the
+  image load, as `init_editfns` does; version.el then records no build
+  time in a dump.  The daemon switches record `daemon_type`/`daemon_name`
+  (`daemonp` answers as GNU's) and `daemon-initialized` has emacs.c's
+  checks and the background daemon's descriptor/pipe protocol.
+- Fidelity fixes the parity corpus exposed: `expand-file-name` of
+  `~USER/` uses that user's passwd home directory (fileio.c's
+  `user_homedir`) instead of `$HOME`, `file-name-absolute-p` of `~USER`
+  agrees, and `read-from-string` at end of input signals `(end-of-file)`
+  with no data (lread.c's `end_of_file_error`; `(end-of-file FILE)` inside
+  a load).
+
+### Boot cost, measured and reduced (same day, after the parity gate)
+
+A callgrind profile of the child's boot (`emaxx -Q --batch --eval
+'(kill-emacs 0)'`, 2.24 G instructions) showed where it went, and each
+item was answered with what the C does:
+
+- 39% hashed the 16 MB executable for its fingerprint on every start.
+  GNU computes it once at build time: `lib/fingerprint.c` holds a default
+  32-byte pattern, `lib-src/make-fingerprint` overwrites it in the linked
+  `temacs` with the file's SHA-256 (src/Makefile.in's temacs rule).  Now
+  `EMAXX_FINGERPRINT` in `pdumper/image.rs` is that pattern (read through
+  a volatile load, as GNU declares it), `src/bin/make-fingerprint.rs` is
+  the tool (same digest, same in-place replacement, `-r`), and
+  tools/build-image.sh runs it before the dump.  An unfingerprinted
+  binary (a plain `cargo build`) still hashes itself, so two such builds
+  never share a fingerprint.
+- 15% was the interpreter constructor reading the oracle's printed
+  defaults for the C variables Emaxx has no owner for: `x-keysym-table`
+  is a hash-table literal of a thousand entries, and the reader's
+  circular-syntax resolver called `to_vec` on every tail of the `data`
+  list, quadratic in its length.  The resolver now examines the car only,
+  walks list spines iteratively, and copies nothing that holds no reader
+  form (lread.c's `read0` likewise substitutes only into the labelled
+  object); `read-from-string` skips it entirely when the reader emitted
+  no placeholder.
+- `get`/`put` walked symbol plists with a hash set of visited cells; fns.c's
+  `plist_get` uses `FOR_EACH_TAIL_SAFE`, Brent's tortoise, and so do they now.
+  `mapatoms`'s name enumeration dedupes with FNV, as `known_symbol_count`
+  already did, and tests the private-symbol markers as characters.
+- The unibyte-ASCII string decode of the image loader validates with
+  `str::from_utf8` instead of the lossy chunk iterator.
+
+Measured after these (release, same box): the child boot 0.32 to 0.21 s
+(0.997 G instructions; GNU 0.057 s), `(require 'comp)` 0.27 to 0.25 s,
+comp-tests.el 110.7 to 97.5 s test phase (GNU 14.3 s).
+
+What remains in the boot, from the profile after the changes: the image
+load 71% (296,000 strings and 152,000 conses materialized one object at
+a time, 489,000 object-table inserts; pdumper.c maps the file and
+relocates in place, its `load-time` here 0.021 s), the startup top-level
+16% (`normal-top-level` through `command-line-1` as bytecode), the
+initial frame faces 5%, one case-folded regexp compile 4%.
+
+What remains per compile test, from elp and per-phase timing of the
+child on both editors: the child's `(require 'comp)` 0.25 s against
+0.058 s when GNU loads the same `.elc` files as bytecode (`load-no-native`),
+the parent's passes 0.12 s against 0.014 s when GNU runs comp.el as
+bytecode, the child's `comp--final1` 0.11 s against 0.047.  GNU as
+bytecode is no slower than GNU native on this workload, so the remaining
+factor is the evaluator's call path (bytecode.c's `exec_byte_code` keeps
+arguments on the Lisp stack and records a backtrace frame as one specpdl
+entry; eval.c's `funcall_lambda`; alloc.c's counters, where Emaxx's GC
+takes a census of every live string through weak pointers on every
+collection), not startup mechanics.  That is the performance ledger's
+open D20 work.
+
+Natively compiling the compiler's own files with Emaxx, as GNU's
+Makefile does for `comp.el`, `comp-cstr.el`, `comp-common.el`,
+`comp-run.el`, `bytecomp.el` and `byte-opt.el` (src/Makefile.in's
+`elnlisp`), exposed a printer bug: `bytecomp.eln`'s constants blob had
+the symbol `` ` `` where GNU's has `backquote` (`(require 'backquote)`
+at the top of bytecomp.el), so the unit could not be loaded.  Emaxx's
+printer treated the symbols *named* `backquote`, `comma` and `comma-at`
+as print.c's `Qbackquote`, `Qcomma` and `Qcomma_at`, which are the
+symbols named "`", "," and ",@" (a leftover of a reader mode that no
+longer exists).  It now special-cases only those three, and it prints
+the comma shorthand only inside a printed backquote, one nesting level
+each (print.c's `new_backquote_output`): `(\, x)` at top level is a
+list, `` `,,x `` inside one backquote is `` `,(\, x) ``, both as GNU
+prints them.  With the fix, all six files compile with Emaxx (the
+`byte-opt.el` failure was the bad `bytecomp.eln` being loaded during its
+compile), `bytecomp.eln`'s blob reads `[require backquote macroexp ...]`,
+and a child's `(require 'comp)` loads them as native code
+(`native-comp-function-p` of `comp--final1` is t).  It is not faster: 0.28
+to 0.30 s against 0.25 s for the bytecode, so the build step does not
+compile them, and the experiment's elns were removed from
+`~/.emacs.d/eln-cache`.  The identity harness was run after the printer
+change: on this box every one of the 45 differing bytes of
+`comp-test-45603.eln` follows from the oracle's five extra subrs (the
+libdbus and libgpm development packages present here, recorded earlier
+in this document): the eight ASCII bytes of `comp-abi-hash`, seventeen
+`%rip`-relative displacements into the freloc table shifted by exactly
+40 bytes (five 8-byte entries), and the 20-byte ELF build ID.  The
+constants blobs are byte-identical.
+
+### The parity gate
+
+`tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then
+runs the same argument vectors on `../emacs/src/emacs` and on Emaxx from
+the same directory and environment, and requires identical stdout,
+stderr and exit status after normalizing the binary path, the corpus
+directory and bytecode addresses.  The probe files print
+`command-line-args`, `command-line-args-left` and `noninteractive` as the
+unchanged startup.el received them.  `--help` is compared whole.
+`--version` is compared except for the per-binary `Development version`
+line, whose shape is checked.  Run it with the release binary, whose
+image is the one the tests below also use:
+
+```sh
+cargo build --release && cargo test --release --test cli_parity
+```
+
+The one normalization that hides a real difference is documented in the
+test: the oracle's preloaded Lisp is native code and calls C primitives
+directly, so its backtraces have no frame for `signal` under `error`,
+`read-from-string` under `command-line-1`, or `string-match` under
+`command-line-normalize-file-name`; Emaxx runs the byte code of the same
+files and records every call.  The test asks the oracle which frame names
+are primitives and drops those frames from both sides.  That is an
+evaluator/native-code difference to close separately, not a command-line
+one.
+
+### Open semantics, stated plainly
+
+- The oracle is an X build.  Its emacs.c rewrites `--display=NAME` to
+  `-d NAME` inside `#ifdef HAVE_X_WINDOWS`; Emaxx has no window system and
+  behaves as a `--without-x` build, leaving `--display=NAME` to startup.el
+  ("Unknown option `-display'").  `-d NAME` agrees.
+- Daemon sessions: the switches, `daemonp` and `daemon-initialized` are
+  GNU's, and batch sessions with daemon switches behave as GNU's.  An
+  interactive daemon needs server.el's network process, which Emaxx does
+  not implement, so it exits with "daemon mode needs the Emacs server,
+  which this build does not implement" instead of forking.
+- `--module-assertions` is recognized (HAVE_MODULES); Emaxx's module
+  loader has no assertion mode to switch on.
+- `-t DEVICE` replaces the standard descriptors and requires a terminal,
+  as emacs.c does; the tty frontend then uses them.  `-nw` is consumed
+  with nothing to inhibit.
+- `EMAXX_FIXTURE_IMAGE_DIR` (the in-process test fixture's shared image,
+  dumped by Rust with the two loadup variables set from Rust) is still
+  there for `cargo test`'s in-process interpreters, whose executable is
+  the test binary.  The editor binary's own image comes only from the
+  GNU recipe above.
+- comp-tests.el with the image beside the release binary, same box and
+  command as the GNU measurement (`EMACS -Q --batch -l ert -l
+  test/src/comp-tests.el --eval '(ert-run-tests-batch-and-exit (quote (not
+  (or (tag :expensive-test) (tag :unstable)))))'`): 177/177 passed, test
+  phase 110.7 s, total 120.5 s (before: 1776 s and 63 s setup; GNU 14.3 s
+  and 3 s).  The remaining 8x is the performance plan's later steps: the
+  0.32 s child boot (loader relocation, interpreter construction), the
+  in-process `native-compile' at 0.35 s against 0.05, `ert-run-test' at
+  0.19 ms against 0.02.
+
 ## Process-loader integration — 2026-09-10, validation in progress
 
 The incoming process loader is now integrated locally for validation. See

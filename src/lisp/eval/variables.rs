@@ -528,17 +528,19 @@ impl Interpreter {
         }
         let index = self.symbol_property_index(name)?;
         let mut tail = self.symbol_properties[index].1.clone();
-        let mut seen = HashSet::new();
+        // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle
+        // detection (a tortoise moved at powers of two), no allocation.
+        let mut tortoise = Brent::new(&tail);
         while let Value::Cons(cell) = tail {
-            if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
-                return None;
-            }
             let rest = cell.cdr.borrow().clone();
             let (value_cell, next_cell) = rest.cons_cells()?;
             if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
                 return Some(value_cell.borrow().clone());
             }
             tail = next_cell.borrow().clone();
+            if tortoise.cycle(&tail) {
+                return None;
+            }
         }
         None
     }
@@ -552,11 +554,8 @@ impl Interpreter {
         if let Some(index) = self.symbol_property_index(name) {
             let plist = self.symbol_properties[index].1.clone();
             let mut tail = plist.clone();
-            let mut seen = HashSet::new();
+            let mut tortoise = Brent::new(&tail);
             while let Value::Cons(cell) = tail {
-                if !seen.insert(crate::lisp::types::ConsCell::identity(&cell)) {
-                    return;
-                }
                 let rest = cell.cdr.borrow().clone();
                 let Some((value_cell, next_cell)) = (rest).cons_cells() else {
                     return;
@@ -572,6 +571,9 @@ impl Interpreter {
                     return;
                 }
                 tail = next;
+                if tortoise.cycle(&tail) {
+                    return;
+                }
             }
             if plist.is_nil() {
                 self.symbol_properties[index].1 =
@@ -2643,5 +2645,40 @@ impl Interpreter {
         // insertion at the end bound falls outside the restriction.  (Only
         // save_restriction_save's end marker has insertion type t.)
         Ok((beg_marker_id, end_marker_id))
+    }
+}
+
+/// lisp.h's FOR_EACH_TAIL_INTERNAL cycle detection (Brent's algorithm):
+/// the tortoise is moved to the current cell at every power-of-two step
+/// count, and a tail that is `eq' to it closes a cycle.
+struct Brent {
+    tortoise: Value,
+    power: usize,
+    steps: usize,
+}
+
+impl Brent {
+    fn new(head: &Value) -> Self {
+        Self {
+            tortoise: head.clone(),
+            power: 2,
+            steps: 0,
+        }
+    }
+
+    /// Note one step to TAIL; true when TAIL is the tortoise's cell.
+    fn cycle(&mut self, tail: &Value) -> bool {
+        self.steps += 1;
+        if let (Value::Cons(a), Value::Cons(b)) = (tail, &self.tortoise)
+            && std::rc::Rc::ptr_eq(a, b)
+        {
+            return true;
+        }
+        if self.steps == self.power {
+            self.tortoise = tail.clone();
+            self.power <<= 1;
+            self.steps = 0;
+        }
+        false
     }
 }

@@ -1000,13 +1000,32 @@ define_dispatch!(
             }
             "daemonp" => {
                 need_args(name, args, 0)?;
-                Ok(Value::Nil)
+                Ok(daemonp_value())
             }
             "daemon-initialized" => {
                 need_args(name, args, 0)?;
-                Err(LispError::Signal(
-                    "This function can only be called if emacs is run as a daemon".into(),
-                ))
+                if daemonp_value().is_nil() {
+                    return Err(LispError::Signal(
+                        "This function can only be called if emacs is run as a daemon".into(),
+                    ));
+                }
+                if interp
+                    .lookup_var("after-init-time", env)
+                    .is_none_or(|value| value.is_nil())
+                {
+                    return Err(LispError::Signal(
+                        "This function can only be called after loading the init files".into(),
+                    ));
+                }
+                match daemon_initialized() {
+                    Ok(true) => Ok(Value::T),
+                    Ok(false) => Err(LispError::Signal(
+                        "The daemon has already been initialized".into(),
+                    )),
+                    Err(()) => Err(LispError::Signal(
+                        "I/O error during daemon initialization".into(),
+                    )),
+                }
             }
             "invocation-name" | "invocation-directory" => {
                 need_args(name, args, 0)?;

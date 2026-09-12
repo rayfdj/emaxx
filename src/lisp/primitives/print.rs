@@ -99,6 +99,9 @@ pub(crate) struct PrintContext {
     next_label: usize,
     active: HashMap<PrintRefKey, usize>,
     number_table: Option<Value>,
+    /// print.c's `new_backquote_output': the backquote nesting the comma
+    /// shorthand `,X' is printed within; outside one, `(\, X)' is a list.
+    backquote_output: usize,
 }
 
 #[derive(Clone)]
@@ -153,6 +156,7 @@ impl PrintContext {
             next_label,
             active: HashMap::new(),
             number_table,
+            backquote_output: 0,
         })
     }
 }
@@ -1016,36 +1020,35 @@ pub(crate) fn render_prin1_body(
         Ok(Some(string_text(&rendered)?))
     };
 
+    // print.c's print_object for a two-element list headed by Qquote,
+    // Qfunction, Qbackquote (the symbol named "`"), Qcomma (",") or
+    // Qcomma_at (",@") under `print-quoted'.  The symbols named
+    // `backquote', `comma' and `comma-at' are ordinary.  The comma
+    // shorthand appears only inside a printed backquote
+    // (`new_backquote_output'), and consumes one level of it.
     if context.options.quoted
-        && let Ok(items) = value.to_vec()
+        && let Some((head, rest)) = value.cons_values()
+        && let Value::Symbol(symbol) = &head
+        && let Some((inner, tail)) = rest.cons_values()
+        && tail.is_nil()
     {
-        let quoted = match items.as_slice() {
-            [Value::Symbol(symbol), inner] if symbol == "quote" => Some(("'", inner)),
-            [Value::Symbol(symbol), inner]
-                if symbol == "function" || symbol == "function-quote" =>
-            {
-                Some(("#'", inner))
-            }
-            [Value::Symbol(symbol), inner] if symbol == "backquote" || symbol == "`" => {
-                Some(("`", inner))
-            }
-            [Value::Symbol(symbol), inner] if symbol == "comma" || symbol == "," => {
-                Some((",", inner))
-            }
-            [Value::Symbol(symbol), inner] if symbol == "comma-at" || symbol == ",@" => {
-                Some((",@", inner))
-            }
+        let quoted = match symbol.as_str() {
+            "quote" => Some(("'", 0)),
+            "function" | "function-quote" => Some(("#'", 0)),
+            "`" => Some(("`", 1)),
+            "," if context.backquote_output > 0 => Some((",", -1)),
+            ",@" if context.backquote_output > 0 => Some((",@", -1)),
             _ => None,
         };
-        if let Some((prefix, inner)) = quoted {
+        if let Some((prefix, nesting)) = quoted {
             // GNU's print-quoted syntax replaces the (quote INNER) wrapper;
             // it does not charge that elided cons level against print-level.
             // Passing depth + 1 here truncates one level too early (for
             // example, print-level 1 would render '(a) as '...).
-            return Ok(format!(
-                "{prefix}{}",
-                render_prin1_with_context(interp, inner, env, context, depth)?
-            ));
+            context.backquote_output = context.backquote_output.wrapping_add_signed(nesting);
+            let rendered = render_prin1_with_context(interp, &inner, env, context, depth);
+            context.backquote_output = context.backquote_output.wrapping_add_signed(-nesting);
+            return Ok(format!("{prefix}{}", rendered?));
         }
     }
 
@@ -1108,19 +1111,9 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
-        Value::Symbol(symbol)
-            if context.options.escape && (symbol == "backquote" || symbol == "`") =>
-        {
-            Ok("\\`".into())
-        }
-        Value::Symbol(symbol) if context.options.escape && (symbol == "comma" || symbol == ",") => {
-            Ok("\\,".into())
-        }
-        Value::Symbol(symbol)
-            if context.options.escape && (symbol == "comma-at" || symbol == ",@") =>
-        {
-            Ok("\\,@".into())
-        }
+        Value::Symbol(symbol) if context.options.escape && symbol == "`" => Ok("\\`".into()),
+        Value::Symbol(symbol) if context.options.escape && symbol == "," => Ok("\\,".into()),
+        Value::Symbol(symbol) if context.options.escape && symbol == ",@" => Ok("\\,@".into()),
         Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
         Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             let items = vector_items(value)?;
@@ -1412,6 +1405,17 @@ pub(crate) fn render_prin1_ephemeral(
     render_prin1(interp, value, &mut env)
 }
 
+/// lread.c:end_of_file_error: `(end-of-file FILE)' while a file is being
+/// loaded (`load-true-file-name' a string), else `(end-of-file)'.
+fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
+    match interp.lookup_var("load-true-file-name", env) {
+        Some(file @ Value::String(_)) => {
+            LispError::SignalValue(Value::list([Value::Symbol("end-of-file".into()), file]))
+        }
+        _ => LispError::EndOfInput,
+    }
+}
+
 pub(crate) fn read_one_form_in_env(
     interp: &mut Interpreter,
     text: &str,
@@ -1420,8 +1424,11 @@ pub(crate) fn read_one_form_in_env(
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
     let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
     let value = match reader.read()? {
-        Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
-        None => return Err(LispError::EndOfInput),
+        Some(value) if reader.emitted_reader_forms() => {
+            crate::lisp::reader::resolve_circular_read_syntax(value)?
+        }
+        Some(value) => value,
+        None => return Err(end_of_file_error(interp, env)),
     };
     let value = interp.intern_read_symbols_in_value(value, env)?;
     interp.set_variable(
@@ -1534,8 +1541,11 @@ fn read_one_positioned_form(
         base_position,
     );
     let value = match reader.read()? {
-        Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
-        None => return Err(LispError::EndOfInput),
+        Some(value) if reader.emitted_reader_forms() => {
+            crate::lisp::reader::resolve_circular_read_syntax(value)?
+        }
+        Some(value) => value,
+        None => return Err(end_of_file_error(interp, env)),
     };
     interp.set_variable(
         "lread--unescaped-character-literals",

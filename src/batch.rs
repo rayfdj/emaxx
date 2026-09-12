@@ -27,6 +27,19 @@ pub struct BatchRunOptions {
     /// emacs.c's `--dump-file FILE': the image the process starts from.
     /// None looks for the executable's own `<name>.pdmp' beside it.
     pub dump_file: Option<PathBuf>,
+    /// emacs.c's `--temacs=MODE' (`pdump' or `pbootstrap'): the process
+    /// loads no image, builds its state by running loadup.el as its
+    /// top-level form, and loadup.el itself dumps the image.
+    pub dump_mode: Option<String>,
+    /// emacs.c's `-nl'/`--no-loadup': an uninitialized process does not
+    /// load loadup.el ("Bare Emacs").  Ignored by a process that starts
+    /// from an image, as in GNU.
+    pub no_loadup: bool,
+    /// emacs.c:main's "Handle -l loadup, args passed by Makefile": the
+    /// file a `-l FILE' first among the remaining arguments names, which
+    /// an uninitialized process loads as its top-level form (loadup.el
+    /// replaces it unless `-nl').
+    pub temacs_load: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -438,16 +451,100 @@ fn finish_test_fixture(interpreter: Result<Interpreter, String>) -> Result<Inter
 /// Reconstruct persistent Lisp state and initialize C-owned interactive
 /// process state. The terminal must be ready before run_startup_top_level.
 pub(crate) fn initialize_interactive_interpreter(
-    no_site_lisp: bool,
-    dump_file: Option<PathBuf>,
+    options: &BatchRunOptions,
 ) -> Result<Interpreter, String> {
-    let options = BatchRunOptions {
-        no_site_lisp,
-        defer_delayed_custom_init: true,
-        dump_file,
-        ..Default::default()
+    finish_test_fixture(initialize_interpreter(options, false))
+}
+
+/// emacs.c:main after load_pdump: whether this process starts
+/// `initialized', from an image (`--dump-file', or the executable's own
+/// `<name>.pdmp' beside it).  A named image that cannot be loaded is
+/// fatal there, as in GNU.
+pub fn startup_image_loads(dump_file: Option<&Path>) -> bool {
+    let mut interpreter = Interpreter::new();
+    crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file).is_some()
+}
+
+/// pdumper.c:dump_fingerprint with an empty label: the executable's
+/// fingerprint as lowercase hex.
+pub fn executable_fingerprint_hex() -> String {
+    crate::lisp::primitives::pdumper::image::executable_fingerprint()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// emacs.c:main's `--version' report, produced after load_pdump and the
+/// init_* calls: the dumped process reports its `emacs-version',
+/// `emacs-copyright' and repository details; a process without an image
+/// (temacs) reports the C constants.  An unusable variable is the
+/// message GNU writes to stderr before exiting with status 1.
+pub fn version_banner(dump_file: Option<&Path>) -> Result<String, String> {
+    let mut interpreter = Interpreter::new();
+    let initialized =
+        crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file)
+            .is_some();
+    let env: Env = Vec::new();
+    let variable = |interpreter: &Interpreter, name: &str| {
+        interpreter.lookup_var(name, &env).unwrap_or(Value::Nil)
     };
-    finish_test_fixture(initialize_interpreter(&options, false))
+    let string_variable = |interpreter: &Interpreter, name: &str| -> Result<String, String> {
+        lisp::primitives::string_like(&variable(interpreter, name))
+            .map(|string| string.text)
+            .ok_or_else(|| format!("Invalid value of '{name}'"))
+    };
+    let (version, copyright) = if initialized {
+        (
+            string_variable(&interpreter, "emacs-version")?,
+            string_variable(&interpreter, "emacs-copyright")?,
+        )
+    } else {
+        (
+            lisp::primitives::emacs_version_value(),
+            lisp::primitives::EMACS_COPYRIGHT.to_string(),
+        )
+    };
+    let mut report = format!("GNU Emacs {version}\n");
+    if initialized {
+        let rversion = variable(&interpreter, "emacs-repository-version");
+        let rbranch = variable(&interpreter, "emacs-repository-branch");
+        let rtime = variable(&interpreter, "emacs-build-time");
+        if !rversion.is_nil() && !rbranch.is_nil() && !rtime.is_nil() {
+            let text = |interpreter: &mut Interpreter, function: &str, args: &[Value]| {
+                lisp::primitives::call(interpreter, function, args, &mut Vec::new())
+                    .map_err(|error| error.to_string())
+                    .and_then(|value| {
+                        lisp::primitives::string_like(&value)
+                            .map(|string| string.text)
+                            .ok_or_else(|| format!("{function} did not return a string"))
+                    })
+            };
+            let short = text(
+                &mut interpreter,
+                "substring",
+                &[rversion, Value::Integer(0), Value::Integer(12)],
+            )?;
+            let branch = lisp::primitives::string_like(&rbranch)
+                .map(|string| string.text)
+                .unwrap_or_default();
+            let date = text(
+                &mut interpreter,
+                "format-time-string",
+                &[Value::string("%Y-%m-%d"), rtime, Value::Nil],
+            )?;
+            report.push_str(&format!(
+                "Development version {short} on {branch} branch; build date {date}.\n"
+            ));
+        }
+    }
+    report.push_str(&format!(
+        "{copyright}\n\
+         GNU Emacs comes with ABSOLUTELY NO WARRANTY.\n\
+         You may redistribute copies of GNU Emacs\n\
+         under the terms of the GNU General Public License.\n\
+         For more information about these matters, see the file named COPYING.\n"
+    ));
+    Ok(report)
 }
 
 pub(crate) fn initialize_batch_interpreter(
@@ -485,16 +582,22 @@ fn initialize_interpreter(
     // loadup; without one it is temacs and reconstructs the dumped state
     // in the closure below.  The process values the constructor took
     // once are applied again over the image, as GNU's init_* are.
-    let mut initialized = crate::lisp::primitives::pdumper::load_pdump_at_startup(
-        &mut interpreter,
-        options.dump_file.as_deref(),
-    )
-    .is_some();
+    // `--temacs=MODE' names the dumping process itself: it attempts no
+    // image load (emacs.c's `attempt_load_pdump' stays false).
+    let temacs = options.dump_mode.is_some();
+    let mut initialized = !temacs
+        && crate::lisp::primitives::pdumper::load_pdump_at_startup(
+            &mut interpreter,
+            options.dump_file.as_deref(),
+        )
+        .is_some();
     // The harness's shared loadup image (`EMAXX_FIXTURE_IMAGE_DIR'): the
     // `emacs.pdmp' of this build, loaded when present, else dumped by
     // this process once its loadup state is built.
     let mut fixture_to_dump = None;
-    if !initialized
+    if !temacs
+        && !initialized
+        && !options.no_loadup
         && options.dump_file.is_none()
         && let Some(fixture) = FixtureImage::acquire()?
     {
@@ -590,6 +693,13 @@ fn initialize_interpreter(
         if initialized {
             return Ok(());
         }
+        // The dumping process (`--temacs'), and the bare one (`-nl'):
+        // emacs.c:main's uninitialized branch stores the top-level form
+        // that loads loadup.el, which performs the dump itself.
+        if temacs || options.no_loadup {
+            prepare_temacs_top_level(interpreter, options);
+            return Ok(());
+        }
         preload_batch_compat_libraries(interpreter)?;
         // The dump boundary.  charset.c's Vcharset_non_preferred_head is
         // not staticpro'd, so the value loadup left (english.el's
@@ -627,17 +737,25 @@ fn initialize_interpreter(
         Value::float(if noninteractive { 1.0 } else { 0.1 }),
         &mut Vec::new(),
     );
+    // sysdep.c:init_system_name, from init_editfns in every process: this
+    // host's name, or nil after `--no-build-details'; the image carries
+    // the dumping host's.
+    interpreter.set_global_binding("system-name", lisp::primitives::system_name_lisp_value());
     if noninteractive {
         interpreter.set_variable("undo-outer-limit", Value::Nil, &mut Vec::new());
     }
     let dump_path = Value::list(installation_load_path.iter().map(|path| {
         lisp::primitives::bytes_to_shared_unibyte_value(path.as_os_str().as_encoded_bytes())
     }));
-    crate::startup::initialize_load_path(&mut interpreter, dump_path, false, options.no_site_lisp)
+    crate::startup::initialize_load_path(&mut interpreter, dump_path, temacs, options.no_site_lisp)
         .map_err(|error| format!("initialize session load-path: {error}"))?;
     // emacs.c:init_display follows init_lread. Interactive initialization
     // waits for the terminal in tty.rs before invoking the same C-owned call.
-    if noninteractive {
+    // dispnew.c:init_display makes it only for a process that started from
+    // an image (`dumped_with_pdumper_p'); the dumping process and the bare
+    // one have no faces.el yet.  The reconstruction above stands for both
+    // phases and so makes the call too.
+    if noninteractive && !(temacs || options.no_loadup) {
         initialize_initial_frame_faces(&mut interpreter)?;
     }
     // emacs.c:main after `initialized = true': "Allow code to be run
@@ -1036,6 +1154,31 @@ fn has_configured_lisp_tree(interpreter: &Interpreter) -> bool {
         .lookup_var("load-path", &Vec::new())
         .and_then(|value| value.to_vec().ok())
         .is_some_and(|paths| !paths.is_empty())
+}
+
+/// emacs.c:main for a process that is not `initialized': `dump-mode'
+/// is the `--temacs' mode, `purify-flag' is t (alloc.c's initial value),
+/// and `top-level' is the `-l FILE' load, then the load of loadup.el
+/// unless `-nl'.  loadup.el runs as the top-level form: with a dump mode
+/// it dumps the image where the Makefile's `--bin-dest' and `--eln-dest'
+/// (read from `command-line-args' by loadup.el itself) say, and kills
+/// Emacs; without one its end evaluates `top-level' for the session.
+fn prepare_temacs_top_level(interpreter: &mut Interpreter, options: &BatchRunOptions) {
+    if let Some(mode) = &options.dump_mode {
+        interpreter.define_special_variable("dump-mode", Value::string(mode));
+    }
+    interpreter.define_special_variable("purify-flag", Value::T);
+    let mut top_level = Value::Nil;
+    if let Some(file) = &options.temacs_load {
+        top_level = Value::list([
+            Value::symbol("load"),
+            lisp::primitives::bytes_to_shared_unibyte_value(file.as_bytes()),
+        ]);
+    }
+    if !options.no_loadup {
+        top_level = Value::list([Value::symbol("load"), Value::string("loadup.el")]);
+    }
+    interpreter.set_global_binding("top-level", top_level);
 }
 
 fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
@@ -1485,8 +1628,12 @@ mod tests {
                 .expect("raw GC initializer"),
             Value::float(0.1)
         );
-        let interactive =
-            initialize_interactive_interpreter(true, None).expect("prepare interactive session");
+        let interactive = initialize_interactive_interpreter(&BatchRunOptions {
+            no_site_lisp: true,
+            defer_delayed_custom_init: true,
+            ..Default::default()
+        })
+        .expect("prepare interactive session");
         assert_eq!(
             interactive
                 .symbol_value_cell("undo-outer-limit")

@@ -2329,9 +2329,11 @@ pub(crate) fn is_visible_symbol_name(name: &str) -> bool {
 }
 
 pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
+    // Character patterns: a one-character `&str' pattern runs the general
+    // substring searcher on every name `mapatoms' visits.
     symbol
-        .split_once(UNINTERNED_SYMBOL_MARKER)
-        .or_else(|| symbol.split_once(OBARRAY_SYMBOL_MARKER))
+        .split_once(UNINTERNED_SYMBOL_MARKER_CHAR)
+        .or_else(|| symbol.split_once(OBARRAY_SYMBOL_MARKER_CHAR))
         .map(|(visible, _)| visible)
         .unwrap_or(symbol)
 }
