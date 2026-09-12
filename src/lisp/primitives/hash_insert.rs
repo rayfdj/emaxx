@@ -189,6 +189,7 @@ pub(crate) fn sweep_weak_hash_tables(
     for (id, entries, keep) in reachability.tables {
         interp.sweep_weak_hash_table(id, entries, &keep);
     }
+    interp.sweep_unreached_markers(&reachability.live_markers);
     interp.install_gc_record_census(reachability.live_records);
 }
 

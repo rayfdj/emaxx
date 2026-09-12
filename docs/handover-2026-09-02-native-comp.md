@@ -193,6 +193,10 @@ checked against a mutation snapshot of its public view before every
 keymap primitive, so pairs spliced by natively compiled Lisp
 (`define-key-after` on the Mac, where subr.el runs natively) reach
 `lookup-key`; the Mac's so-long-tests failures.
+Checkpoint 19p (2026-09-12, for main): the collector unchains the
+markers it does not reach, as alloc.c's sweep does (an edit after
+20,000 dropped markers and a collection 3,104 to 16.5 us, GNU 0.92);
+buffer marks and process marks are roots of the mark phase.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

@@ -1900,6 +1900,87 @@ fn uninterned_symbols_are_reached_by_object_not_by_name() {
 }
 
 #[test]
+fn markers_the_collector_reaches_survive_and_the_rest_are_unchained() {
+    // alloc.c's sweep unchains a marker nothing references: it stops being
+    // adjusted by edits.  Every marker C keeps a slot for is reached from
+    // that slot -- the buffer's mark, a process's mark, the excursion and
+    // restriction markers on the specpdl, the undo list's -- and one held
+    // in a Lisp variable from the variable.  The oracle's values (the
+    // buffer prints as killed: the list is printed after `kill-buffer').
+    let program = r#"
+        (let* ((b (generate-new-buffer "markers"))
+               (kept (with-current-buffer b (insert "0123456789") (copy-marker 4)))
+               (p (start-process "markers-cat" b "cat")))
+          (with-current-buffer b
+            (set-marker (process-mark p) 6)
+            (set-mark 3)
+            (let ((i 0)) (while (< i 500) (copy-marker 5) (setq i (1+ i))))
+            (buffer-enable-undo)
+            (delete-region 7 9)
+            (list
+             (save-excursion
+               (goto-char 8)
+               (garbage-collect)
+               (goto-char 1) (insert "ab")
+               (point))
+             (save-restriction
+               (narrow-to-region 3 7)
+               (garbage-collect)
+               (goto-char (point-min)) (insert "xy")
+               (list (point-min) (point-max)))
+             (progn (garbage-collect)
+                    (goto-char 1) (insert "Q")
+                    (list (marker-position kept) (marker-position (process-mark p))
+                          (marker-position (mark-marker)) (marker-buffer kept)
+                          (let ((entries (seq-filter (lambda (e) (and (consp e) (markerp (car e))))
+                                                     buffer-undo-list)))
+                            (mapcar (lambda (e) (marker-position (car e))) entries))))
+             (progn (delete-process p) (kill-buffer b) (marker-buffer kept)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(3 (3 9) (9 11 8 #<killed buffer> nil) nil)",
+        "markers across a collection",
+    );
+}
+
+#[test]
+fn unreached_markers_leave_their_buffers_edit_walk() {
+    // 500 markers made and dropped: after a collection they are detached,
+    // so an insertion adjusts only the markers still reachable (the kept
+    // one and the buffer's mark), where before every edit walked the
+    // dropped ones too.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        r#"(with-current-buffer (get-buffer-create "walk")
+             (insert "0123456789")
+             (set-marker (mark-marker) 3)
+             (let ((i 0)) (while (< i 500) (copy-marker 5) (setq i (1+ i))))
+             (setq walk-kept (copy-marker 7)))"#,
+    )
+    .read_all()
+    .expect("read the marker walk contract")
+    .remove(0);
+    interp.eval(&form, &mut env).expect("make the markers");
+    let before = interp.attached_marker_count();
+    assert!(before >= 502, "attached before the collection: {before}");
+    let collect = Reader::new(
+        r#"(progn (garbage-collect)
+                  (with-current-buffer "walk" (goto-char 1) (insert "ab") (marker-position walk-kept)))"#,
+    )
+    .read_all()
+    .expect("read the collection form")
+    .remove(0);
+    let position = interp.eval(&collect, &mut env).expect("collect and edit");
+    assert_eq!(position, Value::Integer(9));
+    let after = interp.attached_marker_count();
+    assert!(
+        after < before && after <= before - 500,
+        "attached after the collection: {after} (before {before})"
+    );
+}
+
+#[test]
 fn finalizers_follow_alloc_c() {
     // alloc.c: Fmake_finalizer checks FUNCTIONP; print.c prints
     // `#<finalizer>'; garbage_collect queues every unreached finalizer

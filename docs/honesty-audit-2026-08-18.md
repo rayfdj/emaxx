@@ -10287,3 +10287,44 @@ mixed with `define-key' and `set-keymap-parent', then the lookups,
 `keymap-parent', `copy-sequence' of the view (GNU's shape, parent as
 the tail) and a `copy-keymap', all compared with the oracle.  The
 Mac's so-long-tests run is the receipt still to be taken.
+
+## 2026-09-12 Checkpoint 19p: the collector unchains the markers it does not reach
+
+*What prompted it.*  Measured after 19m and on the Mac's list:
+undo-tests (4.4 s against GNU 0.38), buffer-tests (3.9 against 0.18),
+track-changes-tests (3.4 against 0.29), editfns-tests (2.3 against
+0.07), marker-tests.  The probe: with 20,000 markers dropped in a
+buffer, an insertion and deletion cost 3,104 us (GNU 23: it walks its
+marker chain too), and after `garbage-collect' still 3,104 us (GNU
+0.92): nothing ever removed a marker from its buffer's set except
+`set-marker' to nil, so every edit walked every marker the buffer had
+ever had.
+
+*What changed.*  alloc.c's sweep unchains a marker the mark phase did
+not reach (sweep_misc, unchain_marker).  `sweep_unreached_markers'
+does that at the end of every collection: a marker attached to a
+buffer whose id the mark phase did not reach is detached (buffer and
+position nil) and removed from the buffer's set, and its slot and id
+stay, never reused -- a reference the roots missed would read a marker
+that points nowhere, as one set to nil does, never another marker.
+The mark phase now also reaches the slots C keeps markers in outside
+the Lisp graph: each buffer's mark marker (BVAR (b, mark)) and each
+process's mark (Lisp_Process.mark); the excursions and restrictions on
+the specpdl, the bytecode VM's excursions and the undo lists' marker
+entries were traced already (`roots.rs', `visit_lisp_roots').
+
+*Controls.*  `markers_the_collector_reaches_survive_and_the_rest_are_unchained'
+against the oracle: a marker in a variable, the buffer's mark, a
+process's mark, a `save-excursion' and a `save-restriction' each
+across a `garbage-collect' with 500 dropped markers beside them, then
+insertions, all positions the oracle's.
+`unreached_markers_leave_their_buffers_edit_walk': 500 dropped markers
+attached before the collection, none after, the kept one still
+adjusted by the next insertion.
+
+*Measured.*  The probe: an insertion and deletion after 20,000 dropped
+markers and a `garbage-collect' 3,104 to 16.5 us, the same as the
+fresh buffer's 16.6 (GNU 0.92).  Open: the edit itself at 16.6 us
+against 0.93 (undo recording, property adjustment, the rope), and the
+walk before a collection (3,104 us against GNU's 23: 155 ns a marker
+through a `BTreeSet' of ids against GNU's chain of structs).

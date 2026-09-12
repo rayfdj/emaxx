@@ -3092,6 +3092,10 @@ pub(crate) struct WeakHashReachability {
     /// Finalizer objects the mark phase reached (alloc.c marks a reached
     /// `Lisp_Finalizer' as any pseudovector, and its function with it).
     pub(crate) live_finalizers: MarkedIds,
+    /// Marker objects the mark phase reached, from the Lisp graph and from
+    /// the slots C keeps them in (buffer marks, process marks, the
+    /// excursions and restrictions on the specpdl, the undo lists).
+    pub(crate) live_markers: MarkedIds,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
@@ -4029,6 +4033,8 @@ impl Interpreter {
         }
         for process in &self.process_states {
             mark(&Value::Record(process.record_id));
+            // process.c's Lisp_Process.mark slot: the process mark marker.
+            mark(&Value::Marker(process.mark_marker_id));
             for value in [
                 process.filter.as_ref(),
                 process.sentinel.as_ref(),
@@ -4057,6 +4063,11 @@ impl Interpreter {
         }
         for value in self.plain_quote_templates.values() {
             mark(&value.value);
+        }
+        // buffer.c's BVAR (b, mark): each buffer's mark marker is a slot of
+        // the buffer object, reached whenever the buffer is.
+        for id in self.buffer_mark_marker_ids.values() {
+            mark(&Value::Marker(*id));
         }
         let mut visit_buffer = |value: &Value| {
             mark(value);
@@ -4135,6 +4146,7 @@ impl Interpreter {
             tables,
             live_records: marked.records,
             live_finalizers: marked.finalizers,
+            live_markers: marked.markers,
         }
     }
 

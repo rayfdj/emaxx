@@ -1318,6 +1318,47 @@ impl Interpreter {
         }
     }
 
+    /// alloc.c's sweep of the marker blocks: a marker the mark phase did not
+    /// reach is unchained from its buffer (sweep_misc / unchain_marker), so
+    /// later insertions and deletions no longer adjust it.  The marker's
+    /// slot stays, detached (`buffer_id' and `position' nil), and its id is
+    /// never reused: a reference the roots missed would read a marker that
+    /// points nowhere, as one set to nil does, never another marker.
+    pub(crate) fn sweep_unreached_markers(&mut self, live: &crate::lisp::eval::MarkedIds) {
+        let state = &mut **self;
+        let mut emptied = Vec::new();
+        for (buffer_id, ids) in &mut state.markers_by_buffer {
+            let doomed = ids
+                .iter()
+                .copied()
+                .filter(|id| !live.contains(id))
+                .collect::<Vec<_>>();
+            for id in doomed {
+                ids.remove(&id);
+                if let Some(index) = Self::marker_index(id)
+                    && let Some(marker) = state.markers.get_mut(index)
+                    && marker.id == id
+                {
+                    marker.buffer_id = None;
+                    marker.position = None;
+                }
+            }
+            if ids.is_empty() {
+                emptied.push(*buffer_id);
+            }
+        }
+        for buffer_id in emptied {
+            state.markers_by_buffer.remove(&buffer_id);
+        }
+    }
+
+    /// Markers attached to some buffer: the ones every edit of that buffer
+    /// walks.
+    #[cfg(test)]
+    pub(crate) fn attached_marker_count(&self) -> usize {
+        self.markers_by_buffer.values().map(|ids| ids.len()).sum()
+    }
+
     pub fn live_marker_positions_for_buffer(&self, buffer_id: u64) -> Vec<(u64, Option<usize>)> {
         self.markers_by_buffer
             .get(&buffer_id)
