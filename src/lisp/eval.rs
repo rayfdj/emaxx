@@ -2066,8 +2066,9 @@ pub(crate) struct GnuTlsSessionApi {
 
 pub(crate) struct ProcessGnuTlsSession {
     // Keep the library alive until every session and credential destructor has
-    // run; all stored function pointers are owned by this library.
-    _library: libloading::Library,
+    // run; all stored function pointers are owned by this library (the
+    // per-thread loaded library, shared with every other user of it).
+    _library: std::rc::Rc<dyn std::any::Any>,
     state: *mut std::ffi::c_void,
     credential: *mut std::ffi::c_void,
     api: GnuTlsSessionApi,
@@ -2076,7 +2077,7 @@ pub(crate) struct ProcessGnuTlsSession {
 
 impl ProcessGnuTlsSession {
     pub(crate) fn new(
-        library: libloading::Library,
+        library: std::rc::Rc<dyn std::any::Any>,
         state: *mut std::ffi::c_void,
         credential: *mut std::ffi::c_void,
         api: GnuTlsSessionApi,

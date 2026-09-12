@@ -330,6 +330,10 @@ struct IsolatedTestCheckout {
     root: PathBuf,
     checkout: PathBuf,
     commit: String,
+    /// The tree the generated inputs were staged from; `restore' falls
+    /// back to it when a staged copy has gone (the staging root lives in
+    /// the temporary directory, which the host may clean under a long run).
+    source: PathBuf,
     support_files: Vec<PathBuf>,
 }
 
@@ -346,6 +350,7 @@ impl IsolatedTestCheckout {
             root,
             checkout,
             commit: commit.to_string(),
+            source: source.to_path_buf(),
             support_files,
         };
         let clone = Command::new("git")
@@ -407,11 +412,21 @@ impl IsolatedTestCheckout {
                 self.checkout.display()
             ));
         }
-        copy_relative_files(
-            &self.root.join("test-support"),
-            &self.checkout,
-            &self.support_files,
-        )?;
+        let staged = self.root.join("test-support");
+        for relative in &self.support_files {
+            if staged.join(relative).is_file() {
+                copy_relative_files(&staged, &self.checkout, std::slice::from_ref(relative))?;
+            } else if self.source.join(relative).is_file() {
+                copy_relative_files(&self.source, &self.checkout, std::slice::from_ref(relative))?;
+            } else {
+                return Err(format!(
+                    "isolated test-support input {} is gone from {} and {}",
+                    relative.display(),
+                    staged.display(),
+                    self.source.display()
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -4386,6 +4401,24 @@ mod tests {
             "generated-doc\n"
         );
         assert!(!checkout.file("generated.elc").exists());
+
+        // A staged input the host's temporary-directory cleaning removed
+        // is restored from the source tree; one gone from both is an error
+        // naming it, not a silent omission.
+        fs::remove_file(checkout.root.join("test-support/etc/DOC")).unwrap();
+        fs::write(checkout.file("etc/DOC"), "generated-doc-mutated\n").unwrap();
+        checkout.restore().unwrap();
+        assert_eq!(
+            fs::read_to_string(checkout.file("etc/DOC")).unwrap(),
+            "generated-doc\n"
+        );
+        let staged_doc_bytes = fs::read(source.join("etc/DOC")).unwrap();
+        fs::remove_file(source.join("etc/DOC")).unwrap();
+        let error = checkout.restore().unwrap_err();
+        assert!(error.contains("etc/DOC"), "{error}");
+        fs::write(source.join("etc/DOC"), staged_doc_bytes).unwrap();
+        checkout.restore().unwrap();
+
         fs::write(source.join("lisp/loaddefs.el"), "(generated-changed)\n").unwrap();
         fs::write(source.join("etc/charsets/IBM038.map"), "0x82 0x0061\n").unwrap();
         fs::write(source.join("etc/DOC"), "generated-doc-changed\n").unwrap();

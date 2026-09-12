@@ -1164,6 +1164,36 @@ fn aset_mutates_shared_string_identity_without_rebinding_its_variable() {
 }
 
 #[test]
+fn aset_on_an_ascii_string_keeps_its_properties_multibyteness_and_identity() {
+    // The in-place ASCII store (data.c's one-byte case) must leave the text
+    // properties, the multibyte flag and the object identity as the general
+    // path does, for a unibyte and for a multibyte ASCII string.
+    assert_eq!(
+        eval_str(
+            r#"(let* ((s (propertize "abc" 'face 'bold))
+                      (m (string-to-multibyte (copy-sequence s)))
+                      (alias s))
+                 (aset s 1 ?x)
+                 (aset m 2 ?y)
+                 (list (prin1-to-string s)
+                       (eq s alias)
+                       (multibyte-string-p s)
+                       (prin1-to-string m)
+                       (multibyte-string-p m)
+                       (condition-case err (aset s 5 ?z) (error (car err)))))"#
+        ),
+        Value::list([
+            Value::String("#(\"axc\" 0 3 (face bold))".into()),
+            Value::T,
+            Value::Nil,
+            Value::String("#(\"aby\" 0 3 (face bold))".into()),
+            Value::T,
+            Value::Symbol("args-out-of-range".into()),
+        ])
+    );
+}
+
+#[test]
 fn eval_throw_and_call_interactively_keep_their_gnu_function_boundary() {
     assert_eq!(
         eval_str(

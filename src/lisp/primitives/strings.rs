@@ -9,19 +9,6 @@ pub(crate) struct StringLike {
 }
 
 impl StringLike {
-    pub(crate) fn char_code_at(&self, index: usize) -> Option<i64> {
-        if let Ok(position) = self
-            .extended_chars
-            .binary_search_by_key(&index, |(position, _)| *position)
-        {
-            return Some(i64::from(self.extended_chars[position].1));
-        }
-        self.text
-            .chars()
-            .nth(index)
-            .map(|ch| string_character_code(self.multibyte, ch))
-    }
-
     pub(crate) fn character_codes(&self) -> Vec<i64> {
         self.text
             .chars()
@@ -183,6 +170,64 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
         // ordinary vectors must never be reinterpreted from their contents.
         _ => None,
     }
+}
+
+/// The character code at INDEX of a string, read in place (Faref on a
+/// string: no copy of the text).  `None' for a non-string or an index past
+/// the end.
+pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Option<i64> {
+    fn code_in(
+        text: &str,
+        multibyte: bool,
+        extended: &[(usize, u32)],
+        index: usize,
+    ) -> Option<i64> {
+        if let Ok(position) = extended.binary_search_by_key(&index, |(position, _)| *position) {
+            return Some(i64::from(extended[position].1));
+        }
+        if text.is_ascii() {
+            return text.as_bytes().get(index).map(|byte| i64::from(*byte));
+        }
+        text.chars()
+            .nth(index)
+            .map(|ch| string_character_code(multibyte, ch))
+    }
+    match value {
+        Value::String(text) => {
+            let text = text.as_str();
+            let multibyte = text
+                .chars()
+                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
+            code_in(text, multibyte, &[], index)
+        }
+        Value::StringObject(state) => {
+            let state = state.borrow();
+            code_in(&state.text, state.multibyte, &state.extended_chars, index)
+        }
+        _ => None,
+    }
+}
+
+/// `equal' on two strings, compared in place: the text and the extended
+/// characters, as fns.c's internal_equal compares the bytes.  `None' when
+/// either is not a string.
+pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option<bool> {
+    fn with_parts<R>(value: &Value, f: impl FnOnce(&str, &[(usize, u32)]) -> R) -> Option<R> {
+        match value {
+            Value::String(text) => Some(f(text.as_str(), &[])),
+            Value::StringObject(state) => {
+                let state = state.borrow();
+                Some(f(&state.text, &state.extended_chars))
+            }
+            _ => None,
+        }
+    }
+    with_parts(left, |left_text, left_extended| {
+        with_parts(right, |right_text, right_extended| {
+            left_text == right_text && left_extended == right_extended
+        })
+    })
+    .flatten()
 }
 
 pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
@@ -507,17 +552,50 @@ pub(crate) fn assoc_string_folded_text(
     Ok(folded)
 }
 
+/// data.c's Faset signals `args-out-of-range' with the array and the index.
+fn args_out_of_range_for_aset(target: &Value, index: usize) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("args-out-of-range".into()),
+        target.clone(),
+        Value::Integer(index as i64),
+    ]))
+}
+
 pub(crate) fn aset_string_value(
     target: &Value,
     index: usize,
     new_value: &Value,
 ) -> Result<Value, LispError> {
+    if !matches!(target, Value::String(_) | Value::StringObject(_)) {
+        return Err(LispError::WrongTypeArgument(
+            "stringp".into(),
+            target.clone(),
+        ));
+    }
+    let code = new_value.as_integer()?;
+    // data.c's Faset stores an ASCII character into an ASCII string in
+    // place, one byte; the general case below rebuilds the text.
+    // hex-util.el's `encode-hex-string' sets every byte of its result.
+    if (0..=0x7F).contains(&code)
+        && let Value::StringObject(state) = target
+    {
+        let mut state = state.borrow_mut();
+        if state.extended_chars.is_empty() && state.text.is_ascii() {
+            if index >= state.text.len() {
+                drop(state);
+                return Err(args_out_of_range_for_aset(target, index));
+            }
+            // SAFETY: the text is ASCII and the stored byte is ASCII, so
+            // the result remains valid UTF-8.
+            unsafe { state.text.as_bytes_mut()[index] = code as u8 };
+            return Ok(target.clone());
+        }
+    }
     let mut string = string_like(target)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), target.clone()))?;
-    let code = new_value.as_integer()?;
     let mut chars: Vec<char> = string.text.chars().collect();
     if index >= chars.len() {
-        return Err(LispError::Signal("Args out of range".into()));
+        return Err(args_out_of_range_for_aset(target, index));
     }
     let ch = if string.multibyte {
         char_from_integer(code)?

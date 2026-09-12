@@ -2873,12 +2873,29 @@ impl Interpreter {
         if old_definition.is_nil() {
             return;
         }
-        let file = self
+        // data.c's add_to_function_history walks `current-load-list' to
+        // its last element and takes it when it is a string; the walk
+        // reads the cells in place (a copy of the list cost every
+        // redefinition the length of the file's list so far).
+        let mut file = Value::Nil;
+        let mut tail = self
             .lookup_var("current-load-list", &Env::new())
-            .and_then(|value| value.to_vec().ok())
-            .and_then(|items| items.last().cloned())
-            .filter(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
             .unwrap_or(Value::Nil);
+        let mut seen = 0usize;
+        while let Value::Cons(cell) = tail {
+            let next = cell.cdr.borrow().clone();
+            if next.is_nil() {
+                let last = cell.car.borrow();
+                if matches!(&*last, Value::String(_) | Value::StringObject(_)) {
+                    file = last.clone();
+                }
+            }
+            seen += 1;
+            if seen > 1 << 24 {
+                break;
+            }
+            tail = next;
+        }
         let past = self
             .get_symbol_property(name, "function-history")
             .unwrap_or(Value::Nil);

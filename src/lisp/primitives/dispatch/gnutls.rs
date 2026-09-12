@@ -214,6 +214,23 @@ unsafe fn load_data_symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T,
     Ok(unsafe { *pointer })
 }
 
+/// The library is opened once per thread and kept for the process's life,
+/// as GNU links GnuTLS once (w32 loads the DLL once): opening it on every
+/// call paid the dynamic loader's relocation and initializers for each
+/// cipher or hash operation.
+fn gnutls_library() -> Result<std::rc::Rc<GnuTlsLibrary>, LispError> {
+    thread_local! {
+        static GNUTLS_LIBRARY: std::cell::RefCell<Option<std::rc::Rc<GnuTlsLibrary>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    if let Some(library) = GNUTLS_LIBRARY.with(|slot| slot.borrow().clone()) {
+        return Ok(library);
+    }
+    let library = std::rc::Rc::new(load_gnutls()?);
+    GNUTLS_LIBRARY.with(|slot| *slot.borrow_mut() = Some(library.clone()));
+    Ok(library)
+}
+
 fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
     #[cfg(target_os = "macos")]
     let candidates = [
@@ -730,7 +747,7 @@ fn gnutls_format_certificate(cert: &Value) -> Result<Value, LispError> {
     let cert = string_like(cert)
         .map(|string| string.text)
         .ok_or_else(|| wrong_type_argument("stringp", cert.clone()))?;
-    let library = load_gnutls()?;
+    let library = gnutls_library()?;
     let mut certificate = std::ptr::null_mut();
     // SAFETY: GnuTLS initializes the opaque certificate handle on success.
     let result = unsafe { (library.api.x509_crt_init)(&mut certificate) };
@@ -803,7 +820,7 @@ fn gnutls_symmetric(
     require_crypto_input(&args[3])?;
     require_crypto_input(&args[2])?;
 
-    let library = load_gnutls()?;
+    let library = gnutls_library()?;
     let method = cipher_method_id(&args[0], &library)?;
     // SAFETY: `method` was validated against the host cipher catalog.
     let method_name = c_string(unsafe { (library.api.cipher_name)(method) })
@@ -1486,7 +1503,7 @@ fn gnutls_boot(
         ));
     }
     let transport = interp.process_network_transport_handle(process_id)?;
-    let library = load_gnutls()?;
+    let library = gnutls_library()?;
     let api = library.api;
 
     if let Some(level) = log_level(&contact_plist_get(parameters, ":loglevel")) {
@@ -1662,7 +1679,7 @@ fn gnutls_boot(
     unsafe { (api.transport_set_ptr)(state.pointer, transport as *mut c_void) };
 
     let mut session = ProcessGnuTlsSession::new(
-        library._library,
+        library.clone(),
         state.into_raw(),
         credential.into_raw(),
         GnuTlsSessionApi {
@@ -1755,7 +1772,7 @@ pub(crate) fn progress_async_gnutls(
         return Ok(AsyncGnuTlsProgress::Ready);
     }
 
-    let library = load_gnutls()?;
+    let library = gnutls_library()?;
     let (result, state) = interp.continue_process_gnutls_handshake(process_id)?;
     match result {
         0 => {
@@ -1815,7 +1832,7 @@ define_dispatch!(
         match name {
             "gnutls-available-p" => {
                 need_args(name, args, 0)?;
-                let Ok(library) = load_gnutls() else {
+                let Ok(library) = gnutls_library() else {
                     return Ok(Value::Nil);
                 };
                 interp.set_global_binding(
@@ -1857,7 +1874,10 @@ define_dispatch!(
             }
             "gnutls-ciphers" => {
                 need_args(name, args, 0)?;
-                Ok(cipher_catalog(&load_gnutls()?))
+                {
+                    let library = gnutls_library()?;
+                    Ok(cipher_catalog(&library))
+                }
             }
             "gnutls-deinit" => {
                 need_args(name, args, 1)?;
@@ -1870,7 +1890,7 @@ define_dispatch!(
             }
             "gnutls-digests" => {
                 need_args(name, args, 0)?;
-                let library = load_gnutls()?;
+                let library = gnutls_library()?;
                 Ok(digest_catalog(&library))
             }
             "gnutls-error-fatalp" => {
@@ -1880,7 +1900,7 @@ define_dispatch!(
                 }
                 let code = gnutls_error_code(interp, &args[0])
                     .map_err(|message| LispError::Signal(message.into()))?;
-                let library = load_gnutls()?;
+                let library = gnutls_library()?;
                 // SAFETY: `code` is a C int, the complete input domain accepted by
                 // GnuTLS's pure error classifier.
                 Ok(if unsafe { (library.api.error_is_fatal)(code) } == 0 {
@@ -1898,7 +1918,7 @@ define_dispatch!(
                     Ok(code) => code,
                     Err(message) => return Ok(Value::string(message)),
                 };
-                let library = load_gnutls()?;
+                let library = gnutls_library()?;
                 // SAFETY: `code` is a C int, the complete input domain accepted by
                 // GnuTLS's pure error-description API.
                 let description = c_string(unsafe { (library.api.error_string)(code) })
@@ -1935,7 +1955,7 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 require_crypto_input(&args[2])?;
                 require_crypto_input(&args[1])?;
-                let library = load_gnutls()?;
+                let library = gnutls_library()?;
                 let method = mac_method_id(&args[0], &library)?;
                 let key = Zeroizing::new(digest_input_bytes(interp, &args[1])?);
                 let mut handle = std::ptr::null_mut();
@@ -1985,7 +2005,10 @@ define_dispatch!(
             }
             "gnutls-macs" => {
                 need_args(name, args, 0)?;
-                Ok(mac_catalog(&load_gnutls()?))
+                {
+                    let library = gnutls_library()?;
+                    Ok(mac_catalog(&library))
+                }
             }
             "gnutls-peer-status" => {
                 need_args(name, args, 1)?;

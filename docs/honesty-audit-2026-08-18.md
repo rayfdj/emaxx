@@ -9768,3 +9768,63 @@ before it: the handler-cache, dump-root and field-inventory tests, and
 the new control run against the pre-change code in a worktree, where
 it fails on the first unrelated `setcar' (a rescan: 2 scans, 1
 expected).
+
+## 2026-09-12 Checkpoint 19h: GnuTLS opened once, strings read and stored in place
+
+*What prompted it.*  gnutls-tests.el ran in 76.4 s against GNU's 1.2
+(the AEAD test 60.9 s against 0.92).  Its profile: 27% under
+`Library::open', because every cipher, hash and certificate primitive
+called `load_gnutls' and dropped the handle on return, so each call
+paid the dynamic loader's relocation of libgnutls and its initializers
+(GNU links GnuTLS once; w32 loads the DLL once); 45% under
+`aset_string_value', because hex-util.el's `encode-hex-string' stores
+every byte of its result with `aset', and each store collected the
+string's characters into a vector and rebuilt the text (data.c's Faset
+stores one byte into an ASCII string); after those two, `aref' on a
+string copied the text (`string_like') to read one character, and
+`equal' copied both strings to compare them.
+
+*What changed.*  The library is opened once per thread and shared
+(`gnutls_library'); a TLS session holds a reference to it instead of
+its own handle.  `aset' of an ASCII character into an ASCII string
+object without extended characters writes the byte in place
+(`extended_chars' or non-ASCII text take the general path as before);
+`aref' on a string reads the character in place; `equal' on two strings
+compares their text and extended characters in place.  `aset' past the
+end signals `args-out-of-range' with the string and the index, as
+data.c does (it signalled a plain `error' before; a correction).  The
+control `aset_on_an_ascii_string_keeps_its_properties_multibyteness_and_identity'
+covers the in-place store's invariants.  Two smaller items ride along:
+`record_function_redefinition' reads `current-load-list' in place to
+find the file, as data.c's add_to_function_history does (it copied the
+whole list on every redefinition; with the probe file's list at some
+10,000 entries a `defalias' 84 to 43 us, GNU 10.5: the walk is O(n) in
+GNU too, and what remains is the reference-counted clone of each cdr
+against GNU's pointer read); and the compat harness's
+`restore' of an isolated checkout takes a generated input from the
+source tree when the staged copy is gone, and names the file when both
+are (the Mac run stopped after print-tests.el on a missing staged
+etc/DOC).
+
+*Measured.*  gnutls-tests.el 76.4 to 9.7 s (GNU 1.2): the symmetric
+test 15.4 to 1.7 s (GNU 0.27), the AEAD test 60.9 to 8.0 s (GNU 0.92).
+The remaining 8 s of the AEAD test is the interpreted test loop
+(`sf_and', `unwind-protect', `setq' and `if' at 40%) and `equal' at
+12%: the per-call floor.
+
+*Measured after it and open.*  `make-symbol' 8.5 us (GNU 0.9), a
+`lambda' evaluation 3.4 us (GNU 0.23), `put' 3.9 us (GNU 0.25), `fset'
+6 us (GNU 1): each a flat profile of the interpreter's per-form cost,
+the D20 floor.  semantic-fmt-utest 75 s (GNU 0.83): `looking-at' at
+49%, half of it `encode_syntax_property_haystack' (a haystack encoded
+per call under syntax-table properties) and a tenth the regexp cache
+key; the next theme.
+
+*Gate.*  The full grouped gate on this tree passed: eval_01 353,
+eval_02 284, eval_03 320, eval_04 251, eval_05 351, primitives 458,
+tty 56 (2 ignored), compat_runtime 84, batch 49, lightweight 414, the
+binaries, the integration group (1,085 s); `cargo fmt --check' and
+clippy clean before and after.  The focused runs before it: the
+GnuTLS, `aset', `aref', `equal', function-history, load-history and
+isolated-checkout tests (37 string tests, 16 history tests, 20 GnuTLS
+and harness tests), all passing.

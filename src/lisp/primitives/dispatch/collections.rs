@@ -487,7 +487,9 @@ define_dispatch!(
                 }
                 match &args[0] {
                     Value::String(_) | Value::StringObject(_) => {
-                        match string_like(&args[0]).and_then(|string| string.char_code_at(idx)) {
+                        match crate::lisp::primitives::strings::string_char_code_at_in_place(
+                            &args[0], idx,
+                        ) {
                             Some(code) => Ok(Value::Integer(code)),
                             None => Err(args_out_of_range(&args[0], &args[1])),
                         }

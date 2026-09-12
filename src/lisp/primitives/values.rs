@@ -301,9 +301,9 @@ fn values_equal_recursive_with_env(
     {
         return equal;
     }
-    if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
-        return left_string.text == right_string.text
-            && left_string.extended_chars == right_string.extended_chars;
+    if let Some(equal) = crate::lisp::primitives::strings::string_texts_equal_in_place(left, right)
+    {
+        return equal;
     }
     if is_bool_vector_value(interp, left) && is_bool_vector_value(interp, right) {
         return bool_vector_values(interp, left).ok() == bool_vector_values(interp, right).ok();

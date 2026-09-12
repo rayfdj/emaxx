@@ -166,6 +166,10 @@ Checkpoint 19g (2026-09-11, for main): the file-name-handler scan cache
 is keyed on the authorities the scan reads under one shared watch per
 alist state, not on the process-wide cons epoch (a lookup after an
 unrelated `setcar` 76 to 6.9 us; tramp-tests.el loads in 7.0 s from 8.9).
+Checkpoint 19h (2026-09-12, for main): GnuTLS is opened once per thread,
+`aset`/`aref`/`equal` on strings work in place (gnutls-tests.el 76 to
+9.7 s, GNU 1.2); the harness's checkout restore survives a missing
+staged input.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
