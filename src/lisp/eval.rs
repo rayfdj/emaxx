@@ -4936,13 +4936,13 @@ pub struct InterpreterState {
     /// Membership index for `interned_symbols'.  Keeping insertion order in
     /// the vector makes completion deterministic, while this set prevents
     /// source loading from turning symbol interning into a quadratic scan.
-    interned_symbol_names: HashSet<String>,
+    interned_symbol_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Names removed from the standard obarray while their old symbol cells
     /// remain live.  GNU keeps those cells on the detached symbol object;
     /// this tombstone prevents function/value indexes from accidentally
     /// making the name look interned again until a reader or `intern' creates
     /// the new canonical name.
-    uninterned_standard_symbol_names: HashSet<String>,
+    uninterned_standard_symbol_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -5861,8 +5861,8 @@ impl Interpreter {
             interned_symbols: Vec::new(),
             known_symbols_cache: RefCell::new(None),
             obarray_epoch: 0,
-            interned_symbol_names: HashSet::new(),
-            uninterned_standard_symbol_names: HashSet::new(),
+            interned_symbol_names: HashSet::default(),
+            uninterned_standard_symbol_names: HashSet::default(),
             standard_obarray_id,
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*scratch*"),

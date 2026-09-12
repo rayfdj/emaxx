@@ -233,6 +233,60 @@ structural answer; the borrowed frame is its stage C by the third
 option it lists, the raw pointer, because the two safe options cost a
 copy or a materialization the C does not pay.
 
+### The image loader, without the work the image already did (same day, checkpoint 23)
+
+pdumper.c maps the image and relocates words in place; an object costs
+it one relocation.  Emaxx's objects are Rust allocations (an `Rc' per
+cons, a `String' per string), so the loader materializes every object,
+and that floor stays.  What was removable was the work the loader did
+on top of materializing, each item answered with what the C does:
+
+- Every dumped string was decoded, its characters counted against the
+  record, then scanned twice more by `SharedText::new' to decide its
+  multibyteness and storage size.  The record carries `size' and
+  `size_byte' (the Lisp_String's own fields), so `with_storage_bytes'
+  takes them and scans nothing; a string object with properties or
+  raw bytes registers through `make_loaded_string_object_value' the
+  same way.
+- Every relocated car, cdr and vector slot went through the mutation
+  watch (`borrow_mut': the epoch bump, the Bloom probe, the native-word
+  check) although nothing had seen the placeholder.  A relocation store
+  is `ConsValueCell::initialize', a plain write, and a vector's slots
+  are filled under one borrow.
+- Every dumped symbol was interned through three copies of its name and
+  five hashes (`string_like' copied the text, `intern_str' probed then
+  copied again, `SharedText::new' scanned the copy and registered it as
+  a second live string, the id registry and the name table hashed it
+  each), and the name table grew several times.  As pdumper.c's symbol
+  points at the dumped name string, `symbol_of_record' interns through
+  `intern_with_lisp_name' with the image's own string as the symbol's
+  name (one accounted string, as GNU has), reads the text in place, and
+  the tables are reserved for the record count first.
+- The keymap cons-owner registration built its mutation snapshot one
+  cell at a time, sorting the id vector after each (7,700 sorts in the
+  boot); `include_cells' takes them all and sorts once.
+- The interpreter's interned-name sets and the install's by-name maps
+  hashed with SipHash; they use FNV as the other name-keyed tables do.
+
+Measured (callgrind instructions of `emaxx -Q --batch --eval
+'(kill-emacs 0)'', release build with the image): 1,044 M to 840 M, of
+which the image load 766 M to 562 M (the loader proper 638 M to 458 M),
+the startup top level 151 M unchanged.  GNU's whole boot is 0.068 s
+wall on this box; Emaxx's 0.23 to 0.28 s (the same binary varies by
+15% between runs here, so the instruction counts are the measurement).
+
+What the boot profile shows after these, in order: materializing the
+objects (decoding 296,000 strings 78 M, allocating them 77 M, the
+relocation reads 47 M, 152,000 conses 30 M, the char tables 34 M, the
+symbols 57 M); the 24 `subdirs.el' loads and `simple.elc' of GNU's own
+startup at 95 M, of which 90 M are regexp compiles -- one
+`\\(?:$\\)\\=' with case folding compiles for 6 ms because the point
+assertion becomes a fancy-regex lookaround that builds a second
+case-folded automaton (regex-emacs.c's `at_dot' is a position test);
+one `where-is-internal' at 35 M (keymap.c's `where_is_internal_1'
+walks key vectors; Emaxx joins prefix strings and materializes each
+binding); the initial frame faces 41 M.
+
 ### The parity gate
 
 `tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then

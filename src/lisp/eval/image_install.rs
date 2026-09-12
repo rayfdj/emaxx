@@ -35,14 +35,16 @@ impl Interpreter {
         image: &LoadedImage,
         record: PdumperLoadRecord,
     ) -> Result<(), String> {
-        let mut by_name: HashMap<&str, &LoadedSymbol> = HashMap::new();
+        let mut by_name: HashMap<&str, &LoadedSymbol, crate::lisp::primitives::FnvBuildHasher> =
+            HashMap::default();
         for symbol in &image.symbols {
             by_name.insert(symbol.symbol.as_str(), symbol);
         }
         // The initial obarray's symbols, in its order: every table that
         // `known_symbol_names' enumerates is filled in that order, so
         // `mapatoms' walks the symbols as the writer's process did.
-        let mut installed: HashSet<&str> = HashSet::new();
+        let mut installed: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
+            HashSet::default();
         for name in &image.obarray {
             let text = name.as_str();
             if text == "nil" || text == "t" {

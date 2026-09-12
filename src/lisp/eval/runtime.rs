@@ -2573,6 +2573,7 @@ impl Interpreter {
 
         let mut seen = std::collections::HashSet::new();
         let mut owned_ids = Vec::new();
+        let mut owned_cells = Vec::new();
         let mut watch = crate::lisp::types::ConsMutationSnapshot::tree(&Value::Nil);
         let mut tail = view.clone();
         while let Value::Cons(cell) = tail {
@@ -2592,7 +2593,7 @@ impl Interpreter {
                 break;
             }
             owned_ids.push(cell_id);
-            watch.include_cell(&cell);
+            owned_cells.push(cell.clone());
             self.keymap_public_cons_owners
                 .entry(cell_id)
                 .or_default()
@@ -2607,7 +2608,7 @@ impl Interpreter {
             {
                 let entry_id = crate::lisp::types::ConsCell::identity(entry_cell);
                 owned_ids.push(entry_id);
-                watch.include_cell(entry_cell);
+                owned_cells.push(entry_cell.clone());
                 self.keymap_public_cons_owners
                     .entry(entry_id)
                     .or_default()
@@ -2615,6 +2616,7 @@ impl Interpreter {
             }
             tail = cell.cdr.borrow().clone();
         }
+        watch.include_cells(&owned_cells);
         self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
         self.keymap_public_view_watch.insert(keymap_id, watch);
     }
