@@ -6,20 +6,19 @@ use crate::lisp::types::SymbolName;
 
 impl BacktraceFrame {
     pub(super) fn function_snapshot(&self) -> Value {
-        self.source_form
-            .as_ref()
+        self.source_form()
             .and_then(|form| form.car().ok())
             .unwrap_or_else(|| self.function.clone())
     }
 
     pub(super) fn args_snapshot(&self) -> Vec<Value> {
-        if let Some(words) = &self.native_args {
+        if let Some(words) = self.args.native_words() {
             return crate::lisp::native_comp::decode_active_backtrace_arguments(words)
                 .expect("a native backtrace frame is inspected only during its activation")
                 .expect("a native backtrace frame contains valid Lisp words");
         }
-        let Some(form) = &self.source_form else {
-            return self.args.clone();
+        let Some(form) = self.source_form() else {
+            return self.args.lisp_values().unwrap_or(&[]).to_vec();
         };
         let Ok(tail) = form.cdr() else {
             return Vec::new();
@@ -502,8 +501,49 @@ impl Interpreter {
         self.symbol_properties_index.get(name).copied()
     }
 
+    /// The plist position of SYMBOL by its id, learning it from the name
+    /// index on the first lookup.
+    fn symbol_property_index_of(&self, symbol: &SymbolName) -> Option<usize> {
+        if let Some(index) = self.symbol_properties_by_id.borrow().get(&symbol.id()) {
+            return Some(*index);
+        }
+        let index = self.symbol_property_index(symbol.as_str())?;
+        self.symbol_properties_by_id
+            .borrow_mut()
+            .insert(symbol.id(), index);
+        Some(index)
+    }
+
     fn rebuild_symbol_properties_index(&mut self) {
         self.symbol_properties_index = super::ordered_name_index(&self.symbol_properties);
+        self.symbol_properties_by_id.borrow_mut().clear();
+    }
+
+    /// fns.c:Fget's plist_get on the symbol's own plist: SYMBOL addresses
+    /// its plist directly and PROPERTY is compared as a symbol.
+    pub fn get_symbol_property_of(
+        &self,
+        symbol: &SymbolName,
+        property: &SymbolName,
+    ) -> Option<Value> {
+        if property == "choice" {
+            return self.get_symbol_property(symbol.as_str(), property.as_str());
+        }
+        let index = self.symbol_property_index_of(symbol)?;
+        let mut tail = self.symbol_properties[index].1.clone();
+        let mut tortoise = Brent::new(&tail);
+        while let Value::Cons(cell) = tail {
+            let rest = cell.cdr.borrow().clone();
+            let (value_cell, next_cell) = rest.cons_cells()?;
+            if matches!(&*cell.car.borrow(), Value::Symbol(key) if key == property) {
+                return Some(value_cell.borrow().clone());
+            }
+            tail = next_cell.borrow().clone();
+            if tortoise.cycle(&tail) {
+                return None;
+            }
+        }
+        None
     }
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
@@ -603,6 +643,7 @@ impl Interpreter {
         }
         self.uninterned_standard_symbol_names
             .insert(name.to_string());
+        self.note_obarray_removal();
         if self.interned_symbol_names.remove(name) {
             self.interned_symbols
                 .retain(|candidate| candidate.as_str() != name);
@@ -813,6 +854,7 @@ impl Interpreter {
                 } else if next.is_nil() {
                     self.symbol_properties.remove(index);
                     self.rebuild_symbol_properties_index();
+                    self.note_obarray_removal();
                 } else {
                     self.symbol_properties[index].1 = next;
                 }
@@ -837,6 +879,7 @@ impl Interpreter {
             if let Some(existing) = self.symbol_property_index(name) {
                 self.symbol_properties.remove(existing);
                 self.rebuild_symbol_properties_index();
+                self.note_obarray_removal();
             }
         } else if let Some(existing) = self.symbol_property_index(name) {
             self.symbol_properties[existing].1 = Self::stored_value(plist.clone());
@@ -1115,6 +1158,7 @@ impl Interpreter {
             .rposition(|(alias, _)| alias == name)
         {
             self.variable_aliases.remove(index);
+            self.note_obarray_removal();
             self.globals.clear_alias_by_name(name);
             true
         } else {
@@ -1149,7 +1193,9 @@ impl Interpreter {
         for terminal in &mut self.terminals {
             terminal.keyboard.remove(name);
         }
-        if self.globals.remove_by_name(name).is_some() {}
+        if self.globals.remove_by_name(name).is_some() {
+            self.note_obarray_removal();
+        }
     }
 
     /// `remove_global_binding' for a symbol in hand.
@@ -1158,6 +1204,7 @@ impl Interpreter {
             terminal.keyboard.remove(symbol.as_str());
         }
         self.globals.remove(symbol);
+        self.note_obarray_removal();
     }
 
     /// The native word of SYMBOL's plain value, if the cell still holds
@@ -2027,63 +2074,78 @@ impl Interpreter {
         Ok(())
     }
 
+    /// eval.c:record_in_backtrace.  ARGS is the caller's vector, retained
+    /// by address until the matching `pop_backtrace_frame': the caller
+    /// must pop before ARGS goes away.
+    #[inline]
     pub fn push_backtrace_frame(&mut self, function: Value, args: &[Value]) {
-        let mut pooled = self.backtrace_args_pool.pop().unwrap_or_default();
-        pooled.extend_from_slice(args);
-        self.push_backtrace_frame_with_evald(function, pooled, true);
+        self.push_plain_backtrace_frame(function, FrameArgs::borrowed(args), true);
     }
 
-    pub(crate) fn push_native_backtrace_frame(&mut self, function: Value, args: &[usize]) {
+    /// The four-word frame record_in_backtrace writes.
+    #[inline]
+    fn push_plain_backtrace_frame(&mut self, function: Value, args: FrameArgs, evald: bool) {
         self.backtrace_frames.push(BacktraceFrame {
             function,
-            args: Vec::new(),
-            native_args: Some(args.iter().copied().collect()),
-            source_form: None,
-            locals: Vec::new(),
-            lexical_context: None,
-            evald: true,
+            args,
+            evald,
             debug_on_exit: false,
+            detail: None,
         });
     }
 
+    /// The same, for native Ffuncall's word vector.
+    pub(crate) fn push_native_backtrace_frame(&mut self, function: Value, args: &[usize]) {
+        self.push_plain_backtrace_frame(
+            function,
+            FrameArgs::NativeWords {
+                ptr: args.as_ptr(),
+                len: args.len(),
+            },
+            true,
+        );
+    }
+
+    /// A frame that outlives the scope holding its arguments (a byte op
+    /// recording itself for handlers that run after the op's step) owns them.
     pub fn push_backtrace_frame_with_evald(
         &mut self,
         function: Value,
         args: Vec<Value>,
         evald: bool,
     ) {
-        self.push_backtrace_frame_with_locals(function, args, Vec::new(), evald);
+        self.push_plain_backtrace_frame(function, FrameArgs::Owned(args), evald);
     }
 
     pub(super) fn push_unevaluated_backtrace_frame(&mut self, source_form: &Value) {
         self.backtrace_frames.push(BacktraceFrame {
             function: Value::Nil,
-            args: Vec::new(),
-            native_args: None,
-            source_form: Some(source_form.clone()),
-            locals: Vec::new(),
-            lexical_context: None,
+            args: FrameArgs::Owned(Vec::new()),
             evald: false,
             debug_on_exit: false,
+            detail: Some(Box::new(FrameDetail {
+                source_form: Some(source_form.clone()),
+                ..FrameDetail::default()
+            })),
         });
     }
 
-    pub fn push_backtrace_frame_with_locals(
+    pub(crate) fn push_backtrace_frame_with_locals(
         &mut self,
         function: Value,
-        args: Vec<Value>,
+        args: FrameArgs,
         locals: Vec<(SymbolName, Value)>,
         evald: bool,
     ) {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
-            native_args: None,
-            source_form: None,
-            locals,
-            lexical_context: None,
             evald,
             debug_on_exit: false,
+            detail: Some(Box::new(FrameDetail {
+                locals,
+                ..FrameDetail::default()
+            })),
         });
     }
 
@@ -2099,6 +2161,7 @@ impl Interpreter {
     /// replaces the full variable lookup (whose builtin-variable fallback
     /// tables are a measurable per-call cost); with edebug loaded, defer
     /// to the real lookup, buffer-local bindings included.
+    #[inline]
     fn edebug_entered_active(&self, env: &Env) -> bool {
         // `edebug-entered' can only carry a binding once edebug's defvar
         // has marked it special, so this single flag read, by the id of
@@ -2114,32 +2177,37 @@ impl Interpreter {
                 .is_some_and(|value| value.is_truthy())
     }
 
+    #[inline]
     pub fn capture_current_backtrace_context(
         &mut self,
         function_name: Option<&str>,
         env: &Env,
         activation_frame: Option<&[(SymbolName, Value)]>,
     ) {
-        if function_name != Some("backtrace-eval") && !self.edebug_entered_active(env) {
+        if !self.edebug_entered_active(env) && function_name != Some("backtrace-eval") {
             return;
         }
+        self.capture_backtrace_context(env, activation_frame);
+    }
+
+    #[cold]
+    fn capture_backtrace_context(
+        &mut self,
+        env: &Env,
+        activation_frame: Option<&[(SymbolName, Value)]>,
+    ) {
         let mut context = env.clone();
         if let Some(frame) = activation_frame {
             context.push(frame.to_vec().into());
         }
         if let Some(backtrace) = self.backtrace_frames.last_mut() {
-            backtrace.lexical_context = Some(context);
+            backtrace.detail_mut().lexical_context = Some(context);
         }
     }
 
+    #[inline]
     pub fn pop_backtrace_frame(&mut self) {
-        if let Some(frame) = self.backtrace_frames.pop() {
-            let mut args = frame.args;
-            if args.capacity() > 0 && self.backtrace_args_pool.len() < 64 {
-                args.clear();
-                self.backtrace_args_pool.push(args);
-            }
-        }
+        self.backtrace_frames.pop();
     }
 
     pub fn backtrace_frames_len(&self) -> usize {
@@ -2238,7 +2306,7 @@ impl Interpreter {
             .iter()
             .rev()
             .nth(index)
-            .map(|frame| frame.locals.clone())
+            .map(|frame| frame.locals().to_vec())
     }
 
     pub fn backtrace_frame_locals_snapshot_with_base(
@@ -2258,7 +2326,7 @@ impl Interpreter {
             .into_iter()
             .skip(start)
             .nth(index)
-            .map(|frame| frame.locals.clone())
+            .map(|frame| frame.locals().to_vec())
     }
 
     // The lexical context visible at an activation frame.  While Edebug is
@@ -2276,13 +2344,13 @@ impl Interpreter {
             .unwrap_or(0);
         if let Some(context) = frames
             .get(start + index)
-            .and_then(|frame| frame.lexical_context.clone())
+            .and_then(|frame| frame.lexical_context().cloned())
         {
             return context;
         }
         let mut merged: Vec<(SymbolName, Value)> = Vec::new();
         for frame in frames.into_iter().skip(start + index) {
-            for (name, value) in &frame.locals {
+            for (name, value) in frame.locals() {
                 if !merged.iter().any(|(existing, _)| existing == name) {
                     merged.push((name.clone(), value.clone()));
                 }

@@ -152,6 +152,87 @@ in this document): the eight ASCII bytes of `comp-abi-hash`, seventeen
 40 bytes (five 8-byte entries), and the 20-byte ELF build ID.  The
 constants blobs are byte-identical.
 
+### The call path, structured as eval.c and bytecode.c (same day, checkpoint 22)
+
+The per-compile floor after the boot work was the evaluator's call path,
+so it was profiled on the smallest loop that exercises it -- a lexical
+`(dotimes (i N) (micro-id i))', both functions byte-compiled, eleven
+opcodes and one call an iteration -- with callgrind on two run lengths,
+the difference divided by the iterations (boot and GC cancel out).  Each
+finding was answered with the C structure:
+
+- Every VM call and every byte-op primitive registered the operand stack
+  as a GC root around itself (`vm_call!`, `prim!`: an Rc clone, two
+  RefCell borrows and a free-list slot each way).  alloc.c marks a
+  thread's bytecode stack once per collection, so `run' now registers
+  one root per activation (`VmActivationRoots': the program, the
+  arguments, the operand stack and the specpdl watermark behind
+  `UnsafeCell', read only while a collection runs) and the macros are
+  gone.
+- A backtrace frame copied its arguments into a pooled Vec and carried
+  a 200-byte struct with the debugger's fields inline.  eval.c's
+  `record_in_backtrace' stores the caller's argument vector by address
+  for the life of the frame (`specpdl->bt.args = args'), so `FrameArgs'
+  is that pointer (`Borrowed', `NativeWords' for native Ffuncall's word
+  vector, `Owned' only for a frame that outlives its scope: the byte op
+  that records itself before the handler search, a copy of the
+  interpreter, native words decoded for the debugger), and the frame is
+  function, args, two flags and an `Option<Box<FrameDetail>>' for the
+  source form, locals and lexical context.  The invariant is the one
+  GNU's has: a frame is pushed and popped by the activation that owns
+  the arguments (Lisp threads are stackful coroutines, so a parked
+  thread's frames stay valid); the three byte ops that record a frame
+  whose operands die with the step own a copy.
+- `exec_byte_code''s dispatch loop ran a closure per instruction
+  (captures, a `Result' returned and matched each step) and copied the
+  24-byte `Instr'; the closure now holds the loop, an error leaves it
+  for the handler search which re-enters at the handler's target, a
+  return leaves it with the value (the `VmReturn' error variant is
+  gone), and the fetch reads the opcode in place.
+- `funcall_general''s COMPILEDP arm: a symbol whose function cell holds
+  an already decoded byte-code object dispatches to it straight from the
+  resolution, without the lambda, autoload and record-kind probes
+  (`has_cached_bytecode_program'), and a symbol callee is no longer
+  re-wrapped.  The thin layers between Ffuncall and exec_byte_code
+  (`call_function_value_named', `execute_bytecode_funcall_body',
+  `execute_record', `begin_funcall', `maybe_quit', the depth check) are
+  inlined, with their rare halves (`process_quit_flag', the depth
+  overrun, the EMAXX_PROFILE hook, the edebug context capture) split
+  off as cold functions.
+- The id-keyed tables (function resolution, the collector's mark sets,
+  cons mutation) finished their hash with a three-round splitmix; one
+  multiply and a fold is enough for a dense id or an aligned address.
+- `get' copied both symbol names into fresh Strings and hashed the
+  symbol's name to find its plist.  fns.c's Fget reads
+  `XSYMBOL (sym)->u.s.plist', so `get_symbol_property_of' takes the
+  symbols themselves and reaches the plist through a position index by
+  symbol id (`symbol_properties_by_id', filled on first lookup and
+  cleared when positions shift); the name-keyed index stays the
+  authority for the `&str' callers.
+
+Measured (callgrind instructions an iteration, release build with the
+image, GNU on the same box): the call loop 2,251 before, 1,900 after the root and
+frame changes, 1,630 after the rest (GNU 332); a `(get 'foo 'bar)'
+loop 1,686 to 1,376 (GNU 248); one in-process `native-compile' of a
+small lambda 893 M to 874 M instructions (GNU 280 M, of which libgccjit
+is the same code on both sides).  The call loop's 2,251 is the tree
+before the root and frame changes (the merge commit), built and measured
+the same way.
+
+What the profile shows after these, in order: the VM's own operand
+traffic (`Vec' push, pop and index checks, `Value' clone and drop --
+each an Rc count -- 60% of the loop, representation-bound: GNU copies a
+tagged word); the primitive dispatch by name (`prim' and each module's
+`match name', 12% of a compile: GNU calls the subr's function pointer,
+the symbol-objects document's stage B); the obarray enumeration rebuilt
+for each of `comp--all-classes''s four `mapatoms' calls once a compile
+interns a new symbol (3%); the strings allocated by `comp-c-func-name'
+(elp: 40 us a call against GNU's 10).  The symbol-objects document's
+stage A2 (the function cell on the symbol) and stage B remain the
+structural answer; the borrowed frame is its stage C by the third
+option it lists, the raw pointer, because the two safe options cost a
+copy or a materialization the C does not pay.
+
 ### The parity gate
 
 `tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then

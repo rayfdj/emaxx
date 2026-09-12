@@ -1634,14 +1634,92 @@ pub(crate) struct SpecialBindingRestore {
     local_binding_killed: bool,
 }
 
+/// eval.c:record_in_backtrace stores the caller's argument vector by
+/// address (`specpdl->bt.args = args`) for the life of the frame; the frame
+/// owns no copy.
+///
+/// A frame is pushed and popped by the Rust activation that owns the
+/// arguments, so a borrowed slice outlives its frame.  A parked Lisp thread
+/// keeps its whole coroutine stack alive, so its frames stay valid too.
+/// Only a frame kept beyond that activation (an image copy of the
+/// interpreter, native words decoded for the debugger) owns its arguments.
+#[derive(Debug)]
+pub(crate) enum FrameArgs {
+    Borrowed {
+        ptr: *const Value,
+        len: usize,
+    },
+    /// Native Ffuncall's machine-word argument vector, likewise borrowed;
+    /// Values are decoded only if Lisp inspects the frame.
+    NativeWords {
+        ptr: *const usize,
+        len: usize,
+    },
+    Owned(Vec<Value>),
+}
+
+impl FrameArgs {
+    pub(crate) fn borrowed(args: &[Value]) -> Self {
+        Self::Borrowed {
+            ptr: args.as_ptr(),
+            len: args.len(),
+        }
+    }
+
+    /// The Lisp arguments of an evaluator frame; None for native words.
+    pub(crate) fn lisp_values(&self) -> Option<&[Value]> {
+        match self {
+            // SAFETY: see the type comment: the owning activation is live
+            // for every instant this frame is on a backtrace.
+            Self::Borrowed { ptr, len } => Some(unsafe { std::slice::from_raw_parts(*ptr, *len) }),
+            Self::NativeWords { .. } => None,
+            Self::Owned(values) => Some(values),
+        }
+    }
+
+    pub(crate) fn native_words(&self) -> Option<&[usize]> {
+        match self {
+            // SAFETY: as above; native Ffuncall pops the frame before its
+            // argument vector goes away.
+            Self::NativeWords { ptr, len } => {
+                Some(unsafe { std::slice::from_raw_parts(*ptr, *len) })
+            }
+            Self::Borrowed { .. } | Self::Owned(_) => None,
+        }
+    }
+}
+
+impl Clone for FrameArgs {
+    /// A copy of a frame may outlive the activation, so it owns its values.
+    fn clone(&self) -> Self {
+        match self {
+            Self::NativeWords { .. } => Self::Owned(
+                crate::lisp::native_comp::decode_active_backtrace_arguments(
+                    self.native_words().unwrap_or(&[]),
+                )
+                .and_then(Result::ok)
+                .unwrap_or_default(),
+            ),
+            other => Self::Owned(other.lisp_values().unwrap_or(&[]).to_vec()),
+        }
+    }
+}
+
+/// eval.c's `union specbinding' backtrace member: function, args, nargs
+/// and the debug-on-exit flag.  Everything else a frame can carry lives
+/// behind `detail', so the frame of a byte-code or primitive call costs
+/// what GNU's does.
 #[derive(Clone, Debug)]
 struct BacktraceFrame {
     function: Value,
-    args: Vec<Value>,
-    /// eval.c:record_in_backtrace retains the caller's Lisp_Object argument
-    /// vector.  Native Ffuncall already has that exact word vector, so keep
-    /// it lazy and materialize Values only if Lisp inspects the frame.
-    native_args: Option<smallvec::SmallVec<[usize; 8]>>,
+    args: FrameArgs,
+    evald: bool,
+    debug_on_exit: bool,
+    detail: Option<Box<FrameDetail>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct FrameDetail {
     /// Original list form for an unevaluated frame.  GNU backtraces retain
     /// the live Lisp form; keeping it here avoids cloning its function symbol
     /// and every argument on each interpreted call.  Debugger-facing APIs
@@ -1652,8 +1730,24 @@ struct BacktraceFrame {
     /// debugger is active.  Frames retain their identity stamps so
     /// `backtrace-eval' assignments can update the suspended lexical cells.
     lexical_context: Option<Env>,
-    evald: bool,
-    debug_on_exit: bool,
+}
+
+impl BacktraceFrame {
+    fn source_form(&self) -> Option<&Value> {
+        self.detail.as_ref()?.source_form.as_ref()
+    }
+
+    fn locals(&self) -> &[(SymbolName, Value)] {
+        self.detail.as_ref().map_or(&[], |detail| &detail.locals)
+    }
+
+    fn lexical_context(&self) -> Option<&Env> {
+        self.detail.as_ref()?.lexical_context.as_ref()
+    }
+
+    fn detail_mut(&mut self) -> &mut FrameDetail {
+        self.detail.get_or_insert_with(Box::default)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2711,6 +2805,19 @@ type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::Fnv
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 type OrderedNameIndex = HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>;
+
+/// The sizes of the tables the obarray enumeration is drawn from, and the
+/// removal epoch: equal keys mean an equal enumeration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct KnownSymbolsKey {
+    globals: usize,
+    variable_aliases: usize,
+    functions: usize,
+    symbol_properties: usize,
+    interned_symbols: usize,
+    uninterned_standard: usize,
+    epoch: u64,
+}
 type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::FnvBuildHasher>;
 
 /// Build a last-wins index over an ordered symbol/value registry.
@@ -3965,17 +4072,17 @@ impl Interpreter {
         }
         for frame in &self.backtrace_frames {
             mark(&frame.function);
-            for argument in &frame.args {
+            for argument in frame.args.lisp_values().unwrap_or(&[]) {
                 mark(argument);
             }
-            if let Some(form) = &frame.source_form {
+            if let Some(form) = frame.source_form() {
                 mark(form);
             }
-            for (symbol, value) in &frame.locals {
+            for (symbol, value) in frame.locals() {
                 mark(&Value::Symbol(symbol.clone()));
                 mark(value);
             }
-            if let Some(context) = &frame.lexical_context {
+            if let Some(context) = frame.lexical_context() {
                 for lexical_frame in context {
                     for (symbol, value) in lexical_frame {
                         mark(&Value::Symbol(symbol.clone()));
@@ -4474,14 +4581,20 @@ impl Interpreter {
             }
             for frame in &mut clone.backtrace_frames {
                 frame.function = c.copy(&frame.function.clone());
-                for arg in &mut frame.args {
-                    *arg = c.copy(arg);
+                let mut args = frame.args.clone();
+                if let FrameArgs::Owned(values) = &mut args {
+                    for arg in values {
+                        *arg = c.copy(arg);
+                    }
                 }
-                if let Some(form) = &frame.source_form {
-                    frame.source_form = Some(c.copy(form));
-                }
-                for (_, value) in &mut frame.locals {
-                    *value = c.copy(value);
+                frame.args = args;
+                if let Some(detail) = &mut frame.detail {
+                    if let Some(form) = &detail.source_form {
+                        detail.source_form = Some(c.copy(form));
+                    }
+                    for (_, value) in &mut detail.locals {
+                        *value = c.copy(value);
+                    }
                 }
             }
             if let Some(backtrace) = &mut clone.batch_error_backtrace {
@@ -4570,7 +4683,6 @@ impl Interpreter {
         *clone.syntax_segment_cache.get_mut() = None;
         clone.syntax_table_mutable_entries_cache.get_mut().clear();
         clone.vm_stack_pool.clear();
-        clone.backtrace_args_pool.clear();
 
         // The public-cons registry for keymap records is keyed by cons cell
         // identity; remap each identity to its copy.  A registered cons the
@@ -4804,8 +4916,23 @@ pub struct InterpreterState {
     /// Last-wins position index over `symbol_properties`.  The ordered vector
     /// remains canonical for deterministic symbol enumeration.
     symbol_properties_index: OrderedNameIndex,
+    /// The same positions by symbol id, filled as symbols are looked up:
+    /// `get' reaches a plist through the symbol, as XSYMBOL (sym)->u.s.plist
+    /// does, not through a hash of its name.  Cleared whenever positions
+    /// shift.
+    symbol_properties_by_id: RefCell<HashMap<u32, usize, crate::lisp::types::IdentityBuildHasher>>,
     /// Symbols explicitly interned into the standard obarray.
     interned_symbols: Vec<crate::lisp::types::SymbolName>,
+    /// The obarray's symbol vector as `mapatoms' last enumerated it, with
+    /// the sizes of the tables it was drawn from and `obarray_epoch'.
+    /// GNU walks its one obarray table in place; Emaxx draws the
+    /// enumeration from several name tables, so the enumeration is kept
+    /// until one of them changes.
+    known_symbols_cache:
+        RefCell<Option<(KnownSymbolsKey, Rc<Vec<crate::lisp::types::SymbolName>>)>>,
+    /// Bumped by every removal from the tables the obarray enumeration
+    /// reads (a removal followed by an insertion leaves their sizes alone).
+    obarray_epoch: u64,
     /// Membership index for `interned_symbols'.  Keeping insertion order in
     /// the vector makes completion deterministic, while this set prevents
     /// source loading from turning symbol interning into a quadratic scan.
@@ -5024,7 +5151,6 @@ pub struct InterpreterState {
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
-    backtrace_args_pool: Vec<Vec<Value>>,
     /// SQLite objects keyed by record ID.
     sqlite_handles: Vec<(u64, SqliteHandleState)>,
     /// Lazily compiled Tree-sitter queries keyed by opaque record identity.
@@ -5101,7 +5227,7 @@ pub struct InterpreterState {
     /// cl-flet/cl-labels frames, so repeat calls skip name-facts probes
     /// and function-cell lookup entirely (see call_function_value_inner).
     pub(crate) function_resolution_cache:
-        HashMap<String, (u64, FunctionResolution), crate::lisp::primitives::FnvBuildHasher>,
+        HashMap<u32, (u64, FunctionResolution), crate::lisp::types::IdentityBuildHasher>,
     /// Names the macroexpansion probe determined are NOT macros, from
     /// GLOBAL state only (no cl-flet frame involved), stamped with the
     /// generation that verdict was computed at.  Skips the whole probe on
@@ -5731,7 +5857,10 @@ impl Interpreter {
             ],
             symbol_properties: builtin_symbol_properties(),
             symbol_properties_index: HashMap::default(),
+            symbol_properties_by_id: RefCell::new(HashMap::default()),
             interned_symbols: Vec::new(),
+            known_symbols_cache: RefCell::new(None),
+            obarray_epoch: 0,
             interned_symbol_names: HashSet::new(),
             uninterned_standard_symbol_names: HashSet::new(),
             standard_obarray_id,
@@ -5988,7 +6117,6 @@ impl Interpreter {
             keymap_bindings_cache: std::cell::RefCell::new(Vec::new()),
             vm_stack_pool: Vec::new(),
             stack_roots: roots::StackRoots::default(),
-            backtrace_args_pool: Vec::new(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
             treesit_parsers: Vec::new(),
@@ -6130,6 +6258,7 @@ impl Interpreter {
             continuations: continuations::ThreadContinuations::default(),
         };
         interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
+        interp.symbol_properties_by_id.borrow_mut().clear();
         // Startup globals are dumped `defvar'/DEFVAR value cells, hence
         // intrinsically special.  Fold declarations and values through one
         // registration path so a new startup global cannot require a shadow
@@ -8101,7 +8230,6 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
         LispError::Terminate(_) => {
             unreachable!("process termination cannot be converted to a Lisp condition")
         }
-        LispError::VmReturn(_) => unreachable!("bytecode return escaped the VM"),
         LispError::SignalValue(value) => value.clone(),
     }
 }

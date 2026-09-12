@@ -958,7 +958,10 @@ impl Interpreter {
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
-        self.for_each_known_symbol_name(|name| name.to_string())
+        self.known_symbols_shared()
+            .iter()
+            .map(|symbol| symbol.as_str().to_string())
+            .collect()
     }
 
     /// The initial obarray's symbols, in `known_symbol_names' order, as
@@ -969,17 +972,39 @@ impl Interpreter {
     /// obarray holds twenty thousand names, and ERT's test selection walks
     /// it on every batch run: `mapatoms' was 22 ms against GNU's 3.6).
     pub(crate) fn known_symbols(&self) -> Vec<crate::lisp::types::SymbolName> {
-        self.for_each_known_symbol(|source| match source {
-            KnownSymbolSource::Symbol(symbol) => symbol.clone(),
-            KnownSymbolSource::Name(name) => crate::lisp::types::SymbolName::intern_str(name),
-        })
+        self.known_symbols_shared().as_ref().clone()
     }
 
-    fn for_each_known_symbol_name<T>(&self, mut make: impl FnMut(&str) -> T) -> Vec<T> {
-        self.for_each_known_symbol(|source| match source {
-            KnownSymbolSource::Symbol(symbol) => make(symbol.as_str()),
-            KnownSymbolSource::Name(name) => make(name),
-        })
+    /// The obarray's symbols, enumerated once per change of the tables
+    /// they are drawn from: `mapatoms' and completion walk twenty thousand
+    /// symbols, and comp.el's `comp--all-classes' does so for every
+    /// compilation.
+    pub(crate) fn known_symbols_shared(&self) -> Rc<Vec<crate::lisp::types::SymbolName>> {
+        let key = super::KnownSymbolsKey {
+            globals: self.globals.iter().count(),
+            variable_aliases: self.variable_aliases.len(),
+            functions: self.functions.len(),
+            symbol_properties: self.symbol_properties.len(),
+            interned_symbols: self.interned_symbols.len(),
+            uninterned_standard: self.uninterned_standard_symbol_names.len(),
+            epoch: self.obarray_epoch,
+        };
+        if let Some((cached_key, symbols)) = self.known_symbols_cache.borrow().as_ref()
+            && *cached_key == key
+        {
+            return Rc::clone(symbols);
+        }
+        let symbols = Rc::new(self.for_each_known_symbol(|source| match source {
+            KnownSymbolSource::Symbol(symbol) => symbol.clone(),
+            KnownSymbolSource::Name(name) => crate::lisp::types::SymbolName::intern_str(name),
+        }));
+        *self.known_symbols_cache.borrow_mut() = Some((key, Rc::clone(&symbols)));
+        symbols
+    }
+
+    /// Note a removal from a table the obarray enumeration reads.
+    pub(crate) fn note_obarray_removal(&mut self) {
+        self.obarray_epoch = self.obarray_epoch.wrapping_add(1);
     }
 
     /// The obarray's symbols in a fixed order: nil and t, the value cells,
@@ -1364,6 +1389,7 @@ impl Interpreter {
     pub fn pop_function_binding(&mut self, name: &str) {
         if let Some(index) = self.functions_position.remove(name) {
             self.functions.remove(index);
+            self.note_obarray_removal();
             self.reposition_function_bindings_from(index);
             self.reindex_function_binding(name);
         }
@@ -1372,6 +1398,7 @@ impl Interpreter {
     pub fn remove_all_function_bindings(&mut self, name: &str) {
         if let Some(index) = self.functions_position.remove(name) {
             self.functions.remove(index);
+            self.note_obarray_removal();
             self.reposition_function_bindings_from(index);
         }
         self.functions_index.remove(name);
@@ -1392,6 +1419,7 @@ impl Interpreter {
             None => {
                 if let Some(index) = self.functions_position.remove(name) {
                     self.functions.remove(index);
+                    self.note_obarray_removal();
                     self.reposition_function_bindings_from(index);
                 }
                 self.reindex_function_binding(name);

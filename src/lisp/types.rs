@@ -41,10 +41,11 @@ pub(crate) struct IdentityHasher(u64);
 
 impl Hasher for IdentityHasher {
     fn finish(&self) -> u64 {
-        let mut mixed = self.0;
-        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        mixed ^ (mixed >> 31)
+        // One multiply spreads a dense id or an aligned address into the
+        // high bits hashbrown's control bytes read; folding them back down
+        // gives the bucket index bits of a pointer's zero low bits as well.
+        let mixed = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        mixed ^ (mixed >> 32)
     }
 
     fn write(&mut self, bytes: &[u8]) {
@@ -3023,8 +3024,6 @@ pub enum LispError {
     ErtTestFailed(String),
     /// Non-local exit via `throw`.
     Throw(Value, Value),
-    /// Internal bytecode VM return; consumed before control leaves the VM.
-    VmReturn(Value),
     /// Orderly, non-catchable process termination via `kill-emacs`.
     Terminate(EmacsTermination),
     /// An ERT skip condition.
@@ -3050,9 +3049,6 @@ impl LispError {
             },
             LispError::ErtTestFailed(_) => "ert-test-failed".into(),
             LispError::Throw(_, _) => "no-catch".into(),
-            LispError::VmReturn(_) => {
-                unreachable!("bytecode return escaped the VM")
-            }
             LispError::Terminate(_) => {
                 unreachable!("process termination is non-catchable evaluator control flow")
             }
@@ -3138,7 +3134,6 @@ impl fmt::Display for LispError {
             },
             LispError::ErtTestFailed(msg) => write!(f, "{}", msg),
             LispError::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
-            LispError::VmReturn(_) => unreachable!("bytecode return escaped the VM"),
             LispError::Terminate(termination) => {
                 if termination.restart {
                     write!(

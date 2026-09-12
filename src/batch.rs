@@ -936,9 +936,7 @@ fn call_safe_hook_function(
         env.truncate(depth);
         let error = match result {
             Ok(_) => return Ok(()),
-            Err(
-                error @ (LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)),
-            ) => return Err(error),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
             Err(error) => error,
         };
         interpreter.clear_batch_error_backtrace();

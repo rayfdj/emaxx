@@ -1347,10 +1347,6 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
             "released bytecode stacks, cleared before pooling",
         ),
         (
-            "backtrace_args_pool",
-            "released backtrace argument vectors, cleared before pooling",
-        ),
-        (
             "finalizer_functions",
             "alloc.c marks a live finalizer's function only through the reached object; an unreached one is doomed and then rooted",
         ),
