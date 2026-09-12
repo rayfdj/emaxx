@@ -292,6 +292,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("records", "installed per record"),
     ("record_ids_by_type_index", "the index install_record keeps"),
     ("gc_live_record_ids", "the last collection's census"),
+    ("gc_mark_set_sizes", "the last collection's mark counts"),
     ("gc_record_high_water", "the last collection's census"),
     ("gc_has_record_census", "the last collection's census"),
     ("vm_stack_pool", "released bytecode stacks"),

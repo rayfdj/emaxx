@@ -441,6 +441,11 @@ pub(crate) fn pdumper_load(
     interp
         .native_compiler
         .garbage_collection_baseline_after_image_load();
+    // emacs.c:main calls init_alloc after the dump is loaded: `gcs_done'
+    // and `Vgc_elapsed' start from zero in every process, whatever the
+    // image recorded.
+    interp.set_symbol_value_cell("gcs-done", Value::Integer(0));
+    interp.set_symbol_value_cell("gc-elapsed", Value::float(0.0));
     Ok(record)
 }
 

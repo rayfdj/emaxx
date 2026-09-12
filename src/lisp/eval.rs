@@ -3172,19 +3172,24 @@ pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 type MarkedAddresses = HashSet<usize, crate::lisp::types::IdentityBuildHasher>;
 pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher>;
 
-#[derive(Default)]
+/// How many objects of each kind the last collection reached: the mark
+/// sets of the next one are sized for it, so the mark phase grows no
+/// table (alloc.c's mark bit sits on the object and allocates nothing).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MarkSetSizes {
+    string_objects: usize,
+    records: usize,
+}
+
 struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
+    /// This collection's number: a cons, string, vector or symbol is
+    /// marked by carrying it (alloc.c's mark bit, on the object); the
+    /// other kinds are marked by address or id below.
+    epoch: u32,
     big_integers: MarkedAddresses,
     floats: MarkedAddresses,
-    strings: MarkedAddresses,
     string_objects: MarkedAddresses,
-    /// Reached symbols by id (interned and uninterned alike): alloc.c marks
-    /// the symbol object, so two uninterned symbols of one name are
-    /// reached separately.
-    symbols: HashSet<u32, crate::lisp::types::IdentityBuildHasher>,
-    conses: MarkedAddresses,
-    vectors: MarkedAddresses,
     lambdas: MarkedAddresses,
     buffers: MarkedAddresses,
     markers: MarkedIds,
@@ -3195,6 +3200,29 @@ struct LispReachability<'mark, 'heap> {
     records: MarkedIds,
     finalizers: MarkedIds,
     reader_forms: MarkedAddresses,
+}
+
+impl Default for LispReachability<'_, '_> {
+    /// A fresh collection: its own epoch, so nothing is marked in it yet.
+    fn default() -> Self {
+        Self {
+            native: None,
+            epoch: crate::lisp::types::begin_mark_epoch(),
+            big_integers: MarkedAddresses::default(),
+            floats: MarkedAddresses::default(),
+            string_objects: MarkedAddresses::default(),
+            lambdas: MarkedAddresses::default(),
+            buffers: MarkedAddresses::default(),
+            markers: MarkedIds::default(),
+            overlays: MarkedIds::default(),
+            char_tables: MarkedIds::default(),
+            frames: MarkedIds::default(),
+            terminals: MarkedIds::default(),
+            records: MarkedIds::default(),
+            finalizers: MarkedIds::default(),
+            reader_forms: MarkedAddresses::default(),
+        }
+    }
 }
 
 pub(crate) struct WeakHashReachability {
@@ -3219,16 +3247,16 @@ impl LispReachability<'_, '_> {
             }
             Value::BigInteger(value) => self.big_integers.contains(&value.identity_ptr()),
             Value::Float(value) => self.floats.contains(&value.identity_ptr()),
-            Value::String(value) => self.strings.contains(&value.identity_ptr()),
+            Value::String(value) => value.mark_bit().is_marked(self.epoch),
             Value::StringObject(value) => {
                 self.string_objects.contains(&(Rc::as_ptr(value) as usize))
             }
             Value::Symbol(symbol) => {
                 crate::lisp::types::visible_symbol_name(symbol) == symbol.as_str()
-                    || self.symbols.contains(&symbol.id())
+                    || symbol.mark_bit().is_marked(self.epoch)
             }
-            Value::Cons(value) => self.conses.contains(&ConsCell::identity(value)),
-            Value::Vector(value) => self.vectors.contains(&(Rc::as_ptr(value) as usize)),
+            Value::Cons(value) => value.mark.is_marked(self.epoch),
+            Value::Vector(value) => value.mark.is_marked(self.epoch),
             Value::Lambda(value) => self.lambdas.contains(&(Rc::as_ptr(value) as usize)),
             Value::Buffer(value) => self.buffers.contains(&(Rc::as_ptr(value) as usize)),
             Value::Marker(id) => self.markers.contains(id),
@@ -3265,11 +3293,11 @@ impl LispReachability<'_, '_> {
             }
             Value::BigInteger(value) => self.big_integers.insert(value.identity_ptr()),
             Value::Float(value) => self.floats.insert(value.identity_ptr()),
-            Value::String(value) => self.strings.insert(value.identity_ptr()),
+            Value::String(value) => value.mark_bit().mark(self.epoch),
             Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
-            Value::Symbol(symbol) => self.symbols.insert(symbol.id()),
-            Value::Cons(value) => self.conses.insert(ConsCell::identity(value)),
-            Value::Vector(value) => self.vectors.insert(Rc::as_ptr(value) as usize),
+            Value::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
+            Value::Cons(value) => value.mark.mark(self.epoch),
+            Value::Vector(value) => value.mark.mark(self.epoch),
             Value::Lambda(value) => self.lambdas.insert(Rc::as_ptr(value) as usize),
             Value::Buffer(value) => self.buffers.insert(Rc::as_ptr(value) as usize),
             Value::Marker(id) => self.markers.insert(*id),
@@ -3327,13 +3355,11 @@ impl LispReachability<'_, '_> {
                 }
             }
             Value::Cons(cell) => {
-                let children = [
-                    Value::Cons(cell.clone()).car(),
-                    Value::Cons(cell.clone()).cdr(),
-                ];
-                for child in children.into_iter().flatten() {
-                    self.mark(interp, &child);
-                }
+                // The two words, read in place.
+                let car = cell.car.borrow().clone();
+                self.mark(interp, &car);
+                let cdr = cell.cdr.borrow().clone();
+                self.mark(interp, &cdr);
             }
             Value::Vector(vector) => {
                 // Slot by slot: cloning the slot vector per reached vector
@@ -3371,7 +3397,7 @@ impl LispReachability<'_, '_> {
                 }
             }
             Value::Buffer(buffer) => {
-                self.strings.insert(buffer.name.identity_ptr());
+                buffer.name.mark_bit().mark(self.epoch);
             }
             Value::CharTable(id) => {
                 if let Some(table) = interp.find_char_table(*id) {
@@ -3914,8 +3940,14 @@ impl Interpreter {
         native_roots: &[Value],
         native: Option<&mut crate::lisp::native_comp::NativeMark<'_>>,
     ) -> WeakHashReachability {
+        let sizes = self.gc_mark_set_sizes.get();
+        fn sized<K>(count: usize) -> HashSet<K, crate::lisp::types::IdentityBuildHasher> {
+            HashSet::with_capacity_and_hasher(count, Default::default())
+        }
         let mut marked = LispReachability {
             native,
+            string_objects: sized(sizes.string_objects),
+            records: sized(sizes.records),
             ..LispReachability::default()
         };
         marked.mark_env(self, env);
@@ -4247,6 +4279,10 @@ impl Interpreter {
             }
         }
 
+        self.gc_mark_set_sizes.set(MarkSetSizes {
+            string_objects: marked.string_objects.len(),
+            records: marked.records.len(),
+        });
         let tables = weak_tables
             .into_iter()
             .map(|(id, _, entries)| {
@@ -4266,6 +4302,22 @@ impl Interpreter {
             live_records: marked.records,
             live_finalizers: marked.finalizers,
             live_markers: marked.markers,
+        }
+    }
+
+    /// alloc.c:garbage_collect's tail: `Vgc_elapsed' accumulates the
+    /// collection's time and `gcs_done' counts it, before post-gc-hook.
+    /// Both are forwarded C variables, so the value cells are the state.
+    pub(crate) fn note_collection_done(&mut self, elapsed: std::time::Duration) {
+        let env = Env::new();
+        if let Some(Value::Float(seconds)) = self.forwarded_c_value("gc-elapsed", &env) {
+            self.set_symbol_value_cell(
+                "gc-elapsed",
+                Value::float(seconds.get() + elapsed.as_secs_f64()),
+            );
+        }
+        if let Some(Value::Integer(done)) = self.forwarded_c_value("gcs-done", &env) {
+            self.set_symbol_value_cell("gcs-done", Value::Integer(done.saturating_add(1)));
         }
     }
 
@@ -5131,6 +5183,8 @@ pub struct InterpreterState {
     /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
     /// were allocated after that collection and remain live until the next.
     gc_live_record_ids: MarkedIds,
+    /// The last collection's mark counts, sizing the next one's mark sets.
+    gc_mark_set_sizes: Cell<MarkSetSizes>,
     gc_record_high_water: u64,
     gc_has_record_census: bool,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
@@ -6110,6 +6164,7 @@ impl Interpreter {
             .into_iter()
             .collect(),
             gc_live_record_ids: HashSet::default(),
+            gc_mark_set_sizes: Cell::new(MarkSetSizes::default()),
             gc_record_high_water: 0,
             gc_has_record_census: false,
             sqlite_handles: Vec::new(),

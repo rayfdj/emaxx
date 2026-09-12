@@ -440,29 +440,119 @@ impl ConsMutationSnapshot {
     }
 }
 
+/// The storage size of a Lisp string that is not a Lisp allocation at all
+/// (a host-side key): counted nowhere.
+const UNTRACKED_TEXT: usize = usize::MAX;
+
+thread_local! {
+    /// The current collection's number; see `MarkBit'.
+    static GC_MARK_EPOCH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Start a collection: the epoch every object marked in it will carry.
+pub(crate) fn begin_mark_epoch() -> u32 {
+    let epoch = GC_MARK_EPOCH.get().wrapping_add(1).max(1);
+    GC_MARK_EPOCH.set(epoch);
+    epoch
+}
+
+/// alloc.c's mark bit, on the object: a cons, string, vector or symbol is
+/// marked when it carries the current collection's epoch, so the mark
+/// phase writes a word into the object instead of inserting its address
+/// into a table, and no pass clears the bits afterwards.
+#[derive(Debug, Default)]
+pub(crate) struct MarkBit(Cell<u32>);
+
+impl MarkBit {
+    /// Mark for EPOCH; true when the object was not yet marked in it.
+    pub(crate) fn mark(&self, epoch: u32) -> bool {
+        if self.0.get() == epoch {
+            return false;
+        }
+        self.0.set(epoch);
+        true
+    }
+
+    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
+        self.0.get() == epoch
+    }
+}
+
+/// One immutable Lisp string: the text and, as `struct Lisp_String' keeps
+/// `size_byte', the storage size alloc.c's sweep would read.  The live
+/// totals (gcstat's total_strings and total_string_bytes) are counters
+/// that allocation raises and the release by Rust ownership lowers, so a
+/// collection reads them instead of walking a register of every string.
+pub struct LispText {
+    text: String,
+    storage_bytes: usize,
+    mark: MarkBit,
+}
+
+impl Drop for LispText {
+    fn drop(&mut self) {
+        if self.storage_bytes == UNTRACKED_TEXT {
+            return;
+        }
+        // A thread's locals may already be gone when its last texts go.
+        let _ = LIVE_TEXTS.try_with(|count| count.set(count.get().saturating_sub(1)));
+        let _ = LIVE_TEXT_BYTES
+            .try_with(|bytes| bytes.set(bytes.get().saturating_sub(self.storage_bytes)));
+    }
+}
+
+fn tracked_text(text: String, storage_bytes: usize) -> Rc<LispText> {
+    note_string_allocation(storage_bytes);
+    LIVE_TEXTS.set(LIVE_TEXTS.get().saturating_add(1));
+    LIVE_TEXT_BYTES.set(LIVE_TEXT_BYTES.get().saturating_add(storage_bytes));
+    Rc::new(LispText {
+        text,
+        storage_bytes,
+        mark: MarkBit::default(),
+    })
+}
+
 /// Immutable shared text stored inside compact Lisp values.
 #[repr(transparent)]
-#[derive(Clone, Eq, PartialOrd, Ord)]
-pub struct SharedText(Rc<String>);
+#[derive(Clone)]
+pub struct SharedText(Rc<LispText>);
+
+impl Eq for SharedText {}
+
+impl PartialOrd for SharedText {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SharedText {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
 
 thread_local! {
     // alloc.c returns its permanently rooted empty string from every zero-
     // length allocation.  Besides making `(eq "" "")' true, that identity
     // is observable through print-circle when compiler constants repeat it.
-    static EMPTY_SHARED_TEXT: SharedText = SharedText(Rc::new(String::new()));
+    static EMPTY_SHARED_TEXT: SharedText = SharedText(Rc::new(LispText {
+        text: String::new(),
+        storage_bytes: UNTRACKED_TEXT,
+        mark: MarkBit::default(),
+    }));
 }
 
 impl PartialEq for SharedText {
     fn eq(&self, other: &Self) -> bool {
         // Interned symbol names share one allocation, so the common case
         // (`eq'-style symbol comparison) never reaches the byte compare.
-        Rc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+        Rc::ptr_eq(&self.0, &other.0) || self.0.text == other.0.text
     }
 }
 
 impl std::hash::Hash for SharedText {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.0, state);
+        std::hash::Hash::hash(&self.0.text, state);
     }
 }
 
@@ -475,15 +565,8 @@ impl SharedText {
         if text.is_empty() {
             return EMPTY_SHARED_TEXT.with(Clone::clone);
         }
-        note_string_allocation(
-            crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text),
-        );
-        let text = Rc::new(text);
-        INTERNED_TEXT_BOOK.with(|book| {
-            book.borrow_mut().push(Rc::downgrade(&text));
-            INTERNED_TEXT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
-        });
-        Self(text)
+        let storage_bytes = crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text);
+        Self(tracked_text(text, storage_bytes))
     }
 
     /// A string whose storage size the image records (`size_byte' of the
@@ -493,13 +576,7 @@ impl SharedText {
         if text.is_empty() {
             return EMPTY_SHARED_TEXT.with(Clone::clone);
         }
-        note_string_allocation(storage_bytes);
-        let text = Rc::new(text);
-        INTERNED_TEXT_BOOK.with(|book| {
-            book.borrow_mut().push(Rc::downgrade(&text));
-            INTERNED_TEXT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
-        });
-        Self(text)
+        Self(tracked_text(text, storage_bytes))
     }
 
     /// Host-only text which is not a Lisp string allocation.  Uninterned
@@ -508,11 +585,19 @@ impl SharedText {
     /// Lisp-visible name string.  Keep the encoded key out of both allocation
     /// and live-string accounting.
     fn new_untracked(text: String) -> Self {
-        Self(Rc::new(text))
+        Self(Rc::new(LispText {
+            text,
+            storage_bytes: UNTRACKED_TEXT,
+            mark: MarkBit::default(),
+        }))
+    }
+
+    pub(crate) fn mark_bit(&self) -> &MarkBit {
+        &self.0.mark
     }
 
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        self.0.text.as_str()
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
@@ -520,7 +605,12 @@ impl SharedText {
     }
 
     pub fn into_string(self) -> String {
-        Rc::try_unwrap(self.0).unwrap_or_else(|text| text.as_ref().clone())
+        match Rc::try_unwrap(self.0) {
+            // The object goes away with its counters either way; the text
+            // moves out first.
+            Ok(mut owned) => std::mem::take(&mut owned.text),
+            Err(shared) => shared.text.clone(),
+        }
     }
 }
 
@@ -528,7 +618,7 @@ impl Deref for SharedText {
     type Target = String;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.0.text
     }
 }
 
@@ -552,13 +642,13 @@ impl Borrow<str> for SharedText {
 
 impl fmt::Debug for SharedText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.0.text.fmt(f)
     }
 }
 
 impl fmt::Display for SharedText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.0.text.fmt(f)
     }
 }
 
@@ -657,6 +747,7 @@ impl PartialEq<SharedText> for SymbolName {
 struct SymbolNameState {
     internal: SharedText,
     lisp_name: Value,
+    mark: MarkBit,
     /// The native handle this symbol currently has, packed as the owning
     /// native heap's id in the high 32 bits and the handle index plus one
     /// in the low 32 bits; 0 when it has none.  comp.c passes a symbol to
@@ -810,12 +901,18 @@ impl SymbolName {
             let name = Self(Rc::new(SymbolNameState {
                 internal: text,
                 lisp_name,
+                mark: MarkBit::default(),
                 native_word: Cell::new(0),
                 id,
             }));
             names.insert(name.clone());
             name
         })
+    }
+
+    /// alloc.c's mark bit on the symbol object.
+    pub(crate) fn mark_bit(&self) -> &MarkBit {
+        &self.0.mark
     }
 
     /// Room for ADDITIONAL interned names (the image loader knows how many
@@ -875,6 +972,7 @@ impl SymbolName {
         let state = Rc::new(SymbolNameState {
             internal,
             lisp_name,
+            mark: MarkBit::default(),
             native_word: Cell::new(0),
             id,
         });
@@ -1077,7 +1175,17 @@ impl PartialEq<SymbolName> for &str {
 
 #[repr(transparent)]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SharedBigInt(Rc<BigInt>);
+pub struct SharedBigInt(Rc<LispBignum>);
+
+/// One allocated `struct Lisp_Bignum'; the live count is a counter.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LispBignum(BigInt);
+
+impl Drop for LispBignum {
+    fn drop(&mut self) {
+        let _ = LIVE_BIGNUMS.try_with(|count| count.set(count.get().saturating_sub(1)));
+    }
+}
 
 impl SharedBigInt {
     pub(crate) fn identity_ptr(&self) -> usize {
@@ -1093,43 +1201,42 @@ impl Deref for SharedBigInt {
     type Target = BigInt;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.0.0
     }
 }
 
 impl From<BigInt> for SharedBigInt {
     fn from(value: BigInt) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(24);
-        let value = Rc::new(value);
-        BIGNUM_OBJECT_BOOK.with(|book| {
-            book.borrow_mut().push(Rc::downgrade(&value));
-            BIGNUM_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
-        });
-        Self(value)
+        LIVE_BIGNUMS.set(LIVE_BIGNUMS.get().saturating_add(1));
+        Self(Rc::new(LispBignum(value)))
     }
 }
 
 impl From<SharedBigInt> for BigInt {
     fn from(value: SharedBigInt) -> Self {
-        Rc::try_unwrap(value.0).unwrap_or_else(|value| value.as_ref().clone())
+        match Rc::try_unwrap(value.0) {
+            Ok(mut owned) => std::mem::take(&mut owned.0),
+            Err(shared) => shared.0.clone(),
+        }
     }
 }
 
 impl PartialEq<BigInt> for SharedBigInt {
     fn eq(&self, other: &BigInt) -> bool {
-        self.0.as_ref() == other
+        self.0.0 == *other
     }
 }
 
 impl PartialEq<SharedBigInt> for BigInt {
     fn eq(&self, other: &SharedBigInt) -> bool {
-        self == other.0.as_ref()
+        *self == other.0.0
     }
 }
 
 impl fmt::Display for SharedBigInt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.0.0.fmt(f)
     }
 }
 
@@ -1140,7 +1247,17 @@ impl fmt::Display for SharedBigInt {
 /// preserves that object identity while Rust ownership manages the storage.
 #[repr(transparent)]
 #[derive(Clone, Debug)]
-pub struct SharedFloat(Rc<f64>);
+pub struct SharedFloat(Rc<LispFloat>);
+
+/// One allocated `struct Lisp_Float'; the live count is a counter.
+#[derive(Debug)]
+pub struct LispFloat(f64);
+
+impl Drop for LispFloat {
+    fn drop(&mut self) {
+        let _ = LIVE_FLOATS.try_with(|count| count.set(count.get().saturating_sub(1)));
+    }
+}
 
 impl SharedFloat {
     pub(crate) fn identity_ptr(&self) -> usize {
@@ -1152,7 +1269,7 @@ impl SharedFloat {
     }
 
     pub fn get(&self) -> f64 {
-        *self.0
+        self.0.0
     }
 }
 
@@ -1165,12 +1282,8 @@ impl PartialEq for SharedFloat {
 impl From<f64> for SharedFloat {
     fn from(value: f64) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(8);
-        let value = Rc::new(value);
-        FLOAT_OBJECT_BOOK.with(|book| {
-            book.borrow_mut().push(Rc::downgrade(&value));
-            FLOAT_OBJECT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
-        });
-        Self(value)
+        LIVE_FLOATS.set(LIVE_FLOATS.get().saturating_add(1));
+        Self(Rc::new(LispFloat(value)))
     }
 }
 
@@ -1178,13 +1291,13 @@ impl Deref for SharedFloat {
     type Target = f64;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.0.0
     }
 }
 
 impl fmt::Display for SharedFloat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.0.0.fmt(f)
     }
 }
 
@@ -1296,6 +1409,7 @@ pub struct BufferValue {
 pub struct VectorValue {
     slots: RefCell<Vec<Value>>,
     accounted_slots: usize,
+    pub(crate) mark: MarkBit,
 }
 
 impl VectorValue {
@@ -1307,6 +1421,7 @@ impl VectorValue {
         Rc::new(Self {
             slots: RefCell::new(slots),
             accounted_slots,
+            mark: MarkBit::default(),
         })
     }
 
@@ -1314,6 +1429,7 @@ impl VectorValue {
         Rc::new(Self {
             slots: RefCell::new(Vec::new()),
             accounted_slots: 0,
+            mark: MarkBit::default(),
         })
     }
 
@@ -1399,6 +1515,7 @@ pub struct ConsCell {
     words: ConsWords,
     pub(crate) car: ConsValueCell,
     pub(crate) cdr: ConsValueCell,
+    pub(crate) mark: MarkBit,
 }
 
 /// One tracked field of a cons cell.
@@ -1512,15 +1629,12 @@ thread_local! {
     static STRING_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<RefCell<SharedStringState>>>> =
         const { RefCell::new(Vec::new()) };
     static STRING_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    static INTERNED_TEXT_BOOK: RefCell<Vec<std::rc::Weak<String>>> =
-        const { RefCell::new(Vec::new()) };
-    static INTERNED_TEXT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    static FLOAT_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<f64>>> =
-        const { RefCell::new(Vec::new()) };
-    static FLOAT_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
-    static BIGNUM_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<BigInt>>> =
-        const { RefCell::new(Vec::new()) };
-    static BIGNUM_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
+    // gcstat's total_strings, total_string_bytes, total_floats and the
+    // bignums' share of total_vectors, as counters (see `LispText').
+    static LIVE_TEXTS: Cell<usize> = const { Cell::new(0) };
+    static LIVE_TEXT_BYTES: Cell<usize> = const { Cell::new(0) };
+    static LIVE_FLOATS: Cell<usize> = const { Cell::new(0) };
+    static LIVE_BIGNUMS: Cell<usize> = const { Cell::new(0) };
     static LAMBDA_OBJECT_BOOK: RefCell<Vec<std::rc::Weak<LambdaValue>>> =
         const { RefCell::new(Vec::new()) };
     static LAMBDA_OBJECT_BOOK_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(1 << 16) };
@@ -1599,7 +1713,15 @@ pub(crate) fn census_live_conses() -> usize {
 }
 
 pub(crate) fn census_live_strings() -> StringCensus {
-    let mut census = StringCensus::default();
+    // The immutable texts are counted; only the string objects (text
+    // properties, raw bytes, `aset' targets: a few thousand against
+    // hundreds of thousands of texts) are still walked, for their
+    // property spans as well.
+    let mut census = StringCensus {
+        count: LIVE_TEXTS.get(),
+        bytes: LIVE_TEXT_BYTES.get(),
+        property_spans: 0,
+    };
     STRING_OBJECT_BOOK.with(|book| {
         let mut book = book.borrow_mut();
         book.retain(|weak| match weak.upgrade() {
@@ -1618,29 +1740,11 @@ pub(crate) fn census_live_strings() -> StringCensus {
         });
         STRING_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
     });
-    INTERNED_TEXT_BOOK.with(|book| {
-        let mut book = book.borrow_mut();
-        book.retain(|weak| match weak.upgrade() {
-            Some(text) => {
-                census.count += 1;
-                census.bytes +=
-                    crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text);
-                true
-            }
-            None => false,
-        });
-        INTERNED_TEXT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-    });
     census
 }
 
 pub(crate) fn census_live_floats() -> usize {
-    FLOAT_OBJECT_BOOK.with(|book| {
-        let mut book = book.borrow_mut();
-        book.retain(|weak| weak.strong_count() > 0);
-        FLOAT_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-        book.len()
-    })
+    LIVE_FLOATS.get()
 }
 
 pub(crate) fn census_live_vectors() -> VectorCensus {
@@ -1649,14 +1753,10 @@ pub(crate) fn census_live_vectors() -> VectorCensus {
         slots: LIVE_VECTOR_SLOTS.get(),
         representation_conses: 0,
     };
-    BIGNUM_OBJECT_BOOK.with(|book| {
-        let mut book = book.borrow_mut();
-        book.retain(|weak| weak.strong_count() > 0);
-        census.count += book.len();
-        // lisp.h:Lisp_Bignum is 24 bytes on the supported GNU ABI.
-        census.slots = census.slots.saturating_add(book.len().saturating_mul(3));
-        BIGNUM_OBJECT_BOOK_LIMIT.with(|limit| limit.set((book.len() * 2).max(1 << 16)));
-    });
+    let bignums = LIVE_BIGNUMS.get();
+    census.count += bignums;
+    // lisp.h:Lisp_Bignum is 24 bytes on the supported GNU ABI.
+    census.slots = census.slots.saturating_add(bignums.saturating_mul(3));
     LAMBDA_OBJECT_BOOK.with(|book| {
         let mut book = book.borrow_mut();
         book.retain(|weak| match weak.upgrade() {
@@ -1699,6 +1799,7 @@ impl ConsCell {
             words: ConsWords::new(0, 0),
             car: ConsValueCell::new(car),
             cdr: ConsValueCell::new(cdr),
+            mark: MarkBit::default(),
         }
     }
 
@@ -1708,6 +1809,7 @@ impl ConsCell {
             words: ConsWords::new(car, cdr),
             car: ConsValueCell::new(Value::Nil),
             cdr: ConsValueCell::new(Value::Nil),
+            mark: MarkBit::default(),
         })
     }
 

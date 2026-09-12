@@ -933,28 +933,9 @@ impl Interpreter {
     /// `known_symbol_names' without materializing the names: the census
     /// behind `garbage-collect' runs once per loaded file during the
     /// loadup replay, and cloning ~40k Strings per call is pure waste.
+    /// The obarray's symbol count: the cached enumeration's length.
     pub(crate) fn known_symbol_count(&self) -> usize {
-        let mut seen: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
-            HashSet::with_capacity_and_hasher(
-                1 << 15,
-                crate::lisp::primitives::FnvBuildHasher::default(),
-            );
-        for name in ["nil", "t"]
-            .into_iter()
-            .chain(self.globals.iter().map(|(name, _)| name.as_str()))
-            .chain(self.variable_aliases.iter().map(|(name, _)| name.as_str()))
-            .chain(self.functions.iter().map(|(name, _)| name.as_str()))
-            .chain(self.symbol_properties.iter().map(|(name, _)| name.as_str()))
-            .chain(self.interned_symbols.iter().map(|name| name.as_str()))
-        {
-            if !crate::lisp::types::is_visible_symbol_name(name)
-                || self.uninterned_standard_symbol_names.contains(name)
-            {
-                continue;
-            }
-            seen.insert(name);
-        }
-        seen.len()
+        self.known_symbols_shared().len()
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
