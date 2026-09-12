@@ -9960,3 +9960,104 @@ GNU's mark bit and sweep.  The per-collection cost, times the
 collections a consing loop triggers at `gc-cons-threshold' (800 KB,
 as GNU), is what keeps the sort test at 10x; that is the D20
 collector item, not closed here.
+
+## 2026-09-12 Adversarial audit of checkpoints 19a to 19k
+
+*Scope.*  Every code change on this branch since main (`4ea1408' to
+`2d98ccd', and the uncommitted 19i, 19j and 19k), read commit by commit
+against one question: does any change make a result cheaper by reading
+less than GNU reads, or by trusting a cache whose authorities are not
+all named?  The gate's passing runs are not evidence for that question;
+this section is.
+
+*19a.*  The per-call-site verdict "this head is an alias of a special
+form" is stamped with the function-binding generation, which every
+`fset', `defalias' and `fmakunbound' advances, and is not cached under
+a `cl-flet' frame.  The local text-property write reads only the spans
+meeting the range and the neighbour on either side, and the properties
+of a gap inside the range are the empty plist both before and after.
+Symbols inside vectors are read with positions as lread.c reads them.
+No finding.
+
+*19b.*  The loader's dense tables key by image offset divided by the
+8-byte dump alignment; a second offset in one slot would overwrite the
+first unseen.  Every offset the writer records is aligned, and the gate
+runs with debug assertions on: the tables now assert the alignment on
+every insert, and the offset table asserts that no slot is written
+twice (the object table replaces a placeholder by design).  The decoder's
+UTF-8 fast path is taken only for text that is valid UTF-8, which
+excludes every internal sequence UTF-8 does not have (raw bytes,
+characters above U+10FFFF, surrogates).  `looking-at' over the shared
+whole-region haystack requires the match to start at point's byte
+(`matched.start() == search_offset'); `\`' is the haystack's start.
+The `equal' table keeps each entry's bucket key: a key whose hash would
+differ under a later `symbols-with-pos-enabled' stays in the bucket it
+entered, as fns.c keeps `hash' beside the entry (the rebuild it replaces
+re-hashed under the current mode, which GNU does not).  No finding
+beyond the assertions.
+
+*19c to 19f.*  Assignment, `let', dynamic parameters and the edebug
+flag by symbol id read the same authorities the name-keyed paths read
+(the alias chain, the flags, the active-binding scope, the buffer-local
+cell); the hashers change no result.  The allocator's purge delay is a
+host policy, disclosed at 19c.  No finding.
+
+*19g.*  Audited at its checkpoint: the handler cache's authorities are
+enumerated and controlled.  No finding.
+
+*19h.*  The in-place `aset' takes only ASCII into an ASCII string object
+without extended characters; `aref' and `equal' read the same fields the
+copies read.  Found here and pre-existing, not introduced by 19h: the
+string comparisons compared the internal text alone, so a unibyte
+string and a multibyte string holding the same raw bytes were `equal'
+and `string=' (t) where fns.c compares the byte counts and reports nil
+(probed: GNU (nil nil nil nil t nil t nil) against emaxx (t t non-nil
+non-nil nil nil -1 1) for `string=', `string-equal', `member', `assoc',
+`string-lessp', `string<', `compare-strings' and an `equal' table's
+`gethash' on "\300" against its `string-to-multibyte').  Fixed for
+`equal' (and through it `member', `assoc' and the `equal' tables) and
+for `string=': the same non-ASCII characters in a unibyte and a
+multibyte string are not equal; ASCII text is equal either way, as the
+bytes are.  Controlled by
+`equal_and_string_equal_compare_multibyteness_when_a_string_is_not_ascii'
+with the oracle's values, and for `string-lessp' and `string>'
+(string_cmp: bytewise for two unibyte or all-ASCII strings, else by
+character with a unibyte string's characters its bytes, so the unibyte
+byte 192 orders before the raw-byte character) and `compare-strings'
+(fetch_string_char_as_multibyte: the unibyte byte becomes the raw-byte
+character, and the two are equal), in the same control.  The stricter
+`equal' then exposed `make-string': it derived the multibyte flag from
+the text, so a raw-byte character (`(max-char)') made a unibyte string
+where alloc.c's Fmake_string makes a unibyte string only for an ASCII
+INIT with MULTIBYTE nil, and the optional MULTIBYTE argument was
+ignored.  Fixed to that rule; probed against GNU over eighteen cases
+(the raw-byte, Latin-1, zero-length, MULTIBYTE-t and MULTIBYTE-0
+constructions, their `string-bytes' and `aref', and `concat' of a
+raw-byte character, which fns.c keeps unibyte) with every value the
+same, and controlled by
+`make_string_follows_alloc_c_for_the_multibyte_flag'.  The harness's
+checkout fallback takes a source file only when its bytes hash as they
+did when staged, and names the file otherwise (tested).
+
+*19i.*  The hangup goes to `-gid' as process_send_signal sends every
+signal (`pid = no_pgrp ? gid : -gid'), with `gid' the terminal's
+foreground group for a pty child and the child's own pid otherwise,
+and only while the child is alive.  No finding.
+
+*19j.*  Findings, each fixed before any gate: (1) the key's comment
+still named the definition generation as the category authority after
+the entry's snapshots replaced it; (2) `char-property-alias-alist' was
+consulted only when an entry was built, so an alist set afterwards
+would not have kept a hit from being served -- it is consulted on
+every call; (3) the key lacked the buffer's multibyte flag, which the
+raw haystack key carries; (4) both caches keyed on `modiff' or
+`chars_modiff', which `internal--set-buffer-modified-tick' moves
+backwards (buffer.c's primitive, used by `primitive-undo'), so an edit
+could reuse a tick and hit a stale entry -- both key on per-process
+monotonic edit serials now, with a control; (5) the caches are
+thread-local and key on buffer ids that a second interpreter on the
+same thread numbers from the start again -- they are emptied when an
+interpreter is created or installed from an image.
+
+*19k.*  Hashers only; the census and finalizer sets carry the same
+type.  No finding.

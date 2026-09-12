@@ -1194,6 +1194,46 @@ fn aset_on_an_ascii_string_keeps_its_properties_multibyteness_and_identity() {
 }
 
 #[test]
+fn equal_and_string_equal_compare_multibyteness_when_a_string_is_not_ascii() {
+    // fns.c's internal_equal and Fstring_equal compare byte counts (a
+    // unibyte raw byte is one byte, the same byte in a multibyte string is
+    // two); string_cmp orders a unibyte byte as the character 192 before
+    // the raw-byte character; compare-strings converts the unibyte byte to
+    // the raw-byte character and finds them equal.  Verified against the
+    // oracle: (nil t t nil nil t t nil t t t t).
+    assert_eq!(
+        eval_str(
+            r#"(list (equal "\300" (string-to-multibyte "\300"))
+                     (equal "abc" (string-to-multibyte "abc"))
+                     (equal (string-to-multibyte "\300") (string-to-multibyte "\300"))
+                     (equal (string-to-unibyte "abc\300") (string-to-multibyte "abc\300"))
+                     (string= "\300" (string-to-multibyte "\300"))
+                     (string= "abc" (string-to-multibyte "abc"))
+                     (string-lessp "\300" (string-to-multibyte "\300"))
+                     (string< (string-to-multibyte "\300") "\300")
+                     (string> (string-to-multibyte "\300") "\300")
+                     (compare-strings "\300" nil nil (string-to-multibyte "\300") nil nil)
+                     (string-lessp "abc" "abd")
+                     (string-lessp "ab" "abc"))"#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn eval_throw_and_call_interactively_keep_their_gnu_function_boundary() {
     assert_eq!(
         eval_str(

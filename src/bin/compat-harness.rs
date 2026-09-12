@@ -332,9 +332,20 @@ struct IsolatedTestCheckout {
     commit: String,
     /// The tree the generated inputs were staged from; `restore' falls
     /// back to it when a staged copy has gone (the staging root lives in
-    /// the temporary directory, which the host may clean under a long run).
+    /// the temporary directory, which the host may clean under a long run),
+    /// and only for a file whose bytes still hash as they did when staged.
     source: PathBuf,
     support_files: Vec<PathBuf>,
+    support_hashes: Vec<String>,
+}
+
+fn sha256_of_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("open {} to hash it: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)
+        .map_err(|error| format!("read {} to hash it: {error}", path.display()))?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 impl IsolatedTestCheckout {
@@ -346,12 +357,17 @@ impl IsolatedTestCheckout {
         let checkout = root.join("emacs");
         let support_files = isolated_test_support_inputs(source)?;
         copy_relative_files(source, &root.join("test-support"), &support_files)?;
+        let support_hashes = support_files
+            .iter()
+            .map(|relative| sha256_of_file(&source.join(relative)))
+            .collect::<Result<Vec<_>, _>>()?;
         let isolated = Self {
             root,
             checkout,
             commit: commit.to_string(),
             source: source.to_path_buf(),
             support_files,
+            support_hashes,
         };
         let clone = Command::new("git")
             .args([
@@ -413,10 +429,20 @@ impl IsolatedTestCheckout {
             ));
         }
         let staged = self.root.join("test-support");
-        for relative in &self.support_files {
+        for (relative, staged_hash) in self.support_files.iter().zip(&self.support_hashes) {
             if staged.join(relative).is_file() {
                 copy_relative_files(&staged, &self.checkout, std::slice::from_ref(relative))?;
             } else if self.source.join(relative).is_file() {
+                let current_hash = sha256_of_file(&self.source.join(relative))?;
+                if current_hash != *staged_hash {
+                    return Err(format!(
+                        "isolated test-support input {} is gone from {} and has changed in {} \
+                         since it was staged",
+                        relative.display(),
+                        staged.display(),
+                        self.source.display()
+                    ));
+                }
                 copy_relative_files(&self.source, &self.checkout, std::slice::from_ref(relative))?;
             } else {
                 return Err(format!(
@@ -4433,6 +4459,13 @@ mod tests {
             "generated-doc\n"
         );
         let staged_doc_bytes = fs::read(source.join("etc/DOC")).unwrap();
+        fs::write(
+            source.join("etc/DOC"),
+            "generated-doc-changed-behind-the-run\n",
+        )
+        .unwrap();
+        let error = checkout.restore().unwrap_err();
+        assert!(error.contains("has changed"), "{error}");
         fs::remove_file(source.join("etc/DOC")).unwrap();
         let error = checkout.restore().unwrap_err();
         assert!(error.contains("etc/DOC"), "{error}");

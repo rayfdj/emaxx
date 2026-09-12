@@ -696,6 +696,46 @@ fn make_string_and_aset_share_the_internal_character_encoding() {
 }
 
 #[test]
+fn make_string_follows_alloc_c_for_the_multibyte_flag() {
+    // alloc.c Fmake_string: unibyte only for an ASCII INIT with MULTIBYTE
+    // nil; a raw-byte character makes a multibyte string.  fns.c concat
+    // keeps a raw-byte character from a list unibyte.  Values from GNU.
+    let body = r#"(list (multibyte-string-p (make-string 1 (max-char)))
+                     (string-bytes (make-string 1 (max-char)))
+                     (aref (make-string 1 (max-char)) 0)
+                     (equal (make-string 1 (max-char)) (string (max-char)))
+                     (multibyte-string-p (make-string 0 (max-char)))
+                     (multibyte-string-p (make-string 1 ?a t))
+                     (multibyte-string-p (make-string 0 ?a))
+                     (multibyte-string-p (make-string 2 ?\377))
+                     (aref (make-string 1 ?\377) 0)
+                     (string-bytes (make-string 1 ?\377))
+                     (multibyte-string-p (make-string 3 ?a nil))
+                     (multibyte-string-p (make-string 3 ?a 0))
+                     (multibyte-string-p (concat "a" (list (max-char))))
+                     (multibyte-string-p (concat (list (max-char))))
+                     (string-bytes (concat (list (max-char))))
+                     (aref (concat (list (max-char))) 0)
+                     (multibyte-string-p (string (max-char)))
+                     (multibyte-string-p (string-to-unibyte (make-string 1 (max-char)))))"#;
+    let expected = "(t 2 4194303 t t t nil t 255 2 nil t nil nil 1 255 t nil)";
+    assert_upstream_primitive_contract(&format!("(prin1 {body})"), expected);
+
+    let mut interp = Interpreter::new();
+    let form = Reader::new(body)
+        .read_all()
+        .expect("read the make-string multibyte contract")
+        .remove(0);
+    assert_eq!(
+        interp
+            .eval(&form, &mut Vec::new())
+            .expect("evaluate the make-string multibyte contract")
+            .to_string(),
+        expected
+    );
+}
+
+#[test]
 fn overlay_properties_accept_nil_keys_and_accessible_endpoints() {
     assert_upstream_primitive_contract(
         "(with-temp-buffer\

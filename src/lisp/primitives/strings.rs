@@ -208,23 +208,38 @@ pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Optio
     }
 }
 
-/// `equal' on two strings, compared in place: the text and the extended
-/// characters, as fns.c's internal_equal compares the bytes.  `None' when
-/// either is not a string.
+/// `equal' on two strings, compared in place.  fns.c's internal_equal
+/// compares the character count, the byte count and the bytes: two
+/// strings of the same characters differ when one is unibyte and the
+/// other multibyte and any character is not ASCII (a raw byte is one
+/// byte unibyte and two multibyte).  `None' when either is not a string.
 pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option<bool> {
-    fn with_parts<R>(value: &Value, f: impl FnOnce(&str, &[(usize, u32)]) -> R) -> Option<R> {
+    fn with_parts<R>(
+        value: &Value,
+        f: impl FnOnce(&str, &[(usize, u32)], Option<bool>) -> R,
+    ) -> Option<R> {
         match value {
-            Value::String(text) => Some(f(text.as_str(), &[])),
+            Value::String(text) => Some(f(text.as_str(), &[], None)),
             Value::StringObject(state) => {
                 let state = state.borrow();
-                Some(f(&state.text, &state.extended_chars))
+                Some(f(&state.text, &state.extended_chars, Some(state.multibyte)))
             }
             _ => None,
         }
     }
-    with_parts(left, |left_text, left_extended| {
-        with_parts(right, |right_text, right_extended| {
-            left_text == right_text && left_extended == right_extended
+    fn multibyte_of(text: &str, known: Option<bool>) -> bool {
+        known.unwrap_or_else(|| {
+            text.chars()
+                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F)
+        })
+    }
+    with_parts(left, |left_text, left_extended, left_multibyte| {
+        with_parts(right, |right_text, right_extended, right_multibyte| {
+            left_text == right_text
+                && left_extended == right_extended
+                && (left_text.is_ascii()
+                    || multibyte_of(left_text, left_multibyte)
+                        == multibyte_of(right_text, right_multibyte))
         })
     })
     .flatten()
@@ -244,6 +259,45 @@ pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
         return Ok(raw_byte_regex_char((code - RAW_BYTE8_BASE as i64) as u8));
     }
     char::from_u32(code as u32).ok_or_else(|| LispError::Signal("Invalid character".into()))
+}
+
+/// Whether a string argument (or a symbol's name, for the comparisons
+/// that accept symbols) is multibyte: fns.c compares bytes, and the same
+/// non-ASCII characters have different bytes in the two representations.
+pub(crate) fn string_argument_multibyte(value: &Value) -> bool {
+    match value {
+        Value::StringObject(state) => state.borrow().multibyte,
+        Value::String(text) => text
+            .chars()
+            .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
+        Value::Symbol(name) => !name.as_str().is_ascii(),
+        _ => false,
+    }
+}
+
+/// fns.c's string_cmp: two unibyte or all-ASCII strings compare bytewise;
+/// otherwise character by character, a unibyte string's characters being
+/// its bytes (0 to 255) and a multibyte string's its decoded characters
+/// (a raw byte among them is 0x3FFF80 and above).  Symbols compare by
+/// their names.
+pub(crate) fn string_order(left: &Value, right: &Value) -> Result<std::cmp::Ordering, LispError> {
+    let left_text = string_comparison_text(left)?;
+    let right_text = string_comparison_text(right)?;
+    if left_text.is_ascii() && right_text.is_ascii() {
+        return Ok(left_text.as_bytes().cmp(right_text.as_bytes()));
+    }
+    let codes = |value: &Value, text: &str| -> Vec<i64> {
+        match string_like(value) {
+            Some(string) => string.character_codes(),
+            None => {
+                let multibyte = !text.is_ascii();
+                text.chars()
+                    .map(|ch| string_character_code(multibyte, ch))
+                    .collect()
+            }
+        }
+    };
+    Ok(codes(left, &left_text).cmp(&codes(right, &right_text)))
 }
 
 pub(crate) fn string_comparison_text(value: &Value) -> Result<String, LispError> {
@@ -338,8 +392,31 @@ pub(crate) fn compare_strings_value(
     right_end: Option<&Value>,
     ignore_case: bool,
 ) -> Result<Value, LispError> {
-    let left = string_compare_codes(left, left_start, left_end, ignore_case, true)?;
-    let right = string_compare_codes(right, right_start, right_end, ignore_case, true)?;
+    // fns.c reads both strings with fetch_string_char_as_multibyte_advance:
+    // a unibyte string's byte above 127 is the raw-byte character.
+    let promote = |codes: Vec<i64>, value: &Value| -> Vec<i64> {
+        if string_argument_multibyte(value) {
+            return codes;
+        }
+        codes
+            .into_iter()
+            .map(|code| {
+                if (0x80..=0xFF).contains(&code) {
+                    RAW_BYTE8_BASE as i64 + code
+                } else {
+                    code
+                }
+            })
+            .collect()
+    };
+    let left = promote(
+        string_compare_codes(left, left_start, left_end, ignore_case, true)?,
+        left,
+    );
+    let right = promote(
+        string_compare_codes(right, right_start, right_end, ignore_case, true)?,
+        right,
+    );
     let common_len = left.len().min(right.len());
 
     for index in 0..common_len {

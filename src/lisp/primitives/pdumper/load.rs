@@ -266,10 +266,21 @@ impl<V: Copy> OffsetTable<V> {
     }
 
     fn insert(&mut self, offset: u32, value: V) {
+        // Every key is an aligned image offset; a second offset in the
+        // same slot would overwrite the first unseen.
+        debug_assert_eq!(
+            offset as usize % DUMP_ALIGNMENT,
+            0,
+            "unaligned image offset {offset}"
+        );
         let slot = offset as usize / DUMP_ALIGNMENT;
         if slot >= self.slots.len() {
             self.slots.resize(slot + 1, None);
         }
+        debug_assert!(
+            self.slots[slot].is_none(),
+            "image offset {offset} recorded twice"
+        );
         self.slots[slot] = Some(value);
     }
 
@@ -309,6 +320,11 @@ impl ObjectTable {
     }
 
     fn insert(&mut self, offset: u32, value: Value) {
+        debug_assert_eq!(
+            offset as usize % DUMP_ALIGNMENT,
+            0,
+            "unaligned image offset {offset}"
+        );
         let slot = offset as usize / DUMP_ALIGNMENT;
         if slot >= self.index.len() {
             self.index.resize(slot + 1, 0);

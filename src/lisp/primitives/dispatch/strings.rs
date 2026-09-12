@@ -29,9 +29,12 @@ define_dispatch!(
                 let init = args[1].as_integer()?;
                 let c = char_for_codepoint(init)?;
                 let s: String = std::iter::repeat_n(c, length as usize).collect();
-                let multibyte = s
-                    .chars()
-                    .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
+                // alloc.c Fmake_string: the result is unibyte only when INIT is
+                // an ASCII character and MULTIBYTE is nil.  Every other
+                // character, a raw-byte character included, makes a multibyte
+                // string, whatever the length.
+                let multibyte = !(u32::try_from(init).is_ok_and(|code| code < 0x80)
+                    && args.get(2).is_none_or(Value::is_nil));
                 Ok(make_shared_string_value_with_multibyte(
                     s,
                     Vec::new(),
