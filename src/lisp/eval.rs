@@ -4570,6 +4570,9 @@ impl Interpreter {
                 .filter_map(|identity| remap_cons_identity(&copier, identity))
                 .collect();
         }
+        // The snapshots name the template's cells; a missing snapshot
+        // rebuilds the record from its (copied) view on first use.
+        clone.keymap_public_view_watch.clear();
 
         // Weak closure-environment registries point at template envs (the
         // template stays alive, so the weaks stay upgradable -- exactly the
@@ -4808,6 +4811,14 @@ pub struct InterpreterState {
     /// Forward half of `keymap_public_cons_owners', used to unregister one
     /// refreshed keymap without scanning every live public cons view.
     keymap_public_cons_ids: HashMap<u64, Vec<usize>>,
+    /// Per keymap record, the mutation dependencies of its public view (the
+    /// spine and the binding pairs, the cells the owner index names): a
+    /// store through the Rust primitives reaches the record at the store,
+    /// but generated code stores into the canonical words of a cell it
+    /// reached through native pointers without crossing into Rust, and only
+    /// a check of those words finds it.  A record whose snapshot is not
+    /// current (or missing) is rebuilt from its view before it is read.
+    keymap_public_view_watch: HashMap<u64, crate::lisp::types::ConsMutationSnapshot>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
     /// The currently selected window record.
@@ -5705,6 +5716,7 @@ impl Interpreter {
             current_global_map: None,
             keymap_public_cons_owners: HashMap::new(),
             keymap_public_cons_ids: HashMap::new(),
+            keymap_public_view_watch: HashMap::new(),
             current_buffer_id: 0,
             selected_window_id: 0,
             minibuffer_selected_window_id: None,

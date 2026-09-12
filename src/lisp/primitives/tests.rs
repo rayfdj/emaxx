@@ -16194,6 +16194,102 @@ fn keymap_bindings_accept_t_vector_events() {
 }
 
 #[test]
+fn native_stores_into_a_keymaps_public_view_reach_its_record() {
+    // subr.el's `define-key-after', compiled natively, splices a binding
+    // pair into the keymap's public list with `setcdr' on a cell it reached
+    // through native pointers, without crossing into Rust.  The runtime
+    // keymap's record is a projection of that list; its snapshot of the
+    // list's cells (canonical words included) is checked before every
+    // keymap primitive reads or rewrites the record, so the lookups,
+    // `keymap-parent', `copy-keymap' and `define-key' see the spliced
+    // pairs.  GNU reads the list itself.  (Found on macOS, whose startup
+    // runs subr.el natively: so-long-tests' `(funcall (lookup-key menu
+    // [so-long-revert]))' called nil.)
+    let program = r#"(progn (require 'comp)
+ (let ((comp-no-spawn nil) (comp-running-batch-compilation t))
+  (fset 'probe-define-key-after (native-compile '(lambda (keymap key definition &optional after)
+  (unless after (setq after t))
+  (or (keymapp keymap)
+      (signal 'wrong-type-argument (list 'keymapp keymap)))
+  (setq key
+	(if (<= (length key) 1) (aref key 0)
+	  (setq keymap (lookup-key keymap
+				   (apply #'vector
+					  (butlast (mapcar #'identity key)))))
+	  (aref key (1- (length key)))))
+  (let ((tail keymap) done inserted)
+    (while (and (not done) tail)
+      ;; Delete any earlier bindings for the same key.
+      (if (eq (car-safe (car (cdr tail))) key)
+	  (setcdr tail (cdr (cdr tail))))
+      ;; If we hit an included map, go down that one.
+      (if (keymapp (car tail)) (setq tail (car tail)))
+      ;; When we reach AFTER's binding, insert the new binding after.
+      ;; If we reach an inherited keymap, insert just before that.
+      ;; If we reach the end of this keymap, insert at the end.
+      (if (or (and (eq (car-safe (car tail)) after)
+		   (not (eq after t)))
+	      (eq (car (cdr tail)) 'keymap)
+	      (null (cdr tail)))
+	  (progn
+	    ;; Stop the scan only if we find a parent keymap.
+	    ;; Keep going past the inserted element
+	    ;; so we can delete any duplications that come later.
+	    (if (eq (car (cdr tail)) 'keymap)
+		(setq done t))
+	    ;; Don't insert more than once.
+	    (or inserted
+		(setcdr tail (cons (cons key definition) (cdr tail))))
+	    (setq inserted t)))
+      (setq tail (cdr tail)))))
+))
+  (list (native-comp-function-p (symbol-function 'probe-define-key-after))
+        (let ((k (make-sparse-keymap "Q")))
+          (probe-define-key-after k [baz] 'qux)
+          (probe-define-key-after k [foo] '(menu-item "Foo" bar))
+          (probe-define-key-after k [zot] 'zip)
+          (list (lookup-key k [baz]) (lookup-key k [foo]) (lookup-key k [zot]) (keymap-parent k) k))
+        (let ((k (make-sparse-keymap "S")) (p (make-sparse-keymap)))
+          (probe-define-key-after k [baz] 'qux)
+          (lookup-key k [baz])
+          (probe-define-key-after k [foo] 'bar)
+          (define-key k [wkey] 'x)
+          (set-keymap-parent k p)
+          (probe-define-key-after k [zot] 'zip)
+          (list (lookup-key k [baz]) (lookup-key k [foo]) (lookup-key k [wkey]) (lookup-key k [zot])
+                (eq (keymap-parent k) p) (copy-sequence k)
+                (let ((c (copy-keymap k))) (list (lookup-key c [zot]) (eq (keymap-parent c) p))))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t (qux bar zip nil (keymap \"Q\" (baz . qux) (foo menu-item \"Foo\" bar) (zot . zip))) (qux bar x zip t (keymap (wkey . x) \"S\" (baz . qux) (foo . bar) (zot . zip) keymap) (zip t)))",
+        "native define-key-after on a runtime keymap",
+    );
+}
+
+#[test]
+fn keymap_views_hand_out_their_own_cells() {
+    // fns.c's `nthcdr' (and `last', `nth', `length', `safe-length' through
+    // it) walk the keymap list itself, so `(setcdr (last map) parent)'
+    // reaches the map's own last cell and Fset_keymap_parent's shape (the
+    // parent's list as the tail) results; a `setcdr' on the root does the
+    // same.  Values from the oracle.
+    let program = r#"(let ((k (make-sparse-keymap "N")) (p (make-sparse-keymap)))
+  (define-key p [akey] 'pa)
+  (list (eq (last k) (cdr k)) (eq (nthcdr 1 k) (cdr k)) (safe-length k) (length k)
+        (progn (setcdr (last k) p)
+               (list k (eq (cdr (cdr k)) p) (keymap-parent k) (lookup-key k [akey]) (length k)))
+        (let ((m (make-sparse-keymap)) (q (make-sparse-keymap)))
+          (define-key q [bkey] 'qb)
+          (setcdr m q)
+          (list m (keymap-parent m) (lookup-key m [bkey])))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t 2 2 ((keymap \"N\" keymap (akey . pa)) t (keymap (akey . pa)) pa 4) ((keymap keymap (bkey . qb)) (keymap (bkey . qb)) qb))",
+        "keymap cells through nthcdr and last",
+    );
+}
+
+#[test]
 fn map_keymap_visits_runtime_keymap_bindings() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut env = Vec::new();

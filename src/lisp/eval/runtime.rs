@@ -2542,13 +2542,26 @@ impl Interpreter {
 
         let mut seen = std::collections::HashSet::new();
         let mut owned_ids = Vec::new();
+        let mut watch = crate::lisp::types::ConsMutationSnapshot::tree(&Value::Nil);
         let mut tail = view.clone();
         while let Value::Cons(cell) = tail {
             let cell_id = crate::lisp::types::ConsCell::identity(&cell);
             if !seen.insert(cell_id) {
                 break;
             }
+            // The parent's list is spliced in as the tail (its first cell
+            // carries the `keymap' symbol); its cells are the parent's own.
+            if cell_id
+                != crate::lisp::types::ConsCell::identity(match &view {
+                    Value::Cons(root) => root,
+                    _ => break,
+                })
+                && matches!(&*cell.car.borrow(), Value::Symbol(name) if name == "keymap")
+            {
+                break;
+            }
             owned_ids.push(cell_id);
+            watch.include_cell(&cell);
             self.keymap_public_cons_owners
                 .entry(cell_id)
                 .or_default()
@@ -2563,6 +2576,7 @@ impl Interpreter {
             {
                 let entry_id = crate::lisp::types::ConsCell::identity(entry_cell);
                 owned_ids.push(entry_id);
+                watch.include_cell(entry_cell);
                 self.keymap_public_cons_owners
                     .entry(entry_id)
                     .or_default()
@@ -2571,6 +2585,18 @@ impl Interpreter {
             tail = cell.cdr.borrow().clone();
         }
         self.keymap_public_cons_ids.insert(keymap_id, owned_ids);
+        self.keymap_public_view_watch.insert(keymap_id, watch);
+    }
+
+    /// Whether the record of keymap KEYMAP_ID still describes its public
+    /// view: no watched cell stored through Rust, and no canonical word of
+    /// a cell generated code can reach changed since the record was built
+    /// from the view.  A record without a snapshot (a loaded or copied one)
+    /// is not current until it is rebuilt once.
+    pub(crate) fn runtime_keymap_view_is_current(&self, keymap_id: u64) -> bool {
+        self.keymap_public_view_watch
+            .get(&keymap_id)
+            .is_some_and(|watch| watch.is_current())
     }
 
     /// After an image load: the keymap records came back with their

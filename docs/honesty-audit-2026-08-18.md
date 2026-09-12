@@ -10201,3 +10201,89 @@ semantic's profile in `SymbolName::id_of').  The planned sharing of
 stored strings was measured and dropped: binding an 80 KB
 `buffer-string' costs the same as discarding it (453 against 486 us;
 GNU 927 and 920), so `stored_value' is not a theme.
+
+## 2026-09-12 Checkpoint 19n: a keymap's record follows stores generated code makes into its view
+
+*What prompted it.*  The Mac run of so-long-tests.el failed two tests
+with `(void-function nil)': `(funcall (lookup-key menu [so-long-revert]))'
+on the menu `so-long-menu' builds with `define-key-after'.  On the
+Mac the startup runs subr.el natively (GNU's preloaded units match
+the version directory emaxx computes there), on Linux both GNU and
+emaxx compute a version directory the checked-in native-lisp tree
+does not have, so subr.el runs as byte-code and this path had never
+run on Linux.  Reproduced on Linux by native-compiling a copy of
+`define-key-after' with the oracle and loading the unit: after three
+insertions, `lookup-key' found the first pair and not the later two,
+though the printed list held all three.
+
+*Cause.*  A runtime keymap is a record (name, parent, bindings,
+char-table) with a public `(keymap ...)' view; keymap.c has only the
+list.  A store through the Rust `setcar'/`setcdr' primitives into a
+view cell reaches the record through the cell's owner index at the
+store.  Generated code stores into the canonical words of a cell it
+reached through native pointers (`define-key-after' walks the list
+with `cdr' and splices with `setcdr'), and the boundary's publish
+step reconciles only the cells encoded during that call, so the
+mirror healed lazily on the next read of the cell while the record
+stayed as it was, and readers of the record (every lookup) never
+read the cell.
+
+*What changed.*  The owner registration also takes a
+`ConsMutationSnapshot' over the same cells (the spine and the
+binding pairs; `include_cell'), which the other caches already use
+and which checks the canonical words of the cells generated code can
+reach.  `ensure_runtime_keymap_current' checks it and rebuilds the
+record from the view when it is not current or missing (a copied or
+loaded interpreter starts without snapshots), and runs before every
+keymap primitive reads or rewrites a record (`define-key',
+`lookup-key', `keymap-prompt', `keymap-parent', `set-keymap-parent',
+`map-keymap', `map-keymap-internal', `copy-keymap'), before the
+single-map lookup every key search goes through, and before the four
+binding writers; the cached-bindings reader, which has no mutable
+interpreter, reads the view itself when the snapshot is stale.
+The view parse is one function shared by the rebuild and that reader.
+
+*Found by the control and fixed with it: the parent's place in the
+view.*  keymap.c:Fset_keymap_parent splices the parent's own list in
+as the tail of the child's (`(keymap (a . b) keymap (c . d))'); the
+refreshed view put the parent's view in as an element (`(keymap (a
+. b) (keymap (c . d)))').  Lisp that walks the list saw the
+difference: `define-key-after' (interpreted or native) descends into
+an element that is a keymap, so on a child with a parent it inserted
+the pair into the parent (probed: `(lookup-key p [zot])' zip against
+GNU nil), and the idiom `(setcdr (last k) p)' lost the parent
+altogether (`keymap-parent' nil against GNU's p): `nthcdr' on a
+keymap projected the record into a fresh list, so `last' handed back
+a copy's cell (`(eq (last k) (cdr k))' nil against GNU t).  The view
+now carries the parent as its tail, sharing the parent's cells as
+GNU does; the parse back stops at the first spine cell whose car is
+the symbol `keymap' and takes that tail as the parent; the owner
+walk and the snapshot stop there too, the parent's cells being the
+parent's own; and `nthcdr', `nth', `length' and `safe-length' on a
+keymap held by its view read the list itself (the projection stays
+for a keymap held as its record alone).  An element that is itself a keymap stays what it was in the
+parse (a parent), where GNU treats it as an included keymap searched
+by access_keymap; `keymap-parent' differs on that shape (probed:
+`(keymap (keymap (i . ii)))' gives `(keymap (i . ii))' against GNU
+nil, lookups agree) -- recorded open, the shape is not one GNU's
+primitives produce.
+
+*Found by the control and recorded open.*  A single-character symbol
+event and the character are one key: `(define-key m [w] 'x)' stores
+`(119 . x)' and `(lookup-key m "w")' finds it, where GNU stores `(w
+. x)' and finds nothing for the string (probed: `((keymap (119 . x))
+x x x x)' against GNU's `((keymap (w . x)) x nil nil nil)'; the
+converse with `(define-key m "w" 'x)' and `[w]' likewise).  The
+keymap parts are key descriptions, and the description of the symbol
+`w' folds into the character's; multi-character symbol events
+(`[f1]', `[wkey]') are unaffected.  Not fixed here: the mapping
+between descriptions and events underlies every keymap primitive and
+is a checkpoint of its own.
+
+*Control.*  `native_stores_into_a_keymaps_public_view_reach_its_record':
+a copy of `define-key-after' native-compiled in the test (the oracle
+compiles it too), three insertions into a sparse keymap, insertions
+mixed with `define-key' and `set-keymap-parent', then the lookups,
+`keymap-parent', `copy-sequence' of the view (GNU's shape, parent as
+the tail) and a `copy-keymap', all compared with the oracle.  The
+Mac's so-long-tests run is the receipt still to be taken.

@@ -107,6 +107,7 @@ define_dispatch!(
             }
             "copy-keymap" => {
                 need_args(name, args, 1)?;
+                crate::lisp::primitives::values::ensure_runtime_keymap_current(interp, &args[0])?;
                 // keymap.c Fcopy_keymap (copy_keymap_1): a runtime keymap
                 // gets a new owner record and public view, a plain
                 // `(keymap ...)' list is copied cell by cell.  Returning a

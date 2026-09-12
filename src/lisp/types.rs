@@ -334,6 +334,19 @@ impl ConsMutationSnapshot {
         snapshot
     }
 
+    /// Add one cell's two fields (and its canonical words, when generated
+    /// code can reach it) to the dependencies.
+    pub(crate) fn include_cell(&mut self, cell: &SharedCons) {
+        let fields = ConsCell::mutation_field_ids(cell);
+        if self.field_ids.binary_search(&fields[0]).is_ok() {
+            return;
+        }
+        self.track_native_cell(cell);
+        register_cons_mutation_watchers(&fields, &self.watch);
+        self.field_ids.extend(fields);
+        self.field_ids.sort_unstable();
+    }
+
     pub(crate) fn include_tree(&mut self, value: &Value) {
         let mut seen = HashSet::new();
         let mut pending = vec![value.clone()];

@@ -188,6 +188,11 @@ call (`forward-sexp` 245 to 8.2 us, GNU 0.51), plain searches read
 windows, the collector marks symbols by id (semantic-fmt-utest 46.9 to
 34.7 s, GNU 0.84).  Open, measured: markers are never reclaimed by the
 collector (an edit after 20,000 dropped markers 3,304 us, GNU 0.90).
+Checkpoint 19n (2026-09-12, for main): a runtime keymap's record is
+checked against a mutation snapshot of its public view before every
+keymap primitive, so pairs spliced by natively compiled Lisp
+(`define-key-after` on the Mac, where subr.el runs natively) reach
+`lookup-key`; the Mac's so-long-tests failures.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

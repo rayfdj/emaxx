@@ -219,6 +219,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the record-to-view half of that index, rebuilt with it",
     ),
     (
+        "keymap_public_view_watch",
+        "a cache: the mutation snapshots of the public views, taken again on first use",
+    ),
+    (
         "minibuffer_selected_window_id",
         "window.c:init_window_once_for_pdumper resets minibuf_selected_window",
     ),
