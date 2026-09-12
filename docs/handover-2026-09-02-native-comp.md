@@ -197,6 +197,11 @@ Checkpoint 19p (2026-09-12, for main): the collector unchains the
 markers it does not reach, as alloc.c's sweep does (an edit after
 20,000 dropped markers and a collection 3,104 to 16.5 us, GNU 0.92);
 buffer marks and process marks are roots of the mark phase.
+Checkpoint 19o (2026-09-12, for main): the obarray enumeration behind
+`mapatoms` hands out the symbol objects it holds instead of
+re-interning every name (22 to 13 ms, GNU 3.6); the per-file floor
+of the Mac's list (232 files at 30 ms against 3) is otherwise the
+per-call cost of `ert-select-tests`' walk, open.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

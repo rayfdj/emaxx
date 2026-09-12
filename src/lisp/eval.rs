@@ -4793,7 +4793,7 @@ pub struct InterpreterState {
     /// remains canonical for deterministic symbol enumeration.
     symbol_properties_index: OrderedNameIndex,
     /// Symbols explicitly interned into the standard obarray.
-    interned_symbols: Vec<String>,
+    interned_symbols: Vec<crate::lisp::types::SymbolName>,
     /// Membership index for `interned_symbols'.  Keeping insertion order in
     /// the vector makes completion deterministic, while this set prevents
     /// source loading from turning symbol interning into a quadratic scan.

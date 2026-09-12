@@ -590,7 +590,8 @@ impl Interpreter {
     pub fn intern_symbol_name(&mut self, name: &str) {
         self.uninterned_standard_symbol_names.remove(name);
         if self.interned_symbol_names.insert(name.to_string()) {
-            self.interned_symbols.push(name.to_string());
+            self.interned_symbols
+                .push(crate::lisp::types::SymbolName::intern_str(name));
         }
     }
 
@@ -601,7 +602,8 @@ impl Interpreter {
         self.uninterned_standard_symbol_names
             .insert(name.to_string());
         if self.interned_symbol_names.remove(name) {
-            self.interned_symbols.retain(|candidate| candidate != name);
+            self.interned_symbols
+                .retain(|candidate| candidate.as_str() != name);
         }
         true
     }

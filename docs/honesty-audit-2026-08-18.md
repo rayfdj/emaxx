@@ -10328,3 +10328,35 @@ fresh buffer's 16.6 (GNU 0.92).  Open: the edit itself at 16.6 us
 against 0.93 (undo recording, property adjustment, the rope), and the
 walk before a collection (3,104 us against GNU's 23: 155 ns a marker
 through a `BTreeSet' of ids against GNU's chain of structs).
+
+## 2026-09-12 Checkpoint 19o: the obarray walk hands out the symbols it holds
+
+*What prompted it.*  The Mac's list has 232 of its 384 files over 2x
+at about 30 ms against GNU's 3: not their tests (which skip or finish
+at once) but the fixed cost of running a file, measured on Linux as
+the `emaxx-compat-run' phase of erc-scenarios-misc.el at 92 ms
+against 13.5.  A profile of that phase over sixty runs put a quarter
+of it in `known_symbols' behind `mapatoms', which ERT's
+`ert-select-tests' calls to find the tests: the enumeration
+re-interned every name of the twenty-thousand-symbol obarray through
+the name table on every call (`intern_str'), split every name to
+look for the uninterned marker, and deduplicated through a SipHash
+set.  `mapatoms' over an `ignore' function: 22 ms against GNU 3.6;
+`(ert-select-tests t t)': 77 ms against 9.4.
+
+*What changed.*  The interned list holds the symbol objects
+(`Vec<SymbolName>'), so the enumeration hands them out as they are,
+as it does the value cells' (the name-keyed lists -- aliases,
+functions, plists -- still resolve through the table); the marker
+test is a byte scan; the dedup set hashes with FNV.  The order and
+the exclusions are unchanged.
+
+*Measured.*  `mapatoms' 22.4 to 12.9 ms (GNU 3.6);
+`(ert-select-tests t t)' 77 to 61 ms (GNU 9.4); the file's phase 92
+to 85 ms (GNU 13.5).  What remains is the calls: `ert-select-tests'
+calls its predicate on every symbol and `ert-test-boundp' and `get'
+inside it, about sixty thousand calls at the interpreter's per-call
+floor, which the profile spreads over the evaluator (no symbol above
+5%).  The 232 files stay over 2x until that floor drops; they are one
+theme with one cause, and this checkpoint closes only the part that
+was not the floor.

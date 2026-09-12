@@ -20,6 +20,7 @@ const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
 /// on every name-to-id resolution (a tenth of a tight interpreted loop).
 const UNINTERNED_SYMBOL_MARKER_CHAR: char = '\u{1F}';
 const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
+const OBARRAY_SYMBOL_MARKER_CHAR: char = '\u{1E}';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConsMutationEpoch(u64);
@@ -2318,6 +2319,13 @@ pub(crate) fn is_uninterned_symbol(symbol: &str) -> bool {
 /// object, whose Lisp name can equal an initial-obarray symbol's.
 pub(crate) fn is_private_obarray_symbol(symbol: &str) -> bool {
     symbol.contains(OBARRAY_SYMBOL_MARKER)
+}
+
+/// Whether NAME carries neither marker: `visible_symbol_name' returns it
+/// unchanged.  A byte scan, where the split cost every symbol of an
+/// obarray walk.
+pub(crate) fn is_visible_symbol_name(name: &str) -> bool {
+    !name.contains(UNINTERNED_SYMBOL_MARKER_CHAR) && !name.contains(OBARRAY_SYMBOL_MARKER_CHAR)
 }
 
 pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
