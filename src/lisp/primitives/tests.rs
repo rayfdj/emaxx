@@ -68,6 +68,34 @@ fn upstream_primitive_contract_output(program: &str) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+#[test]
+fn backquote_shorthand_prints_only_the_reader_s_symbols_within_a_backquote() {
+    // print.c: Qbackquote, Qcomma and Qcomma_at are the symbols named
+    // "`", "," and ",@"; the symbols named `backquote', `comma' and
+    // `comma-at' print as themselves (bytecomp.el's `(require 'backquote)'
+    // reached a native compilation unit's constants as "`").  The comma
+    // shorthand is printed only inside a backquote, one nesting level
+    // each (`new_backquote_output').
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (prin1-to-string 'backquote)
+                 (prin1-to-string '(backquote x))
+                 (prin1-to-string (list (intern "backquote") 1 2))
+                 (prin1-to-string '\`)
+                 (prin1-to-string '(\` x))
+                 (prin1-to-string '(\` x y))
+                 (prin1-to-string 'comma)
+                 (prin1-to-string '(\, x))
+                 (prin1-to-string '(\,@ x))
+                 (prin1-to-string '(\` (a (\, x) (\,@ y))))
+                 (prin1-to-string '(\` (\` (\, (\, x)))))
+                 (prin1-to-string '(\` (\, (\, x))))
+                 (prin1-to-string '(\` (comma x)))
+                 (prin1-to-string '(backquote (\, x))))"#,
+        r#"("backquote" "(backquote x)" "(backquote 1 2)" "\\`" "`x" "(\\` x y)" "comma" "(\\, x)" "(\\,@ x)" "`(a ,x ,@y)" "``,,x" "`,(\\, x)" "`(comma x)" "(backquote (\\, x))")"#,
+        "backquote shorthand",
+    );
+}
+
 fn assert_upstream_primitive_contract(program: &str, expected: &str) {
     assert_eq!(
         upstream_primitive_contract_output(program),

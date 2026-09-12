@@ -123,15 +123,34 @@ takes a census of every live string through weak pointers on every
 collection), not startup mechanics.  That is the performance ledger's
 open D20 work.
 
-An experiment worth recording: natively compiling the compiler's own
-files with Emaxx, as GNU's Makefile does for `comp.el`, `comp-cstr.el`,
-`comp-common.el`, `comp-run.el`, `bytecomp.el` and `byte-opt.el`
-(src/Makefile.in's `elnlisp`), produced a `bytecomp.eln` whose constants
-blob has the symbol `` ` `` where GNU's has `backquote` (`(require
-'backquote)` at the top of bytecomp.el), so loading it fails with
-"Cannot open load file: `"; `byte-opt.el` failed to compile at all.  The
-identity harness's rungs do not include these files.  Those elns were
-removed from `~/.emacs.d/eln-cache`; the bug is open.
+Natively compiling the compiler's own files with Emaxx, as GNU's
+Makefile does for `comp.el`, `comp-cstr.el`, `comp-common.el`,
+`comp-run.el`, `bytecomp.el` and `byte-opt.el` (src/Makefile.in's
+`elnlisp`), exposed a printer bug: `bytecomp.eln`'s constants blob had
+the symbol `` ` `` where GNU's has `backquote` (`(require 'backquote)`
+at the top of bytecomp.el), so the unit could not be loaded.  Emaxx's
+printer treated the symbols *named* `backquote`, `comma` and `comma-at`
+as print.c's `Qbackquote`, `Qcomma` and `Qcomma_at`, which are the
+symbols named "`", "," and ",@" (a leftover of a reader mode that no
+longer exists).  It now special-cases only those three, and it prints
+the comma shorthand only inside a printed backquote, one nesting level
+each (print.c's `new_backquote_output`): `(\, x)` at top level is a
+list, `` `,,x `` inside one backquote is `` `,(\, x) ``, both as GNU
+prints them.  With the fix, all six files compile with Emaxx (the
+`byte-opt.el` failure was the bad `bytecomp.eln` being loaded during its
+compile), `bytecomp.eln`'s blob reads `[require backquote macroexp ...]`,
+and a child's `(require 'comp)` loads them as native code
+(`native-comp-function-p` of `comp--final1` is t).  It is not faster: 0.28
+to 0.30 s against 0.25 s for the bytecode, so the build step does not
+compile them, and the experiment's elns were removed from
+`~/.emacs.d/eln-cache`.  The identity harness was run after the printer
+change: on this box every one of the 45 differing bytes of
+`comp-test-45603.eln` follows from the oracle's five extra subrs (the
+libdbus and libgpm development packages present here, recorded earlier
+in this document): the eight ASCII bytes of `comp-abi-hash`, seventeen
+`%rip`-relative displacements into the freloc table shifted by exactly
+40 bytes (five 8-byte entries), and the 20-byte ELF build ID.  The
+constants blobs are byte-identical.
 
 ### The parity gate
 

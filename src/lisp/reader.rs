@@ -118,14 +118,21 @@ fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
     .then_some(literal)
 }
 
-/// The elements of a `(vector-literal ...)' template (the reader's
-/// representation of a vector inside a circular label), head included.
+/// The elements of a vector template, head included: a `(vector-literal
+/// ...)' list, or a vector itself, whose `to_vec' also leads with that
+/// head.  A list is examined by its car alone, never converted.
 fn vector_literal_items(value: &Value) -> Option<Vec<Value>> {
-    let (car, _) = value.cons_values()?;
-    if !matches!(car, Value::Symbol(ref symbol) if symbol == "vector-literal") {
-        return None;
+    match value {
+        Value::Vector(_) => value.to_vec().ok(),
+        Value::Cons(_) => {
+            let (car, _) = value.cons_values()?;
+            if !matches!(car, Value::Symbol(ref symbol) if symbol == "vector-literal") {
+                return None;
+            }
+            value.to_vec().ok()
+        }
+        _ => None,
     }
-    value.to_vec().ok()
 }
 
 fn circular_vector_skeleton(len: usize) -> Value {
@@ -217,7 +224,6 @@ fn resolve_changed(
     if let Some(items) = vector_literal_items(value) {
         let mut changed = false;
         let mut resolved = Vec::with_capacity(items.len());
-        resolved.push(Value::symbol("vector-literal"));
         for item in &items[1..] {
             match resolve_changed(item, labels)? {
                 Some(item) => {
@@ -227,7 +233,14 @@ fn resolve_changed(
                 None => resolved.push(item.clone()),
             }
         }
-        return Ok(changed.then(|| Value::list(resolved)));
+        if !changed {
+            return Ok(None);
+        }
+        return Ok(Some(if matches!(value, Value::Vector(_)) {
+            Value::vector(resolved)
+        } else {
+            Value::list(std::iter::once(Value::symbol("vector-literal")).chain(resolved))
+        }));
     }
 
     match value {
@@ -440,7 +453,6 @@ pub struct Reader<'a> {
     pos: usize,
     symbol_shorthands: Vec<(String, String)>,
     backquote_depth: usize,
-    raw_quote_symbols: bool,
     unescaped_character_literals: BTreeSet<u8>,
     /// read0's LOCATE_SYMS: wrap each symbol occurrence (t included, nil
     /// excluded) in a position-bearing `ReaderForm::PositionedSymbol'.
@@ -475,7 +487,6 @@ impl<'a> Reader<'a> {
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
             // registered under those names.
-            raw_quote_symbols: true,
             unescaped_character_literals: BTreeSet::new(),
             emitted_reader_forms: false,
             locate_symbols: false,
@@ -495,12 +506,6 @@ impl<'a> Reader<'a> {
         let mut reader = Self::with_symbol_shorthands(input, symbol_shorthands);
         reader.locate_symbols = true;
         reader.position_base = position_base;
-        reader
-    }
-
-    pub fn with_raw_quote_symbols(input: &'a str) -> Self {
-        let mut reader = Self::new(input);
-        reader.raw_quote_symbols = true;
         reader
     }
 
@@ -1112,10 +1117,11 @@ impl<'a> Reader<'a> {
         } else {
             self.read()?.ok_or(LispError::EndOfInput)?
         };
-        let symbol = match (self.raw_quote_symbols, name) {
-            (true, "backquote") => "`",
-            (true, "comma") => ",",
-            (true, "comma-at") => ",@",
+        // lread.c: the heads are the symbols named "`", "," and ",@".
+        let symbol = match name {
+            "backquote" => "`",
+            "comma" => ",",
+            "comma-at" => ",@",
             _ => name,
         };
         Ok(Some(Value::list([Value::symbol(symbol), inner])))
