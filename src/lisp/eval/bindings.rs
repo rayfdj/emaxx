@@ -970,16 +970,68 @@ impl Interpreter {
             uninterned_standard: self.uninterned_standard_symbol_names.len(),
             epoch: self.obarray_epoch,
         };
-        if let Some((cached_key, symbols)) = self.known_symbols_cache.borrow().as_ref()
-            && *cached_key == key
-        {
-            return Rc::clone(symbols);
+        let mut cache = self.known_symbols_cache.borrow_mut();
+        if let Some(cached) = cache.as_mut() {
+            if cached.key == key {
+                return Rc::clone(&cached.symbols);
+            }
+            let old = cached.key;
+            let only_grew = key.epoch == old.epoch
+                && key.uninterned_standard == old.uninterned_standard
+                && key.globals >= old.globals
+                && key.variable_aliases >= old.variable_aliases
+                && key.functions >= old.functions
+                && key.symbol_properties >= old.symbol_properties
+                && key.interned_symbols >= old.interned_symbols;
+            if only_grew {
+                // Nothing left any table (the removal epoch is the
+                // same): the names each table gained since are the
+                // enumeration's new members, appended in table order.
+                // Their names were already in some table or are new to
+                // every table, so the set is the full walk's; the
+                // position of a name new to a table it joined is the
+                // end rather than that table's segment.
+                let symbols = Rc::make_mut(&mut cached.symbols);
+                let mut admit = |symbol: crate::lisp::types::SymbolName| {
+                    let name = symbol.as_str();
+                    if !crate::lisp::types::is_visible_symbol_name(name)
+                        || self.uninterned_standard_symbol_names.contains(name)
+                    {
+                        return;
+                    }
+                    if cached.seen.insert(symbol.id()) {
+                        symbols.push(symbol);
+                    }
+                };
+                for (symbol, _) in self.globals.iter().skip(old.globals) {
+                    admit(symbol.clone());
+                }
+                for (name, _) in &self.variable_aliases[old.variable_aliases..] {
+                    admit(crate::lisp::types::SymbolName::intern_str(name));
+                }
+                for (name, _) in &self.functions[old.functions..] {
+                    admit(crate::lisp::types::SymbolName::intern_str(name));
+                }
+                for (name, _) in &self.symbol_properties[old.symbol_properties..] {
+                    admit(crate::lisp::types::SymbolName::intern_str(name));
+                }
+                for symbol in &self.interned_symbols[old.interned_symbols..] {
+                    admit(symbol.clone());
+                }
+                cached.key = key;
+                return Rc::clone(&cached.symbols);
+            }
         }
         let symbols = Rc::new(self.for_each_known_symbol(|source| match source {
             KnownSymbolSource::Symbol(symbol) => symbol.clone(),
             KnownSymbolSource::Name(name) => crate::lisp::types::SymbolName::intern_str(name),
         }));
-        *self.known_symbols_cache.borrow_mut() = Some((key, Rc::clone(&symbols)));
+        let seen = symbols.iter().map(|symbol| symbol.id()).collect();
+        *cache = Some(super::KnownSymbolsCache {
+            key,
+            symbols: Rc::clone(&symbols),
+            seen,
+        });
         symbols
     }
 
