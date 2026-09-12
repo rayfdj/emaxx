@@ -988,7 +988,13 @@ impl Interpreter {
             )
             .chain(self.interned_symbols.iter().map(String::as_str));
         let mut items = Vec::new();
-        let mut seen: HashSet<&str> = HashSet::new();
+        // `mapatoms' walks twenty thousand names: the dedupe set hashes
+        // them with FNV, as `known_symbol_count' does, not SipHash.
+        let mut seen: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
+            HashSet::with_capacity_and_hasher(
+                self.interned_symbols.len(),
+                crate::lisp::primitives::FnvBuildHasher::default(),
+            );
         for name in candidates {
             if crate::lisp::types::visible_symbol_name(name) != name
                 || self.uninterned_standard_symbol_names.contains(name)

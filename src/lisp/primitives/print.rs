@@ -1431,7 +1431,10 @@ pub(crate) fn read_one_form_in_env(
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
     let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
     let value = match reader.read()? {
-        Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
+        Some(value) if reader.emitted_reader_forms() => {
+            crate::lisp::reader::resolve_circular_read_syntax(value)?
+        }
+        Some(value) => value,
         None => return Err(end_of_file_error(interp, env)),
     };
     let value = interp.intern_read_symbols_in_value(value, env)?;
@@ -1545,7 +1548,10 @@ fn read_one_positioned_form(
         base_position,
     );
     let value = match reader.read()? {
-        Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
+        Some(value) if reader.emitted_reader_forms() => {
+            crate::lisp::reader::resolve_circular_read_syntax(value)?
+        }
+        Some(value) => value,
         None => return Err(end_of_file_error(interp, env)),
     };
     interp.set_variable(

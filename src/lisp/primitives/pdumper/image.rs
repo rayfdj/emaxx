@@ -29,13 +29,48 @@ pub(crate) const EARLY_RELOCS: usize = 0;
 pub(crate) const LATE_RELOCS: usize = 1;
 pub(crate) const VERY_LATE_RELOCS: usize = 2;
 
-/// The fingerprint "unique to each build of Emacs": the SHA-256 of this
-/// executable, computed once per process.  `pdumper-fingerprint' prints
-/// the same bytes as hex.
+/// lib/fingerprint.c's default `fingerprint': the bytes make-fingerprint
+/// looks for in the linked executable and overwrites, in place, with the
+/// executable's SHA-256 (src/Makefile.in's temacs rule; here
+/// tools/build-image.sh).  Stored complemented so that this comparison
+/// operand is not a second copy of the pattern for make-fingerprint to
+/// overwrite; the one copy is `EMAXX_FINGERPRINT' below.
+const DEFAULT_FINGERPRINT_COMPLEMENT: [u8; FINGERPRINT_LEN] = [
+    !0xDE, !0x86, !0xBB, !0x99, !0xFF, !0xF5, !0x46, !0x9A, !0x9E, !0x3F, !0x9F, !0x5D, !0x9A,
+    !0xDF, !0xF0, !0x91, !0xBD, !0xCD, !0xC1, !0xE8, !0x0C, !0x16, !0x1E, !0xAF, !0xB8, !0x6C,
+    !0xE2, !0x2B, !0xB1, !0x24, !0xCE, !0xB0,
+];
+
+/// The executable's `fingerprint' array: the default pattern until
+/// make-fingerprint replaces it in the file.  Read through a volatile
+/// load, as GNU declares it volatile, so the compiler cannot fold the
+/// initializer.
+#[unsafe(no_mangle)]
+#[used]
+static EMAXX_FINGERPRINT: [u8; FINGERPRINT_LEN] = [
+    0xDE, 0x86, 0xBB, 0x99, 0xFF, 0xF5, 0x46, 0x9A, 0x9E, 0x3F, 0x9F, 0x5D, 0x9A, 0xDF, 0xF0, 0x91,
+    0xBD, 0xCD, 0xC1, 0xE8, 0x0C, 0x16, 0x1E, 0xAF, 0xB8, 0x6C, 0xE2, 0x2B, 0xB1, 0x24, 0xCE, 0xB0,
+];
+
+/// The fingerprint "unique to each build of Emacs": the bytes
+/// make-fingerprint wrote into this executable at build time.  An
+/// executable that was not fingerprinted (a plain `cargo build') hashes
+/// itself once per process instead, so that two different such builds
+/// never share a fingerprint.  `pdumper-fingerprint' prints the same
+/// bytes as hex.
 pub(crate) fn executable_fingerprint() -> &'static [u8; FINGERPRINT_LEN] {
     static FINGERPRINT: OnceLock<[u8; FINGERPRINT_LEN]> = OnceLock::new();
     FINGERPRINT.get_or_init(|| {
         use sha2::Digest;
+        // SAFETY: a volatile read of a live static of the same type.
+        let embedded = unsafe { std::ptr::read_volatile(&raw const EMAXX_FINGERPRINT) };
+        let mut default = DEFAULT_FINGERPRINT_COMPLEMENT;
+        for byte in &mut default {
+            *byte = !*byte;
+        }
+        if embedded != default {
+            return embedded;
+        }
         // A failed read must never give unrelated binaries the fingerprint
         // of an empty byte string and thereby bypass image validation.
         let executable = std::env::current_exe().expect("locate executable for dump fingerprint");

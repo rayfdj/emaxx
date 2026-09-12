@@ -1711,8 +1711,10 @@ pub(crate) fn decode_internal_bytes(
     // C0/C1 xx, the five-byte forms and the surrogates, which need the
     // loop below, are not valid UTF-8).
     if !multibyte {
-        if bytes.is_ascii() {
-            return Ok((String::from_utf8_lossy(bytes).into_owned(), Vec::new()));
+        if let Ok(text) = std::str::from_utf8(bytes)
+            && text.is_ascii()
+        {
+            return Ok((text.to_owned(), Vec::new()));
         }
     } else if let Ok(text) = std::str::from_utf8(bytes) {
         return Ok((text.to_owned(), Vec::new()));

@@ -35,6 +35,16 @@ if [ "${EMAXX_IMAGE_FORCE:-}" = "" ] && "$binary" --fingerprint >/dev/null 2>&1;
 fi
 
 cd "$dir"
+# The temacs rule's `$(MAKE_PDUMPER_FINGERPRINT) $@.tmp': write the
+# executable's SHA-256 over lib/fingerprint.c's default pattern in it.  A
+# binary fingerprinted earlier (the pattern gone) is left as it is.
+if ! "$dir/make-fingerprint" "$name" 2>"$dir/make-fingerprint.err"; then
+    if ! grep -q "missing fingerprint" "$dir/make-fingerprint.err"; then
+        cat "$dir/make-fingerprint.err" >&2
+        exit 1
+    fi
+fi
+rm -f "$dir/make-fingerprint.err"
 rm -f emacs && cp -f "$name" emacs
 LC_ALL=C ./emacs -batch ${BUILD_DETAILS:-} -l loadup --temacs=pdump \
     --bin-dest "$dir/" --eln-dest "$source/"

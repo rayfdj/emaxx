@@ -67,6 +67,72 @@ that rebuilt its Lisp state took 26 s, one that starts from an image 0.3 s.
   with no data (lread.c's `end_of_file_error`; `(end-of-file FILE)` inside
   a load).
 
+### Boot cost, measured and reduced (same day, after the parity gate)
+
+A callgrind profile of the child's boot (`emaxx -Q --batch --eval
+'(kill-emacs 0)'`, 2.24 G instructions) showed where it went, and each
+item was answered with what the C does:
+
+- 39% hashed the 16 MB executable for its fingerprint on every start.
+  GNU computes it once at build time: `lib/fingerprint.c` holds a default
+  32-byte pattern, `lib-src/make-fingerprint` overwrites it in the linked
+  `temacs` with the file's SHA-256 (src/Makefile.in's temacs rule).  Now
+  `EMAXX_FINGERPRINT` in `pdumper/image.rs` is that pattern (read through
+  a volatile load, as GNU declares it), `src/bin/make-fingerprint.rs` is
+  the tool (same digest, same in-place replacement, `-r`), and
+  tools/build-image.sh runs it before the dump.  An unfingerprinted
+  binary (a plain `cargo build`) still hashes itself, so two such builds
+  never share a fingerprint.
+- 15% was the interpreter constructor reading the oracle's printed
+  defaults for the C variables Emaxx has no owner for: `x-keysym-table`
+  is a hash-table literal of a thousand entries, and the reader's
+  circular-syntax resolver called `to_vec` on every tail of the `data`
+  list, quadratic in its length.  The resolver now examines the car only,
+  walks list spines iteratively, and copies nothing that holds no reader
+  form (lread.c's `read0` likewise substitutes only into the labelled
+  object); `read-from-string` skips it entirely when the reader emitted
+  no placeholder.
+- `get`/`put` walked symbol plists with a hash set of visited cells; fns.c's
+  `plist_get` uses `FOR_EACH_TAIL_SAFE`, Brent's tortoise, and so do they now.
+  `mapatoms`'s name enumeration dedupes with FNV, as `known_symbol_count`
+  already did, and tests the private-symbol markers as characters.
+- The unibyte-ASCII string decode of the image loader validates with
+  `str::from_utf8` instead of the lossy chunk iterator.
+
+Measured after these (release, same box): the child boot 0.32 to 0.21 s
+(0.997 G instructions; GNU 0.057 s), `(require 'comp)` 0.27 to 0.25 s,
+comp-tests.el 110.7 to 97.5 s test phase (GNU 14.3 s).
+
+What remains in the boot, from the profile after the changes: the image
+load 71% (296,000 strings and 152,000 conses materialized one object at
+a time, 489,000 object-table inserts; pdumper.c maps the file and
+relocates in place, its `load-time` here 0.021 s), the startup top-level
+16% (`normal-top-level` through `command-line-1` as bytecode), the
+initial frame faces 5%, one case-folded regexp compile 4%.
+
+What remains per compile test, from elp and per-phase timing of the
+child on both editors: the child's `(require 'comp)` 0.25 s against
+0.058 s when GNU loads the same `.elc` files as bytecode (`load-no-native`),
+the parent's passes 0.12 s against 0.014 s when GNU runs comp.el as
+bytecode, the child's `comp--final1` 0.11 s against 0.047.  GNU as
+bytecode is no slower than GNU native on this workload, so the remaining
+factor is the evaluator's call path (bytecode.c's `exec_byte_code` keeps
+arguments on the Lisp stack and records a backtrace frame as one specpdl
+entry; eval.c's `funcall_lambda`; alloc.c's counters, where Emaxx's GC
+takes a census of every live string through weak pointers on every
+collection), not startup mechanics.  That is the performance ledger's
+open D20 work.
+
+An experiment worth recording: natively compiling the compiler's own
+files with Emaxx, as GNU's Makefile does for `comp.el`, `comp-cstr.el`,
+`comp-common.el`, `comp-run.el`, `bytecomp.el` and `byte-opt.el`
+(src/Makefile.in's `elnlisp`), produced a `bytecomp.eln` whose constants
+blob has the symbol `` ` `` where GNU's has `backquote` (`(require
+'backquote)` at the top of bytecomp.el), so loading it fails with
+"Cannot open load file: `"; `byte-opt.el` failed to compile at all.  The
+identity harness's rungs do not include these files.  Those elns were
+removed from `~/.emacs.d/eln-cache`; the bug is open.
+
 ### The parity gate
 
 `tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then
