@@ -752,6 +752,23 @@ pub(crate) fn make_shared_string_value_with_extended_chars(
     Value::StringObject(state)
 }
 
+/// A string object from the image, whose storage size the image records.
+pub(crate) fn make_loaded_string_object_value(
+    text: String,
+    multibyte: bool,
+    extended_chars: Vec<(usize, u32)>,
+    storage_bytes: usize,
+) -> Value {
+    let state = Rc::new(RefCell::new(SharedStringState {
+        text,
+        props: shared_string_props(&[]),
+        multibyte,
+        extended_chars,
+    }));
+    crate::lisp::types::register_string_object_with_storage_bytes(&state, storage_bytes);
+    Value::StringObject(state)
+}
+
 pub(crate) fn string_like_value_with_extended_chars(
     text: String,
     props: Vec<TextPropertySpan>,

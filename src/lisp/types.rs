@@ -349,6 +349,27 @@ impl ConsMutationSnapshot {
         self.field_ids.sort_unstable();
     }
 
+    /// `include_cell' for many cells at once: one sort, not one a cell.
+    pub(crate) fn include_cells<'c>(&mut self, cells: impl IntoIterator<Item = &'c SharedCons>) {
+        let mut added = Vec::new();
+        for cell in cells {
+            let fields = ConsCell::mutation_field_ids(cell);
+            if self.field_ids.binary_search(&fields[0]).is_ok() {
+                continue;
+            }
+            self.track_native_cell(cell);
+            added.extend(fields);
+        }
+        if added.is_empty() {
+            return;
+        }
+        added.sort_unstable();
+        added.dedup();
+        register_cons_mutation_watchers(&added, &self.watch);
+        self.field_ids.extend(added);
+        self.field_ids.sort_unstable();
+    }
+
     pub(crate) fn include_tree(&mut self, value: &Value) {
         let mut seen = HashSet::new();
         let mut pending = vec![value.clone()];
@@ -457,6 +478,22 @@ impl SharedText {
         note_string_allocation(
             crate::lisp::primitives::immutable_lisp_string_storage_byte_len(&text),
         );
+        let text = Rc::new(text);
+        INTERNED_TEXT_BOOK.with(|book| {
+            book.borrow_mut().push(Rc::downgrade(&text));
+            INTERNED_TEXT_BOOK_LIMIT.with(|limit| prune_book(book, limit));
+        });
+        Self(text)
+    }
+
+    /// A string whose storage size the image records (`size_byte' of the
+    /// dumped Lisp_String): pdumper.c relocates the string in place and
+    /// scans nothing, so neither does the loader.
+    pub(crate) fn with_storage_bytes(text: String, storage_bytes: usize) -> Self {
+        if text.is_empty() {
+            return EMPTY_SHARED_TEXT.with(Clone::clone);
+        }
+        note_string_allocation(storage_bytes);
         let text = Rc::new(text);
         INTERNED_TEXT_BOOK.with(|book| {
             book.borrow_mut().push(Rc::downgrade(&text));
@@ -779,6 +816,18 @@ impl SymbolName {
             names.insert(name.clone());
             name
         })
+    }
+
+    /// Room for ADDITIONAL interned names (the image loader knows how many
+    /// symbols it is about to intern; one growth instead of several).
+    pub(crate) fn reserve_interned(additional: usize) {
+        INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| names.reserve(additional));
+        let mut registry = SYMBOL_IDS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry
+            .get_or_insert_with(HashMap::default)
+            .reserve(additional);
     }
 
     /// The interned state for TEXT, without allocating when it exists.
@@ -1430,6 +1479,14 @@ impl ConsValueCell {
         self.value.borrow()
     }
 
+    /// The image loader's relocation store into a cell it created an
+    /// instant ago: no watcher, generated code or native word has seen
+    /// the cell, so there is no mutation to note (pdumper.c writes the
+    /// relocated word in place).
+    pub(crate) fn initialize(&self, value: Value) {
+        *self.value.borrow_mut() = value;
+    }
+
     pub(crate) fn borrow_mut(&self) -> RefMut<'_, Value> {
         self.synchronize_native_write();
         note_cons_mutation(self as *const Self as usize);
@@ -1507,6 +1564,15 @@ pub(crate) fn register_string_object(state: &Rc<RefCell<SharedStringState>>) {
             &state.extended_chars,
         )
     };
+    register_string_object_with_storage_bytes(state, bytes);
+}
+
+/// `register_string_object' for a string whose storage size is already
+/// known (the image records it).
+pub(crate) fn register_string_object_with_storage_bytes(
+    state: &Rc<RefCell<SharedStringState>>,
+    bytes: usize,
+) {
     note_string_allocation(bytes);
     STRING_OBJECT_BOOK.with(|book| {
         book.borrow_mut().push(Rc::downgrade(state));
