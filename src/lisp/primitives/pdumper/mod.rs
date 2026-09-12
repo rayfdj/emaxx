@@ -400,6 +400,10 @@ pub(crate) fn pdumper_load(
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
                     PdumperLoadError::FileNotFound
                 }
+                // The opener marks a failed read (a directory, a short or
+                // unmappable file) as invalid data: pdumper.c's
+                // PDUMPER_LOAD_BAD_FILE_TYPE, "not a dump file".
+                std::io::ErrorKind::InvalidData => PdumperLoadError::BadFileType,
                 _ => PdumperLoadError::Error(error.to_string()),
             });
         }

@@ -10636,3 +10636,70 @@ checkpoint that round trip is 18% of the process (`keymap_bindings'
 7.6%, the refresh 10%, the registration 5.4%); mwheel-tests stays at
 14x.  Doing as store_in_keymap does -- one cell spliced, one cell
 added to the watch -- is the port that closes it.
+
+## 2026-09-12 Checkpoint 19s: the Mac's seventeen mismatches, read
+
+*The run.*  7,866 of 7,883 outcomes matching across 519 files after
+19r; the seventeen, by cause, each reproduced or excluded on Linux
+with the runner's own comparison of the two binaries' per-test
+outcomes:
+
+*Fixed here.*  `eval-tests--let--vector' and `eval-tests--let*--vector'
+(the tests eval-tests.el generates for a vector binding list): `(let
+[a])' returned nil where eval.c's Flet reads the list with
+list_length and signals `(wrong-type-argument listp [a])'; the
+special forms read the vector as a sequence and bound its elements.
+Both signal as GNU does; control `let_binding_lists_must_be_lists',
+the oracle's conditions.  `multi-test-files-simple': a second Emacs
+increments the multisession variable's file and the first keeps its
+cached 1 because `time-less-p' of its cached time against the file's
+mtime is nil -- `set-file-times' set the seconds alone (a whole-second
+`utimes'), so the file the other Emacs stamped with its `current-time'
+sat a fraction of a second before the first's cached time.
+fileio.c's Fset_file_times passes lisp_time_argument's timespec to
+utimensat; `set-file-times' does the same, the timestamp decoded as
+lisp_to_timespec does (TICKS * 10^9 floor-divided by HZ), and
+`set-visited-file-modtime' keeps the same nanoseconds (buffer.c's
+modtime is a timespec, compared whole).  Control
+`set_file_times_keeps_the_whole_timestamp', the oracle's value read
+back through `file-attributes'.
+
+*The oracle's own, on the Mac.*  `comint-test-no-password-function'
+and `comint-test-password-function-with-nil' fail for the Mac's GNU
+and pass for emaxx there; on Linux both binaries pass both.  The
+test pipes a password to `cat' through a comint buffer and reads it
+back within 0.1 s; the Mac's GNU does not see it in time.  What GNU
+does there is GNU's; emaxx is not made to fail with it.
+`shr-test/zoom-image' errors for the Mac's GNU (no image support in
+that build's `image-type-available-p') and passes for emaxx.
+
+*Disclosed already.*  The six `emacs-tests/seccomp/*' skips print
+`system-configuration-features' in their skip message: the Mac's GNU
+lists its configure-time features, emaxx's is empty there (finding
+65: emaxx is no autoconf build and lists a feature only once the
+capability exists; on GNU/Linux it lists SECCOMP).  The message
+differs by that string and nothing else.
+
+*Open.*  `eglot-test-*rust*' (five): with rust-analyzer present the
+Mac's GNU fails them (`ert-test-failed', the server's replies not
+arriving within the test's wait) and emaxx errors (`error'); on
+Linux with rust-analyzer present see the comparison recorded below.
+`emacs-module-tests.el': "oracle load error differed from emaxx" --
+the file loads the mod-test module built from mod-test.c, which the
+Mac's tree does not carry built, and the two binaries' load errors
+differ in text; the runner's comparison on Linux matches, and the
+Mac's error texts are not in the run's log.  Both need the Mac's
+per-test detail from the run's artifact directory.
+
+*On the merged tree.*  Rebased onto main's merge of the native-comp
+branch (its port of emacs.c's command line), the gate's integration
+stage found two of that port's tests bound to their environment:
+`--dump-file /nonexistent' reported "Is a directory (os error 21)" in
+a container where that path is a directory, while pdumper.c's
+pdumper_load reports "not a dump file" (from its size check on, every
+failure is PDUMPER_LOAD_BAD_FILE_TYPE; an open error keeps its errno,
+a failed fstat is FILE_NOT_FOUND) -- the loader maps a failed read
+the same way now; and `--help --version' compared each binary's own
+"Development version" line, whose build date agrees only when both
+were built the same day -- the test compares that line by shape, as
+`version_report_is_emacs_c_main_s' already did.

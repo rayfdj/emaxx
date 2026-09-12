@@ -88,33 +88,61 @@ pub(crate) fn file_modtime_from_value(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<crate::buffer::FileModTime, LispError> {
+    // timefns.c lisp_time_argument / lisp_to_timespec: floor-divide
+    // TICKS * 10^9 by HZ into whole nanoseconds, then split into the
+    // seconds and the nanoseconds of the timespec -- the whole timestamp,
+    // not its seconds (`set-file-times' with `current-time' set a file's
+    // mtime a fraction of a second early, and multisession's file backend
+    // then took its cached value over another Emacs's newer one).
     let now = current_time_value()?;
     let exact = exact_time_from_value(interp, value, &now)?;
-    let (whole_seconds, _) = time_floor_parts(&exact);
+    let nanoseconds = exact_time_floor_nanoseconds(&exact);
+    let (whole_seconds, subsecond) = floor_div_mod(&nanoseconds, &BigInt::from(1_000_000_000u32));
     let seconds = whole_seconds
         .to_i64()
         .ok_or_else(|| LispError::Signal("Time out of range".into()))?;
+    let subsecond = subsecond
+        .to_u32()
+        .ok_or_else(|| LispError::Signal("Time out of range".into()))?;
     let modified = if seconds >= 0 {
         UNIX_EPOCH
-            .checked_add(Duration::from_secs(seconds as u64))
+            .checked_add(Duration::new(seconds as u64, subsecond))
             .ok_or_else(|| LispError::Signal("Time out of range".into()))?
     } else {
+        // Seconds before the epoch with a positive nanosecond part.
         UNIX_EPOCH
             .checked_sub(Duration::from_secs(seconds.unsigned_abs()))
+            .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(subsecond))))
             .ok_or_else(|| LispError::Signal("Time out of range".into()))?
     };
     Ok(crate::buffer::FileModTime { modified })
 }
 
+/// The timespec fields of TIME: whole seconds (floored) and the
+/// nanoseconds within them, as utimensat takes them.
 #[cfg(unix)]
-pub(crate) fn system_time_to_timeval(time: SystemTime) -> Result<libc::timeval, LispError> {
-    let duration = time
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    Ok(libc::timeval {
-        tv_sec: duration.as_secs() as libc::time_t,
-        tv_usec: duration.subsec_micros() as libc::suseconds_t,
-    })
+fn system_time_to_timespec(time: SystemTime) -> libc::timespec {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => libc::timespec {
+            tv_sec: duration.as_secs() as libc::time_t,
+            tv_nsec: duration.subsec_nanos() as libc::c_long,
+        },
+        Err(before) => {
+            let duration = before.duration();
+            let (mut seconds, mut nanoseconds) = (
+                -(duration.as_secs() as i64),
+                -(i64::from(duration.subsec_nanos())),
+            );
+            if nanoseconds < 0 {
+                seconds -= 1;
+                nanoseconds += 1_000_000_000;
+            }
+            libc::timespec {
+                tv_sec: seconds as libc::time_t,
+                tv_nsec: nanoseconds as libc::c_long,
+            }
+        }
+    }
 }
 
 pub(crate) fn set_file_times_path(
@@ -126,18 +154,19 @@ pub(crate) fn set_file_times_path(
     {
         let c_path = CString::new(Path::new(path).as_os_str().as_bytes())
             .map_err(|_| LispError::Signal("File name contains nul byte".into()))?;
-        let timestamp = system_time_to_timeval(modified)?;
-        // GNU set-file-times sets both atime and mtime to TIMESTAMP.
+        let timestamp = system_time_to_timespec(modified);
+        // fileio.c Fset_file_times: utimensat with both atime and mtime at
+        // TIMESTAMP, to the nanosecond, AT_SYMLINK_NOFOLLOW for `nofollow'.
         let times = [timestamp, timestamp];
-        let result = if nofollow {
-            // SAFETY: c_path is a valid nul-terminated path, and times points to
-            // two initialized timeval values for the duration of this call.
-            unsafe { libc::lutimes(c_path.as_ptr(), times.as_ptr()) }
+        let flags = if nofollow {
+            libc::AT_SYMLINK_NOFOLLOW
         } else {
-            // SAFETY: c_path is a valid nul-terminated path, and times points to
-            // two initialized timeval values for the duration of this call.
-            unsafe { libc::utimes(c_path.as_ptr(), times.as_ptr()) }
+            0
         };
+        // SAFETY: c_path is a valid nul-terminated path, and times points to
+        // two initialized timespec values for the duration of this call.
+        let result =
+            unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), flags) };
         if result == 0 {
             Ok(())
         } else {

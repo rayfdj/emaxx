@@ -188,7 +188,10 @@ impl Interpreter {
     }
 
     pub(super) fn sf_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if is_vector_literal(&items[1]) {
+        // eval.c Flet: list_length (varlist) -- a vector or any other
+        // non-list signals wrong-type-argument listp (a vector read as a
+        // sequence bound its elements to nil before).
+        if is_vector_literal(&items[1]) || !matches!(items[1], Value::Nil | Value::Cons(_)) {
             return Err(wrong_type_argument("listp", items[1].clone()));
         }
         let bindings = items[1].to_vec()?;
@@ -270,7 +273,9 @@ impl Interpreter {
         items: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if is_vector_literal(&items[1]) {
+        // eval.c FletX: FOR_EACH_TAIL (varlist) -- a non-list signals
+        // wrong-type-argument listp.
+        if is_vector_literal(&items[1]) || !matches!(items[1], Value::Nil | Value::Cons(_)) {
             return Err(wrong_type_argument("listp", items[1].clone()));
         }
         let bindings = items[1].to_vec()?;
