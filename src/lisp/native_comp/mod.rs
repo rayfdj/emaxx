@@ -355,6 +355,7 @@ fn garbage_collect_now_impl(
     } else {
         None
     };
+    let started = std::time::Instant::now();
     begin_garbage_collection(interpreter, environment);
     let census = interpreter.live_object_census();
     if let Some(restore) = symbols_with_pos_restore {
@@ -370,6 +371,7 @@ fn garbage_collect_now_impl(
         threshold,
         percentage,
     );
+    interpreter.note_collection_done(started.elapsed());
     let _ = crate::lisp::primitives::call(
         interpreter,
         "run-hooks",

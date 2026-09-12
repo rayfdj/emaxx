@@ -4629,9 +4629,20 @@ fn native_buffer_ticks_are_signed_distinct_and_honor_buffer_arguments() {
 
 #[test]
 fn gc_counter_variables_are_available_for_benchmark() {
+    // alloc.c's gcs_done and Vgc_elapsed: the collections so far and the
+    // seconds they took.  Loading the fixture conses past the threshold,
+    // so collections may already have run (GNU's batch boot reports one).
     assert_eq!(
-        eval_str("(list gcs-done gc-elapsed)"),
-        Value::list([Value::Integer(0), Value::float(0.0)])
+        eval_str("(list (natnump gcs-done) (floatp gc-elapsed) (>= gc-elapsed 0.0))"),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+    assert_eq!(
+        eval_str(
+            "(let ((done gcs-done) (elapsed gc-elapsed)) \
+               (garbage-collect) \
+               (list (- gcs-done done) (>= gc-elapsed elapsed)))"
+        ),
+        Value::list([Value::Integer(1), Value::T])
     );
 }
 

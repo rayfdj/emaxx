@@ -749,6 +749,10 @@ impl Interpreter {
     #[inline(always)]
     pub(crate) fn begin_funcall(&mut self, env: &mut Env) -> Result<(), LispError> {
         self.maybe_quit(env)?;
+        // eval.c:Ffuncall calls maybe_gc after maybe_quit, before the depth
+        // check: byte-compiled code reaches the collector through its
+        // calls, as interpreted code does through eval_sub.
+        crate::lisp::native_comp::maybe_gc(self, env);
         self.lisp_eval_depth += 1;
         if self.lisp_eval_depth_exceeded() {
             let reached = self.lisp_eval_depth;

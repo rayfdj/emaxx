@@ -287,6 +287,55 @@ one `where-is-internal' at 35 M (keymap.c's `where_is_internal_1'
 walks key vectors; Emaxx joins prefix strings and materializes each
 binding); the initial frame faces 41 M.
 
+### The collector's books and mark bits, as alloc.c keeps them (same day, checkpoint 24)
+
+A collection cost 242 M instructions, and byte-compiled code never
+triggered one.  Both answered with the C:
+
+- The live census upgraded a weak handle for every string ever
+  allocated (296,000 after the boot) and recomputed each one's storage
+  size by walking its characters.  alloc.c's `gcstat' totals are
+  counters; `struct Lisp_String' keeps `size_byte'.  A text now carries
+  its storage size (`LispText'), and `total_strings', `total_string_bytes',
+  `total_floats' and the bignums' count are counters that allocation
+  raises and Rust ownership's release lowers (`LIVE_TEXTS',
+  `LIVE_TEXT_BYTES', `LIVE_FLOATS', `LIVE_BIGNUMS'); the weak books for
+  texts, floats and bignums are gone.  Only the string objects (text
+  properties, raw bytes: a few thousand) and the interpreted closures
+  keep a book, walked for the property spans.
+- The obarray's symbol count for the census rebuilt a name set per
+  collection; it is the cached enumeration's length.
+- The mark phase inserted every reached address into hash sets (a
+  quarter of a collection, half of it table growth).  alloc.c's mark bit
+  is on the object: a cons, text, vector or symbol carries the epoch of
+  the collection that marked it (`MarkBit'), so marking writes one word
+  and no pass clears bits; the kinds marked by id or by address (string
+  objects, records, markers, lambdas) keep sets, sized from the previous
+  collection's counts.  A cons's two words are read in place instead of
+  through two temporary Values.
+- eval.c's Ffuncall calls maybe_gc after maybe_quit; Emaxx's did not, so
+  a process running byte code (every compile) never collected, weak
+  tables never shrank, and `gcs-done' stayed at whatever the image
+  recorded.  `begin_funcall' calls it now; `gcs-done' and `gc-elapsed'
+  are maintained as alloc.c's `gcs_done' and `Vgc_elapsed' (the value
+  cells, since both are forwarded C variables) and reset after the
+  image is loaded as emacs.c's init_alloc does.
+
+Measured (callgrind instructions of one `garbage-collect' after the
+boot, two run lengths differenced): 242 M to 146 M with the counters,
+115 M with the sets sized, 62 M with the mark bits.  Five in-process
+`native-compile' calls now run five collections (GNU three: its
+threshold counts only the process's own allocations, pdumper's objects
+being outside gcstat, while Emaxx's census counts the image's objects
+too; and Emaxx tallies more consing per compile), 0.174 s in the
+collector against 0.442 s before the mark bits (GNU 0.050 s for its
+three).
+
+Open after it: the remaining mark phase (27 M of the 62 M is the walk
+itself: RefCell borrows and Value clones per edge), the census of
+string objects and closures still walked, the difference in what is
+consed per compile.
+
 ### The parity gate
 
 `tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then
