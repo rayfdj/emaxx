@@ -1027,6 +1027,37 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
     properties.extend(builtin_edebug_declaration_specs());
     properties.extend(builtin_edebug_elem_specs());
     properties.extend(builtin_error_symbol_properties());
+    // buffer.c:syms_of_buffer's Fput calls: plain plist entries.
+    properties.push((
+        "vertical-scroll-bar".to_string(),
+        vec![(
+            "choice".to_string(),
+            Value::list([
+                Value::Nil,
+                Value::T,
+                Value::symbol("left"),
+                Value::symbol("right"),
+            ]),
+        )],
+    ));
+    properties.push((
+        "fraction".to_string(),
+        vec![(
+            "range".to_string(),
+            Value::cons(Value::float(0.0), Value::float(1.0)),
+        )],
+    ));
+    properties.push((
+        "overwrite-mode".to_string(),
+        vec![(
+            "choice".to_string(),
+            Value::list([
+                Value::Nil,
+                Value::symbol("overwrite-mode-textual"),
+                Value::symbol("overwrite-mode-binary"),
+            ]),
+        )],
+    ));
     properties.extend(
         [
             ("gnutls-e-interrupted", -52),
@@ -1655,6 +1686,9 @@ pub(crate) enum FrameArgs {
         ptr: *const usize,
         len: usize,
     },
+    /// A copy of native words taken outside their activation (an image
+    /// copy of the interpreter); decodable only once a runtime is active.
+    NativeOwned(Vec<usize>),
     Owned(Vec<Value>),
 }
 
@@ -1672,7 +1706,7 @@ impl FrameArgs {
             // SAFETY: see the type comment: the owning activation is live
             // for every instant this frame is on a backtrace.
             Self::Borrowed { ptr, len } => Some(unsafe { std::slice::from_raw_parts(*ptr, *len) }),
-            Self::NativeWords { .. } => None,
+            Self::NativeWords { .. } | Self::NativeOwned(_) => None,
             Self::Owned(values) => Some(values),
         }
     }
@@ -1684,6 +1718,7 @@ impl FrameArgs {
             Self::NativeWords { ptr, len } => {
                 Some(unsafe { std::slice::from_raw_parts(*ptr, *len) })
             }
+            Self::NativeOwned(words) => Some(words),
             Self::Borrowed { .. } | Self::Owned(_) => None,
         }
     }
@@ -1693,13 +1728,13 @@ impl Clone for FrameArgs {
     /// A copy of a frame may outlive the activation, so it owns its values.
     fn clone(&self) -> Self {
         match self {
-            Self::NativeWords { .. } => Self::Owned(
-                crate::lisp::native_comp::decode_active_backtrace_arguments(
-                    self.native_words().unwrap_or(&[]),
-                )
-                .and_then(Result::ok)
-                .unwrap_or_default(),
-            ),
+            Self::NativeWords { .. } | Self::NativeOwned(_) => {
+                let words = self.native_words().unwrap_or(&[]);
+                match crate::lisp::native_comp::decode_active_backtrace_arguments(words) {
+                    Some(Ok(values)) => Self::Owned(values),
+                    _ => Self::NativeOwned(words.to_vec()),
+                }
+            }
             other => Self::Owned(other.lisp_values().unwrap_or(&[]).to_vec()),
         }
     }
@@ -4309,16 +4344,16 @@ impl Interpreter {
     /// collection's time and `gcs_done' counts it, before post-gc-hook.
     /// Both are forwarded C variables, so the value cells are the state.
     pub(crate) fn note_collection_done(&mut self, elapsed: std::time::Duration) {
-        let env = Env::new();
-        if let Some(Value::Float(seconds)) = self.forwarded_c_value("gc-elapsed", &env) {
-            self.set_symbol_value_cell(
-                "gc-elapsed",
-                Value::float(seconds.get() + elapsed.as_secs_f64()),
-            );
-        }
-        if let Some(Value::Integer(done)) = self.forwarded_c_value("gcs-done", &env) {
-            self.set_symbol_value_cell("gcs-done", Value::Integer(done.saturating_add(1)));
-        }
+        // alloc.c accumulates its own timespec and stores the total, so a
+        // value Lisp stored in `gc-elapsed' is replaced by the true total.
+        self.gc_elapsed_total += elapsed.as_secs_f64();
+        self.set_symbol_value_cell("gc-elapsed", Value::float(self.gc_elapsed_total));
+        // `gcs_done++' on the C int the variable forwards to.
+        let done = match self.forwarded_c_value("gcs-done", &Env::new()) {
+            Some(Value::Integer(done)) => done.saturating_add(1),
+            _ => 1,
+        };
+        self.set_symbol_value_cell("gcs-done", Value::Integer(done));
     }
 
     pub(crate) fn install_gc_record_census(&mut self, live_records: MarkedIds) {
@@ -5185,6 +5220,9 @@ pub struct InterpreterState {
     gc_live_record_ids: MarkedIds,
     /// The last collection's mark counts, sizing the next one's mark sets.
     gc_mark_set_sizes: Cell<MarkSetSizes>,
+    /// alloc.c's private `gc_elapsed' timespec: the total the Lisp
+    /// variable is recomputed from after every collection.
+    gc_elapsed_total: f64,
     gc_record_high_water: u64,
     gc_has_record_census: bool,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
@@ -6165,6 +6203,7 @@ impl Interpreter {
             .collect(),
             gc_live_record_ids: HashSet::default(),
             gc_mark_set_sizes: Cell::new(MarkSetSizes::default()),
+            gc_elapsed_total: 0.0,
             gc_record_high_water: 0,
             gc_has_record_census: false,
             sqlite_handles: Vec::new(),

@@ -526,9 +526,6 @@ impl Interpreter {
         symbol: &SymbolName,
         property: &SymbolName,
     ) -> Option<Value> {
-        if property == "choice" {
-            return self.get_symbol_property(symbol.as_str(), property.as_str());
-        }
         let index = self.symbol_property_index_of(symbol)?;
         let mut tail = self.symbol_properties[index].1.clone();
         let mut tortoise = Brent::new(&tail);
@@ -547,25 +544,6 @@ impl Interpreter {
     }
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
-        if property == "choice" {
-            match name {
-                "vertical-scroll-bar" => {
-                    return Some(Value::list([
-                        Value::Nil,
-                        Value::Symbol("left".into()),
-                        Value::Symbol("right".into()),
-                    ]));
-                }
-                "overwrite-mode" => {
-                    return Some(Value::list([
-                        Value::Nil,
-                        Value::Symbol("overwrite-mode-textual".into()),
-                        Value::Symbol("overwrite-mode-binary".into()),
-                    ]));
-                }
-                _ => {}
-            }
-        }
         let index = self.symbol_property_index(name)?;
         let mut tail = self.symbol_properties[index].1.clone();
         // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle

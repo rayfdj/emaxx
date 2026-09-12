@@ -518,6 +518,10 @@ fn run_with_stack(
     // in-frame condition-case that catches must unwind them, and the
     // caller (`run') balances whatever is left after handler dispatch.
     let mut op_error_frames = 0usize;
+    // bytecode.c's `quitcounter': every 256th backward branch calls
+    // maybe_gc and maybe_quit, so a loop without a call collects and can
+    // be interrupted.
+    let mut quitcounter: u8 = 1;
 
     macro_rules! pop {
         () => {
@@ -529,6 +533,21 @@ fn run_with_stack(
     // failure (`?') leaves the loop for the handler search below, which
     // resumes the loop at the handler's target; a normal return leaves
     // it with the value.
+    macro_rules! branch {
+        ($target:expr) => {{
+            let destination = object.instr_at($target as usize);
+            if destination < pc {
+                quitcounter = quitcounter.wrapping_add(1);
+                if quitcounter == 0 {
+                    quitcounter = 1;
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    interp.maybe_quit(env)?;
+                }
+            }
+            pc = destination;
+        }};
+    }
+
     let result = 'run: loop {
         let step: Result<Value, LispError> = (|| loop {
             let Some(instr) = object.instrs.get(pc) else {
@@ -570,24 +589,24 @@ fn run_with_stack(
                     continue;
                 }
                 Op::Goto { target } => {
-                    pc = object.instr_at(target as usize);
+                    branch!(target);
                     continue;
                 }
                 Op::GotoIfNil { target } => {
                     if pop!().is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     }
                     continue;
                 }
                 Op::GotoIfNonNil { target } => {
                     if !pop!().is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     }
                     continue;
                 }
                 Op::GotoIfNilElsePop { target } => {
                     if stack.last().expect("validated bytecode").is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     } else {
                         pop!();
                     }
@@ -595,7 +614,7 @@ fn run_with_stack(
                 }
                 Op::GotoIfNonNilElsePop { target } => {
                     if !stack.last().expect("validated bytecode").is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     } else {
                         pop!();
                     }
@@ -1136,28 +1155,28 @@ fn run_with_stack(
                     stack.push(value);
                 }
                 Op::Goto { target } => {
-                    pc = object.instr_at(target as usize);
+                    branch!(target);
                 }
                 Op::GotoIfNil { target } => {
                     if pop!().is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     }
                 }
                 Op::GotoIfNonNil { target } => {
                     if !pop!().is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     }
                 }
                 Op::GotoIfNilElsePop { target } => {
                     if stack.last().expect("validated bytecode").is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     } else {
                         pop!();
                     }
                 }
                 Op::GotoIfNonNilElsePop { target } => {
                     if !stack.last().expect("validated bytecode").is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     } else {
                         pop!();
                     }

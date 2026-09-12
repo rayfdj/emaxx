@@ -749,10 +749,6 @@ impl Interpreter {
     #[inline(always)]
     pub(crate) fn begin_funcall(&mut self, env: &mut Env) -> Result<(), LispError> {
         self.maybe_quit(env)?;
-        // eval.c:Ffuncall calls maybe_gc after maybe_quit, before the depth
-        // check: byte-compiled code reaches the collector through its
-        // calls, as interpreted code does through eval_sub.
-        crate::lisp::native_comp::maybe_gc(self, env);
         self.lisp_eval_depth += 1;
         if self.lisp_eval_depth_exceeded() {
             let reached = self.lisp_eval_depth;
@@ -960,6 +956,9 @@ impl Interpreter {
             env,
             None,
         );
+        // eval.c:Ffuncall: maybe_quit, the depth check, record_in_backtrace,
+        // then maybe_gc -- the arguments are on the specpdl by then.
+        crate::lisp::native_comp::maybe_gc(self, env);
         let result = primitives::call_with_facts(self, name, facts, args, env)
             .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
         let result = self.settle_frame_result(result, env);
@@ -1035,6 +1034,8 @@ impl Interpreter {
             .unwrap_or(Value::Record(record_id));
         self.push_backtrace_frame(backtrace_function, args);
         self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
+        // Ffuncall's maybe_gc, after record_in_backtrace.
+        crate::lisp::native_comp::maybe_gc(self, env);
         let result = self.execute_bytecode_funcall_body(record_id, args, env);
         let result = self.settle_frame_result(result, env);
         self.pop_backtrace_frame();
@@ -1216,6 +1217,7 @@ impl Interpreter {
                     env,
                     None,
                 );
+                crate::lisp::native_comp::maybe_gc(self, env);
                 let result = primitives::call(self, name, args, env)
                     .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
                 let result = self.settle_frame_result(result, env);
@@ -1236,6 +1238,7 @@ impl Interpreter {
                     env,
                     None,
                 );
+                crate::lisp::native_comp::maybe_gc(self, env);
                 let result = crate::lisp::native_comp::call_function(self, env, id, args);
                 let result = self.settle_frame_result(result, env);
                 self.pop_backtrace_frame();
@@ -1378,6 +1381,7 @@ impl Interpreter {
                     env,
                     Some(&frame),
                 );
+                crate::lisp::native_comp::maybe_gc(self, env);
                 // An empty lexical capture is still a scope boundary.  Keep
                 // that fact as closure metadata instead of an artificial
                 // environment binding, since instrumentation and capture

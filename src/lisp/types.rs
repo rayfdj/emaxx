@@ -352,13 +352,18 @@ impl ConsMutationSnapshot {
     /// `include_cell' for many cells at once: one sort, not one a cell.
     pub(crate) fn include_cells<'c>(&mut self, cells: impl IntoIterator<Item = &'c SharedCons>) {
         let mut added = Vec::new();
+        let mut tracked: Vec<usize> = Vec::new();
         for cell in cells {
             let fields = ConsCell::mutation_field_ids(cell);
             if self.field_ids.binary_search(&fields[0]).is_ok() {
                 continue;
             }
-            self.track_native_cell(cell);
-            added.extend(fields);
+            // A cell named twice in one batch is tracked once.
+            if let Err(slot) = tracked.binary_search(&fields[0]) {
+                tracked.insert(slot, fields[0]);
+                self.track_native_cell(cell);
+                added.extend(fields);
+            }
         }
         if added.is_empty() {
             return;

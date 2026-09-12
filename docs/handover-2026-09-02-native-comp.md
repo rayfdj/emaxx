@@ -180,9 +180,14 @@ finding was answered with the C structure:
   function, args, two flags and an `Option<Box<FrameDetail>>' for the
   source form, locals and lexical context.  The invariant is the one
   GNU's has: a frame is pushed and popped by the activation that owns
-  the arguments (Lisp threads are stackful coroutines, so a parked
-  thread's frames stay valid); the three byte ops that record a frame
-  whose operands die with the step own a copy.
+  the arguments (a parked Lisp thread keeps its coroutine stack until
+  `Interpreter::drop' unwinds it, thread_context.rs, so its frames stay
+  valid); the three byte ops that record a frame whose operands die with
+  the step own a copy.  Two soft spots, stated: `pop_backtrace_frame'
+  pops whatever is on top, so a callee that leaves a frame behind would
+  leave a borrowed frame dangling (the VM's count-based truncate is the
+  guard), and a panic caught between push and pop with the interpreter
+  reused afterwards would too (the catchers today re-raise).
 - `exec_byte_code''s dispatch loop ran a closure per instruction
   (captures, a `Result' returned and matched each step) and copied the
   24-byte `Instr'; the closure now holds the loop, an error leaves it
@@ -208,16 +213,26 @@ finding was answered with the C structure:
   symbols themselves and reaches the plist through a position index by
   symbol id (`symbol_properties_by_id', filled on first lookup and
   cleared when positions shift); the name-keyed index stays the
-  authority for the `&str' callers.
+  authority for the `&str' callers.  The audit of this checkpoint found
+  the getter still fabricating the `choice' property of
+  `vertical-scroll-bar' and `overwrite-mode' by name (a leftover, and
+  wrong: GNU's has `t' in it); buffer.c's syms_of_buffer makes them
+  with Fput, so they are ordinary entries of the builtin plists now
+  (`fraction''s `range' with them) and the special case is gone.
 
-Measured (callgrind instructions an iteration, release build with the
-image, GNU on the same box): the call loop 2,251 before, 1,900 after the root and
-frame changes, 1,630 after the rest (GNU 332); a `(get 'foo 'bar)'
-loop 1,686 to 1,376 (GNU 248); one in-process `native-compile' of a
-small lambda 893 M to 874 M instructions (GNU 280 M, of which libgccjit
-is the same code on both sides).  The call loop's 2,251 is the tree
-before the root and frame changes (the merge commit), built and measured
-the same way.
+Measured with `tools/perf/callgrind-diff.sh' (callgrind on two run
+lengths of the loop, differenced, so the boot and collections cancel;
+`tools/perf/call-loop.el' and `get-loop.el' are the loops; the Emaxx
+binary is the release build with its image beside it, the GNU binary the
+pinned oracle `../emacs/src/emacs', native-comp enabled, started the
+same way): the call loop 2,251 before, 1,900 after the root and frame
+changes, 1,630 after the rest (GNU 332); the `get' loop 1,686 to 1,376
+(GNU 248); one in-process `native-compile' of a small lambda
+(`tools/perf/inproc-compile.el', PERF_N=1 against PERF_N=5, differenced
+and divided by four) 893 M to 874 M instructions (GNU 280 M, of which
+libgccjit is the same code on both sides).  The call loop's 2,251 is the
+tree before the root and frame changes (the merge commit), built and
+measured the same way.
 
 What the profile shows after these, in order: the VM's own operand
 traffic (`Vec' push, pop and index checks, `Value' clone and drop --
@@ -260,8 +275,10 @@ on top of materializing, each item answered with what the C does:
   each), and the name table grew several times.  As pdumper.c's symbol
   points at the dumped name string, `symbol_of_record' interns through
   `intern_with_lisp_name' with the image's own string as the symbol's
-  name (one accounted string, as GNU has), reads the text in place, and
-  the tables are reserved for the record count first.
+  name (one accounted string, as GNU has -- for a symbol the image is
+  the first to mention; a name the constructor interned before the load
+  keeps the string it had), reads the text in place, and the tables are
+  reserved for the record count first.
 - The keymap cons-owner registration built its mutation snapshot one
   cell at a time, sorting the id vector after each (7,700 sorts in the
   boot); `include_cells' takes them all and sorts once.
@@ -269,7 +286,8 @@ on top of materializing, each item answered with what the C does:
   hashed with SipHash; they use FNV as the other name-keyed tables do.
 
 Measured (callgrind instructions of `emaxx -Q --batch --eval
-'(kill-emacs 0)'', release build with the image): 1,044 M to 840 M, of
+'(kill-emacs 0)'', one run each, release build with the image, GNU the
+pinned oracle started the same way): 1,044 M to 840 M, of
 which the image load 766 M to 562 M (the loader proper 638 M to 458 M),
 the startup top level 151 M unchanged.  GNU's whole boot is 0.068 s
 wall on this box; Emaxx's 0.23 to 0.28 s (the same binary varies by
@@ -313,23 +331,32 @@ triggered one.  Both answered with the C:
   objects, records, markers, lambdas) keep sets, sized from the previous
   collection's counts.  A cons's two words are read in place instead of
   through two temporary Values.
-- eval.c's Ffuncall calls maybe_gc after maybe_quit; Emaxx's did not, so
-  a process running byte code (every compile) never collected, weak
+- eval.c's Ffuncall (maybe_quit, the depth check, record_in_backtrace,
+  then maybe_gc) collects on every call; Emaxx's Ffuncall path did not,
+  so a process running byte code (every compile) never collected, weak
   tables never shrank, and `gcs-done' stayed at whatever the image
-  recorded.  `begin_funcall' calls it now; `gcs-done' and `gc-elapsed'
-  are maintained as alloc.c's `gcs_done' and `Vgc_elapsed' (the value
-  cells, since both are forwarded C variables) and reset after the
-  image is loaded as emacs.c's init_alloc does.
+  recorded.  Each Ffuncall arm calls maybe_gc after its frame is on the
+  backtrace, where the C does (the audit caught a first version that
+  collected before the frame, with the arguments held only by Rust
+  locals), and bytecode.c's `quitcounter' is ported: every 256th
+  backward branch calls maybe_gc and maybe_quit, so a compiled loop
+  without a call collects and can be interrupted.  `gcs-done' is
+  `gcs_done++' on the value cell the variable forwards to; `gc-elapsed'
+  is recomputed from a private total as alloc.c does with its timespec;
+  both are reset after the image is loaded as emacs.c's init_alloc
+  does.
 
 Measured (callgrind instructions of one `garbage-collect' after the
-boot, two run lengths differenced): 242 M to 146 M with the counters,
-115 M with the sets sized, 62 M with the mark bits.  Five in-process
-`native-compile' calls now run five collections (GNU three: its
-threshold counts only the process's own allocations, pdumper's objects
-being outside gcstat, while Emaxx's census counts the image's objects
-too; and Emaxx tallies more consing per compile), 0.174 s in the
-collector against 0.442 s before the mark bits (GNU 0.050 s for its
-three).
+boot: one and three collections in `--eval', differenced and halved):
+242 M to 146 M with the counters, 115 M with the sets sized, 62 M with
+the mark bits.  `tools/perf/gcs-per-compile.el' (five in-process
+`native-compile' calls) now runs five collections in 0.174-0.185 s of
+collector time against 0.442 s before the mark bits; GNU runs three in
+0.050 s.  Why GNU runs fewer is read from the code, not measured: its
+threshold is a percentage of gcstat's live bytes, which exclude the
+dumped objects (`garbage-collect' after GNU's boot reports 1,913
+conses; Emaxx's, counting the image's, 143,895), and Emaxx tallies more
+consing per compile.
 
 Open after it: the remaining mark phase (27 M of the 62 M is the walk
 itself: RefCell borrows and Value clones per edge), the census of
