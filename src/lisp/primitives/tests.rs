@@ -1944,6 +1944,37 @@ fn markers_the_collector_reaches_survive_and_the_rest_are_unchained() {
 }
 
 #[test]
+fn labeled_restriction_bounds_survive_a_collection() {
+    // editfns.c keeps a labeled restriction's bounds as markers in the
+    // buffer's `labeled_restrictions' alist, which the mark phase reaches.
+    // Found by the audit of the marker sweep: the interpreter's list of
+    // active labeled restrictions marked its labels but not its bound
+    // markers, so a collection inside `with-restriction' detached them
+    // and the insertions that followed left the restriction where it
+    // was.  The oracle's values: the end bound advances past the
+    // insertion at its end, `widen' inside the restriction keeps it,
+    // `without-restriction' lifts it, `narrow-to-region' inside it
+    // clamps to it.
+    let program = r#"(with-temp-buffer
+         (insert "0123456789")
+         (with-restriction 3 7 :label 'x
+           (garbage-collect)
+           (goto-char (point-min))
+           (insert "ab")
+           (goto-char (point-max))
+           (insert "cd")
+           (widen)
+           (list (point-min) (point-max) (buffer-string)
+                 (without-restriction :label 'x (list (point-min) (point-max)))
+                 (progn (narrow-to-region 2 9) (list (point-min) (point-max))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(3 9 "ab2345" (1 15) (3 9))"#,
+        "labeled restriction across a collection",
+    );
+}
+
+#[test]
 fn unreached_markers_leave_their_buffers_edit_walk() {
     // 500 markers made and dropped: after a collection they are detached,
     // so an insertion adjusts only the markers still reachable (the kept
@@ -1977,6 +2008,84 @@ fn unreached_markers_leave_their_buffers_edit_walk() {
     assert!(
         after < before && after <= before - 500,
         "attached after the collection: {after} (before {before})"
+    );
+}
+
+#[test]
+fn time_values_follow_timefns_c() {
+    // timefns.c keeps (TICKS . HZ) as given (no reduction), decodes a
+    // (HI LO US PS) list on its own clock (1, 10^6 or 10^12 by length),
+    // scales a float by the power of two that makes it exact, and
+    // time_arith keeps a common clock, else combines over the lcm with
+    // gcd normalization and the rescale that keeps the result at least
+    // as precise as either operand; the result is an integer at HZ 1,
+    // the list form under `current-time-list' for list operands with an
+    // exact list form, else the pair.  The oracle's values.
+    let program = r#"(list (time-convert '(2 . 10) t) (time-convert '(4 . 8) t) (time-convert '(0 . 10) t)
+        (time-convert 5 t) (time-convert '(1 2 3) t) (time-convert '(1 2 3 4) t) (time-convert '(1 2) t)
+        (time-add '(1 . 10) '(1 . 10)) (time-add '(1 . 4) '(1 . 6)) (time-add '(1 . 6) '(1 . 3))
+        (time-subtract '(3 . 6) '(1 . 6)) (time-subtract '(1 . 6) '(1 . 3))
+        (time-equal-p '(1 . 2) '(2 . 4)) (time-less-p '(1 . 3) '(1 . 2))
+        (time-convert '(3 . 4) 'integer) (time-convert '(6 . 4) 100) (float-time '(1 . 3))
+        (time-convert 1.5 t) (time-convert '(2 . 10) 'list) (time-add 1 '(1 . 2)) (time-add '(0 . 10) '(0 . 10))
+        (time-add '(1 2) '(3 4)) (time-add '(1 2 3) '(0 0 1))
+        (let ((current-time-list nil)) (time-add '(1 2 3) '(0 0 1)))
+        (time-add '(1 2 3 4) '(1 . 2)) (time-subtract '(1 2) 1) (time-convert '(1 2 3) 'list)
+        (time-equal-p '(1 2) 65538) (time-less-p 1.5 '(3 . 2)) (time-add 1.5 1.5)
+        (time-convert 0.0 t) (time-convert -1.5 t)
+        (consp (time-convert nil t)) (= (cdr (time-convert nil t)) 1000000000))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((2 . 10) (4 . 8) (0 . 10) (5 . 1) (65538000003 . 1000000) (65538000003000004 . 1000000000000) \
+         (65538 . 1) (2 . 10) (5 . 12) (2 . 4) (2 . 6) (-1 . 6) t t 0 (150 . 100) 0.3333333333333333 \
+         (6755399441055744 . 4503599627370496) (0 0 200000 0) (3 . 2) (0 . 10) 262150 (1 2 4 0) \
+         (65538000004 . 1000000) (16384625000750001 . 250000000000) 65537 (1 2 3 0) t nil \
+         (13510798882111488 . 4503599627370496) (0 . 1) (-6755399441055744 . 4503599627370496) t t)",
+        "time values",
+    );
+}
+
+#[test]
+fn float_time_rounds_as_frac_to_double() {
+    // timefns.c frac_to_double: the quotient scaled to 53 or 54 bits by
+    // shifting the numerator or the denominator, truncating division,
+    // the increment that makes truncation round to nearest even (with
+    // the remainder as the sticky bit), and one scalbn.  Quotients over
+    // 2^53, ties, subnormal results, and clocks that are no power of two
+    // print as the oracle prints them.
+    let program = r#"(mapcar (lambda (c) (float-time c))
+        (list '(1000000004025 . 1000000000000) '(1 . 10000000000) '(-1 . 10000000000) '(1 . 3) '(2 . 3) '(-2 . 3) '(1 . 7) '(22 . 7) (cons (1+ (expt 2 53)) 1) (cons (+ 3 (expt 2 53)) 1) (cons (+ 5 (expt 2 53)) 1) (cons (- (+ 3 (expt 2 53))) 1) (cons (+ 3 (expt 2 54)) 1) (cons (+ 6 (expt 2 54)) 1) (cons (+ 5 (expt 2 54)) 3) (cons (expt 2 60) 3) (cons (1+ (expt 2 60)) 3) (cons (expt 10 30) 7) (cons 1 (expt 2 1074)) (cons 3 (expt 2 1074)) (cons -3 (expt 2 1074)) (cons 1 (expt 2 1075)) (cons 3 (expt 2 1075)) (cons 1 (expt 2 1076)) (cons (1+ (expt 2 53)) (expt 2 1074)) (cons (1+ (expt 2 53)) (expt 2 1073)) (cons 1 (expt 2 1022)) (cons (1- (expt 2 53)) (expt 2 1074)) (cons 1723456789123456789 1000000000) (cons -1723456789123456789 1000000000) (cons 1723456789123456789123 1000000000000) (cons (expt 2 1023) 1) (cons (* 3 (expt 2 1022)) 1) (cons (expt 3 700) (expt 2 100)) (cons (expt 3 700) (expt 3 699)) (cons (expt 3 700) (1+ (expt 3 699))) (cons 1 (expt 3 700)) (cons 9007199254740993 2) (cons 9007199254740995 2) (cons 27021597764222977 3) (cons 4503599627370497 1000000007) '(0 . 5) '(-0 . 5) (cons (- (expt 2 63)) 1) (cons (1- (expt 2 63)) 1) (cons (expt 2 63) (expt 2 10)) (cons (1+ (expt 2 63)) (expt 2 10))) )"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(1.000000004025 1e-10 -1e-10 0.3333333333333333 0.6666666666666666 -0.6666666666666666 0.14285714285714285 3.142857142857143 9007199254740992.0 9007199254740996.0 9007199254740996.0 -9007199254740996.0 18014398509481988.0 1.801439850948199e+16 6004799503160663.0 3.843071682022823e+17 3.843071682022823e+17 1.4285714285714285e+29 5e-324 1.5e-323 -1.5e-323 0.0 1e-323 0.0 4.450147717014403e-308 8.900295434028806e-308 2.2250738585072014e-308 4.4501477170144023e-308 1723456789.1234567 -1723456789.1234567 1723456789.1234567 8.98846567431158e+307 1.348269851146737e+308 7.61866253907264e+303 3.0 3.0 0.0 4503599627370496.0 4503599627370498.0 9007199254740992.0 4503599.5958453 0.0 0.0 -9.223372036854776e+18 9.223372036854776e+18 9007199254740992.0 9007199254740992.0)",
+        "float-time rounding",
+    );
+}
+
+#[test]
+fn buffer_searches_convert_offsets_through_the_rope() {
+    // A multibyte buffer whose haystack is its own text converts the
+    // engine's byte offsets through the rope (test builds compare every
+    // conversion with the haystack index): point, match data, the
+    // positions after forward and backward searches, and a search after
+    // an insertion, all the oracle's.
+    let program = r#"(with-temp-buffer
+         (insert "αβγ abc δεζ\nημ xyz θι\n")
+         (goto-char 3)
+         (list (looking-at "γ \\(a\\)") (match-data t)
+               (re-search-forward "δ\\(ε\\)" nil t) (match-beginning 1) (match-end 0) (point)
+               (re-search-backward "β" nil t) (point)
+               (progn (goto-char 1) (re-search-forward "^η\\(μ\\)" nil t)) (match-data t)
+               (progn (goto-char 14) (looking-at "ημ \\(x\\)")) (match-data t)
+               (progn (goto-char 1) (search-forward "θ" nil t))
+               (progn (goto-char (point-max)) (re-search-backward "[αη]" nil t)) (point)
+               (progn (goto-char 5) (insert "ω") (goto-char 6) (looking-at "abc δ")) (match-end 0)
+               (progn (goto-char 1) (re-search-forward "ζ$" nil t)) (match-beginning 0)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t (3 6 5 6 #<killed buffer>) 11 10 11 11 2 2 15 (13 15 14 15 #<killed buffer>) nil \
+         (13 15 14 15 #<killed buffer>) 21 13 13 t 11 13 12)",
+        "non-ASCII buffer searches",
     );
 }
 

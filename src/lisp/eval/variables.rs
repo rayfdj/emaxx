@@ -2638,9 +2638,10 @@ impl Interpreter {
         };
         self.set_marker(beg_marker_id, Some(start), Some(buffer_id))?;
         self.set_marker(end_marker_id, Some(end), Some(buffer_id))?;
-        // Point-max markers, including the labeled-restriction endpoints in
-        // editfns.c, move after text inserted exactly at their position.
-        self.set_marker_insertion_type(end_marker_id, true);
+        // editfns.c's Finternal__labeled_narrow_to_region records
+        // `point-min-marker' and `point-max-marker': plain markers, so an
+        // insertion at the end bound falls outside the restriction.  (Only
+        // save_restriction_save's end marker has insertion type t.)
         Ok((beg_marker_id, end_marker_id))
     }
 }

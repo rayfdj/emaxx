@@ -176,7 +176,8 @@ pub(crate) use purecopy::*;
 pub(crate) use regexp::forget_buffer_views;
 #[cfg(test)]
 pub(crate) use regexp::{
-    reset_syntax_encoding_scan_count, syntax_encoding_replay_count, syntax_encoding_scan_count,
+    elisp_regex_compile_count, reset_elisp_regex_compile_count, reset_syntax_encoding_scan_count,
+    syntax_encoding_replay_count, syntax_encoding_scan_count,
 };
 pub(crate) use sequences::*;
 pub(crate) use strings::*;

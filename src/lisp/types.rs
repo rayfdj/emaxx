@@ -2381,16 +2381,19 @@ pub(crate) fn format_float(value: f64) -> String {
         };
     }
 
-    // GNU's dtoastr starts at DBL_DIG significant digits and grows only
-    // until parsing reproduces the same f64.  Rust's Display instead prefers
-    // fixed notation for many large integral values, which changes `read'
-    // from float to bignum and breaks numeric round trips.
+    // GNU's dtoastr starts at DBL_DIG significant digits (at one for a
+    // subnormal, whose precision is below DBL_DIG: 5e-324, not
+    // 4.94065645841247e-324) and grows only until parsing reproduces
+    // the same f64.  Rust's Display instead prefers fixed notation for
+    // many large integral values, which changes `read' from float to
+    // bignum and breaks numeric round trips.
     let abs = value.abs();
     let mut rendered = if abs == 0.0 {
         value.to_string()
     } else {
         let exponent = abs.log10().floor() as i32;
-        (15..=17)
+        let first = if abs < f64::MIN_POSITIVE { 1 } else { 15 };
+        (first..=17)
             .find_map(|significant| {
                 let scientific = exponent < -4 || exponent >= significant;
                 let candidate = if scientific {

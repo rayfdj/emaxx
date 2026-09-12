@@ -246,7 +246,10 @@ fn apply_buffer_replacement_hunks(
     )?;
 
     let restore_hooks = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
-    let edit_result: Result<(), LispError> = (|| {
+    // The saved point is a marker held here, in no Lisp object, across
+    // the edits: a root while they run.
+    let held: &[Value] = &[Value::Marker(saved_point_marker)];
+    let edit_result: Result<(), LispError> = interp.with_lisp_stack_roots(&held, |interp| {
         for hunk in hunks.iter().rev() {
             let from = target_start + hunk.old_start;
             let to = target_start + hunk.old_end;
@@ -275,7 +278,7 @@ fn apply_buffer_replacement_hunks(
             }
         }
         Ok(())
-    })();
+    });
     let restore_result = interp.restore_special_dynamic(restore_hooks, env);
     let restored_point = interp
         .marker_position(saved_point_marker)

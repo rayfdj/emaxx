@@ -1186,6 +1186,10 @@ struct RegexpSyntaxClassCache {
     table_id: u64,
     chain: SyntaxChainSignature,
     rendered: [String; 16],
+    /// FNV over the sixteen renderings: two tables that render alike
+    /// (cperl-mode copies its table into every buffer) compile a pattern
+    /// alike, so the compiled-regexp cache keys on this, not the table.
+    rendered_hash: u64,
 }
 
 /// Range segments of the syntax table, resolved once for the scanners that
@@ -4026,10 +4030,18 @@ impl Interpreter {
                 state.visit_lisp_roots(&mut mark);
             }
         }
+        // editfns.c keeps a buffer's labeled restrictions (`with-restriction'
+        // with a label) in `labeled_restrictions', an alist of the buffer,
+        // its labels and its bound markers, which the mark phase reaches
+        // through the alist.  The bounds are markers here as there: reach
+        // them, or the sweep detaches them and the next edit leaves the
+        // restriction where it was.
         for restriction in &self.labeled_restrictions {
             if let Some(value) = &restriction.label {
                 mark(value);
             }
+            mark(&Value::Marker(restriction.beg_marker_id));
+            mark(&Value::Marker(restriction.end_marker_id));
         }
         for process in &self.process_states {
             mark(&Value::Record(process.record_id));

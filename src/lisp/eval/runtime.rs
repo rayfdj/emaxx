@@ -109,7 +109,13 @@ impl Interpreter {
     ) -> Result<PathBuf, LispError> {
         let mut call_env = env.clone();
         let saved = crate::lisp::primitives::call(self, "match-data", &[], &mut call_env)?;
-        let result = self.load_target_with_env(target, env);
+        // The saved data holds markers (a buffer match), and lread.c keeps
+        // it on the specpdl (record_unwind_save_match_data) where the
+        // collector reaches it; held here through the load, it is a
+        // registered root, or a collection inside the load unchains its
+        // markers and the restore signals.
+        let result =
+            self.with_lisp_stack_roots(&saved, |interp| interp.load_target_with_env(target, env));
         crate::lisp::primitives::call(self, "set-match-data", &[saved, Value::T], &mut call_env)?;
         result
     }
@@ -2050,9 +2056,19 @@ impl Interpreter {
             Some("category-table") => {
                 self.category_context_generation = self.category_context_generation.wrapping_add(1);
             }
-            _ => {
+            // The case tables: a `case-table' (set-case-table checks the
+            // purpose), the `case-table-up' the standard table's upcase
+            // slot is made with, or a table without a purpose (casetab.c
+            // accepts any char-table as an extra slot).  A write to a
+            // table of another named purpose (`regexp-opt-charset',
+            // `char-script-table', a keymap's, a display table) is not a
+            // case-table write and recompiled every case-folded pattern
+            // (cperl-mode-tests: `regexp-opt' builds its charset table
+            // between searches).
+            Some("case-table") | Some("case-table-up") | None => {
                 self.case_context_generation = self.case_context_generation.wrapping_add(1);
             }
+            Some(_) => {}
         }
         let table = &mut self.char_tables[index];
         table.note_written();
@@ -2089,6 +2105,17 @@ impl Interpreter {
             .iter()
             .find(|cache| cache.table_id == table_id && cache.chain == chain)
             .map(|cache| cache.rendered.clone())
+    }
+
+    /// The hash of the table's sixteen class renderings as cached: what a
+    /// syntax-dependent pattern's translation reads from the table.
+    pub(crate) fn cached_regexp_syntax_classes_hash(&self, table_id: u64) -> Option<u64> {
+        let chain = self.syntax_table_chain_signature(table_id);
+        self.regexp_syntax_class_cache
+            .borrow()
+            .iter()
+            .find(|cache| cache.table_id == table_id && cache.chain == chain)
+            .map(|cache| cache.rendered_hash)
     }
 
     /// Whether TABLE_ID or a table it inherits from holds an entry (or
@@ -2169,6 +2196,10 @@ impl Interpreter {
         cache.push(RegexpSyntaxClassCache {
             table_id,
             chain,
+            rendered_hash: {
+                use std::hash::BuildHasher;
+                crate::lisp::primitives::FnvBuildHasher::default().hash_one(&rendered)
+            },
             rendered,
         });
     }

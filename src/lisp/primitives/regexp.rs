@@ -28,6 +28,78 @@ struct SyntaxPropertySentinel {
 struct SyntaxPropertyEncoding {
     haystack: std::rc::Rc<str>,
     sentinels: Vec<SyntaxPropertySentinel>,
+    /// What the compiled-regexp cache keys the sentinel table by.
+    sentinel_table: SentinelTableKey,
+    /// On the registry path, how many registry entries a pattern must
+    /// have been translated against to read this haystack: one past the
+    /// highest registry index among its substitutions (0 for none).  The
+    /// registry only grows and its first N entries never change, so a
+    /// pattern compiled against N or more entries serves the haystack.
+    needed: usize,
+}
+
+/// The sentinel table a compiled pattern was translated against: none
+/// (a plain haystack), the thread's registry (the cache entry records how
+/// many entries the translation saw), or an encoding's own private table.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum SentinelTableKey {
+    Plain,
+    Registry,
+    Private(Vec<SyntaxPropertySentinel>),
+}
+
+impl SentinelRegistry {
+    /// The registry index of SENTINEL, one of its characters.
+    fn index_of(sentinel: char) -> usize {
+        (sentinel as u32 - FIRST_SYNTAX_SENTINEL) as usize
+    }
+}
+
+/// One sentinel character per (original character, effective class) pair
+/// for the thread, assigned once and kept: every buffer's encoding renders
+/// the same pair with the same character, so a pattern compiled against
+/// the registry serves every buffer, where each encoding's own numbering
+/// made the compiled-regexp cache miss per buffer (cperl-mode-tests:
+/// 1,777 compiles of 265 patterns, the key differing only in the table).
+/// A haystack or pattern that itself holds a plane-15 private-use
+/// character cannot use the registry (its characters could be mistaken
+/// for sentinels) and gets a private table, as every encoding had.
+struct SentinelRegistry {
+    entries: Vec<SyntaxPropertySentinel>,
+    by_pair: HashMap<(char, char), char>,
+    next: u32,
+}
+
+impl SentinelRegistry {
+    fn sentinel_for(&mut self, original: char, class: char) -> char {
+        if let Some(sentinel) = self.by_pair.get(&(original, class)) {
+            return *sentinel;
+        }
+        let sentinel =
+            char::from_u32(self.next).expect("plane-15 private-use sentinel is a valid character");
+        self.next += 1;
+        self.by_pair.insert((original, class), sentinel);
+        self.entries.push(SyntaxPropertySentinel {
+            original,
+            class,
+            sentinel,
+        });
+        sentinel
+    }
+}
+
+thread_local! {
+    static SENTINEL_REGISTRY: RefCell<SentinelRegistry> = RefCell::new(SentinelRegistry {
+        entries: Vec::new(),
+        by_pair: HashMap::new(),
+        next: FIRST_SYNTAX_SENTINEL,
+    });
+}
+
+/// Whether CH lies in the plane-15 private-use range the registry draws
+/// sentinels from.
+fn in_sentinel_range(ch: char) -> bool {
+    (FIRST_SYNTAX_SENTINEL..=0xFFFFD).contains(&(ch as u32))
 }
 
 /// The key of one syntax-property encoding: the buffer, the range, the
@@ -74,6 +146,11 @@ struct SyntaxEncodingCacheEntry {
     /// character stays, harmlessly) and of each pattern searched.
     forbidden: HashSet<char>,
     next_sentinel: u32,
+    /// The entry numbers its own sentinels (`sentinels', `next_sentinel')
+    /// because a forbidden character lies in the registry's range;
+    /// otherwise the registry's characters are used and `sentinels' stays
+    /// empty.
+    private_sentinels: bool,
     encoding: Option<std::rc::Rc<SyntaxPropertyEncoding>>,
 }
 
@@ -247,6 +324,22 @@ pub(crate) fn syntax_encoding_replay_count() -> usize {
 }
 
 #[cfg(test)]
+thread_local! {
+    static ELISP_REGEX_COMPILE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Compiled-regexp cache misses since the last reset (test builds).
+#[cfg(test)]
+pub(crate) fn elisp_regex_compile_count() -> usize {
+    ELISP_REGEX_COMPILE_COUNT.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_elisp_regex_compile_count() {
+    ELISP_REGEX_COMPILE_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
 pub(crate) fn reset_syntax_encoding_scan_count() {
     SYNTAX_ENCODING_SCAN_COUNT.with(|count| count.set(0));
     SYNTAX_ENCODING_REPLAY_COUNT.with(|count| count.set(0));
@@ -258,10 +351,19 @@ pub(crate) fn syntax_encoding_scan_count() -> usize {
 }
 
 impl SyntaxPropertyEncoding {
+    /// Whether PATTERN holds a character that could be one of this
+    /// encoding's sentinels: on the registry path any character of the
+    /// registry's range (the translation reads the registry as it is at
+    /// compile time, which may hold entries this snapshot predates), on a
+    /// private table one of its own.  Such a pattern searches a private
+    /// encoding whose sentinels avoid it.
     fn uses_sentinel_in(&self, pattern: &str) -> bool {
-        pattern
-            .chars()
-            .any(|ch| self.sentinels.iter().any(|entry| entry.sentinel == ch))
+        match &self.sentinel_table {
+            SentinelTableKey::Registry => pattern.chars().any(in_sentinel_range),
+            _ => pattern.chars().any(|ch| {
+                in_sentinel_range(ch) && self.sentinels.iter().any(|entry| entry.sentinel == ch)
+            }),
+        }
     }
 
     fn original_sentinels(&self, original: char, case_fold: bool) -> Vec<char> {
@@ -2267,7 +2369,7 @@ fn linear_boundary_prefilter(rendered: &str) -> Option<LinearBoundaryPrefilter> 
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct CompiledElispRegexKey {
     pattern: String,
-    syntax_property_sentinels: Vec<SyntaxPropertySentinel>,
+    sentinel_table: SentinelTableKey,
     // search.c compile_pattern re-checks its cached entry with EQ against
     // the current syntax table before reuse; the analog here is the pair
     // of table identities plus the write stamps of what each rendering
@@ -2277,9 +2379,13 @@ struct CompiledElispRegexKey {
     // the definition generation observes interior mutation of shared
     // structure (setcar on a cons stored as a table entry bumps it), so
     // no route to changing what a class renders as escapes the key.
-    syntax_table_id: u64,
+    /// The hash of the sixteen class renderings of the current syntax
+    /// table (with its parents), which is all a syntax-dependent
+    /// translation reads from it: two tables rendering alike (a mode's
+    /// table copied into each buffer) share the compiled pattern, and a
+    /// write to the chain renders again and so changes the hash.
+    syntax_classes_hash: u64,
     category_table_id: u64,
-    syntax_chain: crate::lisp::eval::SyntaxChainSignature,
     category_generation: u64,
     case_generation: u64,
     definition_generation: u64,
@@ -2295,37 +2401,68 @@ struct CompiledElispRegexKey {
 /// real-world test uses 351: with 256 entries every call recompiled).
 const COMPILED_ELISP_REGEX_CACHE_LIMIT: usize = 1024;
 
+struct CompiledElispRegexEntry {
+    compiled: Rc<CompiledElispRegex>,
+    last_used: u64,
+    /// How many registry entries the translation saw (0 off the
+    /// registry path).
+    registry_len: usize,
+}
+
 #[derive(Default)]
 struct CompiledElispRegexCache {
     entries: std::collections::HashMap<
         CompiledElispRegexKey,
-        (Rc<CompiledElispRegex>, u64),
+        CompiledElispRegexEntry,
         SampledBuildHasher,
     >,
     use_counter: u64,
 }
 
 impl CompiledElispRegexCache {
-    fn get(&mut self, key: &CompiledElispRegexKey) -> Option<Rc<CompiledElispRegex>> {
+    /// The entry for KEY when its translation saw at least NEEDED registry
+    /// entries (every haystack the key can meet is read correctly by a
+    /// translation that knows a prefix of the registry covering its
+    /// sentinels; a haystack using a newer sentinel compiles again).
+    fn get(
+        &mut self,
+        key: &CompiledElispRegexKey,
+        needed: usize,
+    ) -> Option<Rc<CompiledElispRegex>> {
         self.use_counter = self.use_counter.wrapping_add(1);
-        let (compiled, last_used) = self.entries.get_mut(key)?;
-        *last_used = self.use_counter;
-        Some(Rc::clone(compiled))
+        let entry = self.entries.get_mut(key)?;
+        if entry.registry_len < needed {
+            return None;
+        }
+        entry.last_used = self.use_counter;
+        Some(Rc::clone(&entry.compiled))
     }
 
-    fn insert(&mut self, key: CompiledElispRegexKey, compiled: Rc<CompiledElispRegex>) {
+    fn insert(
+        &mut self,
+        key: CompiledElispRegexKey,
+        compiled: Rc<CompiledElispRegex>,
+        registry_len: usize,
+    ) {
         self.use_counter = self.use_counter.wrapping_add(1);
         if self.entries.len() >= COMPILED_ELISP_REGEX_CACHE_LIMIT
             && !self.entries.contains_key(&key)
             && let Some(victim) = self
                 .entries
                 .iter()
-                .min_by_key(|(_, (_, last_used))| *last_used)
+                .min_by_key(|(_, entry)| entry.last_used)
                 .map(|(key, _)| key.clone())
         {
             self.entries.remove(&victim);
         }
-        self.entries.insert(key, (compiled, self.use_counter));
+        self.entries.insert(
+            key,
+            CompiledElispRegexEntry {
+                compiled,
+                last_used: self.use_counter,
+                registry_len,
+            },
+        );
     }
 }
 
@@ -2509,14 +2646,17 @@ fn fresh_syntax_encoding_entry(
     haystack: &std::rc::Rc<str>,
     pattern: &str,
 ) -> SyntaxEncodingCacheEntry {
+    let forbidden: HashSet<char> = haystack.chars().chain(pattern.chars()).collect();
+    let private_sentinels = forbidden.iter().any(|ch| in_sentinel_range(*ch));
     SyntaxEncodingCacheEntry {
         key,
         descriptors: crate::lisp::types::ConsMutationSnapshot::tree(&Value::Nil),
         categories: Vec::new(),
         substitutions: Vec::new(),
         sentinels: Vec::new(),
-        forbidden: haystack.chars().chain(pattern.chars()).collect(),
+        forbidden,
         next_sentinel: FIRST_SYNTAX_SENTINEL,
+        private_sentinels,
         encoding: None,
     }
 }
@@ -2564,27 +2704,37 @@ fn render_syntax_substitutions(
         if table_class == effective_class {
             continue;
         }
-        let sentinel = entry
-            .sentinels
-            .iter()
-            .find(|candidate| candidate.original == original && candidate.class == effective_class)
-            .map(|candidate| candidate.sentinel)
-            .unwrap_or_else(|| {
-                loop {
-                    let candidate = char::from_u32(entry.next_sentinel)
-                        .expect("plane-15 private-use sentinel is a valid character");
-                    entry.next_sentinel += 1;
-                    if !entry.forbidden.contains(&candidate) {
-                        entry.forbidden.insert(candidate);
-                        entry.sentinels.push(SyntaxPropertySentinel {
-                            original,
-                            class: effective_class,
-                            sentinel: candidate,
-                        });
-                        break candidate;
+        let sentinel = if entry.private_sentinels {
+            entry
+                .sentinels
+                .iter()
+                .find(|candidate| {
+                    candidate.original == original && candidate.class == effective_class
+                })
+                .map(|candidate| candidate.sentinel)
+                .unwrap_or_else(|| {
+                    loop {
+                        let candidate = char::from_u32(entry.next_sentinel)
+                            .expect("plane-15 private-use sentinel is a valid character");
+                        entry.next_sentinel += 1;
+                        if !entry.forbidden.contains(&candidate) {
+                            entry.forbidden.insert(candidate);
+                            entry.sentinels.push(SyntaxPropertySentinel {
+                                original,
+                                class: effective_class,
+                                sentinel: candidate,
+                            });
+                            break candidate;
+                        }
                     }
-                }
-            });
+                })
+        } else {
+            SENTINEL_REGISTRY.with(|registry| {
+                registry
+                    .borrow_mut()
+                    .sentinel_for(original, effective_class)
+            })
+        };
         entry.substitutions.push((offset, sentinel));
     }
 }
@@ -2597,7 +2747,25 @@ fn materialize_syntax_encoding(
     entry: &SyntaxEncodingCacheEntry,
 ) -> Option<std::rc::Rc<SyntaxPropertyEncoding>> {
     if entry.substitutions.is_empty() {
-        return None;
+        // Nothing to substitute.  On the registry path the haystack still
+        // reads through the registry's table, so a pattern compiled for
+        // it serves the encoded haystacks too (a `looking-at' from point
+        // 9 after one from point 1 compiles nothing new); a private
+        // table, or an empty registry, leaves the plain haystack.
+        if entry.private_sentinels {
+            return None;
+        }
+        return SENTINEL_REGISTRY.with(|registry| {
+            let registry = registry.borrow();
+            (!registry.entries.is_empty()).then(|| {
+                std::rc::Rc::new(SyntaxPropertyEncoding {
+                    haystack: std::rc::Rc::clone(haystack),
+                    sentinels: registry.entries.clone(),
+                    sentinel_table: SentinelTableKey::Registry,
+                    needed: 0,
+                })
+            })
+        });
     }
     let index = haystack_char_index(haystack);
     let mut encoded = String::with_capacity(haystack.len() + 3 * entry.substitutions.len());
@@ -2609,9 +2777,32 @@ fn materialize_syntax_encoding(
         byte = at + haystack[at..].chars().next().map_or(0, char::len_utf8);
     }
     encoded.push_str(&haystack[byte..]);
+    let (sentinels, sentinel_table, needed) = if entry.private_sentinels {
+        (
+            entry.sentinels.clone(),
+            SentinelTableKey::Private(entry.sentinels.clone()),
+            0,
+        )
+    } else {
+        SENTINEL_REGISTRY.with(|registry| {
+            let registry = registry.borrow();
+            (
+                registry.entries.clone(),
+                SentinelTableKey::Registry,
+                entry
+                    .substitutions
+                    .iter()
+                    .map(|(_, sentinel)| SentinelRegistry::index_of(*sentinel) + 1)
+                    .max()
+                    .unwrap_or(0),
+            )
+        })
+    };
     Some(std::rc::Rc::new(SyntaxPropertyEncoding {
         haystack: encoded.into(),
-        sentinels: entry.sentinels.clone(),
+        sentinels,
+        sentinel_table,
+        needed,
     }))
 }
 
@@ -2695,11 +2886,10 @@ fn replay_syntax_encoding(
     for &(from, to) in &ranges {
         let bytes = haystack_byte_at_char(haystack, from)..haystack_byte_at_char(haystack, to);
         for ch in haystack[bytes].chars() {
-            if entry
-                .sentinels
-                .iter()
-                .any(|sentinel| sentinel.sentinel == ch)
-            {
+            // A character in the sentinels' range could be mistaken for
+            // one (a registry entry or a private one): a fresh entry
+            // decides its table over the whole haystack.
+            if in_sentinel_range(ch) {
                 return false;
             }
             entry.forbidden.insert(ch);
@@ -2739,16 +2929,21 @@ fn assert_replay_matches_a_fresh_encoding(
     haystack: &std::rc::Rc<str>,
 ) {
     let canonical = |entry: &SyntaxEncodingCacheEntry| {
+        let registry = SENTINEL_REGISTRY.with(|registry| registry.borrow().entries.clone());
         entry
             .substitutions
             .iter()
             .map(|(offset, sentinel)| {
-                let class = entry
-                    .sentinels
+                let table = if entry.private_sentinels {
+                    &entry.sentinels
+                } else {
+                    &registry
+                };
+                let class = table
                     .iter()
                     .find(|candidate| candidate.sentinel == *sentinel)
                     .map(|candidate| (candidate.original, candidate.class))
-                    .expect("every substitution names a sentinel of its entry");
+                    .expect("every substitution names a sentinel of its table");
                 (*offset, class.0, class.1)
             })
             .collect::<Vec<_>>()
@@ -2961,6 +3156,96 @@ fn haystack_byte_at_char(haystack: &std::rc::Rc<str>, chars: usize) -> usize {
     haystack_char_index(haystack).byte_at_char(haystack, chars)
 }
 
+/// A buffer haystack that is the buffer's own text -- a multibyte buffer
+/// without extended characters in the span, the haystack not encoded for
+/// syntax properties -- converts between its character and byte offsets
+/// through the rope in logarithmic time, where the per-haystack index
+/// walked the whole text once per haystack: after every edit, for a
+/// `looking-at' in a large non-ASCII buffer, the length of the buffer
+/// (ucs-normalize-tests: a third of its run in that walk).
+#[derive(Clone)]
+struct PlainBufferSpan {
+    rope: ropey::Rope,
+    start_char: usize,
+    start_byte: usize,
+}
+
+impl PlainBufferSpan {
+    /// The span starting at buffer position START (1-based) of the current
+    /// buffer, when its haystack is the buffer's own text.
+    fn new(interp: &Interpreter, start: usize, end: usize, encoded: bool) -> Option<Self> {
+        if encoded
+            || !interp.buffer.is_multibyte()
+            || interp.buffer.has_extended_chars_in(start, end)
+        {
+            return None;
+        }
+        let rope = interp.buffer.text_rope();
+        let start_char = start.saturating_sub(1).min(rope.len_chars());
+        let start_byte = rope.char_to_byte(start_char);
+        Some(Self {
+            rope,
+            start_char,
+            start_byte,
+        })
+    }
+
+    fn byte_at_char(&self, chars: usize) -> usize {
+        let index = (self.start_char + chars).min(self.rope.len_chars());
+        self.rope.char_to_byte(index) - self.start_byte
+    }
+
+    fn char_at_byte(&self, byte: usize) -> usize {
+        let index = (self.start_byte + byte).min(self.rope.len_bytes());
+        self.rope.byte_to_char(index) - self.start_char
+    }
+}
+
+/// The byte at which character CHARS of a buffer haystack begins: through
+/// the span's rope when the haystack is the buffer's text, else through
+/// the haystack's index.  In test builds both are computed and compared.
+fn buffer_haystack_byte_at_char(
+    span: Option<&PlainBufferSpan>,
+    haystack: &std::rc::Rc<str>,
+    chars: usize,
+) -> usize {
+    match span {
+        Some(span) => {
+            let byte = span.byte_at_char(chars);
+            #[cfg(test)]
+            assert_eq!(
+                byte,
+                haystack_byte_at_char(haystack, chars),
+                "rope byte offset"
+            );
+            byte
+        }
+        None => haystack_byte_at_char(haystack, chars),
+    }
+}
+
+/// The number of characters before BYTE of a buffer haystack (see
+/// `buffer_haystack_byte_at_char').
+fn buffer_haystack_char_at_byte(
+    span: Option<&PlainBufferSpan>,
+    haystack: &std::rc::Rc<str>,
+    byte: usize,
+) -> usize {
+    match span {
+        Some(span) => {
+            let chars = span.char_at_byte(byte);
+            #[cfg(test)]
+            assert_eq!(
+                chars,
+                haystack_char_at_byte(haystack, byte),
+                "rope char offset"
+            );
+            chars
+        }
+        None => haystack_char_at_byte(haystack, byte),
+    }
+}
+
 fn build_buffer_regexp_haystack(
     interp: &Interpreter,
     start: usize,
@@ -3040,6 +3325,20 @@ fn compile_elisp_regex_with_syntax_properties(
     )
 }
 
+/// The hash of the current syntax table's class renderings (see
+/// `CompiledElispRegexKey::syntax_classes_hash'), rendering them once per
+/// table and chain state when not yet cached.
+fn syntax_classes_fingerprint(interp: &Interpreter) -> u64 {
+    let table_id = interp.current_syntax_table_id();
+    if let Some(hash) = interp.cached_regexp_syntax_classes_hash(table_id) {
+        return hash;
+    }
+    rendered_table_syntax_classes(interp, None);
+    interp
+        .cached_regexp_syntax_classes_hash(table_id)
+        .unwrap_or(0)
+}
+
 fn compile_elisp_regex_with_case_fold(
     interp: &Interpreter,
     pattern: &StringLike,
@@ -3068,11 +3367,11 @@ fn compile_elisp_regex_with_case_fold(
         // sentinel scalar is intentionally reused by separate searches, so
         // omitting this mapping lets one buffer poison another's compiled
         // regexp cache entry.
-        syntax_property_sentinels: encoding
-            .map(|encoding| encoding.sentinels.clone())
-            .unwrap_or_default(),
-        syntax_table_id: if depends_on_tables {
-            interp.current_syntax_table_id()
+        sentinel_table: encoding
+            .map(|encoding| encoding.sentinel_table.clone())
+            .unwrap_or(SentinelTableKey::Plain),
+        syntax_classes_hash: if depends_on_syntax_table {
+            syntax_classes_fingerprint(interp)
         } else {
             0
         },
@@ -3089,11 +3388,6 @@ fn compile_elisp_regex_with_case_fold(
         // recompiled cc-mode's largest patterns (hundreds of milliseconds
         // each under the regex crate's unrolling of `\\{,1000\\}') each
         // time any mode wrote any syntax table.
-        syntax_chain: if depends_on_syntax_table {
-            interp.syntax_table_chain_signature(interp.current_syntax_table_id())
-        } else {
-            Vec::new()
-        },
         category_generation: if depends_on_category_table {
             interp.category_context_generation()
         } else {
@@ -3127,9 +3421,32 @@ fn compile_elisp_regex_with_case_fold(
         at_absolute_start,
         case_fold,
     };
-    if let Some(compiled) = COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().get(&key)) {
+    let needed = encoding.map_or(0, |encoding| encoding.needed);
+    if let Some(compiled) =
+        COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().get(&key, needed))
+    {
         return Ok(compiled);
     }
+    #[cfg(test)]
+    ELISP_REGEX_COMPILE_COUNT.with(|count| count.set(count.get() + 1));
+    // On the registry path the translation reads the whole registry as it
+    // is now, so the entry serves every haystack encoded so far.
+    let registry_snapshot = match key.sentinel_table {
+        SentinelTableKey::Registry => SENTINEL_REGISTRY.with(|registry| {
+            let registry = registry.borrow();
+            Some(SyntaxPropertyEncoding {
+                haystack: std::rc::Rc::from(""),
+                sentinels: registry.entries.clone(),
+                sentinel_table: SentinelTableKey::Registry,
+                needed: registry.entries.len(),
+            })
+        }),
+        _ => None,
+    };
+    let registry_len = registry_snapshot
+        .as_ref()
+        .map_or(0, |snapshot| snapshot.sentinels.len());
+    let encoding = registry_snapshot.as_ref().or(encoding);
     validate_elisp_regex(&pattern.text)?;
     enforce_elisp_repeat_limit(&pattern.text)?;
     let translated = translate_elisp_regex_with_point(
@@ -3152,7 +3469,11 @@ fn compile_elisp_regex_with_case_fold(
         linear_boundary_prefilter: linear_boundary_prefilter(&rendered),
         capture_mapping: elisp_capture_mapping(&pattern.text)?,
     });
-    COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().insert(key, Rc::clone(&compiled)));
+    COMPILED_ELISP_REGEX_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(key, Rc::clone(&compiled), registry_len)
+    });
     Ok(compiled)
 }
 
@@ -3378,16 +3699,16 @@ fn set_match_data_in_haystack(
     interp: &mut Interpreter,
     start_pos: usize,
     haystack: &std::rc::Rc<str>,
+    span: Option<&PlainBufferSpan>,
     captures: &fancy_regex::Captures<'_>,
     capture_mapping: &[usize],
     source_buffer_id: Option<u64>,
 ) {
-    let index = haystack_char_index(haystack);
     interp.last_match_data = Some(match_data_from_captures_with(
         start_pos,
         captures,
         capture_mapping,
-        |byte| index.char_at_byte(haystack, byte),
+        |byte| buffer_haystack_char_at_byte(span, haystack, byte),
     ));
     interp.last_match_data_buffer_id = source_buffer_id;
 }
@@ -4098,15 +4419,22 @@ pub(super) fn looking_at_impl(
     };
     let syntax_encoding =
         encode_syntax_property_haystack(interp, env, haystack_start, &haystack, &pattern.text);
+    // `\`' is the start of the haystack when the haystack starts at the
+    // accessible region's start, wherever point is: a match anchored at
+    // point can only contain it when point is there.  (Keyed on point
+    // before, a pattern compiled for every `looking-at' at two places.)
     let regex = compile_elisp_regex_with_syntax_properties(
         interp,
         &pattern,
         env,
         point_assertion,
-        pos == interp.buffer.point_min(),
+        haystack_start == interp.buffer.point_min(),
         syntax_encoding.as_deref(),
         RegexpCategoryScope::CurrentBuffer,
     )?;
+    let substituted = syntax_encoding
+        .as_ref()
+        .is_some_and(|encoding| !std::rc::Rc::ptr_eq(&encoding.haystack, &haystack));
     let haystack = syntax_encoding
         .as_ref()
         .map(|encoding| encoding.haystack.clone())
@@ -4115,12 +4443,18 @@ pub(super) fn looking_at_impl(
     // character, but a sentinel can occupy more UTF-8 bytes than the ASCII
     // character it replaces.  Derive the regex engine's byte offset from the
     // final haystack, never from the pre-encoding string.
+    let span = PlainBufferSpan::new(
+        interp,
+        haystack_start,
+        interp.buffer.point_max(),
+        substituted,
+    );
     let search_offset = if has_left_context {
         haystack.chars().next().map(char::len_utf8).unwrap_or(0)
     } else if point_asserted {
         0
     } else {
-        haystack_byte_at_char(&haystack, pos - haystack_start)
+        buffer_haystack_byte_at_char(span.as_ref(), &haystack, pos - haystack_start)
     };
     if let Some(captures) = regex
         .captures_from_pos(&haystack, search_offset)
@@ -4133,6 +4467,7 @@ pub(super) fn looking_at_impl(
                 interp,
                 haystack_start,
                 &haystack,
+                span.as_ref(),
                 &captures,
                 regex.capture_mapping(),
                 Some(interp.current_buffer_id()),
@@ -4270,17 +4605,21 @@ pub(super) fn buffer_regex_search(
             &pattern,
             env,
             r"\A",
-            interp.buffer.point() == interp.buffer.point_min(),
+            haystack_start == interp.buffer.point_min(),
             syntax_encoding.as_deref(),
             RegexpCategoryScope::CurrentBuffer,
         )?;
+        let substituted = syntax_encoding
+            .as_ref()
+            .is_some_and(|encoding| !std::rc::Rc::ptr_eq(&encoding.haystack, &haystack));
         let haystack = syntax_encoding
             .as_ref()
             .map(|encoding| encoding.haystack.clone())
             .unwrap_or(haystack);
         // `captures_from_pos' takes a BYTE offset; positions are chars.
+        let span = PlainBufferSpan::new(interp, haystack_start, limit, substituted);
         let start_chars = start.saturating_sub(haystack_start);
-        let mut search_offset = haystack_byte_at_char(&haystack, start_chars);
+        let mut search_offset = buffer_haystack_byte_at_char(span.as_ref(), &haystack, start_chars);
         for _ in 0..count {
             if posix {
                 let Some(selected) = posix_longest_match(
@@ -4336,11 +4675,13 @@ pub(super) fn buffer_regex_search(
             let Some(matched) = captures.get(0) else {
                 break;
             };
-            let pos = haystack_start + haystack_char_at_byte(&haystack, matched.end());
+            let pos = haystack_start
+                + buffer_haystack_char_at_byte(span.as_ref(), &haystack, matched.end());
             set_match_data_in_haystack(
                 interp,
                 haystack_start,
                 &haystack,
+                span.as_ref(),
                 &captures,
                 regex.capture_mapping(),
                 Some(interp.current_buffer_id()),

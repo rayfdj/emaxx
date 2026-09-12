@@ -1102,7 +1102,16 @@ impl Interpreter {
                             func,
                         ])));
                     };
-                    match self.load_autoload_target(&file, env) {
+                    // The arguments are held here, in no Lisp object, while
+                    // the file loads and runs: a collection inside the
+                    // load must reach them (GNU's conservative stack scan
+                    // does; `set-auto-mode' called a search with a marker
+                    // bound through an autoload, and the marker was
+                    // unchained by the load's collection).
+                    let loaded = self.with_lisp_stack_roots(&args, |interp| {
+                        interp.load_autoload_target(&file, env)
+                    });
+                    match loaded {
                         Ok(_) => self.lookup_function(name, env)?,
                         // Only a genuinely file-less environment (unit tests
                         // with no resolvable Lisp tree) may fall back to a

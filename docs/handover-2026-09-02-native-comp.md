@@ -202,6 +202,16 @@ Checkpoint 19o (2026-09-12, for main): the obarray enumeration behind
 re-interning every name (22 to 13 ms, GNU 3.6); the per-file floor
 of the Mac's list (232 files at 30 ms against 3) is otherwise the
 per-call cost of `ert-select-tests`' walk, open.
+Checkpoint 19q (2026-09-12, for main): `float-time` is timefns.c's
+frac_to_double and `time-add`/`time-subtract` its time_arith
+(timefns-tests 1.9 to 1.0 s, GNU 0.16); buffer haystacks convert the
+engine's offsets through the rope (ucs-normalize-tests 3.5 to 1.6 s,
+GNU 0.17); the compiled-regexp key reads the rendered-class hash and
+a per-thread sentinel registry (cperl-mode-tests warm 6.8 to 1.0 s,
+GNU 0.12; its cold run, like GNU's, compiles the four trampolines
+`ert-with-message-capture` triggers, 1.2 s each here against GNU's
+0.21, open).  The audit of 19n to 19q fixed the labeled restrictions'
+bound markers (unmarked, and of the wrong insertion type).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

@@ -21,6 +21,10 @@ use crate::lisp::primitives::pdumper::image::RootSlot;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "buffer_mark_marker_ids",
+        "buffer.c: BVAR (b, mark) is a slot of each buffer object, which the mark phase reaches through the buffer; here the relation from buffer to mark marker is rebuilt by install_marker from each marker record's mark buffer, which the image writes per marker",
+    ),
+    (
         "stack_roots",
         "eval.c:init_eval_once_for_pdumper recreates the specpdl and bytecode stacks; scoped Rust execution roots belong to live call frames, not the image; Fdump_emacs_portable refuses other live Lisp threads",
     ),
@@ -252,10 +256,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("next_marker_id", "carried in the remembered scalars"),
     ("markers", "installed per marker record"),
     ("markers_by_buffer", "the index install_marker keeps"),
-    (
-        "buffer_mark_marker_ids",
-        "the relation install_marker keeps",
-    ),
     ("category_context_generation", "a cache generation"),
     ("case_context_generation", "a cache generation"),
     ("regexp_syntax_class_cache", "a cache"),

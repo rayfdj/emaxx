@@ -2888,6 +2888,31 @@ fn parse_runtime_keymap_public_view(
         }
     }
     parsed.bindings.extend(after_prompt);
+    // A full keymap's character bindings live in its char-table, and
+    // `define-key' keeps a sparse entry beside each one it stores there
+    // (the lookups' prefix walk and the enumerations read the sparse
+    // projection); a record rebuilt from its view carries the same
+    // entries, one per single-character effective range, ahead of the
+    // list's own (the char-table comes first in the view, and wins).
+    // Without them a store into the list dropped every character prefix
+    // from `key-binding' (C-x C-f, M-x) though `lookup-key' still found
+    // it through the table.
+    if let Value::CharTable(table_id) = parsed.char_table
+        && let Some(ranges) = interp.char_table_effective_ranges(table_id)
+    {
+        let mut from_table = Vec::new();
+        for range in ranges {
+            if range.start != range.end || range.value.is_nil() || range.value == Value::T {
+                continue;
+            }
+            let entry = Value::cons(Value::Integer(i64::from(range.start)), range.value.clone());
+            if let Some(binding) = runtime_keymap_binding_from_public_entry(&entry, false)? {
+                from_table.push(binding);
+            }
+        }
+        from_table.extend(std::mem::take(&mut parsed.bindings));
+        parsed.bindings = from_table;
+    }
     Ok(parsed)
 }
 

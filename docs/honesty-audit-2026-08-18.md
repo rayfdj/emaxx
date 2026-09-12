@@ -10360,3 +10360,245 @@ floor, which the profile spreads over the evaluator (no symbol above
 5%).  The 232 files stay over 2x until that floor drops; they are one
 theme with one cause, and this checkpoint closes only the part that
 was not the floor.
+## 2026-09-12 Checkpoint 19q: time values as timefns.c computes them, buffer offsets through the rope, the compiled-regexp key on what a translation reads
+
+*What prompted it.*  The targeted profiles from the Mac's list:
+timefns-tests (11.1x; on Linux 2.0 s of test phase against GNU
+0.12), ucs-normalize-tests (24.6x; 3.3 s against 0.12),
+cperl-mode-tests (24.2x; 7.0 s against 0.12 measured with GNU's
+trampolines already in its cache, see below), puny-tests (24.8x;
+95 ms against 12).
+
+*timefns.*  The two slow tests were `float-time-precision' (1.39 s
+against 0.084) and `time-arith-tests' (0.30 against 0.049).
+`float-time' of a (TICKS . HZ) pair divided HZ by two in a loop to
+find its power-of-two exponent (1,074 bignum divisions for a
+subnormal's clock, ten thousand times in that test) and otherwise
+divided two doubles each rounded from a bignum, which rounds twice.
+It is now timefns.c's frac_to_double: the quotient scaled to 53 or 54
+bits by shifting the numerator or the denominator, truncating
+division, the increment that makes truncation round to nearest even
+with the remainder as the sticky bit, one `scalbn' (musl's stepwise
+scaling, so a subnormal result rounds once).  `time-add' and
+`time-subtract' are time_arith: a (TICKS . HZ) is kept as given (the
+reduced form `(1 . 5)' for `(2 . 10)' was a divergence), a (HI LO US
+PS) list decodes on its own clock by length, a float scales by the
+power of two that makes it exact, operands on one clock add directly
+and otherwise combine over the lcm with gcd normalization and the
+rescale that keeps the result at least as precise as either operand;
+the result is an integer at HZ 1, the list form under
+`current-time-list' for list operands with an exact list form, else
+the pair.  `time-convert' of nil keeps the nanosecond clock.  The
+printer starts a subnormal at one significant digit as ftoastr does
+(`5e-324', not `4.94065645841247e-324'), found by the control.
+
+*Buffer searches.*  A buffer haystack that is the buffer's own text
+(multibyte, no extended characters in the range, no syntax-property
+substitution) converts the engine's byte offsets to positions and
+back through the rope's own indexes instead of a per-haystack index
+built by scanning the copy; a test build compares every conversion
+with the index.  ucs-normalize's tests search and edit a buffer of
+tens of thousands of non-ASCII characters between searches, and the
+index was rebuilt after every edit.
+
+*The compiled-regexp key.*  cperl-mode's buffers each carry a copy
+of its syntax table and `syntax-table' properties; the trace of one
+run of its tests showed 1,777 compiles of 265 patterns, the key
+differing only in the syntax table's identity and in the encoding's
+sentinel table (each encoding numbered its own sentinels, so the same
+pattern over two buffers compiled twice).  search.c's compile_pattern
+keys on the syntax table object by EQ and compiles in microseconds;
+the regex crate compiles the largest cperl patterns (50 to 97 KB
+rendered) in 40 to 57 ms, so the key now reads what the translation
+reads: the FNV hash of the table's sixteen rendered classes (cached
+per table and chain signature, so a write to the chain renders and
+hashes again), and one sentinel registry per thread -- one plane-15
+character per (character, effective class) pair, assigned once and
+kept, so every buffer's encoding renders a pair with the same
+character.  A pattern is translated against the whole registry as it
+stands, the cache entry records how many entries that was, and a
+haystack whose substitutions reach a newer entry compiles the pattern
+again (the registry only grows and its first N entries never change).
+A haystack or pattern holding a character in the registry's range
+gets a private table, as every encoding had, and a pattern holding
+one refuses a registry encoding.  Two more key fields were wider than
+what they guard: `\\`' was keyed on point instead of on whether the
+haystack starts at the accessible region's start (the translation is
+the same wherever point is: a match anchored at point cannot contain
+the buffer's start unless point is there), and the case generation
+advanced on every write to a char-table that is not a syntax or
+category table -- `regexp-opt' building its `regexp-opt-charset'
+table between two searches recompiled every case-folded pattern.  It
+advances on writes to case tables (`case-table', `case-table-up', or
+a table without a purpose, which casetab.c accepts as an extra slot).
+
+*Controls.*  `time_values_follow_timefns_c' (34 values of
+`time-convert', `time-add', `time-subtract', `time-equal-p',
+`time-less-p' and `float-time', the oracle's);
+`float_time_rounds_as_frac_to_double' (47 fractions: quotients over
+2^53, ties, subnormal results, clocks that are no power of two,
+printed as the oracle prints them);
+`buffer_searches_convert_offsets_through_the_rope' (a Greek buffer:
+`looking-at', forward and backward searches, match data, a search
+after an insertion, the oracle's positions);
+`syntax_patterns_compile_once_across_buffers_with_like_tables' (two
+buffers with copies of one table and `syntax-table' properties: one
+compile, none for the second buffer, one after a write to a table,
+none for the other buffer again; match results the oracle's);
+`case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables'
+(a `regexp-opt-charset' table written between two case-folded
+searches compiles nothing, a write to the case table compiles again);
+the syntax-property controls of 19j to 19m, whose replay assertion
+now resolves a sentinel through the registry.
+
+*Measured.*  The `emaxx-compat-run' phase of each file, run three
+times in one process (the first cold, the others warm), the
+checkpoint before (19o's tree) against this one and GNU on the same
+machine, quiet:
+
+| file | before, cold / warm | now, cold / warm | GNU, cold / warm |
+|---|---|---|---|
+| timefns-tests | 1,905 / 1,880 ms | 1,012 / 994 | 158 / 122 |
+| ucs-normalize-tests | 3,547 / 3,297 | 1,562 / 1,470 | 167 / 121 |
+| puny-tests | 527 / 96 | 516 / 86 | 87 / 11 |
+| cperl-mode-tests | 15,712 / 6,836 | 9,949 / 1,019 | 1,021 / 118 |
+| mhtml-mode-tests | 564 / 375 | 318 / 113 | 19 / 13 |
+| asm-mode-tests | 292 / 147 | 244 / 83 | 14 / 11 |
+
+cperl's warm run no longer compiles per buffer (6.8 s to 1.0);
+mhtml's and asm's warm runs are the per-file floor of 19o.  GNU's
+cold cperl run and emaxx's both compile the four trampolines below.
+
+*Found and open.*  cperl-mode-tests and perl-mode-tests:
+`ert-with-message-capture' (ert-x.el) advises `message', `prin1',
+`princ' and `print', and data.c's Ffset calls
+`comp-subr-trampoline-install' when a primitive is redefined; GNU's
+comp--final runs each trampoline's C side in a child Emacs, and the
+runner's fresh native-comp cache per run means every run compiles the
+four.  GNU pays 0.21 s a trampoline on this machine (its child boots
+in 0.04 s; a run of cperl-mode-tests with an empty cache 1.16 s), the
+Mac's GNU with its 94 ms cannot be compiling them (a Homebrew build
+without native compilation, or trampolines it finds); emaxx pays 1.2
+s each (the child's boot from the image 0.5 s, of which 65% is the
+kernel zeroing the pages the loader's object reconstruction touches,
+then comp.el's passes at the interpreter's speed) -- 4.7 s of the
+file's 10.2 s cold.  The registry's growth: 37 pairs appear over the
+run and a haystack using a newer pair than a pattern's translation
+saw compiles it again (539 compiles in the test phase, 2.5 s).  The
+per-file floor of 19o (asm-mode-tests 87 ms warm against 8,
+mhtml-mode-tests 120 against 19).  erc-sasl-tests (3.9 s against
+0.37): `aref' and `aset' on a string of raw bytes walk the text from
+its start (`string_char_code_at_in_place' through `chars().nth', and
+a `Vec<char>' of the whole string), deferred.  timefns' remainder
+(1.0 s against 0.12): the per-call floor and a bignum allocation per
+arithmetic step.  ucs-normalize's remainder (1.5 s against 0.12): the
+haystack copied after every edit.
+
+## 2026-09-12 Adversarial audit of checkpoints 19n to 19q
+
+Read against the C: each cache's key against what its computation
+reads, each control's expected values against the oracle's, each
+root the collector must reach.
+
+*Found and fixed (19p).*  The interpreter's list of a buffer's active
+labeled restrictions (`with-restriction' with a label, editfns.c's
+`labeled_restrictions' alist) marked its labels but not its bound
+markers, so a collection inside such a restriction detached them and
+the edits that followed left the restriction where it was; harmless
+while nothing was ever detached, wrong once 19p's sweep ran.  The
+mark phase reaches them.  The control written for it found a second
+divergence: the bounds were made with insertion type t, where
+Finternal__labeled_narrow_to_region records `point-min-marker' and
+`point-max-marker' (only save_restriction_save's end marker has
+insertion type t), so an insertion at the end bound extended the
+restriction (probed: `widen' inside it gave 501 against GNU's 500).
+Fixed, and `loaded_with_restriction_uses_the_shared_labeled_restriction_stack'
+(2026-08-13) had that 501 as its expectation -- the interpreter's own
+value, not the oracle's; it holds the oracle's now.  Control:
+`labeled_restriction_bounds_survive_a_collection'.
+
+*Found and fixed (19p, by the gate).*  A marker held only by the
+interpreter -- in no Lisp object -- through a Lisp call was not a
+root: GNU's collector scans the C stack conservatively and reaches
+such a marker, and before 19p nothing was ever unchained, so the gap
+had no effect.  The gate's eval_01 group failed on
+`normal_mode_uses_gnu_cookie_directory_interpreter_and_magic_precedence':
+`set-auto-mode' on an HTML buffer called a search with a marker
+bound, the search's function autoloaded mhtml-mode, and the load's
+collection unchained the marker before the call was made (the
+arguments sat in the caller's argument vector while the file
+loaded).  Reproduced deterministically with `gc-cons-threshold' at
+100.  The arguments of a call whose function autoloads are registered
+as stack roots while the file loads; so are the three bounds
+`delete-region' preserves through `before-change-functions', and the
+point marker `replace-buffer-contents' keeps across its edits (each
+found by reading every `make_marker' call in the interpreter).  The
+primitives' own arguments were reached already through the backtrace
+frames and the bytecode stack.  Controls:
+`markers_held_only_by_the_interpreter_survive_a_collection' (an
+autoloaded function called with a marker, its load consing under a
+low threshold; a `before-change-functions' hook that collects during
+`delete-region'),
+`normal_mode_survives_collections_during_its_autoloads' (the gate's
+shape).  The second gate run found the last such holder: the match
+data an autoload saves around its load (lread.c keeps it on the
+specpdl through record_unwind_save_match_data) sat in a Rust local
+through the load, and `set-match-data' on its unchained markers
+signaled; it is a registered root while the file loads.
+
+*Found and fixed (19n, by the gate).*  `require_edmacro_supports_edmacro_parse_keys_cases'
+failed in the gate's template-cloned interpreters: `edmacro-parse-keys'
+asks `(key-binding [?\M-x])', which answered nil there while
+`lookup-key' on the same map found `execute-extended-command'.  A
+full keymap's character bindings live in its char-table, and
+`define-key' keeps a sparse entry beside each one it stores there;
+the lookups' prefix walk (`key-binding' through C-x or ESC) and the
+enumerations read the sparse projection.  19n rebuilds a record from
+its view when its snapshot is missing (a clone) or a store reached
+the view, and the rebuilt record carried only the char-table, so
+every character prefix vanished from `key-binding' -- in any
+interpreter after a `setcar' into a full keymap's list (probed:
+`(setcar (cdr global-map) (cadr global-map))' then `(key-binding [24
+6])' nil against GNU's `find-file').  The rebuild now carries one
+sparse entry per single-character effective range of the table,
+ahead of the list's own, as `define-key' leaves them.  Control:
+`a_store_into_a_full_keymaps_list_keeps_its_character_prefixes'
+(the oracle's values).  Seen beside it and recorded open: `(keymapp
+'ESC-prefix)' is nil against GNU's t (get_keymap follows the symbol's
+function), and `where-is-internal' reports `[27 120]' where GNU
+reports `[134217848]' (the meta character); both predate 19n.
+
+*Found and fixed (19q).*  A pattern holding a character of the
+registry's range checked it against the encoding's snapshot of the
+registry, which may predate entries the translation (against the
+registry as it stands) would treat as sentinels; on the registry path
+any such character now sends the pattern to a private encoding.
+
+*Checked and unchanged.*  19n: the keymap view snapshot is a
+mutation watch over every cell of the view including the parent's
+tail; the two divergences recorded open there (a single-character
+symbol event folding into the character, an element keymap taken as
+the parent) predate 19n and remain recorded, the key-description
+model being a checkpoint of its own.  19o: the enumeration's order
+and exclusions are unchanged (`is_visible_symbol_name' is
+`visible_symbol_name (name) == name'), and the objects it hands out
+are the interned ones the name table would have given.  19p: the
+roots outside the Lisp graph are the buffer marks, the process marks,
+the specpdl's excursions and restrictions, the VM's, the undo lists,
+and now the active labeled restrictions; windows keep positions, not
+markers.  19q: frac_to_double against timefns.c line by line
+(scaling, the two rounding branches, `mpz_get_d''s truncation, one
+`scalbn'); time_arith's result form; the three fields dropped from
+the regexp key (table identity, chain, per-encoding sentinels) are
+each covered by what replaced them (the rendered-class hash cached
+per table and chain, the registry coverage), and the two narrowed
+(`\\`' on the haystack's start, the case generation on case tables)
+guard exactly what their translations read.
+
+*Not a finding, recorded.*  The tests that compare file permissions
+(`file_writable_p_is_nil_for_missing_files_in_unwritable_directories',
+`save_buffer_skips_unmodified_and_unchanged_files') and the
+charset-property printer control fail when run as root under the C
+locale; the gate runs them as the `emaxx' user with the grouped
+gate's locale, where they pass, and they passed there before and
+after.
