@@ -2841,6 +2841,18 @@ type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvB
 
 type OrderedNameIndex = HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>;
 
+/// The obarray enumeration as last built, with the ids it holds: when
+/// only the interned list has grown since (the reader interning new
+/// names, the common case during a compile), the new names are
+/// appended instead of the tables being walked again (map_obarray walks
+/// one vector).
+#[derive(Clone)]
+pub(crate) struct KnownSymbolsCache {
+    pub(crate) key: KnownSymbolsKey,
+    pub(crate) symbols: Rc<Vec<crate::lisp::types::SymbolName>>,
+    pub(crate) seen: HashSet<u32, crate::lisp::types::IdentityBuildHasher>,
+}
+
 /// The sizes of the tables the obarray enumeration is drawn from, and the
 /// removal epoch: equal keys mean an equal enumeration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5007,7 +5019,8 @@ pub struct InterpreterState {
     /// `get' reaches a plist through the symbol, as XSYMBOL (sym)->u.s.plist
     /// does, not through a hash of its name.  Cleared whenever positions
     /// shift.
-    symbol_properties_by_id: RefCell<HashMap<u32, usize, crate::lisp::types::IdentityBuildHasher>>,
+    symbol_properties_by_id:
+        RefCell<HashMap<u32, Option<usize>, crate::lisp::types::IdentityBuildHasher>>,
     /// Symbols explicitly interned into the standard obarray.
     interned_symbols: Vec<crate::lisp::types::SymbolName>,
     /// The obarray's symbol vector as `mapatoms' last enumerated it, with
@@ -5015,8 +5028,7 @@ pub struct InterpreterState {
     /// GNU walks its one obarray table in place; Emaxx draws the
     /// enumeration from several name tables, so the enumeration is kept
     /// until one of them changes.
-    known_symbols_cache:
-        RefCell<Option<(KnownSymbolsKey, Rc<Vec<crate::lisp::types::SymbolName>>)>>,
+    known_symbols_cache: RefCell<Option<KnownSymbolsCache>>,
     /// Bumped by every removal from the tables the obarray enumeration
     /// reads (a removal followed by an insertion leaves their sizes alone).
     obarray_epoch: u64,

@@ -504,14 +504,26 @@ impl Interpreter {
     /// The plist position of SYMBOL by its id, learning it from the name
     /// index on the first lookup.
     fn symbol_property_index_of(&self, symbol: &SymbolName) -> Option<usize> {
-        if let Some(index) = self.symbol_properties_by_id.borrow().get(&symbol.id()) {
-            return Some(*index);
+        if let Some(cached) = self.symbol_properties_by_id.borrow().get(&symbol.id()) {
+            return *cached;
         }
-        let index = self.symbol_property_index(symbol.as_str())?;
+        // A symbol without a plist (most) is remembered as such; a new
+        // plist clears the cache.
+        let index = self.symbol_property_index(symbol.as_str());
         self.symbol_properties_by_id
             .borrow_mut()
             .insert(symbol.id(), index);
-        Some(index)
+        index
+    }
+
+    /// A symbol's first plist entry: the position cache learns it (a
+    /// cached "no plist" for the symbol would otherwise stand).
+    fn note_symbol_plist_added(&mut self, name: &str, index: usize) {
+        if let Some(id) = SymbolName::id_of(name) {
+            self.symbol_properties_by_id
+                .borrow_mut()
+                .insert(id, Some(index));
+        }
     }
 
     fn rebuild_symbol_properties_index(&mut self) {
@@ -605,6 +617,7 @@ impl Interpreter {
             Value::list([Value::Symbol(property.to_string().into()), value]),
         ));
         self.symbol_properties_index.insert(name.to_string(), index);
+        self.note_symbol_plist_added(name, index);
     }
 
     pub fn intern_symbol_name(&mut self, name: &str) {
@@ -866,6 +879,7 @@ impl Interpreter {
             self.symbol_properties
                 .push((name.to_string(), Self::stored_value(plist.clone())));
             self.symbol_properties_index.insert(name.to_string(), index);
+            self.note_symbol_plist_added(name, index);
         }
         Ok(plist)
     }

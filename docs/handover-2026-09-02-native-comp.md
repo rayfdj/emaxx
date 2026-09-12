@@ -363,6 +363,46 @@ itself: RefCell borrows and Value clones per edge), the census of
 string objects and closures still walked, the difference in what is
 consed per compile.
 
+### Where comp-tests.el's time goes now (same day, checkpoint 25)
+
+comp-tests.el: 177/177, test phase 75.7 s wall on this box after the
+checkpoints above (97.5 s at the start of the day; GNU measured the
+same hour on the same box 20.3 s, its 14.3 s being an earlier, quieter
+reading).  The remaining factor is 3.7x, and it is attributed, not
+guessed:
+
+- A `comp-tests-ret-type-spec-N' test (there are about eighty) costs
+  746 M instructions of Lisp in the test process (callgrind on three
+  tests against one, differenced and halved; `tools/perf' has the
+  method), where the profile is the evaluator floor: the VM's operand
+  loop 151 M, its activation prologue and epilogue 85 M, the Ffuncall
+  layers 108 M, primitive dispatch by name (`prim', each module's
+  `match name') 85 M, `get' 23 M, the obarray enumeration for
+  `comp--all-classes''s four `mapatoms' 29 M, `Value' clone and drop
+  58 M.  GNU's equivalent is the 332 against 1,630 of the call loop.
+- Each test's `native-compile' runs comp.el's final pass in a child
+  Emacs, as GNU's does (comp--final, `-no-comp-spawn'); the child's boot
+  is 813 M instructions (GNU 157 M) and its `(require 'comp)' 1,025 M
+  (GNU 341 M): the loader materializing the image's objects, and the
+  same evaluator floor loading comp's byte code.
+- The gcc toolchain (as, collect2, ld) the child runs is the same five
+  spawns on both sides.
+
+Small things measured and taken on the way: `get' remembers a symbol
+without a plist by id (a `put' teaches the cache; the misses hashed
+the name every time), the obarray enumeration appends the tables' new
+names when nothing was removed since it was built (correct, and no
+effect on the compile, whose tables see a removal between
+`mapatoms' calls, so it walks them: 29 M a test remains), and the two
+scans over a loaded file's text copy runs instead of bytes
+(`preprocess_lazy_doc_source' 64 M to 23 M for comp's files).
+
+What would close the rest is structural and is the symbol-objects
+document's plan: stage B, a subr's function pointer instead of a
+string match per primitive call (85 M a test); stage A2, the function
+cell on the symbol; then the value representation.  None of it is a
+day's work, and none of it is faked here.
+
 ### The parity gate
 
 `tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then
