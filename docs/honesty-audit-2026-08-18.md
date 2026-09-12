@@ -9937,3 +9937,26 @@ edits 15%, `SymbolName::id_of' 11% (name-keyed reads).  A rebuilt
 encoding after every edit at 3.5 ms in an 80 KB buffer: an encoding
 that follows the edited interval alone would be the next step for
 buffers edited between searches.
+
+## 2026-09-12 Checkpoint 19k: the collector's mark sets hash by identity
+
+*What prompted it.*  fns-tests-sort (a `sort' of 100,000 elements with
+a Lisp predicate) ran in 20 s against GNU's 1.6: 71% in
+`LispReachability::mark', a quarter of the whole run in the SipHash
+inserts of the marker's visited sets, which held every reached
+address in std `HashSet's with the default hasher.  alloc.c's mark bit
+is a flag on the object.
+
+*What changed.*  The visited sets hash by identity (`IdentityHasher':
+the address or id mixed once), the symbol set with FNV, and the record
+census and finalizer sets handed to the sweep carry the same type.
+
+*Measured.*  `garbage-collect' 115 to 102 ms on the loaded image (GNU
+10.6); fns-tests-sort 17.6 to 17.0 s (GNU 1.6).  A tenth: the rest of
+the collection is the mark walk itself -- one hash insert per reached
+object into sets rebuilt every collection (`reserve_rehash' 5%), the
+symbol names by text, the weak-table and native-heap passes -- against
+GNU's mark bit and sweep.  The per-collection cost, times the
+collections a consing loop triggers at `gc-cons-threshold' (800 KB,
+as GNU), is what keeps the sort test at 10x; that is the D20
+collector item, not closed here.

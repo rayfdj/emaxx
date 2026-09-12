@@ -1306,7 +1306,7 @@ impl Interpreter {
     /// alloc.c:queue_doomed_finalizers, run after the mark phase and
     /// before the weak-table sweep: an unreached finalizer object with a
     /// non-nil function leaves `finalizers' for `doomed_finalizers'.
-    pub(crate) fn queue_doomed_finalizers(&mut self, live: &std::collections::HashSet<u64>) {
+    pub(crate) fn queue_doomed_finalizers(&mut self, live: &crate::lisp::eval::MarkedIds) {
         let mut doomed = Vec::new();
         self.finalizer_functions.retain(|(id, function)| {
             if live.contains(id) || function.is_nil() {

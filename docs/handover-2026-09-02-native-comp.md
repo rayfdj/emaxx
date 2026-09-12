@@ -176,6 +176,8 @@ the reap (the Mac python-tests.el exit hang; Mac verification pending).
 Checkpoint 19j (2026-09-12, for main): the syntax-property encoding is
 shared across a buffer state under its authorities; pattern maps hash a
 sample of the pattern (semantic-fmt-utest 75 to 51 s, GNU 0.83).
+Checkpoint 19k (2026-09-12, for main): the collector's mark sets hash by
+identity (`garbage-collect` 115 to 102 ms, GNU 10.6).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

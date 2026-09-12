@@ -3055,34 +3055,40 @@ pub(crate) const GNU_BUFFER_VECTOR_SLOTS: usize = 123;
 pub(crate) const GNU_OVERLAY_VECTOR_SLOTS: usize = 3;
 pub(crate) const GNU_CHAR_TABLE_VECTOR_SLOTS: usize = 68;
 
+/// The mark bits of one collection, keyed by object address or id.  The
+/// sets hash by identity (alloc.c's mark bit is a flag on the object; a
+/// SipHash of every visited address made the mark phase a quarter hashing).
+type MarkedAddresses = HashSet<usize, crate::lisp::types::IdentityBuildHasher>;
+pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher>;
+
 #[derive(Default)]
 struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
-    big_integers: HashSet<usize>,
-    floats: HashSet<usize>,
-    strings: HashSet<usize>,
-    string_objects: HashSet<usize>,
-    symbols: HashSet<String>,
-    conses: HashSet<usize>,
-    vectors: HashSet<usize>,
-    lambdas: HashSet<usize>,
-    buffers: HashSet<usize>,
-    markers: HashSet<u64>,
-    overlays: HashSet<u64>,
-    char_tables: HashSet<u64>,
-    frames: HashSet<u64>,
-    terminals: HashSet<u64>,
-    records: HashSet<u64>,
-    finalizers: HashSet<u64>,
-    reader_forms: HashSet<usize>,
+    big_integers: MarkedAddresses,
+    floats: MarkedAddresses,
+    strings: MarkedAddresses,
+    string_objects: MarkedAddresses,
+    symbols: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
+    conses: MarkedAddresses,
+    vectors: MarkedAddresses,
+    lambdas: MarkedAddresses,
+    buffers: MarkedAddresses,
+    markers: MarkedIds,
+    overlays: MarkedIds,
+    char_tables: MarkedIds,
+    frames: MarkedIds,
+    terminals: MarkedIds,
+    records: MarkedIds,
+    finalizers: MarkedIds,
+    reader_forms: MarkedAddresses,
 }
 
 pub(crate) struct WeakHashReachability {
     pub(crate) tables: Vec<WeakHashTableReachability>,
-    pub(crate) live_records: HashSet<u64>,
+    pub(crate) live_records: MarkedIds,
     /// Finalizer objects the mark phase reached (alloc.c marks a reached
     /// `Lisp_Finalizer' as any pseudovector, and its function with it).
-    pub(crate) live_finalizers: HashSet<u64>,
+    pub(crate) live_finalizers: MarkedIds,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
@@ -4122,7 +4128,7 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn install_gc_record_census(&mut self, live_records: HashSet<u64>) {
+    pub(crate) fn install_gc_record_census(&mut self, live_records: MarkedIds) {
         self.gc_live_record_ids = live_records;
         self.gc_record_high_water = self.next_record_id;
         self.gc_has_record_census = true;
@@ -4952,7 +4958,7 @@ pub struct InterpreterState {
     /// host storage keeps IDs stable, but dead records must not contribute to
     /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
     /// were allocated after that collection and remain live until the next.
-    gc_live_record_ids: HashSet<u64>,
+    gc_live_record_ids: MarkedIds,
     gc_record_high_water: u64,
     gc_has_record_census: bool,
     /// Decoded byte-code programs indexed by record ID minus one — ids are
@@ -5928,7 +5934,7 @@ impl Interpreter {
             ]
             .into_iter()
             .collect(),
-            gc_live_record_ids: HashSet::new(),
+            gc_live_record_ids: HashSet::default(),
             gc_record_high_water: 0,
             gc_has_record_census: false,
             sqlite_handles: Vec::new(),
