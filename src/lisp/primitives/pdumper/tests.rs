@@ -425,6 +425,9 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
     }
 
     let root = std::env::temp_dir().join(format!("emaxx-pdump-process-{}", std::process::id()));
+    // A process id is recycled: a fixture left by an earlier run killed
+    // before its cleanup must not fail this one.
+    let _ = std::fs::remove_dir_all(&root);
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&root)

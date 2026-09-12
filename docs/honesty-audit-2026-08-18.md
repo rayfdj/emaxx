@@ -9804,7 +9804,8 @@ against GNU's pointer read); and the compat harness's
 `restore' of an isolated checkout takes a generated input from the
 source tree when the staged copy is gone, and names the file when both
 are (the Mac run stopped after print-tests.el on a missing staged
-etc/DOC).
+etc/DOC).  The fallback takes the source tree's file only when it still
+hashes as it did when staged, and errors naming the file otherwise.
 
 *Measured.*  gnutls-tests.el 76.4 to 9.7 s (GNU 1.2): the symmetric
 test 15.4 to 1.7 s (GNU 0.27), the AEAD test 60.9 to 8.0 s (GNU 0.92).
@@ -9828,3 +9829,40 @@ clippy clean before and after.  The focused runs before it: the
 GnuTLS, `aset', `aref', `equal', function-history, load-history and
 isolated-checkout tests (37 string tests, 16 history tests, 20 GnuTLS
 and harness tests), all passing.
+
+## 2026-09-12 Checkpoint 19i: process teardown hangs up and never blocks
+
+*What prompted it.*  On the operator's Mac, python-tests.el ran every
+test and then did not exit: a `sample' of the process showed the
+batch thread in `RunningProcess::drop' inside `Child::wait' (`wait4')
+for the whole sampling, under the interpreter's drop at the end of
+`run_batch_with_actions'.  The compat harness then killed it at its
+180 s test-phase timeout and reported the file as a timeout "after
+8501ms", the time at which the runner's report had been written.  The
+drop sent SIGKILL to the child and waited without bound while the
+pseudo-terminal's master ends (fields of the same struct, dropped
+after the `Drop' body) were still open, so a child blocked on that
+terminal was never released.  On Linux the same file exits in 15 s;
+the condition was not reproduced here.
+
+*What changed.*  process.c's `kill_buffer_processes', which
+`shut_down_emacs' runs, hangs up each subprocess through
+`process_send_signal (proc, SIGHUP, Qnil, 1)': the signal goes to the
+terminal's foreground group (TIOCGPGRP on the pty, else the child's
+own group), and GNU never waits for a child; those still alive when
+it exits go to the init process.  `RunningProcess::drop' now sends
+that hangup first, the same way; then closes the pseudo-terminal's
+master ends and the slave guard; then, emaxx's own (a Rust `Child'
+must be reaped, or a long test process accumulates zombies), SIGKILL
+and a reap bounded at two seconds, after which the child is left to
+the init process as GNU leaves every child.  The compat harness's
+timeout issue names both clocks when they differ: the phase's wall
+time, and the time at which the runner's report was written.  The
+control `interpreter_drop_releases_a_pty_child_that_ignores_hangup_and_never_blocks'
+drops an interpreter owning a pty child that ignores SIGHUP and writes
+without pause into a terminal nobody reads, and asserts the drop
+returns within five seconds with the child reaped.  That control
+passes on the pre-change code on Linux as well (Linux delivers SIGKILL
+to a process sleeping in a terminal write); it guards the contract,
+it does not reproduce Darwin.  The Mac run is the verification, and
+it is pending.

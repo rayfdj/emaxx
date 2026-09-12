@@ -170,6 +170,9 @@ Checkpoint 19h (2026-09-12, for main): GnuTLS is opened once per thread,
 `aset`/`aref`/`equal` on strings work in place (gnutls-tests.el 76 to
 9.7 s, GNU 1.2); the harness's checkout restore survives a missing
 staged input.
+Checkpoint 19i (2026-09-12, for main): process teardown sends SIGHUP to
+the terminal group as GNU does, closes the pty before reaping and bounds
+the reap (the Mac python-tests.el exit hang; Mac verification pending).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

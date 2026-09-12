@@ -2013,22 +2013,70 @@ impl Drop for RunningProcess {
     fn drop(&mut self) {
         // `Child' closes its pipe handles but deliberately leaves a running
         // child alive.  Every RunningProcess is owned by one interpreter, so
-        // dropping an uninstalled runtime after a later setup error—or
-        // dropping the interpreter itself—must terminate and reap it.
-        match self.child.try_wait() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+        // dropping an uninstalled runtime after a later setup error -- or
+        // dropping the interpreter itself -- must terminate and reap it.
+        //
+        // process.c's kill_buffer_processes, run by shut_down_emacs, hangs
+        // up the terminal's foreground group (process_send_signal with
+        // SIGHUP and CURRENT-GROUP) and never waits for anything; the
+        // children a leaving Emacs still has go to the init process.  The
+        // same hangup goes first here.  Reaping is emaxx's (a Rust Child
+        // must be waited for, or a long test process accumulates zombies),
+        // in an order that cannot block: the pseudo-terminal's master ends
+        // close before the wait, so a child stuck on the terminal (a REPL
+        // reading its input, output nobody drains any more) is released,
+        // and the wait is bounded -- a child not reaped by then is left to
+        // the init process, as GNU leaves every child.  A Darwin run of
+        // python-tests.el sat in an unbounded wait here, the terminal still
+        // open, for the harness's whole timeout.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let pid = self.child.id() as libc::pid_t;
+            let mut group = pid;
+            if let Some(input) = self.pty_input.as_ref() {
+                let mut foreground_group: libc::pid_t = -1;
+                // SAFETY: input is a live PTY descriptor and ioctl writes one
+                // pid_t into initialized caller-owned storage.
+                if unsafe {
+                    libc::ioctl(
+                        input.as_raw_fd(),
+                        libc::TIOCGPGRP,
+                        &mut foreground_group as *mut libc::pid_t,
+                    )
+                } == 0
+                    && foreground_group > 0
+                {
+                    group = foreground_group;
+                }
             }
+            if let Ok(None) = self.child.try_wait() {
+                // SAFETY: a signal to the child's own process group, which
+                // `setsid' made it lead (or the terminal's foreground group,
+                // as GNU addresses it); the pid is this Child's, unreaped.
+                unsafe {
+                    libc::kill(-group, libc::SIGHUP);
+                }
+            }
+        }
+        drop(self.pty_input.take());
+        drop(self.pty_output.take());
+        drop(self.pty_slave_guard.take());
+        match self.child.try_wait() {
+            Ok(Some(_)) => return,
             // The Unix status pump uses waitpid directly so it can observe
             // stop/continue transitions.  ECHILD here means that pump has
             // already reaped this PID; never signal a potentially reused PID.
-            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
-            Err(_) => {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => return,
+            Ok(None) | Err(_) => {}
+        }
+        let _ = self.child.kill();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while let Ok(None) = self.child.try_wait() {
+            if std::time::Instant::now() >= deadline {
+                break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 }

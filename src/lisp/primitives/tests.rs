@@ -11531,6 +11531,59 @@ fn dropping_an_interpreter_terminates_and_reaps_its_child() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn interpreter_drop_releases_a_pty_child_that_ignores_hangup_and_never_blocks() {
+    // The teardown contract for a child on a pseudo-terminal that neither
+    // reads nor exits on SIGHUP and writes without pause: the hangup goes
+    // to the terminal's foreground group as kill_buffer_processes sends
+    // it, the terminal closes before the reap, and the drop returns
+    // promptly with the child gone.  (A Darwin python-tests.el run sat in
+    // the old unbounded wait with the terminal still open.)
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let program = r#"
+        (make-process
+         :name "emaxx-drop-pty-child-contract"
+         :command (list shell-file-name "-c"
+                        "trap '' HUP; while :; do echo y; done")
+         :connection-type 'pty
+         :noquery t)"#;
+    let form = Reader::new(program)
+        .read_all()
+        .expect("read pty child-drop program")
+        .remove(0);
+    let process = interp
+        .eval(&form, &mut Vec::new())
+        .expect("create pty child for interpreter-drop lifecycle");
+    let process_id = interp
+        .resolve_process_id(&process)
+        .expect("resolve pty lifecycle child");
+    let pid = interp
+        .process_os_id(process_id)
+        .expect("pty lifecycle child has an operating-system pid") as libc::pid_t;
+    // Let the child fill the terminal's output buffer, which nobody reads.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let started = std::time::Instant::now();
+    drop(interp);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "interpreter drop took {elapsed:?} with a pty child blocked on its terminal"
+    );
+    // SAFETY: signal zero only queries whether PID still names a process.
+    let result = unsafe { libc::kill(pid, 0) };
+    assert_eq!(
+        result, -1,
+        "interpreter drop left pty child pid {pid} alive"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH),
+        "interpreter drop did not reap pty child pid {pid}"
+    );
+}
+
 #[test]
 fn buffer_file_name_primitive_observes_current_buffer_dynamic_binding() {
     let program = r#"(with-temp-buffer

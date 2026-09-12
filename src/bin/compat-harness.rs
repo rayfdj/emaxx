@@ -2069,16 +2069,36 @@ fn invalidate_timed_out_comparison(
     // second call adds zero.
     comparison.mismatching_outcomes += comparison.matching_outcomes;
     comparison.matching_outcomes = 0;
+    // Name both clocks: the phase's wall time is what the timeout judged,
+    // while the test-phase figure is the runner's own report interval when
+    // its report reached disk -- a runner that wrote its report at 8 s and
+    // then failed to exit is a hung exit, not a slow test, and the two
+    // numbers say so.
+    let detail = match phase {
+        TimeoutPhase::Setup => format!(
+            "{runner} exceeded the setup timeout after {}ms in that phase; the result is incomplete",
+            duration_millis(process.setup_elapsed)
+        ),
+        TimeoutPhase::Test => {
+            let wall = duration_millis(process.elapsed.saturating_sub(process.setup_elapsed));
+            let reported = duration_millis(process.test_elapsed);
+            if reported + 1_000 < wall {
+                format!(
+                    "{runner} exceeded the test timeout after {wall}ms in that phase (its report \
+                     was written at {reported}ms, then the process did not exit); the result is \
+                     incomplete"
+                )
+            } else {
+                format!(
+                    "{runner} exceeded the test timeout after {wall}ms in that phase; the result \
+                     is incomplete"
+                )
+            }
+        }
+    };
     comparison.issues.push(compat::ComparisonIssue {
         kind: "timeout".into(),
-        detail: format!(
-            "{runner} exceeded the {} timeout after {}ms in that phase; the result is incomplete",
-            phase.as_str(),
-            match phase {
-                TimeoutPhase::Setup => duration_millis(process.setup_elapsed),
-                TimeoutPhase::Test => duration_millis(process.test_elapsed),
-            }
-        ),
+        detail,
     });
 }
 
