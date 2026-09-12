@@ -116,9 +116,10 @@ pub(crate) fn obarray_symbols(
     };
     if interp.is_standard_obarray_id(*id) {
         return Ok(interp
-            .known_symbol_names()
-            .into_iter()
-            .map(crate::lisp::types::interned_symbol_value)
+            .known_symbols_shared()
+            .iter()
+            .cloned()
+            .map(Value::Symbol)
             .collect());
     }
     let Some(record) = interp.find_record(*id) else {

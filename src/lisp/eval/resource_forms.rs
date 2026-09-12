@@ -184,10 +184,7 @@ impl Interpreter {
                 }
                 // `throw' passes through `condition-case' untouched; only
                 // signals are eligible for the handlers.
-                if matches!(
-                    e,
-                    LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)
-                ) {
+                if matches!(e, LispError::Throw(_, _) | LispError::Terminate(_)) {
                     return Err(e);
                 }
                 let condition = e.condition_type();

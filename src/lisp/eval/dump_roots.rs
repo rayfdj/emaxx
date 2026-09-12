@@ -210,6 +210,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "an index over symbol_properties, rebuilt by set_symbol_plist",
     ),
     (
+        "symbol_properties_by_id",
+        "an index over symbol_properties, refilled on lookup",
+    ),
+    (
         "interned_symbols",
         "filled by install_image in the obarray's order",
     ),
@@ -291,7 +295,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("gc_record_high_water", "the last collection's census"),
     ("gc_has_record_census", "the last collection's census"),
     ("vm_stack_pool", "released bytecode stacks"),
-    ("backtrace_args_pool", "released argument vectors"),
     (
         "sqlite_handles",
         "sqlite objects are refused by the writer (OS handles)",

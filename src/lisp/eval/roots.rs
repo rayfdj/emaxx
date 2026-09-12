@@ -72,9 +72,7 @@ impl TraceLispRoots for Env {
 impl TraceLispRoots for LispError {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
         match self {
-            Self::WrongTypeArgument(_, value)
-            | Self::SignalValue(value)
-            | Self::VmReturn(value) => {
+            Self::WrongTypeArgument(_, value) | Self::SignalValue(value) => {
                 marker.value(value);
             }
             Self::Throw(tag, value) => {

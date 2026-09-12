@@ -360,11 +360,17 @@ impl Interpreter {
     /// limit an intmax_t field, so the evaluator reads it directly; only a
     /// depth that already exceeds a sub-100 value raises that live cell to
     /// 100 before deciding whether to signal.
+    #[inline(always)]
     fn lisp_eval_depth_exceeded(&mut self) -> bool {
         let depth = i64::try_from(self.lisp_eval_depth).unwrap_or(i64::MAX);
         if depth <= self.max_lisp_eval_depth_value() {
             return false;
         }
+        self.lisp_eval_depth_exceeded_slow(depth)
+    }
+
+    #[cold]
+    fn lisp_eval_depth_exceeded_slow(&mut self, depth: i64) -> bool {
         if self.max_lisp_eval_depth_value() < 100 {
             if self
                 .detached_forwarded_variables
@@ -740,6 +746,7 @@ impl Interpreter {
 
     /// eval.c:Ffuncall's entry sequence.  Generated code uses the same
     /// boundary before it dispatches an already encoded Lisp_Object vector.
+    #[inline(always)]
     pub(crate) fn begin_funcall(&mut self, env: &mut Env) -> Result<(), LispError> {
         self.maybe_quit(env)?;
         self.lisp_eval_depth += 1;
@@ -754,6 +761,7 @@ impl Interpreter {
         Ok(())
     }
 
+    #[inline(always)]
     pub(crate) fn end_funcall(&mut self) {
         self.lisp_eval_depth = self
             .lisp_eval_depth
@@ -765,6 +773,7 @@ impl Interpreter {
     /// quit state.  Platform pending-signal delivery remains owned by the
     /// process/terminal layer; once it sets quit-flag, this is the exact C
     /// dispatch among kill-emacs, throw-on-input, and ordinary quit.
+    #[inline(always)]
     pub(crate) fn maybe_quit(&mut self, env: &mut Env) -> Result<(), LispError> {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
@@ -772,6 +781,12 @@ impl Interpreter {
         if self.quit_flag_is_nil() {
             return Ok(());
         }
+        self.process_quit_flag(env)
+    }
+
+    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag.
+    #[cold]
+    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
         let flag = self.quit_flag_value();
         if self.inhibit_quit_is_truthy() {
             return Ok(());
@@ -796,6 +811,7 @@ impl Interpreter {
         }
     }
 
+    #[inline(always)]
     fn call_function_value_named(
         &mut self,
         func: Value,
@@ -804,19 +820,43 @@ impl Interpreter {
         env: &mut Env,
         funcall: bool,
     ) -> Result<Value, LispError> {
-        if let Some(termination) = self.pending_termination().cloned() {
-            return Err(LispError::Terminate(termination));
+        if self.pending_termination().is_some() {
+            return Err(LispError::Terminate(
+                self.pending_termination()
+                    .cloned()
+                    .expect("checked pending termination"),
+            ));
         }
         // Dev-only flat profiler: EMAXX_PROFILE=<path> accumulates per-name
         // call counts and self-time, periodically rewriting <path>.
         if let Some(path) = profile_path() {
-            let started = std::time::Instant::now();
-            profile_enter();
-            let result = self.call_function_value_inner(func, original_name, args, env, funcall);
-            profile_leave(original_name.map(CallName::as_str), started.elapsed(), path);
-            return result;
+            return self.call_function_value_profiled(
+                func,
+                original_name,
+                args,
+                env,
+                funcall,
+                path,
+            );
         }
         self.call_function_value_inner(func, original_name, args, env, funcall)
+    }
+
+    #[cold]
+    fn call_function_value_profiled(
+        &mut self,
+        func: Value,
+        original_name: Option<CallName<'_>>,
+        args: &[Value],
+        env: &mut Env,
+        funcall: bool,
+        path: &'static str,
+    ) -> Result<Value, LispError> {
+        let started = std::time::Instant::now();
+        profile_enter();
+        let result = self.call_function_value_inner(func, original_name, args, env, funcall);
+        profile_leave(original_name.map(CallName::as_str), started.elapsed(), path);
+        result
     }
 
     /// Resolve a symbol function cell once, before argument evaluation.
@@ -866,9 +906,10 @@ impl Interpreter {
         env: &Env,
         local_context: bool,
     ) -> Result<FunctionResolution, LispError> {
+        // Keyed by the symbol's id, as GNU reads the function cell off the
+        // Lisp_Symbol: no hash of the name per call.
         if !local_context
-            && let Some((generation, resolution)) =
-                self.function_resolution_cache.get(name.as_str())
+            && let Some((generation, resolution)) = self.function_resolution_cache.get(&name.id())
             && *generation == self.function_binding_generation
         {
             return Ok(resolution.clone());
@@ -887,7 +928,7 @@ impl Interpreter {
         if !local_context {
             let state = &mut **self;
             state.function_resolution_cache.insert(
-                name.to_string(),
+                name.id(),
                 (state.function_binding_generation, resolution.clone()),
             );
         }
@@ -977,6 +1018,7 @@ impl Interpreter {
 
     /// Execute one GNU byte-code closure with the activation-frame contract
     /// that eval.c exposes to backtrace-frame/backtrace-eval.
+    #[inline]
     fn execute_bytecode_record_named(
         &mut self,
         record_id: u64,
@@ -998,6 +1040,7 @@ impl Interpreter {
     /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
     /// owns Ffuncall's depth and backtrace entry; this supplies only the
     /// byte-code activation boundary shared by source and native callers.
+    #[inline(always)]
     pub(crate) fn execute_bytecode_funcall_body(
         &mut self,
         record_id: u64,
@@ -1015,6 +1058,15 @@ impl Interpreter {
         let result = crate::lisp::bytecode::vm::execute_record(self, record_id, args, env);
         self.special_scan_floor = previous_floor;
         result
+    }
+
+    /// Only execute_record fills this cache, so a hit is a genuine
+    /// byte-code function whose slots have not been mutated since.
+    fn has_cached_bytecode_program(&self, record_id: u64) -> bool {
+        (record_id as usize)
+            .checked_sub(1)
+            .and_then(|index| self.bytecode_program_cache.get(index))
+            .is_some_and(|slot| slot.is_some())
     }
 
     pub(crate) fn is_genuine_bytecode_function(&self, record_id: u64) -> bool {
@@ -1036,18 +1088,18 @@ impl Interpreter {
         // eval.c/bytecode.c use XBARE_SYMBOL for a positioned callee while
         // the byte compiler's symbol-position mode is active.  This covers
         // explicit `funcall'/`apply' as well as ordinary source dispatch.
-        let func = self
-            .callable_symbol_name(&func, env)
-            .map(Value::Symbol)
-            .unwrap_or(func);
+        let func = if func.is_symbol() {
+            func
+        } else {
+            self.callable_symbol_name(&func, env)
+                .map(Value::Symbol)
+                .unwrap_or(func)
+        };
         // A record with a cached program is a genuine byte-code function
         // (only execute_record populates the cache), so skip the
         // lambda/autoload probes and the record-type guards below.
         if let Value::Record(id) = &func
-            && (*id as usize)
-                .checked_sub(1)
-                .and_then(|index| self.bytecode_program_cache.get(index))
-                .is_some_and(|slot| slot.is_some())
+            && self.has_cached_bytecode_program(*id)
         {
             return self.execute_bytecode_record_named(*id, original_name, args, env);
         }
@@ -1070,16 +1122,26 @@ impl Interpreter {
                         return result;
                     }
                 };
-                if original_name.is_none() {
-                    owned_name = Some(name.clone());
-                }
                 match resolution {
                     FunctionResolution::DirectBuiltin(facts) => {
                         let call_name = original_name.or(Some(CallName::Symbol(&name)));
                         return self
                             .dispatch_named_builtin(&name, facts, call_name, args, env, funcall);
                     }
-                    FunctionResolution::Resolved(value) => value,
+                    // funcall_general's COMPILEDP arm: the function cell
+                    // holds a byte-code object already decoded once.
+                    FunctionResolution::Resolved(Value::Record(id))
+                        if self.has_cached_bytecode_program(id) =>
+                    {
+                        let call_name = original_name.or(Some(CallName::Symbol(&name)));
+                        return self.execute_bytecode_record_named(id, call_name, args, env);
+                    }
+                    FunctionResolution::Resolved(value) => {
+                        if original_name.is_none() {
+                            owned_name = Some(name.clone());
+                        }
+                        value
+                    }
                 }
             }
             other => other,
@@ -1302,7 +1364,7 @@ impl Interpreter {
                     .unwrap_or_else(|| func.clone());
                 self.push_backtrace_frame_with_locals(
                     backtrace_function,
-                    args.to_vec(),
+                    FrameArgs::borrowed(args),
                     frame.clone(),
                     true,
                 );

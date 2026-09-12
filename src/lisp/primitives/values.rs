@@ -684,7 +684,10 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         return Ok(items.len().saturating_sub(1) as i64);
     }
     match value {
-        item if string_like(item).is_some() => Ok(string_text(item)?.chars().count() as i64),
+        // fns.c:Flength reads SCHARS: the character count in place, no
+        // copy of the text.
+        Value::String(text) => Ok(text.as_str().chars().count() as i64),
+        Value::StringObject(state) => Ok(state.borrow().text.chars().count() as i64),
         Value::Nil => Ok(0),
         Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
             Ok(vector_items(value)?.len() as i64)

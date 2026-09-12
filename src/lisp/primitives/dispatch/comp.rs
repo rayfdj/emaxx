@@ -178,9 +178,7 @@ fn try_make_directory(
         &[directory.clone(), Value::T],
     ) {
         Ok(_) => Ok(true),
-        Err(
-            error @ (LispError::Throw(..) | LispError::VmReturn(..) | LispError::Terminate(..)),
-        ) => Err(error),
+        Err(error @ (LispError::Throw(..) | LispError::Terminate(..))) => Err(error),
         Err(_) => Ok(false),
     }
 }
