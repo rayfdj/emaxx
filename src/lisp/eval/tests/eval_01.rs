@@ -3702,6 +3702,213 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
 }
 
 #[test]
+fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
+    // search.c's compile_pattern cache keys on the syntax table object;
+    // the regex crate's compile costs milliseconds where GNU's costs
+    // microseconds, so the compiled-regexp cache keys on what the
+    // translation reads instead: the hash of the table's class
+    // renderings, and the thread's sentinel registry (one character per
+    // (character, class) pair, kept).  A mode that copies its table into
+    // every buffer (cperl-mode) and puts `syntax-table' properties in
+    // each then compiles a pattern once, not once per buffer; a table
+    // that renders differently compiles again.  Match results are GNU's.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut step = |form: &str, expected: Value, compiles_delta: usize| {
+        crate::lisp::primitives::reset_elisp_regex_compile_count();
+        assert_eq!(eval_str_with(&mut interp, form), expected, "{form}");
+        assert_eq!(
+            crate::lisp::primitives::elisp_regex_compile_count(),
+            compiles_delta,
+            "compiles during {form}"
+        );
+    };
+    step(
+        r#"(progn
+             (setq like-table (make-syntax-table))
+             (modify-syntax-entry ?_ "w" like-table)
+             (with-current-buffer (get-buffer-create "*like-a*")
+               (erase-buffer) (insert "foo(bar)baz_qux")
+               (set-syntax-table (copy-syntax-table like-table))
+               (set (make-local-variable (quote parse-sexp-lookup-properties)) t)
+               (put-text-property 4 5 'syntax-table '(2))
+               (goto-char 1)
+               (list (looking-at "\\sw+") (match-end 0))))"#,
+        Value::list([Value::T, Value::Integer(8)]),
+        1,
+    );
+    step(
+        r#"(with-current-buffer (get-buffer-create "*like-b*")
+             (erase-buffer) (insert "zap(zip)zop_zup")
+             (set-syntax-table (copy-syntax-table like-table))
+             (set (make-local-variable (quote parse-sexp-lookup-properties)) t)
+             (put-text-property 4 5 'syntax-table '(2))
+             (goto-char 1)
+             (list (looking-at "\\sw+") (match-end 0)))"#,
+        Value::list([Value::T, Value::Integer(8)]),
+        0,
+    );
+    step(
+        r#"(with-current-buffer "*like-b*"
+             (modify-syntax-entry ?_ "." (syntax-table))
+             (goto-char 9)
+             (list (looking-at "\\sw+") (match-end 0)))"#,
+        Value::list([Value::T, Value::Integer(12)]),
+        1,
+    );
+    step(
+        r#"(with-current-buffer "*like-a*"
+             (goto-char 9)
+             (list (looking-at "\\sw+") (match-end 0)))"#,
+        Value::list([Value::T, Value::Integer(16)]),
+        0,
+    );
+}
+
+#[test]
+fn case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables() {
+    // search.c's compile_pattern keys a case-folded pattern on the
+    // buffer's case-canon table object.  The compiled-regexp cache keys
+    // it on a generation the case tables' writes advance: a write to a
+    // char-table of another purpose (`regexp-opt' building its charset
+    // table, a script table, a display table) is not a case-table write
+    // and compiles nothing again; a write to the case table does.
+    // Match results are GNU's.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut step = |form: &str, expected: Value, compiles_delta: usize| {
+        crate::lisp::primitives::reset_elisp_regex_compile_count();
+        assert_eq!(eval_str_with(&mut interp, form), expected, "{form}");
+        assert_eq!(
+            crate::lisp::primitives::elisp_regex_compile_count(),
+            compiles_delta,
+            "compiles during {form}"
+        );
+    };
+    let search = r#"(with-current-buffer (get-buffer-create "*fold*")
+             (erase-buffer) (insert "Foo bar")
+             (goto-char 1)
+             (let ((case-fold-search t))
+               (list (re-search-forward "foo" nil t) (match-end 0))))"#;
+    step(
+        search,
+        Value::list([Value::Integer(4), Value::Integer(4)]),
+        1,
+    );
+    step(
+        &format!(
+            "(progn (let ((table (make-char-table 'regexp-opt-charset)))
+                      (aset table ?a t))
+                    {search})"
+        ),
+        Value::list([Value::Integer(4), Value::Integer(4)]),
+        0,
+    );
+    step(
+        &format!("(progn (aset (standard-case-table) ?Z ?z) {search})"),
+        Value::list([Value::Integer(4), Value::Integer(4)]),
+        1,
+    );
+}
+
+#[test]
+fn markers_held_only_by_the_interpreter_survive_a_collection() {
+    // GNU's collector scans the C stack conservatively, so a marker an
+    // argument list or a C local holds through a Lisp call is reached.
+    // Here such holders are registered roots: the arguments of a call
+    // whose function autoloads (the file's load conses and collects
+    // before the call is made), and the bounds `delete-region' preserves
+    // through `before-change-functions'.  Found by the gate after 19p's
+    // sweep: `set-auto-mode' on an HTML buffer called a search with a
+    // marker bound through mhtml-mode's autoload, and the load's
+    // collection unchained the marker.  The values are the oracle's
+    // (positions a collection cannot change).
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-marker-autoload-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("emaxx-marker-echo.el"),
+        "(defconst emaxx-marker-echo-ballast (make-list 20000 (list 1 2 3)))\n\
+         (defalias 'emaxx-marker-echo\n  (function (lambda (m) (marker-position m))))\n\
+         (provide 'emaxx-marker-echo)\n",
+    )
+    .unwrap();
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let dir_literal = format!("{:?}", dir.display().to_string());
+    let result = eval_str_with(
+        &mut interp,
+        &format!(
+            r#"(with-temp-buffer
+             (insert "0123456789")
+             (push {dir_literal} load-path)
+             (autoload 'emaxx-marker-echo "emaxx-marker-echo")
+             (add-hook 'before-change-functions
+                       (lambda (&rest _) (let ((gc-cons-threshold 100)) (make-list 2000 nil)))
+                       nil t)
+             (list (let ((gc-cons-threshold 100))
+                     (emaxx-marker-echo (copy-marker 4)))
+                   (progn (delete-region 3 6) (buffer-string))))"#
+        ),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        result,
+        Value::list([Value::Integer(4), Value::string("0156789")])
+    );
+}
+
+#[test]
+fn normal_mode_survives_collections_during_its_autoloads() {
+    // The gate's shape: `set-auto-mode' on an HTML buffer, with the
+    // collection threshold low enough that mhtml-mode's autoload
+    // collects while the search's marker bound is held only by the
+    // call's argument list.  GNU: mhtml-mode.
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(with-temp-buffer
+                 (insert "<!doctype html>")
+                 (let ((gc-cons-threshold 100)) (normal-mode))
+                 major-mode)"#,
+        ),
+        Value::Symbol("mhtml-mode".into())
+    );
+}
+
+#[test]
+fn a_store_into_a_full_keymaps_list_keeps_its_character_prefixes() {
+    // keymap.c reads the list itself, so a `setcar' into a keymap's list
+    // changes nothing about C-x C-f.  Here the record is rebuilt from the
+    // view after such a store, and the rebuilt record must carry the
+    // sparse entries `define-key' keeps beside the char-table's
+    // bindings, or `key-binding' loses every character prefix while
+    // `lookup-key' still finds it (found by the gate's template-cloned
+    // interpreters, whose records are rebuilt the same way).  The
+    // oracle's values.
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(progn
+                 (setcar (cdr global-map) (cadr global-map))
+                 (setcar (cdr ctl-x-map) (cadr ctl-x-map))
+                 (list (key-binding [24 6]) (key-binding [?\M-x]) (key-binding "a")
+                       (lookup-key global-map [24 6])
+                       (and (member [24 6] (where-is-internal 'find-file)) t)))"#,
+        ),
+        Value::list([
+            Value::Symbol("find-file".into()),
+            Value::Symbol("execute-extended-command".into()),
+            Value::Symbol("self-insert-command".into()),
+            Value::Symbol("find-file".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn autoloaded_file_name_handlers_keep_their_symbol_identity() {
     let unique = format!(
         "{}-{}",

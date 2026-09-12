@@ -1186,6 +1186,10 @@ struct RegexpSyntaxClassCache {
     table_id: u64,
     chain: SyntaxChainSignature,
     rendered: [String; 16],
+    /// FNV over the sixteen renderings: two tables that render alike
+    /// (cperl-mode copies its table into every buffer) compile a pattern
+    /// alike, so the compiled-regexp cache keys on this, not the table.
+    rendered_hash: u64,
 }
 
 /// Range segments of the syntax table, resolved once for the scanners that
@@ -3092,6 +3096,10 @@ pub(crate) struct WeakHashReachability {
     /// Finalizer objects the mark phase reached (alloc.c marks a reached
     /// `Lisp_Finalizer' as any pseudovector, and its function with it).
     pub(crate) live_finalizers: MarkedIds,
+    /// Marker objects the mark phase reached, from the Lisp graph and from
+    /// the slots C keeps them in (buffer marks, process marks, the
+    /// excursions and restrictions on the specpdl, the undo lists).
+    pub(crate) live_markers: MarkedIds,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
@@ -4022,13 +4030,23 @@ impl Interpreter {
                 state.visit_lisp_roots(&mut mark);
             }
         }
+        // editfns.c keeps a buffer's labeled restrictions (`with-restriction'
+        // with a label) in `labeled_restrictions', an alist of the buffer,
+        // its labels and its bound markers, which the mark phase reaches
+        // through the alist.  The bounds are markers here as there: reach
+        // them, or the sweep detaches them and the next edit leaves the
+        // restriction where it was.
         for restriction in &self.labeled_restrictions {
             if let Some(value) = &restriction.label {
                 mark(value);
             }
+            mark(&Value::Marker(restriction.beg_marker_id));
+            mark(&Value::Marker(restriction.end_marker_id));
         }
         for process in &self.process_states {
             mark(&Value::Record(process.record_id));
+            // process.c's Lisp_Process.mark slot: the process mark marker.
+            mark(&Value::Marker(process.mark_marker_id));
             for value in [
                 process.filter.as_ref(),
                 process.sentinel.as_ref(),
@@ -4057,6 +4075,11 @@ impl Interpreter {
         }
         for value in self.plain_quote_templates.values() {
             mark(&value.value);
+        }
+        // buffer.c's BVAR (b, mark): each buffer's mark marker is a slot of
+        // the buffer object, reached whenever the buffer is.
+        for id in self.buffer_mark_marker_ids.values() {
+            mark(&Value::Marker(*id));
         }
         let mut visit_buffer = |value: &Value| {
             mark(value);
@@ -4135,6 +4158,7 @@ impl Interpreter {
             tables,
             live_records: marked.records,
             live_finalizers: marked.finalizers,
+            live_markers: marked.markers,
         }
     }
 
@@ -4570,6 +4594,9 @@ impl Interpreter {
                 .filter_map(|identity| remap_cons_identity(&copier, identity))
                 .collect();
         }
+        // The snapshots name the template's cells; a missing snapshot
+        // rebuilds the record from its (copied) view on first use.
+        clone.keymap_public_view_watch.clear();
 
         // Weak closure-environment registries point at template envs (the
         // template stays alive, so the weaks stay upgradable -- exactly the
@@ -4778,7 +4805,7 @@ pub struct InterpreterState {
     /// remains canonical for deterministic symbol enumeration.
     symbol_properties_index: OrderedNameIndex,
     /// Symbols explicitly interned into the standard obarray.
-    interned_symbols: Vec<String>,
+    interned_symbols: Vec<crate::lisp::types::SymbolName>,
     /// Membership index for `interned_symbols'.  Keeping insertion order in
     /// the vector makes completion deterministic, while this set prevents
     /// source loading from turning symbol interning into a quadratic scan.
@@ -4808,6 +4835,14 @@ pub struct InterpreterState {
     /// Forward half of `keymap_public_cons_owners', used to unregister one
     /// refreshed keymap without scanning every live public cons view.
     keymap_public_cons_ids: HashMap<u64, Vec<usize>>,
+    /// Per keymap record, the mutation dependencies of its public view (the
+    /// spine and the binding pairs, the cells the owner index names): a
+    /// store through the Rust primitives reaches the record at the store,
+    /// but generated code stores into the canonical words of a cell it
+    /// reached through native pointers without crossing into Rust, and only
+    /// a check of those words finds it.  A record whose snapshot is not
+    /// current (or missing) is rebuilt from its view before it is read.
+    keymap_public_view_watch: HashMap<u64, crate::lisp::types::ConsMutationSnapshot>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
     /// The currently selected window record.
@@ -5705,6 +5740,7 @@ impl Interpreter {
             current_global_map: None,
             keymap_public_cons_owners: HashMap::new(),
             keymap_public_cons_ids: HashMap::new(),
+            keymap_public_view_watch: HashMap::new(),
             current_buffer_id: 0,
             selected_window_id: 0,
             minibuffer_selected_window_id: None,

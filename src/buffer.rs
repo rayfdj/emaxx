@@ -963,6 +963,19 @@ impl Buffer {
             .map(|index| self.extended_chars[index].1)
     }
 
+    /// Whether any character of [FROM, TO) has a sidecar entry (a code
+    /// outside Unicode's scalars), which the regexp haystack of the span
+    /// then renders differently from the rope's text.
+    pub fn has_extended_chars_in(&self, from: usize, to: usize) -> bool {
+        let (from, to) = if from <= to { (from, to) } else { (to, from) };
+        let first = self
+            .extended_chars
+            .partition_point(|(position, _)| *position < from);
+        self.extended_chars
+            .get(first)
+            .is_some_and(|(position, _)| *position < to)
+    }
+
     /// Return character-indexed sidecar entries relative to FROM.
     pub fn substring_extended_chars(&self, from: usize, to: usize) -> Vec<(usize, u32)> {
         let (from, to) = if from <= to { (from, to) } else { (to, from) };

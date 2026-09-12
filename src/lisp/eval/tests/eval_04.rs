@@ -4186,9 +4186,14 @@ fn loaded_with_restriction_uses_the_shared_labeled_restriction_stack() {
                            (list initial wide narrow
                                  (list (point-min) (point-max))))))))))"
         ),
+        // The oracle's values (2026-09-12): the labeled restriction's
+        // bounds are `point-min-marker' and `point-max-marker', so the
+        // insertion at its end falls outside it and `widen' returns to
+        // 500, not 501 (the value this test held before was the
+        // interpreter's own, with an end marker of insertion type t).
         Value::list([
             Value::list([Value::Integer(100), Value::Integer(500)]),
-            Value::list([Value::Integer(100), Value::Integer(501)]),
+            Value::list([Value::Integer(100), Value::Integer(500)]),
             Value::list([Value::Integer(100), Value::Integer(150)]),
             Value::list([Value::Integer(1), Value::Integer(502)]),
         ]),

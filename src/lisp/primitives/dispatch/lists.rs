@@ -1318,7 +1318,7 @@ define_dispatch!(
             }
             "nth" => {
                 need_args(name, args, 2)?;
-                if let Some(items) = keymap_list_items(interp, &args[1])? {
+                if let Some(items) = keymap_record_list_items(interp, &args[1])? {
                     nth_list_element(&Value::list(items), &args[0])
                 } else {
                     nth_list_element(&args[1], &args[0])
@@ -1341,7 +1341,7 @@ define_dispatch!(
             }
             "nthcdr" => {
                 need_args(name, args, 2)?;
-                if let Some(items) = keymap_list_items(interp, &args[1])? {
+                if let Some(items) = keymap_record_list_items(interp, &args[1])? {
                     if matches!(&args[0], Value::Integer(count) if *count <= 0)
                         || matches!(&args[0], Value::BigInteger(count) if **count <= BigInt::from(0))
                     {
@@ -1361,7 +1361,7 @@ define_dispatch!(
             "safe-length" => {
                 need_args(name, args, 1)?;
                 Ok(Value::Integer(
-                    keymap_list_items(interp, &args[0])?
+                    keymap_record_list_items(interp, &args[0])?
                         .map(|items| items.len() as i64)
                         .unwrap_or_else(|| safe_list_length(&args[0])),
                 ))

@@ -220,6 +220,7 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             "define-key" => {
+                keymap_arguments_current(interp, args)?;
                 need_arg_range(name, args, 3, 4)?;
                 if let Ok(events) = vector_items(&args[1])
                     && let [event] = events.as_slice()
@@ -271,6 +272,7 @@ define_dispatch!(
                 Ok(def)
             }
             "lookup-key" => {
+                keymap_arguments_current(interp, args)?;
                 need_arg_range(name, args, 2, 3)?;
                 // keymap.c:lookup_key_1 applies the same Lucid event-list
                 // conversion as Fdefine_key.
@@ -344,6 +346,7 @@ define_dispatch!(
                 )
             }
             "keymap-prompt" => {
+                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 1)?;
                 if let Some(id) = keymap_record_id(interp, &args[0]) {
                     return Ok(interp
@@ -371,6 +374,7 @@ define_dispatch!(
                 command_remapping(interp, &args[0], args.get(2), env)
             }
             "keymap-parent" => {
+                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 1)?;
                 // GNU's constructor returns the same Lisp keymap object
                 // accepted here. Resolve its public cons root to the existing
@@ -381,6 +385,7 @@ define_dispatch!(
                     .unwrap_or(Value::Nil))
             }
             "set-keymap-parent" => {
+                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 2)?;
                 if let Some(id) = keymap_record_id(interp, &args[0])
                     && let Some(record) = interp.find_record_mut(id)
@@ -396,6 +401,7 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "map-keymap" => {
+                keymap_arguments_current(interp, args)?;
                 need_arg_range(name, args, 2, 3)?;
                 if args.get(2).is_some_and(Value::is_truthy) {
                     return interp.call_function_value(
@@ -412,6 +418,7 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "map-keymap-internal" => {
+                keymap_arguments_current(interp, args)?;
                 need_args(name, args, 2)?;
                 if !is_keymap_value(interp, &args[1]) {
                     return Err(LispError::WrongTypeArgument(
@@ -1984,4 +1991,13 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
             _ => return Err(plist_type_error(&plist)),
         }
     }
+}
+
+/// A keymap argument's record follows its public view before a primitive
+/// reads or rewrites it (see `ensure_runtime_keymap_current').
+fn keymap_arguments_current(interp: &mut Interpreter, args: &[Value]) -> Result<(), LispError> {
+    for arg in args.iter().take(2) {
+        crate::lisp::primitives::values::ensure_runtime_keymap_current(interp, arg)?;
+    }
+    Ok(())
 }

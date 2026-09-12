@@ -393,6 +393,30 @@ call (`forward-sexp` 245 to 8.2 us, GNU 0.51), plain searches read
 windows, the collector marks symbols by id (semantic-fmt-utest 46.9 to
 34.7 s, GNU 0.84).  Open, measured: markers are never reclaimed by the
 collector (an edit after 20,000 dropped markers 3,304 us, GNU 0.90).
+Checkpoint 19n (2026-09-12, for main): a runtime keymap's record is
+checked against a mutation snapshot of its public view before every
+keymap primitive, so pairs spliced by natively compiled Lisp
+(`define-key-after` on the Mac, where subr.el runs natively) reach
+`lookup-key`; the Mac's so-long-tests failures.
+Checkpoint 19p (2026-09-12, for main): the collector unchains the
+markers it does not reach, as alloc.c's sweep does (an edit after
+20,000 dropped markers and a collection 3,104 to 16.5 us, GNU 0.92);
+buffer marks and process marks are roots of the mark phase.
+Checkpoint 19o (2026-09-12, for main): the obarray enumeration behind
+`mapatoms` hands out the symbol objects it holds instead of
+re-interning every name (22 to 13 ms, GNU 3.6); the per-file floor
+of the Mac's list (232 files at 30 ms against 3) is otherwise the
+per-call cost of `ert-select-tests`' walk, open.
+Checkpoint 19q (2026-09-12, for main): `float-time` is timefns.c's
+frac_to_double and `time-add`/`time-subtract` its time_arith
+(timefns-tests 1.9 to 1.0 s, GNU 0.16); buffer haystacks convert the
+engine's offsets through the rope (ucs-normalize-tests 3.5 to 1.6 s,
+GNU 0.17); the compiled-regexp key reads the rendered-class hash and
+a per-thread sentinel registry (cperl-mode-tests warm 6.8 to 1.0 s,
+GNU 0.12; its cold run, like GNU's, compiles the four trampolines
+`ert-with-message-capture` triggers, 1.2 s each here against GNU's
+0.21, open).  The audit of 19n to 19q fixed the labeled restrictions'
+bound markers (unmarked, and of the wrong insertion type).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

@@ -747,21 +747,16 @@ pub(crate) struct PosixTimeZone {
     end: PosixTransitionRule,
 }
 
+/// timefns.c's lisp_time: TICKS over HZ as given.  decode_ticks_hz only
+/// checks that HZ is positive; nothing reduces the fraction, so
+/// `(time-convert '(4 . 8) t)' is (4 . 8), and `time-add' keeps a common
+/// HZ (time_arith reduces only when the clocks differ).  Reducing here
+/// changed those answers and cost a bignum gcd on every time value.
 pub(crate) fn exact_time_value(ticks: BigInt, hz: BigInt) -> Result<ExactTimeValue, LispError> {
     if hz <= BigInt::zero() {
         return Err(LispError::Signal("Invalid time resolution".into()));
     }
-    if ticks.is_zero() {
-        return Ok(ExactTimeValue {
-            ticks: BigInt::zero(),
-            hz: BigInt::from(1u8),
-        });
-    }
-    let divisor = bigint_gcd(ticks.abs(), hz.clone());
-    Ok(ExactTimeValue {
-        ticks: ticks / &divisor,
-        hz: hz / divisor,
-    })
+    Ok(ExactTimeValue { ticks, hz })
 }
 
 pub(crate) fn bigint_gcd(mut left: BigInt, mut right: BigInt) -> BigInt {
@@ -815,10 +810,43 @@ pub(crate) fn exact_time_from_old_style(
     } else {
         BigInt::zero()
     };
-    let ticks = (high * BigInt::from(65_536u32) + low) * BigInt::from(1_000_000_000_000u64)
-        + micros * BigInt::from(1_000_000u32)
-        + picos;
-    exact_time_value(ticks, BigInt::from(1_000_000_000_000u64))
+    // decode_time_components: the clock is the list's own -- 1 for
+    // (HI LO), 1000000 for (HI LO US), 1000000000000 for (HI LO US PS).
+    let seconds = high * BigInt::from(65_536u32) + low;
+    match items.len() {
+        2 => exact_time_value(seconds, BigInt::from(1u8)),
+        3 => exact_time_value(
+            seconds * BigInt::from(1_000_000u32) + micros,
+            BigInt::from(1_000_000u32),
+        ),
+        _ => exact_time_value(
+            seconds * BigInt::from(1_000_000_000_000u64)
+                + micros * BigInt::from(1_000_000u32)
+                + picos,
+            BigInt::from(1_000_000_000_000u64),
+        ),
+    }
+}
+
+/// The form a time value came in, for time_arith's choice of result form.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimeValueForm {
+    TicksHz,
+    Other,
+}
+
+pub(crate) fn time_value_form(value: &Value) -> TimeValueForm {
+    match value {
+        Value::Cons(_)
+            if value
+                .to_vec()
+                .is_ok_and(|items| (2..=4).contains(&items.len())) =>
+        {
+            TimeValueForm::Other
+        }
+        Value::Cons(_) => TimeValueForm::TicksHz,
+        _ => TimeValueForm::Other,
+    }
 }
 
 pub(crate) fn exact_time_from_value(
@@ -917,42 +945,108 @@ pub(crate) fn exact_time_to_old_style(time: &ExactTimeValue) -> Result<Value, Li
     ]))
 }
 
-pub(crate) fn power_of_two_exponent(value: &BigInt) -> Option<i32> {
-    if value <= &BigInt::zero() {
-        return None;
+/// C's scalbn: X times 2 to the N, rounded once (musl's stepwise
+/// scaling keeps a subnormal result from rounding twice).
+pub(crate) fn scalbn(mut x: f64, mut n: i32) -> f64 {
+    const TWO_1023: f64 = 8.98846567431158e307;
+    const TWO_M1022_53: f64 = 2.2250738585072014e-308 * 9007199254740992.0;
+    if n > 1023 {
+        x *= TWO_1023;
+        n -= 1023;
+        if n > 1023 {
+            x *= TWO_1023;
+            n -= 1023;
+            if n > 1023 {
+                n = 1023;
+            }
+        }
+    } else if n < -1022 {
+        x *= TWO_M1022_53;
+        n += 1022 - 53;
+        if n < -1022 {
+            x *= TWO_M1022_53;
+            n += 1022 - 53;
+            if n < -1022 {
+                n = -1022;
+            }
+        }
     }
-    let mut exponent = 0i32;
-    let mut current = value.clone();
-    let two = BigInt::from(2u8);
-    while (&current % &two).is_zero() {
-        current /= &two;
-        exponent += 1;
+    x * f64::from_bits(((0x3ff + n) as u64) << 52)
+}
+
+/// timefns.c frac_to_double: NUMERATOR / DENOMINATOR rounded to the
+/// nearest double, ties to even.  DENOMINATOR is positive.
+pub(crate) fn frac_to_double(numerator: &BigInt, denominator: &BigInt) -> f64 {
+    const DBL_MANT_DIG: i64 = 53;
+    // flt_radix_power_size - 1: DBL_MANT_DIG - DBL_MIN_EXP.
+    const MAX_SCALE: i64 = 53 + 1021;
+    if let (Some(n), Some(d)) = (numerator.to_i64(), denominator.to_i64())
+        && n % d == 0
+    {
+        return (n / d) as f64;
     }
-    (current == BigInt::from(1u8)).then_some(exponent)
+    // mpz_sizeinbase (x, 2): the bit count, 1 for zero.
+    let ndig = numerator.bits().max(1) as i64;
+    let ddig = denominator.bits().max(1) as i64;
+    let mut scale = ddig - ndig + DBL_MANT_DIG;
+    let (n, d) = if scale < 0 {
+        (numerator.clone(), denominator << (-scale) as usize)
+    } else {
+        // min so tiny numbers are not scaled as if they were normalized.
+        scale = scale.min(MAX_SCALE);
+        (numerator << scale as usize, denominator.clone())
+    };
+    // Truncating division, as mpz_tdiv_qr.
+    let (mut q, r) = (&n / &d, &n % &d);
+    let q_magnitude = q.magnitude().clone();
+    // The amount to add to the absolute value of Q so that truncating
+    // it to double rounds correctly.
+    let incr: u32 = if q_magnitude.bits().max(1) as i64 <= DBL_MANT_DIG {
+        // Converting to double uses the whole quotient: add 1 as per
+        // round-to-even when the doubled remainder exceeds the
+        // denominator, or equals it and the quotient is odd.
+        let doubled = r.magnitude() << 1usize;
+        match doubled.cmp(d.magnitude()) {
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Equal => u32::from(q_magnitude.bit(0)),
+            std::cmp::Ordering::Less => 0,
+        }
+    } else {
+        // Converting to double discards the quotient's low-order bit:
+        // add 2 as per round-to-even.
+        let lo_2digits = (&q_magnitude % 4u32).to_u32().unwrap_or(0);
+        let lo_digit = lo_2digits % 2;
+        if lo_digit == 1 && ((lo_2digits / 2) & 1 == 1 || !r.is_zero()) {
+            2
+        } else {
+            0
+        }
+    };
+    if incr != 0 {
+        if n.sign() == Sign::Minus {
+            q -= incr;
+        } else {
+            q += incr;
+        }
+    }
+    // mpz_get_d truncates: a 54-bit quotient loses its low-order bit
+    // (the increment above already rounded it).  Then rescale Q back to
+    // double; this step does not round.
+    let mut magnitude = q.magnitude().clone();
+    if magnitude.bits() > DBL_MANT_DIG as u64 {
+        magnitude = (magnitude >> 1usize) << 1usize;
+    }
+    let truncated = magnitude.to_f64().unwrap_or(0.0);
+    let truncated = if q.sign() == Sign::Minus {
+        -truncated
+    } else {
+        truncated
+    };
+    scalbn(truncated, -(scale as i32))
 }
 
 pub(crate) fn exact_time_to_f64(time: &ExactTimeValue) -> f64 {
-    if let Some(exponent) = power_of_two_exponent(&time.hz)
-        && let Some(ticks) = time.ticks.to_f64()
-    {
-        let mut value = ticks;
-        let mut remaining = exponent;
-        while remaining > 0 {
-            let chunk = remaining.min(1022);
-            value *= 2f64.powi(-chunk);
-            remaining -= chunk;
-        }
-        return value;
-    }
-    let ticks = time.ticks.to_f64().unwrap_or_else(|| {
-        if time.ticks.sign() == Sign::Minus {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        }
-    });
-    let hz = time.hz.to_f64().unwrap_or(f64::INFINITY);
-    ticks / hz
+    frac_to_double(&time.ticks, &time.hz)
 }
 
 pub(crate) fn exact_time_equal(left: &ExactTimeValue, right: &ExactTimeValue) -> bool {
@@ -2023,11 +2117,13 @@ define_dispatch!(
                 let left = exact_time_from_value(interp, &args[0], &now)?;
                 let right = exact_time_from_value(interp, &args[1], &now)?;
                 let subtract = name == "time-subtract";
-                // GNU time_arith: with equal clocks the ticks combine directly
-                // and HZ is preserved (no fraction reduction); with different
-                // clocks the result is LO/HI with LO = db2*na OP da2*nb and
-                // HI = da2*db2*g (g = gcd of the clocks), reduced only by
-                // gcd(LO, da2*db2) — timer-tests compares the cons with `equal'.
+                // timefns.c time_arith: with equal clocks the ticks combine
+                // directly and HZ is kept; with different clocks the sum is
+                // taken over lcm (da, db) = fa * db (g = gcd (da, db), fa =
+                // da / g, fb = db / g), then normalized by gcd (ticks, hz),
+                // and if that leaves HZ below the smaller clock, rescaled up
+                // by ceil (hzmin / hz) so the result is no less precise than
+                // either operand.
                 let result = if left.hz == right.hz {
                     let ticks = if subtract {
                         left.ticks.clone() - &right.ticks
@@ -2039,25 +2135,46 @@ define_dispatch!(
                         hz: left.hz.clone(),
                     }
                 } else {
+                    let hzmin = left.hz.clone().min(right.hz.clone());
                     let g = bigint_gcd(left.hz.clone(), right.hz.clone());
-                    let da2 = left.hz.clone() / &g;
-                    let db2 = right.hz.clone() / &g;
-                    let lo = if subtract {
-                        db2.clone() * &left.ticks - da2.clone() * &right.ticks
+                    let fa = left.hz.clone() / &g;
+                    let fb = right.hz.clone() / &g;
+                    let mut hz = fa.clone() * &right.hz;
+                    let mut ticks = if subtract {
+                        fb * &left.ticks - fa * &right.ticks
                     } else {
-                        db2.clone() * &left.ticks + da2.clone() * &right.ticks
+                        fb * &left.ticks + fa * &right.ticks
                     };
-                    let hi = da2.clone() * &db2 * &g;
-                    let g2 = bigint_gcd(lo.clone(), da2 * db2);
-                    ExactTimeValue {
-                        ticks: lo / &g2,
-                        hz: hi / g2,
+                    let ig = bigint_gcd(ticks.abs(), hz.clone());
+                    if ig > BigInt::from(1u8) {
+                        ticks /= &ig;
+                        hz /= &ig;
+                        if hz < hzmin {
+                            let rescale = (&hzmin + &hz - BigInt::from(1u8)) / &hz;
+                            ticks *= &rescale;
+                            hz *= &rescale;
+                        }
                     }
+                    ExactTimeValue { ticks, hz }
                 };
                 if result.hz <= BigInt::zero() {
                     return Err(LispError::Signal("Invalid time resolution".into()));
                 }
-                Ok(exact_time_to_value(&result))
+                // time_arith's result form: an integer when HZ is 1; else
+                // (TICKS . HZ) when `current-time-list' is nil, either
+                // operand was (TICKS . HZ), or the value has no exact
+                // (HI LO US PS) form; else the list form.
+                if result.hz == BigInt::from(1u8) {
+                    return Ok(normalize_bigint_value(result.ticks));
+                }
+                let ticks_hz_input = time_value_form(&args[0]) == TimeValueForm::TicksHz
+                    || time_value_form(&args[1]) == TimeValueForm::TicksHz;
+                let exact_in_list_form =
+                    (BigInt::from(1_000_000_000_000u64) % &result.hz).is_zero();
+                if !current_time_list_is_set(interp) || ticks_hz_input || !exact_in_list_form {
+                    return Ok(exact_time_to_tick_pair(&result));
+                }
+                exact_time_to_old_style(&result)
             }
             "time-equal-p" => {
                 need_args(name, args, 2)?;
@@ -2096,12 +2213,6 @@ define_dispatch!(
                     _ if current_time_list_is_set(interp) => Value::Symbol("list".into()),
                     _ => Value::T,
                 };
-                // A nil TIME is the current timespec, whose HZ is
-                // 1000000000 (TIMESPEC_HZ) in GNU's lisp_time, not the
-                // reduced fraction `now' carries here.
-                if args[0].is_nil() && matches!(form, Value::T) {
-                    return exact_time_to_scaled_pair(&time, &BigInt::from(1_000_000_000u64));
-                }
                 time_convert_value(&time, &form)
             }
             "decode-time" => {

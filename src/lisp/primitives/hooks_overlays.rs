@@ -596,12 +596,26 @@ pub(crate) fn delete_region_with_hooks(
     } else {
         None
     };
-    let hook_result = run_change_hooks(
-        interp,
-        "before-change-functions",
-        &[Value::Integer(from as i64), Value::Integer(to as i64)],
-        env,
-    );
+    // The preserved bounds are markers held here, in no Lisp object:
+    // register them as roots while the hooks run, or a collection inside
+    // a hook unchains them.
+    let held = preserved_bounds
+        .map(|(preserve_id, start_id, end_id)| {
+            vec![
+                Value::Marker(preserve_id),
+                Value::Marker(start_id),
+                Value::Marker(end_id),
+            ]
+        })
+        .unwrap_or_default();
+    let hook_result = interp.with_lisp_stack_roots(&held, |interp| {
+        run_change_hooks(
+            interp,
+            "before-change-functions",
+            &[Value::Integer(from as i64), Value::Integer(to as i64)],
+            env,
+        )
+    });
     let (from, to) = if let Some((preserve_id, start_id, end_id)) = preserved_bounds {
         // GNU's del_range_1 preserves the start through Lisp callbacks and
         // then reapplies the original range length.  The start/end markers

@@ -189,6 +189,7 @@ pub(crate) fn sweep_weak_hash_tables(
     for (id, entries, keep) in reachability.tables {
         interp.sweep_weak_hash_table(id, entries, &keep);
     }
+    interp.sweep_unreached_markers(&reachability.live_markers);
     interp.install_gc_record_census(reachability.live_records);
 }
 
@@ -232,6 +233,21 @@ pub(crate) fn keymap_list_items(
     value: &Value,
 ) -> Result<Option<Vec<Value>>, LispError> {
     keymap_list_items_inner(interp, value, &mut HashSet::new(), &mut HashSet::new())
+}
+
+/// The projection for a keymap held as its record alone; a keymap held by
+/// its public view is the list GNU has, and the primitives that hand out
+/// its cells or count them (`nthcdr', `nth', `length', `safe-length')
+/// read that list itself, so `(setcdr (last map) parent)' reaches the
+/// map's own cell and `(eq (last map) (cdr map))' holds as in fns.c.
+pub(crate) fn keymap_record_list_items(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<Option<Vec<Value>>, LispError> {
+    if matches!(value, Value::Cons(_)) {
+        return Ok(None);
+    }
+    keymap_list_items(interp, value)
 }
 
 #[cfg(test)]

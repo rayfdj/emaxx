@@ -335,6 +335,19 @@ impl ConsMutationSnapshot {
         snapshot
     }
 
+    /// Add one cell's two fields (and its canonical words, when generated
+    /// code can reach it) to the dependencies.
+    pub(crate) fn include_cell(&mut self, cell: &SharedCons) {
+        let fields = ConsCell::mutation_field_ids(cell);
+        if self.field_ids.binary_search(&fields[0]).is_ok() {
+            return;
+        }
+        self.track_native_cell(cell);
+        register_cons_mutation_watchers(&fields, &self.watch);
+        self.field_ids.extend(fields);
+        self.field_ids.sort_unstable();
+    }
+
     pub(crate) fn include_tree(&mut self, value: &Value) {
         let mut seen = HashSet::new();
         let mut pending = vec![value.clone()];
@@ -2308,6 +2321,13 @@ pub(crate) fn is_private_obarray_symbol(symbol: &str) -> bool {
     symbol.contains(OBARRAY_SYMBOL_MARKER)
 }
 
+/// Whether NAME carries neither marker: `visible_symbol_name' returns it
+/// unchanged.  A byte scan, where the split cost every symbol of an
+/// obarray walk.
+pub(crate) fn is_visible_symbol_name(name: &str) -> bool {
+    !name.contains(UNINTERNED_SYMBOL_MARKER_CHAR) && !name.contains(OBARRAY_SYMBOL_MARKER_CHAR)
+}
+
 pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
     // Character patterns: a one-character `&str' pattern runs the general
     // substring searcher on every name `mapatoms' visits.
@@ -2363,16 +2383,19 @@ pub(crate) fn format_float(value: f64) -> String {
         };
     }
 
-    // GNU's dtoastr starts at DBL_DIG significant digits and grows only
-    // until parsing reproduces the same f64.  Rust's Display instead prefers
-    // fixed notation for many large integral values, which changes `read'
-    // from float to bignum and breaks numeric round trips.
+    // GNU's dtoastr starts at DBL_DIG significant digits (at one for a
+    // subnormal, whose precision is below DBL_DIG: 5e-324, not
+    // 4.94065645841247e-324) and grows only until parsing reproduces
+    // the same f64.  Rust's Display instead prefers fixed notation for
+    // many large integral values, which changes `read' from float to
+    // bignum and breaks numeric round trips.
     let abs = value.abs();
     let mut rendered = if abs == 0.0 {
         value.to_string()
     } else {
         let exponent = abs.log10().floor() as i32;
-        (15..=17)
+        let first = if abs < f64::MIN_POSITIVE { 1 } else { 15 };
+        (first..=17)
             .find_map(|significant| {
                 let scientific = exponent < -4 || exponent >= significant;
                 let candidate = if scientific {

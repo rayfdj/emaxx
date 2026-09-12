@@ -1928,6 +1928,196 @@ fn uninterned_symbols_are_reached_by_object_not_by_name() {
 }
 
 #[test]
+fn markers_the_collector_reaches_survive_and_the_rest_are_unchained() {
+    // alloc.c's sweep unchains a marker nothing references: it stops being
+    // adjusted by edits.  Every marker C keeps a slot for is reached from
+    // that slot -- the buffer's mark, a process's mark, the excursion and
+    // restriction markers on the specpdl, the undo list's -- and one held
+    // in a Lisp variable from the variable.  The oracle's values (the
+    // buffer prints as killed: the list is printed after `kill-buffer').
+    let program = r#"
+        (let* ((b (generate-new-buffer "markers"))
+               (kept (with-current-buffer b (insert "0123456789") (copy-marker 4)))
+               (p (start-process "markers-cat" b "cat")))
+          (with-current-buffer b
+            (set-marker (process-mark p) 6)
+            (set-mark 3)
+            (let ((i 0)) (while (< i 500) (copy-marker 5) (setq i (1+ i))))
+            (buffer-enable-undo)
+            (delete-region 7 9)
+            (list
+             (save-excursion
+               (goto-char 8)
+               (garbage-collect)
+               (goto-char 1) (insert "ab")
+               (point))
+             (save-restriction
+               (narrow-to-region 3 7)
+               (garbage-collect)
+               (goto-char (point-min)) (insert "xy")
+               (list (point-min) (point-max)))
+             (progn (garbage-collect)
+                    (goto-char 1) (insert "Q")
+                    (list (marker-position kept) (marker-position (process-mark p))
+                          (marker-position (mark-marker)) (marker-buffer kept)
+                          (let ((entries (seq-filter (lambda (e) (and (consp e) (markerp (car e))))
+                                                     buffer-undo-list)))
+                            (mapcar (lambda (e) (marker-position (car e))) entries))))
+             (progn (delete-process p) (kill-buffer b) (marker-buffer kept)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(3 (3 9) (9 11 8 #<killed buffer> nil) nil)",
+        "markers across a collection",
+    );
+}
+
+#[test]
+fn labeled_restriction_bounds_survive_a_collection() {
+    // editfns.c keeps a labeled restriction's bounds as markers in the
+    // buffer's `labeled_restrictions' alist, which the mark phase reaches.
+    // Found by the audit of the marker sweep: the interpreter's list of
+    // active labeled restrictions marked its labels but not its bound
+    // markers, so a collection inside `with-restriction' detached them
+    // and the insertions that followed left the restriction where it
+    // was.  The oracle's values: the end bound advances past the
+    // insertion at its end, `widen' inside the restriction keeps it,
+    // `without-restriction' lifts it, `narrow-to-region' inside it
+    // clamps to it.
+    let program = r#"(with-temp-buffer
+         (insert "0123456789")
+         (with-restriction 3 7 :label 'x
+           (garbage-collect)
+           (goto-char (point-min))
+           (insert "ab")
+           (goto-char (point-max))
+           (insert "cd")
+           (widen)
+           (list (point-min) (point-max) (buffer-string)
+                 (without-restriction :label 'x (list (point-min) (point-max)))
+                 (progn (narrow-to-region 2 9) (list (point-min) (point-max))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(3 9 "ab2345" (1 15) (3 9))"#,
+        "labeled restriction across a collection",
+    );
+}
+
+#[test]
+fn unreached_markers_leave_their_buffers_edit_walk() {
+    // 500 markers made and dropped: after a collection they are detached,
+    // so an insertion adjusts only the markers still reachable (the kept
+    // one and the buffer's mark), where before every edit walked the
+    // dropped ones too.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let form = Reader::new(
+        r#"(with-current-buffer (get-buffer-create "walk")
+             (insert "0123456789")
+             (set-marker (mark-marker) 3)
+             (let ((i 0)) (while (< i 500) (copy-marker 5) (setq i (1+ i))))
+             (setq walk-kept (copy-marker 7)))"#,
+    )
+    .read_all()
+    .expect("read the marker walk contract")
+    .remove(0);
+    interp.eval(&form, &mut env).expect("make the markers");
+    let before = interp.attached_marker_count();
+    assert!(before >= 502, "attached before the collection: {before}");
+    let collect = Reader::new(
+        r#"(progn (garbage-collect)
+                  (with-current-buffer "walk" (goto-char 1) (insert "ab") (marker-position walk-kept)))"#,
+    )
+    .read_all()
+    .expect("read the collection form")
+    .remove(0);
+    let position = interp.eval(&collect, &mut env).expect("collect and edit");
+    assert_eq!(position, Value::Integer(9));
+    let after = interp.attached_marker_count();
+    assert!(
+        after < before && after <= before - 500,
+        "attached after the collection: {after} (before {before})"
+    );
+}
+
+#[test]
+fn time_values_follow_timefns_c() {
+    // timefns.c keeps (TICKS . HZ) as given (no reduction), decodes a
+    // (HI LO US PS) list on its own clock (1, 10^6 or 10^12 by length),
+    // scales a float by the power of two that makes it exact, and
+    // time_arith keeps a common clock, else combines over the lcm with
+    // gcd normalization and the rescale that keeps the result at least
+    // as precise as either operand; the result is an integer at HZ 1,
+    // the list form under `current-time-list' for list operands with an
+    // exact list form, else the pair.  The oracle's values.
+    let program = r#"(list (time-convert '(2 . 10) t) (time-convert '(4 . 8) t) (time-convert '(0 . 10) t)
+        (time-convert 5 t) (time-convert '(1 2 3) t) (time-convert '(1 2 3 4) t) (time-convert '(1 2) t)
+        (time-add '(1 . 10) '(1 . 10)) (time-add '(1 . 4) '(1 . 6)) (time-add '(1 . 6) '(1 . 3))
+        (time-subtract '(3 . 6) '(1 . 6)) (time-subtract '(1 . 6) '(1 . 3))
+        (time-equal-p '(1 . 2) '(2 . 4)) (time-less-p '(1 . 3) '(1 . 2))
+        (time-convert '(3 . 4) 'integer) (time-convert '(6 . 4) 100) (float-time '(1 . 3))
+        (time-convert 1.5 t) (time-convert '(2 . 10) 'list) (time-add 1 '(1 . 2)) (time-add '(0 . 10) '(0 . 10))
+        (time-add '(1 2) '(3 4)) (time-add '(1 2 3) '(0 0 1))
+        (let ((current-time-list nil)) (time-add '(1 2 3) '(0 0 1)))
+        (time-add '(1 2 3 4) '(1 . 2)) (time-subtract '(1 2) 1) (time-convert '(1 2 3) 'list)
+        (time-equal-p '(1 2) 65538) (time-less-p 1.5 '(3 . 2)) (time-add 1.5 1.5)
+        (time-convert 0.0 t) (time-convert -1.5 t)
+        (consp (time-convert nil t)) (= (cdr (time-convert nil t)) 1000000000))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((2 . 10) (4 . 8) (0 . 10) (5 . 1) (65538000003 . 1000000) (65538000003000004 . 1000000000000) \
+         (65538 . 1) (2 . 10) (5 . 12) (2 . 4) (2 . 6) (-1 . 6) t t 0 (150 . 100) 0.3333333333333333 \
+         (6755399441055744 . 4503599627370496) (0 0 200000 0) (3 . 2) (0 . 10) 262150 (1 2 4 0) \
+         (65538000004 . 1000000) (16384625000750001 . 250000000000) 65537 (1 2 3 0) t nil \
+         (13510798882111488 . 4503599627370496) (0 . 1) (-6755399441055744 . 4503599627370496) t t)",
+        "time values",
+    );
+}
+
+#[test]
+fn float_time_rounds_as_frac_to_double() {
+    // timefns.c frac_to_double: the quotient scaled to 53 or 54 bits by
+    // shifting the numerator or the denominator, truncating division,
+    // the increment that makes truncation round to nearest even (with
+    // the remainder as the sticky bit), and one scalbn.  Quotients over
+    // 2^53, ties, subnormal results, and clocks that are no power of two
+    // print as the oracle prints them.
+    let program = r#"(mapcar (lambda (c) (float-time c))
+        (list '(1000000004025 . 1000000000000) '(1 . 10000000000) '(-1 . 10000000000) '(1 . 3) '(2 . 3) '(-2 . 3) '(1 . 7) '(22 . 7) (cons (1+ (expt 2 53)) 1) (cons (+ 3 (expt 2 53)) 1) (cons (+ 5 (expt 2 53)) 1) (cons (- (+ 3 (expt 2 53))) 1) (cons (+ 3 (expt 2 54)) 1) (cons (+ 6 (expt 2 54)) 1) (cons (+ 5 (expt 2 54)) 3) (cons (expt 2 60) 3) (cons (1+ (expt 2 60)) 3) (cons (expt 10 30) 7) (cons 1 (expt 2 1074)) (cons 3 (expt 2 1074)) (cons -3 (expt 2 1074)) (cons 1 (expt 2 1075)) (cons 3 (expt 2 1075)) (cons 1 (expt 2 1076)) (cons (1+ (expt 2 53)) (expt 2 1074)) (cons (1+ (expt 2 53)) (expt 2 1073)) (cons 1 (expt 2 1022)) (cons (1- (expt 2 53)) (expt 2 1074)) (cons 1723456789123456789 1000000000) (cons -1723456789123456789 1000000000) (cons 1723456789123456789123 1000000000000) (cons (expt 2 1023) 1) (cons (* 3 (expt 2 1022)) 1) (cons (expt 3 700) (expt 2 100)) (cons (expt 3 700) (expt 3 699)) (cons (expt 3 700) (1+ (expt 3 699))) (cons 1 (expt 3 700)) (cons 9007199254740993 2) (cons 9007199254740995 2) (cons 27021597764222977 3) (cons 4503599627370497 1000000007) '(0 . 5) '(-0 . 5) (cons (- (expt 2 63)) 1) (cons (1- (expt 2 63)) 1) (cons (expt 2 63) (expt 2 10)) (cons (1+ (expt 2 63)) (expt 2 10))) )"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(1.000000004025 1e-10 -1e-10 0.3333333333333333 0.6666666666666666 -0.6666666666666666 0.14285714285714285 3.142857142857143 9007199254740992.0 9007199254740996.0 9007199254740996.0 -9007199254740996.0 18014398509481988.0 1.801439850948199e+16 6004799503160663.0 3.843071682022823e+17 3.843071682022823e+17 1.4285714285714285e+29 5e-324 1.5e-323 -1.5e-323 0.0 1e-323 0.0 4.450147717014403e-308 8.900295434028806e-308 2.2250738585072014e-308 4.4501477170144023e-308 1723456789.1234567 -1723456789.1234567 1723456789.1234567 8.98846567431158e+307 1.348269851146737e+308 7.61866253907264e+303 3.0 3.0 0.0 4503599627370496.0 4503599627370498.0 9007199254740992.0 4503599.5958453 0.0 0.0 -9.223372036854776e+18 9.223372036854776e+18 9007199254740992.0 9007199254740992.0)",
+        "float-time rounding",
+    );
+}
+
+#[test]
+fn buffer_searches_convert_offsets_through_the_rope() {
+    // A multibyte buffer whose haystack is its own text converts the
+    // engine's byte offsets through the rope (test builds compare every
+    // conversion with the haystack index): point, match data, the
+    // positions after forward and backward searches, and a search after
+    // an insertion, all the oracle's.
+    let program = r#"(with-temp-buffer
+         (insert "αβγ abc δεζ\nημ xyz θι\n")
+         (goto-char 3)
+         (list (looking-at "γ \\(a\\)") (match-data t)
+               (re-search-forward "δ\\(ε\\)" nil t) (match-beginning 1) (match-end 0) (point)
+               (re-search-backward "β" nil t) (point)
+               (progn (goto-char 1) (re-search-forward "^η\\(μ\\)" nil t)) (match-data t)
+               (progn (goto-char 14) (looking-at "ημ \\(x\\)")) (match-data t)
+               (progn (goto-char 1) (search-forward "θ" nil t))
+               (progn (goto-char (point-max)) (re-search-backward "[αη]" nil t)) (point)
+               (progn (goto-char 5) (insert "ω") (goto-char 6) (looking-at "abc δ")) (match-end 0)
+               (progn (goto-char 1) (re-search-forward "ζ$" nil t)) (match-beginning 0)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t (3 6 5 6 #<killed buffer>) 11 10 11 11 2 2 15 (13 15 14 15 #<killed buffer>) nil \
+         (13 15 14 15 #<killed buffer>) 21 13 13 t 11 13 12)",
+        "non-ASCII buffer searches",
+    );
+}
+
+#[test]
 fn finalizers_follow_alloc_c() {
     // alloc.c: Fmake_finalizer checks FUNCTIONP; print.c prints
     // `#<finalizer>'; garbage_collect queues every unreached finalizer
@@ -16219,6 +16409,102 @@ fn keymap_bindings_accept_t_vector_events() {
         .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
         .expect("[t] key events should be accepted in keymaps");
     assert_eq!(result, Value::T);
+}
+
+#[test]
+fn native_stores_into_a_keymaps_public_view_reach_its_record() {
+    // subr.el's `define-key-after', compiled natively, splices a binding
+    // pair into the keymap's public list with `setcdr' on a cell it reached
+    // through native pointers, without crossing into Rust.  The runtime
+    // keymap's record is a projection of that list; its snapshot of the
+    // list's cells (canonical words included) is checked before every
+    // keymap primitive reads or rewrites the record, so the lookups,
+    // `keymap-parent', `copy-keymap' and `define-key' see the spliced
+    // pairs.  GNU reads the list itself.  (Found on macOS, whose startup
+    // runs subr.el natively: so-long-tests' `(funcall (lookup-key menu
+    // [so-long-revert]))' called nil.)
+    let program = r#"(progn (require 'comp)
+ (let ((comp-no-spawn nil) (comp-running-batch-compilation t))
+  (fset 'probe-define-key-after (native-compile '(lambda (keymap key definition &optional after)
+  (unless after (setq after t))
+  (or (keymapp keymap)
+      (signal 'wrong-type-argument (list 'keymapp keymap)))
+  (setq key
+	(if (<= (length key) 1) (aref key 0)
+	  (setq keymap (lookup-key keymap
+				   (apply #'vector
+					  (butlast (mapcar #'identity key)))))
+	  (aref key (1- (length key)))))
+  (let ((tail keymap) done inserted)
+    (while (and (not done) tail)
+      ;; Delete any earlier bindings for the same key.
+      (if (eq (car-safe (car (cdr tail))) key)
+	  (setcdr tail (cdr (cdr tail))))
+      ;; If we hit an included map, go down that one.
+      (if (keymapp (car tail)) (setq tail (car tail)))
+      ;; When we reach AFTER's binding, insert the new binding after.
+      ;; If we reach an inherited keymap, insert just before that.
+      ;; If we reach the end of this keymap, insert at the end.
+      (if (or (and (eq (car-safe (car tail)) after)
+		   (not (eq after t)))
+	      (eq (car (cdr tail)) 'keymap)
+	      (null (cdr tail)))
+	  (progn
+	    ;; Stop the scan only if we find a parent keymap.
+	    ;; Keep going past the inserted element
+	    ;; so we can delete any duplications that come later.
+	    (if (eq (car (cdr tail)) 'keymap)
+		(setq done t))
+	    ;; Don't insert more than once.
+	    (or inserted
+		(setcdr tail (cons (cons key definition) (cdr tail))))
+	    (setq inserted t)))
+      (setq tail (cdr tail)))))
+))
+  (list (native-comp-function-p (symbol-function 'probe-define-key-after))
+        (let ((k (make-sparse-keymap "Q")))
+          (probe-define-key-after k [baz] 'qux)
+          (probe-define-key-after k [foo] '(menu-item "Foo" bar))
+          (probe-define-key-after k [zot] 'zip)
+          (list (lookup-key k [baz]) (lookup-key k [foo]) (lookup-key k [zot]) (keymap-parent k) k))
+        (let ((k (make-sparse-keymap "S")) (p (make-sparse-keymap)))
+          (probe-define-key-after k [baz] 'qux)
+          (lookup-key k [baz])
+          (probe-define-key-after k [foo] 'bar)
+          (define-key k [wkey] 'x)
+          (set-keymap-parent k p)
+          (probe-define-key-after k [zot] 'zip)
+          (list (lookup-key k [baz]) (lookup-key k [foo]) (lookup-key k [wkey]) (lookup-key k [zot])
+                (eq (keymap-parent k) p) (copy-sequence k)
+                (let ((c (copy-keymap k))) (list (lookup-key c [zot]) (eq (keymap-parent c) p))))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t (qux bar zip nil (keymap \"Q\" (baz . qux) (foo menu-item \"Foo\" bar) (zot . zip))) (qux bar x zip t (keymap (wkey . x) \"S\" (baz . qux) (foo . bar) (zot . zip) keymap) (zip t)))",
+        "native define-key-after on a runtime keymap",
+    );
+}
+
+#[test]
+fn keymap_views_hand_out_their_own_cells() {
+    // fns.c's `nthcdr' (and `last', `nth', `length', `safe-length' through
+    // it) walk the keymap list itself, so `(setcdr (last map) parent)'
+    // reaches the map's own last cell and Fset_keymap_parent's shape (the
+    // parent's list as the tail) results; a `setcdr' on the root does the
+    // same.  Values from the oracle.
+    let program = r#"(let ((k (make-sparse-keymap "N")) (p (make-sparse-keymap)))
+  (define-key p [akey] 'pa)
+  (list (eq (last k) (cdr k)) (eq (nthcdr 1 k) (cdr k)) (safe-length k) (length k)
+        (progn (setcdr (last k) p)
+               (list k (eq (cdr (cdr k)) p) (keymap-parent k) (lookup-key k [akey]) (length k)))
+        (let ((m (make-sparse-keymap)) (q (make-sparse-keymap)))
+          (define-key q [bkey] 'qb)
+          (setcdr m q)
+          (list m (keymap-parent m) (lookup-key m [bkey])))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t 2 2 ((keymap \"N\" keymap (akey . pa)) t (keymap (akey . pa)) pa 4) ((keymap keymap (bkey . qb)) (keymap (bkey . qb)) qb))",
+        "keymap cells through nthcdr and last",
+    );
 }
 
 #[test]

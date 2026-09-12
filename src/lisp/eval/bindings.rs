@@ -122,6 +122,13 @@ pub(super) fn lisp_environment_declares_special(environment: &Value, name: &str)
     .is_some()
 }
 
+/// One entry of the obarray enumeration: a source holding the symbol
+/// object, or one holding only its name.
+pub(crate) enum KnownSymbolSource<'a> {
+    Symbol(&'a crate::lisp::types::SymbolName),
+    Name(&'a str),
+}
+
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
         // Cow avoids a per-lookup String allocation for the overwhelmingly
@@ -622,7 +629,7 @@ impl Interpreter {
             )),
             // sysdep.c initializes this dumped variable from the same host
             // identity returned by the `system-name' primitive.
-            "system-name" => Some(primitives::system_name_lisp_value()),
+            "system-name" => Some(Value::String(primitives::system_name_value().into())),
             "user-full-name" => Some(Value::String(
                 primitives::current_user_full_name()
                     .or_else(primitives::current_user_login_name)
@@ -940,7 +947,7 @@ impl Interpreter {
             .chain(self.symbol_properties.iter().map(|(name, _)| name.as_str()))
             .chain(self.interned_symbols.iter().map(|name| name.as_str()))
         {
-            if crate::lisp::types::visible_symbol_name(name) != name
+            if !crate::lisp::types::is_visible_symbol_name(name)
                 || self.uninterned_standard_symbol_names.contains(name)
             {
                 continue;
@@ -955,54 +962,72 @@ impl Interpreter {
     }
 
     /// The initial obarray's symbols, in `known_symbol_names' order, as
-    /// symbol objects: what `mapatoms' hands its function.  Each name is
-    /// resolved once through the interned-name table; no per-symbol string
-    /// is allocated (the loadup obarray holds twenty thousand names, and
-    /// ERT's test selection walks it on every batch run).
+    /// symbol objects: what `mapatoms' hands its function.  The sources
+    /// that hold symbol objects (the value cells, the interned list) give
+    /// them as they are; only the name-keyed lists resolve through the
+    /// interned-name table.  No per-symbol string is allocated (the loadup
+    /// obarray holds twenty thousand names, and ERT's test selection walks
+    /// it on every batch run: `mapatoms' was 22 ms against GNU's 3.6).
     pub(crate) fn known_symbols(&self) -> Vec<crate::lisp::types::SymbolName> {
-        self.for_each_known_symbol_name(crate::lisp::types::SymbolName::intern_str)
+        self.for_each_known_symbol(|source| match source {
+            KnownSymbolSource::Symbol(symbol) => symbol.clone(),
+            KnownSymbolSource::Name(name) => crate::lisp::types::SymbolName::intern_str(name),
+        })
     }
 
     fn for_each_known_symbol_name<T>(&self, mut make: impl FnMut(&str) -> T) -> Vec<T> {
+        self.for_each_known_symbol(|source| match source {
+            KnownSymbolSource::Symbol(symbol) => make(symbol.as_str()),
+            KnownSymbolSource::Name(name) => make(name),
+        })
+    }
+
+    /// The obarray's symbols in a fixed order: nil and t, the value cells,
+    /// the variable aliases, the function cells, the plists, then the
+    /// interned list; each name once, the uninterned and per-obarray
+    /// marked names and the names taken out of the standard obarray
+    /// excluded.  MAKE makes an item from the source, which holds either
+    /// the symbol object or only its name.
+    fn for_each_known_symbol<T>(&self, mut make: impl FnMut(KnownSymbolSource<'_>) -> T) -> Vec<T> {
+        use KnownSymbolSource as Source;
         let candidates = ["nil", "t"]
             .into_iter()
-            .chain(
-                self.globals
-                    .iter()
-                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
-            )
+            .map(Source::Name)
+            .chain(self.globals.iter().map(|(name, _)| Source::Symbol(name)))
             .chain(
                 self.variable_aliases
                     .iter()
-                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
+                    .map(|(name, _)| Source::Name(name.as_str())),
             )
             .chain(
                 self.functions
                     .iter()
-                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
+                    .map(|(name, _)| Source::Name(name.as_str())),
             )
             .chain(
                 self.symbol_properties
                     .iter()
-                    .map(|(name, _)| AsRef::<str>::as_ref(name)),
+                    .map(|(name, _)| Source::Name(name.as_str())),
             )
-            .chain(self.interned_symbols.iter().map(String::as_str));
+            .chain(self.interned_symbols.iter().map(Source::Symbol));
         let mut items = Vec::new();
-        // `mapatoms' walks twenty thousand names: the dedupe set hashes
-        // them with FNV, as `known_symbol_count' does, not SipHash.
         let mut seen: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
             HashSet::with_capacity_and_hasher(
-                self.interned_symbols.len(),
+                1 << 15,
                 crate::lisp::primitives::FnvBuildHasher::default(),
             );
-        for name in candidates {
-            if crate::lisp::types::visible_symbol_name(name) != name
+        for candidate in candidates {
+            let name = match &candidate {
+                Source::Symbol(symbol) => symbol.as_str(),
+                Source::Name(name) => name,
+            };
+            if !crate::lisp::types::is_visible_symbol_name(name)
                 || self.uninterned_standard_symbol_names.contains(name)
             {
                 continue;
             }
             if seen.insert(name) {
-                items.push(make(name));
+                items.push(make(candidate));
             }
         }
         items
