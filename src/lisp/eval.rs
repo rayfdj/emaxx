@@ -6239,7 +6239,7 @@ impl Interpreter {
             ("echo-area-clear-hook", Value::Nil),
             (
                 "emacs-copyright",
-                Value::String("Copyright (C) 2025 Free Software Foundation, Inc.".into()),
+                Value::String(primitives::EMACS_COPYRIGHT.into()),
             ),
             ("emulation-mode-map-alists", Value::Nil),
             ("enable-disabled-menus-and-buttons", Value::Nil),
@@ -8041,7 +8041,8 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol(name.clone().into()),
             Value::Integer(*count as i64),
         ]),
-        LispError::EndOfInput => Value::list([Value::Symbol("end-of-file".into()), Value::Nil]),
+        // lread.c:end_of_file_error outside a load: no data.
+        LispError::EndOfInput => Value::list([Value::Symbol("end-of-file".into())]),
         LispError::TestSkipped(message) => Value::list([
             Value::Symbol("ert-test-skipped".into()),
             Value::String(message.clone().into()),

@@ -202,6 +202,8 @@ pub mod reader;
 pub mod sqlite;
 pub mod types;
 
+pub use primitives::{DaemonState, set_build_details, set_daemon_state};
+
 use std::collections::HashMap;
 use std::path::Path;
 

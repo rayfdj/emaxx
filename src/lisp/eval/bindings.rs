@@ -622,7 +622,7 @@ impl Interpreter {
             )),
             // sysdep.c initializes this dumped variable from the same host
             // identity returned by the `system-name' primitive.
-            "system-name" => Some(Value::String(primitives::system_name_value().into())),
+            "system-name" => Some(primitives::system_name_lisp_value()),
             "user-full-name" => Some(Value::String(
                 primitives::current_user_full_name()
                     .or_else(primitives::current_user_login_name)

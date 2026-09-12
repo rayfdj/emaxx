@@ -558,7 +558,7 @@ define_dispatch!(
                 if !args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                Ok(Value::String(system_name_value().into()))
+                Ok(system_name_lisp_value())
             }
             "user-full-name" => {
                 if args.len() > 1 {

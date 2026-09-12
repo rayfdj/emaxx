@@ -1412,6 +1412,17 @@ pub(crate) fn render_prin1_ephemeral(
     render_prin1(interp, value, &mut env)
 }
 
+/// lread.c:end_of_file_error: `(end-of-file FILE)' while a file is being
+/// loaded (`load-true-file-name' a string), else `(end-of-file)'.
+fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
+    match interp.lookup_var("load-true-file-name", env) {
+        Some(file @ Value::String(_)) => {
+            LispError::SignalValue(Value::list([Value::Symbol("end-of-file".into()), file]))
+        }
+        _ => LispError::EndOfInput,
+    }
+}
+
 pub(crate) fn read_one_form_in_env(
     interp: &mut Interpreter,
     text: &str,
@@ -1421,7 +1432,7 @@ pub(crate) fn read_one_form_in_env(
     let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
     let value = match reader.read()? {
         Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
-        None => return Err(LispError::EndOfInput),
+        None => return Err(end_of_file_error(interp, env)),
     };
     let value = interp.intern_read_symbols_in_value(value, env)?;
     interp.set_variable(
@@ -1535,7 +1546,7 @@ fn read_one_positioned_form(
     );
     let value = match reader.read()? {
         Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
-        None => return Err(LispError::EndOfInput),
+        None => return Err(end_of_file_error(interp, env)),
     };
     interp.set_variable(
         "lread--unescaped-character-literals",

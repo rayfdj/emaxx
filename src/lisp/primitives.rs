@@ -182,6 +182,7 @@ pub(crate) use sequences::*;
 pub(crate) use strings::*;
 pub(crate) use syntax::standard_syntax_table_default_value;
 pub(crate) use system::*;
+pub use system::{DaemonState, set_build_details, set_daemon_state};
 pub(crate) use text::*;
 pub(crate) use values::*;
 pub(crate) use window::*;

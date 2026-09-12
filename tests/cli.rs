@@ -254,19 +254,30 @@ fn batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b() {
     // (`noninteractive_need_newline'), so the message starts a new line.
     assert_eq!(output.stderr, b"\nsingle-dash-stderr\n");
 
-    // `-b' is not a GNU option: the oracle exits 255 with "Unknown option".
+    // `-b' is not a GNU option: emacs.c leaves it to startup.el, whose
+    // command-line-1 signals "Unknown option" (the message on stderr, the
+    // batch backtrace on stdout) and the process exits 255 before any
+    // later action runs.
     let rejected = Command::new(env!("CARGO_BIN_EXE_emaxx"))
         .args(["-b", "-batch", "-eval", "(princ \"hi\")"])
         .output()
         .unwrap();
-    assert_ne!(
+    assert_eq!(
         rejected.status.code(),
-        Some(0),
-        "-b must be rejected as GNU rejects it:\nstdout: {}",
-        String::from_utf8_lossy(&rejected.stdout)
+        Some(255),
+        "-b must be rejected as GNU rejects it:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&rejected.stdout),
+        String::from_utf8_lossy(&rejected.stderr)
     );
     assert!(
-        rejected.stdout.is_empty(),
+        String::from_utf8_lossy(&rejected.stderr).starts_with("Unknown option `-b'\n"),
+        "stderr: {}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    // The batch backtrace on stdout quotes the unevaluated `-eval' form;
+    // its own output would have come first.
+    assert!(
+        !String::from_utf8_lossy(&rejected.stdout).starts_with("hi"),
         "a rejected invocation must not evaluate forms: {}",
         String::from_utf8_lossy(&rejected.stdout)
     );
