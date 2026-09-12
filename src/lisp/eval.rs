@@ -4523,6 +4523,7 @@ impl Interpreter {
         clone.function_resolution_cache.clear();
         clone.file_name_handler_match_cache.clear();
         clone.file_name_handler_alist_watch = None;
+        crate::lisp::primitives::forget_buffer_views();
         clone.bytecode_program_cache.clear();
         clone.keymap_bindings_cache.get_mut().clear();
         clone.regexp_syntax_class_cache.get_mut().clear();
@@ -5367,6 +5368,9 @@ impl Interpreter {
     }
 
     pub fn new() -> Self {
+        // A new interpreter numbers buffers and edits from the start; the
+        // thread's cached views of buffer state are of some other one.
+        crate::lisp::primitives::forget_buffer_views();
         primitives::install_user_signal_handlers();
         let main_thread_id = 1u64;
         let standard_obarray_id = 2u64;

@@ -3488,6 +3488,78 @@ fn file_name_handler_match_cache_survives_unrelated_writes() {
 }
 
 #[test]
+fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
+    // Under `parse-sexp-lookup-properties', every `looking-at' over the
+    // same buffer state shares one encoding of the haystack; a
+    // `syntax-table' property write or a syntax-table change makes the
+    // next search encode again.  The match results are GNU's.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    crate::lisp::primitives::reset_syntax_encoding_scan_count();
+    let mut step = |form: &str, expected: Value, scans: usize| {
+        let form =
+            format!("(with-current-buffer (get-buffer-create \"*syntax-encoding-probe*\") {form})");
+        assert_eq!(eval_str_with(&mut interp, &form), expected, "{form}");
+        assert_eq!(
+            crate::lisp::primitives::syntax_encoding_scan_count(),
+            scans,
+            "{form}"
+        );
+    };
+    step(
+        r#"(progn
+             (erase-buffer)
+             (insert "foo(bar)baz (qux) quux")
+             (set-syntax-table (make-syntax-table))
+             (set (make-local-variable (quote parse-sexp-lookup-properties)) t)
+             (put-text-property 4 5 'syntax-table '(2))
+             (list (progn (goto-char 1) (looking-at "\\sw+")) (match-end 0)
+                   (progn (goto-char 5) (looking-at "\\sw+")) (match-end 0)
+                   (progn (goto-char 13) (looking-at "\\s(")) (match-end 0)))"#,
+        Value::list([
+            Value::T,
+            Value::Integer(8),
+            Value::T,
+            Value::Integer(8),
+            Value::T,
+            Value::Integer(14),
+        ]),
+        1,
+    );
+    step(
+        r#"(progn (put-text-property 13 14 'syntax-table '(2))
+                  (goto-char 13)
+                  (list (looking-at "\\sw+") (match-end 0)))"#,
+        Value::list([Value::T, Value::Integer(17)]),
+        2,
+    );
+    step(r#"(progn (goto-char 1) (looking-at "\\sw+"))"#, Value::T, 2);
+    step(
+        r#"(progn (modify-syntax-entry ?q "." (syntax-table))
+                  (goto-char 14)
+                  (looking-at "\\sw+"))"#,
+        Value::Nil,
+        3,
+    );
+
+    // `internal--set-buffer-modified-tick' moves the Lisp-visible tick
+    // backwards; an edit then reuses an old tick value.  The cache keys on
+    // the buffer's monotonic edit serial, so the new text is encoded, not
+    // served from the entry the old tick named.  (buffer.c's primitive;
+    // `primitive-undo' and `restore-buffer-modified-p' use it.)
+    step(
+        r#"(let ((tick (buffer-modified-tick)))
+             (goto-char 5)
+             (insert "(")
+             (internal--set-buffer-modified-tick (1- tick))
+             (goto-char 5)
+             (looking-at "\\s("))"#,
+        Value::T,
+        4,
+    );
+    step(r#"(progn (goto-char 5) (looking-at "\\s("))"#, Value::T, 4);
+}
+
+#[test]
 fn autoloaded_file_name_handlers_keep_their_symbol_identity() {
     let unique = format!(
         "{}-{}",

@@ -26,11 +26,202 @@ struct SyntaxPropertySentinel {
 
 #[derive(Clone, Debug)]
 struct SyntaxPropertyEncoding {
-    haystack: String,
+    haystack: std::rc::Rc<str>,
     sentinels: Vec<SyntaxPropertySentinel>,
 }
 
+/// The key of one syntax-property encoding: the buffer, the range, the
+/// buffer's edit serial (advanced by every text and text-property write;
+/// monotonic, unlike the Lisp-visible `modiff'), its multibyte flag, and
+/// the current syntax table with its parents.  The descriptors the range
+/// reads and the `category' symbols' properties are the entry's own
+/// authorities (`SyntaxEncodingCacheEntry'); the pattern enters only as
+/// characters a sentinel must not collide with, checked on a hit.
+#[derive(Clone, PartialEq, Eq)]
+struct SyntaxEncodingKey {
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    edit_serial: u64,
+    multibyte: bool,
+    syntax_chain: crate::lisp::eval::SyntaxChainSignature,
+}
+
+const SYNTAX_ENCODING_CACHE_LIMIT: usize = 4;
+
+/// One cached encoding with the authorities beyond its key: a mutation
+/// watch over every syntax descriptor the range reads (the `syntax-table'
+/// property values and the values behind `category' symbols) and, for each
+/// category symbol, the `syntax-table' property it had (a `put' replaces
+/// that value without mutating a watched cell).
+struct SyntaxEncodingCacheEntry {
+    key: SyntaxEncodingKey,
+    descriptors: crate::lisp::types::ConsMutationSnapshot,
+    categories: Vec<(String, Value)>,
+    encoding: Option<std::rc::Rc<SyntaxPropertyEncoding>>,
+}
+
+/// What the `syntax-table' properties of a range consist of: whether any
+/// character has one (through a `category' symbol included), the
+/// descriptor values themselves, and the category symbols with their
+/// current `syntax-table' property.
+struct SyntaxPropertyAuthorities {
+    present: bool,
+    descriptors: Vec<Value>,
+    categories: Vec<(String, Value)>,
+}
+
+fn syntax_property_authorities(
+    interp: &Interpreter,
+    start: usize,
+    end: usize,
+) -> SyntaxPropertyAuthorities {
+    let buffer = &interp.buffer;
+    let mut authorities = SyntaxPropertyAuthorities {
+        present: false,
+        descriptors: Vec::new(),
+        categories: Vec::new(),
+    };
+    let mut pos = start.max(buffer.point_min());
+    let end = end.min(buffer.point_max());
+    while pos < end {
+        let (_, interval_end) = buffer.text_property_interval_around(pos);
+        let props = buffer.text_properties_at_ref(pos);
+        if !props.is_empty() {
+            let direct = props
+                .iter()
+                .find(|(name, _)| name == "syntax-table")
+                .map(|(_, value)| value);
+            if let Some(value) = direct {
+                authorities.present |= !value.is_nil();
+                authorities.descriptors.push(value.clone());
+            }
+            if let Some(category) = props
+                .iter()
+                .find(|(name, _)| name == "category")
+                .and_then(|(_, value)| value.as_symbol().ok())
+            {
+                let value = interp
+                    .get_symbol_property(category, "syntax-table")
+                    .unwrap_or(Value::Nil);
+                if direct.is_none() {
+                    authorities.present |= !value.is_nil();
+                }
+                authorities.descriptors.push(value.clone());
+                authorities.categories.push((category.to_string(), value));
+            }
+        }
+        pos = interval_end.max(pos + 1);
+    }
+    authorities
+}
+
+/// The facts the regexp paths read from a pattern's text, memoized by the
+/// text: each was a scan of the pattern on every search (cc-mode's
+/// patterns run to kilobytes; three scans cost more than the match).
+#[derive(Clone, Copy)]
+struct PatternFacts {
+    syntax_table: bool,
+    category_table: bool,
+    point_assertion: bool,
+}
+
+/// Hashes each written slice by its length and its first and last 64
+/// bytes (FNV-1a), so a key holding a kilobyte-long pattern costs the same
+/// to look up as a short one; equality still compares the whole text.
+#[derive(Default)]
+struct SampledHasher(u64);
+
+impl std::hash::Hasher for SampledHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut hash = if self.0 == 0 { OFFSET } else { self.0 };
+        let mut mix = |byte: u8| {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(PRIME);
+        };
+        for byte in (bytes.len() as u64).to_le_bytes() {
+            mix(byte);
+        }
+        if bytes.len() <= 128 {
+            bytes.iter().copied().for_each(&mut mix);
+        } else {
+            bytes[..64].iter().copied().for_each(&mut mix);
+            bytes[bytes.len() - 64..].iter().copied().for_each(&mut mix);
+        }
+        self.0 = hash;
+    }
+}
+
+type SampledBuildHasher = std::hash::BuildHasherDefault<SampledHasher>;
+
+const PATTERN_FACTS_LIMIT: usize = 4096;
+
+thread_local! {
+    static PATTERN_FACTS: RefCell<HashMap<String, PatternFacts, SampledBuildHasher>> =
+        RefCell::new(HashMap::default());
+}
+
+fn pattern_facts(pattern: &str) -> PatternFacts {
+    if let Some(facts) = PATTERN_FACTS.with(|facts| facts.borrow().get(pattern).copied()) {
+        return facts;
+    }
+    let facts = PatternFacts {
+        syntax_table: pattern_depends_on_syntax_table(pattern),
+        category_table: pattern_depends_on_category_table(pattern),
+        point_assertion: contains_point_assertion(pattern),
+    };
+    PATTERN_FACTS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() >= PATTERN_FACTS_LIMIT {
+            memo.clear();
+        }
+        memo.insert(pattern.to_string(), facts);
+    });
+    facts
+}
+
+thread_local! {
+    static SYNTAX_ENCODING_CACHE: RefCell<Vec<SyntaxEncodingCacheEntry>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Forget every thread-local view of buffer state: the haystack and
+/// syntax-encoding caches key on buffer ids and per-process edit serials,
+/// which a new interpreter on this thread (a test, an image install)
+/// numbers from the start again.
+pub(crate) fn forget_buffer_views() {
+    REGEXP_HAYSTACK_CACHE.with(|cache| cache.borrow_mut().clear());
+    SYNTAX_ENCODING_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+#[cfg(test)]
+thread_local! {
+    static SYNTAX_ENCODING_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_syntax_encoding_scan_count() {
+    SYNTAX_ENCODING_SCAN_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn syntax_encoding_scan_count() -> usize {
+    SYNTAX_ENCODING_SCAN_COUNT.with(std::cell::Cell::get)
+}
+
 impl SyntaxPropertyEncoding {
+    fn uses_sentinel_in(&self, pattern: &str) -> bool {
+        pattern
+            .chars()
+            .any(|ch| self.sentinels.iter().any(|entry| entry.sentinel == ch))
+    }
+
     fn original_sentinels(&self, original: char, case_fold: bool) -> Vec<char> {
         self.sentinels
             .iter()
@@ -2064,7 +2255,11 @@ const COMPILED_ELISP_REGEX_CACHE_LIMIT: usize = 1024;
 
 #[derive(Default)]
 struct CompiledElispRegexCache {
-    entries: std::collections::HashMap<CompiledElispRegexKey, (Rc<CompiledElispRegex>, u64)>,
+    entries: std::collections::HashMap<
+        CompiledElispRegexKey,
+        (Rc<CompiledElispRegex>, u64),
+        SampledBuildHasher,
+    >,
     use_counter: u64,
 }
 
@@ -2135,8 +2330,8 @@ fn encode_syntax_property_haystack(
     start: usize,
     haystack: &std::rc::Rc<str>,
     pattern: &str,
-) -> Option<SyntaxPropertyEncoding> {
-    if !pattern_depends_on_syntax_table(pattern)
+) -> Option<std::rc::Rc<SyntaxPropertyEncoding>> {
+    if !pattern_facts(pattern).syntax_table
         || !interp
             .lookup_var("parse-sexp-lookup-properties", env)
             .is_some_and(|value| value.is_truthy())
@@ -2149,14 +2344,104 @@ fn encode_syntax_property_haystack(
     // that per interval spares the per-character walk that made every
     // syntax-class `looking-at' of a cc-mode buffer (which sets
     // `parse-sexp-lookup-properties') cost the length of the buffer.
-    if !haystack_has_syntax_property(
-        interp,
-        start,
-        start + haystack_char_at_byte(haystack, haystack.len()),
-    ) {
-        return None;
+    let end = start + haystack_char_at_byte(haystack, haystack.len());
+    // `char-property-alias-alist' can redirect the property through other
+    // properties, whose changes the entry's authorities do not follow; a
+    // buffer with it in force is encoded fresh each time, as before the
+    // cache, decided on every call.
+    if interp
+        .buffer_local_value(interp.current_buffer_id(), "char-property-alias-alist")
+        .is_some_and(|value| !value.is_nil())
+    {
+        if !haystack_has_syntax_property(interp, start, end) {
+            return None;
+        }
+        #[cfg(test)]
+        SYNTAX_ENCODING_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+        return build_syntax_property_encoding(interp, start, haystack, pattern);
     }
+    // One encoding per buffer state, shared by every search over the same
+    // range: syntax.c reads the property only at the characters a match
+    // examines, and encoding the whole haystack again for each
+    // `looking-at' cost the length of the buffer per call.  A hit is the
+    // key and the entry's own authorities; the range's properties are
+    // walked only to build an entry (cperl-mode's buffers carry thousands
+    // of `syntax-table' properties, and a walk per call cost more than the
+    // match).
+    let key = SyntaxEncodingKey {
+        buffer_id: interp.current_buffer_id(),
+        start,
+        end,
+        edit_serial: interp.buffer.edit_serial(),
+        multibyte: interp.buffer.is_multibyte(),
+        syntax_chain: interp.syntax_table_chain_signature(interp.current_syntax_table_id()),
+    };
+    let cached = SYNTAX_ENCODING_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let index = cache.iter().position(|entry| {
+            entry.key == key
+                && entry.descriptors.is_current()
+                && entry.categories.iter().all(|(name, value)| {
+                    super::values::values_eql(
+                        &interp
+                            .get_symbol_property(name, "syntax-table")
+                            .unwrap_or(Value::Nil),
+                        value,
+                    )
+                })
+        })?;
+        let entry = cache.remove(index);
+        let hit = entry.encoding.clone();
+        cache.push(entry);
+        Some(hit)
+    });
+    if let Some(cached) = cached
+        && cached
+            .as_ref()
+            .is_none_or(|encoding| !encoding.uses_sentinel_in(pattern))
+    {
+        return cached;
+    }
+    let authorities = syntax_property_authorities(interp, start, end);
+    let encoding = if authorities.present {
+        #[cfg(test)]
+        SYNTAX_ENCODING_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+        build_syntax_property_encoding(interp, start, haystack, pattern)
+    } else {
+        // A range without the property renders every character with its
+        // table class: no encoding, remembered as such under the same
+        // authorities.
+        None
+    };
+    let mut descriptors = crate::lisp::types::ConsMutationSnapshot::tree(&Value::Nil);
+    for descriptor in &authorities.descriptors {
+        descriptors.include_tree(descriptor);
+    }
+    SYNTAX_ENCODING_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.retain(|entry| entry.key != key);
+        if cache.len() >= SYNTAX_ENCODING_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push(SyntaxEncodingCacheEntry {
+            key,
+            descriptors,
+            categories: authorities.categories,
+            encoding: encoding.clone(),
+        });
+    });
+    encoding
+}
 
+/// Render the haystack with a sentinel for each character whose effective
+/// syntax class (under its `syntax-table' property) differs from its
+/// table class.
+fn build_syntax_property_encoding(
+    interp: &Interpreter,
+    start: usize,
+    haystack: &std::rc::Rc<str>,
+    pattern: &str,
+) -> Option<std::rc::Rc<SyntaxPropertyEncoding>> {
     let mut forbidden = haystack
         .chars()
         .chain(pattern.chars())
@@ -2201,9 +2486,11 @@ fn encode_syntax_property_haystack(
             });
         encoded.push(sentinel);
     }
-    (!sentinels.is_empty()).then_some(SyntaxPropertyEncoding {
-        haystack: encoded,
-        sentinels,
+    (!sentinels.is_empty()).then(|| {
+        std::rc::Rc::new(SyntaxPropertyEncoding {
+            haystack: encoded.into(),
+            sentinels,
+        })
     })
 }
 
@@ -2220,7 +2507,7 @@ struct RegexpHaystackKey {
     buffer_id: u64,
     start: usize,
     end: usize,
-    chars_modiff: crate::buffer::ModCount,
+    text_edit_serial: u64,
     multibyte: bool,
 }
 
@@ -2234,7 +2521,9 @@ thread_local! {
 // GNU's re_search runs directly over the buffer text and never copies it;
 // this runtime's regex engine needs one contiguous string, so the mapped
 // haystack is built once per (buffer, range, text-modification) state and
-// shared.  CHARS_MODIFF only advances on text changes, and the mapping
+// shared.  The buffer's text edit serial advances on text changes only
+// (monotonic, where `internal--set-buffer-modified-tick' can move
+// CHARS_MODIFF backwards), and the mapping
 // below depends on nothing but the characters and the multibyte flag, so
 // a hit hands back byte-identical content to a fresh build.
 fn buffer_regexp_haystack(
@@ -2246,7 +2535,7 @@ fn buffer_regexp_haystack(
         buffer_id: interp.current_buffer_id(),
         start,
         end,
-        chars_modiff: interp.buffer.chars_modification_count(),
+        text_edit_serial: interp.buffer.text_edit_serial(),
         multibyte: interp.buffer.is_multibyte(),
     };
     let cached = REGEXP_HAYSTACK_CACHE.with(|cache| {
@@ -2492,8 +2781,9 @@ fn compile_elisp_regex_with_case_fold(
     // pattern keys the same either way), so a regexp compiled under one
     // syntax or category table can never leak into another table's search
     // -- and a cache hit no longer pays the translation it cached.
-    let depends_on_syntax_table = pattern_depends_on_syntax_table(&pattern_text);
-    let depends_on_category_table = pattern_depends_on_category_table(&pattern_text);
+    let facts = pattern_facts(&pattern_text);
+    let depends_on_syntax_table = facts.syntax_table;
+    let depends_on_category_table = facts.category_table;
     let depends_on_tables = depends_on_syntax_table || depends_on_category_table;
     let key = CompiledElispRegexKey {
         pattern: pattern_text.clone(),
@@ -3517,7 +3807,7 @@ pub(super) fn looking_at_impl(
     // call (0.22 ms a call in a 400 KB dired listing, once per line from
     // `dired-move-to-filename', GNU's re_match_2 reading the buffer in
     // place).
-    let point_asserted = contains_point_assertion(&pattern.text);
+    let point_asserted = pattern_facts(&pattern.text).point_assertion;
     let haystack_start = if point_asserted {
         pos.saturating_sub(1).max(interp.buffer.point_min())
     } else {
@@ -3538,12 +3828,12 @@ pub(super) fn looking_at_impl(
         env,
         point_assertion,
         pos == interp.buffer.point_min(),
-        syntax_encoding.as_ref(),
+        syntax_encoding.as_deref(),
         RegexpCategoryScope::CurrentBuffer,
     )?;
     let haystack = syntax_encoding
         .as_ref()
-        .map(|encoding| std::rc::Rc::<str>::from(encoding.haystack.as_str()))
+        .map(|encoding| encoding.haystack.clone())
         .unwrap_or(haystack);
     // The syntax-property encoder preserves one Unicode scalar per buffer
     // character, but a sentinel can occupy more UTF-8 bytes than the ASCII
@@ -3705,12 +3995,12 @@ pub(super) fn buffer_regex_search(
             env,
             r"\A",
             interp.buffer.point() == interp.buffer.point_min(),
-            syntax_encoding.as_ref(),
+            syntax_encoding.as_deref(),
             RegexpCategoryScope::CurrentBuffer,
         )?;
         let haystack = syntax_encoding
             .as_ref()
-            .map(|encoding| std::rc::Rc::<str>::from(encoding.haystack.as_str()))
+            .map(|encoding| encoding.haystack.clone())
             .unwrap_or(haystack);
         // `captures_from_pos' takes a BYTE offset; positions are chars.
         let start_chars = start.saturating_sub(haystack_start);
@@ -3896,12 +4186,12 @@ pub(super) fn buffer_regex_search(
                 env,
                 point_boundary.ordinary_assertion(),
                 true,
-                syntax_encoding.as_ref(),
+                syntax_encoding.as_deref(),
                 RegexpCategoryScope::CurrentBuffer,
             )?;
             let prefix = syntax_encoding
                 .as_ref()
-                .map(|encoding| std::rc::Rc::<str>::from(encoding.haystack.as_str()))
+                .map(|encoding| encoding.haystack.clone())
                 .unwrap_or(prefix);
             let boundary_byte = point_boundary
                 .boundary_byte(&prefix)
@@ -3917,7 +4207,7 @@ pub(super) fn buffer_regex_search(
                     env,
                     SearchPointBoundary::End.ordinary_assertion(),
                     true,
-                    syntax_encoding.as_ref(),
+                    syntax_encoding.as_deref(),
                     RegexpCategoryScope::CurrentBuffer,
                 )?)
             };

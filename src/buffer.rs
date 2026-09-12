@@ -53,6 +53,15 @@ pub struct Buffer {
     /// modifications such as `set-buffer-modified-p'.
     chars_modiff: ModCount,
 
+    /// Counts of this process's edits, monotonic: `modiff' is Lisp-visible
+    /// and `internal--set-buffer-modified-tick' can move it backwards, so a
+    /// cache keyed on it could take an old entry for a new state.  The text
+    /// serial advances with the characters, the edit serial with the
+    /// characters and the text properties.  Neither is dumped: a loaded
+    /// buffer starts both at zero in a process without cache entries.
+    edit_serial: u64,
+    text_edit_serial: u64,
+
     /// Value of modiff at last save.
     save_modiff: ModCount,
 
@@ -353,6 +362,8 @@ impl Buffer {
             modiff: 1,
             chars_modiff: 1,
             save_modiff: 1,
+            edit_serial: 0,
+            text_edit_serial: 0,
             saved_text: String::new(),
             forced_modified: false,
             autosaved: false,
@@ -388,6 +399,8 @@ impl Buffer {
             modiff: 1,
             chars_modiff: 1,
             save_modiff: 1,
+            edit_serial: 0,
+            text_edit_serial: 0,
             saved_text: s.to_string(),
             forced_modified: false,
             autosaved: false,
@@ -440,6 +453,16 @@ impl Buffer {
 
     /// CHARS_MODIFF analog: bumped only when buffer text changes, so a
     /// text-derived cache keyed on it can never serve stale content.
+    /// This process's count of text edits (see `edit_serial').
+    pub fn text_edit_serial(&self) -> u64 {
+        self.text_edit_serial
+    }
+
+    /// This process's count of text and text-property edits.
+    pub fn edit_serial(&self) -> u64 {
+        self.edit_serial
+    }
+
     pub fn chars_modification_count(&self) -> ModCount {
         self.chars_modiff
     }
@@ -1195,6 +1218,8 @@ impl Buffer {
 
         self.modiff += 1;
         self.chars_modiff = self.modiff;
+        self.edit_serial += 1;
+        self.text_edit_serial += 1;
         self.autosaved = false;
         self.pt
     }
@@ -1230,6 +1255,8 @@ impl Buffer {
         self.invalidate_char_cache();
         self.modiff += 1;
         self.chars_modiff = self.modiff;
+        self.edit_serial += 1;
+        self.text_edit_serial += 1;
         self.autosaved = false;
     }
 
@@ -1301,6 +1328,8 @@ impl Buffer {
 
         self.modiff += 1;
         self.chars_modiff = self.modiff;
+        self.edit_serial += 1;
+        self.text_edit_serial += 1;
         self.autosaved = false;
         Ok(deleted)
     }
@@ -1696,6 +1725,8 @@ impl Buffer {
             mark_active: parts.mark_active,
             modiff: parts.modiff,
             chars_modiff: parts.chars_modiff,
+            edit_serial: 0,
+            text_edit_serial: 0,
             save_modiff: parts.save_modiff,
             saved_text: parts.saved_text,
             forced_modified: parts.forced_modified,
@@ -2022,6 +2053,7 @@ impl Buffer {
         let window = merge_adjacent_spans(window);
         self.text_properties.splice(splice_lo..splice_hi, window);
         self.modiff = self.modiff.saturating_add(1);
+        self.edit_serial += 1;
         self.autosaved = false;
     }
 }

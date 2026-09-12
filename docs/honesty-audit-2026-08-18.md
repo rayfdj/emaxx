@@ -9866,3 +9866,74 @@ passes on the pre-change code on Linux as well (Linux delivers SIGKILL
 to a process sleeping in a terminal write); it guards the contract,
 it does not reproduce Darwin.  The Mac run is the verification, and
 it is pending.
+
+## 2026-09-12 Checkpoint 19j: the syntax-property encoding shared across a buffer state
+
+*What prompted it.*  semantic-fmt-utest ran in 75 s against GNU's
+0.83; half of it under `looking-at', and a third of that in
+`encode_syntax_property_haystack', which rendered the effective syntax
+class of every character of the haystack (point-min to point-max for a
+`looking-at' without a point assertion) on every call under
+`parse-sexp-lookup-properties'.  syntax.c reads the property only at
+the characters a match examines.  Around it, three scans of the
+pattern's text per search (`pattern_depends_on_syntax_table',
+`pattern_depends_on_category_table', `contains_point_assertion'; each
+called two or three times) and a SipHash of the whole pattern for the
+compiled-regexp cache key: cc-mode's and semantic's patterns run to
+kilobytes.
+
+*What changed.*  One encoding per buffer state, shared by every search
+over the same range (`SYNTAX_ENCODING_CACHE', four entries): the key is
+the buffer, the range, the buffer's edit serial (a process-local count
+advanced by text and text-property writes alike, monotonic where the
+Lisp-visible `modiff' is not: `internal--set-buffer-modified-tick' can
+move that one backwards, and the raw haystack cache keys on the text
+edit serial for the same reason now), the multibyte flag and the syntax
+table chain's signature; the entry carries
+the rest of what the encoding read -- a mutation watch over every
+`syntax-table' descriptor in the range and the descriptors behind
+`category' symbols, and for each category symbol the `syntax-table'
+property it had, compared by `eq' on a hit (a `put' replaces that value
+without mutating a watched cell).  A range without the property is
+remembered as needing no encoding under the same authorities.  A buffer
+with `char-property-alias-alist' in force is encoded fresh each time,
+as before, decided on every call (the aliased properties' changes are
+not among the entry's authorities).  A pattern holding one of the
+cached sentinels misses.  The
+range's properties are walked only to build an entry: a first version
+walked them on every call, and cperl-mode's buffers carry thousands of
+`syntax-table' properties (cperl-test-bug-10483's child ran past its
+two-second budget); a hit is the key and the entry's own watch.  The
+pattern's three facts are memoized by its text (`pattern_facts'), and
+that memo and the compiled-regexp cache hash a pattern by its length
+and its first and last 64 bytes (`SampledHasher'; equality still
+compares the whole text).  The control
+`syntax_property_haystack_encoding_is_shared_across_a_buffer_state'
+counts encodings across `looking-at' calls at different points, a
+`put-text-property' of `syntax-table' and a `modify-syntax-entry', with
+GNU's match results, and asserts that an edit made after
+`internal--set-buffer-modified-tick' moved the tick backwards is
+encoded rather than served from the old entry.
+
+*Measured.*  A `looking-at' of `\\sw+' in an 80 KB buffer with one
+`syntax-table' property, under `parse-sexp-lookup-properties': the
+same state 6.9 us (GNU 0.5); after a `put' on an unrelated symbol 8.3
+us (3,077 before; GNU 0.64); after an insertion and deletion 3.5 ms
+(the encoding is rebuilt; GNU 1.8 us).  semantic-fmt-utest 75 to 51 s
+(GNU 0.83); cperl-mode-tests.el 19.1 to 20.3 s and perl-mode-tests.el
+11.1 to 10.6 s (GNU 1.0 and 1.1): no change there, their cost is
+elsewhere.  cperl-test-bug-10483 runs a child Emacs under a two-second
+`with-timeout'; the child takes 1.55 to 1.8 s on this tree and on the
+19f binary alike (GNU 0.2), so the test passes or fails by the
+machine's load: it failed twice in file runs during this checkpoint's
+measurements and passed alone and in the final file run.  Not caused
+here and not fixed here; the child's boot and load are the D20 items.
+
+*Measured after it and open.*  semantic-fmt-utest at 51 s: `looking-at'
+39% (the match, the compile key's clone of the pattern, the encoding
+lookup), assignments through `set_symbol_value_cell' 15% (every stored
+string is copied into a fresh string object: `stored_value'), buffer
+edits 15%, `SymbolName::id_of' 11% (name-keyed reads).  A rebuilt
+encoding after every edit at 3.5 ms in an 80 KB buffer: an encoding
+that follows the edited interval alone would be the next step for
+buffers edited between searches.
