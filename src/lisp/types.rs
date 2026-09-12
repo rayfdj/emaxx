@@ -335,6 +335,24 @@ impl ConsMutationSnapshot {
         snapshot
     }
 
+    /// A snapshot over CELLS at once: one sort of the field ids and one
+    /// registration, where adding the cells one by one sorted the ids
+    /// after each (a keymap view of a thousand cells snapshotted on every
+    /// `define-key' spent its time there: mwheel-tests 25x GNU).
+    pub(crate) fn cells<'a>(cells: impl IntoIterator<Item = &'a SharedCons>) -> Self {
+        let mut field_ids = Vec::new();
+        let mut native_cells = Vec::new();
+        for cell in cells {
+            field_ids.extend(ConsCell::mutation_field_ids(cell));
+            if cell.attached_native_address().is_some() {
+                native_cells.push(Rc::downgrade(cell));
+            }
+        }
+        let mut snapshot = Self::from_field_ids(field_ids);
+        snapshot.native_cells = native_cells;
+        snapshot
+    }
+
     /// Add one cell's two fields (and its canonical words, when generated
     /// code can reach it) to the dependencies.
     pub(crate) fn include_cell(&mut self, cell: &SharedCons) {

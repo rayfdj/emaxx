@@ -10602,3 +10602,37 @@ charset-property printer control fail when run as root under the C
 locale; the gate runs them as the `emaxx' user with the grouped
 gate's locale, where they pass, and they passed there before and
 after.
+
+## 2026-09-12 Checkpoint 19r: a keymap's view snapshotted in one pass
+
+*What prompted it.*  The Mac's frozen run after checkpoint 19q:
+mwheel-tests 63 to 207 ms (GNU 8), the one regression the list showed
+against the run before; on Linux 487 ms cold, 255 warm, against GNU's
+17 and 10.  The profile: `keymap_define_binding_with_placement' 41%
+of the process, of which `register_keymap_public_cons_owners' 32%
+and `ConsMutationSnapshot::include_cell' 30%.  `mouse-wheel-mode'
+binds its wheel events into the global map with `global-set-key';
+every `define-key' rebuilds the map's public list from the record
+(as before 19n) and, since 19n, snapshots every cell of the new list;
+the snapshot added the cells one at a time and sorted its field ids
+after each -- the square of the map's size, in a sort, per binding.
+
+*What changed.*  `ConsMutationSnapshot::cells' builds a snapshot
+over a set of cells at once (the field ids collected, one sort and
+dedup, one watcher registration, the native cells tracked), and the
+owner registration collects the view's cells and builds it that way.
+Nothing observable changes: the snapshot covers the same cells.
+
+*Measured.*  mwheel-tests, three runs in one process: 487 / 255 / 259
+ms to 196 / 168 / 136 (GNU 17 / 10 / 9).
+
+*Open.*  The record's round trip on every `define-key': the bindings
+list is parsed into a vector, the binding inserted, the list
+serialized again and the public list rebuilt cell by cell, then
+re-registered and re-snapshotted -- linear in the map's size, where
+keymap.c's store_in_keymap splices one cell into the existing list
+(or sets the cdr of the entry it finds).  In the profile after this
+checkpoint that round trip is 18% of the process (`keymap_bindings'
+7.6%, the refresh 10%, the registration 5.4%); mwheel-tests stays at
+14x.  Doing as store_in_keymap does -- one cell spliced, one cell
+added to the watch -- is the port that closes it.

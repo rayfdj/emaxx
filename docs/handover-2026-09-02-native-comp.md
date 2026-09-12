@@ -417,6 +417,10 @@ GNU 0.12; its cold run, like GNU's, compiles the four trampolines
 `ert-with-message-capture` triggers, 1.2 s each here against GNU's
 0.21, open).  The audit of 19n to 19q fixed the labeled restrictions'
 bound markers (unmarked, and of the wrong insertion type).
+Checkpoint 19r (2026-09-12, for main): the keymap view snapshot is
+built in one pass (mwheel-tests, the Mac's one regression after 19q,
+255 to 136 ms warm on Linux, GNU 10); the record's linear round trip
+per `define-key` stays open against store_in_keymap's spliced cell.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
