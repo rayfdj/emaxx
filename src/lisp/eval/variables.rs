@@ -1604,10 +1604,15 @@ impl Interpreter {
         resolved: &SymbolName,
     ) -> Option<SpecialBindingScope> {
         let buffer_id = self.current_buffer_id();
-        if self
-            .buffer_locals
-            .get(&buffer_id)
-            .is_some_and(|locals| locals.binding(resolved).is_some())
+        // data.c:set_internal dispatches on the redirect tag: only a
+        // SYMBOL_LOCALIZED symbol can have a buffer-local binding, so the
+        // buffer's binding table is probed for those alone (the read path
+        // gates the same way).
+        if self.globals.has_flag(resolved, LOCALIZED)
+            && self
+                .buffer_locals
+                .get(&buffer_id)
+                .is_some_and(|locals| locals.binding(resolved).is_some())
         {
             return Some(SpecialBindingScope::BufferLocal(buffer_id));
         }

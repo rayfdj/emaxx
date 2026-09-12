@@ -182,6 +182,12 @@ Checkpoint 19l (2026-09-12, for main): the syntax-property encoding
 follows the buffer's edit log instead of being rebuilt after every
 edit (a `looking-at` after an insertion and deletion 3,170 to 48 us,
 GNU 1.95); `buffer-swap-text` advances the edit serials.
+Checkpoint 19m (2026-09-12, for main): the syntax scanners read the
+rope in place instead of copying the buffer into a `Vec<char>` per
+call (`forward-sexp` 245 to 8.2 us, GNU 0.51), plain searches read
+windows, the collector marks symbols by id (semantic-fmt-utest 46.9 to
+34.7 s, GNU 0.84).  Open, measured: markers are never reclaimed by the
+collector (an edit after 20,000 dropped markers 3,304 us, GNU 0.90).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

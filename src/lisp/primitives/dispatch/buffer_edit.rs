@@ -732,6 +732,18 @@ define_dispatch!(
                     _ if forward => interp.buffer.point_max(),
                     _ => interp.buffer.point_min(),
                 };
+                // search.c's simple search scans the buffer text from point
+                // and stops at the first match; folding and copying the
+                // whole rest of the buffer first made a search that matches
+                // at once cost the buffer's length (330 us for 80 KB).  The
+                // text is read in windows of `SEARCH_WINDOW_CHARS' that
+                // overlap by a needle's length less one, so no match is
+                // split between two windows; each window is folded as the
+                // whole text was.
+                const SEARCH_WINDOW_CHARS: usize = 4096;
+                let needle_chars = needle.chars().count();
+                let window_chars = SEARCH_WINDOW_CHARS.max(2 * needle_chars);
+                let overlap = needle_chars.saturating_sub(1);
                 let mut result = None;
                 for _ in 0..count.unsigned_abs().max(1) {
                     let point = interp.buffer.point();
@@ -740,34 +752,46 @@ define_dispatch!(
                         if limit < point {
                             None
                         } else {
-                            let haystack = interp
-                                .buffer
-                                .buffer_substring(point, limit)
-                                .map_err(|error| LispError::Signal(error.to_string()))?;
-                            let haystack = if case_fold { fold(&haystack) } else { haystack };
-                            haystack.find(&needle_key).map(|found| {
-                                let match_start_chars = haystack[..found].chars().count();
-                                (
-                                    point + match_start_chars,
-                                    point + match_start_chars + needle.chars().count(),
-                                )
-                            })
+                            let mut from = point;
+                            loop {
+                                let to = limit.min(from + window_chars);
+                                let window = interp
+                                    .buffer
+                                    .buffer_substring(from, to)
+                                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                                let window = if case_fold { fold(&window) } else { window };
+                                if let Some(found) = window.find(&needle_key) {
+                                    let start = from + window[..found].chars().count();
+                                    break Some((start, start + needle_chars));
+                                }
+                                if to >= limit {
+                                    break None;
+                                }
+                                from = to - overlap.min(to - from);
+                            }
                         }
                     } else {
                         let limit = limit.max(interp.buffer.point_min());
                         if limit > point {
                             None
                         } else {
-                            let haystack = interp
-                                .buffer
-                                .buffer_substring(limit, point)
-                                .map_err(|error| LispError::Signal(error.to_string()))?;
-                            let haystack = if case_fold { fold(&haystack) } else { haystack };
-                            haystack.rfind(&needle_key).map(|found| {
-                                let start = limit + haystack[..found].chars().count();
-                                let end = start + needle.chars().count();
-                                (start, end)
-                            })
+                            let mut to = point;
+                            loop {
+                                let from = limit.max(to.saturating_sub(window_chars));
+                                let window = interp
+                                    .buffer
+                                    .buffer_substring(from, to)
+                                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                                let window = if case_fold { fold(&window) } else { window };
+                                if let Some(found) = window.rfind(&needle_key) {
+                                    let start = from + window[..found].chars().count();
+                                    break Some((start, start + needle_chars));
+                                }
+                                if from <= limit {
+                                    break None;
+                                }
+                                to = from + overlap.min(to - from);
+                            }
                         }
                     };
                     match result {

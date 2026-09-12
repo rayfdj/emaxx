@@ -144,9 +144,12 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
             text: text.to_string(),
             props: Vec::new(),
             extended_chars: Vec::new(),
-            multibyte: text
-                .chars()
-                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
+            // The byte scan first: ASCII text (most stored strings) never
+            // walks its characters.
+            multibyte: !text.is_ascii()
+                && text
+                    .chars()
+                    .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
         }),
         Value::StringObject(state) => {
             let state = state.borrow();

@@ -711,14 +711,78 @@ fn newline_comment_end_style(interp: &Interpreter, table_id: u64) -> Option<u8> 
     (entry.class == SyntaxClass::CommentEnd).then(|| scan_comment_style(&entry, None))
 }
 
+/// The buffer's characters by index (0-based over the whole text,
+/// narrowing aside), read from a shared handle on the rope as a scan
+/// needs them.  Every scanner collected the whole buffer into a
+/// `Vec<char>' first, which made a `forward-sexp', `parse-partial-sexp'
+/// or `forward-comment' cost the buffer's length (240 us in 80 KB against
+/// GNU's scan in place at 0.3 to 1.4 us).  One rope chunk is kept decoded
+/// at a time; sequential reads stay inside it.
+pub(super) struct ScanChars {
+    text: ropey::Rope,
+    len: usize,
+    chunk_start: std::cell::Cell<usize>,
+    chunk: std::cell::RefCell<Vec<char>>,
+}
+
+impl ScanChars {
+    pub(super) fn new(buffer: &crate::buffer::Buffer) -> Self {
+        let text = buffer.text_rope();
+        let len = text.len_chars();
+        ScanChars {
+            text,
+            len,
+            chunk_start: std::cell::Cell::new(0),
+            chunk: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The number of characters readable (the text's, or fewer after
+    /// `truncate').
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Read no character at or past LEN, as a vector truncated to LEN.
+    pub(super) fn truncate(&mut self, len: usize) {
+        self.len = self.len.min(len);
+    }
+
+    pub(super) fn get(&self, index: usize) -> Option<char> {
+        if index >= self.len {
+            return None;
+        }
+        let start = self.chunk_start.get();
+        {
+            let chunk = self.chunk.borrow();
+            if index >= start && index - start < chunk.len() {
+                return Some(chunk[index - start]);
+            }
+        }
+        let (text, _, chunk_start, _) = self.text.chunk_at_char(index);
+        let mut chunk = self.chunk.borrow_mut();
+        chunk.clear();
+        chunk.extend(text.chars());
+        self.chunk_start.set(chunk_start);
+        Some(chunk[index - chunk_start])
+    }
+
+    /// The character at INDEX; INDEX is within the readable characters,
+    /// as an index into the vector was.
+    pub(super) fn at(&self, index: usize) -> char {
+        self.get(index)
+            .unwrap_or_else(|| panic!("scan index {index} beyond the {} characters", self.len))
+    }
+}
+
 fn comment_start_at(
     interp: &Interpreter,
     scan: &mut SyntaxScan,
-    chars: &[char],
+    chars: &ScanChars,
     idx: usize,
 ) -> Option<CommentStart> {
     let table_id = scan.table_id();
-    let ch = *chars.get(idx)?;
+    let ch = chars.get(idx)?;
     let entry = scan.entry_at(interp, ch, idx + 1);
     if entry.class == SyntaxClass::GenericCommentDelimiter {
         return Some(CommentStart {
@@ -737,7 +801,7 @@ fn comment_start_at(
             len: 1,
         });
     }
-    let next = *chars.get(idx + 1)?;
+    let next = chars.get(idx + 1)?;
     let next_entry = scan.entry_at(interp, next, idx + 2);
     if !(entry.start_first && next_entry.start_second) {
         return None;
@@ -769,10 +833,10 @@ fn comment_start_at(
     })
 }
 
-fn preceded_by_odd_backslashes(chars: &[char], idx: usize) -> bool {
+fn preceded_by_odd_backslashes(chars: &ScanChars, idx: usize) -> bool {
     let mut count = 0usize;
     let mut cursor = idx;
-    while cursor > 0 && chars[cursor - 1] == '\\' {
+    while cursor > 0 && chars.at(cursor - 1) == '\\' {
         count += 1;
         cursor -= 1;
     }
@@ -782,7 +846,7 @@ fn preceded_by_odd_backslashes(chars: &[char], idx: usize) -> bool {
 fn skip_comment_with_status(
     interp: &Interpreter,
     scan: &mut SyntaxScan,
-    chars: &[char],
+    chars: &ScanChars,
     idx: usize,
     start: CommentStart,
     comment_end_can_be_escaped: bool,
@@ -791,12 +855,12 @@ fn skip_comment_with_status(
     match start.kind {
         CommentKind::Single { line } => {
             while cursor < chars.len() {
-                let entry = scan.entry_at(interp, chars[cursor], cursor + 1);
+                let entry = scan.entry_at(interp, chars.at(cursor), cursor + 1);
                 if entry.class == SyntaxClass::CommentEnd
                     && scan_comment_style(&entry, None) == start.style
                 {
                     if line
-                        && chars[cursor] == '\n'
+                        && chars.at(cursor) == '\n'
                         && comment_end_can_be_escaped
                         && preceded_by_odd_backslashes(chars, cursor)
                     {
@@ -811,7 +875,7 @@ fn skip_comment_with_status(
         }
         CommentKind::Fence => {
             while cursor < chars.len() {
-                let entry = scan.entry_at(interp, chars[cursor], cursor + 1);
+                let entry = scan.entry_at(interp, chars.at(cursor), cursor + 1);
                 if entry.class == SyntaxClass::GenericCommentDelimiter {
                     return (cursor + 1, true);
                 }
@@ -843,11 +907,11 @@ fn skip_comment_with_status(
                     continue;
                 }
                 if cursor + 1 < chars.len()
-                    && chars[cursor] == end_first
-                    && chars[cursor + 1] == end_second
+                    && chars.at(cursor) == end_first
+                    && chars.at(cursor + 1) == end_second
                 {
-                    let first = scan.entry_at(interp, chars[cursor], cursor + 1);
-                    let second = scan.entry_at(interp, chars[cursor + 1], cursor + 2);
+                    let first = scan.entry_at(interp, chars.at(cursor), cursor + 1);
+                    let second = scan.entry_at(interp, chars.at(cursor + 1), cursor + 2);
                     if scan_comment_style(&first, Some(&second)) != start.style {
                         cursor += 1;
                         continue;
@@ -873,14 +937,14 @@ fn skip_comment_with_status(
 fn skip_whitespace_forward(
     interp: &Interpreter,
     table_id: u64,
-    chars: &[char],
+    chars: &ScanChars,
     pos: usize,
 ) -> usize {
     let mut idx = pos.saturating_sub(1);
     while idx < chars.len() {
-        let entry = syntax_entry_for_char(interp, table_id, chars[idx]);
+        let entry = syntax_entry_for_char(interp, table_id, chars.at(idx));
         if entry.class != SyntaxClass::Whitespace
-            && !(entry.class == SyntaxClass::CommentEnd && chars[idx] == '\n')
+            && !(entry.class == SyntaxClass::CommentEnd && chars.at(idx) == '\n')
         {
             break;
         }
@@ -1193,24 +1257,24 @@ fn scan_signal(message: &str, last_good: i64, from: i64) -> LispError {
     ]))
 }
 
-fn scan_char(chars: &[char], pos: i64) -> char {
+fn scan_char(chars: &ScanChars, pos: i64) -> char {
     if pos < 1 {
         return '\0';
     }
-    chars.get((pos - 1) as usize).copied().unwrap_or('\0')
+    chars.get((pos - 1) as usize).unwrap_or('\0')
 }
 
 fn scan_entry(
     interp: &Interpreter,
     scan: &mut SyntaxScan,
-    chars: &[char],
+    chars: &ScanChars,
     pos: i64,
 ) -> SyntaxEntry {
     if pos < 1 {
         return SyntaxEntry::default();
     }
     match chars.get((pos - 1) as usize) {
-        Some(&ch) => scan.entry_at(interp, ch, pos as usize),
+        Some(ch) => scan.entry_at(interp, ch, pos as usize),
         None => SyntaxEntry::default(),
     }
 }
@@ -1230,7 +1294,7 @@ fn scan_comment_style(first: &SyntaxEntry, second: Option<&SyntaxEntry>) -> u8 {
 fn scan_char_quoted(
     interp: &Interpreter,
     scan: &mut SyntaxScan,
-    chars: &[char],
+    chars: &ScanChars,
     pos: i64,
     beg: i64,
 ) -> bool {
@@ -1260,7 +1324,7 @@ struct ForwardCommentOptions {
 fn scan_forw_comment(
     interp: &Interpreter,
     scan: &mut SyntaxScan,
-    chars: &[char],
+    chars: &ScanChars,
     mut from: i64,
     stop: i64,
     options: ForwardCommentOptions,
@@ -1350,9 +1414,9 @@ fn scan_back_comment(interp: &mut Interpreter, env: &mut Env, from: i64) -> Opti
     if from <= begv as i64 {
         return None;
     }
-    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    let chars = ScanChars::new(&interp.buffer);
     let from = usize::try_from(from).ok()?;
-    let ch = *chars.get(from - 1)?;
+    let ch = chars.get(from - 1)?;
     let table_id = interp.current_syntax_table_id();
     let entry = syntax_entry_at_buffer_position(interp, table_id, ch, from);
     let comment_end_can_be_escaped = interp
@@ -1413,7 +1477,7 @@ fn ppss_style_code(value: Option<&Value>) -> u8 {
 fn find_defun_start_gnu(
     interp: &mut Interpreter,
     env: &mut Env,
-    chars: &[char],
+    chars: &ScanChars,
     pos: usize,
     begv: usize,
 ) -> usize {
@@ -1441,11 +1505,11 @@ fn find_defun_start_gnu(
     // Scan back line-by-line for `^\s(' -- an open-paren in column 0.
     let table_id = interp.current_syntax_table_id();
     let mut line_start = pos.min(chars.len() + 1);
-    while line_start > begv && chars.get(line_start - 2).copied() != Some('\n') {
+    while line_start > begv && chars.get(line_start - 2) != Some('\n') {
         line_start -= 1;
     }
     loop {
-        if let Some(&c) = chars.get(line_start - 1)
+        if let Some(c) = chars.get(line_start - 1)
             && syntax_entry_at_buffer_position(interp, table_id, c, line_start).class
                 == SyntaxClass::OpenParen
         {
@@ -1455,7 +1519,7 @@ fn find_defun_start_gnu(
             return begv;
         }
         line_start -= 1;
-        while line_start > begv && chars.get(line_start - 2).copied() != Some('\n') {
+        while line_start > begv && chars.get(line_start - 2) != Some('\n') {
             line_start -= 1;
         }
     }
@@ -1473,7 +1537,7 @@ fn back_comment_gnu(
     interp: &mut Interpreter,
     env: &mut Env,
     table_id: u64,
-    chars: &[char],
+    chars: &ScanChars,
     comment_end: usize,
     stop: usize,
     comnested: bool,
@@ -1496,7 +1560,7 @@ fn back_comment_gnu(
 
     while from != stop {
         from -= 1;
-        let c = chars[from - 1];
+        let c = chars.at(from - 1);
         let entry = scan.entry_at(interp, c, from);
         let last_entry = prev_entry;
         prev_entry = Some(entry);
@@ -1514,7 +1578,7 @@ fn back_comment_gnu(
         // Overlapping two-char sequences (snmp-mode's --, C's |*|): don't
         // try to be clever.
         if from > stop && (com2end || comstart) {
-            let next_c = chars[from - 2];
+            let next_c = chars.at(from - 2);
             let next_entry = scan.entry_at(interp, next_c, from - 1);
             if ((comstart || comnested) && entry.end_second && next_entry.end_first)
                 || ((com2end || comnested)
@@ -1605,7 +1669,7 @@ fn back_comment_gnu(
             SyntaxClass::OpenParen
                 if open_paren_defun_start_enabled(interp)
                     && !comment_use_syntax_ppss_enabled(interp)
-                    && (from == stop || chars[from - 2] == '\n') =>
+                    && (from == stop || chars.at(from - 2) == '\n') =>
             {
                 // A defun-start is assumed to be outside of strings.
                 defun_start = from;
@@ -1720,7 +1784,7 @@ pub(super) fn scan_lists_gnu(
     // Buffer positions remain absolute while narrowed.  Keep this text
     // indexed in the same coordinate system and use BEGV/ZV as the scan
     // bounds, just as GNU's scan_lists does.
-    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    let chars = ScanChars::new(&interp.buffer);
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
     let begv = interp.buffer.point_min() as i64;
@@ -2130,7 +2194,7 @@ pub(super) fn parse_forward(
         return Err(LispError::Signal("`from` is greater than `to`".into()));
     }
     // FROM and TO are absolute buffer positions even under narrowing.
-    let mut chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    let mut chars = ScanChars::new(&interp.buffer);
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
     let comment_end_can_be_escaped = interp
@@ -2161,10 +2225,10 @@ pub(super) fn parse_forward(
         && state.string.is_none()
         && idx < end
         && from >= 2
-        && let Some(prev_ch) = chars.get(from - 2).copied()
+        && let Some(prev_ch) = chars.get(from - 2)
     {
         let prev_entry = scan.entry_at(interp, prev_ch, from - 1);
-        let cur_entry = scan.entry_at(interp, chars[idx], idx + 1);
+        let cur_entry = scan.entry_at(interp, chars.at(idx), idx + 1);
         if prev_entry.start_first
             && cur_entry.start_second
             && let Some(start) = comment_start_at(interp, &mut scan, &chars, from - 2)
@@ -2191,14 +2255,14 @@ pub(super) fn parse_forward(
             end_second,
             ..
         } = comment.kind
-        && chars.get(from - 2).copied() == Some(end_first)
-        && chars[idx] == end_second
+        && chars.get(from - 2) == Some(end_first)
+        && chars.at(idx) == end_second
     {
         // forw_comment enters its loop in the middle for the same reason:
         // a restart between the two characters of the comment ender
         // completes it.
         let first = scan.entry_at(interp, end_first, from - 1);
-        let second = scan.entry_at(interp, chars[idx], idx + 1);
+        let second = scan.entry_at(interp, chars.at(idx), idx + 1);
         if scan_comment_style(&first, Some(&second)) == comment.style
             && !(comment_end_can_be_escaped && preceded_by_odd_backslashes(&chars, from - 2))
         {
@@ -2220,7 +2284,7 @@ pub(super) fn parse_forward(
 
     while idx < end {
         if let Some(string) = state.string {
-            let ch = chars[idx];
+            let ch = chars.at(idx);
             let entry = scan.entry_at(interp, ch, idx + 1);
             if string.fence {
                 if entry.class == SyntaxClass::GenericStringDelimiter
@@ -2268,12 +2332,12 @@ pub(super) fn parse_forward(
         if let Some(comment) = state.comment {
             match comment.kind {
                 CommentKind::Single { line } => {
-                    let entry = scan.entry_at(interp, chars[idx], idx + 1);
+                    let entry = scan.entry_at(interp, chars.at(idx), idx + 1);
                     if entry.class == SyntaxClass::CommentEnd
                         && scan_comment_style(&entry, None) == comment.style
                     {
                         if line
-                            && chars[idx] == '\n'
+                            && chars.at(idx) == '\n'
                             && comment_end_can_be_escaped
                             && preceded_by_odd_backslashes(&chars, idx)
                         {
@@ -2292,7 +2356,7 @@ pub(super) fn parse_forward(
                     continue;
                 }
                 CommentKind::Fence => {
-                    let entry = scan.entry_at(interp, chars[idx], idx + 1);
+                    let entry = scan.entry_at(interp, chars.at(idx), idx + 1);
                     if entry.class == SyntaxClass::GenericCommentDelimiter {
                         idx += 1;
                         state.comment = None;
@@ -2329,11 +2393,11 @@ pub(super) fn parse_forward(
                         continue;
                     }
                     if idx + 1 < chars.len()
-                        && chars[idx] == end_first
-                        && chars[idx + 1] == end_second
+                        && chars.at(idx) == end_first
+                        && chars.at(idx + 1) == end_second
                     {
-                        let first = scan.entry_at(interp, chars[idx], idx + 1);
-                        let second = scan.entry_at(interp, chars[idx + 1], idx + 2);
+                        let first = scan.entry_at(interp, chars.at(idx), idx + 1);
+                        let second = scan.entry_at(interp, chars.at(idx + 1), idx + 2);
                         if scan_comment_style(&first, Some(&second)) != comment.style {
                             idx += 1;
                             continue;
@@ -2378,7 +2442,7 @@ pub(super) fn parse_forward(
             continue;
         }
 
-        let ch = chars[idx];
+        let ch = chars.at(idx);
         // syntax-table TEXT PROPERTIES override the char table (generic
         // string fences from syntax-propertize live there).
         let entry = scan.entry_at(interp, ch, idx + 1);
@@ -2471,7 +2535,7 @@ pub(super) fn parse_forward(
                 };
                 if open.close_char != ch
                     && matching_open_char(ch, entry)
-                        .is_some_and(|open_char| open_char != chars[open.open_pos - 1])
+                        .is_some_and(|open_char| open_char != chars.at(open.open_pos - 1))
                 {
                     let closed = state.stack.pop().expect("stack non-empty");
                     state.set_last_sexp(closed.open_pos);
@@ -2698,7 +2762,7 @@ pub(super) fn forward_comment_impl(
     ensure_syntax_propertized_preserving_match_data(interp, env);
 
     let minimum = interp.buffer.point_min();
-    let mut chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    let mut chars = ScanChars::new(&interp.buffer);
     chars.truncate(interp.buffer.point_max().saturating_sub(1));
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
@@ -2748,7 +2812,7 @@ pub(super) fn forward_comment_impl(
                 return Ok(Value::Nil);
             }
             from -= 1;
-            let c = chars[from - 1];
+            let c = chars.at(from - 1);
             let quoted = scan_char_quoted(interp, &mut scan, &chars, from as i64, minimum as i64);
             let entry = scan.entry_at(interp, c, from);
             let mut code = entry.class;
@@ -2762,7 +2826,7 @@ pub(super) fn forward_comment_impl(
             let mut two_char_ender = false;
             if from > minimum && entry.end_second {
                 let first_pos = from - 1;
-                let first_c = chars[first_pos - 1];
+                let first_c = chars.at(first_pos - 1);
                 let first_entry = scan.entry_at(interp, first_c, first_pos);
                 if first_entry.end_first
                     && !scan_char_quoted(
@@ -2787,7 +2851,7 @@ pub(super) fn forward_comment_impl(
                 let mut fence_found = false;
                 while from > minimum {
                     from -= 1;
-                    let fence_c = chars[from - 1];
+                    let fence_c = chars.at(from - 1);
                     let fence_entry = scan.entry_at(interp, fence_c, from);
                     if fence_entry.class == SyntaxClass::GenericCommentDelimiter
                         && !scan_char_quoted(interp, &mut scan, &chars, from as i64, minimum as i64)
@@ -2856,13 +2920,13 @@ pub(super) fn forward_comment_impl(
 pub(super) fn backward_prefix_chars(interp: &mut Interpreter) -> Result<Value, LispError> {
     // Point and point-min are absolute buffer positions even while narrowed.
     // Index the full buffer rather than the accessible substring.
-    let chars: Vec<char> = interp.buffer.full_buffer_string().chars().collect();
+    let chars = ScanChars::new(&interp.buffer);
     let table_id = interp.current_syntax_table_id();
     let mut scan = SyntaxScan::new(interp, table_id);
     let minimum = interp.buffer.point_min();
     let mut position = interp.buffer.point();
     while position > minimum {
-        let ch = chars[position - 2];
+        let ch = chars.at(position - 2);
         let char_position = position - 1;
         let entry = scan.entry_at(interp, ch, char_position);
         if !(entry.class == SyntaxClass::Quote || entry.prefix)

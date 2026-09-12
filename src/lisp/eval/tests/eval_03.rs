@@ -2304,6 +2304,54 @@ fn search_forward_noerror_returns_nil_on_missing_pattern() {
 }
 
 #[test]
+fn plain_searches_read_the_text_in_overlapping_windows() {
+    // search.c scans from point and stops at the first match; the text is
+    // read in 4096-character windows overlapping by a needle's length less
+    // one.  A needle straddling the first window's end, bounds inside and
+    // at the boundary, backward searches ending at it, counts, folding,
+    // the empty needle, `move' on failure: GNU's results.
+    let program = r#"(with-temp-buffer
+  (let ((i 0)) (while (< i 4090) (insert "a") (setq i (1+ i))))
+  (insert "needleXYZ needle")
+  (let ((i 0)) (while (< i 5000) (insert "b") (setq i (1+ i))))
+  (insert "Needle tail")
+  (list
+   (let ((case-fold-search nil))
+     (list (progn (goto-char 1) (search-forward "needle" nil t))
+           (progn (goto-char 1) (search-forward "needle" 4096 t))
+           (progn (goto-char 1) (search-forward "needle" 4097 t))
+           (progn (goto-char (point-max)) (search-backward "needle" nil t))
+           (progn (goto-char 4097) (search-backward "needle" nil t))
+           (progn (goto-char 4096) (search-backward "needle" nil t))
+           (progn (goto-char 1) (search-forward "needle" nil t 2))
+           (progn (goto-char (point-max)) (search-backward "needle" nil t 2))
+           (progn (goto-char 1) (search-forward "Needle" nil t))
+           (progn (goto-char 1) (search-forward "" nil t))
+           (progn (goto-char (point-max)) (search-backward "" nil t))
+           (progn (goto-char 1) (search-forward "zzz" nil t))
+           (progn (goto-char 1) (search-forward "zzz" nil 'move))
+           (progn (goto-char (point-max)) (search-backward "zzz" 100 'move))
+           (progn (goto-char 1) (search-forward "needle" nil t -1))))
+   (let ((case-fold-search t))
+     (list (progn (goto-char 1) (search-forward "NEEDLE" nil t))
+           (progn (goto-char (point-max)) (search-backward "needle" nil t))
+           (progn (goto-char 1) (search-forward "needle" nil t 3))
+           (progn (goto-char (point-max)) (search-backward "NEEDLE" nil t 3))))
+   (with-temp-buffer
+     (insert "abcabcabc")
+     (list (progn (goto-char 1) (search-forward "abcabc" nil t))
+           (progn (goto-char (point-max)) (search-backward "abcabc" nil t))
+           (progn (goto-char 4) (search-backward "abc" nil t))
+           (progn (goto-char 4) (search-forward "abc" 4 t))
+           (progn (goto-char 4) (search-forward "abc" 7 t))))))"#;
+    assert_eq!(
+        eval_str(program).to_string(),
+        "((4097 nil 4097 4101 4091 nil 4107 4091 9113 1 9118 nil nil nil nil) \
+         (4097 9107 9113 4091) (7 4 1 nil 7))"
+    );
+}
+
+#[test]
 fn cl_destructuring_bind_keeps_missing_optional_slots_nil() {
     assert_eq!(
         eval_str_with_upstream_batch_feature(

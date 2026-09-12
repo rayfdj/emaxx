@@ -10129,3 +10129,75 @@ to 10 us (GNU 1.95 and 1.32).  The 48 us is the haystack copied again
 after a text edit (19b's shared haystack is per text state: 43 us for
 the same probe without the property machinery), against GNU's search
 over the buffer text in place -- open.
+
+## 2026-09-12 Checkpoint 19m: syntax scans, plain searches and the collector read in place
+
+*What prompted it.*  Probes against GNU on the same machine (an 80 KB
+buffer of C): `forward-sexp' 245 us (GNU 0.51), `parse-partial-sexp'
+over 40 characters 241 us (1.40), `forward-comment' 233 us (0.29),
+`scan-lists' 234 us (0.54), `syntax-ppss' 254 us (1.20): every scanner
+in syntax.rs began by collecting the whole buffer into a `Vec<char>'.
+An unbounded `search-forward' whose match is 40 characters away 332 us
+(GNU 0.62): the text from point to the end was copied and case-folded
+before the search.  A profile of semantic-fmt-utest (47 s after 19l,
+GNU 0.84) had a tenth of the run in the sampled pattern hasher (a byte
+a step over 128 bytes, two to three times a search), 7% in
+`stored_value' walking the characters of every string assigned, and
+the collector's mark walk copying each symbol's name and each vector's
+slot vector.
+
+*What changed.*  (1) The scanners read the buffer through `ScanChars':
+a constant-time clone of the rope (ropey shares its nodes) with one
+chunk decoded at a time, indexed as the vector was; nothing else in the
+scanners changed.  (2) `search-forward' and `search-backward' read the
+text in 4096-character windows overlapping by a needle's length less
+one, each folded as the whole text was, and stop at the first match
+(search.c's scan stops there too).  (3) The collector's reached-symbol
+set holds symbol ids (alloc.c marks the symbol object; two uninterned
+symbols of one name are reached separately, as before by their
+distinct internal texts), and a vector's slots are marked one by one
+instead of through a clone of the slot vector.  (4) `setq' probes the
+buffer's local bindings only for a symbol with the `LOCALIZED' flag,
+as `set_internal' dispatches on the redirect tag and as the read path
+already did.  (5) The sampled hasher mixes eight bytes a step.  (6)
+`string_like' scans a string's bytes for ASCII before walking its
+characters for the multibyte flag.
+
+*Controls.*  `plain_searches_read_the_text_in_overlapping_windows':
+a needle straddling the first window's end, bounds inside and at the
+boundary, backward searches ending at it, counts, folding, the empty
+needle, `move' on failure, with GNU's values.
+`uninterned_symbols_are_reached_by_object_not_by_name' against the
+oracle.  The scanners: a probe of 24 positions in a buffer of
+comments, strings, nested braces and a macro, each position put
+through `forward-sexp', `backward-sexp', `forward-comment' both ways,
+`scan-lists' three ways, `up-list', `parse-partial-sexp',
+`beginning-of-defun' and `backward-prefix-chars', gives the same 288
+values as GNU (`$S/scan-check.el', compared byte for byte), and the
+191 syntax, regexp and search tests pass.
+
+*Measured.*  `forward-sexp' 245 to 8.2 us, `parse-partial-sexp' 241 to
+15.5, `forward-comment' 233 to 6.2, `scan-lists' 234 to 7.0,
+`syntax-ppss' 254 to 23.3 (GNU 0.51, 1.40, 0.29, 0.54, 1.20);
+`search-forward' unbounded 332 to 19.2 us (GNU 0.62);
+semantic-fmt-utest 46.9 to 34.7 s (GNU 0.84; 51 s before 19l); a loop
+of 41 `garbage-collect's 4.3 s including the boot (about 92 ms a
+collection, 102 at 19k, GNU 10.6).
+
+*Measured and left open, each with its number.*  Markers: with 20,000
+markers dropped in a buffer, an insertion and deletion costs 3,286 us
+(GNU 22.8: it walks its marker chain too), and after `garbage-collect'
+still 3,304 us (GNU 0.90): the collector does not reclaim markers that
+nothing references, and the per-edit walk costs 165 ns a marker
+against GNU's 1.1.  `save-excursion' detaches its marker on exit as
+save_excursion_restore does, but 20,000 of them leave the edit at 52.9
+us (GNU 0.87) until the next collection.  Reclaiming markers needs the
+Rust-held marker ids (an excursion in progress, a restriction, the
+buffers' mark markers) enumerated as roots first.  The localized
+variables read on the search path (`case-fold-search',
+`parse-sexp-lookup-properties', both buffer-local under cc-mode) go
+through the name-keyed `lookup_var_with_resolved_name' (7% of
+semantic's profile in `SymbolName::id_of').  The planned sharing of
+stored strings was measured and dropped: binding an 80 KB
+`buffer-string' costs the same as discarding it (453 against 486 us;
+GNU 927 and 920), so `stored_value' is not a theme.

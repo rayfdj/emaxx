@@ -161,21 +161,33 @@ impl std::hash::Hasher for SampledHasher {
     }
 
     fn write(&mut self, bytes: &[u8]) {
+        // Eight bytes a step (a short tail padded), where a byte a step
+        // was a tenth of a search-heavy run.
         const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0000_0100_0000_01b3;
-        let mut hash = if self.0 == 0 { OFFSET } else { self.0 };
-        let mut mix = |byte: u8| {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(PRIME);
-        };
-        for byte in (bytes.len() as u64).to_le_bytes() {
-            mix(byte);
+        fn mix(hash: &mut u64, word: u64) {
+            *hash ^= word;
+            *hash = hash.wrapping_mul(PRIME);
+            *hash ^= *hash >> 29;
         }
+        fn mix_bytes(hash: &mut u64, slice: &[u8]) {
+            let (words, tail) = slice.as_chunks::<8>();
+            for word in words {
+                mix(hash, u64::from_le_bytes(*word));
+            }
+            if !tail.is_empty() {
+                let mut padded = [0u8; 8];
+                padded[..tail.len()].copy_from_slice(tail);
+                mix(hash, u64::from_le_bytes(padded));
+            }
+        }
+        let mut hash = if self.0 == 0 { OFFSET } else { self.0 };
+        mix(&mut hash, bytes.len() as u64);
         if bytes.len() <= 128 {
-            bytes.iter().copied().for_each(&mut mix);
+            mix_bytes(&mut hash, bytes);
         } else {
-            bytes[..64].iter().copied().for_each(&mut mix);
-            bytes[bytes.len() - 64..].iter().copied().for_each(&mut mix);
+            mix_bytes(&mut hash, &bytes[..64]);
+            mix_bytes(&mut hash, &bytes[bytes.len() - 64..]);
         }
         self.0 = hash;
     }

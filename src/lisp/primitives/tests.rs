@@ -1883,6 +1883,23 @@ fn oracle_only_forwarded_c_variables_are_bound_as_the_oracle_binds_them() {
 }
 
 #[test]
+fn uninterned_symbols_are_reached_by_object_not_by_name() {
+    // alloc.c marks the symbol object: of two uninterned symbols with one
+    // name, the unreferenced one is collected while the other, referenced,
+    // keeps its weak-key entry.  The collector's reached-symbol set is by
+    // symbol id.
+    let program = r#"
+        (let* ((table (make-hash-table :test 'eq :weakness 'key))
+               (live (make-symbol "same")))
+          (puthash (make-symbol "same") 1 table)
+          (puthash live 2 table)
+          (garbage-collect)
+          (garbage-collect)
+          (list (hash-table-count table) (gethash live table)))"#;
+    assert_oracle_contract_matches_interpreter(program, "(1 2)", "uninterned symbol reach");
+}
+
+#[test]
 fn finalizers_follow_alloc_c() {
     // alloc.c: Fmake_finalizer checks FUNCTIONP; print.c prints
     // `#<finalizer>'; garbage_collect queues every unreached finalizer

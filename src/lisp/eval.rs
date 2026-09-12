@@ -3068,7 +3068,10 @@ struct LispReachability<'mark, 'heap> {
     floats: MarkedAddresses,
     strings: MarkedAddresses,
     string_objects: MarkedAddresses,
-    symbols: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
+    /// Reached symbols by id (interned and uninterned alike): alloc.c marks
+    /// the symbol object, so two uninterned symbols of one name are
+    /// reached separately.
+    symbols: HashSet<u32, crate::lisp::types::IdentityBuildHasher>,
     conses: MarkedAddresses,
     vectors: MarkedAddresses,
     lambdas: MarkedAddresses,
@@ -3107,7 +3110,7 @@ impl LispReachability<'_, '_> {
             }
             Value::Symbol(symbol) => {
                 crate::lisp::types::visible_symbol_name(symbol) == symbol.as_str()
-                    || self.symbols.contains(symbol.as_str())
+                    || self.symbols.contains(&symbol.id())
             }
             Value::Cons(value) => self.conses.contains(&ConsCell::identity(value)),
             Value::Vector(value) => self.vectors.contains(&(Rc::as_ptr(value) as usize)),
@@ -3149,7 +3152,7 @@ impl LispReachability<'_, '_> {
             Value::Float(value) => self.floats.insert(value.identity_ptr()),
             Value::String(value) => self.strings.insert(value.identity_ptr()),
             Value::StringObject(value) => self.string_objects.insert(Rc::as_ptr(value) as usize),
-            Value::Symbol(symbol) => self.symbols.insert(symbol.as_str().to_owned()),
+            Value::Symbol(symbol) => self.symbols.insert(symbol.id()),
             Value::Cons(value) => self.conses.insert(ConsCell::identity(value)),
             Value::Vector(value) => self.vectors.insert(Rc::as_ptr(value) as usize),
             Value::Lambda(value) => self.lambdas.insert(Rc::as_ptr(value) as usize),
@@ -3218,9 +3221,16 @@ impl LispReachability<'_, '_> {
                 }
             }
             Value::Vector(vector) => {
-                let children = vector.slots().clone();
-                for child in &children {
-                    self.mark(interp, child);
+                // Slot by slot: cloning the slot vector per reached vector
+                // allocated once per vector of the heap on every collection.
+                let mut index = 0;
+                loop {
+                    let child = match vector.slots().get(index) {
+                        Some(child) => child.clone(),
+                        None => break,
+                    };
+                    index += 1;
+                    self.mark(interp, &child);
                 }
             }
             Value::Lambda(lambda) => {

@@ -848,6 +848,13 @@ impl Buffer {
         self.text.slice(start..end).to_string()
     }
 
+    /// A shared handle on the text as it is now: ropey's rope clones in
+    /// constant time and never changes once cloned, so a scan can read
+    /// characters by index without holding the buffer borrowed.
+    pub fn text_rope(&self) -> Rope {
+        self.text.clone()
+    }
+
     pub fn full_buffer_string(&self) -> String {
         self.text.to_string()
     }
