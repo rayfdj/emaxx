@@ -184,6 +184,13 @@ pub(crate) fn mark_process_test() {
     });
 }
 
+/// Whether this test thread already holds the process-test permit (a
+/// boot about to reconstruct asks before taking the boot-environment
+/// guard; see `batch::BootAttempt').
+pub(crate) fn holds_process_test_permit() -> bool {
+    PROCESS_TEST_PERMIT.with(|slot| slot.borrow().is_some())
+}
+
 /// Initialize GNU's early Lisp owners in their `loadup.el` order.
 ///
 /// This is the smallest honest runtime for tests whose subject executes

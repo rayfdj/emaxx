@@ -403,6 +403,82 @@ string match per primitive call (85 M a test); stage A2, the function
 cell on the symbol; then the value representation.  None of it is a
 day's work, and none of it is faked here.
 
+The gate after checkpoint 25 (this tree, this box), under the gate
+standard of finding 113 (`LANG=C LC_ALL=C RUST_MIN_STACK=134217728',
+`cargo test --profile gate'; a first library run under an empty locale
+was discarded, it had two locale-only reds, `char_charset_family' and
+`print_prunes_charset_properties', which are green under LANG=C):
+`cargo fmt --check' and `cargo clippy --release --all-targets -- -D
+warnings' clean; the library suite 2645 tests: 2638 passed, 2 ignored,
+5 failed, every failure environmental to this box: the two GNU C
+manifest tests (this box's oracle has libdbus and libgpm, five subrs
+the checked-in manifests do not), and three tests that need a
+directory or file to be unwritable, which nothing is to root
+(`byte_compile_file_reports_an_unwritable_target_like_gnu',
+`file_writable_p_is_nil_for_missing_files_in_unwritable_directories',
+`save_buffer_skips_unmodified_and_unchanged_files'; the oracle run by
+hand on a 0555 directory as root writes the .elc too).  The library
+result is two runs of one binary, not one: the first run stopped at
+test 2111 in the deadlock described below, its 2111 passes and 6
+failures stand (the sixth, the dump test below, was fixed and re-run
+green); the 528 tests it never reached were then run by name under the
+same environment, 526 passed and 2 ignored.  `--bins' 43/43;
+tests/cli 17/17 (run after `tools/build-image.sh', which
+tests/cli_parity runs for itself: a cli run against an image dumped by
+an older binary fails every test on the fingerprint, as GNU's
+`pdumper_load' refuses an image "not built for this Emacs executable");
+tests/ert_runner 3/3; tests/cli_parity 4/5, the fifth `--version'
+differing only in `emacs-build-time''s date, the oracle dumped on the
+12th and this image after midnight on the 13th; comp-tests.el 177/177,
+test phase 84.9 s with the library suite running on the same four cores
+(75.7 s alone, above); the identity harness differs from the oracle by
+the same 45 bytes recorded earlier in this document (the eight ASCII
+bytes of `comp-abi-hash', seventeen `%rip'-relative displacements
+shifted by the oracle's five extra subrs' 40 freloc bytes, the 20-byte
+build ID: this box's oracle has libdbus and libgpm), the constants
+blobs identical.
+
+Two inventory tests caught the checkpoint's new fields before the gate
+did: `interpreter_roots_are_dumped_or_documented' requires every
+`self.<field>' the mark phase reads to be written by the image or listed
+as a root GNU re-creates after a load, and the mark phase now reads
+`gc_mark_set_sizes' to size its sets, so the field moved from the
+not-carried list to `ROOTS_RESET_AFTER_LOAD' with its alloc.c reason
+(`gcstat' is a file-static, zero in a fresh process, rewritten by each
+collection, not written by pdumper.c); and the declaration check looks
+for ` name: ' on one line, which rustfmt had wrapped for
+`symbol_properties_by_id', hence the `SymbolPlistPositions' alias.
+
+The library suite found two more, both fixed in this checkpoint:
+
+- `dump_emacs_portable_restores_context_and_reports_native_image_limit'
+  asserts that a process starting from a dump has no consing on the
+  books before its first evaluation (alloc.c: pdumper's objects are not
+  consing, `consing_until_gc' is zero).  Checkpoint 24's two post-load
+  writes, `gcs-done' and `gc-elapsed' (emacs.c:main's init_alloc), came
+  after the loader's consing baseline, and the float for `gc-elapsed'
+  is an allocation, so the fast guard saw it.  The two writes now
+  precede the baseline; the collector's behavior is otherwise
+  unchanged (the guard trips on the process's own consing, as before).
+- The gate deadlocked at test 2111 with no CPU: the harness's
+  `fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it'
+  held the boot-environment write lock while its first boot
+  reconstructed the dumped state, and loadup.el's dump-mode path runs
+  git (`emacs-repository-get-version', loadup.el:468), which crosses
+  the host-process boundary and so waited for the test harness's
+  process-test permit; a concurrent process test held that permit and
+  waited to boot on the read lock.  gdb on the hung process showed the
+  two threads in `futex_do_wait'.  Both tests predate this branch's
+  work (2026-09-01 and 2026-09-10), and no full library run had been
+  made since the fixture image landed.  The fix is a lock order, in
+  test builds only: a boot that will reconstruct takes the process
+  permit BEFORE the boot-environment guard (`batch::BootAttempt': the
+  attempt reports it under the guard, the permit is taken, the boot
+  restarts), and `lock_boot_environment_for_write' takes the permit
+  before the write lock, so the permit always precedes the environment
+  lock.  Production builds compile the attempt without the retry.
+  The pair now runs concurrently and passes.
+
 ### The parity gate
 
 `tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then
