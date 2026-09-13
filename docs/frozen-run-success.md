@@ -190,6 +190,33 @@ not been altered.
 
 ## Still open
 
+Linux ordinary run `34789196776` has been inspected at the raw-report level.
+Module results are independently 37 passed, one upstream skip and zero
+unexpected outcomes in both editors. Its GNU discovery explicitly extends
+the Linux manifest by 38 names, preserving all 7,883 existing names. The
+reviewed Linux lock now records the actual pristine `636f166c` build and
+matches the existing native ABI configuration.
+
+The same CI run is **not** an Eglot success. GNU has 44 passes, seven skips
+and one unexpected `jsonrpc-error` in
+`eglot-test-rust-completion-exit-function`; Emaxx has 45 passes and seven
+skips. GNU sent the completion request at 23:38:01.348 and timed out at
+23:38:11.351. Both language-server connections finished indexing by
+23:38:04.165; a completion payload appears in the retained process output,
+so further diagnosis must distinguish server readiness from message delivery.
+Neither the upstream deadline nor the expected result has been changed.
+
+Adversarial review found the CI wrapper lost the harness's failure status
+through `tee`: GitHub's implicit shell did not enable `pipefail`. Both
+compatibility workflows now select explicit Bash, which runs with `-e -o
+pipefail`. The actual workflow branch was exercised with independent child
+exit codes 0, 1 and 2; all failures reach the workflow exit. The original
+green badge remains historical evidence of this defect, not evidence of
+Eglot success. Existing raw files correctly recorded the failure throughout.
+An explicit single-file workflow input permits continuing with Eglot while
+retaining the valid module result. Dispatch controls when validation runs;
+publishing a workflow correction does not silently restart all affected files.
+
 Final cross-platform regexp validation, GNU's SHR dependency correction, and
 features-string diagnostics remain open in #69. Runtime and native compilation measurements/fixes remain
 tracked in #70 and #71.
@@ -199,7 +226,7 @@ ordinary Linux frozen-success certificate. The new `frozen-run.yml` workflow
 first proposes an explicit Linux oracle pin update: the existing native-ABI
 CI builds pristine GNU revision `636f166c`, whereas the old frozen Linux pin
 names an Ubuntu repack revision. The proposed lock and actual ordinary
-module/Eglot results must be reviewed before committing the Linux inventory.
+module/Eglot results were reviewed as described above before committing the Linux inventory.
 Final frozen mode validates the committed lock; it does not repin it.
 The workflow caches build outputs, never compatibility results.
 

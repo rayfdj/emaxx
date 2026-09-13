@@ -7652,7 +7652,45 @@ test/src/editfns-tests.el: discovered=23 selected=23
   transpose-ascii-regions-test
   transpose-nonascii-regions-test-1
   transpose-nonascii-regions-test-2
-test/src/emacs-module-tests.el: load-error Cannot open load file: No such file or directory, /home/user/emacs/test/src/emacs-module-resources/mod-test
+test/src/emacs-module-tests.el: discovered=38 selected=38
+  emacs-module-tests/interleaved-threads
+  mod-test-add-nanosecond/invalid
+  mod-test-add-nanosecond/nil
+  mod-test-add-nanosecond/valid
+  mod-test-double
+  mod-test-globref-free-test
+  mod-test-globref-make-test
+  mod-test-globref-reordered
+  mod-test-make-string/empty
+  mod-test-make-string/nonempty
+  mod-test-nanoseconds
+  mod-test-non-local-exit-funcall-normal
+  mod-test-non-local-exit-funcall-signal
+  mod-test-non-local-exit-funcall-throw
+  mod-test-non-local-exit-signal-test
+  mod-test-non-local-exit-throw-test
+  mod-test-sleep-until
+  mod-test-string-a-to-b-test
+  mod-test-sum-docstring
+  mod-test-sum-test
+  mod-test-userptr-fun-test
+  mod-test-vector-test
+  module--func-arity
+  module--help-function-arglist
+  module--test-assertions--call-emacs-from-gc
+  module--test-assertions--globref-invalid-free
+  module--test-assertions--load-non-live-object
+  module--test-assertions--load-non-live-object-with-global-copy
+  module-darwin-secondary-suffix
+  module-function-object
+  module/async-pipe
+  module/describe-function-1
+  module/function-finalizer
+  module/interactive/identity
+  module/interactive/return-t
+  module/interactive/return-t-int
+  module/load-history
+  module/unibyte
 test/src/emacs-tests.el: discovered=7 selected=7
   emacs-tests/bwrap/allows-stdout
   emacs-tests/seccomp/absent-file

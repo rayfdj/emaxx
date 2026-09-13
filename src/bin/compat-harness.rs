@@ -54,16 +54,15 @@ const FROZEN_CONTRACT_DARWIN: FrozenContract = FrozenContract {
     manifest_sha256: "a1f87443aad516a128001595d7c69fbbaace40b420d8cd1e9e5ec178aa2fd615",
 };
 
-// Linux retains its separately pinned inventory until its ordinary module
-// run supplies the corresponding discovery evidence. Never reuse a score
-// or a platform contract merely because its outcome count agrees.
+// Each platform inventory includes its own actual GNU module discovery.
+// Equal outcome counts do not substitute for independent execution evidence.
 const FROZEN_CONTRACT_LINUX: FrozenContract = FrozenContract {
     platform: "linux",
     manifest_path: "compat/oracle_tests_all_linux.txt",
-    file_count: 518,
-    load_error_count: 1,
-    outcome_count: 7_883,
-    manifest_sha256: "167d6c865bd321220747dc6fb60081f0a41446e88236d8f4ecfcc007c4b7cc6c",
+    file_count: 519,
+    load_error_count: 0,
+    outcome_count: 7_921,
+    manifest_sha256: "a1f87443aad516a128001595d7c69fbbaace40b420d8cd1e9e5ec178aa2fd615",
 };
 
 fn frozen_contract_for_configuration(

@@ -11,6 +11,7 @@ jobs:
     timeout-minutes: 45
     defaults:
       run:
+        shell: bash
         working-directory: emaxx
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

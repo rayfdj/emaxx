@@ -1,10 +1,5 @@
 name: Ordinary frozen compatibility
 on:
-  push:
-    branches: [fix/frozen-run-success]
-    paths:
-      - src/bin/compat-harness/prerequisites.rs
-      - .github/workflows/frozen-run.yml
   workflow_dispatch:
     inputs:
       validation:
@@ -12,6 +7,10 @@ on:
         type: choice
         options: [prepare-oracle, affected, frozen, rust]
         default: affected
+      file:
+        description: For affected mode, run only this upstream file; blank runs module and Eglot
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -20,6 +19,7 @@ jobs:
     timeout-minutes: 360
     defaults:
       run:
+        shell: bash
         working-directory: emaxx
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -98,6 +98,7 @@ jobs:
       - name: Execute the requested normal validation
         env:
           VALIDATION: ${{ inputs.validation || 'prepare-oracle' }}
+          VALIDATION_FILE: ${{ inputs.file }}
         run: |
           mkdir -p target/frozen-ci
           python3 - <<'PY'
@@ -124,6 +125,10 @@ jobs:
           fi
           case "$VALIDATION" in
             prepare-oracle|affected)
+              if [ "$VALIDATION" = affected ] && [ -n "$VALIDATION_FILE" ]; then
+                run_harness run --file "$VALIDATION_FILE" 2>&1 | tee target/frozen-ci/affected.log
+                exit 0
+              fi
               status=0
               run_harness run --file test/src/emacs-module-tests.el 2>&1 | tee target/frozen-ci/module.log || status=$?
               run_harness run --file test/lisp/progmodes/eglot-tests.el 2>&1 | tee target/frozen-ci/eglot.log || status=$?
@@ -158,7 +163,7 @@ jobs:
           import re, shutil
           from pathlib import Path
           root = Path('target/frozen-ci')
-          for name in ('module', 'eglot', 'frozen'):
+          for name in ('module', 'eglot', 'affected', 'frozen'):
               log = root / f'{name}.log'
               if not log.exists():
                   continue

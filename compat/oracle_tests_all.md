@@ -7,6 +7,22 @@ successful ordinary module run, retained in
 names remain; only the historical module load-error line was replaced.
 The normal runner now builds the unchanged fixture using GNU's Makefile.
 
+The Linux manifest was independently extended from GNU's actual 38-test
+module discovery in ordinary run `run-1789342303344350652-26168`, downloaded
+from GitHub run `34789196776`. GNU and Emaxx each passed 37 tests and skipped
+the same platform-specific test, with zero unexpected outcomes. All 7,883
+previous Linux names remain. Both platform manifests now contain 519 files
+and 7,921 outcomes; their identical bytes were verified after independently
+using each platform's discovery, not by copying results between editors.
+
+Linux's oracle lock now records pristine GNU revision `636f166c`, matching
+the already committed native ABI configuration, instead of the older Ubuntu
+source repack `6ee5c136`. The reviewed executable hash is
+`5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf`.
+The original and proposed pins and build metadata are retained in that CI
+artifact. Final frozen runs validate this pin and the entire inventory;
+the module extension is not a claim that those final runs have passed.
+
 Full regeneration, with the documented Rust/clangd prerequisites installed:
 
 ```sh
@@ -52,7 +68,8 @@ Counts:
 
 Canonical progress denominator and order:
 
-- Use `compat/oracle_tests_all.txt` as the only ordered compatibility manifest.
+- Use `compat/oracle_tests_all.txt` on macOS and
+  `compat/oracle_tests_all_linux.txt` on Linux as the ordered manifest.
 - Count test selectors with:
 
   ```sh
