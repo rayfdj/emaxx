@@ -71,6 +71,8 @@ jobs:
             openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
       - name: Build Emaxx and run Rust regression controls
         env:
+          LANG: C
+          LC_ALL: C
           RUST_MIN_STACK: '134217728'
           RUST_TEST_THREADS: '1'
         run: |

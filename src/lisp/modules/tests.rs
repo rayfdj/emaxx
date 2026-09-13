@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn module_time_conversion_floors_and_checks_host_range() {
+    let mut interpreter = Interpreter::new();
+    let mut environment = Env::new();
+    let activation = Activation::new(&mut interpreter, &mut environment);
+    let env = activation.public_ptr();
+    let mut context = Context(&activation);
+    // GNU lisp_time_argument floors sub-nanosecond fractions and reports
+    // an unrepresentable time through time_overflow, not overflow-error.
+    unsafe {
+        let value = context.make(Value::cons(Value::Integer(-1), Value::Integer(3)));
+        let time = extract_time(env, value);
+        assert_eq!((time.tv_sec, time.tv_nsec), (-1, 666_666_666));
+        assert_eq!(non_local_exit_check(env), 0);
+        for seconds in [libc::time_t::MIN, libc::time_t::MAX] {
+            let value = context.make(primitives::normalize_bigint_value(seconds.into()));
+            let time = extract_time(env, value);
+            assert_eq!((time.tv_sec, time.tv_nsec), (seconds, 0));
+            assert_eq!(non_local_exit_check(env), 0);
+        }
+        for seconds in [
+            num_bigint::BigInt::from(libc::time_t::MIN) - 1,
+            num_bigint::BigInt::from(libc::time_t::MAX) + 1,
+        ] {
+            let value = context.make(primitives::normalize_bigint_value(seconds));
+            let time = extract_time(env, value);
+            assert_eq!((time.tv_sec, time.tv_nsec), (0, 0));
+            let mut symbol = std::ptr::null_mut();
+            let mut data = std::ptr::null_mut();
+            assert_eq!(non_local_exit_get(env, &mut symbol, &mut data), 1);
+            assert_eq!(context.value(symbol), Value::symbol("error"));
+            assert_eq!(
+                context.value(data),
+                Value::list([Value::string("Specified time is not representable")])
+            );
+            non_local_exit_clear(env);
+        }
+    }
+}
+
+#[test]
 fn module_strings_preserve_bytes_unicode_and_pending_errors() {
     let mut interpreter = Interpreter::new();
     let mut environment = Env::new();

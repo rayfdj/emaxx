@@ -585,9 +585,11 @@ pub(super) unsafe extern "C" fn extract_time(env: *mut ModuleEnv, value: Handle)
             let (seconds, nanos) = primitives::floor_div_mod(&ticks, &BigInt::from(1_000_000_000));
             Ok(libc::timespec {
                 tv_sec: seconds
-                    .to_i64()
-                    .ok_or_else(|| condition("overflow-error", []))?
-                    as libc::time_t,
+                    .to_i128()
+                    .and_then(|seconds| libc::time_t::try_from(seconds).ok())
+                    .ok_or_else(|| {
+                        LispError::Signal("Specified time is not representable".into())
+                    })?,
                 tv_nsec: nanos.to_i64().expect("nanosecond remainder") as libc::c_long,
             })
         },

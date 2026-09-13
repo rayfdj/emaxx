@@ -81,7 +81,8 @@ def main():
     clangd.chmod(0o755)
     env = os.environ.copy()
     env.update(PATH=str(root / "bin") + os.pathsep + env["PATH"],
-               TMPDIR=str(temporary), LANG="C", LC_ALL="C")
+               TMPDIR=str(temporary), LANG="C", LC_ALL="C",
+               EMAXX_DUMP_SOURCE_DIRECTORY=str(source))
     versions = {name: subprocess.check_output([str(root / "bin" / name), "--version"],
                                               env=env, text=True).strip()
                 for name in ("cargo", "rustc", "rust-analyzer", "clangd")}

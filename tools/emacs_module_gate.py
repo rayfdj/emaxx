@@ -84,6 +84,7 @@ def main():
         env = os.environ.copy()
         env.update(EMAXX_BATCH_RESULT_FILE=str(work / "results.json"),
                    EMAXX_COMPAT_RUNNER=editor, EMAXX_COMPAT_RELATIVE_FILE=inputs[0],
+                   EMAXX_DUMP_SOURCE_DIRECTORY=str(source),
                    EMACS_TEST_DIRECTORY=str(source / "test"))
         # The test derives the module path from invocation-directory. Point
         # that fixture lookup at our build tree, then give its assertion
