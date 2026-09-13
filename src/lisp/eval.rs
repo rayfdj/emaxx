@@ -824,6 +824,11 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             &["module-init-failed", "module-load-failed", "error"],
             "Module initialization failed",
         ),
+        (
+            "invalid-arity",
+            &["invalid-arity", "error"],
+            "Invalid function arity",
+        ),
         // sqlite.c defines these condition hierarchies even when a caller
         // never loads sqlite.el.  Generic condition consumers such as ERT's
         // `should-error' inspect the symbol properties after the native
@@ -1405,6 +1410,8 @@ pub(crate) enum RecordKind {
     ConditionVariable,
     NativeCompUnit,
     NativeCompiledFunction,
+    ModuleFunction,
+    UserPointer,
     TreeSitterParser,
     TreeSitterNode,
     TreeSitterCompiledQuery,
@@ -1435,6 +1442,8 @@ impl RecordKind {
             // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
             // which is 42 words on the configured GNU 64-bit ABI.
             Self::Process => 42,
+            Self::ModuleFunction => 9,
+            Self::UserPointer => 3,
             // window.c allocates struct window as a full pseudovector.  Its
             // configured VECSIZE is 66 words, including the header word.
             Self::Window => 66,
@@ -2333,6 +2342,7 @@ impl Clone for ProcessState {
             runtime: None,
             network: None,
             serial: None,
+            module_pipe: None,
             contact_host: self.contact_host.clone(),
             contact_service: self.contact_service,
             remote: self.remote.clone(),
@@ -2387,6 +2397,7 @@ struct ProcessState {
     runtime: Option<RunningProcess>,
     network: Option<NetworkRuntime>,
     serial: Option<SerialRuntime>,
+    module_pipe: Option<(fs::File, fs::File)>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
     contact_service: Option<i64>,
@@ -3844,6 +3855,9 @@ impl Interpreter {
         for function in &self.doomed_finalizers {
             mark(function);
         }
+        for value in self.modules.roots() {
+            mark(value);
+        }
         for event in &self.pending_thread_events {
             mark(event);
         }
@@ -3997,6 +4011,7 @@ impl Interpreter {
         }
         for handler in &self.active_handlers {
             match handler {
+                ActiveHandler::Module => {}
                 ActiveHandler::Bind(_, function) => mark(function),
                 ActiveHandler::Case(heads) => {
                     for head in heads {
@@ -4494,6 +4509,7 @@ impl Interpreter {
             }
             for handler in &mut clone.active_handlers {
                 match handler {
+                    ActiveHandler::Module => {}
                     ActiveHandler::Bind(_, function) => *function = c.copy(&function.clone()),
                     ActiveHandler::Case(heads) => {
                         for head in heads {
@@ -4782,6 +4798,8 @@ pub struct InterpreterState {
     /// primitive.  GNU keeps this in C state; it must not leak through a
     /// project-private Lisp variable.
     pub(crate) external_debugging_output_target: Option<String>,
+    /// Scoped module handles, global references and retained libraries.
+    pub(crate) modules: crate::lisp::modules::ModuleState,
     /// The live libgccjit arena and runtime ABI state owned by GNU's `comp.c`
     /// in the reference implementation.  All compiler policy and LIMPLE
     /// remain in the unchanged `comp.el` frontend.
@@ -5296,6 +5314,8 @@ pub struct InterpreterState {
 /// matching `handler-bind' functions run at the signal point (pre-unwind).
 #[derive(Clone, Debug)]
 pub(crate) enum ActiveHandler {
+    /// The GNU module API catches every signal and throw at its boundary.
+    Module,
     /// One CONDITIONS/HANDLER pair from `handler-bind'.  Keep the condition
     /// list grouped so a handler whose list contains both a child condition
     /// and one of its parents still runs exactly once for a signal.
@@ -5636,6 +5656,7 @@ impl Interpreter {
             minibuffer_runtime: MinibufferRuntimeState::default(),
             minibuffer_activation_count: 0,
             external_debugging_output_target: None,
+            modules: crate::lisp::modules::ModuleState::default(),
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: initial_default_file_modes(),
             local_time_zone_rule,

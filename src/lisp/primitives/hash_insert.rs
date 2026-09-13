@@ -190,6 +190,7 @@ pub(crate) fn sweep_weak_hash_tables(
         interp.sweep_weak_hash_table(id, entries, &keep);
     }
     interp.sweep_unreached_markers(&reachability.live_markers);
+    interp.modules.collect(&reachability.live_records);
     interp.install_gc_record_census(reachability.live_records);
 }
 

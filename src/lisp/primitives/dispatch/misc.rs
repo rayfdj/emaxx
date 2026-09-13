@@ -2059,29 +2059,31 @@ fn documentation(
     let generic_available = interp
         .lookup_function("function-documentation", env)
         .is_ok();
-    let mut doc = if generic_available && !matches!(function, Value::BuiltinFunc(_)) {
-        interp.call_function_value(
-            Value::symbol("function-documentation"),
-            Some("function-documentation"),
-            std::slice::from_ref(&function),
-            env,
-        )?
-    } else {
-        match &function {
-            Value::BuiltinFunc(name) => {
-                let offset = ensure_builtin_doc_offset(interp, name, env)?;
-                if offset == 0 {
-                    fallback_function_documentation(interp, name)
-                        .map(|value| Value::String(value.into()))
-                        .unwrap_or(Value::Nil)
-                } else {
-                    resolve_doc_reference(interp, &Value::Integer(offset), env)?
-                        .unwrap_or(Value::Nil)
+    let module_function = matches!(function, Value::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction));
+    let mut doc =
+        if generic_available && !matches!(function, Value::BuiltinFunc(_)) && !module_function {
+            interp.call_function_value(
+                Value::symbol("function-documentation"),
+                Some("function-documentation"),
+                std::slice::from_ref(&function),
+                env,
+            )?
+        } else {
+            match &function {
+                Value::BuiltinFunc(name) => {
+                    let offset = ensure_builtin_doc_offset(interp, name, env)?;
+                    if offset == 0 {
+                        fallback_function_documentation(interp, name)
+                            .map(|value| Value::String(value.into()))
+                            .unwrap_or(Value::Nil)
+                    } else {
+                        resolve_doc_reference(interp, &Value::Integer(offset), env)?
+                            .unwrap_or(Value::Nil)
+                    }
                 }
+                _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
             }
-            _ => function_documentation(interp, &function, env).unwrap_or(Value::Nil),
-        }
-    };
+        };
     if doc.is_nil()
         && let Value::Symbol(symbol) = &args[0]
     {

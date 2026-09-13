@@ -205,6 +205,12 @@ pub(crate) fn function_documentation(
     {
         return record.slots.get(4).filter(|doc| !doc.is_nil()).cloned();
     }
+    if let Value::Record(id) = value
+        && let Some(record) = interp.find_record(id)
+        && record.kind == crate::lisp::eval::RecordKind::ModuleFunction
+    {
+        return record.slots.first().cloned();
+    }
     let Value::Lambda(lambda) = value else {
         return None;
     };

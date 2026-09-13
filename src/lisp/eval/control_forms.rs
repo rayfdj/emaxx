@@ -142,10 +142,12 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         if self
-            .active_catch_tags
+            .active_handlers
             .iter()
-            .rev()
-            .any(|candidate| crate::lisp::primitives::values_eq_in_env(self, candidate, &tag, env))
+            .any(|handler| matches!(handler, ActiveHandler::Module))
+            || self.active_catch_tags.iter().rev().any(|candidate| {
+                crate::lisp::primitives::values_eq_in_env(self, candidate, &tag, env)
+            })
         {
             Err(LispError::Throw(tag, value))
         } else {

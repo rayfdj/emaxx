@@ -141,6 +141,16 @@ impl Interpreter {
         history_filename: &str,
         env: &Env,
     ) -> Result<Value, LispError> {
+        self.load_foreign_resolved_path(path, history_filename, env, true)
+    }
+
+    pub(crate) fn load_foreign_resolved_path(
+        &mut self,
+        path: &std::path::Path,
+        history_filename: &str,
+        env: &Env,
+        native: bool,
+    ) -> Result<Value, LispError> {
         let filename = path.to_str().ok_or_else(|| {
             LispError::SignalValue(Value::list([
                 Value::symbol("file-error"),
@@ -171,12 +181,16 @@ impl Interpreter {
                 }
             }
         }
-        let mut result = primitives::native_elisp_load(
-            self,
-            &Value::string(filename),
-            false,
-            &mut load_environment,
-        );
+        let mut result = if native {
+            primitives::native_elisp_load(
+                self,
+                &Value::string(filename),
+                false,
+                &mut load_environment,
+            )
+        } else {
+            crate::lisp::modules::load(self, &Value::string(filename), &mut load_environment)
+        };
         if result.is_ok() {
             let current = self
                 .lookup_var("current-load-list", &load_environment)

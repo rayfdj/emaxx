@@ -746,7 +746,9 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
         JsonNode::Integer(value) => Value::Integer(value),
         JsonNode::BigInteger(value) => Value::BigInteger(value.into()),
         JsonNode::Float(value) => Value::float(value),
-        JsonNode::String(value) => Value::String(value.into()),
+        // json.c returns ordinary mutable multibyte strings, including
+        // ASCII strings. LSP clients attach completion metadata to them.
+        JsonNode::String(value) => make_shared_string_value_with_multibyte(value, Vec::new(), true),
         JsonNode::Array(items) => {
             let items: Vec<Value> = items
                 .into_iter()
@@ -775,7 +777,12 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
                     "equal",
                     deduped
                         .into_iter()
-                        .map(|(key, value)| (Value::String(key.into()), value))
+                        .map(|(key, value)| {
+                            (
+                                make_shared_string_value_with_multibyte(key, Vec::new(), true),
+                                value,
+                            )
+                        })
                         .collect(),
                 )
             }
@@ -1146,6 +1153,48 @@ fn json_error(condition: &str, message: &str, position: usize) -> LispError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_strings_are_mutable_multibyte_objects() {
+        let mut interp = Interpreter::new();
+        let options = JsonParseOptions {
+            object_type: JsonObjectType::Plist,
+            array_type: JsonArrayType::List,
+            null_object: Value::Nil,
+            false_object: Value::symbol(":false"),
+        };
+        let string = parse_text_source(&mut interp, "\"alpha\"", true, &options, true)
+            .expect("JSON string")
+            .value;
+        let alias = string.clone();
+        let mut env = Vec::new();
+        for (name, args) in [
+            (
+                "put-text-property",
+                vec![
+                    Value::Integer(0),
+                    Value::Integer(1),
+                    Value::symbol("item"),
+                    Value::T,
+                    string.clone(),
+                ],
+            ),
+            (
+                "aset",
+                vec![string, Value::Integer(0), Value::Integer('A' as i64)],
+            ),
+        ] {
+            crate::lisp::primitives::call(&mut interp, name, &args, &mut env)
+                .expect("parsed JSON strings should support mutation");
+        }
+        let text = string_like(&alias).expect("the alias should remain a string");
+        assert_eq!(text.text, "Alpha");
+        assert!(text.multibyte);
+        assert_eq!(
+            crate::lisp::primitives::string_property_at(&alias, 0, "item"),
+            Some(Value::T)
+        );
+    }
 
     #[test]
     fn serializer_emits_utf8_byte_strings() {

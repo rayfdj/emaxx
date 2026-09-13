@@ -310,6 +310,17 @@ pub(crate) fn function_arity_value(
                 record.slots[2].clone(),
             ))
         }
+        Value::Record(id) if interp.modules.functions.contains_key(id) => {
+            let function = &interp.modules.functions[id];
+            Ok(Value::cons(
+                Value::Integer(function.min as i64),
+                if function.max == -2 {
+                    Value::symbol("many")
+                } else {
+                    Value::Integer(function.max as i64)
+                },
+            ))
+        }
         value if is_lambda_expression(interp, value, env) => {
             let items = value.to_vec()?;
             let parameters = items[1]

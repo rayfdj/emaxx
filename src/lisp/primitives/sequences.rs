@@ -40,12 +40,6 @@ pub(crate) fn copy_sequence_value(
     }
 }
 
-pub(crate) fn exit_status_code(status: &std::process::ExitStatus) -> i64 {
-    status
-        .code()
-        .unwrap_or(if status.success() { 0 } else { 1 }) as i64
-}
-
 pub(crate) fn default_sort_lt(
     interp: &Interpreter,
     left: &Value,

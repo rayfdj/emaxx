@@ -144,7 +144,7 @@ define_dispatch_modules! {
     BufferMeta => buffer_meta => buffer_meta::call(interp, name, args, env),
     FilesProcess => files_process => files_process::call(interp, name, args, env),
     Display => display => display::call(interp, name, args, env),
-    EmacsModule => emacs_module => emacs_module::call(name, args),
+    EmacsModule => emacs_module => emacs_module::call(interp, name, args, env),
     Faces => faces => faces::call(interp, name, args, env),
     Misc => misc => misc::call(interp, name, args, env),
     MiscKeymaps => misc_keymaps => misc_keymaps::call(interp, name, args, env),

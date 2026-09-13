@@ -520,6 +520,7 @@ fn try_main() -> Result<u8, String> {
 
     let options = BatchRunOptions {
         no_site_lisp,
+        module_assertions,
         startup_command_line_args: Some(command_line_args.clone()),
         defer_delayed_custom_init: true,
         dump_file,

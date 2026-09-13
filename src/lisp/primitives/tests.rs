@@ -3576,7 +3576,29 @@ fn memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly() {
 
 #[cfg(unix)]
 #[test]
-fn module_load_validates_real_libraries_without_fabricating_the_gnu_value_abi() {
+fn call_process_reports_signal_termination_in_both_entry_points() {
+    let program = r#"(list
+        (call-process "/bin/sh" nil nil nil "-c" "exit 7")
+        (stringp (call-process "/bin/sh" nil nil nil "-c" "kill -TERM $$"))
+        (stringp (call-process-region (point-min) (point-max)
+                    "/bin/sh" nil nil nil "-c" "kill -TERM $$")))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(7 t t)");
+    let mut interp = Interpreter::new();
+    let actual = interp
+        .eval(
+            &Reader::new(program)
+                .read()
+                .expect("subprocess program should parse")
+                .expect("subprocess program should contain a form"),
+            &mut Env::new(),
+        )
+        .expect("synchronous subprocess results");
+    assert_eq!(actual, Value::list([Value::Integer(7), Value::T, Value::T]));
+}
+
+#[cfg(unix)]
+#[test]
+fn module_load_validates_and_initializes_real_libraries() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static PROBE_ID: AtomicU64 = AtomicU64::new(0);
@@ -3672,13 +3694,10 @@ fn module_load_validates_real_libraries_without_fabricating_the_gnu_value_abi() 
     let actual = interp
         .eval(&form, &mut env)
         .expect("dynamic-module ABI boundary should be catchable");
-    let expected = Value::list([
-        Value::symbol("error"),
-        Value::string("GNU dynamic module ABI is unavailable in the Rust value backend"),
-    ]);
+    let expected = Value::T;
     assert!(
         values_equal(&interp, &actual, &expected),
-        "module initializer must not receive a fabricated runtime:\nactual: {actual:?}"
+        "a successful module initializer returns t:\nactual: {actual:?}"
     );
     std::fs::remove_dir_all(directory).expect("module probe directory should be removed");
 }
