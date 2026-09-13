@@ -202,7 +202,12 @@ cargo build --release && cargo test --release --test cli_parity
 
 The test first runs `tools/build-image.sh` so that Emaxx, like the oracle,
 starts from a dumped image (the image is the `emaxx.pdmp` beside the release
-binary; the script is a no-op while it is current).  The one normalization
+binary; the script is a no-op while it is current).  Every integration test
+that executes the built binary does the same, and the compatibility harness
+runs the script on the subject it links under `target/compat-subject` (the
+Makefile's `$(pdmp): emacs$(EXEEXT)` dependency): a binary started beside a
+stale image is fatal, as in emacs.c, and one started without an image
+rebuilds its Lisp state on every run.  The one normalization
 beyond paths and addresses is documented in the test: the oracle's preloaded
 Lisp is native code and records no backtrace frame for the C primitives it
 calls, so those frames are dropped from both sides.

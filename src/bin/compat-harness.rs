@@ -3247,8 +3247,18 @@ fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, Stri
     // current; Cargo does not also rebuild its sibling `emaxx' target.  Ask
     // Cargo to validate/build the exact profile whose sibling we are about
     // to execute, so a stale executable can never produce an oracle result.
+    // make-fingerprint beside it, as lib-src's is a prerequisite of temacs:
+    // tools/build-image.sh runs the sibling.
     let mut build = Command::new("cargo");
-    build.args(["build", "--quiet", "--locked", "--bin", "emaxx"]);
+    build.args([
+        "build",
+        "--quiet",
+        "--locked",
+        "--bin",
+        "emaxx",
+        "--bin",
+        "make-fingerprint",
+    ]);
     // Pin Cargo to the target directory containing this harness.  Otherwise
     // an inherited CARGO_TARGET_DIR could build a fresh Emaxx elsewhere while
     // the gate continued to execute an old sibling from this directory.
@@ -3284,6 +3294,7 @@ fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, Stri
             layout.candidate.display()
         ));
     }
+    build_subject_image(&source_root, &layout.candidate)?;
     let source_after_build = subject_source_fingerprint(&source_root)?;
     if source_after_build != source_sha256 {
         return Err(format!(
@@ -3299,6 +3310,39 @@ fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, Stri
         source_sha256,
         _lock: subject_lock,
     })
+}
+
+/// src/Makefile.in's `$(pdmp): emacs$(EXEEXT)': the image is a product of
+/// the binary and is rebuilt when the binary is.  The subject was just
+/// relinked, so tools/build-image.sh is run on it here -- a no-op while the
+/// image beside it still loads (a reproducible relink), a dump otherwise --
+/// and every runner it starts boots from `emaxx.pdmp' as the oracle boots
+/// from its emacs.pdmp.  Without this the subject rebuilt its Lisp state on
+/// every start (and a stale image beside it was fatal, as in emacs.c).
+fn build_subject_image(source_root: &Path, binary: &Path) -> Result<(), String> {
+    let script = source_root.join("tools").join("build-image.sh");
+    let mut image = Command::new(&script);
+    image.arg(binary).current_dir(source_root);
+    // The dump reads the pinned oracle's lisp/ and native-lisp/, and the
+    // dumping process resolves its source provenance as the runners do
+    // (EMAXX_DUMP_SOURCE_DIRECTORY with EMACS_TEST_DIRECTORY beside it).
+    if let Ok(local) = compat::load_oracle_local_config() {
+        image
+            .env(compat::DUMP_SOURCE_DIRECTORY_ENV, &local.emacs_repo)
+            .env("EMACS_TEST_DIRECTORY", local.emacs_repo.join("test"));
+    }
+    let output = image
+        .output()
+        .map_err(|error| format!("run {}: {error}", script.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "building the image beside {} failed ({}):\n{}",
+            binary.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
 }
 
 fn subject_build_layout(source_root: &Path, profile: &str) -> EmaxxBuildLayout {

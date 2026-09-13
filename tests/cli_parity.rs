@@ -8,33 +8,18 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
 fn oracle() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs")
 }
 
-/// The Emaxx binary with its image built beside it the way GNU's Makefile
-/// builds emacs.pdmp (tools/build-image.sh), so that every child starts
-/// `initialized' like the oracle does.
+mod common;
+
+/// The fingerprint-and-dump build runs even when a previous test left a
+/// valid image beside an unprocessed Cargo executable: the fingerprint
+/// controls below need the binary fingerprinted, not only imaged.
 fn emaxx() -> &'static Path {
-    static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| {
-        let binary = PathBuf::from(env!("CARGO_BIN_EXE_emaxx"));
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/build-image.sh");
-        let built = Command::new(&script)
-            .arg(&binary)
-            .env("EMAXX_IMAGE_FORCE", "1")
-            .output()
-            .unwrap();
-        assert!(
-            built.status.success(),
-            "tools/build-image.sh failed:\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&built.stdout),
-            String::from_utf8_lossy(&built.stderr)
-        );
-        binary
-    })
+    common::emaxx(true)
 }
 
 struct Corpus {

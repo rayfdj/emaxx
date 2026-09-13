@@ -10809,16 +10809,98 @@ this tree: the ten library groups passed (batch 49, compat_runtime 84,
 eval_01 361, eval_02 284, eval_03 320, eval_04 251, eval_05 351,
 lightweight 422, primitives 474, tty 56, every group 0 failed) and the
 bins stage; its integration stage failed 16 of 17 in tests/cli.rs
-because an image dumped earlier in the session from the previous link
-of the gate binary was still beside the relinked one, which refused it
-("not built for this Emacs executable", exit 1) as emacs.c's load_pdump
-refuses a stale pdmp -- the environment, not the tree, and the
-launcher now clears the images beside the binary before it builds.
-The six integration binaries were run again alone, as the gate user
+because an image dumped from the previous link of the gate binary was
+still beside the relinked one, which refused it ("not built for this
+Emacs executable", exit 1) as emacs.c's load_pdump refuses a stale
+pdmp.  That image was one dumped by hand earlier in the session, but
+the tree lays the same trap for itself: tests/cli_parity.rs builds the
+image beside the binary and tests/cli.rs, which runs the binary
+directly and comes first, did nothing about a stale one after a relink
+(19v corrects this).  The six integration binaries were run again alone, as the gate user
 under the gate's C locale, on the same tree without the stale image:
 cli 17, cli_parity 5, ert_runner 3, native_comp_identity 1,
 native_thread_continuations 1, package_lifecycle 5, every one 0
 failed.  (A first rerun under the user's C.UTF-8 locale failed two cli
 tests on curved quotes, which GNU also prints under that locale; the
 tests expect the gate's C locale.)
+
+## 2026-09-13 Checkpoint 19v: a failed deletion reports as fileio.c does; the harness images its subject
+
+*What prompted it.*  `shr-test/zoom-image' on the Mac: the oracle
+fails it with `(error "Timed out waiting for initial load")' and emaxx
+passes.  On Linux both pass under the harness.  The test mocks
+`url-queue-retrieve' with a zero-delay timer around `url-retrieve' and
+waits five seconds for `shr-put-image'; an error anywhere on the timer's
+path is swallowed by the timer machinery and the wait times out, so the
+timeout names no cause.  Probing the environment the harness gives both
+sides (HOME=/nonexistent, as test/Makefile.in gives GNU's own suite)
+found the opposite divergence on Linux as an unprivileged user with a
+HOME it cannot write: GNU passes, emaxx timed out.
+
+*Read.*  url.el's retrieval prunes the URL cache under
+`(condition-case err (url-cache-prune-cache) (file-error ...))', and
+the pruner's `delete-file' of a file in a directory the user cannot
+write is, in GNU, report_file_error ("Removing old name", filename):
+`(permission-denied "Removing old name" "Permission denied" FILE)',
+caught, logged as "Error when expiring the cache", and the retrieval
+goes on.  emaxx's `delete-file-internal' signalled a plain `error' with
+Rust's rendering ("Permission denied (os error 13)"), which no
+`file-error' handler catches; the retrieval died inside the timer and
+the test timed out.  `delete-directory-internal' had the same shape
+(GNU: report_file_error ("Removing directory", directory)).
+
+*Fixed.*  Both are report_file_error's condition (`permission-denied'
+for EACCES, `file-missing' for ENOENT, `file-error' otherwise, the
+strerror text, the name) through the existing file_operation_error;
+`delete-file-internal' still ignores ENOENT as Fdelete_file_internal
+does.  Control `failed_deletions_report_as_fileio_c_does' (a path
+through a regular file, ENOTDIR for any user; a missing directory; a
+missing file), the oracle's values.  As the unprivileged user with the
+unwritable HOME both binaries now pass the test and print the same
+"Error when expiring the cache" line.
+
+*Found on the way, fixed.*  The harness links its subject under
+target/compat-subject on every run (it removes the binary and builds
+again, so a stale executable cannot serve) and started every runner
+from it with no image beside it: the subject rebuilt its Lisp state on
+every start unless the operator exported the fixture-image directory
+-- the Mac's 9.4 s of setup per file and its 27x emacsclient-tests were
+this, not the binary under test, and the instructions given after 19s
+(image target/gate/emaxx) imaged a binary the harness never runs.
+src/Makefile.in makes emacs.pdmp a product of the emacs binary; the
+harness now runs tools/build-image.sh on the subject it just linked
+(make-fingerprint built beside it, the dumping process given the
+oracle tree's provenance as the runners are), a no-op when the relink
+was reproducible and the image still loads, a dump otherwise.
+shr-tests.el through the harness on Linux: emaxx setup 1.6 s (GNU
+0.11); it was the cold 22 s.  tests/cli.rs refreshes the image beside
+the gate binary through the same helper cli_parity uses, so a relink
+no longer meets the previous run's image (the 19u gate failure).
+
+*Open.*  The Mac oracle's own timeout is not explained by any of the
+above: on Linux GNU passes with an unwritable HOME and with a HOME
+whose parent does not exist.  The trace to run on the Mac is with the
+user; until it is read, that mismatch stays as it is -- emaxx is not
+made to fail with it.  The 1.6 s harness setup against 0.11.
+
+*Verified.*  fmt and strict clippy exit 0; tests/cli.rs 17 and
+tests/cli_parity.rs 5 as the gate user under the C locale; the control
+and its neighbours; two harness runs of shr-tests.el (4/4 matching,
+the second's image a no-op after a reproducible relink).  Gate: grouped
+gate run-1789290446479291048-8217, alone on the machine, on the tree as
+committed, GROUPED GATE PASSED -- the ten library groups (batch 49,
+compat_runtime 84, eval_01 361, eval_02 284, eval_03 320, eval_04 251,
+eval_05 351, lightweight 422, primitives 475, tty 56, every group 0
+failed), the bins stage, and the integration stage this time in the
+gate itself (cli 17, cli_parity 5, ert_runner 3, native_comp_identity
+1, native_thread_continuations 1, package_lifecycle 5); `cargo fmt
+--check' and strict clippy exit 0 before and after; 09:07 to 09:28.
+Rebased onto main's native-comp merge (1af8cd54), the tree gated again:
+grouped gate run-1789310967094659712-5878, GROUPED GATE PASSED -- ten
+library groups (batch 49, compat_runtime 84, eval_01 362, eval_02 284,
+eval_03 321, eval_04 251, eval_05 351, lightweight 424, primitives 476,
+tty 56), bins 43, integration cli 17, cli_parity 6 (main's
+copy-and-resign control included), ert_runner 3, native_comp_identity
+1, native_thread_continuations 1, package_lifecycle 5, every one 0
+failed; fmt and strict clippy exit 0 before and after.
 

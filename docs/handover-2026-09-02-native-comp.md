@@ -770,6 +770,15 @@ file.  The operand is a static read through a volatile load; control
 `the_executable_holds_the_default_fingerprint_once` (it passes on
 Linux against the old code, whose build emitted one copy; the Mac's
 gate run and the agreeing fingerprints are the receipt).
+Checkpoint 19v (2026-09-13, for main): `delete-file-internal` and
+`delete-directory-internal` signal report_file_error's conditions
+(url's cache pruner catches `file-error`; emaxx alone timed out
+`shr-test/zoom-image` as an unprivileged user with an unwritable HOME);
+the compatibility harness builds the image beside the subject it links
+under target/compat-subject on every run, as make builds emacs.pdmp
+from emacs -- its runners booted cold before (the Mac's 9.4 s setup per
+file); tests/cli.rs refreshes the image beside the gate binary.  The
+Mac oracle's own timeout on that test is unexplained and stays open.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

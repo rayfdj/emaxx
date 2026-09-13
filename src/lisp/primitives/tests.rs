@@ -7385,6 +7385,56 @@ fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
 
 #[cfg(unix)]
 #[test]
+fn failed_deletions_report_as_fileio_c_does() {
+    // Fdelete_file_internal: `unlink' failing with anything but ENOENT is
+    // report_file_error ("Removing old name", filename); ENOENT is no
+    // error.  Fdelete_directory_internal: report_file_error ("Removing
+    // directory", directory) on any `rmdir' failure.  The condition is the
+    // errno's (permission-denied for EACCES, file-missing for ENOENT,
+    // file-error otherwise) with strerror's text -- url-cache's pruner
+    // handles `file-error' and let a plain `error' through.  A path through
+    // a regular file is ENOTDIR for any user; the values are the oracle's.
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let file = std::env::temp_dir().join(format!(
+        "emaxx-deletion-report-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::write(&file, b"regular").expect("write the regular file");
+    let file = file.display().to_string();
+    let inner = format!("{file}/x");
+    let cases = [
+        (
+            format!("(condition-case e (delete-file-internal \"{inner}\") (error e))"),
+            format!("(file-error \"Removing old name\" \"Not a directory\" \"{inner}\")"),
+        ),
+        (
+            format!("(condition-case e (delete-directory-internal \"{inner}\") (error e))"),
+            format!("(file-error \"Removing directory\" \"Not a directory\" \"{inner}\")"),
+        ),
+        (
+            "(condition-case e (delete-file-internal \"/no/such/file\") (error e))".to_string(),
+            "nil".to_string(),
+        ),
+        (
+            "(condition-case e (delete-directory-internal \"/no/such/dir\") (error e))".to_string(),
+            "(file-missing \"Removing directory\" \"No such file or directory\" \"/no/such/dir\")"
+                .to_string(),
+        ),
+    ];
+    for (form, expected) in cases {
+        let value = crate::test_support::eval_lisp(&mut interp, &mut env, &form)
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(value.to_string(), expected, "{form}");
+    }
+    let _ = std::fs::remove_file(&file);
+}
+
+#[cfg(unix)]
+#[test]
 fn process_lines_uses_default_directory_as_subprocess_cwd() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

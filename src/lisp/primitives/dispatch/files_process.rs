@@ -1273,10 +1273,17 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
+                // Fdelete_file_internal: `unlink' failing with anything but
+                // ENOENT is report_file_error ("Removing old name", filename)
+                // -- the errno's own condition (`permission-denied' for
+                // EACCES, which url-cache's pruner and callers handling
+                // `file-error' expect), not a plain `error'.
                 let removed = match fs::remove_file(&path) {
                     Ok(()) => true,
                     Err(error) if error.kind() == ErrorKind::NotFound => false,
-                    Err(error) => return Err(LispError::Signal(error.to_string())),
+                    Err(error) => {
+                        return Err(file_operation_error("Removing old name", &error, &path));
+                    }
                 };
                 if removed {
                     dispatch_file_notification(interp, env, &path, "deleted")?;
@@ -1288,7 +1295,10 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
                 validate_file_name(&path)?;
-                fs::remove_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+                // Fdelete_directory_internal: report_file_error ("Removing
+                // directory", directory) on `rmdir' failure.
+                fs::remove_dir(&path)
+                    .map_err(|error| file_operation_error("Removing directory", &error, &path))?;
                 interp.queue_directory_deletion_notification(&path);
                 interp.invalidate_file_notify_watches_for_path(&path);
                 Ok(Value::Nil)

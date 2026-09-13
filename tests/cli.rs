@@ -4,6 +4,8 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod common;
+
 fn unique_temp_path(stem: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "{stem}-{}-{}",
@@ -38,7 +40,7 @@ fn sigusr_events_follow_gnu_special_event_map_semantics() {
         "GNU signal oracle failed: {}",
         String::from_utf8_lossy(&oracle.stderr)
     );
-    let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
+    let subject = run(common::emaxx(false));
     assert!(
         subject.status.success(),
         "Emaxx did not survive/dispatch SIGUSR1: {}",
@@ -75,7 +77,7 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
         "{}/",
         std::fs::canonicalize(&load_directory).unwrap().display()
     );
-    let dump = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let dump = Command::new(common::emaxx(false))
         .current_dir(&dump_directory)
         .args([
             "--batch",
@@ -104,7 +106,7 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
         .lines()
         .find_map(|line| line.strip_prefix("native-functions=").map(str::to_owned))
         .expect("the session counted its native functions");
-    let started = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let started = Command::new(common::emaxx(false))
         .current_dir(&load_directory)
         .args([
             "--batch",
@@ -141,7 +143,7 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
             std::env::var("HOME").unwrap_or_default()
         )
     );
-    let missing = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let missing = Command::new(common::emaxx(false))
         .args(["--batch", "--dump-file", "/nonexistent-dir/none.pdmp"])
         .output()
         .unwrap();
@@ -154,7 +156,7 @@ fn dump_file_process_round_trip_or_explicit_native_image_limit() {
 
 #[test]
 fn empty_batch_invocation_succeeds_like_gnu_emacs() {
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .arg("--batch")
         .output()
         .unwrap();
@@ -169,7 +171,7 @@ fn empty_batch_invocation_succeeds_like_gnu_emacs() {
 
 #[test]
 fn batch_read_string_consumes_a_line_from_piped_stdin() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let mut child = Command::new(common::emaxx(false))
         .args([
             "--quick",
             "--batch",
@@ -207,7 +209,7 @@ fn batch_symbol_readers_answer_piped_stdin_like_gnu() {
             (read-variable "Variable: " 'tab-width)
             (subrp (symbol-function 'read-command))
             (subrp (symbol-function 'read-variable)))))"#;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let mut child = Command::new(common::emaxx(false))
         .args(["--quick", "--batch", "--eval", program])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -230,7 +232,7 @@ fn batch_symbol_readers_answer_piped_stdin_like_gnu() {
 
 #[test]
 fn batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b() {
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .args([
             "-batch",
             "-eval",
@@ -258,7 +260,7 @@ fn batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b() {
     // command-line-1 signals "Unknown option" (the message on stderr, the
     // batch backtrace on stdout) and the process exits 255 before any
     // later action runs.
-    let rejected = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let rejected = Command::new(common::emaxx(false))
         .args(["-b", "-batch", "-eval", "(princ \"hi\")"])
         .output()
         .unwrap();
@@ -290,7 +292,7 @@ fn batch_preserves_eval_and_load_action_order() {
     std::fs::write(&source, ";;; -*- lexical-binding: t -*-\n(kill-emacs 31)\n").unwrap();
     let compile = format!("(byte-compile-file {:?})", source.display().to_string());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .arg("-batch")
         .arg("-eval")
         .arg(compile)
@@ -314,7 +316,7 @@ fn batch_preserves_eval_and_load_action_order() {
 
 #[test]
 fn batch_funcall_receives_remaining_file_arguments() {
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .arg("--batch")
         .arg("--eval")
         .arg(
@@ -352,7 +354,7 @@ fn startup_options_after_an_eval_are_sorted_ahead_of_it_like_emacs_c() {
             .unwrap()
     };
     let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
-    let subject = std::path::Path::new(env!("CARGO_BIN_EXE_emaxx"));
+    let subject = common::emaxx(false);
     let sorted = [
         "--eval",
         "(prin1 (list init-file-user site-run-file (cdr command-line-args)))",
@@ -389,7 +391,7 @@ fn startup_options_after_an_eval_are_sorted_ahead_of_it_like_emacs_c() {
 
 #[test]
 fn batch_eval_error_uses_gnu_stderr_and_exit_status() {
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .args([
             "-Q",
             "-batch",
@@ -412,7 +414,7 @@ fn batch_accepts_gnu_quick_and_long_load_options() {
     let source = unique_temp_path("emaxx-cli-load").with_extension("el");
     std::fs::write(&source, "(provide 'emaxx-cli-load-test)\n").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .arg("--quick")
         .arg("--batch")
         .arg(format!("--load={}", source.display()))
@@ -462,7 +464,7 @@ fn batch_child_load_path_ignores_the_test_directory_like_lread() {
             .unwrap()
     };
     let oracle = run(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs"));
-    let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
+    let subject = run(common::emaxx(false));
 
     std::fs::remove_dir_all(&repo).unwrap();
     assert_eq!(oracle.status.code(), Some(255));
@@ -491,7 +493,7 @@ fn batch_kill_emacs_runs_hooks_and_exits_without_lisp_unwinding() {
         hook_result.display(),
         hook_result.display()
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .args(["--quick", "--batch", "--eval", &expression])
         .output()
         .unwrap();
@@ -510,7 +512,7 @@ fn batch_kill_emacs_runs_hooks_and_exits_without_lisp_unwinding() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let negative = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let negative = Command::new(common::emaxx(false))
         .args(["--quick", "--batch", "--eval", "(kill-emacs -1)"])
         .output()
         .unwrap();
@@ -522,7 +524,7 @@ fn batch_load_propagates_kill_emacs_instead_of_reporting_a_load_error() {
     let source = unique_temp_path("emaxx-cli-kill-emacs").with_extension("el");
     std::fs::write(&source, "(kill-emacs 6)\n").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .arg("--quick")
         .arg("--batch")
         .arg(format!("--load={}", source.display()))
@@ -558,7 +560,7 @@ fn batch_eval_interns_the_symbols_it_reads_like_gnu() {
                                   ;; something once the obarray is seeded.
                                   (progn ':zz-cli-kw (intern-soft ":zz-cli-kw"))
                                   (intern-soft "zz-cli-never-mentioned")))"#;
-    let output = Command::new(env!("CARGO_BIN_EXE_emaxx"))
+    let output = Command::new(common::emaxx(false))
         .args(["--quick", "--batch", "--eval", program])
         .output()
         .unwrap();
@@ -628,7 +630,7 @@ fn batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor() {
         (status.code(), text)
     };
     let oracle = run(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs"));
-    let subject = run(std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
+    let subject = run(common::emaxx(false));
     let _ = std::fs::remove_file(&program);
     assert_eq!(oracle.0, Some(255), "GNU oracle exit status:\n{}", oracle.1);
     // Compare every output byte and every frame; do not strip loader frames.
