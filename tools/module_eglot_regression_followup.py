@@ -33,11 +33,51 @@ def require_image_failure(output, expected, total):
     return result
 
 
+def replay_cli_baseline(baseline, output, report):
+    """Record the two CLI failures found by the completed inventory follow-up."""
+    expected = {
+        "c_owned_switches_and_startup_arguments_agree_with_gnu",
+        "script_with_equals_rewrites_the_argument_before_it_like_emacs_c",
+    }
+    report["baseline_target"] = "cli_parity"
+    environment = gate.gate_environment(False)
+    environment["CARGO_TARGET_DIR"] = str(gate.PROJECT_ROOT / "target")
+    with (output / "cli-baseline.log").open("w") as log:
+        subprocess.run(
+            ["cargo", "clean", "--package", "emaxx", "--profile", "gate"],
+            cwd=baseline, env=environment, stdout=log, stderr=subprocess.STDOUT,
+            check=True,
+        )
+        completed = subprocess.run(
+            ["cargo", "test", "--locked", "--profile", "gate", "--test",
+             "cli_parity", "-j2", "--", "--test-threads=1"],
+            cwd=baseline, env=environment, stdout=log, stderr=subprocess.STDOUT,
+            check=False,
+        )
+    text = (output / "cli-baseline.log").read_text()
+    result = gate.parse_test_result(text)
+    failures = re.findall(r"^---- (.*?) stdout ----$", text, re.M)
+    report["baseline_result"] = result
+    report["baseline_failures"] = failures
+    report["baseline_exit_code"] = completed.returncode
+    report["baseline_reproduced"] = (
+        completed.returncode != 0 and result["status"] == "FAILED"
+        and result["passed"] == 3 and result["failed"] == 2
+        and result["ignored"] == result["filtered_out"] == result["measured"] == 0
+        and len(failures) == 2 and set(failures) == expected
+    )
+    gate.write_summary(output / "cli-baseline-summary.json", report)
+    print(text, flush=True)
+    print(json.dumps(report, indent=2), flush=True)
+    return 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--previous", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--cli-baseline-only", action="store_true")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -77,6 +117,8 @@ def main():
         gate.write_summary(output / "summary.json", report)
 
     save()
+    if args.cli_baseline_only:
+        return replay_cli_baseline(baseline, output, report)
     binary = gate.discover_test_binary("gate", output)
     inventory_text = subprocess.check_output(
         [str(binary), "--list", "--format=terse"], text=True,

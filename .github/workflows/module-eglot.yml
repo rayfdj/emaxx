@@ -8,6 +8,10 @@ on:
         description: Finish the stopped 9a44331 Rust inventory and reproduce its baseline failure
         type: boolean
         default: false
+      cli_baseline_only:
+        description: Replay the two CLI backtrace failures on the unchanged base only
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -133,6 +137,7 @@ jobs:
         if: github.event.inputs.followup == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          CLI_BASELINE_ONLY: ${{ github.event.inputs.cli_baseline_only }}
           CARGO_BUILD_JOBS: '2'
           LANG: C
           LC_ALL: C
@@ -140,11 +145,17 @@ jobs:
           RUST_TEST_THREADS: '1'
         run: |
           gh run download 34730542855 --repo rayfdj/emaxx --dir /tmp/module-eglot-previous
-          cargo clean --package emaxx --profile gate
-          cargo build --locked --profile gate --bin emaxx -j2
-          python3 tools/module_eglot_regression_followup.py \
-            --previous /tmp/module-eglot-previous --baseline ../baseline \
-            --output /tmp/module-eglot-rust-followup
+          if [ "$CLI_BASELINE_ONLY" = true ]; then
+            python3 tools/module_eglot_regression_followup.py --cli-baseline-only \
+              --previous /tmp/module-eglot-previous --baseline ../baseline \
+              --output /tmp/module-eglot-rust-followup
+          else
+            cargo clean --package emaxx --profile gate
+            cargo build --locked --profile gate --bin emaxx -j2
+            python3 tools/module_eglot_regression_followup.py \
+              --previous /tmp/module-eglot-previous --baseline ../baseline \
+              --output /tmp/module-eglot-rust-followup
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
