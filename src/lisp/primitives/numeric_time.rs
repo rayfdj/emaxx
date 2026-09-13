@@ -901,6 +901,12 @@ pub(crate) fn time_floor_parts(time: &ExactTimeValue) -> (BigInt, BigInt) {
     floor_div_mod(&time.ticks, &time.hz)
 }
 
+/// timefns.c lisp_to_timespec's first step: TIME as whole nanoseconds,
+/// floored (TICKS * 10^9 floor-divided by HZ).
+pub(crate) fn exact_time_floor_nanoseconds(time: &ExactTimeValue) -> BigInt {
+    floor_div_mod(&(&time.ticks * BigInt::from(1_000_000_000u32)), &time.hz).0
+}
+
 pub(crate) fn exact_time_to_value(time: &ExactTimeValue) -> Value {
     if time.hz == BigInt::from(1u8) {
         normalize_bigint_value(time.ticks.clone())

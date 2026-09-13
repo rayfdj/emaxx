@@ -339,7 +339,25 @@ fn help_text_is_emacs_c_usage_message() {
     assert_same(&corpus, &["--help"]);
     assert_same(&corpus, &["-help"]);
     assert_same(&corpus, &["--batch", "--he"]);
-    assert_same(&corpus, &["--help", "--version"]);
+    // `--version' wins over `--help' and prints each binary's own
+    // "Development version" line (its revision and build date, which
+    // agree only when both were built the same day): compare without it,
+    // as `version_report_is_emacs_c_main_s' does.
+    let args = ["--help", "--version"];
+    let ((actual_out, actual_err, actual_status), (expected_out, expected_err, expected_status)) =
+        both(&corpus, &args);
+    assert_eq!((actual_err, actual_status), (expected_err, expected_status));
+    let strip = |text: &str| {
+        text.lines()
+            .filter(|line| !line.starts_with("Development version "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        strip(&actual_out),
+        strip(&expected_out),
+        "arguments {args:?}"
+    );
 }
 
 #[test]

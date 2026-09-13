@@ -80,9 +80,18 @@ impl ImageBytes {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
+            // pdumper.c pdumper_load: an open error stays what it was
+            // (ENOENT and ENOTDIR are FILE_NOT_FOUND, the rest strerror),
+            // a failed fstat is FILE_NOT_FOUND, and from the size check on
+            // everything that goes wrong is BAD_FILE_TYPE ("not a dump
+            // file"): a directory opens and cannot be read.
             let file = std::fs::File::open(path)?;
-            let len = usize::try_from(file.metadata()?.len())
-                .map_err(|_| std::io::Error::other("the image is too large to map"))?;
+            let len = usize::try_from(
+                file.metadata()
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?
+                    .len(),
+            )
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "too large"))?;
             if len == 0 {
                 return Ok(Self::Owned(Vec::new()));
             }
@@ -106,10 +115,16 @@ impl ImageBytes {
             if address == libc::MAP_FAILED {
                 // A file the host cannot map (a directory, a filesystem
                 // without mmap): read it, and report what the read does.
-                return std::fs::read(path).map(Self::Owned);
+                return std::fs::read(path)
+                    .map(Self::Owned)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
             }
-            let address = std::ptr::NonNull::new(address.cast::<u8>())
-                .ok_or_else(|| std::io::Error::other("mmap returned a null address"))?;
+            let address = std::ptr::NonNull::new(address.cast::<u8>()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "mmap returned a null address",
+                )
+            })?;
             Ok(Self::Mapped { address, len })
         }
         #[cfg(not(unix))]

@@ -2091,6 +2091,41 @@ fn float_time_rounds_as_frac_to_double() {
 }
 
 #[test]
+fn let_binding_lists_must_be_lists() {
+    // eval.c Flet and FletX read the binding list with list_length and
+    // FOR_EACH_TAIL: a vector (or any non-list) is wrong-type-argument
+    // listp.  A vector, read as a sequence, bound its elements to nil
+    // before (the Mac's frozen run: eval-tests--let--vector).  The
+    // oracle's conditions.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (condition-case e (let [a]) (error e))
+               (condition-case e (let* [a]) (error e))
+               (condition-case e (let 1) (error e))
+               (condition-case e (let "a") (error e)))"#,
+        r#"((wrong-type-argument listp [a]) (wrong-type-argument listp [a]) (wrong-type-argument listp 1) (wrong-type-argument listp "a"))"#,
+        "let binding lists",
+    );
+}
+
+#[test]
+fn set_file_times_keeps_the_whole_timestamp() {
+    // fileio.c Fset_file_times: lisp_time_argument's timespec through
+    // utimensat, to the nanosecond.  The seconds alone were set before,
+    // so a file stamped with `current-time' fell a fraction of a second
+    // behind the time the caller kept (multisession's file backend then
+    // took its cached value over another Emacs's newer one).  The
+    // oracle's value, read back with `file-attributes'.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((file (make-temp-file "emaxx-file-times")))
+             (set-file-times file '(27301 29776 232076 444000))
+             (prog1 (file-attribute-modification-time (file-attributes file))
+               (delete-file file)))"#,
+        "(27301 29776 232076 444000)",
+        "set-file-times precision",
+    );
+}
+
+#[test]
 fn buffer_searches_convert_offsets_through_the_rope() {
     // A multibyte buffer whose haystack is its own text converts the
     // engine's byte offsets through the rope (test builds compare every
