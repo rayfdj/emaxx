@@ -190,6 +190,55 @@ not been altered.
 
 ## Still open
 
+The runtime performance increment fixes two general problems. Vector
+`length` now reads the slot count without cloning the entire vector, as
+GNU's `Flength` reads its size. Overlay ownership now follows GNU's GC
+behavior: attached overlays are buffer roots, reachable detached overlays
+retain their properties, and unreachable detached overlays are swept after
+the shared mark/weak-table fixed point. Killing a buffer or deleting all its
+overlays detaches those objects rather than destroying still-reachable
+properties. Detached objects no longer accumulate in buffer edit scans.
+
+GNU probes confirmed both lifetime bugs before the fix: an attached overlay
+incorrectly disappeared from an Emaxx weak-key table, while an unreachable
+deleted overlay incorrectly retained its payload. A compiled helper removes
+temporary stack references in the latter probe; a direct top-level GNU
+probe can conservatively retain a temporary, so it is not treated as an
+exact collection-time assertion. Buffer teardown and bulk deletion now
+preserve properties as GNU does. Dump restoration and interpreter cloning
+also preserve independent detached ownership.
+
+The first IndexMap experiment regressed buffer timing by about 14% and was
+removed, including its direct dependency. The replacement was measured
+against the saved pre-change executable/image with unchanged upstream tests
+in fresh independent processes. These are single paired diagnostic timings,
+not a statistical benchmark or frozen certificate:
+
+| Case | Before | After |
+| --- | ---: | ---: |
+| `test-overlay-randomly` | 3.544 s | 0.817 s |
+| `replace-buffer-contents-bug31837` | 2.292 s | 0.466 s |
+| `mule-cmds-tests--ucs-names-missing-names` | 7.309 s | 3.905 s |
+| `mule-cmds-tests--ucs-names-old-name-override` | 3.645 s | 3.740 s |
+
+The Unicode override case did not improve; it remains in the slow-case work.
+All diagnostic outcomes were preserved. Subsequent ordinary-run artifacts
+independently validate 406 buffer passes, 22 editfns passes plus one upstream
+expected failure, and 16 Mule passes in each editor, with no unexpected
+outcomes. Raw receipt and contract hashes were checked. Evidence is retained
+in `target/compat-audit-20260914/ordinary-ownership-evidence.json` and its
+referenced run directories. Forty-six focused overlay controls, fourteen
+native-GC controls, module GC/reentry, and the dump round trip pass; formatting
+and strict Clippy pass.
+
+The inventory audit also now compares the complete freshly discovered file
+set with the frozen manifest before execution. Added and missing files fail
+preflight, including zero-selection files; discovery runs once rather than
+once per manifest row. Final aggregate totals are printed only after the
+input/provenance checks and durable summary succeed. The inventory controls
+exercise added, missing and newly selected cases. These changes strengthen
+coverage and reporting without modifying upstream selections or outcomes.
+
 Linux ordinary run `34789196776` has been inspected at the raw-report level.
 Module results are independently 37 passed, one upstream skip and zero
 unexpected outcomes in both editors. Its GNU discovery explicitly extends

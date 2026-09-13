@@ -1043,7 +1043,7 @@ impl Buffer {
     /// Visit every Lisp value retained by this buffer.  Garbage collection
     /// uses the same ownership boundary as `rewrite_lisp_values`: the rope,
     /// positions and file metadata are native data, while properties, undo
-    /// payloads and overlay plists are Lisp roots.
+    /// payloads and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
         for span in &self.text_properties {
             for (_, value) in &span.props {
@@ -1076,9 +1076,8 @@ impl Buffer {
             visit(&view.value);
         }
         for overlay in &self.overlays {
-            for (key, value) in &overlay.plist {
-                visit(key);
-                visit(value);
+            if !overlay.is_dead() {
+                visit(&Value::Overlay(overlay.id));
             }
         }
     }

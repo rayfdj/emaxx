@@ -3288,6 +3288,7 @@ pub(crate) struct WeakHashReachability {
     /// the slots C keeps them in (buffer marks, process marks, the
     /// excursions and restrictions on the specpdl, the undo lists).
     pub(crate) live_markers: MarkedIds,
+    pub(crate) live_overlays: MarkedIds,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
@@ -3452,6 +3453,16 @@ impl LispReachability<'_, '_> {
             Value::Buffer(buffer) => {
                 buffer.name.mark_bit().mark(self.epoch);
             }
+            Value::Overlay(id) => {
+                // alloc.c:mark_overlay follows the plist whether the overlay
+                // was reached through a buffer or through another Lisp object.
+                if let Some(overlay) = interp.find_overlay(*id) {
+                    for (key, value) in &overlay.plist {
+                        self.mark(interp, key);
+                        self.mark(interp, value);
+                    }
+                }
+            }
             Value::CharTable(id) => {
                 if let Some(table) = interp.find_char_table(*id) {
                     let children = std::iter::once(table.default.clone())
@@ -3539,7 +3550,6 @@ impl LispReachability<'_, '_> {
             | Value::String(_)
             | Value::BuiltinFunc(_)
             | Value::Marker(_)
-            | Value::Overlay(_)
             | Value::Terminal(_)
             | Value::Unbound => {}
         }
@@ -3782,8 +3792,8 @@ impl Interpreter {
         !self.doomed_finalizers.is_empty()
     }
 
-    /// The overlay's holding buffer: the buffer whose overlay list has it
-    /// (a deleted overlay stays on the list of its last buffer).
+    /// The buffer whose overlay list holds the object, if any. Detached
+    /// overlays do not need a live buffer to retain their properties.
     pub(crate) fn overlay_holder_id(&self, id: u64) -> Option<u64> {
         if self.buffer.overlays.iter().any(|ov| ov.id == id) {
             return Some(self.current_buffer_id);
@@ -3862,11 +3872,15 @@ impl Interpreter {
         self.markers[index] = state;
     }
 
-    /// Install an overlay on the list of buffer HOLDER (the current
-    /// buffer's when that buffer is not live).
+    /// Restore an overlay from an image, independently owning detached ones.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_overlay(&mut self, holder: u64, overlay: crate::overlay::Overlay) {
         self.next_overlay_id = self.next_overlay_id.max(overlay.id + 1);
+        self.take_overlay(overlay.id);
+        if overlay.is_dead() {
+            self.detached_overlays.insert(overlay.id, overlay);
+            return;
+        }
         let holder = if self.get_buffer_by_id(holder).is_some() {
             holder
         } else {
@@ -3875,7 +3889,6 @@ impl Interpreter {
         let buffer = self
             .get_buffer_by_id_mut(holder)
             .expect("the current buffer is live");
-        buffer.overlays.retain(|ov| ov.id != overlay.id);
         buffer.overlays.push(overlay);
     }
 
@@ -4359,6 +4372,7 @@ impl Interpreter {
             live_records: marked.records,
             live_finalizers: marked.finalizers,
             live_markers: marked.markers,
+            live_overlays: marked.overlays,
         }
     }
 
@@ -4413,8 +4427,8 @@ impl Interpreter {
                     .iter()
                     .flat_map(|(_, buffer)| &buffer.overlays),
             )
-            .filter(|overlay| !overlay.is_dead())
-            .count();
+            .count()
+            .saturating_add(self.detached_overlays.len());
         let char_table_slots = self
             .char_tables
             .iter()
@@ -4775,6 +4789,12 @@ impl Interpreter {
             for (_, buffer) in &mut clone.inactive_buffers {
                 buffer.rewrite_lisp_values(&mut copy);
             }
+            for overlay in clone.detached_overlays.values_mut() {
+                for (key, value) in &mut overlay.plist {
+                    *key = copy(key);
+                    *value = copy(value);
+                }
+            }
         }
 
         // Identity-keyed caches: the copied cells have fresh identities, so
@@ -5123,6 +5143,9 @@ pub struct InterpreterState {
     next_buffer_id: u64,
     /// Next overlay ID for identity tracking.
     next_overlay_id: u64,
+    /// Deleted overlays remain Lisp objects even after their buffer dies.
+    /// This allocation table is swept by Lisp reachability, not a GC root.
+    detached_overlays: HashMap<u64, crate::overlay::Overlay>,
     /// Next marker ID for identity tracking.
     next_marker_id: u64,
     /// All markers currently known to the interpreter.
@@ -6036,6 +6059,7 @@ impl Interpreter {
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
             next_overlay_id: 1,
+            detached_overlays: HashMap::new(),
             next_marker_id: 1,
             markers: Vec::new(),
             markers_by_buffer: HashMap::new(),

@@ -241,11 +241,7 @@ define_dispatch!(
                 {
                     overlay.buffer_id = None;
                 }
-                interp
-                    .get_buffer_by_id_mut(target_buffer_id)
-                    .expect("resolved live buffer id")
-                    .overlays
-                    .push(overlay);
+                interp.install_overlay(target_buffer_id, overlay);
                 Ok(Value::Overlay(ov_id))
             }
 
@@ -260,15 +256,16 @@ define_dispatch!(
                         ));
                     }
                 };
-                if let Some(ov) = interp.find_overlay_mut(ov_id) {
-                    ov.buffer_id = None;
-                }
+                interp.delete_overlay(ov_id);
                 Ok(Value::Nil)
             }
 
             "delete-all-overlays" => {
-                // Remove all overlays (or mark them dead)
-                interp.buffer.overlays.clear();
+                let buffer_id = match args.first() {
+                    None | Some(Value::Nil) => interp.current_buffer_id(),
+                    Some(buffer) => interp.resolve_buffer_id(buffer)?,
+                };
+                interp.delete_buffer_overlays(buffer_id);
                 Ok(Value::Nil)
             }
 
@@ -285,6 +282,7 @@ define_dispatch!(
                 };
                 let key = args[1].clone();
                 let value = args[2].clone();
+                let mut evaporated = false;
                 if let Some(ov) = interp.find_overlay_mut(ov_id) {
                     ov.put_prop(key, value.clone());
                     // buffer.c Foverlay_put: giving an already-empty
@@ -295,8 +293,11 @@ define_dispatch!(
                         && value.is_truthy()
                         && ov.beg == ov.end
                     {
-                        ov.buffer_id = None;
+                        evaporated = true;
                     }
+                }
+                if evaporated {
+                    interp.delete_overlay(ov_id);
                 }
                 Ok(value)
             }

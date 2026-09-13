@@ -804,10 +804,20 @@ impl FrozenCompatibilityManifest {
     }
 
     fn executable_files(&self, repo_root: &Path) -> Result<Vec<PathBuf>, String> {
-        self.entries
-            .keys()
-            .map(|file| resolve_manifest_path_from_cli(repo_root, file))
-            .collect()
+        let files = compat::discover_test_files(repo_root, Scope::All)?;
+        let discovered = files
+            .iter()
+            .map(|file| compat::relative_test_path(repo_root, file))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let recorded = self.entries.keys().cloned().collect::<BTreeSet<_>>();
+        let added = discovered.difference(&recorded).collect::<Vec<_>>();
+        let missing = recorded.difference(&discovered).collect::<Vec<_>>();
+        if !added.is_empty() || !missing.is_empty() {
+            return Err(format!(
+                "frozen file inventory differs from the source tree: unrecorded={added:?}, missing={missing:?}; review and regenerate the platform manifest explicitly"
+            ));
+        }
+        Ok(files)
     }
 
     fn evidence(&self, compared_outcomes: usize) -> FrozenManifestEvidence {
@@ -2297,14 +2307,6 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             manifest.contract.platform, manifest.contract.outcome_count
         ));
     }
-    println!(
-        "TESTS {}/{} matching ({} mismatching) across {} files; {} files with unsuccessful execution",
-        aggregate.matching_outcomes,
-        aggregate.total_outcomes,
-        aggregate.mismatching_outcomes,
-        aggregate.total_files,
-        aggregate.unsuccessful_files.len(),
-    );
     prerequisites.verify()?;
     verify_run_inputs_unchanged(provenance)?;
     if execution_environment_fingerprint() != contract.environment_sha256 {
@@ -2315,6 +2317,14 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         &aggregate,
         "aggregate summary",
     )?;
+    println!(
+        "TESTS {}/{} matching ({} mismatching) across {} files; {} files with unsuccessful execution",
+        aggregate.matching_outcomes,
+        aggregate.total_outcomes,
+        aggregate.mismatching_outcomes,
+        aggregate.total_files,
+        aggregate.unsuccessful_files.len(),
+    );
 
     Ok(compatibility_exit_status(&aggregate))
 }
@@ -4356,6 +4366,21 @@ mod tests {
             vec![root.join("test/src/empty.el")]
         );
         assert_eq!(manifest.evidence(0).executed_files, 1);
+        fs::write(root.join("test/src/unrecorded.el"), "").unwrap();
+        assert!(
+            manifest
+                .executable_files(&root)
+                .unwrap_err()
+                .contains("unrecorded.el")
+        );
+        fs::remove_file(root.join("test/src/unrecorded.el")).unwrap();
+        fs::remove_file(root.join("test/src/empty.el")).unwrap();
+        assert!(
+            manifest
+                .executable_files(&root)
+                .unwrap_err()
+                .contains("missing=[\"test/src/empty.el\"]")
+        );
         let mut report = audit_runner("oracle").report;
         report.file = "test/src/empty.el".into();
         assert!(

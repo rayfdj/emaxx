@@ -190,6 +190,7 @@ pub(crate) fn sweep_weak_hash_tables(
         interp.sweep_weak_hash_table(id, entries, &keep);
     }
     interp.sweep_unreached_markers(&reachability.live_markers);
+    interp.sweep_unreached_overlays(&reachability.live_overlays);
     interp.modules.collect(&reachability.live_records);
     interp.install_gc_record_census(reachability.live_records);
 }
@@ -254,6 +255,68 @@ pub(crate) fn keymap_record_list_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_collection_follows_buffer_and_lisp_ownership() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let table = json::make_hash_table(&mut interp, "eq", Vec::new());
+        let Value::Record(table_id) = table.clone() else {
+            panic!("hash table is not a record");
+        };
+        interp.find_record_mut(table_id).expect("new table").slots[5] = Value::symbol("key");
+        interp.set_global_binding("overlay-weak-table", table);
+        let overlay = call(
+            &mut interp,
+            "make-overlay",
+            &[Value::Integer(1), Value::Integer(1)],
+            &mut env,
+        )
+        .expect("make overlay");
+        let Value::Overlay(id) = overlay else {
+            panic!("not an overlay");
+        };
+        assert!(interp.equal_hash_put(table_id, overlay.clone(), Value::T, &env));
+        call(&mut interp, "garbage-collect", &[], &mut env).expect("collect attached overlay");
+        assert_eq!(
+            interp
+                .hash_table_runtime_entries(table_id)
+                .expect("entries")
+                .len(),
+            1
+        );
+
+        interp.set_global_binding("overlay-root", overlay.clone());
+        // A self-cycle does not make the detached object an independent root.
+        call(
+            &mut interp,
+            "overlay-put",
+            &[overlay.clone(), Value::symbol("self"), overlay.clone()],
+            &mut env,
+        )
+        .expect("set cycle");
+        call(&mut interp, "delete-overlay", &[overlay], &mut env).expect("detach");
+        call(&mut interp, "garbage-collect", &[], &mut env)
+            .expect("collect rooted detached overlay");
+        assert!(interp.find_overlay(id).is_some());
+        assert_eq!(
+            interp
+                .hash_table_runtime_entries(table_id)
+                .expect("entries")
+                .len(),
+            1
+        );
+
+        interp.set_global_binding("overlay-root", Value::Nil);
+        call(&mut interp, "garbage-collect", &[], &mut env).expect("collect unreachable cycle");
+        assert!(interp.find_overlay(id).is_none());
+        assert!(
+            interp
+                .hash_table_runtime_entries(table_id)
+                .expect("entries")
+                .is_empty()
+        );
+    }
 
     #[test]
     fn weak_key_collection_uses_reachability() {

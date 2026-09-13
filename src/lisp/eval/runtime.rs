@@ -1205,6 +1205,7 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
+        self.delete_buffer_overlays(id);
         let file_name = self
             .get_buffer_by_id(id)
             .and_then(|buffer| buffer.file.clone());

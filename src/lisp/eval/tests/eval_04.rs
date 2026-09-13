@@ -3519,6 +3519,86 @@ fn failed_counted_searches_restore_point_unless_noerror_requests_the_bound() {
 }
 
 #[test]
+fn detached_overlay_properties_survive_buffer_teardown_and_bulk_deletion() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(let* ((buffer (generate-new-buffer " *overlay-teardown*"))
+                      (overlay (make-overlay 1 1 buffer))
+                      (token (list 'kept)))
+                 (unwind-protect
+                     (progn
+                       (overlay-put overlay 'payload token)
+                       (delete-all-overlays buffer)
+                       (garbage-collect)
+                       (and (null (overlay-buffer overlay))
+                            (eq token (overlay-get overlay 'payload))
+                            (progn (move-overlay overlay 1 1 buffer)
+                                   (kill-buffer buffer)
+                                   (garbage-collect)
+                                   (and (null (overlay-buffer overlay))
+                                        (eq token (overlay-get overlay 'payload))))
+                            (with-temp-buffer
+                              (move-overlay overlay 1 1)
+                              (delete-all-overlays)
+                              (garbage-collect)
+                              (eq token (overlay-get overlay 'payload)))))
+                   (when (buffer-live-p buffer) (kill-buffer buffer))))"#,
+        ),
+        Value::T,
+    );
+}
+
+#[test]
+fn overlay_identity_survives_buffer_moves_cloning_deletion_and_gc() {
+    // GNU keeps deleted overlays' properties and gives indirect clones
+    // distinct overlay identities, including for overlays moved between buffers.
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+            (let ((first-buffer (generate-new-buffer " *overlay-owner-a*"))
+                  (second-buffer (generate-new-buffer " *overlay-owner-b*")))
+              (unwind-protect
+                  (with-current-buffer first-buffer
+                    (insert "abc")
+                    (let ((first (make-overlay 1 2))
+                          (second (make-overlay 2 3))
+                          (token (list 'retained)))
+                      (overlay-put first 'payload token)
+                      (with-current-buffer second-buffer
+                        (insert "xyz")
+                        (move-overlay first 2 3 (current-buffer)))
+                      (garbage-collect)
+                      (let ((copy (copy-overlay first)))
+                        (and (not (eq first copy))
+                             (eq (overlay-buffer copy) second-buffer)
+                             (eq (overlay-buffer second) first-buffer)
+                             (eq (overlay-get first 'payload) token)
+                             (eq (overlay-get copy 'payload) token)
+                             (progn (delete-overlay first)
+                                    (garbage-collect)
+                                    (null (overlay-buffer first)))
+                             (progn (move-overlay first 1 2 first-buffer)
+                                    (and (eq (overlay-buffer first) first-buffer)
+                                         (eq (overlay-get first 'payload) token)))
+                             (with-current-buffer second-buffer
+                               (equal (overlays-at 2) (list copy)))
+                             (let ((clone (clone-indirect-buffer " *overlay-clone*" nil)))
+                               (unwind-protect
+                                   (with-current-buffer clone
+                                     (let ((overlays (append (car (overlay-lists)) (cdr (overlay-lists)))))
+                                       (and (= (length overlays) 2)
+                                            (not (memq first overlays))
+                                            (not (memq second overlays)))))
+                                 (kill-buffer clone)))))))
+                (kill-buffer first-buffer)
+                (kill-buffer second-buffer)))
+            "#,
+        ),
+        Value::T,
+    );
+}
+
+#[test]
 fn overlay_enumeration_matches_gnu_interval_tree_order() {
     assert_eq!(
         eval_str(

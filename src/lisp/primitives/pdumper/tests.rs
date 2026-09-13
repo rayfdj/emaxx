@@ -1141,7 +1141,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     );
     assert!(target.terminals.first().expect("initial terminal").live);
 
-    // The deleted overlay, on the buffer's list, with its properties.
+    // The deleted overlay retains its properties without a holding buffer.
     let Value::Overlay(ov) = slots[6] else {
         panic!("overlay")
     };
@@ -1151,7 +1151,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         overlay.plist,
         vec![(Value::symbol("zz-prop"), Value::symbol("yes"))]
     );
-    assert_eq!(target.overlay_holder_id(ov), Some(source_id));
+    assert_eq!(target.overlay_holder_id(ov), None);
 
     // The local hook list came with the buffer.
     assert_eq!(

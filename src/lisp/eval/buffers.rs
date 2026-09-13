@@ -400,7 +400,7 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Find an overlay by ID in any live buffer.
+    /// Find an attached or detached overlay by ID.
     pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
         self.buffer
             .overlays
@@ -411,9 +411,10 @@ impl Interpreter {
                     .iter()
                     .find_map(|(_, buffer)| buffer.overlays.iter().find(|ov| ov.id == id))
             })
+            .or_else(|| self.detached_overlays.get(&id))
     }
 
-    /// Find a mutable overlay by ID in any live buffer.
+    /// Find a mutable attached or detached overlay by ID.
     pub fn find_overlay_mut(&mut self, id: u64) -> Option<&mut crate::overlay::Overlay> {
         let state = &mut **self;
         if let Some(overlay) = state.buffer.overlays.iter_mut().find(|ov| ov.id == id) {
@@ -423,9 +424,10 @@ impl Interpreter {
             .inactive_buffers
             .iter_mut()
             .find_map(|(_, buffer)| buffer.overlays.iter_mut().find(|ov| ov.id == id))
+            .or_else(|| state.detached_overlays.get_mut(&id))
     }
 
-    /// Remove and return an overlay by ID from any live buffer.
+    /// Remove an overlay from its current owner, for moving or deleting it.
     pub fn take_overlay(&mut self, id: u64) -> Option<crate::overlay::Overlay> {
         if let Some(pos) = self.buffer.overlays.iter().position(|ov| ov.id == id) {
             return Some(self.buffer.overlays.swap_remove(pos));
@@ -435,6 +437,46 @@ impl Interpreter {
                 return Some(buffer.overlays.swap_remove(pos));
             }
         }
-        None
+        self.detached_overlays.remove(&id)
+    }
+
+    pub(crate) fn delete_overlay(&mut self, id: u64) {
+        if let Some(mut overlay) = self.take_overlay(id) {
+            overlay.buffer_id = None;
+            self.detached_overlays.insert(id, overlay);
+        }
+    }
+
+    /// buffer.c:delete_all_overlays detaches the objects; it does not destroy
+    /// their plists. Lisp references may still use or move them afterwards.
+    pub(crate) fn delete_buffer_overlays(&mut self, id: u64) {
+        let Some(buffer) = self.get_buffer_by_id_mut(id) else {
+            return;
+        };
+        let overlays = std::mem::take(&mut buffer.overlays);
+        self.detached_overlays
+            .extend(overlays.into_iter().map(|mut overlay| {
+                overlay.buffer_id = None;
+                (overlay.id, overlay)
+            }));
+    }
+
+    pub(crate) fn sweep_unreached_overlays(&mut self, live: &super::MarkedIds) {
+        let state = &mut **self;
+        state.detached_overlays.retain(|id, _| live.contains(id));
+        for buffer in std::iter::once(&mut state.buffer)
+            .chain(state.inactive_buffers.iter_mut().map(|(_, buffer)| buffer))
+        {
+            // Edits can evaporate overlays without passing through the
+            // interpreter. Move reachable detached objects out of the edit
+            // path and discard unreachable ones after the shared mark phase.
+            for overlay in buffer.overlays.extract_if(.., |overlay| {
+                overlay.is_dead() || !live.contains(&overlay.id)
+            }) {
+                if live.contains(&overlay.id) {
+                    state.detached_overlays.insert(overlay.id, overlay);
+                }
+            }
+        }
     }
 }
