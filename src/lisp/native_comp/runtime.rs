@@ -320,6 +320,7 @@ core::arch::global_asm!(
     r#"
     .text
     .p2align 4
+    .globl native_call_trampoline
     .hidden native_call_trampoline
     .type native_call_trampoline, @function
 native_call_trampoline:
@@ -374,6 +375,7 @@ core::arch::global_asm!(
     r#"
     .text
     .p2align 4
+    .globl emaxx_native_gc_trampoline
     .hidden emaxx_native_gc_trampoline
     .type emaxx_native_gc_trampoline, @function
 emaxx_native_gc_trampoline:
@@ -847,6 +849,12 @@ enum UnwindAction {
     Cleanup { function: bool, value: Value },
 }
 
+struct UnwindEntry {
+    action: UnwindAction,
+    backtrace_depth: usize,
+    lisp_eval_depth: usize,
+}
+
 /// Native execution shell. The shared allocation can move to a different
 /// shell at a suspension boundary while this thread's live call state stays
 /// with its Rust/native frames. The scheduler must also switch TLS and roots;
@@ -855,7 +863,7 @@ pub(crate) struct NativeRuntime {
     shared: Option<Box<NativeSharedState>>,
     thread: Box<NativeThreadState>,
     handlers: Vec<HandlerEntry>,
-    unwind: Vec<UnwindAction>,
+    unwind: Vec<UnwindEntry>,
     calls: Vec<NativeCallFrame>,
     ephemeral_root_ranges: Vec<NativeRootRange>,
 }
@@ -1443,9 +1451,22 @@ impl NativeRuntime {
             let target = &mut self.handlers[target_index];
             interpreter.lisp_eval_depth = target.lisp_eval_depth;
             interpreter.truncate_backtrace_frames(target.backtrace_depth);
+            if target.kind == 1 {
+                // The signal is caught: its diagnostic snapshot must not
+                // keep the unwound arguments alive while the handler runs.
+                interpreter.clear_batch_error_backtrace();
+            }
             target.storage.set_value(encoded);
             return unsafe { target.address().cast::<u8>().add(HANDLER_JMP_OFFSET).cast() };
         }
+    }
+
+    fn record_unwind(&mut self, interpreter: &Interpreter, action: UnwindAction) {
+        self.unwind.push(UnwindEntry {
+            action,
+            backtrace_depth: interpreter.backtrace_frames_len(),
+            lisp_eval_depth: interpreter.lisp_eval_depth,
+        });
     }
 
     fn unwind_one(
@@ -1453,12 +1474,16 @@ impl NativeRuntime {
         interpreter: &mut Interpreter,
         environment: &mut Env,
     ) -> Result<(), LispError> {
-        let Some(action) = self.unwind.pop() else {
+        let Some(entry) = self.unwind.pop() else {
             return Err(super::lisp::native_ice(
                 "native byte-unbind exceeded the dynamic binding stack",
             ));
         };
-        match action {
+        // GNU's specpdl interleaves backtraces and unwind records. Retire
+        // younger activations before a cleanup or variable watcher runs.
+        interpreter.truncate_backtrace_frames(entry.backtrace_depth);
+        interpreter.lisp_eval_depth = entry.lisp_eval_depth;
+        match entry.action {
             UnwindAction::Special(restore) => {
                 interpreter.restore_special_dynamic(restore, environment)
             }
@@ -2244,49 +2269,54 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
         remember_helper_error(active, error);
         return Some(0);
     }
-    interpreter.push_native_backtrace_frame(original_function.clone(), call_arguments);
-    interpreter.capture_current_backtrace_context(None, environment, None);
+    let result = interpreter.with_native_backtrace_frame(
+        original_function.clone(),
+        call_arguments,
+        |interpreter| {
+            interpreter.capture_current_backtrace_context(None, environment, None);
 
-    // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
-    unsafe { emaxx_native_gc_trampoline() };
-    let result = target.invoke(active, call_arguments);
-    let result = match result {
-        Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
-            // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
-            // dropping its backtrace record when backtrace-debug marked the
-            // frame.  Keep the native word live until the debugger receives
-            // the same Lisp object, then encode the debugger's return value.
-            let value = runtime
-                .heap
-                .decode(word)
-                .map_err(|error| super::lisp::native_ice(&error));
-            value.and_then(|value| {
-                let argument = Value::list([Value::symbol("exit"), value]);
-                interpreter
-                    .call_debugger(argument, environment)
-                    .and_then(|value| {
-                        runtime
-                            .heap
-                            .encode(&value)
-                            .map_err(|error| super::lisp::native_ice(&error))
+            // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
+            unsafe { emaxx_native_gc_trampoline() };
+            let result = target.invoke(active, call_arguments);
+            let result = match result {
+                Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
+                    // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
+                    // dropping its backtrace record when backtrace-debug marked the
+                    // frame.  Keep the native word live until the debugger receives
+                    // the same Lisp object, then encode the debugger's return value.
+                    let value = runtime
+                        .heap
+                        .decode(word)
+                        .map_err(|error| super::lisp::native_ice(&error));
+                    value.and_then(|value| {
+                        let argument = Value::list([Value::symbol("exit"), value]);
+                        interpreter
+                            .call_debugger(argument, environment)
+                            .and_then(|value| {
+                                runtime
+                                    .heap
+                                    .encode(&value)
+                                    .map_err(|error| super::lisp::native_ice(&error))
+                            })
                     })
-            })
-        }
-        Ok(word) => Ok(word),
-        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
-        Err(error) => match interpreter.dispatch_handler_bindings(error, environment) {
-            Ok(value) => runtime
-                .heap
-                .encode(&value)
-                .map_err(|error| super::lisp::native_ice(&error)),
-            Err(error) => Err(error),
+                }
+                Ok(word) => Ok(word),
+                Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
+                Err(error) => match interpreter.dispatch_handler_bindings(error, environment) {
+                    Ok(value) => runtime
+                        .heap
+                        .encode(&value)
+                        .map_err(|error| super::lisp::native_ice(&error)),
+                    Err(error) => Err(error),
+                },
+            };
+            if let Err(error) = &result {
+                interpreter.capture_batch_error_backtrace(error, environment);
+            }
+            result
         },
-    };
-    if let Err(error) = &result {
-        interpreter.capture_batch_error_backtrace(error, environment);
-    }
+    );
     interpreter.end_funcall();
-    interpreter.pop_backtrace_frame();
 
     Some(match result {
         Ok(word) => word,
@@ -3254,8 +3284,20 @@ unsafe fn jump_nonlocal(buffer: *mut c_void) -> ! {
 }
 
 fn remember_helper_error(active: &mut ActiveCall, error: LispError) {
-    let runtime = unsafe { &mut *active.runtime };
-    let jump_buffer = runtime.prepare_nonlocal_exit(
+    // signal_or_quit runs handler-bind before unwind_to_catch removes the
+    // signaling activations. Native helpers can signal without entering
+    // Ffuncall, so settling only at that outer boundary loses their frames.
+    let interpreter = unsafe { &mut *active.interpreter };
+    let environment = unsafe { &mut *active.environment };
+    let error = match unsafe { &mut *active.runtime }.sync_handlers(interpreter) {
+        Ok(()) => match interpreter.dispatch_handler_bindings(error, environment) {
+            Err(error) => error,
+            Ok(_) => unreachable!("handler-bind handlers return to signal"),
+        },
+        Err(error) => error,
+    };
+    interpreter.capture_batch_error_backtrace(&error, environment);
+    let jump_buffer = unsafe { &mut *active.runtime }.prepare_nonlocal_exit(
         unsafe { &mut *active.interpreter },
         unsafe { &mut *active.environment },
         error,
@@ -3367,9 +3409,7 @@ extern "C" fn runtime_record_unwind_protect_excursion() {
     with_active(|active| {
         let interpreter = unsafe { &mut *active.interpreter };
         let saved = interpreter.save_excursion_state();
-        unsafe { &mut *active.runtime }
-            .unwind
-            .push(UnwindAction::Excursion(saved));
+        unsafe { &mut *active.runtime }.record_unwind(interpreter, UnwindAction::Excursion(saved));
     });
 }
 
@@ -3405,10 +3445,10 @@ extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
 
 extern "C" fn runtime_save_restriction() {
     with_active(|active| {
-        let saved = unsafe { &mut *active.interpreter }.save_restriction_state();
+        let interpreter = unsafe { &mut *active.interpreter };
+        let saved = interpreter.save_restriction_state();
         unsafe { &mut *active.runtime }
-            .unwind
-            .push(UnwindAction::Restriction(saved));
+            .record_unwind(interpreter, UnwindAction::Restriction(saved));
     });
 }
 
@@ -3484,10 +3524,10 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
 
 extern "C" fn runtime_record_unwind_current_buffer() {
     with_active(|active| {
-        let buffer_id = unsafe { &mut *active.interpreter }.current_buffer_id();
+        let interpreter = unsafe { &mut *active.interpreter };
+        let buffer_id = interpreter.current_buffer_id();
         unsafe { &mut *active.runtime }
-            .unwind
-            .push(UnwindAction::CurrentBuffer(buffer_id));
+            .record_unwind(interpreter, UnwindAction::CurrentBuffer(buffer_id));
     });
 }
 
@@ -3532,9 +3572,10 @@ extern "C" fn runtime_unwind_protect(value: NativeWord) {
                 unsafe { &mut *active.environment },
             )?
             .is_truthy();
-            unsafe { &mut *active.runtime }
-                .unwind
-                .push(UnwindAction::Cleanup { function, value });
+            unsafe { &mut *active.runtime }.record_unwind(
+                unsafe { &*active.interpreter },
+                UnwindAction::Cleanup { function, value },
+            );
             Ok(())
         })();
         if let Err(error) = result {
@@ -3554,9 +3595,10 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
             let restore =
                 unsafe { &mut *active.interpreter }
                     .bind_special_dynamic(name, value, unsafe { &mut *active.environment })?;
-            unsafe { &mut *active.runtime }
-                .unwind
-                .push(UnwindAction::Special(restore));
+            unsafe { &mut *active.runtime }.record_unwind(
+                unsafe { &*active.interpreter },
+                UnwindAction::Special(restore),
+            );
             Ok(())
         })();
         if let Err(error) = result {
@@ -8757,6 +8799,66 @@ mod tests {
             old_owner.upgrade().is_none(),
             "the replaced child must leave the typed census too"
         );
+    }
+
+    #[test]
+    fn native_caught_signal_releases_the_signaling_arguments() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Value::Record(id) = table.clone() else {
+            panic!("hash table record");
+        };
+        interpreter.find_record_mut(id).expect("new table").slots[5] = Value::symbol("key");
+        interpreter.set_global_binding("native-caught-signal-table", table.clone());
+        let key = Value::list([Value::Integer(73)]);
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "puthash",
+            &[key.clone(), Value::T, table],
+            &mut environment,
+        )
+        .expect("install weak key");
+        runtime.begin_call(std::ptr::null_mut(), &interpreter);
+        let condition = runtime
+            .heap
+            .encode(&Value::symbol("error"))
+            .expect("condition word");
+        let handler = with_active_call(&mut interpreter, &mut environment, &mut runtime, || {
+            runtime_push_handler(condition, 1)
+        });
+        assert!(!handler.is_null());
+        interpreter.push_backtrace_frame(Value::symbol("signaling-callee"), &[key]);
+        let error = wrong_type_argument("stringp", Value::Nil);
+        interpreter.capture_batch_error_backtrace(&error, &environment);
+        let collect = |interpreter: &mut Interpreter, environment: &Env| {
+            let reachable = interpreter.weak_hash_reachability(environment, &[]);
+            crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachable);
+            interpreter
+                .hash_table_runtime_entries(id)
+                .expect("weak table")
+                .len()
+        };
+        assert_eq!(
+            collect(&mut interpreter, &environment),
+            1,
+            "the live argument is rooted"
+        );
+        let jump = runtime.prepare_nonlocal_exit(&mut interpreter, &mut environment, error);
+        assert_eq!(jump, unsafe {
+            handler.cast::<u8>().add(HANDLER_JMP_OFFSET).cast()
+        });
+        assert_eq!(interpreter.backtrace_frames_len(), 0);
+        assert_eq!(
+            collect(&mut interpreter, &environment),
+            0,
+            "a caught signal no longer owns its arguments"
+        );
+        runtime.thread.set_handler(std::ptr::null_mut());
+        runtime
+            .finish_call(&mut interpreter)
+            .expect("finish the native activation");
     }
 
     #[test]

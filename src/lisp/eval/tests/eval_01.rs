@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
+    use std::ffi::{c_char, c_int, c_void};
+
+    #[derive(Default)]
+    struct Transport {
+        handshakes: usize,
+        reads: usize,
+    }
+    unsafe extern "C" fn handshake(state: *mut c_void) -> c_int {
+        // SAFETY: The session below borrows this Transport until it is dropped.
+        unsafe { &mut *state.cast::<Transport>() }.handshakes += 1;
+        0
+    }
+    unsafe extern "C" fn receive(state: *mut c_void, _: *mut c_void, _: usize) -> isize {
+        // SAFETY: The session below borrows this Transport until it is dropped.
+        unsafe { &mut *state.cast::<Transport>() }.reads += 1;
+        -28 // GNUTLS_E_AGAIN: no application data has arrived.
+    }
+    unsafe extern "C" fn send(_: *mut c_void, _: *const c_void, length: usize) -> isize {
+        length as isize
+    }
+    unsafe extern "C" fn deinit(_: *mut c_void) {}
+    unsafe extern "C" fn bye(_: *mut c_void, _: c_int) -> c_int {
+        0
+    }
+    unsafe extern "C" fn error_string(_: c_int) -> *const c_char {
+        std::ptr::null()
+    }
+    unsafe extern "C" fn error_is_fatal(_: c_int) -> c_int {
+        1
+    }
+
+    let mut transport = Transport::default();
+    let mut session = ProcessGnuTlsSession::new(
+        std::sync::Arc::new(()),
+        std::ptr::from_mut(&mut transport).cast(),
+        std::ptr::null_mut(),
+        GnuTlsSessionApi {
+            session_deinit: deinit,
+            credential_deinit: deinit,
+            record_recv: receive,
+            record_send: send,
+            handshake,
+            bye,
+            error_string,
+            error_is_fatal,
+        },
+        false,
+    );
+    // gnutls.c:emacs_gnutls_read returns EAGAIN before GNUTLS_STAGE_READY.
+    // Even a server ready to finish negotiation must not move the handshake
+    // behind process.c's back when ordinary output polling asks for bytes.
+    assert_eq!(session.receive().unwrap(), (Vec::new(), false));
+    assert_eq!((transport.handshakes, transport.reads), (0, 0));
+    assert_eq!(session.handshake(false).unwrap(), 0);
+    assert_eq!(session.receive().unwrap(), (Vec::new(), false));
+    assert_eq!((transport.handshakes, transport.reads), (1, 1));
+}
+
+#[test]
 fn eval_atoms() {
     assert_eq!(eval_str_bare("42"), Value::Integer(42));
     assert_eq!(eval_str_bare("\"hello\""), Value::String("hello".into()));
@@ -4629,9 +4689,20 @@ fn native_buffer_ticks_are_signed_distinct_and_honor_buffer_arguments() {
 
 #[test]
 fn gc_counter_variables_are_available_for_benchmark() {
+    // alloc.c's gcs_done and Vgc_elapsed: the collections so far and the
+    // seconds they took.  Loading the fixture conses past the threshold,
+    // so collections may already have run (GNU's batch boot reports one).
     assert_eq!(
-        eval_str("(list gcs-done gc-elapsed)"),
-        Value::list([Value::Integer(0), Value::float(0.0)])
+        eval_str("(list (natnump gcs-done) (floatp gc-elapsed) (>= gc-elapsed 0.0))"),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+    assert_eq!(
+        eval_str(
+            "(let ((done gcs-done) (elapsed gc-elapsed)) \
+               (garbage-collect) \
+               (list (- gcs-done done) (>= gc-elapsed elapsed)))"
+        ),
+        Value::list([Value::Integer(1), Value::T])
     );
 }
 

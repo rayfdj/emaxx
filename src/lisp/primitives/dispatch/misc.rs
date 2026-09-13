@@ -162,6 +162,31 @@ fn destroy_fringe_bitmap(
 /// Bare name of VALUE when it is a symbol, or a positioned symbol while
 /// `symbols-with-pos-enabled' is non-nil — the same view GNU's `eq' takes
 /// inside `assq'/`plist-get' during byte compilation.
+/// `bare_symbol_name' without the name copy: the symbol itself.
+pub(super) fn bare_symbol_identity(
+    interp: &Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Option<crate::lisp::types::SymbolName> {
+    match value {
+        Value::Symbol(symbol) => return Some(symbol.clone()),
+        Value::Nil => return Some("nil".into()),
+        Value::T => return Some("t".into()),
+        _ => {}
+    }
+    if symbols_with_pos_enabled(interp, env)
+        && let Some((bare, _)) = symbol_with_pos_parts(interp, value)
+    {
+        return match bare {
+            Value::Symbol(symbol) => Some(symbol),
+            Value::Nil => Some("nil".into()),
+            Value::T => Some("t".into()),
+            _ => None,
+        };
+    }
+    None
+}
+
 pub(super) fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -> Option<String> {
     if let Ok(symbol) = value.as_symbol() {
         return Some(symbol.to_string());
@@ -1054,23 +1079,26 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
                 // XSYMBOL to the same underlying bare symbol.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                let property = bare_symbol_name(interp, env, &args[1]);
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                let property = bare_symbol_identity(interp, env, &args[1]);
                 // GNU fns.c:Fget consults `overriding-plist-environment'
                 // (populated by bytecomp's compile-time handler for top-level
                 // `function-put'/`define-symbol-prop') before the symbol's
                 // own plist, returning the first non-nil hit.
-                if let Some(property) = property.as_deref() {
+                if let Some(property) = &property {
                     if let Some(overriding) =
-                        overriding_plist_property(interp, env, &symbol, property)
+                        overriding_plist_property(interp, env, symbol.as_str(), property.as_str())
                     {
                         return Ok(overriding);
                     }
                     return Ok(interp
-                        .get_symbol_property(&symbol, property)
+                        .get_symbol_property_of(&symbol, property)
                         .unwrap_or(Value::Nil));
                 }
-                Ok(symbol_property_by_eq(interp, env, &symbol, &args[1]).unwrap_or(Value::Nil))
+                Ok(
+                    symbol_property_by_eq(interp, env, symbol.as_str(), &args[1])
+                        .unwrap_or(Value::Nil),
+                )
             }
             "makunbound" => {
                 need_args(name, args, 1)?;
@@ -1550,7 +1578,11 @@ define_dispatch!(
                     interp
                         .known_symbols()
                         .into_iter()
-                        .map(Value::Symbol)
+                        .map(|symbol| match symbol.as_str() {
+                            "nil" => Value::Nil,
+                            "t" => Value::T,
+                            _ => Value::Symbol(symbol),
+                        })
                         .collect()
                 } else {
                     obarray_symbols(interp, &obarray)?

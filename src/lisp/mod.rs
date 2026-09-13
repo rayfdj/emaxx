@@ -348,31 +348,41 @@ fn rewrite_lazy_doc_refs(
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
     let mut in_string = false;
-    let mut escaped = false;
     let mut in_comment = false;
 
     while index < bytes.len() {
-        let byte = bytes[index];
         if in_string {
+            index = copy_run(bytes, index, &mut out, |byte| byte == b'\\' || byte == b'"');
+            let Some(&byte) = bytes.get(index) else {
+                break;
+            };
             out.push(byte);
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
+            index += 1;
+            if byte == b'\\' {
+                if let Some(&escaped) = bytes.get(index) {
+                    out.push(escaped);
+                    index += 1;
+                }
+            } else {
                 in_string = false;
             }
-            index += 1;
             continue;
         }
         if in_comment {
-            out.push(byte);
-            if byte == b'\n' {
-                in_comment = false;
+            index = copy_run(bytes, index, &mut out, |byte| byte == b'\n');
+            if index < bytes.len() {
+                out.push(b'\n');
+                index += 1;
             }
-            index += 1;
+            in_comment = false;
             continue;
         }
+        index = copy_run(bytes, index, &mut out, |byte| {
+            matches!(byte, b'"' | b';' | b'\\' | b'(' | b'#')
+        });
+        let Some(&byte) = bytes.get(index) else {
+            break;
+        };
         if byte == b'"' {
             in_string = true;
             out.push(byte);
@@ -427,6 +437,17 @@ fn rewrite_lazy_doc_refs(
     String::from_utf8(out).expect("rewriting valid UTF-8 preserves UTF-8")
 }
 
+/// Copy the bytes from FROM up to the first one STOP accepts (or the
+/// end) into OUT, returning the index of that byte.
+fn copy_run(bytes: &[u8], from: usize, out: &mut Vec<u8>, stop: impl Fn(u8) -> bool) -> usize {
+    let end = bytes[from..]
+        .iter()
+        .position(|byte| stop(*byte))
+        .map_or(bytes.len(), |at| from + at);
+    out.extend_from_slice(&bytes[from..end]);
+    end
+}
+
 pub(crate) fn preprocess_lazy_doc_source(
     path: &Path,
     source: &str,
@@ -437,31 +458,43 @@ pub(crate) fn preprocess_lazy_doc_source(
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
     let mut in_string = false;
-    let mut escaped = false;
     let mut in_comment = false;
 
+    // The scanner copies whole runs; only a string or comment boundary,
+    // a reader escape and `#' need a look.
     while index < bytes.len() {
-        let byte = bytes[index];
         if in_string {
+            index = copy_run(bytes, index, &mut out, |byte| byte == b'\\' || byte == b'"');
+            let Some(&byte) = bytes.get(index) else {
+                break;
+            };
             out.push(byte);
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
+            index += 1;
+            if byte == b'\\' {
+                if let Some(&escaped) = bytes.get(index) {
+                    out.push(escaped);
+                    index += 1;
+                }
+            } else {
                 in_string = false;
             }
-            index += 1;
             continue;
         }
         if in_comment {
-            out.push(byte);
-            if byte == b'\n' {
-                in_comment = false;
+            index = copy_run(bytes, index, &mut out, |byte| byte == b'\n');
+            if index < bytes.len() {
+                out.push(b'\n');
+                index += 1;
             }
-            index += 1;
+            in_comment = false;
             continue;
         }
+        index = copy_run(bytes, index, &mut out, |byte| {
+            matches!(byte, b'"' | b';' | b'\\' | b'#')
+        });
+        let Some(&byte) = bytes.get(index) else {
+            break;
+        };
         if byte == b'"' {
             in_string = true;
             out.push(byte);
@@ -547,9 +580,31 @@ fn decode_utf8_emacs_source(path: &Path, bytes: &[u8]) -> Result<String, types::
     while index < bytes.len() {
         let byte = bytes[index];
         if byte < 0x80 {
+            // An ASCII run up to the next byte the state machine looks
+            // at is copied whole; a backslash and the byte it escapes are
+            // taken one at a time.
+            let stops = |candidate: u8| {
+                candidate >= 0x80
+                    || if in_comment {
+                        candidate == b'\n'
+                    } else if in_string {
+                        escaped || candidate == b'\\' || candidate == b'"'
+                    } else {
+                        candidate == b';' || candidate == b'"'
+                    }
+            };
+            let end = if stops(byte) {
+                index + 1
+            } else {
+                bytes[index + 1..]
+                    .iter()
+                    .position(|candidate| stops(*candidate))
+                    .map_or(bytes.len(), |at| index + 1 + at)
+            };
+            // The run is ASCII, hence UTF-8.
+            output.push_str(std::str::from_utf8(&bytes[index..end]).expect("ASCII run"));
             let ch = char::from(byte);
-            output.push(ch);
-            index += 1;
+            index = end;
             if in_comment {
                 if ch == '\n' {
                     in_comment = false;

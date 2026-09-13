@@ -446,6 +446,12 @@ impl Loader<'_> {
 
         // Phase 2: objects whose construction needs a name, and the
         // containers as placeholders.
+        SymbolName::reserve_interned(
+            object_starts
+                .iter()
+                .filter(|(_, kind)| *kind == DumpType::Symbol)
+                .count(),
+        );
         let mut symbol_records = Vec::new();
         let mut obarray_records = Vec::new();
         let mut hash_table_records = Vec::new();
@@ -461,10 +467,7 @@ impl Loader<'_> {
                 DumpType::Symbol => {
                     let flags = self.reader.word(offset)?;
                     let name = self.value_at(offset + 8)?;
-                    let name_text = string_like(&name)
-                        .map(|string| string.text)
-                        .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?;
-                    let symbol = self.symbol_of_record(offset, flags, name, &name_text)?;
+                    let symbol = self.symbol_of_record(offset, flags, name)?;
                     self.objects.insert(offset, Value::Symbol(symbol.clone()));
                     symbol_records.push((offset, symbol, flags));
                 }
@@ -589,18 +592,22 @@ impl Loader<'_> {
                 DumpType::Cons => {
                     let car = self.value_at(offset)?;
                     let cdr = self.value_at(offset + 8)?;
-                    let cell = &self.objects[&offset];
-                    cell.set_car(car).map_err(lisp_error)?;
-                    cell.set_cdr(cdr).map_err(lisp_error)?;
+                    let Value::Cons(cell) = &self.objects[&offset] else {
+                        unreachable!("a cons placeholder was installed in phase 2")
+                    };
+                    // The placeholder's relocated words, stored as
+                    // pdumper.c stores them: nothing has seen the cell.
+                    cell.car.initialize(car);
+                    cell.cdr.initialize(cdr);
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
                     let Value::Vector(vector) = self.objects[&offset].clone() else {
                         unreachable!()
                     };
-                    for index in 0..size {
-                        let slot = self.value_at(offset + 8 * (index as u32 + 1))?;
-                        vector.slots_mut()[index] = slot;
+                    let mut slots = vector.slots_mut();
+                    for (index, slot) in slots.iter_mut().enumerate().take(size) {
+                        *slot = self.value_at(offset + 8 * (index as u32 + 1))?;
                     }
                 }
                 DumpType::Record | DumpType::Obarray | DumpType::HashTable => {
@@ -912,17 +919,12 @@ impl Loader<'_> {
                 }
                 let flags = self.reader.word(target)?;
                 let name = self.value_at(target + 8)?;
-                let name_text = string_like(&name)
-                    .map(|string| string.text)
-                    .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?;
                 if (flags >> SYMBOL_INTERNED_SHIFT) & 3 == SYMBOL_UNINTERNED {
                     return Err(LoadError::Error(
                         "a record's type tag is an uninterned symbol read early".into(),
                     ));
                 }
-                Ok(Value::Symbol(
-                    self.symbol_of_record(target, flags, name, &name_text)?,
-                ))
+                Ok(Value::Symbol(self.symbol_of_record(target, flags, name)?))
             }
             _ => self.value_at(field_offset),
         }
@@ -957,18 +959,29 @@ impl Loader<'_> {
     /// a fresh identity; one interned in another obarray (SYMBOL_INTERNED)
     /// is re-created under the internal name the record carries after
     /// its watchers, so its obarray's lookups find the same object.
+    /// The symbol of a dumped record.  NAME is the record's name string,
+    /// itself an object of the image: as pdumper.c's symbol points at
+    /// that string, so does the interned state (no second copy of the
+    /// text is accounted as a Lisp string).
     fn symbol_of_record(
         &mut self,
         offset: u32,
         flags: u64,
         name: Value,
-        name_text: &str,
     ) -> Result<SymbolName, LoadError> {
         let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
+        let name_text: std::borrow::Cow<'_, str> = match &name {
+            Value::String(text) => std::borrow::Cow::Borrowed(text.as_str()),
+            other => std::borrow::Cow::Owned(
+                string_like(other)
+                    .map(|string| string.text)
+                    .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?,
+            ),
+        };
         if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
             return Ok(SymbolName::make_uninterned(
-                name,
-                name_text,
+                name.clone(),
+                &name_text,
                 next_make_symbol_id(),
             ));
         }
@@ -989,7 +1002,10 @@ impl Loader<'_> {
             }
             return Ok(SymbolName::intern_with_lisp_name(internal, Some(name)));
         }
-        Ok(SymbolName::intern_str(name_text))
+        Ok(SymbolName::intern_with_lisp_name(
+            name_text.into_owned(),
+            Some(name),
+        ))
     }
 
     fn closure_at(&mut self, offset: u32) -> Result<Value, LoadError> {
@@ -1153,19 +1169,17 @@ impl Loader<'_> {
                 LoadError::Error(format!("string data at {data} is outside the image"))
             })?;
         let (text, extended_chars) = decode_internal_bytes(bytes, multibyte)?;
-        if text.chars().count() != size {
-            return Err(LoadError::Error(format!(
-                "string at {offset} decodes to {} characters, record says {size}",
-                text.chars().count()
-            )));
-        }
+        // The record's `size' and `size_byte' are the string's character
+        // count and storage size; pdumper.c takes them as they are, so
+        // the loader counts nothing (a unibyte string stores one byte a
+        // character).
         let value = match kind {
-            DumpType::String => Value::String(SharedText::new(text)),
-            _ => crate::lisp::primitives::strings::make_shared_string_value_with_extended_chars(
+            DumpType::String => Value::String(SharedText::with_storage_bytes(text, nbytes)),
+            _ => crate::lisp::primitives::strings::make_loaded_string_object_value(
                 text,
-                Vec::new(),
                 multibyte,
                 extended_chars,
+                nbytes,
             ),
         };
         Ok((value, (intervals != 0).then_some(intervals)))
@@ -1690,10 +1704,6 @@ fn symbol_of(value: Value, what: &str) -> Result<SymbolName, LoadError> {
             "{what} is not a symbol: {other:?}"
         ))),
     }
-}
-
-fn lisp_error(error: LispError) -> LoadError {
-    LoadError::Error(format!("{error:?}"))
 }
 
 /// A word without a relocation is self-representing.

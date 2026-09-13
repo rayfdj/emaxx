@@ -12,6 +12,7 @@ use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
 use super::super::types::{Env, LispError, Value, VectorValue};
 use super::{ArgSpec, ByteCodeObject, Instr, Op};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// One specpdl-style entry the VM must undo on Bunbind or error unwind.
@@ -68,18 +69,33 @@ impl TraceLispRoots for UnwindEntry {
 
 /// Borrow only while calling out: the VM may mutate either vector between
 /// calls, but neither may change while Lisp/GC runs on another stack.
-struct VmCallRoots<'a> {
-    operands: &'a [Value],
-    unwinds: &'a [UnwindEntry],
+/// One byte-code activation's roots, registered once for its whole run as
+/// GNU marks a thread's bytecode stack and specpdl (alloc.c:mark_threads),
+/// not re-registered around each call the activation makes.
+struct VmActivationRoots<'a> {
+    object: &'a CachedProgram,
+    args: &'a [Value],
+    operands: &'a RefCell<Vec<Value>>,
+    unwinds: &'a RefCell<Vec<UnwindEntry>>,
 }
 
-impl TraceLispRoots for VmCallRoots<'_> {
+impl TraceLispRoots for VmActivationRoots<'_> {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
-        self.operands.trace_lisp_roots(marker);
-        for entry in self.unwinds {
+        self.object.trace_lisp_roots(marker);
+        self.args.trace_lisp_roots(marker);
+        // Shared borrows coexist with argument slices held by a suspended
+        // call. Mutations end before calling Lisp, running GC, or unwinding.
+        self.operands.borrow().trace_lisp_roots(marker);
+        for entry in self.unwinds.borrow().iter() {
             entry.trace_lisp_roots(marker);
         }
     }
+}
+
+/// End the mutable stack borrow before an unwind handler can execute Lisp
+/// and trace this activation's remaining entries.
+fn pop_unwind(unwinds: &RefCell<Vec<UnwindEntry>>) -> Option<UnwindEntry> {
+    unwinds.borrow_mut().pop()
 }
 
 /// Undo one specpdl-style entry (GNU's do_one_unbind).
@@ -296,6 +312,7 @@ fn build_cached(object: &ByteCodeObject) -> Result<CachedProgram, LispError> {
 
 /// Execute the genuine byte-code function stored in RECORD_ID, decoding
 /// its instructions once and reusing the decoded program afterwards.
+#[inline(always)]
 pub fn execute_record(
     interp: &mut Interpreter,
     record_id: u64,
@@ -354,13 +371,22 @@ fn run(
     stack.clear();
     stack.reserve(object.stack_depth.max(8));
     let frames_at_entry = interp.backtrace_frames_len();
-    let result = interp.with_lisp_stack_roots(&(object, args), |interp| {
-        run_with_stack(interp, object, args, env, &mut stack)
+    let stack = RefCell::new(stack);
+    let unwinds = RefCell::new(Vec::new());
+    let roots = VmActivationRoots {
+        object,
+        args,
+        operands: &stack,
+        unwinds: &unwinds,
+    };
+    let result = interp.with_lisp_stack_roots(&roots, |interp| {
+        run_with_stack(interp, object, args, env, &stack, &unwinds)
     });
     // A signaling byte op recorded itself as a backtrace frame
     // (bytecode.c's record_in_backtrace) so handler-bind handlers saw it;
     // the handlers have run by now, so unwind it like GNU's specpdl does.
     interp.truncate_backtrace_frames(frames_at_entry);
+    let mut stack = stack.into_inner();
     stack.clear();
     if interp.vm_stack_pool.len() < 256 {
         interp.vm_stack_pool.push(stack);
@@ -368,37 +394,17 @@ fn run(
     result
 }
 
+/// bytecode.c:exec_byte_code.  STACK and UNWINDS are this activation's
+/// operand stack and specpdl watermark, already registered as roots by
+/// `run' for the whole activation.
 fn run_with_stack(
     interp: &mut Interpreter,
     object: &CachedProgram,
     args: &[Value],
     env: &mut Env,
-    stack: &mut Vec<Value>,
+    stack: &RefCell<Vec<Value>>,
+    unwinds: &RefCell<Vec<UnwindEntry>>,
 ) -> Result<Value, LispError> {
-    let stack = &mut *stack;
-    let mut unwinds: Vec<UnwindEntry> = Vec::new();
-
-    macro_rules! vm_call {
-        ($interpreter:ident, $body:expr) => {
-            $interpreter.with_lisp_stack_roots(
-                &VmCallRoots {
-                    operands: stack,
-                    unwinds: &unwinds,
-                },
-                |$interpreter| $body,
-            )
-        };
-    }
-
-    macro_rules! prim {
-        ($interpreter:ident, $name:expr, $arguments:expr, $environment:expr $(,)?) => {
-            vm_call!(
-                $interpreter,
-                prim($interpreter, $name, $arguments, $environment)
-            )
-        };
-    }
-
     // Argument prologue (exec_byte_code's ARGS_TEMPLATE handling).
     match &object.argspec {
         ArgSpec::Packed {
@@ -418,15 +424,17 @@ fn run_with_stack(
             // bytecode.c:exec_byte_code pushes the original Lisp objects.
             // Allocation belongs to their producers; copying a string here
             // splits aliases and shared compiler constants.
-            stack.extend(args[..pushed].iter().cloned());
+            stack.borrow_mut().extend(args[..pushed].iter().cloned());
             if args.len() > nonrest {
-                stack.push(Value::list(args[nonrest..].iter().cloned()));
+                stack
+                    .borrow_mut()
+                    .push(Value::list(args[nonrest..].iter().cloned()));
             } else {
                 for _ in args.len()..nonrest {
-                    stack.push(Value::Nil);
+                    stack.borrow_mut().push(Value::Nil);
                 }
                 if *rest {
-                    stack.push(Value::Nil);
+                    stack.borrow_mut().push(Value::Nil);
                 }
             }
         }
@@ -446,9 +454,9 @@ fn run_with_stack(
                             Value::Symbol("invalid-function".into()),
                             other.clone(),
                         ]));
-                        while let Some(entry) = unwinds.pop() {
+                        while let Some(entry) = pop_unwind(unwinds) {
                             interp.with_lisp_stack_roots(&error, |interp| {
-                                vm_call!(interp, unwind_one(interp, entry, env))
+                                unwind_one(interp, entry, env)
                             })?;
                         }
                         return Err(error);
@@ -469,8 +477,8 @@ fn run_with_stack(
                 } else if optional {
                     Value::Nil
                 } else {
-                    while let Some(entry) = unwinds.pop() {
-                        vm_call!(interp, unwind_one(interp, entry, env))?;
+                    while let Some(entry) = pop_unwind(unwinds) {
+                        unwind_one(interp, entry, env)?;
                     }
                     return Err(LispError::WrongNumberOfArgs(
                         "byte-code function".into(),
@@ -482,15 +490,15 @@ fn run_with_stack(
                 } else {
                     index += 1;
                 }
-                let restore = vm_call!(interp, interp.bind_special_variable(&name, value, env))?;
-                unwinds.push(UnwindEntry::Binding(restore));
+                let restore = interp.bind_special_variable(&name, value, env)?;
+                unwinds.borrow_mut().push(UnwindEntry::Binding(restore));
                 if rest {
                     break;
                 }
             }
             if !rest && index < args.len() {
-                while let Some(entry) = unwinds.pop() {
-                    vm_call!(interp, unwind_one(interp, entry, env))?;
+                while let Some(entry) = pop_unwind(unwinds) {
+                    unwind_one(interp, entry, env)?;
                 }
                 return Err(LispError::WrongNumberOfArgs(
                     "byte-code function".into(),
@@ -506,236 +514,292 @@ fn run_with_stack(
     // in-frame condition-case that catches must unwind them, and the
     // caller (`run') balances whatever is left after handler dispatch.
     let mut op_error_frames = 0usize;
+    // bytecode.c's `quitcounter': backward branches increment the byte
+    // counter; wrapping it to zero calls maybe_gc and maybe_quit before
+    // resetting it to one, so a loop without a call can be interrupted.
+    let mut quitcounter: u8 = 1;
 
     macro_rules! pop {
-        () => {
-            stack.pop().expect("validated bytecode never underflows")
-        };
+        () => {{
+            let value = stack.borrow_mut().pop();
+            value
+        }
+        .expect("validated bytecode never underflows")};
+    }
+
+    // exec_byte_code's dispatch loop runs inside one closure, so an op's
+    // failure (`?') leaves the loop for the handler search below, which
+    // resumes the loop at the handler's target; a normal return leaves
+    // it with the value.
+    macro_rules! branch {
+        ($target:expr) => {{
+            let destination = object.instr_at($target as usize);
+            if destination < pc {
+                quitcounter = quitcounter.wrapping_add(1);
+                if quitcounter == 0 {
+                    quitcounter = 1;
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    interp.maybe_quit(env)?;
+                }
+            }
+            pc = destination;
+        }};
     }
 
     let result = 'run: loop {
-        let Some(instr) = object.instrs.get(pc) else {
-            break Err(LispError::Signal(
-                "byte code ran off the end of its program".into(),
-            ));
-        };
-        let Instr { op, offset, .. } = *instr;
-        pc += 1;
+        let step: Result<Value, LispError> = (|| loop {
+            let Some(instr) = object.instrs.get(pc) else {
+                return Err(LispError::Signal(
+                    "byte code ran off the end of its program".into(),
+                ));
+            };
+            let op = instr.op;
+            let offset = instr.offset;
+            pc += 1;
 
-        // Hot pre-dispatch: the ops below either cannot fail or only take
-        // this path when their operands make failure impossible, so they
-        // skip the fallible-step closure (and its Result plumbing)
-        // entirely.  Anything that falls through runs the full arm below.
-        match op {
-            Op::StackRef(n) => {
-                let value = stack[stack.len() - 1 - n as usize].clone();
-                stack.push(value);
-                continue;
-            }
-            Op::StackSet(n) => {
-                let value = pop!();
-                let slot = stack.len() - 1 - (n as usize - 1);
-                stack[slot] = value;
-                continue;
-            }
-            Op::Dup => {
-                let top = stack.last().expect("validated bytecode").clone();
-                stack.push(top);
-                continue;
-            }
-            Op::Discard => {
-                pop!();
-                continue;
-            }
-            Op::Constant(index) | Op::Constant2(index) => {
-                stack.push(object.constant(index));
-                continue;
-            }
-            Op::Goto { target } => {
-                pc = object.instr_at(target as usize);
-                continue;
-            }
-            Op::GotoIfNil { target } => {
-                if pop!().is_nil() {
-                    pc = object.instr_at(target as usize);
-                }
-                continue;
-            }
-            Op::GotoIfNonNil { target } => {
-                if !pop!().is_nil() {
-                    pc = object.instr_at(target as usize);
-                }
-                continue;
-            }
-            Op::GotoIfNilElsePop { target } => {
-                if stack.last().expect("validated bytecode").is_nil() {
-                    pc = object.instr_at(target as usize);
-                } else {
-                    pop!();
-                }
-                continue;
-            }
-            Op::GotoIfNonNilElsePop { target } => {
-                if !stack.last().expect("validated bytecode").is_nil() {
-                    pc = object.instr_at(target as usize);
-                } else {
-                    pop!();
-                }
-                continue;
-            }
-            Op::Return => {
-                break 'run Ok(pop!());
-            }
-            Op::Not => {
-                let value = pop!();
-                stack.push(if value.is_nil() { Value::T } else { Value::Nil });
-                continue;
-            }
-            Op::Cons => {
-                let b = pop!();
-                let a = pop!();
-                stack.push(Value::cons(a, b));
-                continue;
-            }
-            Op::Eq => {
-                let b = pop!();
-                let a = pop!();
-                let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
-                stack.push(if equal { Value::T } else { Value::Nil });
-                continue;
-            }
-            Op::Consp => {
-                let a = pop!();
-                stack.push(if primitives::is_cons_value(interp, &a) {
-                    Value::T
-                } else {
-                    Value::Nil
-                });
-                continue;
-            }
-            Op::Plus | Op::Diff | Op::Mult => {
-                let len = stack.len();
-                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
-                    let fast = match op {
-                        Op::Plus => x.checked_add(*y),
-                        Op::Diff => x.checked_sub(*y),
-                        _ => x.checked_mul(*y),
-                    };
-                    if let Some(n) = fast {
-                        stack.truncate(len - 2);
-                        stack.push(Value::Integer(n));
-                        continue;
-                    }
-                }
-            }
-            Op::Quo | Op::Rem => {
-                let len = stack.len();
-                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
-                    // checked_div/checked_rem refuse y == 0 and the MIN/-1
-                    // overflow, which fall through to the full arithmetic
-                    // (and its arith-error).
-                    let fast = match op {
-                        Op::Quo => x.checked_div(*y),
-                        _ => x.checked_rem(*y),
-                    };
-                    if let Some(n) = fast {
-                        stack.truncate(len - 2);
-                        stack.push(Value::Integer(n));
-                        continue;
-                    }
-                }
-            }
-            Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
-                let len = stack.len();
-                if let (Value::Integer(x), Value::Integer(y)) = (&stack[len - 2], &stack[len - 1]) {
-                    let holds = match op {
-                        Op::Eqlsign => x == y,
-                        Op::Gtr => x > y,
-                        Op::Lss => x < y,
-                        Op::Leq => x <= y,
-                        _ => x >= y,
-                    };
-                    stack.truncate(len - 2);
-                    stack.push(if holds { Value::T } else { Value::Nil });
-                    continue;
-                }
-            }
-            Op::Add1 | Op::Sub1 | Op::Negate => {
-                if let Some(Value::Integer(x)) = stack.last() {
-                    let fast = match op {
-                        Op::Add1 => x.checked_add(1),
-                        Op::Sub1 => x.checked_sub(1),
-                        _ => x.checked_neg(),
-                    };
-                    if let Some(n) = fast {
-                        *stack.last_mut().expect("validated bytecode") = Value::Integer(n);
-                        continue;
-                    }
-                }
-            }
-            Op::Aref => {
-                let len = stack.len();
-                if let Value::Integer(index) = &stack[len - 1]
-                    && *index >= 0
-                    && let Some(value) =
-                        crate::lisp::primitives::vector_aref_fast(&stack[len - 2], *index as usize)
-                {
-                    stack.truncate(len - 2);
-                    stack.push(value);
-                    continue;
-                }
-            }
-            Op::Aset => {
-                // Stack: [.. vector index value]; aset returns the value.
-                let len = stack.len();
-                if let Value::Integer(index) = &stack[len - 2]
-                    && *index >= 0
-                    && crate::lisp::primitives::vector_aset_fast(
-                        &stack[len - 3],
-                        *index as usize,
-                        &stack[len - 1],
-                    )
-                    .is_some()
-                {
-                    let value = pop!();
-                    stack.truncate(len - 3);
-                    stack.push(value);
-                    continue;
-                }
-            }
-            Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => match stack.last() {
-                Some(Value::Cons(cell)) => {
-                    let value = if matches!(op, Op::Car | Op::CarSafe) {
-                        cell.car.borrow().clone()
-                    } else {
-                        cell.cdr.borrow().clone()
-                    };
-                    *stack.last_mut().expect("validated bytecode") = value;
-                    continue;
-                }
-                Some(Value::Nil) => continue,
-                Some(_) if matches!(op, Op::CarSafe | Op::CdrSafe) => {
-                    *stack.last_mut().expect("validated bytecode") = Value::Nil;
-                    continue;
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-
-        // Every fallible operation funnels through here so handler
-        // unwinding (GNU's sys_setjmp arm) is applied uniformly.
-        let step: Result<(), LispError> = (|| {
+            // Hot pre-dispatch: the ops below either cannot fail or only take
+            // this path when their operands make failure impossible, so they
+            // skip the fallible arms (and their Result plumbing) entirely.
+            // Anything that falls through runs the full arm below.
             match op {
                 Op::StackRef(n) => {
-                    let value = stack[stack.len() - 1 - n as usize].clone();
-                    stack.push(value);
+                    let value = stack.borrow()[stack.borrow().len() - 1 - n as usize].clone();
+                    stack.borrow_mut().push(value);
+                    continue;
                 }
                 Op::StackSet(n) => {
                     let value = pop!();
-                    let slot = stack.len() - 1 - (n as usize - 1);
+                    let slot = stack.borrow().len() - 1 - (n as usize - 1);
+                    stack.borrow_mut()[slot] = value;
+                    continue;
+                }
+                Op::Dup => {
+                    let top = stack.borrow().last().expect("validated bytecode").clone();
+                    stack.borrow_mut().push(top);
+                    continue;
+                }
+                Op::Discard => {
+                    pop!();
+                    continue;
+                }
+                Op::Constant(index) | Op::Constant2(index) => {
+                    stack.borrow_mut().push(object.constant(index));
+                    continue;
+                }
+                Op::Goto { target } => {
+                    branch!(target);
+                    continue;
+                }
+                Op::GotoIfNil { target } => {
+                    if pop!().is_nil() {
+                        branch!(target);
+                    }
+                    continue;
+                }
+                Op::GotoIfNonNil { target } => {
+                    if !pop!().is_nil() {
+                        branch!(target);
+                    }
+                    continue;
+                }
+                Op::GotoIfNilElsePop { target } => {
+                    if stack.borrow().last().expect("validated bytecode").is_nil() {
+                        branch!(target);
+                    } else {
+                        pop!();
+                    }
+                    continue;
+                }
+                Op::GotoIfNonNilElsePop { target } => {
+                    if !stack.borrow().last().expect("validated bytecode").is_nil() {
+                        branch!(target);
+                    } else {
+                        pop!();
+                    }
+                    continue;
+                }
+                Op::Return => {
+                    return Ok(pop!());
+                }
+                Op::Not => {
+                    let value = pop!();
+                    stack
+                        .borrow_mut()
+                        .push(if value.is_nil() { Value::T } else { Value::Nil });
+                    continue;
+                }
+                Op::Cons => {
+                    let b = pop!();
+                    let a = pop!();
+                    stack.borrow_mut().push(Value::cons(a, b));
+                    continue;
+                }
+                Op::Eq => {
+                    let b = pop!();
+                    let a = pop!();
+                    let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
+                    stack
+                        .borrow_mut()
+                        .push(if equal { Value::T } else { Value::Nil });
+                    continue;
+                }
+                Op::Consp => {
+                    let a = pop!();
+                    stack
+                        .borrow_mut()
+                        .push(if primitives::is_cons_value(interp, &a) {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        });
+                    continue;
+                }
+                Op::Plus | Op::Diff | Op::Mult => {
+                    let len = stack.borrow().len();
+                    if let (Value::Integer(x), Value::Integer(y)) = {
+                        let operands = stack.borrow();
+                        (operands[len - 2].clone(), operands[len - 1].clone())
+                    } {
+                        let fast = match op {
+                            Op::Plus => x.checked_add(y),
+                            Op::Diff => x.checked_sub(y),
+                            _ => x.checked_mul(y),
+                        };
+                        if let Some(n) = fast {
+                            stack.borrow_mut().truncate(len - 2);
+                            stack.borrow_mut().push(Value::Integer(n));
+                            continue;
+                        }
+                    }
+                }
+                Op::Quo | Op::Rem => {
+                    let len = stack.borrow().len();
+                    if let (Value::Integer(x), Value::Integer(y)) = {
+                        let operands = stack.borrow();
+                        (operands[len - 2].clone(), operands[len - 1].clone())
+                    } {
+                        // checked_div/checked_rem refuse y == 0 and the MIN/-1
+                        // overflow, which fall through to the full arithmetic
+                        // (and its arith-error).
+                        let fast = match op {
+                            Op::Quo => x.checked_div(y),
+                            _ => x.checked_rem(y),
+                        };
+                        if let Some(n) = fast {
+                            stack.borrow_mut().truncate(len - 2);
+                            stack.borrow_mut().push(Value::Integer(n));
+                            continue;
+                        }
+                    }
+                }
+                Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
+                    let len = stack.borrow().len();
+                    if let (Value::Integer(x), Value::Integer(y)) = {
+                        let operands = stack.borrow();
+                        (operands[len - 2].clone(), operands[len - 1].clone())
+                    } {
+                        let holds = match op {
+                            Op::Eqlsign => x == y,
+                            Op::Gtr => x > y,
+                            Op::Lss => x < y,
+                            Op::Leq => x <= y,
+                            _ => x >= y,
+                        };
+                        stack.borrow_mut().truncate(len - 2);
+                        stack
+                            .borrow_mut()
+                            .push(if holds { Value::T } else { Value::Nil });
+                        continue;
+                    }
+                }
+                Op::Add1 | Op::Sub1 | Op::Negate => {
+                    if let Some(Value::Integer(x)) = { stack.borrow().last().cloned() } {
+                        let fast = match op {
+                            Op::Add1 => x.checked_add(1),
+                            Op::Sub1 => x.checked_sub(1),
+                            _ => x.checked_neg(),
+                        };
+                        if let Some(n) = fast {
+                            *stack.borrow_mut().last_mut().expect("validated bytecode") =
+                                Value::Integer(n);
+                            continue;
+                        }
+                    }
+                }
+                Op::Aref => {
+                    let len = stack.borrow().len();
+                    if let Value::Integer(index) = { stack.borrow()[len - 1].clone() }
+                        && index >= 0
+                        && let Some(value) = {
+                            let operands = stack.borrow();
+                            crate::lisp::primitives::vector_aref_fast(
+                                &operands[len - 2],
+                                index as usize,
+                            )
+                        }
+                    {
+                        stack.borrow_mut().truncate(len - 2);
+                        stack.borrow_mut().push(value);
+                        continue;
+                    }
+                }
+                Op::Aset => {
+                    // Stack: [.. vector index value]; aset returns the value.
+                    let len = stack.borrow().len();
+                    if let Value::Integer(index) = { stack.borrow()[len - 2].clone() }
+                        && index >= 0
+                        && {
+                            let operands = stack.borrow();
+                            crate::lisp::primitives::vector_aset_fast(
+                                &operands[len - 3],
+                                index as usize,
+                                &operands[len - 1],
+                            )
+                            .is_some()
+                        }
+                    {
+                        let value = pop!();
+                        stack.borrow_mut().truncate(len - 3);
+                        stack.borrow_mut().push(value);
+                        continue;
+                    }
+                }
+                Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
+                    let top = stack.borrow().last().cloned();
+                    match top {
+                        Some(Value::Cons(cell)) => {
+                            let value = if matches!(op, Op::Car | Op::CarSafe) {
+                                cell.car.borrow().clone()
+                            } else {
+                                cell.cdr.borrow().clone()
+                            };
+                            *stack.borrow_mut().last_mut().expect("validated bytecode") = value;
+                            continue;
+                        }
+                        Some(Value::Nil) => continue,
+                        Some(_) if matches!(op, Op::CarSafe | Op::CdrSafe) => {
+                            *stack.borrow_mut().last_mut().expect("validated bytecode") =
+                                Value::Nil;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            // Every fallible operation funnels through the closure's result so
+            // handler unwinding (GNU's sys_setjmp arm) is applied uniformly.
+            match op {
+                Op::StackRef(n) => {
+                    let value = stack.borrow()[stack.borrow().len() - 1 - n as usize].clone();
+                    stack.borrow_mut().push(value);
+                }
+                Op::StackSet(n) => {
+                    let value = pop!();
+                    let slot = stack.borrow().len() - 1 - (n as usize - 1);
                     // stack-set N stores relative to the *pre-pop* top.
-                    stack[slot] = value;
+                    stack.borrow_mut()[slot] = value;
                 }
                 Op::DiscardN {
                     count,
@@ -746,7 +810,7 @@ fn run_with_stack(
                         for _ in 0..count {
                             pop!();
                         }
-                        stack.push(top);
+                        stack.borrow_mut().push(top);
                     } else {
                         for _ in 0..count {
                             pop!();
@@ -757,11 +821,11 @@ fn run_with_stack(
                     pop!();
                 }
                 Op::Dup => {
-                    let top = stack.last().expect("validated bytecode").clone();
-                    stack.push(top);
+                    let top = stack.borrow().last().expect("validated bytecode").clone();
+                    stack.borrow_mut().push(top);
                 }
                 Op::Constant(index) | Op::Constant2(index) => {
-                    stack.push(object.constant(index));
+                    stack.borrow_mut().push(object.constant(index));
                 }
                 Op::VarRef(index) => {
                     // bytecode.c:Bvarref is find_symbol_value on the constant,
@@ -780,9 +844,9 @@ fn run_with_stack(
                             }
                             Err(error) => return Err(error),
                         },
-                        _ => prim!(interp, "symbol-value", &[name], env)?,
+                        _ => prim(interp, "symbol-value", &[name], env)?,
                     };
-                    stack.push(value);
+                    stack.borrow_mut().push(value);
                 }
                 Op::VarSet(index) => {
                     // bytecode.c:Bvarset is set_internal on the constant.
@@ -790,15 +854,12 @@ fn run_with_stack(
                     let value = pop!();
                     match &name {
                         Value::Symbol(symbol) => {
-                            vm_call!(
-                                interp,
-                                crate::lisp::primitives::set_internal_symbol(
-                                    interp, symbol, value, env,
-                                )
+                            crate::lisp::primitives::set_internal_symbol(
+                                interp, symbol, value, env,
                             )?;
                         }
                         _ => {
-                            prim!(interp, "set", &[name, value], env)?;
+                            prim(interp, "set", &[name, value], env)?;
                         }
                     }
                 }
@@ -809,13 +870,13 @@ fn run_with_stack(
                         LispError::Signal("varbind constant must be a symbol".into())
                     })?;
                     let value = pop!();
-                    let restore = vm_call!(interp, interp.bind_special_variable(name, value, env))?;
-                    unwinds.push(UnwindEntry::Binding(restore));
+                    let restore = interp.bind_special_variable(name, value, env)?;
+                    unwinds.borrow_mut().push(UnwindEntry::Binding(restore));
                 }
                 Op::Unbind(count) => {
                     for _ in 0..count {
-                        match unwinds.pop() {
-                            Some(entry) => vm_call!(interp, unwind_one(interp, entry, env))?,
+                        match pop_unwind(unwinds) {
+                            Some(entry) => unwind_one(interp, entry, env)?,
                             None => {
                                 return Err(LispError::Signal("byte code unbind underflow".into()));
                             }
@@ -829,14 +890,14 @@ fn run_with_stack(
                         unreachable!("make_marker returns a marker")
                     };
                     interp.set_marker(marker_id, Some(saved_pt), Some(buffer_id))?;
-                    unwinds.push(UnwindEntry::Excursion {
+                    unwinds.borrow_mut().push(UnwindEntry::Excursion {
                         buffer_id,
                         marker_id,
                         saved_pt,
                     });
                 }
                 Op::SaveCurrentBuffer | Op::SaveCurrentBufferObsolete => {
-                    unwinds.push(UnwindEntry::CurrentBuffer {
+                    unwinds.borrow_mut().push(UnwindEntry::CurrentBuffer {
                         buffer_id: interp.current_buffer_id(),
                     });
                 }
@@ -849,7 +910,9 @@ fn run_with_stack(
                     // restriction" (marker-tracking would spuriously
                     // re-narrow after edits at BEGV).
                     if saved_begv == 1 && saved_zv == interp.buffer.size_total() + 1 {
-                        unwinds.push(UnwindEntry::RestrictionWide { buffer_id, labeled });
+                        unwinds
+                            .borrow_mut()
+                            .push(UnwindEntry::RestrictionWide { buffer_id, labeled });
                     } else {
                         let Value::Marker(beg_id) = interp.make_marker() else {
                             unreachable!("make_marker returns a marker")
@@ -860,7 +923,7 @@ fn run_with_stack(
                         let _ = interp.set_marker(beg_id, Some(saved_begv), Some(buffer_id));
                         let _ = interp.set_marker(end_id, Some(saved_zv), Some(buffer_id));
                         interp.set_marker_insertion_type(end_id, true);
-                        unwinds.push(UnwindEntry::Restriction {
+                        unwinds.borrow_mut().push(UnwindEntry::Restriction {
                             buffer_id,
                             beg_id,
                             end_id,
@@ -872,7 +935,7 @@ fn run_with_stack(
                 }
                 Op::UnwindProtect => {
                     let handler = pop!();
-                    unwinds.push(UnwindEntry::Protect(handler));
+                    unwinds.borrow_mut().push(UnwindEntry::Protect(handler));
                 }
                 Op::SaveWindowExcursion => {
                     // Obsolete since 24.1: TOP is a list of body forms;
@@ -883,30 +946,31 @@ fn run_with_stack(
                     let result: Result<(), LispError> =
                         interp.with_lisp_stack_roots(&(&body, &snapshot), |interp| {
                             for form in &body.to_vec()? {
-                                value = vm_call!(interp, interp.eval(form, env))?;
+                                value = interp.eval(form, env)?;
                             }
                             Ok(())
                         });
                     let _ = interp.restore_window_configuration(snapshot);
                     result?;
-                    stack.push(value);
+                    stack.borrow_mut().push(value);
                 }
                 Op::Catch => {
                     // Obsolete since 25: TAG below an unevaluated body form.
                     let body = pop!();
                     let tag = pop!();
-                    let value = interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
-                        match vm_call!(interp, interp.eval(&body, env)) {
-                            Err(LispError::Throw(thrown, thrown_value))
-                                if prim!(interp, "eq", &[tag.clone(), thrown.clone()], env)?
-                                    .is_truthy() =>
-                            {
-                                Ok(thrown_value)
+                    let value =
+                        interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
+                            match interp.eval(&body, env) {
+                                Err(LispError::Throw(thrown, thrown_value))
+                                    if prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?
+                                        .is_truthy() =>
+                                {
+                                    Ok(thrown_value)
+                                }
+                                other => other,
                             }
-                            other => other,
-                        }
-                    })?;
-                    stack.push(value);
+                        })?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::ConditionCase => {
                     // Obsolete since 25: VAR, BODY form, HANDLERS list —
@@ -917,28 +981,25 @@ fn run_with_stack(
                     let mut form = vec![Value::symbol("condition-case"), var, body];
                     form.extend(handlers.to_vec()?);
                     let form = Value::list(form);
-                    let value = interp.with_lisp_stack_roots(&form, |interp| {
-                        vm_call!(interp, interp.eval(&form, env))
-                    })?;
-                    stack.push(value);
+                    let value =
+                        interp.with_lisp_stack_roots(&form, |interp| interp.eval(&form, env))?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::TempOutputBufferSetup => {
                     // Obsolete since 24.1: create/erase the temp buffer and
                     // bind standard-output to it (GNU temp_output_buffer_setup
                     // specbinds, so Bunbind pops it).
                     let name = pop!();
-                    let buffer = prim!(interp, "get-buffer-create", &[name], env)?;
+                    let buffer = prim(interp, "get-buffer-create", &[name], env)?;
                     let saved = interp.current_buffer_id();
                     let buffer_id = interp.resolve_buffer_id(&buffer)?;
                     let _ = interp.set_current_buffer_id(buffer_id);
-                    prim!(interp, "erase-buffer", &[], env)?;
+                    prim(interp, "erase-buffer", &[], env)?;
                     let _ = interp.set_current_buffer_id(saved);
-                    let restore = vm_call!(
-                        interp,
-                        interp.bind_special_variable("standard-output", buffer.clone(), env)
-                    )?;
-                    unwinds.push(UnwindEntry::Binding(restore));
-                    stack.push(buffer);
+                    let restore =
+                        interp.bind_special_variable("standard-output", buffer.clone(), env)?;
+                    unwinds.borrow_mut().push(UnwindEntry::Binding(restore));
+                    stack.borrow_mut().push(buffer);
                 }
                 Op::TempOutputBufferShow => {
                     // Obsolete since 24.1: show the buffer at TOP, replace it
@@ -950,23 +1011,20 @@ fn run_with_stack(
                         .unwrap_or(Value::Nil);
                     interp.with_lisp_stack_roots(&value, |interp| {
                         if show.is_truthy() {
-                            vm_call!(
-                                interp,
-                                interp.call_function_value(
-                                    show,
-                                    None,
-                                    std::slice::from_ref(&buffer),
-                                    env,
-                                )
+                            interp.call_function_value(
+                                show,
+                                None,
+                                std::slice::from_ref(&buffer),
+                                env,
                             )?;
                         } else {
-                            prim!(interp, "display-buffer", &[buffer], env)?;
+                            prim(interp, "display-buffer", &[buffer], env)?;
                         }
                         Ok::<_, LispError>(())
                     })?;
-                    stack.push(value);
-                    match unwinds.pop() {
-                        Some(entry) => vm_call!(interp, unwind_one(interp, entry, env))?,
+                    stack.borrow_mut().push(value);
+                    match pop_unwind(unwinds) {
+                        Some(entry) => unwind_one(interp, entry, env)?,
                         None => {
                             return Err(LispError::Signal("byte code unbind underflow".into()));
                         }
@@ -974,16 +1032,13 @@ fn run_with_stack(
                 }
                 Op::InteractiveP => {
                     // Obsolete since 24.1: GNU call0s the Lisp function.
-                    let value = vm_call!(
-                        interp,
-                        interp.call_function_value(
-                            Value::symbol("interactive-p"),
-                            Some("interactive-p"),
-                            &[],
-                            env,
-                        )
+                    let value = interp.call_function_value(
+                        Value::symbol("interactive-p"),
+                        Some("interactive-p"),
+                        &[],
+                        env,
                     )?;
-                    stack.push(value);
+                    stack.borrow_mut().push(value);
                 }
                 // Zero-argument push ops.
                 Op::Point
@@ -1012,8 +1067,8 @@ fn run_with_stack(
                         Op::CurrentBuffer => "current-buffer",
                         _ => "widen",
                     };
-                    let value = prim!(interp, name, &[], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 // One-argument buffer/navigation ops (TOP = F(TOP)).
                 Op::GotoChar
@@ -1041,14 +1096,14 @@ fn run_with_stack(
                         Op::MatchBeginning => "match-beginning",
                         _ => "match-end",
                     };
-                    let value = prim!(interp, name, &[a], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[a], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::IndentTo => {
                     // GNU passes an explicit nil MINIMUM.
                     let column = pop!();
-                    let value = prim!(interp, "indent-to", &[column, Value::Nil], env)?;
-                    stack.push(value);
+                    let value = prim(interp, "indent-to", &[column, Value::Nil], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 // Two-argument region/motion ops.
                 Op::SkipCharsForward
@@ -1065,40 +1120,43 @@ fn run_with_stack(
                         Op::DeleteRegion => "delete-region",
                         _ => "narrow-to-region",
                     };
-                    let value = prim!(interp, name, &[a, b], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[a, b], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::SetMarker => {
                     let position_buffer = pop!();
                     let position = pop!();
                     let marker = pop!();
-                    let value = prim!(
+                    let value = prim(
                         interp,
                         "set-marker",
                         &[marker, position, position_buffer],
                         env,
                     )?;
-                    stack.push(value);
+                    stack.borrow_mut().push(value);
                 }
                 Op::InsertN(n) => {
-                    let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
-                    let value = prim!(interp, "insert", &items, env)?;
-                    stack.push(value);
+                    let start = stack.borrow().len() - n as usize;
+                    let items: Vec<Value> = stack.borrow_mut().drain(start..).collect();
+                    let value = prim(interp, "insert", &items, env)?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::Call(argc) => {
                     let argc = argc as usize;
-                    let args_start = stack.len() - argc;
+                    let args_start = stack.borrow().len() - argc;
                     // Call with the arguments still on the stack (GNU's
                     // exec_byte_code does the same); an error unwind
                     // truncates to the handler's recorded depth anyway.
                     // GNU retains TOP (the function) as well as its arguments
                     // until the call returns. Keep that exact object rooted
                     // even if entry processing itself invokes Lisp/GC.
-                    let func = stack[args_start - 1].clone();
+                    let func = stack.borrow()[args_start - 1].clone();
                     let trace_call = trace_errors.then(|| func.to_string());
-                    let value = match vm_call!(
-                        interp,
-                        interp.call_function_value(func, None, &stack[args_start..], env)
+                    let value = match interp.call_function_value(
+                        func,
+                        None,
+                        &stack.borrow()[args_start..],
+                        env,
                     ) {
                         Ok(value) => value,
                         Err(error) => {
@@ -1116,38 +1174,38 @@ fn run_with_stack(
                             return Err(error);
                         }
                     };
-                    stack.truncate(args_start - 1);
-                    stack.push(value);
+                    stack.borrow_mut().truncate(args_start - 1);
+                    stack.borrow_mut().push(value);
                 }
                 Op::Goto { target } => {
-                    pc = object.instr_at(target as usize);
+                    branch!(target);
                 }
                 Op::GotoIfNil { target } => {
                     if pop!().is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     }
                 }
                 Op::GotoIfNonNil { target } => {
                     if !pop!().is_nil() {
-                        pc = object.instr_at(target as usize);
+                        branch!(target);
                     }
                 }
                 Op::GotoIfNilElsePop { target } => {
-                    if stack.last().expect("validated bytecode").is_nil() {
-                        pc = object.instr_at(target as usize);
+                    if stack.borrow().last().expect("validated bytecode").is_nil() {
+                        branch!(target);
                     } else {
                         pop!();
                     }
                 }
                 Op::GotoIfNonNilElsePop { target } => {
-                    if !stack.last().expect("validated bytecode").is_nil() {
-                        pc = object.instr_at(target as usize);
+                    if !stack.borrow().last().expect("validated bytecode").is_nil() {
+                        branch!(target);
                     } else {
                         pop!();
                     }
                 }
                 Op::Return => {
-                    return Err(LispError::VmReturn(pop!()));
+                    return Ok(pop!());
                 }
                 Op::PushCatch { target } => {
                     let tag = pop!();
@@ -1158,8 +1216,8 @@ fn run_with_stack(
                     handlers.push(Handler {
                         kind: HandlerKind::Catch(tag),
                         dest: target as usize,
-                        stack_len: stack.len(),
-                        unwind_len: unwinds.len(),
+                        stack_len: stack.borrow().len(),
+                        unwind_len: unwinds.borrow().len(),
                         registry_start: None,
                     });
                 }
@@ -1174,8 +1232,8 @@ fn run_with_stack(
                     handlers.push(Handler {
                         kind: HandlerKind::ConditionCase(conditions),
                         dest: target as usize,
-                        stack_len: stack.len(),
-                        unwind_len: unwinds.len(),
+                        stack_len: stack.borrow().len(),
+                        unwind_len: unwinds.borrow().len(),
                         registry_start: Some(registry_start),
                     });
                 }
@@ -1192,19 +1250,21 @@ fn run_with_stack(
                 Op::Switch => {
                     let table = pop!();
                     let value = pop!();
-                    let dest = prim!(interp, "gethash", &[value, table, Value::Nil], env)?;
+                    let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
                     if let Value::Integer(dest) = dest {
                         pc = object.instr_at(dest as usize);
                     }
                 }
                 Op::ListN(n) => {
-                    let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
-                    stack.push(Value::list(items));
+                    let start = stack.borrow().len() - n as usize;
+                    let items: Vec<Value> = stack.borrow_mut().drain(start..).collect();
+                    stack.borrow_mut().push(Value::list(items));
                 }
                 Op::ConcatN(n) => {
-                    let items: Vec<Value> = stack.drain(stack.len() - n as usize..).collect();
-                    let value = prim!(interp, "concat", &items, env)?;
-                    stack.push(value);
+                    let start = stack.borrow().len() - n as usize;
+                    let items: Vec<Value> = stack.borrow_mut().drain(start..).collect();
+                    let value = prim(interp, "concat", &items, env)?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::List1 | Op::List2 | Op::List3 | Op::List4 => {
                     let n = match op {
@@ -1213,24 +1273,29 @@ fn run_with_stack(
                         Op::List3 => 3,
                         _ => 4,
                     };
-                    let items: Vec<Value> = stack.drain(stack.len() - n..).collect();
-                    stack.push(Value::list(items));
+                    let start = stack.borrow().len() - n;
+                    let items: Vec<Value> = stack.borrow_mut().drain(start..).collect();
+                    stack.borrow_mut().push(Value::list(items));
                 }
                 Op::Not => {
                     let value = pop!();
-                    stack.push(if value.is_nil() { Value::T } else { Value::Nil });
+                    stack
+                        .borrow_mut()
+                        .push(if value.is_nil() { Value::T } else { Value::Nil });
                 }
                 // Two-argument ops with inline fast paths.
                 Op::Eq => {
                     let b = pop!();
                     let a = pop!();
                     let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
-                    stack.push(if equal { Value::T } else { Value::Nil });
+                    stack
+                        .borrow_mut()
+                        .push(if equal { Value::T } else { Value::Nil });
                 }
                 Op::Cons => {
                     let b = pop!();
                     let a = pop!();
-                    stack.push(Value::cons(a, b));
+                    stack.borrow_mut().push(Value::cons(a, b));
                 }
                 Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
                     let b = pop!();
@@ -1243,8 +1308,10 @@ fn run_with_stack(
                             Op::Leq => x <= y,
                             _ => x >= y,
                         };
-                        stack.push(if holds { Value::T } else { Value::Nil });
-                        return Ok(());
+                        stack
+                            .borrow_mut()
+                            .push(if holds { Value::T } else { Value::Nil });
+                        continue;
                     }
                     let name = match op {
                         Op::Eqlsign => "=",
@@ -1253,8 +1320,8 @@ fn run_with_stack(
                         Op::Leq => "<=",
                         _ => ">=",
                     };
-                    let value = prim!(interp, name, &[a, b], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[a, b], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::Plus | Op::Diff | Op::Mult => {
                     let b = pop!();
@@ -1266,8 +1333,8 @@ fn run_with_stack(
                             _ => x.checked_mul(*y),
                         };
                         if let Some(n) = fast {
-                            stack.push(Value::Integer(n));
-                            return Ok(());
+                            stack.borrow_mut().push(Value::Integer(n));
+                            continue;
                         }
                     }
                     let name = match op {
@@ -1275,8 +1342,8 @@ fn run_with_stack(
                         Op::Diff => "-",
                         _ => "*",
                     };
-                    let value = prim!(interp, name, &[a, b], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[a, b], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::Max | Op::Min => {
                     let b = pop!();
@@ -1287,12 +1354,12 @@ fn run_with_stack(
                         } else {
                             (*x).min(*y)
                         };
-                        stack.push(Value::Integer(n));
-                        return Ok(());
+                        stack.borrow_mut().push(Value::Integer(n));
+                        continue;
                     }
                     let name = if matches!(op, Op::Max) { "max" } else { "min" };
-                    let value = prim!(interp, name, &[a, b], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[a, b], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 // Two-argument primitive ops.
                 Op::Memq
@@ -1338,7 +1405,7 @@ fn run_with_stack(
                         _ => "nconc",
                     };
                     let call_args = [a, b];
-                    let value = match prim!(interp, name, &call_args, env) {
+                    let value = match prim(interp, name, &call_args, env) {
                         Ok(value) => value,
                         Err(error) => {
                             // bytecode.c's record_in_backtrace covers
@@ -1349,13 +1416,17 @@ fn run_with_stack(
                                     LispError::Throw(_, _) | LispError::Terminate(_)
                                 )
                             {
-                                interp.push_backtrace_frame(Value::Symbol(name.into()), &call_args);
+                                interp.push_backtrace_frame_with_evald(
+                                    Value::Symbol(name.into()),
+                                    call_args.to_vec(),
+                                    true,
+                                );
                                 op_error_frames += 1;
                             }
                             return Err(error);
                         }
                     };
-                    stack.push(value);
+                    stack.borrow_mut().push(value);
                 }
                 // One-argument ops with inline fast paths.
                 Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
@@ -1363,17 +1434,19 @@ fn run_with_stack(
                     match (&a, op) {
                         (Value::Cons(cell), Op::Car | Op::CarSafe) => {
                             let value = cell.car.borrow().clone();
-                            stack.push(value);
+                            stack.borrow_mut().push(value);
                         }
                         (Value::Cons(cell), _) => {
                             let value = cell.cdr.borrow().clone();
-                            stack.push(value);
+                            stack.borrow_mut().push(value);
                         }
-                        (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => stack.push(Value::Nil),
+                        (Value::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => {
+                            stack.borrow_mut().push(Value::Nil)
+                        }
                         _ => {
                             let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
                             let call_args = [a];
-                            let value = match prim!(interp, name, &call_args, env) {
+                            let value = match prim(interp, name, &call_args, env) {
                                 Ok(value) => value,
                                 Err(error) => {
                                     // bytecode.c records the signaling op
@@ -1383,16 +1456,17 @@ fn run_with_stack(
                                         error,
                                         LispError::Throw(_, _) | LispError::Terminate(_)
                                     ) {
-                                        interp.push_backtrace_frame(
+                                        interp.push_backtrace_frame_with_evald(
                                             Value::Symbol(name.into()),
-                                            &call_args,
+                                            call_args.to_vec(),
+                                            true,
                                         );
                                         op_error_frames += 1;
                                     }
                                     return Err(error);
                                 }
                             };
-                            stack.push(value);
+                            stack.borrow_mut().push(value);
                         }
                     }
                 }
@@ -1405,8 +1479,8 @@ fn run_with_stack(
                             _ => x.checked_neg(),
                         };
                         if let Some(n) = fast {
-                            stack.push(Value::Integer(n));
-                            return Ok(());
+                            stack.borrow_mut().push(Value::Integer(n));
+                            continue;
                         }
                     }
                     let name = match op {
@@ -1414,22 +1488,26 @@ fn run_with_stack(
                         Op::Sub1 => "1-",
                         _ => "-",
                     };
-                    let value = prim!(interp, name, &[a], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[a], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 Op::Consp => {
                     let a = pop!();
-                    stack.push(if primitives::is_cons_value(interp, &a) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    });
+                    stack
+                        .borrow_mut()
+                        .push(if primitives::is_cons_value(interp, &a) {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        });
                 }
                 Op::Length => {
                     let sequence = pop!();
-                    stack.push(Value::Integer(primitives::sequence_length_value(
-                        interp, &sequence,
-                    )?));
+                    stack
+                        .borrow_mut()
+                        .push(Value::Integer(primitives::sequence_length_value(
+                            interp, &sequence,
+                        )?));
                 }
                 // One-argument primitive ops.
                 Op::Symbolp
@@ -1455,8 +1533,8 @@ fn run_with_stack(
                         Op::Upcase => "upcase",
                         _ => "downcase",
                     };
-                    let value = prim!(interp, name, &[a], env)?;
-                    stack.push(value);
+                    let value = prim(interp, name, &[a], env)?;
+                    stack.borrow_mut().push(value);
                 }
                 // Three-argument primitive ops.
                 Op::Aset | Op::Substring | Op::Concat3 => {
@@ -1469,7 +1547,7 @@ fn run_with_stack(
                         _ => "concat",
                     };
                     let call_args = [a, b, c];
-                    let value = match prim!(interp, name, &call_args, env) {
+                    let value = match prim(interp, name, &call_args, env) {
                         Ok(value) => value,
                         Err(error) => {
                             if matches!(op, Op::Aset)
@@ -1478,29 +1556,31 @@ fn run_with_stack(
                                     LispError::Throw(_, _) | LispError::Terminate(_)
                                 )
                             {
-                                interp.push_backtrace_frame(Value::Symbol(name.into()), &call_args);
+                                interp.push_backtrace_frame_with_evald(
+                                    Value::Symbol(name.into()),
+                                    call_args.to_vec(),
+                                    true,
+                                );
                                 op_error_frames += 1;
                             }
                             return Err(error);
                         }
                     };
-                    stack.push(value);
+                    stack.borrow_mut().push(value);
                 }
                 Op::Concat4 => {
                     let d = pop!();
                     let c = pop!();
                     let b = pop!();
                     let a = pop!();
-                    let value = prim!(interp, "concat", &[a, b, c, d], env)?;
-                    stack.push(value);
+                    let value = prim(interp, "concat", &[a, b, c, d], env)?;
+                    stack.borrow_mut().push(value);
                 }
             }
-            Ok(())
         })();
 
         match step {
-            Ok(()) => {}
-            Err(LispError::VmReturn(value)) => {
+            Ok(value) => {
                 break 'run Ok(value);
             }
             Err(error) => {
@@ -1517,7 +1597,7 @@ fn run_with_stack(
                     }
                     let matched_value = match (&handler.kind, &error) {
                         (HandlerKind::Catch(tag), LispError::Throw(thrown, value)) => {
-                            let same = prim!(interp, "eq", &[tag.clone(), thrown.clone()], env)?;
+                            let same = prim(interp, "eq", &[tag.clone(), thrown.clone()], env)?;
                             if same.is_truthy() {
                                 Some(value.clone())
                             } else {
@@ -1548,17 +1628,17 @@ fn run_with_stack(
                             interp.pop_backtrace_frame();
                             op_error_frames -= 1;
                         }
-                        while unwinds.len() > handler.unwind_len {
-                            match unwinds.pop() {
+                        while unwinds.borrow().len() > handler.unwind_len {
+                            match pop_unwind(unwinds) {
                                 Some(entry) => interp
                                     .with_lisp_stack_roots(&(&error, &value), |interp| {
-                                        vm_call!(interp, unwind_one(interp, entry, env))
+                                        unwind_one(interp, entry, env)
                                     })?,
                                 None => break,
                             }
                         }
-                        stack.truncate(handler.stack_len);
-                        stack.push(value);
+                        stack.borrow_mut().truncate(handler.stack_len);
+                        stack.borrow_mut().push(value);
                         pc = object.instr_at(handler.dest);
                         handled = true;
                         break;
@@ -1581,9 +1661,12 @@ fn run_with_stack(
                     if trace_errors
                         && !matches!(error, LispError::Throw(_, _))
                         && !interp.some_active_handler_matches(&error)
+                        && let Some(instr) = object.instrs.get(pc.wrapping_sub(1))
                     {
                         eprintln!(
-                            "bytecode operation {op:?} failed at byte offset {offset}: {}",
+                            "bytecode operation {:?} failed at byte offset {}: {}",
+                            instr.op,
+                            instr.offset,
                             crate::lisp::types::bounded_error_debug(&error)
                         );
                     }
@@ -1605,12 +1688,14 @@ fn run_with_stack(
             interp.pop_handler_bindings(start);
         }
     }
-    interp.with_lisp_stack_roots(&result, |interp| {
-        while let Some(entry) = unwinds.pop() {
-            vm_call!(interp, unwind_one(interp, entry, env))?;
-        }
-        Ok::<_, LispError>(())
-    })?;
+    if !unwinds.borrow().is_empty() {
+        interp.with_lisp_stack_roots(&result, |interp| {
+            while let Some(entry) = pop_unwind(unwinds) {
+                unwind_one(interp, entry, env)?;
+            }
+            Ok::<_, LispError>(())
+        })?;
+    }
     // GNU runs `handler-bind' handlers from `signal' itself, so an error
     // raised inside byte-code reaches them exactly as one raised by the
     // interpreter does.  Emaxx dispatches at each native-call boundary

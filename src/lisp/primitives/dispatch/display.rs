@@ -171,9 +171,7 @@ fn redisplay_safe_call(
     interp.pop_handler_bindings(handler_start);
     env.truncate(depth);
     let result = match result {
-        Err(
-            error @ (LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)),
-        ) => Err(error),
+        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => Err(error),
         Err(error) => {
             // dsafe_eval_handler -> add_to_log -> Fformat_message and
             // message_dolog. Calling Fmessage here would run message hooks

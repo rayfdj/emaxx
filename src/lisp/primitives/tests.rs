@@ -1736,6 +1736,31 @@ fn current_time_and_a_nil_time_convert_form_follow_current_time_list() {
 }
 
 #[test]
+fn symbol_fast_paths_preserve_nil_and_t_identity() {
+    // fns.c:Fget compares property keys with EQ. lread.c:Fmapatoms hands
+    // the actual obarray symbols to the callback, including false nil.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((symbol (make-symbol "symbol-fast-paths")))
+             (put symbol nil 11)
+             (put symbol t 22)
+             (list (get symbol nil) (get symbol t)
+                   (let (seen)
+                     (mapatoms (lambda (s)
+                                 (when (string= (symbol-name s) "nil")
+                                   (push (if s 'wrong 'ok) seen))))
+                     seen)
+                   (let (seen)
+                     (mapatoms (lambda (s)
+                                 (when (string= (symbol-name s) "nil")
+                                   (push (if s 'wrong 'ok) seen)))
+                               obarray)
+                     seen)))"#,
+        "(11 22 (ok) (ok))",
+        "symbol fast paths preserve nil and t",
+    );
+}
+
+#[test]
 fn garbage_collect_maybe_reads_the_counters_the_last_collection_left() {
     // alloc.c:Fgarbage_collect_maybe compares `since_gc' with the
     // `gc_threshold' the last collection computed; only maybe_garbage_collect
@@ -3428,43 +3453,6 @@ fn fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it() {
         load_path: load_path.clone(),
         ..Default::default()
     };
-    let (mut first, mut second, images) = {
-        let _env_write = crate::compat::lock_boot_environment_for_write();
-        unsafe {
-            std::env::set_var("EMAXX_FIXTURE_IMAGE_DIR", &directory);
-        }
-        let first = crate::batch::initialize_batch_interpreter(&options());
-        let images = std::fs::read_dir(&directory)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                    .filter(|name| name.ends_with(".pdmp"))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let second = crate::batch::initialize_batch_interpreter(&options());
-        unsafe {
-            std::env::remove_var("EMAXX_FIXTURE_IMAGE_DIR");
-        }
-        (
-            first.unwrap_or_else(|error| panic!("the dumping boot: {error}")),
-            second.unwrap_or_else(|error| panic!("the boot from the image: {error}")),
-            images,
-        )
-    };
-    let _ = std::fs::remove_dir_all(&directory);
-    let fingerprint = crate::lisp::primitives::pdumper::image::executable_fingerprint()[..4]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    assert_eq!(images.len(), 1, "{images:?}");
-    assert!(
-        images[0].starts_with(&format!("loadup-{fingerprint}-")),
-        "{images:?}"
-    );
-    assert!(!first.dump_loaded_p());
-    assert!(second.dump_loaded_p());
     let programs = [
         "(list (featurep 'subr-x) (fboundp 'when-let) (macrop 'when) purify-flag)",
         "(list (fboundp 'forward-sexp) (fboundp 'beginning-of-defun-raw) (fboundp 'move-to-left-margin))",
@@ -3475,8 +3463,8 @@ fn fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it() {
         "(with-temp-buffer (insert \"abc\") (upcase-region 1 3) (buffer-string))",
         "(list (getenv \"HOME\") (car command-line-args) (car exec-path))",
     ];
-    for program in programs {
-        let print = |interp: &mut crate::lisp::eval::Interpreter| {
+    let observe = |interp: &mut crate::lisp::eval::Interpreter| {
+        programs.map(|program| {
             let mut env = Vec::new();
             let form = Reader::new(program)
                 .read()
@@ -3487,9 +3475,59 @@ fn fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it() {
                 .unwrap_or_else(|error| panic!("{program}: {error:?}"));
             let printed = call(interp, "prin1-to-string", &[value], &mut env).expect("print");
             string_like(&printed).expect("printed").text
-        };
-        assert_eq!(print(&mut second), print(&mut first), "{program}");
+        })
+    };
+    let _env_write = crate::compat::lock_boot_environment_for_write();
+    struct RestoreFixtureDirectory(Option<std::ffi::OsString>);
+    impl Drop for RestoreFixtureDirectory {
+        fn drop(&mut self) {
+            // SAFETY: The boot-environment write guard outlives this restore.
+            unsafe {
+                match &self.0 {
+                    Some(previous) => std::env::set_var("EMAXX_FIXTURE_IMAGE_DIR", previous),
+                    None => std::env::remove_var("EMAXX_FIXTURE_IMAGE_DIR"),
+                }
+            }
+        }
     }
+    let _restore = RestoreFixtureDirectory(std::env::var_os("EMAXX_FIXTURE_IMAGE_DIR"));
+    // SAFETY: The boot-environment write guard covers the mutation and both boots.
+    unsafe {
+        std::env::set_var("EMAXX_FIXTURE_IMAGE_DIR", &directory);
+    }
+    let mut first = crate::batch::initialize_batch_interpreter(&options())
+        .unwrap_or_else(|error| panic!("the dumping boot: {error}"));
+    assert!(!first.dump_loaded_p());
+    let first_answers = observe(&mut first);
+    let images = std::fs::read_dir(&directory)
+        .expect("fixture image directory")
+        .map(|entry| entry.expect("fixture directory entry").file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".pdmp"))
+        .collect::<Vec<_>>();
+    let fingerprint = crate::lisp::primitives::pdumper::image::executable_fingerprint()[..4]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(images.len(), 1, "{images:?}");
+    assert!(
+        images[0].starts_with(&format!("loadup-{fingerprint}-")),
+        "{images:?}"
+    );
+    // GNU loads the image in a fresh process. Release the writer's native
+    // units before dlopen restores their relocation slots from the image.
+    drop(first);
+    let mut second = crate::batch::initialize_batch_interpreter(&options())
+        .unwrap_or_else(|error| panic!("the boot from the image: {error}"));
+    assert!(second.dump_loaded_p());
+    for ((program, first), second) in programs
+        .into_iter()
+        .zip(first_answers)
+        .zip(observe(&mut second))
+    {
+        assert_eq!(second, first, "{program}");
+    }
+    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -15737,7 +15775,8 @@ fn font_lock_mode_declines_to_enable_in_a_batch_session() {
 fn backtrace_frame_internal_honors_depth_relative_to_base() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
-    interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), &[Value::Integer(7)]);
+    let outer_args = [Value::Integer(7)];
+    interp.push_backtrace_frame(Value::Symbol("outer-frame".into()), &outer_args);
     interp.push_backtrace_frame(Value::Symbol("base-frame".into()), &[]);
     interp.push_backtrace_frame(Value::Symbol("inner-frame".into()), &[]);
 

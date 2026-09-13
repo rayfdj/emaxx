@@ -565,10 +565,43 @@ pub(crate) fn initialize_batch_interpreter_as_started(
     initialize_interpreter(options, true)
 }
 
+/// A boot that has no image to start from reconstructs the dumped state
+/// by running loadup.el, whose dump-mode path runs git
+/// (`emacs-repository-get-version'): that crosses the host-process
+/// boundary, which the test harness serializes with a permit every
+/// process test takes before it boots.  Such a boot takes the permit
+/// before the boot-environment guard too, so the two are always taken
+/// in that order; whether this boot reconstructs is known only under the
+/// guard, so the attempt reports it, the permit is taken, and the boot
+/// restarts (taking the permit under the guard deadlocked against a
+/// process test waiting to boot).
+enum BootAttempt {
+    Ready(Box<Interpreter>),
+    #[cfg(test)]
+    NeedsProcessPermit,
+}
+
 fn initialize_interpreter(
     options: &BatchRunOptions,
     noninteractive: bool,
 ) -> Result<Interpreter, String> {
+    #[cfg(test)]
+    loop {
+        match initialize_interpreter_attempt(options, noninteractive)? {
+            BootAttempt::Ready(interpreter) => return Ok(*interpreter),
+            BootAttempt::NeedsProcessPermit => crate::test_support::mark_process_test(),
+        }
+    }
+    #[cfg(not(test))]
+    match initialize_interpreter_attempt(options, noninteractive)? {
+        BootAttempt::Ready(interpreter) => Ok(*interpreter),
+    }
+}
+
+fn initialize_interpreter_attempt(
+    options: &BatchRunOptions,
+    noninteractive: bool,
+) -> Result<BootAttempt, String> {
     // Boot resolves its Lisp tree partly from process environment
     // (EMAXX_DUMP_SOURCE_DIRECTORY, EMACS_TEST_DIRECTORY).  Tests that
     // point those at fixture roots take this lock for WRITE; every boot
@@ -623,6 +656,13 @@ fn initialize_interpreter(
                 ));
             }
         }
+    }
+    #[cfg(test)]
+    if !initialized && !crate::test_support::holds_process_test_permit() {
+        // The reconstruction runs git (see `BootAttempt'); the fixture
+        // directory lock goes with the attempt.
+        drop(fixture_to_dump);
+        return Ok(BootAttempt::NeedsProcessPermit);
     }
     if initialized {
         interpreter
@@ -770,7 +810,7 @@ fn initialize_interpreter(
             Ok(()) => {}
             Err(LispError::Terminate(termination)) => {
                 interpreter.request_termination(termination);
-                return Ok(interpreter);
+                return Ok(BootAttempt::Ready(Box::new(interpreter)));
             }
             Err(error) => return Err(format!("after-pdump-load-hook: {error}")),
         }
@@ -798,7 +838,7 @@ fn initialize_interpreter(
             other => return Err(format!("GNU batch startup did not complete: {other:?}")),
         }
     }
-    Ok(interpreter)
+    Ok(BootAttempt::Ready(Box::new(interpreter)))
 }
 
 fn configure_native_load_path_for_dump_reconstruction(
@@ -939,9 +979,7 @@ fn call_safe_hook_function(
         env.truncate(depth);
         let error = match result {
             Ok(_) => return Ok(()),
-            Err(
-                error @ (LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)),
-            ) => return Err(error),
+            Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
             Err(error) => error,
         };
         interpreter.clear_batch_error_backtrace();

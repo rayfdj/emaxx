@@ -72,9 +72,7 @@ impl TraceLispRoots for Env {
 impl TraceLispRoots for LispError {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_, '_, '_>) {
         match self {
-            Self::WrongTypeArgument(_, value)
-            | Self::SignalValue(value)
-            | Self::VmReturn(value) => {
+            Self::WrongTypeArgument(_, value) | Self::SignalValue(value) => {
                 marker.value(value);
             }
             Self::Throw(tag, value) => {
@@ -345,6 +343,67 @@ mod tests {
                 .hash_table_runtime_entries(id)
                 .expect("weak table remains globally rooted")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn scoped_backtrace_roots_release_after_panic_and_retained_frames_own_arguments() {
+        let mut interpreter = Interpreter::new();
+        let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Value::Record(id) = table else {
+            panic!("hash table must be a record");
+        };
+        interpreter.find_record_mut(id).expect("weak table").slots[5] = Value::symbol("key");
+        interpreter.set_global_binding("backtrace-root-table", Value::Record(id));
+        let retain = |interpreter: &mut Interpreter, key: &Value| {
+            primitives::call(
+                interpreter,
+                "puthash",
+                &[key.clone(), Value::T, Value::Record(id)],
+                &mut Env::new(),
+            )
+            .expect("insert weak key");
+        };
+        let collect = |interpreter: &mut Interpreter| {
+            primitives::call(interpreter, "garbage-collect", &[], &mut Env::new())
+                .expect("collect actual roots");
+            interpreter
+                .hash_table_runtime_entries(id)
+                .expect("live table")
+                .len()
+        };
+        {
+            let temporary_arguments = vec![Value::list([Value::Integer(1)])];
+            retain(&mut interpreter, &temporary_arguments[0]);
+            interpreter.push_backtrace_frame(Value::symbol("retained"), &temporary_arguments);
+        }
+        assert_eq!(
+            collect(&mut interpreter),
+            1,
+            "retained arguments remain valid"
+        );
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let arguments = [Value::list([Value::Integer(2)])];
+            retain(&mut interpreter, &arguments[0]);
+            interpreter.with_backtrace_frame(Value::symbol("scoped"), &arguments, |interpreter| {
+                assert_eq!(collect(interpreter), 2, "both argument vectors are rooted");
+                // A callee may leave an owned signaling frame behind.
+                interpreter.push_backtrace_frame(Value::symbol("signal"), &[]);
+                panic!("unwind the borrowed backtrace scope");
+            });
+        }));
+        assert!(panic.is_err());
+        assert_eq!(interpreter.backtrace_frames_len(), 1);
+        assert_eq!(
+            collect(&mut interpreter),
+            1,
+            "the inner arguments were released"
+        );
+        interpreter.pop_backtrace_frame();
+        assert_eq!(
+            collect(&mut interpreter),
+            0,
+            "all backtrace roots were released"
         );
     }
 

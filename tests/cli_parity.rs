@@ -22,7 +22,11 @@ fn emaxx() -> &'static Path {
     BINARY.get_or_init(|| {
         let binary = PathBuf::from(env!("CARGO_BIN_EXE_emaxx"));
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/build-image.sh");
-        let built = Command::new(&script).arg(&binary).output().unwrap();
+        let built = Command::new(&script)
+            .arg(&binary)
+            .env("EMAXX_IMAGE_FORCE", "1")
+            .output()
+            .unwrap();
         assert!(
             built.status.success(),
             "tools/build-image.sh failed:\nstdout: {}\nstderr: {}",
@@ -395,6 +399,65 @@ fn version_report_is_emacs_c_main_s() {
                 })
         };
         assert_eq!(development(&actual_out), development(&expected_out));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn dumped_fingerprint_survives_copying_and_resigning_the_executable() {
+    let corpus = Corpus::new();
+    // Dumped native units are relative to each executable directory.
+    // Mirror their relative layout under the corpus without changing either
+    // editor's original executable, dump, or native libraries.
+    let native = oracle()
+        .parent()
+        .unwrap()
+        .join("../native-lisp")
+        .canonicalize()
+        .unwrap();
+    let native_link = corpus.directory.join(native.strip_prefix("/").unwrap());
+    std::fs::create_dir_all(native_link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&native, &native_link).unwrap();
+    for (name, binary) in [("gnu", oracle()), ("emaxx", emaxx().to_path_buf())] {
+        let expected = corpus.run(&binary, &["--fingerprint"]);
+        assert_eq!(expected.2, Some(0), "{name}: {expected:?}");
+        let original = binary.canonicalize().unwrap();
+        let copied = corpus
+            .directory
+            .join(original.strip_prefix("/").unwrap())
+            .with_file_name(format!("{name}-copied"));
+        std::fs::create_dir_all(copied.parent().unwrap()).unwrap();
+        std::fs::copy(&binary, &copied).unwrap();
+        // Change the file's digest while preserving its executable format.
+        // GNU's embedded build fingerprint must still identify its dump.
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&copied)
+                .unwrap()
+                .write_all(b"build fingerprint regression\n")
+                .unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let signed = Command::new("codesign")
+                .args(["--force", "--sign", "-"])
+                .args(["--identifier", &format!("fingerprint-regression-{name}")])
+                .arg(&copied)
+                .output()
+                .unwrap();
+            assert!(signed.status.success(), "codesign: {signed:?}");
+        }
+        assert!(std::fs::read(&copied).unwrap() != std::fs::read(&binary).unwrap());
+        let image = binary.with_extension("pdmp");
+        assert!(image.is_file(), "missing image {}", image.display());
+        let actual = corpus.run(
+            &copied,
+            &["--dump-file", image.to_str().unwrap(), "--fingerprint"],
+        );
+        assert_eq!(actual, expected, "{name} must retain its build fingerprint");
     }
 }
 

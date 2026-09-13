@@ -360,11 +360,17 @@ impl Interpreter {
     /// limit an intmax_t field, so the evaluator reads it directly; only a
     /// depth that already exceeds a sub-100 value raises that live cell to
     /// 100 before deciding whether to signal.
+    #[inline(always)]
     fn lisp_eval_depth_exceeded(&mut self) -> bool {
         let depth = i64::try_from(self.lisp_eval_depth).unwrap_or(i64::MAX);
         if depth <= self.max_lisp_eval_depth_value() {
             return false;
         }
+        self.lisp_eval_depth_exceeded_slow(depth)
+    }
+
+    #[cold]
+    fn lisp_eval_depth_exceeded_slow(&mut self, depth: i64) -> bool {
         if self.max_lisp_eval_depth_value() < 100 {
             if self
                 .detached_forwarded_variables
@@ -740,6 +746,7 @@ impl Interpreter {
 
     /// eval.c:Ffuncall's entry sequence.  Generated code uses the same
     /// boundary before it dispatches an already encoded Lisp_Object vector.
+    #[inline(always)]
     pub(crate) fn begin_funcall(&mut self, env: &mut Env) -> Result<(), LispError> {
         self.maybe_quit(env)?;
         self.lisp_eval_depth += 1;
@@ -754,6 +761,7 @@ impl Interpreter {
         Ok(())
     }
 
+    #[inline(always)]
     pub(crate) fn end_funcall(&mut self) {
         self.lisp_eval_depth = self
             .lisp_eval_depth
@@ -765,6 +773,7 @@ impl Interpreter {
     /// quit state.  Platform pending-signal delivery remains owned by the
     /// process/terminal layer; once it sets quit-flag, this is the exact C
     /// dispatch among kill-emacs, throw-on-input, and ordinary quit.
+    #[inline(always)]
     pub(crate) fn maybe_quit(&mut self, env: &mut Env) -> Result<(), LispError> {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
@@ -772,6 +781,12 @@ impl Interpreter {
         if self.quit_flag_is_nil() {
             return Ok(());
         }
+        self.process_quit_flag(env)
+    }
+
+    /// eval.c:process_quit_flag, reached only with a non-nil quit-flag.
+    #[cold]
+    fn process_quit_flag(&mut self, env: &mut Env) -> Result<(), LispError> {
         let flag = self.quit_flag_value();
         if self.inhibit_quit_is_truthy() {
             return Ok(());
@@ -796,6 +811,7 @@ impl Interpreter {
         }
     }
 
+    #[inline(always)]
     fn call_function_value_named(
         &mut self,
         func: Value,
@@ -804,19 +820,43 @@ impl Interpreter {
         env: &mut Env,
         funcall: bool,
     ) -> Result<Value, LispError> {
-        if let Some(termination) = self.pending_termination().cloned() {
-            return Err(LispError::Terminate(termination));
+        if self.pending_termination().is_some() {
+            return Err(LispError::Terminate(
+                self.pending_termination()
+                    .cloned()
+                    .expect("checked pending termination"),
+            ));
         }
         // Dev-only flat profiler: EMAXX_PROFILE=<path> accumulates per-name
         // call counts and self-time, periodically rewriting <path>.
         if let Some(path) = profile_path() {
-            let started = std::time::Instant::now();
-            profile_enter();
-            let result = self.call_function_value_inner(func, original_name, args, env, funcall);
-            profile_leave(original_name.map(CallName::as_str), started.elapsed(), path);
-            return result;
+            return self.call_function_value_profiled(
+                func,
+                original_name,
+                args,
+                env,
+                funcall,
+                path,
+            );
         }
         self.call_function_value_inner(func, original_name, args, env, funcall)
+    }
+
+    #[cold]
+    fn call_function_value_profiled(
+        &mut self,
+        func: Value,
+        original_name: Option<CallName<'_>>,
+        args: &[Value],
+        env: &mut Env,
+        funcall: bool,
+        path: &'static str,
+    ) -> Result<Value, LispError> {
+        let started = std::time::Instant::now();
+        profile_enter();
+        let result = self.call_function_value_inner(func, original_name, args, env, funcall);
+        profile_leave(original_name.map(CallName::as_str), started.elapsed(), path);
+        result
     }
 
     /// Resolve a symbol function cell once, before argument evaluation.
@@ -866,9 +906,10 @@ impl Interpreter {
         env: &Env,
         local_context: bool,
     ) -> Result<FunctionResolution, LispError> {
+        // Keyed by the symbol's id, as GNU reads the function cell off the
+        // Lisp_Symbol: no hash of the name per call.
         if !local_context
-            && let Some((generation, resolution)) =
-                self.function_resolution_cache.get(name.as_str())
+            && let Some((generation, resolution)) = self.function_resolution_cache.get(&name.id())
             && *generation == self.function_binding_generation
         {
             return Ok(resolution.clone());
@@ -887,7 +928,7 @@ impl Interpreter {
         if !local_context {
             let state = &mut **self;
             state.function_resolution_cache.insert(
-                name.to_string(),
+                name.id(),
                 (state.function_binding_generation, resolution.clone()),
             );
         }
@@ -909,17 +950,19 @@ impl Interpreter {
         let backtrace_function = original_name
             .map(|original| original.symbol_value(name))
             .unwrap_or_else(|| Value::Symbol(name.clone()));
-        self.push_backtrace_frame(backtrace_function, args);
-        self.capture_current_backtrace_context(
-            Some(original_name.map_or(name.as_str(), CallName::as_str)),
-            env,
-            None,
-        );
-        let result = primitives::call_with_facts(self, name, facts, args, env)
-            .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
-        let result = self.settle_frame_result(result, env);
-        self.pop_backtrace_frame();
-        result
+        self.with_backtrace_frame(backtrace_function, args, |interp| {
+            interp.capture_current_backtrace_context(
+                Some(original_name.map_or(name.as_str(), CallName::as_str)),
+                env,
+                None,
+            );
+            // eval.c:Ffuncall: maybe_quit, the depth check, record_in_backtrace,
+            // then maybe_gc -- the arguments are on the specpdl by then.
+            crate::lisp::native_comp::maybe_gc(interp, env);
+            let result = primitives::call_with_facts(interp, name, facts, args, env)
+                .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
+            interp.settle_frame_result(result, env)
+        })
     }
 
     // eval.c:funcall_subr reports the resolved subr object. eval_sub
@@ -977,6 +1020,7 @@ impl Interpreter {
 
     /// Execute one GNU byte-code closure with the activation-frame contract
     /// that eval.c exposes to backtrace-frame/backtrace-eval.
+    #[inline]
     fn execute_bytecode_record_named(
         &mut self,
         record_id: u64,
@@ -987,17 +1031,23 @@ impl Interpreter {
         let backtrace_function = original_name
             .map(CallName::original_symbol_value)
             .unwrap_or(Value::Record(record_id));
-        self.push_backtrace_frame(backtrace_function, args);
-        self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
-        let result = self.execute_bytecode_funcall_body(record_id, args, env);
-        let result = self.settle_frame_result(result, env);
-        self.pop_backtrace_frame();
-        result
+        self.with_backtrace_frame(backtrace_function, args, |interp| {
+            interp.capture_current_backtrace_context(
+                original_name.map(CallName::as_str),
+                env,
+                None,
+            );
+            // Ffuncall's maybe_gc, after record_in_backtrace.
+            crate::lisp::native_comp::maybe_gc(interp, env);
+            let result = interp.execute_bytecode_funcall_body(record_id, args, env);
+            interp.settle_frame_result(result, env)
+        })
     }
 
     /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
     /// owns Ffuncall's depth and backtrace entry; this supplies only the
     /// byte-code activation boundary shared by source and native callers.
+    #[inline(always)]
     pub(crate) fn execute_bytecode_funcall_body(
         &mut self,
         record_id: u64,
@@ -1015,6 +1065,15 @@ impl Interpreter {
         let result = crate::lisp::bytecode::vm::execute_record(self, record_id, args, env);
         self.special_scan_floor = previous_floor;
         result
+    }
+
+    /// Only execute_record fills this cache, so a hit is a genuine
+    /// byte-code function whose slots have not been mutated since.
+    fn has_cached_bytecode_program(&self, record_id: u64) -> bool {
+        (record_id as usize)
+            .checked_sub(1)
+            .and_then(|index| self.bytecode_program_cache.get(index))
+            .is_some_and(|slot| slot.is_some())
     }
 
     pub(crate) fn is_genuine_bytecode_function(&self, record_id: u64) -> bool {
@@ -1036,18 +1095,18 @@ impl Interpreter {
         // eval.c/bytecode.c use XBARE_SYMBOL for a positioned callee while
         // the byte compiler's symbol-position mode is active.  This covers
         // explicit `funcall'/`apply' as well as ordinary source dispatch.
-        let func = self
-            .callable_symbol_name(&func, env)
-            .map(Value::Symbol)
-            .unwrap_or(func);
+        let func = if func.is_symbol() {
+            func
+        } else {
+            self.callable_symbol_name(&func, env)
+                .map(Value::Symbol)
+                .unwrap_or(func)
+        };
         // A record with a cached program is a genuine byte-code function
         // (only execute_record populates the cache), so skip the
         // lambda/autoload probes and the record-type guards below.
         if let Value::Record(id) = &func
-            && (*id as usize)
-                .checked_sub(1)
-                .and_then(|index| self.bytecode_program_cache.get(index))
-                .is_some_and(|slot| slot.is_some())
+            && self.has_cached_bytecode_program(*id)
         {
             return self.execute_bytecode_record_named(*id, original_name, args, env);
         }
@@ -1064,22 +1123,31 @@ impl Interpreter {
                         let function = original_name
                             .map(|original| original.symbol_value(&name))
                             .unwrap_or_else(|| Value::Symbol(name.clone()));
-                        self.push_backtrace_frame(function, args);
-                        let result = self.settle_frame_result(Err(error), env);
-                        self.pop_backtrace_frame();
-                        return result;
+                        return self.with_backtrace_frame(function, args, |interp| {
+                            interp.settle_frame_result(Err(error), env)
+                        });
                     }
                 };
-                if original_name.is_none() {
-                    owned_name = Some(name.clone());
-                }
                 match resolution {
                     FunctionResolution::DirectBuiltin(facts) => {
                         let call_name = original_name.or(Some(CallName::Symbol(&name)));
                         return self
                             .dispatch_named_builtin(&name, facts, call_name, args, env, funcall);
                     }
-                    FunctionResolution::Resolved(value) => value,
+                    // funcall_general's COMPILEDP arm: the function cell
+                    // holds a byte-code object already decoded once.
+                    FunctionResolution::Resolved(Value::Record(id))
+                        if self.has_cached_bytecode_program(id) =>
+                    {
+                        let call_name = original_name.or(Some(CallName::Symbol(&name)));
+                        return self.execute_bytecode_record_named(id, call_name, args, env);
+                    }
+                    FunctionResolution::Resolved(value) => {
+                        if original_name.is_none() {
+                            owned_name = Some(name.clone());
+                        }
+                        value
+                    }
                 }
             }
             other => other,
@@ -1144,17 +1212,18 @@ impl Interpreter {
                 let backtrace_function = original_name
                     .map(|original| original.symbol_value(name))
                     .unwrap_or_else(|| Value::Symbol(name.clone()));
-                self.push_backtrace_frame(backtrace_function, args);
-                self.capture_current_backtrace_context(
-                    original_name.map(CallName::as_str),
-                    env,
-                    None,
-                );
-                let result = primitives::call(self, name, args, env)
-                    .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error));
-                let result = self.settle_frame_result(result, env);
-                self.pop_backtrace_frame();
-                result
+                self.with_backtrace_frame(backtrace_function, args, |interp| {
+                    interp.capture_current_backtrace_context(
+                        original_name.map(CallName::as_str),
+                        env,
+                        None,
+                    );
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    let result = primitives::call(interp, name, args, env).map_err(|error| {
+                        Self::builtin_call_error(name, args.len(), funcall, error)
+                    });
+                    interp.settle_frame_result(result, env)
+                })
             }
             Value::Record(id)
                 if self
@@ -1164,16 +1233,16 @@ impl Interpreter {
                 let backtrace_function = original_name
                     .map(CallName::original_symbol_value)
                     .unwrap_or(Value::Record(id));
-                self.push_backtrace_frame(backtrace_function, args);
-                self.capture_current_backtrace_context(
-                    original_name.map(CallName::as_str),
-                    env,
-                    None,
-                );
-                let result = crate::lisp::native_comp::call_function(self, env, id, args);
-                let result = self.settle_frame_result(result, env);
-                self.pop_backtrace_frame();
-                result
+                self.with_backtrace_frame(backtrace_function, args, |interp| {
+                    interp.capture_current_backtrace_context(
+                        original_name.map(CallName::as_str),
+                        env,
+                        None,
+                    );
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    let result = crate::lisp::native_comp::call_function(interp, env, id, args);
+                    interp.settle_frame_result(result, env)
+                })
             }
             Value::Record(id)
                 if self
@@ -1183,16 +1252,21 @@ impl Interpreter {
                 let backtrace_function = original_name
                     .map(CallName::original_symbol_value)
                     .unwrap_or(Value::Record(id));
-                self.push_backtrace_frame(backtrace_function, args);
-                self.capture_current_backtrace_context(
-                    original_name.map(CallName::as_str),
-                    env,
-                    None,
-                );
-                let result = crate::lisp::modules::call(self, env, id, args);
-                let result = self.settle_frame_result(result, env);
-                self.pop_backtrace_frame();
-                result
+                self.with_backtrace_frame(backtrace_function, args, |interp| {
+                    interp.capture_current_backtrace_context(
+                        original_name.map(CallName::as_str),
+                        env,
+                        None,
+                    );
+                    let result = interp.with_lisp_stack_roots(&Value::Record(id), |interp| {
+                        // Ffuncall collects after recording the arguments for
+                        // module functions too. Keep the resolved function
+                        // live if a finalizer rebinds its original symbol.
+                        crate::lisp::native_comp::maybe_gc(interp, env);
+                        crate::lisp::modules::call(interp, env, id, args)
+                    });
+                    interp.settle_frame_result(result, env)
+                })
             }
             Value::Record(id)
                 if self
@@ -1245,10 +1319,12 @@ impl Interpreter {
                     let function = original_name
                         .map(CallName::original_symbol_value)
                         .unwrap_or_else(|| func.clone());
-                    this.push_backtrace_frame(function, args);
-                    let result = this.settle_frame_result(Err(wrong_arity()), env);
-                    this.pop_backtrace_frame();
-                    result.err().unwrap_or_else(wrong_arity)
+                    this.with_backtrace_frame(function, args, |interp| {
+                        interp
+                            .settle_frame_result(Err(wrong_arity()), env)
+                            .err()
+                            .unwrap_or_else(wrong_arity)
+                    })
                 };
                 self.register_captured_lexical_frames(closure_env);
                 if params.len() != args.len() {
@@ -1319,155 +1395,161 @@ impl Interpreter {
                 let backtrace_function = original_name
                     .map(CallName::original_symbol_value)
                     .unwrap_or_else(|| func.clone());
-                self.push_backtrace_frame_with_locals(
-                    backtrace_function,
-                    args.to_vec(),
-                    frame.clone(),
-                    true,
-                );
-                let frame = EnvFrame::with_identity(frame, Self::fresh_frame_identity());
-                self.capture_current_backtrace_context(
-                    original_name.map(CallName::as_str),
-                    env,
-                    Some(&frame),
-                );
-                // An empty lexical capture is still a scope boundary.  Keep
-                // that fact as closure metadata instead of an artificial
-                // environment binding, since instrumentation and capture
-                // analysis must see only real Lisp bindings.
-                let closure_eval_context = self.closure_eval_context(closure_env);
-                let lexical_closure = closure_eval_context == Some(true);
-                // A closure without a lexical environment is a GNU dynamic
-                // lambda.  Calling it from lexical code must switch the
-                // hidden interpreter environment to nil; otherwise it can
-                // read the caller's lexical frames and create lexical nested
-                // lambdas that GNU would keep dynamic.
-                let call_context = closure_eval_context.unwrap_or(false);
-                let call_capture_override =
-                    (self.lambda_capture_override() != Some(call_context)).then_some(call_context);
-                if let Some(capture) = call_capture_override {
-                    self.push_lambda_eval_context(capture);
-                }
-                let previous_activation = self.enter_activation();
-                let result = if closure_env.borrow().is_empty() && !lexical_closure {
-                    // GNU funcall_lambda binds a dynamic lambda's arguments
-                    // with specbind and installs a nil interpreter
-                    // environment for its body.  No caller lexical frame is
-                    // visible, while ordinary dynamic lets remain visible
-                    // through their value-cell bindings.
-                    // The caller's lexical cells remain live even though
-                    // the dynamic callee cannot see them. Root the actual
-                    // parked environment across binding watchers and body.
-                    self.with_lisp_stack_roots(&*env, |interp| {
-                        let mut call_env = Vec::new();
-                        let mut restores = Vec::with_capacity(frame.len());
-                        let setup = frame.iter().try_for_each(|(name, value)| {
-                            interp
-                                .bind_special_symbol(name, value.clone(), &mut call_env)
-                                .map(|restore| restores.push(restore))
-                        });
+                self.with_backtrace_frame(backtrace_function, args, |interp| {
+                    interp
+                        .backtrace_frames
+                        .last_mut()
+                        .expect("just pushed frame")
+                        .detail_mut()
+                        .locals = frame.clone();
+                    let frame = EnvFrame::with_identity(frame, Self::fresh_frame_identity());
+                    interp.capture_current_backtrace_context(
+                        original_name.map(CallName::as_str),
+                        env,
+                        Some(&frame),
+                    );
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    // An empty lexical capture is still a scope boundary.  Keep
+                    // that fact as closure metadata instead of an artificial
+                    // environment binding, since instrumentation and capture
+                    // analysis must see only real Lisp bindings.
+                    let closure_eval_context = interp.closure_eval_context(closure_env);
+                    let lexical_closure = closure_eval_context == Some(true);
+                    // A closure without a lexical environment is a GNU dynamic
+                    // lambda.  Calling it from lexical code must switch the
+                    // hidden interpreter environment to nil; otherwise it can
+                    // read the caller's lexical frames and create lexical nested
+                    // lambdas that GNU would keep dynamic.
+                    let call_context = closure_eval_context.unwrap_or(false);
+                    let call_capture_override = (interp.lambda_capture_override()
+                        != Some(call_context))
+                    .then_some(call_context);
+                    if let Some(capture) = call_capture_override {
+                        interp.push_lambda_eval_context(capture);
+                    }
+                    let previous_activation = interp.enter_activation();
+                    let result = if closure_env.borrow().is_empty() && !lexical_closure {
+                        // GNU funcall_lambda binds a dynamic lambda's arguments
+                        // with specbind and installs a nil interpreter
+                        // environment for its body.  No caller lexical frame is
+                        // visible, while ordinary dynamic lets remain visible
+                        // through their value-cell bindings.
+                        // The caller's lexical cells remain live even though
+                        // the dynamic callee cannot see them. Root the actual
+                        // parked environment across binding watchers and body.
+                        interp.with_lisp_stack_roots(&*env, |interp| {
+                            let mut call_env = Vec::new();
+                            let mut restores = Vec::with_capacity(frame.len());
+                            let setup = frame.iter().try_for_each(|(name, value)| {
+                                interp
+                                    .bind_special_symbol(name, value.clone(), &mut call_env)
+                                    .map(|restore| restores.push(restore))
+                            });
+                            let previous_floor = interp.special_scan_floor;
+                            interp.special_scan_floor = 0;
+                            let result = match setup {
+                                Ok(()) => {
+                                    interp.sf_progn(function_executable_body(body), &mut call_env)
+                                }
+                                Err(error) => Err(error),
+                            };
+                            interp.special_scan_floor = previous_floor;
+                            let mut restore_error = None;
+                            for restore in restores.into_iter().rev() {
+                                if let Err(error) =
+                                    interp.restore_special_binding(restore, &mut call_env)
+                                    && restore_error.is_none()
+                                {
+                                    restore_error = Some(error);
+                                }
+                            }
+                            match result {
+                                Ok(value) => restore_error.map_or(Ok(value), Err),
+                                Err(error) => Err(error),
+                            }
+                        })
+                    } else if body_has_marker(body, ":closure-transparent-env") {
+                        // Advice wrappers are plumbing: run them on the caller's
+                        // environment chain with the wrapper's captured frames
+                        // appended, so lexical mutations made below the wrapper
+                        // still reach the calling scope.
+                        let caller_len = env.len();
+                        // A captured frame whose IDENTITY is live in the caller
+                        // env is the same binding frame: the caller's version is
+                        // current (the capture is a snapshot), so skip the stale
+                        // copy and let the live frame be seen and mutated.  Run
+                        // directly on the caller's chain (no full-chain clone).
+                        let captured_frames = closure_env.borrow().clone();
+                        let mut frame_sources: Vec<usize> =
+                            Vec::with_capacity(captured_frames.len());
+                        for captured_frame in &captured_frames {
+                            let live_position =
+                                Self::frame_identity(captured_frame).and_then(|id| {
+                                    env[..caller_len]
+                                        .iter()
+                                        .position(|frame| Self::frame_identity(frame) == Some(id))
+                                });
+                            match live_position {
+                                Some(position) => frame_sources.push(position),
+                                None => {
+                                    env.push(captured_frame.clone());
+                                    frame_sources.push(env.len() - 1);
+                                }
+                            }
+                        }
+                        let captured_len = env.len();
+                        env.push(frame.clone());
+                        let previous_floor = interp.special_scan_floor;
+                        interp.special_scan_floor = caller_len;
+                        let result = interp.sf_progn(function_executable_body(body), env);
+                        interp.special_scan_floor = previous_floor;
+                        env.truncate(captured_len);
+                        let refreshed: Vec<_> = frame_sources
+                            .iter()
+                            .map(|&position| env[position].clone())
+                            .collect();
+                        env.truncate(caller_len);
+                        {
+                            let mut stored = closure_env.borrow_mut();
+                            stored.clear();
+                            stored.extend(refreshed);
+                        }
+                        result
+                    } else if body_has_marker(body, ":closure-isolated-current-env") {
+                        let mut call_env = closure_env.borrow().clone();
+                        let captured_len = call_env.len();
+                        call_env
+                            .push(vec![("__closure-isolated-current-env".into(), Value::T)].into());
+                        call_env.push(frame.clone());
                         let previous_floor = interp.special_scan_floor;
                         interp.special_scan_floor = 0;
-                        let result = match setup {
-                            Ok(()) => {
-                                interp.sf_progn(function_executable_body(body), &mut call_env)
-                            }
-                            Err(error) => Err(error),
-                        };
+                        let result = interp.with_lisp_stack_roots(&*env, |interp| {
+                            interp.sf_progn(function_executable_body(body), &mut call_env)
+                        });
                         interp.special_scan_floor = previous_floor;
-                        let mut restore_error = None;
-                        for restore in restores.into_iter().rev() {
-                            if let Err(error) =
-                                interp.restore_special_binding(restore, &mut call_env)
-                                && restore_error.is_none()
-                            {
-                                restore_error = Some(error);
-                            }
-                        }
-                        match result {
-                            Ok(value) => restore_error.map_or(Ok(value), Err),
-                            Err(error) => Err(error),
-                        }
-                    })
-                } else if body_has_marker(body, ":closure-transparent-env") {
-                    // Advice wrappers are plumbing: run them on the caller's
-                    // environment chain with the wrapper's captured frames
-                    // appended, so lexical mutations made below the wrapper
-                    // still reach the calling scope.
-                    let caller_len = env.len();
-                    // A captured frame whose IDENTITY is live in the caller
-                    // env is the same binding frame: the caller's version is
-                    // current (the capture is a snapshot), so skip the stale
-                    // copy and let the live frame be seen and mutated.  Run
-                    // directly on the caller's chain (no full-chain clone).
-                    let captured_frames = closure_env.borrow().clone();
-                    let mut frame_sources: Vec<usize> = Vec::with_capacity(captured_frames.len());
-                    for captured_frame in &captured_frames {
-                        let live_position = Self::frame_identity(captured_frame).and_then(|id| {
-                            env[..caller_len]
-                                .iter()
-                                .position(|frame| Self::frame_identity(frame) == Some(id))
-                        });
-                        match live_position {
-                            Some(position) => frame_sources.push(position),
-                            None => {
-                                env.push(captured_frame.clone());
-                                frame_sources.push(env.len() - 1);
-                            }
-                        }
+                        call_env.truncate(captured_len);
+                        result
+                    } else {
+                        let previous_floor = interp.special_scan_floor;
+                        interp.special_scan_floor = 0;
+                        let result =
+                            interp.eval_with_closure_env(closure_env, env, |interp, call_env| {
+                                let depth = call_env.len();
+                                call_env.push(frame.clone());
+                                let result =
+                                    interp.sf_progn(function_executable_body(body), call_env);
+                                call_env.truncate(depth);
+                                result
+                            });
+                        interp.special_scan_floor = previous_floor;
+                        result
+                    };
+                    interp.leave_activation(previous_activation);
+                    if call_capture_override.is_some() {
+                        interp.pop_lambda_capture_override();
                     }
-                    let captured_len = env.len();
-                    env.push(frame.clone());
-                    let previous_floor = self.special_scan_floor;
-                    self.special_scan_floor = caller_len;
-                    let result = self.sf_progn(function_executable_body(body), env);
-                    self.special_scan_floor = previous_floor;
-                    env.truncate(captured_len);
-                    let refreshed: Vec<_> = frame_sources
-                        .iter()
-                        .map(|&position| env[position].clone())
-                        .collect();
-                    env.truncate(caller_len);
-                    {
-                        let mut stored = closure_env.borrow_mut();
-                        stored.clear();
-                        stored.extend(refreshed);
-                    }
-                    result
-                } else if body_has_marker(body, ":closure-isolated-current-env") {
-                    let mut call_env = closure_env.borrow().clone();
-                    let captured_len = call_env.len();
-                    call_env.push(vec![("__closure-isolated-current-env".into(), Value::T)].into());
-                    call_env.push(frame.clone());
-                    let previous_floor = self.special_scan_floor;
-                    self.special_scan_floor = 0;
-                    let result = self.with_lisp_stack_roots(&*env, |interp| {
-                        interp.sf_progn(function_executable_body(body), &mut call_env)
-                    });
-                    self.special_scan_floor = previous_floor;
-                    call_env.truncate(captured_len);
-                    result
-                } else {
-                    let previous_floor = self.special_scan_floor;
-                    self.special_scan_floor = 0;
-                    let result =
-                        self.eval_with_closure_env(closure_env, env, |interp, call_env| {
-                            let depth = call_env.len();
-                            call_env.push(frame.clone());
-                            let result = interp.sf_progn(function_executable_body(body), call_env);
-                            call_env.truncate(depth);
-                            result
-                        });
-                    self.special_scan_floor = previous_floor;
-                    result
-                };
-                self.leave_activation(previous_activation);
-                if call_capture_override.is_some() {
-                    self.pop_lambda_capture_override();
-                }
-                let result = self.settle_frame_result(result, env);
-                self.pop_backtrace_frame();
-                result
+                    interp.settle_frame_result(result, env)
+                })
             }
             Value::Nil => Err(LispError::SignalValue(Value::list([
                 Value::Symbol("void-function".into()),

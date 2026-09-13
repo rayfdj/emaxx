@@ -62,14 +62,16 @@ impl TraceLispRoots for ThreadExecutionContext {
         }
         for frame in &self.backtrace_frames {
             marker.value(&frame.function);
-            frame.args.trace_lisp_roots(marker);
-            if let Some(form) = &frame.source_form {
+            if let Some(arguments) = frame.args.lisp_values() {
+                arguments.trace_lisp_roots(marker);
+            }
+            if let Some(form) = frame.source_form() {
                 marker.value(form);
             }
-            for (_, value) in &frame.locals {
+            for (_, value) in frame.locals() {
                 marker.value(value);
             }
-            if let Some(environment) = &frame.lexical_context {
+            if let Some(environment) = frame.lexical_context() {
                 marker.environment(environment);
             }
         }
@@ -94,15 +96,13 @@ impl TraceLispRoots for ThreadExecutionContext {
 impl Interpreter {
     pub(super) fn materialize_native_backtrace_arguments(&mut self) -> Result<(), LispError> {
         for index in 0..self.backtrace_frames.len() {
-            let Some(words) = self.backtrace_frames[index].native_args.as_ref() else {
+            let Some(words) = self.backtrace_frames[index].args.native_words() else {
                 continue;
             };
             let arguments = crate::lisp::native_comp::decode_active_backtrace_arguments(words)
                 .ok_or_else(|| LispError::Signal("Native backtrace has no active runtime".into()))?
                 .map_err(LispError::Signal)?;
-            let frame = &mut self.backtrace_frames[index];
-            frame.args = arguments;
-            frame.native_args = None;
+            self.backtrace_frames[index].args = FrameArgs::Owned(arguments);
         }
         Ok(())
     }

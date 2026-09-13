@@ -152,6 +152,333 @@ in this document): the eight ASCII bytes of `comp-abi-hash`, seventeen
 40 bytes (five 8-byte entries), and the 20-byte ELF build ID.  The
 constants blobs are byte-identical.
 
+### The call path, structured as eval.c and bytecode.c (same day, checkpoint 22)
+
+The per-compile floor after the boot work was the evaluator's call path,
+so it was profiled on the smallest loop that exercises it -- a lexical
+`(dotimes (i N) (micro-id i))', both functions byte-compiled, eleven
+opcodes and one call an iteration -- with callgrind on two run lengths,
+the difference divided by the iterations (boot and GC cancel out).  Each
+finding was answered with the C structure:
+
+- Every VM call and every byte-op primitive registered the operand stack
+  as a GC root around itself (`vm_call!`, `prim!`: an Rc clone, two
+  RefCell borrows and a free-list slot each way).  alloc.c marks a
+  thread's bytecode stack once per collection, so `run' now registers
+  one root per activation (`VmActivationRoots': the program, the
+  arguments, the operand stack and the specpdl watermark behind
+  `UnsafeCell', read only while a collection runs) and the macros are
+  gone.
+- A backtrace frame copied its arguments into a pooled Vec and carried
+  a 200-byte struct with the debugger's fields inline.  eval.c's
+  `record_in_backtrace' stores the caller's argument vector by address
+  for the life of the frame (`specpdl->bt.args = args'), so `FrameArgs'
+  is that pointer (`Borrowed', `NativeWords' for native Ffuncall's word
+  vector, `Owned' only for a frame that outlives its scope: the byte op
+  that records itself before the handler search, a copy of the
+  interpreter, native words decoded for the debugger), and the frame is
+  function, args, two flags and an `Option<Box<FrameDetail>>' for the
+  source form, locals and lexical context.  The invariant is the one
+  GNU's has: a frame is pushed and popped by the activation that owns
+  the arguments (a parked Lisp thread keeps its coroutine stack until
+  `Interpreter::drop' unwinds it, thread_context.rs, so its frames stay
+  valid); the three byte ops that record a frame whose operands die with
+  the step own a copy.  Two soft spots, stated: `pop_backtrace_frame'
+  pops whatever is on top, so a callee that leaves a frame behind would
+  leave a borrowed frame dangling (the VM's count-based truncate is the
+  guard), and a panic caught between push and pop with the interpreter
+  reused afterwards would too (the catchers today re-raise).
+- `exec_byte_code''s dispatch loop ran a closure per instruction
+  (captures, a `Result' returned and matched each step) and copied the
+  24-byte `Instr'; the closure now holds the loop, an error leaves it
+  for the handler search which re-enters at the handler's target, a
+  return leaves it with the value (the `VmReturn' error variant is
+  gone), and the fetch reads the opcode in place.
+- `funcall_general''s COMPILEDP arm: a symbol whose function cell holds
+  an already decoded byte-code object dispatches to it straight from the
+  resolution, without the lambda, autoload and record-kind probes
+  (`has_cached_bytecode_program'), and a symbol callee is no longer
+  re-wrapped.  The thin layers between Ffuncall and exec_byte_code
+  (`call_function_value_named', `execute_bytecode_funcall_body',
+  `execute_record', `begin_funcall', `maybe_quit', the depth check) are
+  inlined, with their rare halves (`process_quit_flag', the depth
+  overrun, the EMAXX_PROFILE hook, the edebug context capture) split
+  off as cold functions.
+- The id-keyed tables (function resolution, the collector's mark sets,
+  cons mutation) finished their hash with a three-round splitmix; one
+  multiply and a fold is enough for a dense id or an aligned address.
+- `get' copied both symbol names into fresh Strings and hashed the
+  symbol's name to find its plist.  fns.c's Fget reads
+  `XSYMBOL (sym)->u.s.plist', so `get_symbol_property_of' takes the
+  symbols themselves and reaches the plist through a position index by
+  symbol id (`symbol_properties_by_id', filled on first lookup and
+  cleared when positions shift); the name-keyed index stays the
+  authority for the `&str' callers.  The audit of this checkpoint found
+  the getter still fabricating the `choice' property of
+  `vertical-scroll-bar' and `overwrite-mode' by name (a leftover, and
+  wrong: GNU's has `t' in it); buffer.c's syms_of_buffer makes them
+  with Fput, so they are ordinary entries of the builtin plists now
+  (`fraction''s `range' with them) and the special case is gone.
+
+Measured with `tools/perf/callgrind-diff.sh' (callgrind on two run
+lengths of the loop, differenced, so the boot and collections cancel;
+`tools/perf/call-loop.el' and `get-loop.el' are the loops; the Emaxx
+binary is the release build with its image beside it, the GNU binary the
+pinned oracle `../emacs/src/emacs', native-comp enabled, started the
+same way): the call loop 2,251 before, 1,900 after the root and frame
+changes, 1,630 after the rest (GNU 332); the `get' loop 1,686 to 1,376
+(GNU 248); one in-process `native-compile' of a small lambda
+(`tools/perf/inproc-compile.el', PERF_N=1 against PERF_N=5, differenced
+and divided by four) 893 M to 874 M instructions (GNU 280 M, of which
+libgccjit is the same code on both sides).  The call loop's 2,251 is the
+tree before the root and frame changes (the merge commit), built and
+measured the same way.
+
+What the profile shows after these, in order: the VM's own operand
+traffic (`Vec' push, pop and index checks, `Value' clone and drop --
+each an Rc count -- 60% of the loop, representation-bound: GNU copies a
+tagged word); the primitive dispatch by name (`prim' and each module's
+`match name', 12% of a compile: GNU calls the subr's function pointer,
+the symbol-objects document's stage B); the obarray enumeration rebuilt
+for each of `comp--all-classes''s four `mapatoms' calls once a compile
+interns a new symbol (3%); the strings allocated by `comp-c-func-name'
+(elp: 40 us a call against GNU's 10).  The symbol-objects document's
+stage A2 (the function cell on the symbol) and stage B remain the
+structural answer; the borrowed frame is its stage C by the third
+option it lists, the raw pointer, because the two safe options cost a
+copy or a materialization the C does not pay.
+
+### The image loader, without the work the image already did (same day, checkpoint 23)
+
+pdumper.c maps the image and relocates words in place; an object costs
+it one relocation.  Emaxx's objects are Rust allocations (an `Rc' per
+cons, a `String' per string), so the loader materializes every object,
+and that floor stays.  What was removable was the work the loader did
+on top of materializing, each item answered with what the C does:
+
+- Every dumped string was decoded, its characters counted against the
+  record, then scanned twice more by `SharedText::new' to decide its
+  multibyteness and storage size.  The record carries `size' and
+  `size_byte' (the Lisp_String's own fields), so `with_storage_bytes'
+  takes them and scans nothing; a string object with properties or
+  raw bytes registers through `make_loaded_string_object_value' the
+  same way.
+- Every relocated car, cdr and vector slot went through the mutation
+  watch (`borrow_mut': the epoch bump, the Bloom probe, the native-word
+  check) although nothing had seen the placeholder.  A relocation store
+  is `ConsValueCell::initialize', a plain write, and a vector's slots
+  are filled under one borrow.
+- Every dumped symbol was interned through three copies of its name and
+  five hashes (`string_like' copied the text, `intern_str' probed then
+  copied again, `SharedText::new' scanned the copy and registered it as
+  a second live string, the id registry and the name table hashed it
+  each), and the name table grew several times.  As pdumper.c's symbol
+  points at the dumped name string, `symbol_of_record' interns through
+  `intern_with_lisp_name' with the image's own string as the symbol's
+  name (one accounted string, as GNU has -- for a symbol the image is
+  the first to mention; a name the constructor interned before the load
+  keeps the string it had), reads the text in place, and the tables are
+  reserved for the record count first.
+- The keymap cons-owner registration built its mutation snapshot one
+  cell at a time, sorting the id vector after each (7,700 sorts in the
+  boot); `include_cells' takes them all and sorts once.
+- The interpreter's interned-name sets and the install's by-name maps
+  hashed with SipHash; they use FNV as the other name-keyed tables do.
+
+Measured (callgrind instructions of `emaxx -Q --batch --eval
+'(kill-emacs 0)'', one run each, release build with the image, GNU the
+pinned oracle started the same way): 1,044 M to 840 M, of
+which the image load 766 M to 562 M (the loader proper 638 M to 458 M),
+the startup top level 151 M unchanged.  GNU's whole boot is 0.068 s
+wall on this box; Emaxx's 0.23 to 0.28 s (the same binary varies by
+15% between runs here, so the instruction counts are the measurement).
+
+What the boot profile shows after these, in order: materializing the
+objects (decoding 296,000 strings 78 M, allocating them 77 M, the
+relocation reads 47 M, 152,000 conses 30 M, the char tables 34 M, the
+symbols 57 M); the 24 `subdirs.el' loads and `simple.elc' of GNU's own
+startup at 95 M, of which 90 M are regexp compiles -- one
+`\\(?:$\\)\\=' with case folding compiles for 6 ms because the point
+assertion becomes a fancy-regex lookaround that builds a second
+case-folded automaton (regex-emacs.c's `at_dot' is a position test);
+one `where-is-internal' at 35 M (keymap.c's `where_is_internal_1'
+walks key vectors; Emaxx joins prefix strings and materializes each
+binding); the initial frame faces 41 M.
+
+### The collector's books and mark bits, as alloc.c keeps them (same day, checkpoint 24)
+
+A collection cost 242 M instructions, and byte-compiled code never
+triggered one.  Both answered with the C:
+
+- The live census upgraded a weak handle for every string ever
+  allocated (296,000 after the boot) and recomputed each one's storage
+  size by walking its characters.  alloc.c's `gcstat' totals are
+  counters; `struct Lisp_String' keeps `size_byte'.  A text now carries
+  its storage size (`LispText'), and `total_strings', `total_string_bytes',
+  `total_floats' and the bignums' count are counters that allocation
+  raises and Rust ownership's release lowers (`LIVE_TEXTS',
+  `LIVE_TEXT_BYTES', `LIVE_FLOATS', `LIVE_BIGNUMS'); the weak books for
+  texts, floats and bignums are gone.  Only the string objects (text
+  properties, raw bytes: a few thousand) and the interpreted closures
+  keep a book, walked for the property spans.
+- The obarray's symbol count for the census rebuilt a name set per
+  collection; it is the cached enumeration's length.
+- The mark phase inserted every reached address into hash sets (a
+  quarter of a collection, half of it table growth).  alloc.c's mark bit
+  is on the object: a cons, text, vector or symbol carries the epoch of
+  the collection that marked it (`MarkBit'), so marking writes one word
+  and no pass clears bits; the kinds marked by id or by address (string
+  objects, records, markers, lambdas) keep sets, sized from the previous
+  collection's counts.  A cons's two words are read in place instead of
+  through two temporary Values.
+- eval.c's Ffuncall (maybe_quit, the depth check, record_in_backtrace,
+  then maybe_gc) collects on every call; Emaxx's Ffuncall path did not,
+  so a process running byte code (every compile) never collected, weak
+  tables never shrank, and `gcs-done' stayed at whatever the image
+  recorded.  Each Ffuncall arm calls maybe_gc after its frame is on the
+  backtrace, where the C does (the audit caught a first version that
+  collected before the frame, with the arguments held only by Rust
+  locals), and bytecode.c's `quitcounter' is ported: every 256th
+  backward branch calls maybe_gc and maybe_quit, so a compiled loop
+  without a call collects and can be interrupted.  `gcs-done' is
+  `gcs_done++' on the value cell the variable forwards to; `gc-elapsed'
+  is recomputed from a private total as alloc.c does with its timespec;
+  both are reset after the image is loaded as emacs.c's init_alloc
+  does.
+
+Measured (callgrind instructions of one `garbage-collect' after the
+boot: one and three collections in `--eval', differenced and halved):
+242 M to 146 M with the counters, 115 M with the sets sized, 62 M with
+the mark bits.  `tools/perf/gcs-per-compile.el' (five in-process
+`native-compile' calls) now runs five collections in 0.174-0.185 s of
+collector time against 0.442 s before the mark bits; GNU runs three in
+0.050 s.  Why GNU runs fewer is read from the code, not measured: its
+threshold is a percentage of gcstat's live bytes, which exclude the
+dumped objects (`garbage-collect' after GNU's boot reports 1,913
+conses; Emaxx's, counting the image's, 143,895), and Emaxx tallies more
+consing per compile.
+
+Open after it: the remaining mark phase (27 M of the 62 M is the walk
+itself: RefCell borrows and Value clones per edge), the census of
+string objects and closures still walked, the difference in what is
+consed per compile.
+
+### Where comp-tests.el's time goes now (same day, checkpoint 25)
+
+comp-tests.el: 177/177, test phase 75.7 s wall on this box after the
+checkpoints above (97.5 s at the start of the day; GNU measured the
+same hour on the same box 20.3 s, its 14.3 s being an earlier, quieter
+reading).  The remaining factor is 3.7x, and it is attributed, not
+guessed:
+
+- A `comp-tests-ret-type-spec-N' test (there are about eighty) costs
+  746 M instructions of Lisp in the test process (callgrind on three
+  tests against one, differenced and halved; `tools/perf' has the
+  method), where the profile is the evaluator floor: the VM's operand
+  loop 151 M, its activation prologue and epilogue 85 M, the Ffuncall
+  layers 108 M, primitive dispatch by name (`prim', each module's
+  `match name') 85 M, `get' 23 M, the obarray enumeration for
+  `comp--all-classes''s four `mapatoms' 29 M, `Value' clone and drop
+  58 M.  GNU's equivalent is the 332 against 1,630 of the call loop.
+- Each test's `native-compile' runs comp.el's final pass in a child
+  Emacs, as GNU's does (comp--final, `-no-comp-spawn'); the child's boot
+  is 813 M instructions (GNU 157 M) and its `(require 'comp)' 1,025 M
+  (GNU 341 M): the loader materializing the image's objects, and the
+  same evaluator floor loading comp's byte code.
+- The gcc toolchain (as, collect2, ld) the child runs is the same five
+  spawns on both sides.
+
+Small things measured and taken on the way: `get' remembers a symbol
+without a plist by id (a `put' teaches the cache; the misses hashed
+the name every time), the obarray enumeration appends the tables' new
+names when nothing was removed since it was built (correct, and no
+effect on the compile, whose tables see a removal between
+`mapatoms' calls, so it walks them: 29 M a test remains), and the two
+scans over a loaded file's text copy runs instead of bytes
+(`preprocess_lazy_doc_source' 64 M to 23 M for comp's files).
+
+What would close the rest is structural and is the symbol-objects
+document's plan: stage B, a subr's function pointer instead of a
+string match per primitive call (85 M a test); stage A2, the function
+cell on the symbol; then the value representation.  None of it is a
+day's work, and none of it is faked here.
+
+The gate after checkpoint 25 (this tree, this box), under the gate
+standard of finding 113 (`LANG=C LC_ALL=C RUST_MIN_STACK=134217728',
+`cargo test --profile gate'; a first library run under an empty locale
+was discarded, it had two locale-only reds, `char_charset_family' and
+`print_prunes_charset_properties', which are green under LANG=C):
+`cargo fmt --check' and `cargo clippy --release --all-targets -- -D
+warnings' clean; the library suite 2645 tests: 2638 passed, 2 ignored,
+5 failed, every failure environmental to this box: the two GNU C
+manifest tests (this box's oracle has libdbus and libgpm, five subrs
+the checked-in manifests do not), and three tests that need a
+directory or file to be unwritable, which nothing is to root
+(`byte_compile_file_reports_an_unwritable_target_like_gnu',
+`file_writable_p_is_nil_for_missing_files_in_unwritable_directories',
+`save_buffer_skips_unmodified_and_unchanged_files'; the oracle run by
+hand on a 0555 directory as root writes the .elc too).  The library
+result is two runs of one binary, not one: the first run stopped at
+test 2111 in the deadlock described below, its 2111 passes and 6
+failures stand (the sixth, the dump test below, was fixed and re-run
+green); the 528 tests it never reached were then run by name under the
+same environment, 526 passed and 2 ignored.  `--bins' 43/43;
+tests/cli 17/17 (run after `tools/build-image.sh', which
+tests/cli_parity runs for itself: a cli run against an image dumped by
+an older binary fails every test on the fingerprint, as GNU's
+`pdumper_load' refuses an image "not built for this Emacs executable");
+tests/ert_runner 3/3; tests/cli_parity 4/5, the fifth `--version'
+differing only in `emacs-build-time''s date, the oracle dumped on the
+12th and this image after midnight on the 13th; comp-tests.el 177/177,
+test phase 84.9 s with the library suite running on the same four cores
+(75.7 s alone, above); the identity harness differs from the oracle by
+the same 45 bytes recorded earlier in this document (the eight ASCII
+bytes of `comp-abi-hash', seventeen `%rip'-relative displacements
+shifted by the oracle's five extra subrs' 40 freloc bytes, the 20-byte
+build ID: this box's oracle has libdbus and libgpm), the constants
+blobs identical.
+
+Two inventory tests caught the checkpoint's new fields before the gate
+did: `interpreter_roots_are_dumped_or_documented' requires every
+`self.<field>' the mark phase reads to be written by the image or listed
+as a root GNU re-creates after a load, and the mark phase now reads
+`gc_mark_set_sizes' to size its sets, so the field moved from the
+not-carried list to `ROOTS_RESET_AFTER_LOAD' with its alloc.c reason
+(`gcstat' is a file-static, zero in a fresh process, rewritten by each
+collection, not written by pdumper.c); and the declaration check looks
+for ` name: ' on one line, which rustfmt had wrapped for
+`symbol_properties_by_id', hence the `SymbolPlistPositions' alias.
+
+The library suite found two more, both fixed in this checkpoint:
+
+- `dump_emacs_portable_restores_context_and_reports_native_image_limit'
+  asserts that a process starting from a dump has no consing on the
+  books before its first evaluation (alloc.c: pdumper's objects are not
+  consing, `consing_until_gc' is zero).  Checkpoint 24's two post-load
+  writes, `gcs-done' and `gc-elapsed' (emacs.c:main's init_alloc), came
+  after the loader's consing baseline, and the float for `gc-elapsed'
+  is an allocation, so the fast guard saw it.  The two writes now
+  precede the baseline; the collector's behavior is otherwise
+  unchanged (the guard trips on the process's own consing, as before).
+- The gate deadlocked at test 2111 with no CPU: the harness's
+  `fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it'
+  held the boot-environment write lock while its first boot
+  reconstructed the dumped state, and loadup.el's dump-mode path runs
+  git (`emacs-repository-get-version', loadup.el:468), which crosses
+  the host-process boundary and so waited for the test harness's
+  process-test permit; a concurrent process test held that permit and
+  waited to boot on the read lock.  gdb on the hung process showed the
+  two threads in `futex_do_wait'.  Both tests predate this branch's
+  work (2026-09-01 and 2026-09-10), and no full library run had been
+  made since the fixture image landed.  The fix is a lock order, in
+  test builds only: a boot that will reconstruct takes the process
+  permit BEFORE the boot-environment guard (`batch::BootAttempt': the
+  attempt reports it under the guard, the permit is taken, the boot
+  restarts), and `lock_boot_environment_for_write' takes the permit
+  before the write lock, so the permit always precedes the environment
+  lock.  Production builds compile the attempt without the retry.
+  The pair now runs concurrently and passes.
+
 ### The parity gate
 
 `tests/cli_parity.rs` builds the image with `tools/build-image.sh`, then

@@ -242,6 +242,11 @@ impl SymbolCells {
         self.order = order;
     }
 
+    /// How many cells hold a value.
+    pub(crate) fn bound_len(&self) -> usize {
+        self.bound
+    }
+
     /// Bound (symbol, value) pairs in first-binding order.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&SymbolName, &Value)> {
         self.order

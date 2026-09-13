@@ -412,7 +412,16 @@ impl Drop for BootEnvironmentWriteGuard {
 
 /// Take the boot-environment write lock before mutating the process
 /// environment a boot consults.  Hold the guard across set-var AND restore.
+///
+/// A boot under this lock may dump (the fixture image's first build), and
+/// loadup.el's dump runs git through `emacs-repository-get-version', which
+/// crosses the host-process boundary.  The in-process test gate for
+/// process tests is therefore taken first, the order every process test
+/// already uses (its permit, then a boot's read guard); taking the write
+/// lock first deadlocked against a process test waiting to boot.
 pub fn lock_boot_environment_for_write() -> BootEnvironmentWriteGuard {
+    #[cfg(test)]
+    crate::test_support::mark_process_test();
     let guard = boot_environment_lock()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

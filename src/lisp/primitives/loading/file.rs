@@ -61,9 +61,7 @@ pub(crate) fn load_file(
         env,
     ) {
         Ok(file) => file,
-        Err(
-            error @ (LispError::Throw(_, _) | LispError::VmReturn(_) | LispError::Terminate(_)),
-        ) => return Err(error),
+        Err(error @ (LispError::Throw(_, _) | LispError::Terminate(_))) => return Err(error),
         Err(_) if request.noerror.is_truthy() => return Ok((Value::Nil, Value::Nil)),
         Err(error) => return Err(error),
     };

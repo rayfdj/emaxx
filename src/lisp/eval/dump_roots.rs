@@ -25,6 +25,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "emacs-module.c: local handles belong to active foreign frames; pdumper.c refuses PVEC_MODULE_FUNCTION, PVEC_USER_PTR and PVEC_OTHER global references, so a dumped runtime has no live module state",
     ),
     (
+        "gc_mark_set_sizes",
+        "alloc.c: gcstat is a file-static struct, zero in a fresh process and rewritten by each garbage_collect; the mark phase reads the previous collection's sizes only to size its mark sets, and pdumper.c does not write it",
+    ),
+    (
         "buffer_mark_marker_ids",
         "buffer.c: BVAR (b, mark) is a slot of each buffer object, which the mark phase reaches through the buffer; here the relation from buffer to mark marker is rebuilt by install_marker from each marker record's mark buffer, which the image writes per marker",
     ),
@@ -214,6 +218,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "an index over symbol_properties, rebuilt by set_symbol_plist",
     ),
     (
+        "symbol_properties_by_id",
+        "an index over symbol_properties, refilled on lookup",
+    ),
+    (
         "interned_symbols",
         "filled by install_image in the obarray's order",
     ),
@@ -292,10 +300,18 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("records", "installed per record"),
     ("record_ids_by_type_index", "the index install_record keeps"),
     ("gc_live_record_ids", "the last collection's census"),
+    ("gc_elapsed_total", "alloc.c's private gc_elapsed total"),
+    (
+        "known_symbols_cache",
+        "the obarray enumeration, derived from the tables it reads",
+    ),
+    (
+        "obarray_epoch",
+        "a removal counter the enumeration cache keys on",
+    ),
     ("gc_record_high_water", "the last collection's census"),
     ("gc_has_record_census", "the last collection's census"),
     ("vm_stack_pool", "released bytecode stacks"),
-    ("backtrace_args_pool", "released argument vectors"),
     (
         "sqlite_handles",
         "sqlite objects are refused by the writer (OS handles)",

@@ -3,6 +3,7 @@ use crate::lisp::eval::{GnuTlsSessionApi, ProcessGnuTlsSession};
 use chrono::{DateTime, Utc};
 use libloading::Library;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
 type AlgorithmList = unsafe extern "C" fn() -> *const c_int;
@@ -181,6 +182,27 @@ struct GnuTlsApi {
 struct GnuTlsLibrary {
     _library: Library,
     api: GnuTlsApi,
+    initialized: Mutex<bool>,
+}
+
+impl GnuTlsLibrary {
+    fn initialize(&self) -> c_int {
+        let mut initialized = self
+            .initialized
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *initialized {
+            return 0;
+        }
+        // SAFETY: Initialization has no borrowed inputs and is serialized.
+        // GNU's emacs_gnutls_global_init retains a successful initialization
+        // for the process lifetime, but permits a retry after failure.
+        let result = unsafe { (self.api.global_init)() };
+        if result == 0 {
+            *initialized = true;
+        }
+        result
+    }
 }
 
 fn gnutls_load_error(message: impl Into<String>) -> LispError {
@@ -214,20 +236,19 @@ unsafe fn load_data_symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T,
     Ok(unsafe { *pointer })
 }
 
-/// The library is opened once per thread and kept for the process's life,
-/// as GNU links GnuTLS once (w32 loads the DLL once): opening it on every
-/// call paid the dynamic loader's relocation and initializers for each
-/// cipher or hash operation.
-fn gnutls_library() -> Result<std::rc::Rc<GnuTlsLibrary>, LispError> {
-    thread_local! {
-        static GNUTLS_LIBRARY: std::cell::RefCell<Option<std::rc::Rc<GnuTlsLibrary>>> =
-            const { std::cell::RefCell::new(None) };
+/// GNU links GnuTLS once (w32 loads the DLL once). Keep that process lifetime:
+/// unloading at thread exit can invalidate GnuTLS's native thread destructors
+/// before the host invokes them. Failed loads remain retryable.
+fn gnutls_library() -> Result<Arc<GnuTlsLibrary>, LispError> {
+    static GNUTLS_LIBRARY: Mutex<Option<Arc<GnuTlsLibrary>>> = Mutex::new(None);
+    let mut slot = GNUTLS_LIBRARY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(library) = slot.as_ref() {
+        return Ok(Arc::clone(library));
     }
-    if let Some(library) = GNUTLS_LIBRARY.with(|slot| slot.borrow().clone()) {
-        return Ok(library);
-    }
-    let library = std::rc::Rc::new(load_gnutls()?);
-    GNUTLS_LIBRARY.with(|slot| *slot.borrow_mut() = Some(library.clone()));
+    let library = Arc::new(load_gnutls()?);
+    *slot = Some(Arc::clone(&library));
     Ok(library)
 }
 
@@ -387,6 +408,7 @@ fn load_gnutls() -> Result<GnuTlsLibrary, LispError> {
         return Ok(GnuTlsLibrary {
             _library: library,
             api,
+            initialized: Mutex::new(false),
         });
     }
     Err(gnutls_load_error(
@@ -1511,8 +1533,7 @@ fn gnutls_boot(
         unsafe { (api.global_set_log_level)(level) };
     }
 
-    // SAFETY: Global initialization is idempotent and has no borrowed inputs.
-    let result = unsafe { (api.global_init)() };
+    let result = library.initialize();
     if result < 0 {
         return Ok(gnutls_result(result));
     }

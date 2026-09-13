@@ -35,7 +35,7 @@ pub(crate) const VERY_LATE_RELOCS: usize = 2;
 /// tools/build-image.sh).  Stored complemented so that this comparison
 /// operand is not a second copy of the pattern for make-fingerprint to
 /// overwrite; the one copy is `EMAXX_FINGERPRINT' below.
-const DEFAULT_FINGERPRINT_COMPLEMENT: [u8; FINGERPRINT_LEN] = [
+static DEFAULT_FINGERPRINT_COMPLEMENT: [u8; FINGERPRINT_LEN] = [
     !0xDE, !0x86, !0xBB, !0x99, !0xFF, !0xF5, !0x46, !0x9A, !0x9E, !0x3F, !0x9F, !0x5D, !0x9A,
     !0xDF, !0xF0, !0x91, !0xBD, !0xCD, !0xC1, !0xE8, !0x0C, !0x16, !0x1E, !0xAF, !0xB8, !0x6C,
     !0xE2, !0x2B, !0xB1, !0x24, !0xCE, !0xB0,
@@ -64,7 +64,12 @@ pub(crate) fn executable_fingerprint() -> &'static [u8; FINGERPRINT_LEN] {
         use sha2::Digest;
         // SAFETY: a volatile read of a live static of the same type.
         let embedded = unsafe { std::ptr::read_volatile(&raw const EMAXX_FINGERPRINT) };
-        let mut default = DEFAULT_FINGERPRINT_COMPLEMENT;
+        // Read the complemented comparison bytes at runtime too. Folding
+        // their inversion would recreate the default pattern in the file,
+        // so make-fingerprint would patch the comparison operand as well.
+        // SAFETY: a volatile read of a live static of the same type.
+        let mut default =
+            unsafe { std::ptr::read_volatile(&raw const DEFAULT_FINGERPRINT_COMPLEMENT) };
         for byte in &mut default {
             *byte = !*byte;
         }

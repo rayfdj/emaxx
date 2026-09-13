@@ -153,7 +153,7 @@ impl Drop for SuspendedStackGuard {
 
 struct SuspendedLispRoots<'a> {
     handlers: &'a [HandlerEntry],
-    unwind: &'a [UnwindAction],
+    unwind: &'a [UnwindEntry],
     calls: &'a [NativeCallFrame],
     environment: Option<&'a Env>,
 }
@@ -163,8 +163,8 @@ impl TraceLispRoots for SuspendedLispRoots<'_> {
         for handler in self.handlers {
             marker.value(&handler.match_value);
         }
-        for action in self.unwind {
-            match action {
+        for entry in self.unwind {
+            match &entry.action {
                 // The canonical specbinding lives in InterpreterState (and
                 // then in its owning thread context). This unwind action
                 // carries a restore token with a historical copy: tracing
@@ -336,10 +336,13 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
         &[key.clone(), Value::T, table],
         &mut Env::new(),
     )?;
-    state.runtime.unwind.push(UnwindAction::Cleanup {
-        function: false,
-        value: key,
-    });
+    state.runtime.record_unwind(
+        interpreter,
+        UnwindAction::Cleanup {
+            function: false,
+            value: key,
+        },
+    );
     let result = super::super::loader::with_native_state(
         &state.compiler,
         &mut state.registry,
