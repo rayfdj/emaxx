@@ -61,8 +61,13 @@ def main():
     assert subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=baseline, text=True
     ).strip() == BASE
+    environment = gate.gate_environment(False)
     report = {
         "source_commit": SUBJECT, "validation_commit": gate.git_state(),
+        "environment": {
+            key: environment[key]
+            for key in ("LANG", "LC_ALL", "RUST_MIN_STACK", "RUST_TEST_THREADS")
+        },
         "baseline_commit": BASE, "original_failure": FAILURE,
         "full_gate_status": "failed", "original_groups": [],
         "remaining_groups": [], "cargo_stages": [], "errors": [],
