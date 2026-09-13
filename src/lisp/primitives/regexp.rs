@@ -1528,25 +1528,54 @@ fn regex_syntax_class(
     }
 }
 
+#[derive(Clone, Copy)]
+enum EncodingClass {
+    Ascii,
+    Multibyte,
+}
+
+impl EncodingClass {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "ascii" | "unibyte" => Some(Self::Ascii),
+            "nonascii" | "multibyte" => Some(Self::Multibyte),
+            _ => None,
+        }
+    }
+
+    fn fragment(self) -> &'static str {
+        match self {
+            Self::Ascii => r"\x00-\x7F",
+            Self::Multibyte => r"\x{0080}-\x{E07F}\x{E100}-\x{10FFFF}",
+        }
+    }
+
+    fn contains(self, character: char) -> bool {
+        match self {
+            Self::Ascii => character.is_ascii(),
+            Self::Multibyte => !character.is_ascii() && !is_raw_byte_regex_char(character),
+        }
+    }
+}
+
 fn regex_posix_class_fragment(name: &str) -> Option<&'static str> {
+    if let Some(class) = EncodingClass::from_name(name) {
+        return Some(class.fragment());
+    }
     match name {
         "alnum" => Some(r"\p{Alphabetic}\p{Number}"),
         "alpha" => Some(r"\p{Alphabetic}"),
-        "ascii" => Some(r"\x00-\x7F"),
         "blank" => Some(r"\t\p{Zs}"),
         "cntrl" => Some(r"\x00-\x1F"),
         "digit" => Some("0-9"),
         "graph" => Some(r"\p{Alphabetic}\p{Number}\p{Punctuation}\p{Symbol}\p{Mark}"),
         "lower" => Some(r"\p{Lowercase}"),
-        "multibyte" => Some(r"\x{0080}-\x{D7FF}\x{E100}-\x{10FFFF}"),
-        "nonascii" => Some(r"\x{0080}-\x{10FFFF}"),
         "print" => Some(r"\p{Alphabetic}\p{Number}\p{Punctuation}\p{Symbol}\p{Mark}\p{Zs}"),
         // GNU regex-emacs.c defines ASCII punct as every printable
         // non-alphanumeric byte.  Unicode's Punctuation property alone omits
         // ASCII symbols such as `|', `+', and `$'.
         "punct" => Some(r"\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E\p{Punctuation}"),
         "space" => Some(r"\p{White_Space}"),
-        "unibyte" => Some(r"\x00-\x7F\x{E080}-\x{E0FF}"),
         "upper" => Some(r"\p{Uppercase}"),
         "word" => Some(r"\p{Alphabetic}\p{Number}_"),
         "xdigit" => Some("0-9A-Fa-f"),
@@ -1602,6 +1631,7 @@ fn translate_bracket_expression(
     let mut emitted_delegate_atom = false;
     let mut table_syntax_class_atoms: Vec<super::syntax::SyntaxClass> = Vec::new();
     let mut table_punct_atom = false;
+    let mut encoding_classes = Vec::new();
     let mut negated = false;
     let mut sentinel_original_members = encoding
         .map(|encoding| vec![false; encoding.sentinels.len()])
@@ -1622,7 +1652,10 @@ fn translate_bracket_expression(
                     "(?!)".into()
                 };
             }
-            let translated = if !table_syntax_class_atoms.is_empty() || table_punct_atom {
+            let translated = if !table_syntax_class_atoms.is_empty()
+                || table_punct_atom
+                || !encoding_classes.is_empty()
+            {
                 let ordinary = if emitted_delegate_atom {
                     if negated {
                         translated.remove(1);
@@ -1647,6 +1680,7 @@ fn translate_bracket_expression(
                     .iter()
                     .map(|class| class_fragment(*class))
                     .collect::<Vec<_>>();
+                classes.extend(encoding_classes);
                 if table_punct_atom {
                     // ISPUNCT: printable non-alphanumeric ASCII, or any
                     // non-ASCII character whose syntax is not word.
@@ -1752,6 +1786,25 @@ fn translate_bracket_expression(
         // non-alphanumeric ASCII set, and for every other character
         // `BUFFER_SYNTAX (c) != Sword'.
         if let RegexClassAtom::Posix(name) = &atom
+            && let Some(class) = EncodingClass::from_name(name)
+        {
+            // regex-emacs.c builds these classes from ASCII bitmap bits
+            // and BIT_MULTIBYTE, not Unicode case-equivalence closures.
+            // Folding the non-ASCII range admits ASCII s/k through long-s
+            // and Kelvin sign. Keep this atom outside the folded bracket,
+            // while ordinary literals/ranges in the same bracket still fold.
+            // Raw byte8 characters match neither the ASCII bitmap nor
+            // BIT_MULTIBYTE; the names do not imply the C isunibyte predicate.
+            encoding_classes.push(format!("(?-i:[{}])", class.fragment()));
+            record_sentinel_atom_members(
+                &atom,
+                encoding,
+                case_fold,
+                interp,
+                &mut sentinel_original_members,
+            );
+            emitted_atom = true;
+        } else if let RegexClassAtom::Posix(name) = &atom
             && let Some(class) = match name.as_str() {
                 "word" => Some(super::syntax::SyntaxClass::Word),
                 "space" => Some(super::syntax::SyntaxClass::Whitespace),
@@ -1822,6 +1875,10 @@ fn record_sentinel_atom_members(
                 chars_equal_for_regexp(entry.original, *ch, case_fold) || entry.sentinel == *ch
             }
             RegexClassAtom::Posix(class) => {
+                if let Some(class) = EncodingClass::from_name(class) {
+                    *member |= class.contains(entry.original);
+                    continue;
+                }
                 // regex-emacs.c:139-141: these predicates "use the
                 // buffer-local syntax table and IGNORE syntax properties",
                 // so resolve `word'/`space' from the table even for a

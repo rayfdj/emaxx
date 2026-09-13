@@ -159,10 +159,39 @@ visits all files with zero recorded selected tests, so new selections cannot
 hide in previously omitted files. Linux's inventory remains separately pinned
 until actual Linux discovery is reviewed.
 
+## Regexp correction and SHR diagnosis
+
+The general bracket translator now keeps ASCII/non-ASCII and byte-class
+membership separate from Unicode case folding. Ordinary letters and ranges
+in the same bracket still fold; negation and quantifiers apply to the entire
+combined atom. It also preserves the correct membership of characters with
+syntax properties and raw byte8 characters. This removes the false ASCII
+matches through long-s/Kelvin case equivalence without recognizing test names.
+
+All 632 diagnostic rows match the actual GNU oracle, covering both folding
+settings, mixed/negated/repeated brackets, bytes and syntax properties. The
+new regression and 16 adjacent controls pass. Ordinary regex-emacs (34), search
+(1), and diff-mode (7) results match with zero unexpected outcomes:
+
+- `target/compat/run-1789341707802267000-85433/`
+- `target/compat/run-1789341778094170000-87935/`
+- `target/compat/run-1789341794149079000-88864/`
+
+Both diff-mode font-lock tests now naturally declare `:passed`, as GNU does;
+no expectation was rewritten. Rustfmt and strict Clippy pass.
+
+SHR's missing callback has a parser cause: the upstream test supplies an
+unfinished image tag. GNU links Homebrew libxml2 2.15.3 and returns an empty
+body; Emaxx links macOS libxml2 2.9.13 and retains the image. Both invoke the
+same documented parser options. A separate build of unchanged GNU source with
+the same macOS parser dependency is in progress. Its success, native ABI and
+explicit oracle pin change still require verification; the current pin has
+not been altered.
+
 ## Still open
 
-The non-ASCII regexp defect, GNU's SHR timeout, and features-string diagnostics
-remain open in #69. Runtime and native compilation measurements/fixes remain
+Final cross-platform regexp validation, GNU's SHR dependency correction, and
+features-string diagnostics remain open in #69. Runtime and native compilation measurements/fixes remain
 tracked in #70 and #71.
 
 Linux Rust checks for commit `fdca75e` passed, but those checks are not an

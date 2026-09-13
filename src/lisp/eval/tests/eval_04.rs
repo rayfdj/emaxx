@@ -6407,6 +6407,57 @@ fn regexp_word_class_does_not_cache_mutable_syntax_table_entries() {
 }
 
 #[test]
+fn regexp_encoding_classes_preserve_membership_under_case_folding() {
+    // Checked against GNU 30.2: these classes use bitmap/BIT_MULTIBYTE
+    // membership, including when syntax properties encode the haystack.
+    assert_eq!(
+        eval_str(
+            r#"
+            (not
+             (memq nil
+              (mapcar
+               (lambda (case-fold-search)
+                 (and
+                  (equal
+                   (mapcar
+                    (lambda (class)
+                      (let ((pattern (concat "\\`[[:" class ":]]+\\'")))
+                        (mapcar (lambda (text) (not (null (string-match-p pattern text))))
+                                (list "sSkK" "éÉſK" (string #xE010) (unibyte-string 255)))))
+                    '("ascii" "nonascii" "multibyte" "unibyte"))
+                   '((t nil nil nil) (nil t t nil) (nil t t nil) (t nil nil nil)))
+                  (equal
+                   (mapcar (lambda (pair) (not (null (string-match-p (car pair) (cadr pair)))))
+                    '(("\\`[[:nonascii:]a-c]+\\'" "bé")
+                      ("\\`[^[:nonascii:]a-c]+\\'" "sSK")
+                      ("\\`[^[:nonascii:]a-c]+\\'" "sés")
+                      ("\\`[[:nonascii:][:digit:]]+\\'" "é0K")
+                      ("\\`[[:ascii:]é]+\\'" "éÉ")
+                      ("\\`[[:ascii:]é]+\\'" "ſ")
+                      ("\\`[[:nonascii:]a-c]+\\'" "Bé")))
+                   (list t t nil t case-fold-search nil case-fold-search))
+                  (with-temp-buffer
+                    (insert "sékK")
+                    (put-text-property 1 5 'syntax-table (string-to-syntax "|"))
+                    (let ((parse-sexp-lookup-properties t))
+                      (equal
+                       (mapcar
+                        (lambda (class)
+                          (mapcar
+                           (lambda (position)
+                             (goto-char position)
+                             (looking-at-p (concat "[[:" class ":]]\\s|")))
+                           '(1 2 3)))
+                        '("ascii" "nonascii" "multibyte" "unibyte"))
+                       '((t nil t) (nil t nil) (nil t nil) (t nil t)))))))
+               '(nil t))))
+            "#,
+        ),
+        Value::T,
+    );
+}
+
+#[test]
 fn regexp_posix_word_class_uses_wide_current_syntax_table_ranges() {
     assert_eq!(
         eval_str(
