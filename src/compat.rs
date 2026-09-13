@@ -1076,20 +1076,10 @@ fn summarize_outcomes(results: &[TestOutcome]) -> BatchSummary {
     summary
 }
 
-/// Matching outcomes are useful parity evidence even when neither editor
-/// succeeded. Keep execution failures separate from the parity comparison.
-pub fn report_execution_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
+/// Validate the original report before a scope filter can discard evidence
+/// or rebuild its summary. This does not judge outcomes outside that scope.
+pub fn report_integrity_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
     let mut issues = Vec::new();
-    if report.file_status == FileStatus::LoadError {
-        issues.push(ComparisonIssue {
-            kind: "load_error".into(),
-            detail: format!(
-                "{} did not load {}: {:?}",
-                report.runner, report.file, report.file_error
-            ),
-        });
-        return issues;
-    }
     let selected = report.selected_tests.iter().collect::<BTreeSet<_>>();
     let completed = report
         .results
@@ -1108,19 +1098,30 @@ pub fn report_execution_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
             ),
         });
     }
-    for result in &report.results {
-        let kind = match result.expected {
-            Some(true) => continue,
-            Some(false) => "unexpected_outcome",
-            None => "missing_expectation_evidence",
-        };
+    let discovered = report
+        .discovered_tests
+        .iter()
+        .map(|test| &test.name)
+        .collect::<BTreeSet<_>>();
+    if discovered.len() != report.discovered_tests.len() || !selected.is_subset(&discovered) {
         issues.push(ComparisonIssue {
-            kind: kind.into(),
+            kind: "discovery_coverage".into(),
             detail: format!(
-                "{} test `{}`: {:?}, expected={:?}",
-                report.runner, result.name, result.status, result.expected
+                "{} discovery is duplicated or omits selected tests",
+                report.runner
             ),
         });
+    }
+    for result in &report.results {
+        if result.expected.is_none() {
+            issues.push(ComparisonIssue {
+                kind: "missing_expectation_evidence".into(),
+                detail: format!(
+                    "{} test `{}` has no ERT expectation evidence",
+                    report.runner, result.name
+                ),
+            });
+        }
     }
     if report.summary != summarize_outcomes(&report.results) {
         issues.push(ComparisonIssue {
@@ -1130,6 +1131,33 @@ pub fn report_execution_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
                 report.runner
             ),
         });
+    }
+    issues
+}
+
+/// Matching outcomes are useful parity evidence even when neither editor
+/// succeeded. Keep execution failures separate from the parity comparison.
+pub fn report_execution_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
+    let mut issues = report_integrity_issues(report);
+    if report.file_status == FileStatus::LoadError {
+        issues.push(ComparisonIssue {
+            kind: "load_error".into(),
+            detail: format!(
+                "{} did not load {}: {:?}",
+                report.runner, report.file, report.file_error
+            ),
+        });
+    }
+    for result in &report.results {
+        if result.expected == Some(false) {
+            issues.push(ComparisonIssue {
+                kind: "unexpected_outcome".into(),
+                detail: format!(
+                    "{} test `{}`: {:?}, expected=false",
+                    report.runner, result.name, result.status
+                ),
+            });
+        }
     }
     issues
 }
@@ -1776,6 +1804,25 @@ mod tests {
             report_execution_issues(&report)
                 .iter()
                 .any(|issue| issue.kind == "result_coverage")
+        );
+    }
+
+    #[test]
+    fn raw_integrity_is_independent_of_outcome_expectations_and_filtering() {
+        let mut report = expectation_report();
+        assert!(report_integrity_issues(&report).is_empty());
+        report.summary.unexpected = 99;
+        assert!(
+            report_integrity_issues(&report)
+                .iter()
+                .any(|issue| issue.kind == "summary_mismatch")
+        );
+        report.summary = summarize_outcomes(&report.results);
+        report.discovered_tests.pop();
+        assert!(
+            report_integrity_issues(&report)
+                .iter()
+                .any(|issue| issue.kind == "discovery_coverage")
         );
     }
 

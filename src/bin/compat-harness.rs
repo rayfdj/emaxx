@@ -94,8 +94,7 @@ struct CompatRunPlan<'a> {
     subject: &'a SubjectBuild,
     provenance: &'a RunProvenance,
     frozen_manifest: Option<&'a FrozenCompatibilityManifest>,
-    /// A prior artifact root from the SAME commit whose completed per-file
-    /// comparisons may be reused instead of re-executed (frozen resume).
+    /// Prior raw execution evidence, bound to an identical run contract.
     resume_root: Option<&'a PathBuf>,
 }
 
@@ -128,10 +127,9 @@ struct FrozenArgs {
     /// Per setup and test phase.  This is recorded in summary provenance.
     #[arg(long)]
     timeout_seconds: Option<u64>,
-    /// A prior frozen artifact root to resume from.  Only per-file
-    /// comparisons recorded for the SAME commit (its head.json) are
-    /// reused; anything else re-runs, so the score stays
-    /// commit-addressable.
+    /// Resume verified raw executions from the same commit and run contract.
+    /// Missing or invalid per-file evidence replays that file. Cached scores
+    /// are never reused; older roots without a contract cannot certify resume.
     #[arg(long)]
     resume: Option<PathBuf>,
 }
@@ -280,7 +278,7 @@ struct RegressionImportLandedArgs {
     scope: ScopeArg,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ProcessResult {
     exit_code: Option<i32>,
     stdout: String,
@@ -293,7 +291,7 @@ struct ProcessResult {
     elapsed: Duration,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum TimeoutPhase {
     Setup,
     Test,
@@ -312,7 +310,41 @@ impl TimeoutPhase {
 struct RunnerArtifacts {
     report: BatchReport,
     process: ProcessResult,
-    temp_directory: PathBuf,
+    paths: ReportPaths,
+}
+
+/// Record spellings while the directories still exist, including resolved
+/// symlinks. Resume must not guess roots from message contents.
+#[derive(Debug, Serialize, Deserialize)]
+struct ReportPaths {
+    checkout: Vec<String>,
+    temporary: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ExecutionReceipt {
+    contract_sha256: String,
+    file: String,
+    sha256: BTreeMap<String, String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RunnerEvidence {
+    process: ProcessResult,
+    paths: ReportPaths,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct RunContract {
+    version: u32,
+    mode: String,
+    scope: String,
+    selector: String,
+    files: Vec<String>,
+    name_filter: Option<String>,
+    manifest_sha256: Option<String>,
+    environment_sha256: String,
+    provenance: RunProvenance,
 }
 
 #[derive(Debug)]
@@ -814,18 +846,6 @@ struct FileTiming {
     emaxx_at_least_twice_as_slow: bool,
 }
 
-/// The readable twin of `TimedComparison', for `--resume' (same flattened
-/// shape on disk).
-#[derive(Serialize, Deserialize)]
-struct StoredTimedComparison {
-    #[serde(flatten)]
-    comparison: compat::ComparisonReport,
-    timing: FileTiming,
-    // Older records attest parity only and cannot certify execution success.
-    #[serde(default)]
-    execution_issues: Option<Vec<compat::ComparisonIssue>>,
-}
-
 #[derive(Serialize)]
 struct TimedComparison<'a> {
     #[serde(flatten)]
@@ -855,6 +875,8 @@ struct RunProvenance {
     oracle_repo_commit: String,
     #[serde(default)]
     oracle_test_support_sha256: String,
+    #[serde(default)]
+    runtime_images_sha256: BTreeMap<String, String>,
     oracle_emacs_version: String,
     oracle_system_type: String,
     oracle_native_compilation: bool,
@@ -1824,9 +1846,227 @@ fn unmanifested_result_names(
         .results
         .iter()
         .map(|result| result.name.as_str())
+        .chain(report.selected_tests.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .filter(|name| !required_names.contains(*name))
         .map(str::to_string)
         .collect()
+}
+
+fn execution_environment_fingerprint() -> String {
+    // Hash the effective inherited environment without publishing its values.
+    // Per-file paths are represented by stable placeholders, not ambient TMPDIR.
+    let mut command = Command::new("unused-environment-description");
+    configure_test_environment(&mut command, Path::new("<checkout>/test"));
+    for variable in ["TMPDIR", "TMP", "TEMP"] {
+        command.env(variable, "<runner-tmp>");
+    }
+    if let Some(directory) = env::var_os("EMAXX_FIXTURE_IMAGE_DIR") {
+        command.env("EMAXX_FIXTURE_IMAGE_DIR", directory);
+    }
+    let mut environment = env::vars_os().collect::<BTreeMap<_, _>>();
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            environment.insert(key.to_os_string(), value.to_os_string());
+        } else {
+            environment.remove(key);
+        }
+    }
+    let mut hash = Sha256::new();
+    for (key, value) in environment {
+        for part in [key, value] {
+            let bytes = part.as_encoded_bytes();
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+    }
+    format!("{:x}", hash.finalize())
+}
+
+fn validate_resume_contract(root: &Path, current: &RunContract) -> Result<(), String> {
+    let path = root.join("contract.json");
+    let bytes = fs::read(&path).map_err(|error| {
+        format!(
+            "cannot certify resume without a run contract at {}: {error}",
+            path.display()
+        )
+    })?;
+    let recorded: RunContract = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    if &recorded != current {
+        return Err(format!(
+            "refusing resume from {}: run contract differs (binaries, helper, inputs, environment, selector, or manifest); completed artifacts remain available for inspection",
+            root.display()
+        ));
+    }
+    Ok(())
+}
+
+const EXECUTION_FILES: [&str; 6] = [
+    "oracle.json",
+    "emaxx.json",
+    "oracle.execution.json",
+    "emaxx.execution.json",
+    "oracle.log",
+    "emaxx.log",
+];
+
+fn record_execution(
+    directory: &Path,
+    contract_sha256: &str,
+    relative: &str,
+    oracle: &RunnerArtifacts,
+    emaxx: &RunnerArtifacts,
+) -> Result<(), String> {
+    for (name, runner) in [("oracle", oracle), ("emaxx", emaxx)] {
+        let raw_path = directory.join(format!("{name}.json"));
+        if BatchReport::read_json(&raw_path)? != runner.report {
+            return Err(format!(
+                "{} changed after its runner completed",
+                raw_path.display()
+            ));
+        }
+        write_json(
+            &directory.join(format!("{name}.execution.json")),
+            &serde_json::json!({ "process": runner.process, "paths": runner.paths }),
+            "runner execution evidence",
+        )?;
+        write_raw_log(&directory.join(format!("{name}.log")), &runner.process)?;
+    }
+    let sha256 = EXECUTION_FILES
+        .iter()
+        .map(|name| Ok(((*name).into(), sha256_file(&directory.join(name))?)))
+        .collect::<Result<_, String>>()?;
+    write_json(
+        &directory.join("execution.json"),
+        &ExecutionReceipt {
+            contract_sha256: contract_sha256.into(),
+            file: relative.into(),
+            sha256,
+        },
+        "completed execution receipt",
+    )
+}
+
+fn resume_execution(
+    source: &Path,
+    destination: &Path,
+    contract_sha256: &str,
+    relative: &str,
+    selector: &str,
+) -> Result<Option<(RunnerArtifacts, RunnerArtifacts)>, String> {
+    if !source.exists() {
+        return Ok(None);
+    }
+    let receipt_path = source.join("execution.json");
+    let receipt: ExecutionReceipt = serde_json::from_slice(
+        &fs::read(&receipt_path)
+            .map_err(|error| format!("read {}: {error}", receipt_path.display()))?,
+    )
+    .map_err(|error| format!("parse {}: {error}", receipt_path.display()))?;
+    if receipt.contract_sha256 != contract_sha256 || receipt.file != relative {
+        return Err("execution receipt belongs to another run contract or file".into());
+    }
+    if receipt
+        .sha256
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        != EXECUTION_FILES.into_iter().collect()
+    {
+        return Err("execution receipt does not cover exactly both runners' raw evidence".into());
+    }
+    // Read once: parse and retain precisely the bytes whose hashes we checked.
+    let mut verified = BTreeMap::new();
+    for name in EXECUTION_FILES {
+        let path = source.join(name);
+        let bytes = fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+        if receipt.sha256[name] != format!("{:x}", Sha256::digest(&bytes)) {
+            return Err(format!("raw evidence hash mismatch: {}", path.display()));
+        }
+        verified.insert(name, bytes);
+    }
+    let read_runner = |name: &str| -> Result<RunnerArtifacts, String> {
+        let report: BatchReport =
+            serde_json::from_slice(&verified[format!("{name}.json").as_str()])
+                .map_err(|error| format!("parse {name} report: {error}"))?;
+        let issues = raw_runner_issues(&report, name, relative, selector);
+        if !issues.is_empty() {
+            return Err(format!("invalid {name} raw report: {issues:?}"));
+        }
+        let evidence: RunnerEvidence =
+            serde_json::from_slice(&verified[format!("{name}.execution.json").as_str()])
+                .map_err(|error| format!("parse {name} execution evidence: {error}"))?;
+        Ok(RunnerArtifacts {
+            report,
+            process: evidence.process,
+            paths: evidence.paths,
+        })
+    };
+    let runners = (read_runner("oracle")?, read_runner("emaxx")?);
+    for (name, bytes) in verified {
+        let path = destination.join(name);
+        fs::write(&path, bytes).map_err(|error| format!("retain {}: {error}", path.display()))?;
+    }
+    write_json(
+        &destination.join("execution.json"),
+        &receipt,
+        "resumed execution receipt",
+    )?;
+    Ok(Some(runners))
+}
+
+fn raw_runner_issues(
+    report: &BatchReport,
+    runner: &str,
+    file: &str,
+    selector: &str,
+) -> Vec<compat::ComparisonIssue> {
+    let mut issues = compat::report_integrity_issues(report);
+    let selector_matches = report.selector == selector
+        || (report.file_status == FileStatus::LoadError
+            && report.selector == format!("(quote {selector})"));
+    if report.runner != runner || report.file != file || !selector_matches {
+        issues.push(compat::ComparisonIssue {
+            kind: "report_identity".into(),
+            detail: format!("expected {runner} report for {file} with selector {selector}; got {} for {} with selector {}", report.runner, report.file, report.selector),
+        });
+    }
+    issues
+}
+
+fn prepare_report(
+    raw: &BatchReport,
+    runner: &str,
+    file: &str,
+    selector: &str,
+    required_names: Option<&BTreeSet<String>>,
+    name_filter: Option<&Regex>,
+) -> Result<(BatchReport, Vec<compat::ComparisonIssue>), String> {
+    // Never allow filtering to erase raw coverage or summary errors.
+    let issues = raw_runner_issues(raw, runner, file, selector);
+    let scoped = if let Some(required) = required_names {
+        let completed = raw
+            .results
+            .iter()
+            .map(|result| &result.name)
+            .collect::<BTreeSet<_>>();
+        let missing = required
+            .iter()
+            .filter(|name| !completed.contains(name))
+            .collect::<Vec<_>>();
+        let extra = unmanifested_result_names(raw, required);
+        if !missing.is_empty() || !extra.is_empty() {
+            return Err(format!(
+                "frozen outcome coverage failed for `{file}` on {runner}: missing {missing:?}; unmanifested {extra:?}; manifest changes require an explicit contract revision"
+            ));
+        }
+        compat::filter_report_by_exact_names(raw, required)
+    } else {
+        compat::filter_report_by_name(raw, name_filter)
+    };
+    Ok((scoped, issues))
 }
 
 fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, String> {
@@ -1844,6 +2084,29 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         frozen_manifest,
         resume_root,
     } = plan;
+    let contract = RunContract {
+        version: 1,
+        mode: mode.into(),
+        scope: scope.clone(),
+        selector: selector.into(),
+        files: files
+            .iter()
+            .map(|file| compat::relative_test_path(&context.local.emacs_repo, file))
+            .collect::<Result<_, _>>()?,
+        name_filter: name_filter_expression.map(ToOwned::to_owned),
+        manifest_sha256: frozen_manifest.map(|manifest| manifest.sha256.clone()),
+        environment_sha256: execution_environment_fingerprint(),
+        provenance: provenance.clone(),
+    };
+    if let Some(resume_root) = resume_root {
+        validate_resume_contract(resume_root, &contract)?;
+    }
+    write_json(
+        &artifact_root.join("contract.json"),
+        &contract,
+        "run contract",
+    )?;
+    let contract_sha256 = sha256_file(&artifact_root.join("contract.json"))?;
     let mut matching_files = 0usize;
     let mut matching_outcomes = 0usize;
     let mut mismatching_outcomes = 0usize;
@@ -1871,165 +2134,94 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         fs::create_dir_all(&per_file_dir)
             .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
 
-        // Resume: a completed per-file comparison recorded for this same
-        // commit (head.json equality was checked before the loop) is a
-        // finished measurement of an identical subject and oracle; reuse
-        // it rather than re-executing hours of work after an interrupted
-        // run.  An absent or unreadable record simply re-runs the file.
-        if let Some(resume_root) = resume_root
-            && let Ok(stored) = fs::read_to_string(
-                per_file_artifact_dir(resume_root, &relative).join("comparison.json"),
-            )
-            && let Ok(stored) = serde_json::from_str::<StoredTimedComparison>(&stored)
-            && let Some(execution_issues) = &stored.execution_issues
-        {
-            write_json(
-                &per_file_dir.join("comparison.json"),
-                &stored,
-                "resumed comparison report",
-            )?;
-            matching_outcomes += stored.comparison.matching_outcomes;
-            mismatching_outcomes += stored.comparison.mismatching_outcomes;
-            if frozen_manifest.is_some() {
-                compared_outcomes +=
-                    stored.comparison.matching_outcomes + stored.comparison.mismatching_outcomes;
+        let cached = resume_root.and_then(|root| {
+            let old_dir = per_file_artifact_dir(root, &relative);
+            match resume_execution(
+                &old_dir,
+                &per_file_dir,
+                &contract_sha256,
+                &relative,
+                selector,
+            ) {
+                Ok(runners) => runners,
+                Err(error) => {
+                    eprintln!("REPLAY {relative}: resume evidence rejected: {error}");
+                    None
+                }
             }
-            if stored.comparison.matches {
-                matching_files += 1;
-            } else {
-                mismatches.push(relative.clone());
-            }
-            if !execution_issues.is_empty() {
-                unsuccessful_files.push(relative.clone());
-            }
-            print_file_result(&relative, &stored.comparison, execution_issues, true);
-            if stored.timing.emaxx_at_least_twice_as_slow {
-                performance_regressions.push(relative.clone());
-            }
-            timings.push(stored.timing);
-            continue;
-        }
-
-        oracle_checkout.restore()?;
-        oracle_checkout.prepare_runtime_libraries()?;
-        let oracle = run_oracle(
-            &context.local,
-            &oracle_checkout.checkout,
-            &relative,
-            &oracle_checkout.file(&relative),
-            selector,
-            &per_file_dir,
-            timeout,
-        )?;
-        emaxx_checkout.restore()?;
-        emaxx_checkout.prepare_runtime_libraries()?;
-        let emaxx_file = emaxx_checkout.file(&relative);
-        let emaxx = run_emaxx(EmaxxRun {
-            binary: &subject.binary,
-            load_path_repo: &context.local.emacs_repo,
-            test_repo: &emaxx_checkout.checkout,
-            relative_file: &relative,
-            file: &emaxx_file,
-            selector,
-            artifact_dir: &per_file_dir,
-            timeout,
-        })?;
-
-        let (oracle_report, emaxx_report) = if let Some(manifest) = frozen_manifest {
-            let required_names = manifest.entries.get(&relative).ok_or_else(|| {
-                format!("frozen compatibility manifest has no entry for `{relative}`")
-            })?;
-            let required_names = required_names.iter().cloned().collect::<BTreeSet<_>>();
-            let oracle_report =
-                compat::filter_report_by_exact_names(&oracle.report, &required_names);
-            let emaxx_report = compat::filter_report_by_exact_names(&emaxx.report, &required_names);
-            let oracle_results = oracle_report
-                .results
-                .iter()
-                .map(|result| result.name.as_str())
-                .collect::<BTreeSet<_>>();
-            let emaxx_results = emaxx_report
-                .results
-                .iter()
-                .map(|result| result.name.as_str())
-                .collect::<BTreeSet<_>>();
-            let missing_oracle = required_names
-                .iter()
-                .filter(|name| !oracle_results.contains(name.as_str()))
-                .cloned()
-                .collect::<Vec<_>>();
-            let missing_emaxx = required_names
-                .iter()
-                .filter(|name| !emaxx_results.contains(name.as_str()))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !missing_oracle.is_empty() || !missing_emaxx.is_empty() {
-                return Err(format!(
-                    "frozen outcome coverage failed for `{relative}`: missing from GNU Emacs {missing_oracle:?}; missing from Emaxx {missing_emaxx:?}"
-                ));
-            }
-            // Finding 115: the coverage check above proves manifest ⊆ run,
-            // but a STALE manifest let run-minus-manifest names vanish
-            // through the exact-name filter above — score-inflating drift
-            // by construction (a new upstream test emaxx fails would simply
-            // stop being counted).  Prove run ⊆ manifest too, on selected
-            // OUTCOMES (discovery legitimately sees :expensive/:unstable
-            // tests the pinned selector never runs).
-            let unmanifested_oracle = unmanifested_result_names(&oracle.report, &required_names);
-            let unmanifested_emaxx = unmanifested_result_names(&emaxx.report, &required_names);
-            if !unmanifested_oracle.is_empty() || !unmanifested_emaxx.is_empty() {
-                return Err(format!(
-                    "frozen manifest is stale for `{relative}`: the pinned selector now \
-                     yields outcomes the manifest does not carry (GNU Emacs \
-                     {unmanifested_oracle:?}; Emaxx {unmanifested_emaxx:?}); regenerate \
-                     this platform's manifest (`compat-harness list --scope all`) and \
-                     re-pin its frozen contract"
-                ));
-            }
-            compared_outcomes += required_names.len();
-            (oracle_report, emaxx_report)
+        });
+        let resumed = cached.is_some();
+        let (oracle, emaxx) = if let Some(runners) = cached {
+            runners
         } else {
-            (
-                compat::filter_report_by_name(&oracle.report, name_filter),
-                compat::filter_report_by_name(&emaxx.report, name_filter),
-            )
+            oracle_checkout.restore()?;
+            oracle_checkout.prepare_runtime_libraries()?;
+            let oracle = run_oracle(
+                &context.local,
+                &oracle_checkout.checkout,
+                &relative,
+                &oracle_checkout.file(&relative),
+                selector,
+                &per_file_dir,
+                timeout,
+            )?;
+            emaxx_checkout.restore()?;
+            emaxx_checkout.prepare_runtime_libraries()?;
+            let emaxx_file = emaxx_checkout.file(&relative);
+            let emaxx = run_emaxx(EmaxxRun {
+                binary: &subject.binary,
+                load_path_repo: &context.local.emacs_repo,
+                test_repo: &emaxx_checkout.checkout,
+                relative_file: &relative,
+                file: &emaxx_file,
+                selector,
+                artifact_dir: &per_file_dir,
+                timeout,
+            })?;
+
+            // Commit the receipt only after both independent executions and
+            // all their raw evidence have been written. No score is cached.
+            record_execution(&per_file_dir, &contract_sha256, &relative, &oracle, &emaxx)?;
+            (oracle, emaxx)
         };
-        // Erase only environmental variance from failure messages before
-        // equality: each runner's isolated checkout root and the shared
-        // temp directory, in every spelling a test can print them in --
-        // as given, resolved (Darwin's `/var' is a link to `/private/var',
-        // and `file-truename' or getcwd answers the latter), and
-        // downcased (a test comparing case-folded names prints them so).
-        // Anything else that differs is a real divergence.
-        let mut replacements = Vec::new();
-        for (root, placeholder) in [
-            (&oracle_checkout.checkout, "<checkout>"),
-            (&emaxx_checkout.checkout, "<checkout>"),
-            (&oracle.temp_directory, "<runner-tmp>"),
-            (&emaxx.temp_directory, "<runner-tmp>"),
-            (&std::env::temp_dir(), "<tmp>"),
-        ] {
-            for form in path_spellings(root) {
-                replacements.push((form, placeholder));
-            }
+        let required_names = frozen_manifest
+            .map(|manifest| {
+                manifest
+                    .entries
+                    .get(&relative)
+                    .map(|names| names.iter().cloned().collect::<BTreeSet<_>>())
+                    .ok_or_else(|| {
+                        format!("frozen compatibility manifest has no entry for `{relative}`")
+                    })
+            })
+            .transpose()?;
+        let (oracle_report, mut execution_issues) = prepare_report(
+            &oracle.report,
+            "oracle",
+            &relative,
+            selector,
+            required_names.as_ref(),
+            name_filter,
+        )?;
+        let (emaxx_report, emaxx_issues) = prepare_report(
+            &emaxx.report,
+            "emaxx",
+            &relative,
+            selector,
+            required_names.as_ref(),
+            name_filter,
+        )?;
+        execution_issues.extend(emaxx_issues);
+        if let Some(names) = &required_names {
+            compared_outcomes += names.len();
         }
-        // Longest spelling first, so a resolved root is not left half
-        // replaced by its shorter unresolved prefix.
-        replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
-        replacements.dedup();
-        let normalize = move |text: &str| {
-            let mut text = text.to_string();
-            for (form, placeholder) in &replacements {
-                text = text.replace(form, placeholder);
-            }
-            canonicalize_temp_randomness(&text)
-        };
+        let normalize = |text: &str| normalize_report_paths(text, &[&oracle.paths, &emaxx.paths]);
         let mut comparison =
             compat::compare_reports_normalized(&oracle_report, &emaxx_report, &normalize);
         invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &oracle.process);
         invalidate_timed_out_comparison(&mut comparison, "Emaxx", &emaxx.process);
         let timing = compare_runner_timings(&relative, &oracle.process, &emaxx.process);
-        let mut execution_issues = runner_execution_issues(&oracle_report, &oracle.process);
+        execution_issues.extend(runner_execution_issues(&oracle_report, &oracle.process));
         execution_issues.extend(runner_execution_issues(&emaxx_report, &emaxx.process));
         write_json(
             &per_file_dir.join("comparison.json"),
@@ -2040,8 +2232,6 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             },
             "comparison report",
         )?;
-        write_raw_log(&per_file_dir.join("oracle.log"), &oracle.process)?;
-        write_raw_log(&per_file_dir.join("emaxx.log"), &emaxx.process)?;
 
         matching_outcomes += comparison.matching_outcomes;
         mismatching_outcomes += comparison.mismatching_outcomes;
@@ -2053,7 +2243,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         if !execution_issues.is_empty() {
             unsuccessful_files.push(relative.clone());
         }
-        print_file_result(&relative, &comparison, &execution_issues, false);
+        print_file_result(&relative, &comparison, &execution_issues, resumed);
         if timing.emaxx_at_least_twice_as_slow {
             performance_regressions.push(relative.clone());
             println!(
@@ -2105,6 +2295,9 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         aggregate.unsuccessful_files.len(),
     );
     verify_run_inputs_unchanged(provenance)?;
+    if execution_environment_fingerprint() != contract.environment_sha256 {
+        return Err("execution environment changed during compatibility run".into());
+    }
     write_json(
         &artifact_root.join("summary.json"),
         &aggregate,
@@ -2620,6 +2813,10 @@ fn collect_run_provenance(
         oracle_repo: context.local.emacs_repo.display().to_string(),
         oracle_repo_commit: context.lock.emacs_repo_commit.clone(),
         oracle_test_support_sha256: test_support_fingerprint(&context.local.emacs_repo)?,
+        runtime_images_sha256: runtime_image_fingerprints(
+            &context.local.emacs_binary,
+            &subject.binary,
+        )?,
         oracle_emacs_version: context.lock.emacs_version.clone(),
         oracle_system_type: oracle_runtime.system_type,
         oracle_native_compilation: oracle_runtime.native_compilation,
@@ -2628,6 +2825,13 @@ fn collect_run_provenance(
 }
 
 fn verify_run_inputs_unchanged(provenance: &RunProvenance) -> Result<(), String> {
+    if runtime_image_fingerprints(
+        Path::new(&provenance.oracle_binary),
+        Path::new(&provenance.subject_binary),
+    )? != provenance.runtime_images_sha256
+    {
+        return Err("runtime dump images changed during compatibility run; refusing to write a valid summary".into());
+    }
     let checks = [
         (
             "compatibility harness binary",
@@ -2689,25 +2893,32 @@ fn verify_run_inputs_unchanged(provenance: &RunProvenance) -> Result<(), String>
     Ok(())
 }
 
-/// Everything the oracle's answers depend on that git cannot see.
+/// Generated Lisp inputs in the pinned source tree that git cannot see.
 ///
 /// The copied support inputs are `.el' only, but GNU resolves `lisp/**/*.elc'
 /// from its own tree at run time, so those compiled files are what the oracle
 /// actually executes.  They are gitignored, which means `git status' cannot
 /// detect an edit to one -- a weakened `subr.elc' would move every oracle
-/// result invisibly.  Hash them here even though they are not copied.
+/// result invisibly. Include native libraries too; dump images are recorded
+/// separately. External tool prerequisites still need their own provenance.
 fn fingerprint_inputs(repo_root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = isolated_test_support_inputs(repo_root)?;
     let mut stack = vec![repo_root.join("lisp")];
+    if repo_root.join("native-lisp").exists() {
+        stack.push(repo_root.join("native-lisp"));
+    }
     while let Some(directory) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("read input directory {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("read input entry in {}: {error}", directory.display()))?;
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "elc")
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "elc" || extension == "eln")
                 && let Ok(relative) = path.strip_prefix(repo_root)
             {
                 files.push(relative.to_path_buf());
@@ -2717,6 +2928,47 @@ fn fingerprint_inputs(repo_root: &Path) -> Result<Vec<PathBuf>, String> {
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+fn runtime_image_fingerprints(
+    oracle: &Path,
+    subject: &Path,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut images = Vec::new();
+    for binary in [oracle, subject] {
+        let mut name = binary.as_os_str().to_os_string();
+        name.push(".pdmp");
+        images.push(PathBuf::from(name));
+    }
+    if let Some(directory) = env::var_os("EMAXX_FIXTURE_IMAGE_DIR") {
+        let directory = PathBuf::from(directory);
+        if directory.exists() {
+            for entry in fs::read_dir(&directory)
+                .map_err(|error| format!("read {}: {error}", directory.display()))?
+            {
+                let path = entry
+                    .map_err(|error| format!("read fixture image entry: {error}"))?
+                    .path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "pdmp")
+                {
+                    images.push(path);
+                }
+            }
+        }
+    }
+    images
+        .into_iter()
+        .map(|path| {
+            let hash = match fs::metadata(&path) {
+                Ok(_) => sha256_file(&path)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => "absent".into(),
+                Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+            };
+            Ok((path.display().to_string(), hash))
+        })
+        .collect()
 }
 
 fn test_support_fingerprint(repo_root: &Path) -> Result<String, String> {
@@ -2798,61 +3050,45 @@ fn make_artifact_root(prefix: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-/// Canonicalize OS-generated randomness that both runners legitimately
-/// embed in compared output, applied IDENTICALLY to both sides:
-///
-/// - each runner's isolated scratch directory
-///   (`emaxx-compat-<tag>-<pid>-<nanos>`) becomes `emaxx-compat-run` —
-///   the tag names which runner made the path and the numbers are
-///   per-invocation, so no faithful run can ever match on them;
-/// - `make-temp-name' randomness after ert-x's documented fixture prefix
-///   (`emacs-test-` + exactly six [A-Za-z0-9], gen_tempname's shape,
-///   which Emaxx now reproduces) becomes `emacs-test-``xxxxxx`.
-///
-/// Nothing else is touched: a name of the wrong SHAPE (length or
-/// alphabet) does not canonicalize and still scores as a divergence.
-fn canonicalize_temp_randomness(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let rest = &text[i..];
-        if let Some(tail) = rest.strip_prefix("emaxx-compat-") {
-            let mut consumed = None;
-            for tag in ["oracle-", "emaxx_-"] {
-                if let Some(after_tag) = tail.strip_prefix(tag) {
-                    let digits1 = after_tag.bytes().take_while(u8::is_ascii_digit).count();
-                    let after1 = &after_tag[digits1..];
-                    if digits1 > 0
-                        && let Some(after_dash) = after1.strip_prefix('-')
-                    {
-                        let digits2 = after_dash.bytes().take_while(u8::is_ascii_digit).count();
-                        if digits2 > 0 {
-                            consumed =
-                                Some("emaxx-compat-".len() + tag.len() + digits1 + 1 + digits2);
-                        }
-                    }
-                }
-            }
-            if let Some(length) = consumed {
-                out.push_str("emaxx-compat-run");
-                i += length;
-                continue;
-            }
+/// Replace only recorded directory roots at path boundaries. Child names,
+/// arbitrary fixture-looking strings, and sibling paths retain their bytes.
+fn normalize_report_paths(text: &str, paths: &[&ReportPaths]) -> String {
+    let mut replacements = Vec::new();
+    for paths in paths {
+        for (forms, replacement) in [
+            (&paths.checkout, "<checkout>"),
+            (&paths.temporary, "<runner-tmp>"),
+        ] {
+            replacements.extend(forms.iter().map(|form| (form.as_str(), replacement)));
         }
-        if let Some(tail) = rest.strip_prefix("emacs-test-") {
-            let random = tail.bytes().take_while(u8::is_ascii_alphanumeric).count();
-            if random == 6 {
-                out.push_str("emacs-test-xxxxxx");
-                i += "emacs-test-".len() + 6;
-                continue;
-            }
-        }
-        let ch = rest.chars().next().expect("in-bounds char");
-        out.push(ch);
-        i += ch.len_utf8();
     }
-    out
+    replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(b.0)));
+    replacements.dedup();
+    let boundary = |ch: char| ch.is_whitespace() || "\"'`()[]{}=,:;".contains(ch);
+    let mut normalized = String::with_capacity(text.len());
+    let mut offset = 0;
+    while offset < text.len() {
+        let rest = &text[offset..];
+        let before = text[..offset].chars().next_back();
+        let matched = replacements.iter().find(|(root, _)| {
+            !root.is_empty()
+                && before.is_none_or(boundary)
+                && rest.strip_prefix(root).is_some_and(|tail| {
+                    tail.chars()
+                        .next()
+                        .is_none_or(|ch| ch == '/' || ch == '\\' || boundary(ch))
+                })
+        });
+        if let Some((root, replacement)) = matched {
+            normalized.push_str(replacement);
+            offset += root.len();
+        } else {
+            let ch = rest.chars().next().expect("nonempty remaining text");
+            normalized.push(ch);
+            offset += ch.len_utf8();
+        }
+    }
+    normalized
 }
 
 /// Runner tags padded to one width.  ERT's failure explanations embed raw
@@ -2966,6 +3202,8 @@ fn run_oracle(
     fs::create_dir_all(per_file_dir)
         .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
     let result_path = per_file_dir.join("oracle.json");
+    let loaded_marker = per_file_dir.join("oracle.loaded");
+    clear_runner_outputs(&result_path, &loaded_marker)?;
     let helper_path = compat::oracle_helper_path();
     let test_directory = repo_root.join("test");
     let mut command = Command::new(&local.emacs_binary);
@@ -2988,7 +3226,6 @@ fn run_oracle(
     command.arg(&helper_path);
     command.arg("-l");
     command.arg(file);
-    let loaded_marker = per_file_dir.join("oracle.loaded");
     configure_loaded_marker(&mut command, &loaded_marker)?;
     command.arg("--eval");
     command.arg(format!("(emaxx-compat-run (quote {selector}))"));
@@ -2999,7 +3236,10 @@ fn run_oracle(
     Ok(RunnerArtifacts {
         report,
         process,
-        temp_directory: temp_directory.path.clone(),
+        paths: ReportPaths {
+            checkout: path_spellings(repo_root),
+            temporary: path_spellings(&temp_directory.path),
+        },
     })
 }
 
@@ -3018,6 +3258,8 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     fs::create_dir_all(request.artifact_dir)
         .map_err(|error| format!("create {}: {error}", request.artifact_dir.display()))?;
     let result_path = request.artifact_dir.join("emaxx.json");
+    let loaded_marker = request.artifact_dir.join("emaxx.loaded");
+    clear_runner_outputs(&result_path, &loaded_marker)?;
     let test_directory = request.test_repo.join("test");
     // Artifact-form parity with the oracle.  GNU resolves library Lisp
     // through its dumped load-path, which points at the pinned checkout, so it
@@ -3072,7 +3314,6 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     command.arg(compat::oracle_helper_path());
     command.arg("-l");
     command.arg(request.file);
-    let loaded_marker = request.artifact_dir.join("emaxx.loaded");
     configure_loaded_marker(&mut command, &loaded_marker)?;
     command.arg("--eval");
     command.arg(format!("(emaxx-compat-run (quote {}))", request.selector));
@@ -3088,8 +3329,27 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     Ok(RunnerArtifacts {
         report,
         process,
-        temp_directory: temp_directory.path.clone(),
+        paths: ReportPaths {
+            checkout: path_spellings(request.test_repo),
+            temporary: path_spellings(&temp_directory.path),
+        },
     })
+}
+
+fn clear_runner_outputs(result: &Path, loaded_marker: &Path) -> Result<(), String> {
+    for path in [result, loaded_marker] {
+        match fs::remove_file(path) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => {
+                return Err(format!(
+                    "remove stale runner output {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_or_synthesize_report(
@@ -3694,6 +3954,281 @@ mod tests {
 
     use super::*;
 
+    fn audit_runner(runner: &str) -> RunnerArtifacts {
+        RunnerArtifacts {
+            report: BatchReport {
+                runner: runner.into(),
+                file: "test/a.el".into(),
+                selector: "t".into(),
+                file_status: FileStatus::Loaded,
+                file_error: None,
+                discovered_tests: vec![compat::DiscoveredTest {
+                    name: "a".into(),
+                    tags: vec![],
+                    expected_result: ":passed".into(),
+                }],
+                selected_tests: vec!["a".into()],
+                results: vec![compat::TestOutcome {
+                    name: "a".into(),
+                    status: TestStatus::Passed,
+                    expected: Some(true),
+                    condition_type: None,
+                    message: None,
+                }],
+                summary: compat::BatchSummary {
+                    total: 1,
+                    passed: 1,
+                    ..Default::default()
+                },
+            },
+            process: process_result(
+                Duration::from_millis(1),
+                Duration::from_millis(2),
+                true,
+                None,
+            ),
+            paths: ReportPaths {
+                checkout: vec![format!("/checkout-{runner}")],
+                temporary: vec![format!("/scratch-{runner}")],
+            },
+        }
+    }
+
+    #[test]
+    fn audit_raw_errors_survive_scoping_and_equal_count_name_substitutions_fail() {
+        let mut report = audit_runner("oracle").report;
+        let names = BTreeSet::from(["a".into()]);
+        report.summary.unexpected = 99;
+        let (scoped, issues) =
+            prepare_report(&report, "oracle", "test/a.el", "t", Some(&names), None).unwrap();
+        assert_eq!(scoped.summary.unexpected, 0);
+        assert!(issues.iter().any(|issue| issue.kind == "summary_mismatch"));
+        report.summary.unexpected = 0;
+        report
+            .selected_tests
+            .push("unmanifested-without-a-result".into());
+        assert!(
+            prepare_report(&report, "oracle", "test/a.el", "t", Some(&names), None)
+                .unwrap_err()
+                .contains("unmanifested-without-a-result")
+        );
+        report.selected_tests = vec!["replacement".into()];
+        report.results[0].name = "replacement".into();
+        report.discovered_tests[0].name = "replacement".into();
+        assert!(prepare_report(&report, "oracle", "test/a.el", "t", Some(&names), None).is_err());
+    }
+
+    #[test]
+    fn audit_report_identity_rejects_copied_or_misrouted_reports() {
+        let oracle = audit_runner("oracle").report;
+        for (runner, file, selector) in [
+            ("emaxx", "test/a.el", "t"),
+            ("oracle", "test/b.el", "t"),
+            ("oracle", "test/a.el", "nil"),
+        ] {
+            assert!(
+                raw_runner_issues(&oracle, runner, file, selector)
+                    .iter()
+                    .any(|issue| issue.kind == "report_identity")
+            );
+        }
+        assert!(raw_runner_issues(&oracle, "oracle", "test/a.el", "t").is_empty());
+    }
+
+    #[test]
+    fn audit_path_normalization_preserves_literal_payloads_and_child_names() {
+        let paths = ReportPaths {
+            checkout: vec!["/work/tree".into()],
+            temporary: vec!["/private/tmp/ec-oracle-0123456789ab".into()],
+        };
+        let normalize = |text: &str| normalize_report_paths(text, &[&paths]);
+        assert_eq!(
+            normalize(
+                "(error \"/work/tree/test/a.el\" \"/private/tmp/ec-oracle-0123456789ab/socket\")"
+            ),
+            "(error \"<checkout>/test/a.el\" \"<runner-tmp>/socket\")"
+        );
+        for literal in [
+            "payload emacs-test-ABC123",
+            "payload emacs-test-DEF456",
+            "emaxx-compat-oracle-123-456",
+            "emaxx-compat-emaxx_-234-567",
+            "/work/tree-sibling/file",
+            "/prefix/work/tree/file",
+            "/private/tmp/unrecorded/file",
+            "préfixe/work/tree",
+        ] {
+            assert_eq!(normalize(literal), literal);
+        }
+        assert_ne!(
+            normalize("/work/tree/emacs-test-ABC123"),
+            normalize("/work/tree/emacs-test-DEF456")
+        );
+        assert_ne!(
+            normalize("(error \"/work/tree/missing\")"),
+            normalize("(error \"/work/tree/denied\")")
+        );
+    }
+
+    fn record_audit_execution(directory: &Path) {
+        fs::create_dir_all(directory).unwrap();
+        let oracle = audit_runner("oracle");
+        let mut emaxx = audit_runner("emaxx");
+        emaxx.report.results[0].status = TestStatus::Failed;
+        emaxx.report.results[0].expected = Some(false);
+        emaxx.report.summary.passed = 0;
+        emaxx.report.summary.failed = 1;
+        emaxx.report.summary.unexpected = 1;
+        oracle
+            .report
+            .write_json(&directory.join("oracle.json"))
+            .unwrap();
+        emaxx
+            .report
+            .write_json(&directory.join("emaxx.json"))
+            .unwrap();
+        record_execution(directory, "contract", "test/a.el", &oracle, &emaxx).unwrap();
+    }
+
+    #[test]
+    fn audit_resume_ignores_forged_scores_and_retains_each_editors_raw_evidence() {
+        let root = unique_temp_path("audit-resume").unwrap();
+        let old = root.join("old");
+        let new = root.join("new");
+        record_audit_execution(&old);
+        fs::create_dir_all(&new).unwrap();
+        fs::write(old.join("comparison.json"), r#"{"matches":true,"matching_outcomes":7883,"mismatching_outcomes":0,"execution_issues":[]}"#).unwrap();
+        let (oracle, emaxx) = resume_execution(&old, &new, "contract", "test/a.el", "t")
+            .unwrap()
+            .unwrap();
+        let comparison = compat::compare_reports(&oracle.report, &emaxx.report);
+        assert!(!comparison.matches);
+        assert_eq!(comparison.mismatching_outcomes, 1);
+        assert!(
+            runner_execution_issues(&emaxx.report, &emaxx.process)
+                .iter()
+                .any(|issue| issue.kind == "unexpected_outcome")
+        );
+        for name in EXECUTION_FILES {
+            assert_eq!(
+                fs::read(old.join(name)).unwrap(),
+                fs::read(new.join(name)).unwrap()
+            );
+        }
+        assert!(!new.join("comparison.json").exists());
+        assert_ne!(
+            fs::read(new.join("oracle.json")).unwrap(),
+            fs::read(new.join("emaxx.json")).unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audit_resume_rejects_tampering_incomplete_receipts_and_other_run_inputs() {
+        let root = unique_temp_path("audit-tampering").unwrap();
+        let old = root.join("old");
+        let new = root.join("new");
+        fs::create_dir_all(&new).unwrap();
+        assert!(
+            resume_execution(&old, &new, "contract", "test/a.el", "t")
+                .unwrap()
+                .is_none()
+        );
+        record_audit_execution(&old);
+        assert!(
+            resume_execution(&old, &new, "different", "test/a.el", "t")
+                .unwrap_err()
+                .contains("another run contract")
+        );
+        assert!(resume_execution(&old, &new, "contract", "test/b.el", "t").is_err());
+        for name in EXECUTION_FILES {
+            let path = old.join(name);
+            let original = fs::read(&path).unwrap();
+            fs::write(&path, "{}").unwrap();
+            assert!(
+                resume_execution(&old, &new, "contract", "test/a.el", "t")
+                    .unwrap_err()
+                    .contains("hash mismatch"),
+                "{name}"
+            );
+            fs::write(path, original).unwrap();
+        }
+        fs::remove_file(old.join("emaxx.json")).unwrap();
+        assert!(resume_execution(&old, &new, "contract", "test/a.el", "t").is_err());
+        assert!(fs::read_dir(&new).unwrap().next().is_none());
+        fs::remove_file(old.join("execution.json")).unwrap();
+        assert!(resume_execution(&old, &new, "contract", "test/a.el", "t").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audit_resume_requires_matching_contract_before_using_any_file() {
+        let root = unique_temp_path("audit-contract").unwrap();
+        let mut current = RunContract {
+            version: 1,
+            mode: "frozen".into(),
+            scope: "Frozen".into(),
+            selector: "t".into(),
+            files: vec!["test/a.el".into()],
+            name_filter: None,
+            manifest_sha256: Some("manifest".into()),
+            environment_sha256: "environment".into(),
+            provenance: test_provenance(),
+        };
+        assert!(validate_resume_contract(&root, &current).is_err());
+        write_json(&root.join("contract.json"), &current, "test contract").unwrap();
+        validate_resume_contract(&root, &current).unwrap();
+        current.provenance.subject_sha256 = "changed binary".into();
+        assert!(validate_resume_contract(&root, &current).is_err());
+        current.provenance = test_provenance();
+        current.manifest_sha256 = Some("equal counts but different names".into());
+        assert!(validate_resume_contract(&root, &current).is_err());
+        current.manifest_sha256 = Some("manifest".into());
+        current.environment_sha256 = "different environment".into();
+        assert!(validate_resume_contract(&root, &current).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audit_missing_child_output_cannot_reuse_a_previous_pass() {
+        let root = unique_temp_path("audit-stale-output").unwrap();
+        let result = root.join("emaxx.json");
+        let marker = root.join("emaxx.loaded");
+        audit_runner("emaxx").report.write_json(&result).unwrap();
+        fs::write(&marker, "stale marker").unwrap();
+        clear_runner_outputs(&result, &marker).unwrap();
+        let process = process_result(Duration::ZERO, Duration::ZERO, false, None);
+        let report =
+            load_or_synthesize_report(&result, "emaxx", "test/a.el", "t", &process).unwrap();
+        assert_eq!(report.file_status, FileStatus::LoadError);
+        assert!(report.results.is_empty());
+        assert!(!marker.exists());
+        assert!(!runner_execution_issues(&report, &process).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audit_runtime_image_changes_are_bound_to_provenance() {
+        let root = unique_temp_path("audit-images").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let oracle = root.join("emacs");
+        let subject = root.join("emaxx");
+        let absent = runtime_image_fingerprints(&oracle, &subject).unwrap();
+        fs::write(root.join("emacs.pdmp"), "oracle image").unwrap();
+        let present = runtime_image_fingerprints(&oracle, &subject).unwrap();
+        assert_ne!(present, absent);
+        fs::write(root.join("emacs.pdmp"), "changed image").unwrap();
+        assert_ne!(
+            runtime_image_fingerprints(&oracle, &subject).unwrap(),
+            present
+        );
+        fs::write(root.join("emaxx.pdmp"), "subject image").unwrap();
+        let both = runtime_image_fingerprints(&oracle, &subject).unwrap();
+        fs::write(root.join("emaxx.pdmp"), "changed subject image").unwrap();
+        assert_ne!(runtime_image_fingerprints(&oracle, &subject).unwrap(), both);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn unmanifested_result_names_flag_manifest_staleness_in_both_directions() {
         let report = compat::BatchReport {
@@ -3863,6 +4398,7 @@ mod tests {
             oracle_repo: "/oracle".into(),
             oracle_repo_commit: "oracle-head".into(),
             oracle_test_support_sha256: "test-support".into(),
+            runtime_images_sha256: BTreeMap::new(),
             oracle_emacs_version: "30.2".into(),
             oracle_system_type: "darwin".into(),
             oracle_native_compilation: true,
