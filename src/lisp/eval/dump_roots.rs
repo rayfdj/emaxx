@@ -21,6 +21,10 @@ use crate::lisp::primitives::pdumper::image::RootSlot;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "gc_mark_set_sizes",
+        "alloc.c: gcstat is a file-static struct, zero in a fresh process and rewritten by each garbage_collect; the mark phase reads the previous collection's sizes only to size its mark sets, and pdumper.c does not write it",
+    ),
+    (
         "buffer_mark_marker_ids",
         "buffer.c: BVAR (b, mark) is a slot of each buffer object, which the mark phase reaches through the buffer; here the relation from buffer to mark marker is rebuilt by install_marker from each marker record's mark buffer, which the image writes per marker",
     ),
@@ -292,7 +296,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("records", "installed per record"),
     ("record_ids_by_type_index", "the index install_record keeps"),
     ("gc_live_record_ids", "the last collection's census"),
-    ("gc_mark_set_sizes", "the last collection's mark counts"),
     ("gc_elapsed_total", "alloc.c's private gc_elapsed total"),
     (
         "known_symbols_cache",

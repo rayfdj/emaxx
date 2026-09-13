@@ -4913,6 +4913,10 @@ impl std::ops::DerefMut for Interpreter {
     }
 }
 
+/// Plist positions by symbol id, `None' for a symbol without a plist.
+type SymbolPlistPositions =
+    RefCell<HashMap<u32, Option<usize>, crate::lisp::types::IdentityBuildHasher>>;
+
 /// The uniquely owned editor payload. Thread switching must also save and
 /// restore the per-thread execution fields; moving this allocation alone does
 /// not implement a scheduler. This type is public only as the Deref target.
@@ -5019,8 +5023,7 @@ pub struct InterpreterState {
     /// `get' reaches a plist through the symbol, as XSYMBOL (sym)->u.s.plist
     /// does, not through a hash of its name.  Cleared whenever positions
     /// shift.
-    symbol_properties_by_id:
-        RefCell<HashMap<u32, Option<usize>, crate::lisp::types::IdentityBuildHasher>>,
+    symbol_properties_by_id: SymbolPlistPositions,
     /// Symbols explicitly interned into the standard obarray.
     interned_symbols: Vec<crate::lisp::types::SymbolName>,
     /// The obarray's symbol vector as `mapatoms' last enumerated it, with

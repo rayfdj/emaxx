@@ -432,6 +432,12 @@ pub(crate) fn pdumper_load(
         &image.native_functions,
     )
     .map_err(|error| PdumperLoadError::Error(error.to_string()))?;
+    // emacs.c:main calls init_alloc after the dump is loaded: `gcs_done'
+    // and `Vgc_elapsed' start from zero in every process, whatever the
+    // image recorded.  (The float is the loader's allocation, before the
+    // baseline below.)
+    interp.set_symbol_value_cell("gcs-done", Value::Integer(0));
+    interp.set_symbol_value_cell("gc-elapsed", Value::float(0.0));
     // alloc.c: `consing_until_gc' and `gc_threshold' are plain globals
     // the image does not carry, zero in a process that starts from a
     // dump, and pdumper's objects are not consing.  The loader's
@@ -441,11 +447,6 @@ pub(crate) fn pdumper_load(
     interp
         .native_compiler
         .garbage_collection_baseline_after_image_load();
-    // emacs.c:main calls init_alloc after the dump is loaded: `gcs_done'
-    // and `Vgc_elapsed' start from zero in every process, whatever the
-    // image recorded.
-    interp.set_symbol_value_cell("gcs-done", Value::Integer(0));
-    interp.set_symbol_value_cell("gc-elapsed", Value::float(0.0));
     Ok(record)
 }
 
