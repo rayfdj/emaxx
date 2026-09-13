@@ -46,7 +46,11 @@ def main():
     parser.add_argument("--subject", type=Path, default=Path("target/gate/emaxx"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cc", help="C compiler command (default: configured GNU test compiler)")
+    parser.add_argument("--timeout-seconds", type=float, default=300,
+                        help="whole-file budget, including assertion subprocess startup (default: 300)")
     args = parser.parse_args()
+    if args.timeout_seconds <= 0:
+        parser.error("--timeout-seconds must be positive")
     if sys.platform not in ("darwin", "linux"):
         parser.error("this gate currently supports macOS and Linux")
     source = args.source.resolve()
@@ -77,6 +81,13 @@ def main():
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
     selector = "(not (or (tag :expensive-test) (tag :unstable)))"
     helper = Path(__file__).resolve().parents[1] / "compat/emacs_compat_runner.el"
+    # ERT's listener runs outside test bodies. Keep the shared listener's
+    # cleanup and record which test is active if a subprocess times out.
+    progress = '''(advice-add 'emaxx-compat--test-listener :after
+      (lambda (event &rest args)
+        (when (memq event '(test-started test-ended))
+          (message "module-gate %.3f %s %s" (float-time) event
+                   (ert-test-name (nth 1 args))))))'''
     results = {}
     for editor, binary in [("gnu", args.oracle.resolve()), ("emaxx", args.subject.resolve())]:
         work = root / editor
@@ -91,13 +102,18 @@ def main():
         # subprocesses the real binary path, preserving image relocation.
         load = (f'(let ((invocation-directory {json.dumps(str(root / "src") + "/")})) '
                 f'(load {json.dumps(str(source / inputs[0]))} nil t))')
-        code = run([str(binary), "-Q", "--batch", "-l", str(helper), "--eval", load,
-                    "--eval", f'(setq mod-test-emacs {json.dumps(str(binary))})',
-                    "--eval", f"(emaxx-compat-run '{selector})"], env,
-                   work / "stdout.log", work / "stderr.log", timeout=120)
+        timed_out = False
+        try:
+            code = run([str(binary), "-Q", "--batch", "-l", str(helper), "--eval", load,
+                        "--eval", f'(setq mod-test-emacs {json.dumps(str(binary))})',
+                        "--eval", progress, "--eval", f"(emaxx-compat-run '{selector})"], env,
+                       work / "stdout.log", work / "stderr.log", timeout=args.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            code, timed_out = 124, True
         report = work / "results.json"
         results[editor] = {"exit_code": code, "binary_sha256": digest(binary),
                            "module_sha256": digest(module),
+                           "timed_out": timed_out, "timeout_seconds": args.timeout_seconds,
                            "report": json.loads(report.read_text()) if report.exists() else None}
         print(editor, results[editor]["report"]["summary"] if report.exists() else code,
               flush=True)

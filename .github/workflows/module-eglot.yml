@@ -86,6 +86,7 @@ jobs:
           RUST_MIN_STACK: '134217728'
           RUST_TEST_THREADS: '1'
         run: |
+          cargo clean --package emaxx
           cargo clean --package emaxx --profile gate
           cargo build --locked --profile gate --bin emaxx -j2
           cargo test --locked --profile gate --lib -j2 -- \
@@ -120,6 +121,7 @@ jobs:
           path: |
             /tmp/module-results
             /tmp/eglot-results
+            !/tmp/eglot-results/bin
             /tmp/module-eglot-rust-gate
             /tmp/module-eglot-metadata
           if-no-files-found: error
