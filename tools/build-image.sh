@@ -45,7 +45,22 @@ if ! "$dir/make-fingerprint" "$name" 2>"$dir/make-fingerprint.err"; then
     fi
 fi
 rm -f "$dir/make-fingerprint.err"
+# The temacs rule's `ifeq ($(DO_CODESIGN),yes) codesign -s - -f $@.tmp'
+# (DO_CODESIGN is yes for aarch64-apple-darwin): "ARM Macs require that
+# all code have a valid signature.  Since pdump invalidates the signature,
+# we must re-sign to fix it."  The linker's ad-hoc signature covers the
+# bytes make-fingerprint overwrote, and the kernel kills (SIGKILL,
+# "Killed: 9") a binary whose signature no longer matches at exec.  The
+# binary is signed again whether or not this run wrote the fingerprint,
+# and its copy as the bootstrap-emacs rule re-signs its copy of temacs.
+codesign_if_arm_mac() {
+    case $(uname -s)/$(uname -m) in
+        Darwin/arm64) codesign -s - -f "$1" ;;
+    esac
+}
+codesign_if_arm_mac "$name"
 rm -f emacs && cp -f "$name" emacs
+codesign_if_arm_mac emacs
 LC_ALL=C ./emacs -batch ${BUILD_DETAILS:-} -l loadup --temacs=pdump \
     --bin-dest "$dir/" --eln-dest "$source/"
 [ "$name" = emacs ] || cp -f emacs.pdmp "$name.pdmp"

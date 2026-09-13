@@ -14,7 +14,9 @@ The second step is GNU's `src/Makefile.in` recipe for `temacs` and
 fingerprint placeholder in it, the uninitialized binary runs the unchanged
 `loadup.el` under `--temacs=pdump`, which dumps the image, and the image is
 placed beside the binary as `emaxx.pdmp`, where `emacs.c`'s `load_pdump`
-looks for it.  A binary started
+looks for it (on an ARM Mac the fingerprinted binary is signed again
+with `codesign -s - -f`, the rule's `DO_CODESIGN` step: the kernel kills a
+binary whose ad-hoc signature no longer covers its bytes).  A binary started
 without its image builds its Lisp state itself on every run (about 26 s);
 one started from the image boots in a fraction of a second.  Rebuilding the
 binary makes the image stale, and, as in GNU, the binary then refuses it:

@@ -10718,3 +10718,41 @@ the same way now; and `--help --version' compared each binary's own
 "Development version" line, whose build date agrees only when both
 were built the same day -- the test compares that line by shape, as
 `version_report_is_emacs_c_main_s' already did.
+
+## 2026-09-13 Checkpoint 19t: the image build on an ARM Mac
+
+*What prompted it.*  The Mac's run of the steps given after 19s
+(`cargo build --profile gate', `tools/build-image.sh target/gate/emaxx'):
+the dump under `--temacs=pdump' ended "Killed: 9", and
+`target/gate/emaxx --fingerprint' was killed the same way.  The Mac's
+frozen runs since checkpoint 21 (the fingerprint written at build time)
+had therefore been of a binary with no image beside it, rebuilding its
+Lisp state at every start (emacsclient-tests 27x, its setup 9.4 s).
+
+*Read in the C.*  src/Makefile.in: "ARM Macs require that all code
+have a valid signature.  Since pdump invalidates the signature, we must
+re-sign to fix it."  `DO_CODESIGN' is `yes' for aarch64-apple-darwin,
+and the temacs rule runs `codesign -s - -f $@.tmp' right after
+`$(MAKE_PDUMPER_FINGERPRINT) $@.tmp'; the bootstrap-emacs rule re-signs
+its copy of temacs.  The linker's ad-hoc signature covers the bytes
+make-fingerprint overwrites with the SHA-256, and the kernel refuses to
+exec a binary whose signature no longer matches -- SIGKILL, which is
+"Killed: 9".  On Linux nothing checks the bytes, so the script's flow
+passed there.
+
+*Fixed.*  `tools/build-image.sh' signs the binary again after the
+fingerprint step and its `emacs' copy after the copy, on `Darwin/arm64'
+only (`uname -s`/`uname -m`), whether or not this run wrote the
+fingerprint: the binary the Mac has now is written into and unsigned,
+and the script must recover it without a relink (`cargo build' does not
+rebuild an output whose inputs are unchanged).  The embedded fingerprint
+is the digest of the bytes before the signature was rewritten, as GNU's
+is (the loader compares the embedded value, not a fresh hash).
+
+*Verified.*  On Linux, the script on the gate binary (up to date: exits
+0 at the `--fingerprint' check), and the full flow forced on a copy of
+the gate binary in a scratch directory: fingerprint, dump, and
+`--fingerprint' printing the embedded digest from the image.  The
+`codesign' step itself cannot run here: the Mac's run of the script is
+its receipt, recorded as pending in the ledger and the handover.
+

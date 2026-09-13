@@ -427,6 +427,13 @@ read; `let` with a vector binding list signals as Flet does, and
 (multisession's file backend); the rest are the Mac oracle's own,
 the disclosed `system-configuration-features`, or need the run's
 per-test artifacts (eglot's rust tests, emacs-module's load error).
+Checkpoint 19t (2026-09-13, for main): `tools/build-image.sh` re-signs
+the fingerprinted binary on an ARM Mac as src/Makefile.in's DO_CODESIGN
+step does (`codesign -s - -f`); without it the Mac's kernel killed the
+binary make-fingerprint had written into ("Killed: 9" at the dump and
+at `--fingerprint`), so the Mac had no image and its timings after
+checkpoint 21 were of a binary rebuilding its Lisp state at every
+start.  The Mac's run of the script is the receipt; Linux is unchanged.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
