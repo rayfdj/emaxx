@@ -7,58 +7,60 @@ a real JSON-RPC subprocess.
 
 ## Authoritative upstream replay
 
-The 2026-08-30 replay used the repository's pinned Darwin oracle:
+The success gate uses GNU Emacs 30.2 at source commit
+`636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`, with native compilation enabled,
+and selector `(not (or (tag :expensive-test) (tag :unstable)))`.
+The unchanged upstream test file produces **45 passes, zero failures and seven
+skips on both editors on macOS**. Matching failures do not satisfy this gate.
 
-- GNU Emacs 30.2, source commit
-  `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd`
-- native compilation enabled
-- selector `(not (or (tag :expensive-test) (tag :unstable)))`
-
-The release-profile compatibility harness command was:
+Run it with a built Emaxx and the configured GNU source tree:
 
 ```sh
-target/gate/compat-harness run --scope all --selector default \
-  --file test/lisp/progmodes/eglot-tests.el --timeout-seconds 300
+rustup toolchain install 1.75.0 --profile minimal --component rust-analyzer --component rust-src
+python3 tools/eglot_gate.py --output target/eglot-success
 ```
 
-All 52 selected outcomes match GNU exactly: 39 pass, 6 fail, and 7 skip on
-both editors.  The matching failures and skips are part of the contract; they
-must not be relabelled as Emaxx successes.
+`--source`, `--oracle`, `--subject`, `--rust-bin`, and `--clangd` can select
+explicit installations. The gate records input hashes, binary hashes, tool
+versions and individual test results. It leaves the frozen manifest and
+upstream fixtures unchanged. Linux runs the same gate in
+[the compatibility workflow](../.github/workflows/module-eglot.yml).
 
-The six matching failures are:
+### Why the GNU baseline failed
 
-- `eglot-test-lsp-abiding-column`: the test's oracle assertion expects 71 but
-  the pinned GNU run produces 51.
-- `eglot-test-project-wide-diagnostics-rust-analyzer`
-- `eglot-test-rust-analyzer-hover-after-edit`
-- `eglot-test-rust-analyzer-watches-files`
-- `eglot-test-rust-completion-exit-function`
-- `eglot-test-rust-on-type-formatting`
+The earlier frozen environment had six failures even in GNU:
 
-The five Rust failures all stop at the fixture's `cargo init`, which returns
-status 1 in this environment.  Emaxx preserves the same outcome and condition;
-it does not bypass the missing toolchain setup.
+- Five Rust tests stopped at `cargo init`: the mise shim could not select a
+  toolchain after the fixture changed `XDG_CONFIG_HOME`. The gate supplies
+  direct toolchain executables to both editors.
+- `eglot-test-lsp-abiding-column` expected a UTF-16 column of 71, but Apple
+  clangd negotiated UTF-32 and returned 51. The gate starts the real clangd
+  with `--offset-encoding=utf-16`, identically for both editors.
 
-The seven matching skips are:
+Running the Rust fixtures also required canonical temporary paths outside the
+checkout. On macOS, `/var` aliases `/private/var`; mixing these spellings makes
+Eglot miss diagnostic and watched-file matches. Temporary projects inside the
+Emaxx checkout instead inherit its Git/Cargo project. The gate creates and
+canonicalizes an external temporary directory before launching either editor.
 
-- `eglot-test-eclipse`: `jdtls` is unavailable.
-- `eglot-test-javascript`: `typescript-language-server` or `tsserver` is
-  unavailable.
-- `eglot-test-json`: `vscode-json-languageserver` is unavailable.
-- `eglot-test-path-to-uri-windows`: the oracle host is Darwin, not Windows.
-- `eglot-test-project-wide-diagnostics-typescript`: the TypeScript language
-  tools are unavailable.
-- `eglot-test-snippet-completions`: `yas-minor-mode` is unavailable.
-- `eglot-test-snippet-completions-with-company`: `yas-minor-mode` or `company`
-  is unavailable.
+The pinned fixture expects rust-analyzer's `rustAnalyzer/Indexing` progress
+notification. Current rust-analyzer reports `rustAnalyzer/cachePriming` with
+different cancellation metadata. Rust 1.75 supplies the protocol this fixture
+expects. This is a test prerequisite, not a runtime restriction on servers.
 
-The available native server was also recorded, rather than silently assumed:
+### Emaxx fixes exposed by the working fixtures
 
-```text
-Apple clangd version 21.0.0 (clang-2100.1.1.101)
-Features: mac+xpc
-Platform: arm64-apple-darwin25.6.0
-```
+- Native unwind cleanup now publishes interpreted cons mutations before native
+  execution resumes. Otherwise JSON-RPC could reuse an old message length and
+  parse the next message body as a header.
+- Parsed JSON strings are mutable multibyte Lisp strings, as in GNU. Completion
+  metadata attached to a string now survives, so the Rust completion exit
+  function applies the server's edit instead of inserting the display label.
+
+All six formerly failing tests must pass. The seven explicitly allowed skips
+cover unavailable Java, JavaScript, JSON and TypeScript servers, Windows URI
+behavior on Unix, and snippet packages (`yasnippet`/`company`). A missing Rust
+or clangd prerequisite is a gate failure, not an allowed skip.
 
 ## Interactive TTY comparison
 
@@ -73,8 +75,8 @@ is masked, but they are fixture content, not derived output.  A known
 structural blind spot: the server ignores LSP `position` parameters and
 advertises full-document sync, so an Emaxx bug confined to position or
 column arithmetic would produce identical screens on both editors and
-these journeys could not surface it (the upstream
-`eglot-test-lsp-abiding-column` failure below is exactly that territory).
+these journeys could not surface it. The upstream
+`eglot-test-lsp-abiding-column` success gate provides additional coverage.
 
 Three default [`tools/ttydiff.py`](../tools/ttydiff.py) scenarios drive the
 same server through GNU and Emaxx in separately rooted, same-named projects:
@@ -104,7 +106,6 @@ selecting the three names above.
 This contract covers the Eglot shipped with the pinned GNU tree and the LSP
 mechanisms exercised above, at whole-document granularity (see the
 position-parameter blind spot noted with the fixture server).  It does not substitute for tests of third-party
-`lsp-mode`, Magit, uninstalled language servers, Windows URI behavior, or the
-five unavailable Rust fixtures.  Those gaps remain explicit rather than being
+`lsp-mode`, Magit, uninstalled language servers, or Windows URI behavior.  Those gaps remain explicit rather than being
 filled with prerecorded responses, normalized asynchronous events, or
 environment-specific success expectations.

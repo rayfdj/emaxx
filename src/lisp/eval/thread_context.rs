@@ -81,6 +81,7 @@ impl TraceLispRoots for ThreadExecutionContext {
         }
         for handler in &self.active_handlers {
             match handler {
+                ActiveHandler::Module => {}
                 ActiveHandler::Bind(_, value) => marker.value(value),
                 ActiveHandler::Case(values) => values.trace_lisp_roots(marker),
             }

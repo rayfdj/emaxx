@@ -720,6 +720,8 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 crate::lisp::eval::RecordKind::ConditionVariable => "condition-variable",
                 crate::lisp::eval::RecordKind::NativeCompUnit => "native-comp-unit",
                 crate::lisp::eval::RecordKind::NativeCompiledFunction => "native-comp-function",
+                crate::lisp::eval::RecordKind::ModuleFunction => "module-function",
+                crate::lisp::eval::RecordKind::UserPointer => "user-ptr",
                 crate::lisp::eval::RecordKind::TreeSitterParser => "treesit-parser",
                 crate::lisp::eval::RecordKind::TreeSitterNode => "treesit-node",
                 crate::lisp::eval::RecordKind::TreeSitterCompiledQuery => "treesit-compiled-query",

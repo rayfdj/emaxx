@@ -417,6 +417,8 @@ fn values_equal_recursive_with_env(
                     | crate::lisp::eval::RecordKind::Mutex
                     | crate::lisp::eval::RecordKind::ConditionVariable
                     | crate::lisp::eval::RecordKind::NativeCompUnit
+                    | crate::lisp::eval::RecordKind::ModuleFunction
+                    | crate::lisp::eval::RecordKind::UserPointer
                     | crate::lisp::eval::RecordKind::TreeSitterParser
                     | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
                     | crate::lisp::eval::RecordKind::Sqlite
@@ -869,6 +871,8 @@ pub(crate) fn values_equal_including_properties_recursive(
                     | crate::lisp::eval::RecordKind::ConditionVariable
                     | crate::lisp::eval::RecordKind::NativeCompUnit
                     | crate::lisp::eval::RecordKind::NativeCompiledFunction
+                    | crate::lisp::eval::RecordKind::ModuleFunction
+                    | crate::lisp::eval::RecordKind::UserPointer
                     | crate::lisp::eval::RecordKind::TreeSitterParser
                     | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
                     | crate::lisp::eval::RecordKind::Sqlite
@@ -1164,6 +1168,8 @@ pub(crate) fn compare_record_values(
         | crate::lisp::eval::RecordKind::ConditionVariable
         | crate::lisp::eval::RecordKind::NativeCompUnit
         | crate::lisp::eval::RecordKind::NativeCompiledFunction
+        | crate::lisp::eval::RecordKind::ModuleFunction
+        | crate::lisp::eval::RecordKind::UserPointer
         | crate::lisp::eval::RecordKind::TreeSitterParser
         | crate::lisp::eval::RecordKind::TreeSitterNode
         | crate::lisp::eval::RecordKind::TreeSitterCompiledQuery
@@ -2202,6 +2208,8 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::ConditionVariable
         | crate::lisp::eval::RecordKind::NativeCompUnit
         | crate::lisp::eval::RecordKind::NativeCompiledFunction
+        | crate::lisp::eval::RecordKind::ModuleFunction
+        | crate::lisp::eval::RecordKind::UserPointer
         | crate::lisp::eval::RecordKind::SymbolWithPos
         | crate::lisp::eval::RecordKind::TreeSitterParser
         | crate::lisp::eval::RecordKind::TreeSitterNode
@@ -2345,6 +2353,7 @@ pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -
                     record.kind,
                     crate::lisp::eval::RecordKind::Closure
                         | crate::lisp::eval::RecordKind::NativeCompiledFunction
+                    | crate::lisp::eval::RecordKind::ModuleFunction
                 ))
         )
 }

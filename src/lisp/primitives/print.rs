@@ -1217,6 +1217,12 @@ pub(crate) fn render_prin1_body(
                     return Ok(format!("#<symbol {rendered_symbol} at {position}>"));
                 }
                 let rendered = match record.kind {
+                    crate::lisp::eval::RecordKind::ModuleFunction => {
+                        crate::lisp::modules::print_function(interp, *id)
+                    }
+                    crate::lisp::eval::RecordKind::UserPointer => {
+                        crate::lisp::modules::print_user_pointer(interp, *id)
+                    }
                     crate::lisp::eval::RecordKind::Closure => {
                         // GNU print.c writes PVEC_CLOSURE with its dedicated
                         // readable `#[...]' syntax.  `#s(...)' would read back

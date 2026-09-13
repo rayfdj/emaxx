@@ -131,6 +131,19 @@ pub(crate) fn call_interactively_impl(
         interp.load_autoload_target(&file, env)?;
         func = interp.lookup_function(symbol, env)?;
     }
+    // callint.c requires an interactive form, including forms supplied by
+    // the Lisp generic for closures and advice.
+    if !matches!(
+        call(
+            interp,
+            "interactive-form",
+            std::slice::from_ref(&args[0]),
+            env
+        )?,
+        Value::Cons(_)
+    ) {
+        return Err(wrong_type_argument("commandp", args[0].clone()));
+    }
     // callint.c: a non-nil KEYS is the key sequence the spec codes (`e',
     // `k'...) read instead of the current command's keys -- how
     // `command-execute' hands a special event to its `special-event-map'

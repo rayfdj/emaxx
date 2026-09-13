@@ -273,11 +273,11 @@ fn load_with_context(
                 if native {
                     interp.load_native_resolved_path(&path, &string_text(&history)?, env)?;
                 } else {
-                    super::super::call(
-                        interp,
-                        "module-load",
-                        std::slice::from_ref(&found.name),
+                    interp.load_foreign_resolved_path(
+                        &path,
+                        &string_text(&history)?,
                         env,
+                        false,
                     )?;
                 }
             } else {

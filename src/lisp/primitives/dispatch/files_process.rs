@@ -1922,7 +1922,7 @@ define_dispatch!(
                     args,
                     env,
                 )?;
-                Ok(Value::Integer(exit_status_code(&process_output.status)))
+                Ok(call_process_status(&process_output.status))
             }
             "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
             "get-buffer-process" => {
@@ -2670,7 +2670,7 @@ define_dispatch!(
                     args,
                     env,
                 )?;
-                Ok(Value::Integer(exit_status_code(&process_output.status)))
+                Ok(call_process_status(&process_output.status))
             }
             "kill-buffer" => {
                 need_arg_range(name, args, 0, 1)?;

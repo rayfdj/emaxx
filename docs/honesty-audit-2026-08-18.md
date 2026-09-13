@@ -10680,16 +10680,31 @@ lists its configure-time features, emaxx's is empty there (finding
 capability exists; on GNU/Linux it lists SECCOMP).  The message
 differs by that string and nothing else.
 
-*Open.*  `eglot-test-*rust*' (five): with rust-analyzer present the
-Mac's GNU fails them (`ert-test-failed', the server's replies not
-arriving within the test's wait) and emaxx errors (`error'); on
-Linux with rust-analyzer present see the comparison recorded below.
-`emacs-module-tests.el': "oracle load error differed from emaxx" --
-the file loads the mod-test module built from mod-test.c, which the
-Mac's tree does not carry built, and the two binaries' load errors
-differ in text; the runner's comparison on Linux matches, and the
-Mac's error texts are not in the run's log.  Both need the Mac's
-per-test detail from the run's artifact directory.
+*Mac detail recovered.*  The per-file reports from
+`target/compat/run-1789221352152739000-85006/' show all five GNU Rust
+failures at `(should (zerop (shell-command "cargo init")))', exit 1,
+before the server-reply waits. Emaxx reports `[eglot] -1: Server died'.
+Both also fail the clangd column test, expecting 71 and receiving 51.
+The shared prerequisites are direct Rust toolchain executables (the
+fixture's XDG_CONFIG_HOME breaks the mise shim), canonical temporary
+projects outside the checkout, the analyzer protocol expected by the
+pinned fixture, and clangd's UTF-16 offset mode. Working prerequisites
+exposed two Emaxx bugs: interpreted cons mutations were not published
+before native unwind cleanup resumed, and parsed JSON strings could
+not retain the completion text properties GNU attaches. Both are fixed;
+the unchanged Mac Eglot tests now pass 45, skip seven explicit optional
+cases, and fail zero in each editor. See
+[Eglot compatibility](eglot-compatibility.md) for the shared success gate.
+
+Both historical `emacs-module-tests.el' reports are load errors for
+the missing compiled `mod-test' fixture, with zero selected outcomes;
+their paths and process-exit text differ. Building GNU's unchanged
+fixture exposed Emaxx's absent public module ABI. The Rust implementation
+now loads the same library as GNU, with all 38 upstream tests passing
+in each editor on the Mac. See
+[GNU dynamic modules](emacs-module-compatibility.md) for the ABI and
+cross-platform gate. These gates reject matching failures; the frozen
+manifest and upstream test bodies remain unchanged.
 
 *On the merged tree.*  Rebased onto main's merge of the native-comp
 branch (its port of emacs.c's command line), the gate's integration

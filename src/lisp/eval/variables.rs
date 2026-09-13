@@ -2331,6 +2331,12 @@ impl Interpreter {
         start
     }
 
+    pub(crate) fn push_module_handler(&mut self) -> usize {
+        let start = self.active_handlers.len();
+        self.active_handlers.push(ActiveHandler::Module);
+        start
+    }
+
     pub fn pop_handler_bindings(&mut self, start: usize) {
         self.active_handlers.truncate(start);
     }
@@ -2414,6 +2420,7 @@ impl Interpreter {
         let error_type = error.condition_type();
         let condition_list = self.error_condition_names(&error_type);
         self.active_handlers.iter().any(|handler| match handler {
+            ActiveHandler::Module => true,
             ActiveHandler::Case(heads) => heads
                 .iter()
                 .any(|head| Self::clause_head_matches(head, &error_type, &condition_list)),
@@ -2462,6 +2469,7 @@ impl Interpreter {
         let snapshot = self.active_handlers.clone();
         for (index, entry) in snapshot.iter().enumerate().rev() {
             match entry {
+                ActiveHandler::Module => break,
                 // A matching `condition-case' between the signal point and
                 // any outer `handler-bind' handles the error itself; stop
                 // searching like GNU's signal_or_quit.

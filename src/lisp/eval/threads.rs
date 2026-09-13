@@ -419,6 +419,63 @@ impl Interpreter {
         }
     }
 
+    /// process.c:open_channel_for_module duplicates the pipe's writer. The
+    /// module owns the duplicate; the process retains both original ends.
+    pub(crate) fn open_module_channel(
+        &mut self,
+        value: &Value,
+    ) -> Result<std::ffi::c_int, LispError> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        let id = self.resolve_process_id(value)?;
+        let process = self.find_process_state_mut(id).expect("resolved process");
+        if process.kind != ProcessKind::Pipe {
+            return Err(wrong_type_argument("pipe-process-p", value.clone()));
+        }
+        let io_error = || {
+            let error = std::io::Error::last_os_error();
+            let errno = error.raw_os_error().unwrap_or(libc::EBADF);
+            // SAFETY: strerror returns a NUL-terminated message for ERRNO.
+            let message = unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) }
+                .to_string_lossy()
+                .into_owned();
+            LispError::SignalValue(Value::list([
+                Value::symbol("file-error"),
+                Value::string("Cannot duplicate file descriptor"),
+                Value::string(&message),
+            ]))
+        };
+        if !process.status.is_live() {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("file-error"),
+                Value::string("Cannot duplicate file descriptor"),
+                Value::string("Bad file descriptor"),
+            ])));
+        }
+        if process.module_pipe.is_none() {
+            let mut fds = [-1; 2];
+            // SAFETY: PIPE writes exactly two descriptors to FDS. Each is
+            // immediately owned, including on later setup failure.
+            if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+                return Err(io_error());
+            }
+            let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+            let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+            for fd in [reader.as_raw_fd(), writer.as_raw_fd()] {
+                if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+                    return Err(io_error());
+                }
+            }
+            if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
+                return Err(io_error());
+            }
+            process.module_pipe = Some((fs::File::from(reader), fs::File::from(writer)));
+        }
+        let writer = &process.module_pipe.as_ref().expect("pipe installed").1;
+        // SAFETY: the descriptor is live; the caller assumes ownership of DUP.
+        let fd = unsafe { libc::dup(writer.as_raw_fd()) };
+        if fd == -1 { Err(io_error()) } else { Ok(fd) }
+    }
+
     pub(crate) fn create_process(
         &mut self,
         buffer_id: Option<u64>,
@@ -478,6 +535,7 @@ impl Interpreter {
             runtime,
             network: None,
             serial: None,
+            module_pipe: None,
             contact_host: None,
             contact_service: None,
             remote: None,
@@ -557,6 +615,7 @@ impl Interpreter {
             runtime: None,
             network: Some(network),
             serial: None,
+            module_pipe: None,
             contact_host,
             contact_service,
             remote,
@@ -627,6 +686,7 @@ impl Interpreter {
             runtime: None,
             network: None,
             serial: Some(serial),
+            module_pipe: None,
             contact_host: None,
             contact_service: None,
             remote: None,
@@ -1657,6 +1717,7 @@ impl Interpreter {
             return Ok(("deleted\n", notify_sentinel));
         }
         if kind == ProcessKind::Pipe {
+            process.module_pipe = None;
             process.status = ProcessStatus::Closed;
             process.exit_code = Some(0);
             process.exit_signal = None;
@@ -1839,6 +1900,7 @@ impl Interpreter {
             .iter()
             .filter(|process| {
                 process.runtime.is_some()
+                    || process.module_pipe.is_some()
                     || !process.pending_stdout.is_empty()
                     || !process.pending_stderr.is_empty()
             })
@@ -1857,6 +1919,11 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if let Some((reader, _)) = process.module_pipe.as_mut() {
+            let mut output = std::mem::take(&mut process.pending_stdout);
+            read_nonblocking_pipe(reader, &mut output)?;
+            return Ok((output, std::mem::take(&mut process.pending_stderr)));
+        }
         let Some(runtime) = process.runtime.as_mut() else {
             // Output drained at exit-detection time still needs delivering.
             return Ok((

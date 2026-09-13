@@ -21,6 +21,10 @@ use crate::lisp::primitives::pdumper::image::RootSlot;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "modules",
+        "emacs-module.c: local handles belong to active foreign frames; pdumper.c refuses PVEC_MODULE_FUNCTION, PVEC_USER_PTR and PVEC_OTHER global references, so a dumped runtime has no live module state",
+    ),
+    (
         "buffer_mark_marker_ids",
         "buffer.c: BVAR (b, mark) is a slot of each buffer object, which the mark phase reaches through the buffer; here the relation from buffer to mark marker is rebuilt by install_marker from each marker record's mark buffer, which the image writes per marker",
     ),

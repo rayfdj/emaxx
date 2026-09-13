@@ -1178,6 +1178,25 @@ impl Interpreter {
             Value::Record(id)
                 if self
                     .find_record(id)
+                    .is_some_and(|record| record.kind == RecordKind::ModuleFunction) =>
+            {
+                let backtrace_function = original_name
+                    .map(CallName::original_symbol_value)
+                    .unwrap_or(Value::Record(id));
+                self.push_backtrace_frame(backtrace_function, args);
+                self.capture_current_backtrace_context(
+                    original_name.map(CallName::as_str),
+                    env,
+                    None,
+                );
+                let result = crate::lisp::modules::call(self, env, id, args);
+                let result = self.settle_frame_result(result, env);
+                self.pop_backtrace_frame();
+                result
+            }
+            Value::Record(id)
+                if self
+                    .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::Closure) =>
             {
                 let (inner, uses_dynamic_binding) = {

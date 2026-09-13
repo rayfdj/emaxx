@@ -1603,6 +1603,14 @@ pub(crate) fn callable_interactive_form_items(
     if let Value::Record(id) = func
         && let Some(record) = interp.find_record(*id)
     {
+        if record.kind == crate::lisp::eval::RecordKind::ModuleFunction {
+            return record
+                .slots
+                .get(1)?
+                .to_vec()
+                .ok()
+                .filter(|items| !items.is_empty());
+        }
         if record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction {
             return record
                 .slots

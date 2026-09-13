@@ -196,6 +196,7 @@ macro_rules! define_dispatch {
 pub mod bytecode;
 pub mod eval;
 pub mod json;
+pub(crate) mod modules;
 pub(crate) mod native_comp;
 pub mod primitives;
 pub mod reader;

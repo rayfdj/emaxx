@@ -14,6 +14,8 @@ pub struct BatchRunOptions {
     pub load_path: Vec<PathBuf>,
     /// emacs.c consumes --no-site-lisp (also implied by -Q) before init_lread.
     pub no_site_lisp: bool,
+    /// Enable GNU dynamic-module lifetime and API assertions.
+    pub module_assertions: bool,
     pub load: Vec<String>,
     pub eval: Vec<String>,
     pub funcall: Vec<String>,
@@ -627,6 +629,7 @@ fn initialize_interpreter(
             .init_after_pdump_load()
             .map_err(|error| format!("initialize restored process: {error}"))?;
     }
+    interpreter.modules.assertions = options.module_assertions;
     let before_init_time =
         lisp::primitives::system_time_list_value(std::time::SystemTime::now())
             .map_err(|error| format!("record batch initialization start: {error}"))?;

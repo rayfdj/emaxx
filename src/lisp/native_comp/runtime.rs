@@ -1477,14 +1477,27 @@ impl NativeRuntime {
                 Ok(())
             }
             UnwindAction::Cleanup { function, value } => {
-                if function {
-                    interpreter.call_function_value(value, None, &[], environment)?;
+                let result = if function {
+                    interpreter
+                        .call_function_value(value, None, &[], environment)
+                        .map(|_| ())
                 } else {
-                    for form in value.to_vec()? {
-                        interpreter.eval(&form, environment)?;
-                    }
-                }
-                Ok(())
+                    value.to_vec().and_then(|forms| {
+                        forms
+                            .iter()
+                            .try_for_each(|form| interpreter.eval(form, environment).map(|_| ()))
+                    })
+                };
+                // An interpreted or byte-code cleanup can mutate a captured
+                // cons without crossing the ordinary native subr dispatcher.
+                // Publish those writes before generated code resumes, even
+                // when cleanup replaces an older non-local exit.
+                let published = self
+                    .heap
+                    .publish_interpreter_writes()
+                    .map_err(|error| super::lisp::native_ice(&error));
+                result?;
+                published
             }
         }
     }
@@ -7640,6 +7653,50 @@ mod tests {
                 .expect("native apply with an empty spread"),
             Value::Nil
         );
+    }
+
+    #[test]
+    fn native_unwind_cleanup_publishes_captured_cons_mutation_before_resuming() {
+        extern "C" fn resume_after_cleanup(cell: NativeWord, cleanup: NativeWord) -> NativeWord {
+            runtime_unwind_protect(cleanup);
+            runtime_unbind_n((1 << FIXNUM_BITS) + TAG_FIXNUM_LOW);
+            // Generated callers read the captured variable directly, without
+            // entering a primitive that could repair stale native fields.
+            unsafe { native_car(cell) }
+        }
+
+        for function in [false, true] {
+            let mut interpreter = Interpreter::new();
+            let mut environment = Env::new();
+            let mut runtime = NativeRuntime::default();
+            let cell = Value::list([Value::Integer(123)]);
+            let body = vec![Value::list([
+                Value::symbol("setcar"),
+                Value::list([Value::symbol("quote"), cell.clone()]),
+                Value::Nil,
+            ])];
+            let cleanup = if function {
+                Value::lambda(
+                    Rc::new(Vec::new()),
+                    Rc::new(body),
+                    Rc::new(RefCell::new(Env::new())),
+                )
+            } else {
+                Value::list(body)
+            };
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        resume_after_cleanup as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[cell, cleanup],
+                    )
+                    .expect("cleanup returns to generated code"),
+                Value::Nil
+            );
+        }
     }
 
     #[test]

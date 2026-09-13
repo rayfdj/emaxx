@@ -220,7 +220,14 @@ define_dispatch!(
             }
             "module-function-p" => {
                 need_args(name, args, 1)?;
-                Ok(Value::Nil)
+                Ok(
+                    if matches!(args[0], Value::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::ModuleFunction))
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "make-closure" => {
                 need_args(name, args, 1)?;
@@ -265,36 +272,14 @@ define_dispatch!(
             }
             "user-ptrp" => {
                 need_args(name, args, 1)?;
-                // GNU's true case is the PVEC_USER_PTR variant created by a
-                // native module.  Emaxx deliberately has no such Value variant
-                // while module loading is absent.  Keep this match exhaustive:
-                // adding module user pointers later must force this predicate to
-                // be revisited instead of silently preserving a blanket nil.
-                let is_user_ptr = match &args[0] {
-                    Value::Nil
-                    | Value::T
-                    | Value::Integer(_)
-                    | Value::BigInteger(_)
-                    | Value::Float(_)
-                    | Value::String(_)
-                    | Value::StringObject(_)
-                    | Value::Symbol(_)
-                    | Value::Cons(_)
-                    | Value::Vector(_)
-                    | Value::BuiltinFunc(_)
-                    | Value::Lambda(_)
-                    | Value::Buffer(_)
-                    | Value::Marker(_)
-                    | Value::Overlay(_)
-                    | Value::CharTable(_)
-                    | Value::Frame(_)
-                    | Value::Terminal(_)
-                    | Value::Record(_)
-                    | Value::Finalizer(_)
-                    | Value::ReaderForm(_)
-                    | Value::Unbound => false,
-                };
-                Ok(if is_user_ptr { Value::T } else { Value::Nil })
+                Ok(
+                    if matches!(args[0], Value::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::UserPointer))
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "closurep" => {
                 need_args(name, args, 1)?;

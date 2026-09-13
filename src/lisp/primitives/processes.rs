@@ -250,6 +250,33 @@ pub(crate) fn external_stderr_for_destination(destination: &Value) -> ExternalSt
     ExternalStderr::Mixed
 }
 
+/// callproc.c returns an exit code or the host's signal description.
+pub(crate) fn call_process_status(status: &std::process::ExitStatus) -> Value {
+    if let Some(code) = status.code() {
+        return Value::Integer(i64::from(code));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            // SAFETY: strsignal returns a NUL-terminated static description;
+            // copy it immediately, as GNU does before returning to Lisp.
+            let description = unsafe {
+                let pointer = libc::strsignal(signal);
+                if pointer.is_null() {
+                    format!("Unknown signal {signal}")
+                } else {
+                    std::ffi::CStr::from_ptr(pointer)
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            };
+            return Value::string(&description);
+        }
+    }
+    Value::Integer(1)
+}
+
 pub(crate) fn run_external_process(
     interp: &mut Interpreter,
     program: &str,

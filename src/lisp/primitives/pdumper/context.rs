@@ -125,6 +125,8 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::TreeSitterCompiledQuery => 18,
         RecordKind::Sqlite => 19,
         RecordKind::Keymap => 20,
+        RecordKind::ModuleFunction => 21,
+        RecordKind::UserPointer => 22,
     }
 }
 
@@ -859,6 +861,11 @@ impl DumpContext {
             .dump_transient_roots_check()
             .map_err(|message| DumpError::Lisp(LispError::Signal(message)))?;
         self.set_referrer(Value::string("emacs root"));
+        if let Some(value) = interp.modules.global_root() {
+            // GNU's global-reference table contains PVEC_OTHER handles,
+            // which the portable dumper refuses even for plain Lisp values.
+            return Err(self.unsupported(value, "module global reference"));
+        }
         for (slot, value) in interp.dump_root_values() {
             self.emacs_reloc_to_lv(slot, &value);
         }
@@ -1332,6 +1339,8 @@ impl DumpContext {
                 Err(self.unsupported(object, "tree-sitter compiled query"))
             }
             RecordKind::Sqlite => Err(self.unsupported(object, "sqlite")),
+            RecordKind::ModuleFunction => Err(self.unsupported(object, "module function")),
+            RecordKind::UserPointer => Err(self.unsupported(object, "user pointer")),
         }
     }
 
