@@ -1,0 +1,61 @@
+name: Compatibility runner checks
+on:
+  push:
+    branches: [fix/frozen-run-success]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: emaxx
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: emaxx
+          persist-credentials: false
+      - name: Install Rust and runtime build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libxml2-dev liblcms2-dev libgccjit-13-dev libgnutls28-dev
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          rustup default 1.97.1
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            emaxx/target
+          key: runner-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            runner-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
+            modules-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
+            openpgp-rust-ubuntu24-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
+      - name: Check formatting, lint and affected Rust tests
+        env:
+          RUST_TEST_THREADS: '1'
+        run: |
+          # Reuse dependencies, never another commit's Emaxx outputs.
+          cargo clean --package emaxx
+          cargo clean --package emaxx --profile gate
+          mkdir -p target/compat-runner-checks
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -j2 -- -D warnings 2>&1 | tee target/compat-runner-checks/clippy.log
+          cargo test --locked --profile gate --lib -j2 compat::tests -- --test-threads=1 2>&1 | tee target/compat-runner-checks/compat.log
+          cargo test --locked --profile gate --bin compat-harness -j2 -- --test-threads=1 2>&1 | tee target/compat-runner-checks/harness.log
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: success()
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            emaxx/target
+          key: runner-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: compatibility-runner-linux
+          path: emaxx/target/compat-runner-checks

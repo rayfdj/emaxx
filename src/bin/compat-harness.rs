@@ -312,6 +312,7 @@ impl TimeoutPhase {
 struct RunnerArtifacts {
     report: BatchReport,
     process: ProcessResult,
+    temp_directory: PathBuf,
 }
 
 #[derive(Debug)]
@@ -393,6 +394,13 @@ impl IsolatedTestCheckout {
     }
 
     fn restore(&self) -> Result<(), String> {
+        // Detach the shared library view before Git or generated-file
+        // restoration can write through it into the pinned runtime tree.
+        let library = self.checkout.join("lisp");
+        if library.is_symlink() {
+            fs::remove_file(&library)
+                .map_err(|error| format!("detach {}: {error}", library.display()))?;
+        }
         let reset = Command::new("git")
             .args(["reset", "--hard", "--quiet"])
             .arg(&self.commit)
@@ -454,6 +462,30 @@ impl IsolatedTestCheckout {
             }
         }
         Ok(())
+    }
+
+    fn prepare_runtime_libraries(&self) -> Result<(), String> {
+        // Both editors already load the pinned build's compiled Lisp. Test
+        // files also locate those libraries relative to their own filename.
+        // Give those paths the same real filesystem identity, while keeping
+        // test/ and its writable resources in the disposable checkout.
+        let library = self.checkout.join("lisp");
+        fs::remove_dir_all(&library)
+            .map_err(|error| format!("remove disposable library {}: {error}", library.display()))?;
+        let source = self.source.join("lisp");
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(&source, &library);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_dir(&source, &library);
+        #[cfg(not(any(unix, windows)))]
+        let result = Err(std::io::Error::other("directory links are unsupported"));
+        result.map_err(|error| {
+            format!(
+                "link {} to {}: {error}",
+                library.display(),
+                source.display()
+            )
+        })
     }
 
     fn file(&self, relative: &str) -> PathBuf {
@@ -582,6 +614,8 @@ struct AggregateReport {
     total_outcomes: usize,
     files: Vec<String>,
     mismatches: Vec<String>,
+    #[serde(default)]
+    unsuccessful_files: Vec<String>,
     name_filter: Option<String>,
     #[serde(default)]
     timings: Vec<FileTiming>,
@@ -787,6 +821,9 @@ struct StoredTimedComparison {
     #[serde(flatten)]
     comparison: compat::ComparisonReport,
     timing: FileTiming,
+    // Older records attest parity only and cannot certify execution success.
+    #[serde(default)]
+    execution_issues: Option<Vec<compat::ComparisonIssue>>,
 }
 
 #[derive(Serialize)]
@@ -794,6 +831,7 @@ struct TimedComparison<'a> {
     #[serde(flatten)]
     comparison: &'a compat::ComparisonReport,
     timing: &'a FileTiming,
+    execution_issues: &'a [compat::ComparisonIssue],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1071,6 +1109,7 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
         let relative = compat::relative_test_path(&context.local.emacs_repo, &file)?;
         let per_file_dir = per_file_artifact_dir(&artifact_root, &relative);
         oracle_checkout.restore()?;
+        oracle_checkout.prepare_runtime_libraries()?;
         let oracle = run_oracle(
             &context.local,
             &oracle_checkout.checkout,
@@ -1809,6 +1848,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
     let mut matching_outcomes = 0usize;
     let mut mismatching_outcomes = 0usize;
     let mut mismatches = Vec::new();
+    let mut unsuccessful_files = Vec::new();
     let mut timings = Vec::new();
     let mut performance_regressions = Vec::new();
     let mut relative_files = Vec::new();
@@ -1841,6 +1881,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
                 per_file_artifact_dir(resume_root, &relative).join("comparison.json"),
             )
             && let Ok(stored) = serde_json::from_str::<StoredTimedComparison>(&stored)
+            && let Some(execution_issues) = &stored.execution_issues
         {
             write_json(
                 &per_file_dir.join("comparison.json"),
@@ -1855,14 +1896,13 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             }
             if stored.comparison.matches {
                 matching_files += 1;
-                println!("PASS {relative} (resumed)");
             } else {
                 mismatches.push(relative.clone());
-                println!("FAIL {relative} (resumed)");
-                for issue in &stored.comparison.issues {
-                    println!("  [{}] {}", issue.kind, issue.detail);
-                }
             }
+            if !execution_issues.is_empty() {
+                unsuccessful_files.push(relative.clone());
+            }
+            print_file_result(&relative, &stored.comparison, execution_issues, true);
             if stored.timing.emaxx_at_least_twice_as_slow {
                 performance_regressions.push(relative.clone());
             }
@@ -1871,6 +1911,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         }
 
         oracle_checkout.restore()?;
+        oracle_checkout.prepare_runtime_libraries()?;
         let oracle = run_oracle(
             &context.local,
             &oracle_checkout.checkout,
@@ -1881,6 +1922,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             timeout,
         )?;
         emaxx_checkout.restore()?;
+        emaxx_checkout.prepare_runtime_libraries()?;
         let emaxx_file = emaxx_checkout.file(&relative);
         let emaxx = run_emaxx(EmaxxRun {
             binary: &subject.binary,
@@ -1963,6 +2005,8 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         for (root, placeholder) in [
             (&oracle_checkout.checkout, "<checkout>"),
             (&emaxx_checkout.checkout, "<checkout>"),
+            (&oracle.temp_directory, "<runner-tmp>"),
+            (&emaxx.temp_directory, "<runner-tmp>"),
             (&std::env::temp_dir(), "<tmp>"),
         ] {
             for form in path_spellings(root) {
@@ -1985,11 +2029,14 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &oracle.process);
         invalidate_timed_out_comparison(&mut comparison, "Emaxx", &emaxx.process);
         let timing = compare_runner_timings(&relative, &oracle.process, &emaxx.process);
+        let mut execution_issues = runner_execution_issues(&oracle_report, &oracle.process);
+        execution_issues.extend(runner_execution_issues(&emaxx_report, &emaxx.process));
         write_json(
             &per_file_dir.join("comparison.json"),
             &TimedComparison {
                 comparison: &comparison,
                 timing: &timing,
+                execution_issues: &execution_issues,
             },
             "comparison report",
         )?;
@@ -2000,14 +2047,13 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         mismatching_outcomes += comparison.mismatching_outcomes;
         if comparison.matches {
             matching_files += 1;
-            println!("PASS {}", relative);
         } else {
             mismatches.push(relative.clone());
-            println!("FAIL {}", relative);
-            for issue in &comparison.issues {
-                println!("  [{}] {}", issue.kind, issue.detail);
-            }
         }
+        if !execution_issues.is_empty() {
+            unsuccessful_files.push(relative.clone());
+        }
+        print_file_result(&relative, &comparison, &execution_issues, false);
         if timing.emaxx_at_least_twice_as_slow {
             performance_regressions.push(relative.clone());
             println!(
@@ -2035,6 +2081,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         total_outcomes: matching_outcomes + mismatching_outcomes,
         files: relative_files,
         mismatches,
+        unsuccessful_files,
         name_filter: name_filter_expression.map(ToOwned::to_owned),
         timings,
         performance_regressions,
@@ -2050,11 +2097,12 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         ));
     }
     println!(
-        "TESTS {}/{} matching ({} mismatching) across {} files",
+        "TESTS {}/{} matching ({} mismatching) across {} files; {} files with unsuccessful execution",
         aggregate.matching_outcomes,
         aggregate.total_outcomes,
         aggregate.mismatching_outcomes,
         aggregate.total_files,
+        aggregate.unsuccessful_files.len(),
     );
     verify_run_inputs_unchanged(provenance)?;
     write_json(
@@ -2067,7 +2115,42 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
 }
 
 fn compatibility_exit_status(aggregate: &AggregateReport) -> u8 {
-    u8::from(aggregate.mismatching_files != 0)
+    u8::from(aggregate.mismatching_files != 0 || !aggregate.unsuccessful_files.is_empty())
+}
+
+fn runner_execution_issues(
+    report: &BatchReport,
+    process: &ProcessResult,
+) -> Vec<compat::ComparisonIssue> {
+    let mut issues = compat::report_execution_issues(report);
+    if process.exit_code != Some(0) {
+        issues.push(compat::ComparisonIssue {
+            kind: "process_exit".into(),
+            detail: format!(
+                "{} did not exit successfully: {:?}",
+                report.runner, process.exit_code
+            ),
+        });
+    }
+    issues
+}
+
+fn print_file_result(
+    relative: &str,
+    comparison: &compat::ComparisonReport,
+    execution_issues: &[compat::ComparisonIssue],
+    resumed: bool,
+) {
+    let status = if comparison.matches && execution_issues.is_empty() {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    let suffix = if resumed { " (resumed)" } else { "" };
+    println!("{status} {relative}{suffix}");
+    for issue in comparison.issues.iter().chain(execution_issues) {
+        println!("  [{}] {}", issue.kind, issue.detail);
+    }
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -2802,9 +2885,34 @@ fn configure_isolated_temp_directory(
     command: &mut Command,
     runner: &str,
 ) -> Result<RunnerTempDirectory, String> {
-    let temp_directory = unique_temp_path(&equal_width_runner_label(runner))?;
-    fs::create_dir(&temp_directory)
-        .map_err(|error| format!("create {}: {error}", temp_directory.display()))?;
+    // Darwin's per-user TMPDIR alone can consume most of sun_path. Use a
+    // short, canonical root on Unix, leaving room for upstream's nested
+    // socket names. Canonical paths also keep LSP project identities stable.
+    let root = if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        env::temp_dir()
+    };
+    let root = fs::canonicalize(&root)
+        .map_err(|error| format!("resolve temporary root {}: {error}", root.display()))?;
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    let temp_directory = loop {
+        let mut random = [0u8; 6];
+        getrandom::fill(&mut random)
+            .map_err(|error| format!("generate runner temporary directory name: {error}"))?;
+        let suffix = random.map(|byte| format!("{byte:02x}")).concat();
+        let path = root.join(format!("ec-{}-{suffix}", equal_width_runner_label(runner)));
+        match builder.create(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create {}: {error}", path.display())),
+        }
+    };
     // Keep each side independent of the developer's shared temp directory
     // and of artifacts left by a crashed peer run.  Cover Unix and Windows
     // conventions; unused variables are harmless on either platform.
@@ -2816,22 +2924,12 @@ fn configure_isolated_temp_directory(
     })
 }
 
-fn configure_isolated_source_directory(
-    command: &mut Command,
-    repo_root: &Path,
-) -> Result<(), String> {
-    let mut directory = repo_root.display().to_string();
-    if !directory.ends_with(std::path::MAIN_SEPARATOR) {
-        directory.push(std::path::MAIN_SEPARATOR);
-    }
-    let literal = serde_json::to_string(&directory)
-        .map_err(|error| format!("encode isolated source-directory: {error}"))?;
-    // GNU's dumped `source-directory' points at the checkout that built the
-    // oracle executable.  Override it before loading a test so fixtures under
-    // test/data are resolved inside this run's clean checkout instead.
-    command.arg("--eval");
-    command.arg(format!("(setq source-directory {literal})"));
-    Ok(())
+fn configure_test_environment(command: &mut Command, test_directory: &Path) {
+    compat::configure_upstream_like_env(command, test_directory);
+    // Upstream's test/Makefile runs ERT from test/. Keep relative fixtures
+    // there without changing source-directory: dumped definitions and their
+    // xref locations still belong to the tree that built the editor.
+    command.current_dir(test_directory);
 }
 
 fn configure_isolated_native_comp_cache(
@@ -2871,7 +2969,7 @@ fn run_oracle(
     let helper_path = compat::oracle_helper_path();
     let test_directory = repo_root.join("test");
     let mut command = Command::new(&local.emacs_binary);
-    compat::configure_upstream_like_env(&mut command, &test_directory);
+    configure_test_environment(&mut command, &test_directory);
     let temp_directory = configure_isolated_temp_directory(&mut command, "oracle")?;
     configure_isolated_native_comp_cache(&mut command, &temp_directory.path)?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
@@ -2882,7 +2980,6 @@ fn run_oracle(
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");
     command.arg("--batch");
-    configure_isolated_source_directory(&mut command, repo_root)?;
     command.arg("-L");
     command.arg(&test_directory);
     command.arg("-l");
@@ -2899,7 +2996,11 @@ fn run_oracle(
     let process = run_command(command, timeout, &loaded_marker, Some(&result_path))?;
     let report =
         load_or_synthesize_report(&result_path, "oracle", relative_file, selector, &process)?;
-    Ok(RunnerArtifacts { report, process })
+    Ok(RunnerArtifacts {
+        report,
+        process,
+        temp_directory: temp_directory.path.clone(),
+    })
 }
 
 struct EmaxxRun<'a> {
@@ -2927,7 +3028,7 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     // same tree the oracle reads; the test file still comes from the clone.
     let load_paths = compat::emaxx_upstream_load_path(request.load_path_repo)?;
     let mut command = Command::new(request.binary);
-    compat::configure_upstream_like_env(&mut command, &test_directory);
+    configure_test_environment(&mut command, &test_directory);
     // GNU's dumped standard-Lisp load path retains the tree that built it,
     // even while this test executes in a disposable checkout.  Emaxx reads an
     // isolated copy, so pass the equivalent observable provenance separately
@@ -2957,7 +3058,6 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");
     command.arg("--batch");
-    configure_isolated_source_directory(&mut command, request.test_repo)?;
     for load_path in &load_paths {
         command.arg("-L");
         command.arg(load_path);
@@ -2985,7 +3085,11 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
         request.selector,
         &process,
     )?;
-    Ok(RunnerArtifacts { report, process })
+    Ok(RunnerArtifacts {
+        report,
+        process,
+        temp_directory: temp_directory.path.clone(),
+    })
 }
 
 fn load_or_synthesize_report(
@@ -3612,6 +3716,7 @@ mod tests {
             results: ["foo", "foo-new"]
                 .into_iter()
                 .map(|name| compat::TestOutcome {
+                    expected: Some(true),
                     name: name.into(),
                     status: compat::TestStatus::Passed,
                     condition_type: None,
@@ -3778,6 +3883,7 @@ mod tests {
             mismatching_files: 0,
             files: vec!["a.el".into()],
             mismatches: Vec::new(),
+            unsuccessful_files: Vec::new(),
             name_filter: None,
             timings: Vec::new(),
             performance_regressions: Vec::new(),
@@ -3794,6 +3900,14 @@ mod tests {
         assert_eq!(compatibility_exit_status(&summary), 0);
 
         summary.mismatching_files = 1;
+        assert_eq!(compatibility_exit_status(&summary), 1);
+    }
+
+    #[test]
+    fn matching_results_do_not_hide_unsuccessful_execution() {
+        let mut summary = test_summary();
+        summary.unsuccessful_files.push("a.el".into());
+        assert_eq!(summary.mismatching_files, 0);
         assert_eq!(compatibility_exit_status(&summary), 1);
     }
 
@@ -4330,13 +4444,13 @@ mod tests {
             .expect("configure isolated runner temp directory");
         let configured_path = configured.path.clone();
 
-        assert_eq!(configured_path.parent(), Some(env::temp_dir().as_path()));
+        assert_eq!(configured_path, fs::canonicalize(&configured_path).unwrap());
         assert!(configured_path.is_dir());
         assert!(
             configured_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("emaxx-compat-oracle-"))
+                .is_some_and(|name| name.starts_with("ec-oracle-"))
         );
         let exported = command
             .get_envs()
@@ -4348,31 +4462,31 @@ mod tests {
             assert_eq!(exported.get(variable), Some(&configured_path));
         }
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::net::UnixListener;
+            assert_eq!(
+                fs::metadata(&configured_path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let nested = configured_path.join("server-test-123456");
+            fs::create_dir(&nested).unwrap();
+            let _socket = UnixListener::bind(nested.join("server-test-123456"))
+                .expect("upstream socket names fit within the platform limit");
+        }
+
         drop(configured);
         assert!(!configured_path.exists());
     }
 
     #[test]
-    fn runner_overrides_dumped_source_directory_with_isolated_checkout() {
+    fn runner_uses_upstream_working_directory_without_rewriting_source_provenance() {
         let mut command = Command::new("emacs-test-command");
-        let checkout = Path::new("/tmp/emaxx isolated checkout");
-        configure_isolated_source_directory(&mut command, checkout)
-            .expect("configure isolated source-directory");
-
-        let mut expected_directory = checkout.display().to_string();
-        expected_directory.push(std::path::MAIN_SEPARATOR);
-        let expected_literal = serde_json::to_string(&expected_directory).unwrap();
-        let args = command
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            args,
-            vec![
-                "--eval".to_string(),
-                format!("(setq source-directory {expected_literal})"),
-            ]
-        );
+        let directory = Path::new("/tmp/emaxx isolated checkout/test");
+        configure_test_environment(&mut command, directory);
+        assert_eq!(command.get_current_dir(), Some(directory));
+        assert_eq!(command.get_args().count(), 0);
     }
 
     #[test]
@@ -4516,6 +4630,20 @@ mod tests {
         fs::write(source.join("etc/DOC"), staged_doc_bytes).unwrap();
         checkout.restore().unwrap();
 
+        checkout.prepare_runtime_libraries().unwrap();
+        assert_eq!(
+            fs::canonicalize(checkout.file("lisp/loaddefs.el")).unwrap(),
+            fs::canonicalize(source.join("lisp/loaddefs.el")).unwrap(),
+        );
+        checkout.restore().unwrap();
+        assert!(!checkout.file("lisp").is_symlink());
+        assert_eq!(
+            fs::read_to_string(source.join("lisp/loaddefs.el")).unwrap(),
+            "(generated-pristine)\n"
+        );
+        // Dropping a prepared view must remove only the alias, too.
+        checkout.prepare_runtime_libraries().unwrap();
+
         fs::write(source.join("lisp/loaddefs.el"), "(generated-changed)\n").unwrap();
         fs::write(source.join("etc/charsets/IBM038.map"), "0x82 0x0061\n").unwrap();
         fs::write(source.join("etc/DOC"), "generated-doc-changed\n").unwrap();
@@ -4527,6 +4655,7 @@ mod tests {
         let checkout_root = checkout.root.clone();
         drop(checkout);
         assert!(!checkout_root.exists());
+        assert!(source.join("lisp/loaddefs.el").is_file());
         fs::remove_dir_all(source).unwrap();
     }
 

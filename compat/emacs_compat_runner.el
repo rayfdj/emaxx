@@ -141,6 +141,9 @@ printing test can contaminate the next test's first `prin1-to-string' result."
                  (list
                   (cons 'name (symbol-name (ert-test-name test)))
                   (cons 'status (emaxx-compat--result-status result))
+                  (cons 'expected
+                        (if (ert-test-result-expected-p test result)
+                            t :json-false))
                   (cons 'condition_type
                         (emaxx-compat--result-condition-type result))
                   (cons 'message (emaxx-compat--result-message result)))))

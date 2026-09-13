@@ -258,6 +258,7 @@ impl Interpreter {
                         summary.unexpected += 1;
                     }
                     self.test_results.push(TestOutcome {
+                        expected: Some(test.expected_result != ":failed"),
                         name: test.name.clone(),
                         status: TestStatus::Passed,
                         condition_type: None,
@@ -296,6 +297,7 @@ impl Interpreter {
                         TestStatus::Passed => unreachable!("errors cannot produce passed results"),
                     };
                     self.test_results.push(TestOutcome {
+                        expected: Some(status == TestStatus::Skipped || expected_failure),
                         name: test.name.clone(),
                         status,
                         condition_type: Some(e.condition_type()),
