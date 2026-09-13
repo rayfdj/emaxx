@@ -1,6 +1,13 @@
 # Oracle Test Inventory
 
-Regenerated on 2026-08-26 with:
+Regenerated on 2026-08-26 and extended on 2026-09-14 with 38 module tests.
+The extension comes from the pinned GNU oracle's actual discovery and
+successful ordinary module run, retained in
+`target/compat/run-1789340763686766000-79353/`. All 7,883 previous outcome
+names remain; only the historical module load-error line was replaced.
+The normal runner now builds the unchanged fixture using GNU's Makefile.
+
+Full regeneration, with the documented Rust/clangd prerequisites installed:
 
 ```sh
 cargo run --quiet --bin compat-harness -- list --scope all | tail -n +2 > compat/oracle_tests_all.txt
@@ -37,11 +44,11 @@ Oracle pin:
 
 Counts:
 
-- Harness-selected oracle tests: 7883
+- Harness-selected oracle tests: 7921
 - Source-tree literal `ert-deftest` forms are not the compatibility count.
   Static grep-style counts vary with the pattern used and miss tests generated
   while files load.
-- Files with oracle load errors: 1
+- Files with oracle load errors: 0
 
 Canonical progress denominator and order:
 
@@ -52,14 +59,14 @@ Canonical progress denominator and order:
   awk 'BEGIN{count=0; files=0} /^[^ ].*: discovered=/{files++; next} /^  /{count++} END{print "files", files; print "tests", count}' compat/oracle_tests_all.txt
   ```
 
-- The expected result is `files 518` and `tests 7883`.
+- The expected result is `files 519` and `tests 7921`.
 
 The harness-selected count is the compatibility ordering source. It is not the
 same thing as any count inferred directly from the Emacs source tree because
 Emacs test files can generate tests while loading, and the harness applies ERT
 selection after load.
 
-Load-error files:
+Historical load-error file (resolved by the 2026-09-14 extension):
 
 - `test/src/emacs-module-tests.el`: cannot open `emacs-module-resources/mod-test`
   (needs a separately compiled C dynamic module)

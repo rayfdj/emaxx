@@ -30,7 +30,8 @@ selected tests that never produced a result.
 
 Each run writes `contract.json` before executing files. Resume requires that
 contract to match the current binaries, helper, source/generated Lisp inputs,
-dump images, effective environment, selector, file inventory, and manifest.
+dump images, effective environment, selector, file inventory, manifest, and
+prepared external tools/module inputs.
 Values of inherited environment variables are hashed, not published.
 
 Each completed file has an `execution.json` receipt binding hashes of both
@@ -112,16 +113,67 @@ These controls and logs are in `target/compat-audit-20260914/`. They verify
 the targeted execution/scoring paths, not every possible runtime path. The
 remaining completed upstream runs were not repeated.
 
+## Ordinary prerequisites and inventory extension
+
+The normal `run`, `frozen`, and discovery commands now prepare the same real
+external prerequisites for both editors. Eglot uses Rust 1.75.0 with
+rust-analyzer and rust-src, matching the pinned upstream fixture's
+`rustAnalyzer/Indexing` protocol, and clangd with UTF-16 offsets. Install with:
+
+```sh
+rustup toolchain install 1.75.0 --profile minimal --component rust-analyzer --component rust-src
+```
+
+Clangd must be installed on PATH; `EMAXX_COMPAT_CLANGD` can select its actual
+executable and `EMAXX_COMPAT_RUST_BIN` can select the 1.75 toolchain directory.
+Missing prerequisites stop preflight rather than silently removing tests.
+Tool executables, versions, sysroot contents, generated launchers, and module
+build inputs are recorded and checked after execution. They also bind resume.
+
+Module preparation runs the pinned source's configured GNU Makefile against
+unchanged C source and headers. Each editor gets a separate short installation
+containing its own unchanged executable and dump, the same compiled module,
+and its original relative library layout. This preserves GNU's actual
+`invocation-directory` lookup and portable-image native paths. Long artifact
+paths caused the upstream help test to wrap its filename before abbreviation;
+short installation paths remove that environmental failure without changing
+Lisp variables, expectations, or report messages.
+
+Ordinary Mac validation now includes Eglot (45 passes, seven upstream skips,
+zero unexpected results on each editor) and modules (38 passes each):
+
+- Eglot: `target/compat/run-1789340787561035000-79536/`.
+- Modules: `target/compat/run-1789341049773817000-80892/`.
+
+Together with the earlier file results, this provides incremental ordinary-run
+evidence for all 26 original shared unexpected failures. It is not a final
+frozen certificate. Earlier module attempts exposed missing native paths and
+the help wrapping issue; their failures are retained. An invocation started
+while the harness was rebuilding was stopped before tests and excluded
+(`run-1789340337784221000-78881`).
+
+The Darwin manifest deliberately adds the 38 names actually discovered by GNU,
+replacing only its historical module load error. All previous 7,883 names
+remain: 519 files, 7,921 outcomes, zero load errors. Frozen execution also
+visits all files with zero recorded selected tests, so new selections cannot
+hide in previously omitted files. Linux's inventory remains separately pinned
+until actual Linux discovery is reviewed.
+
 ## Still open
 
-The six Eglot failures need real toolchain/server prerequisites integrated
-into ordinary setup. Module fixture preparation and explicit frozen-manifest
-extension are also outstanding, as are the non-ASCII regexp defect, GNU's SHR
-timeout, and the features-string diagnostics recorded in #69. No baseline
-counts or expected results have been changed by this increment.
+The non-ASCII regexp defect, GNU's SHR timeout, and features-string diagnostics
+remain open in #69. Runtime and native compilation measurements/fixes remain
+tracked in #70 and #71.
 
-Linux Rust checks run in `compat-runner.yml`; those checks are not an ordinary
-Linux frozen-success certificate. Issue #69 remains open until the complete
-ordinary frozen artifacts on both platforms meet its acceptance criteria.
-External tool contents/versions still need to be recorded with the ordinary
-Eglot prerequisites; an unchanged PATH alone does not pin those tools.
+Linux Rust checks for commit `fdca75e` passed, but those checks are not an
+ordinary Linux frozen-success certificate. The new `frozen-run.yml` workflow
+first proposes an explicit Linux oracle pin update: the existing native-ABI
+CI builds pristine GNU revision `636f166c`, whereas the old frozen Linux pin
+names an Ubuntu repack revision. The proposed lock and actual ordinary
+module/Eglot results must be reviewed before committing the Linux inventory.
+Final frozen mode validates the committed lock; it does not repin it.
+The workflow caches build outputs, never compatibility results.
+
+Issue #69 remains open until complete ordinary frozen artifacts on both
+platforms meet its acceptance criteria. Completed valid file evidence is
+retained during iteration; final integration will receive its own full runs.

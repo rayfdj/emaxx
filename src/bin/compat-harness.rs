@@ -1,3 +1,8 @@
+#[path = "compat-harness/prerequisites.rs"]
+mod prerequisites;
+
+use prerequisites::Prerequisites;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -43,17 +48,15 @@ struct FrozenContract {
 const FROZEN_CONTRACT_DARWIN: FrozenContract = FrozenContract {
     platform: "darwin",
     manifest_path: "compat/oracle_tests_all.txt",
-    file_count: 518,
-    load_error_count: 1,
-    outcome_count: 7_883,
-    manifest_sha256: "724913b78150495a73afb852a943f843a17245a96f3bda30f72c490889634353",
+    file_count: 519,
+    load_error_count: 0,
+    outcome_count: 7_921,
+    manifest_sha256: "a1f87443aad516a128001595d7c69fbbaace40b420d8cd1e9e5ec178aa2fd615",
 };
 
-// The Linux contract's universe is byte-identical to Darwin's under the
-// pinned selector (518/1/7,883; the manifests differ only in the absolute
-// path inside the one recorded load-error line), so the two platforms
-// score the same outcome set against their own oracles.  The sha embeds
-// that machine-local path, as Darwin's does.
+// Linux retains its separately pinned inventory until its ordinary module
+// run supplies the corresponding discovery evidence. Never reuse a score
+// or a platform contract merely because its outcome count agrees.
 const FROZEN_CONTRACT_LINUX: FrozenContract = FrozenContract {
     platform: "linux",
     manifest_path: "compat/oracle_tests_all_linux.txt",
@@ -280,6 +283,8 @@ struct RegressionImportLandedArgs {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessResult {
+    #[serde(default)]
+    command: Vec<String>,
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
@@ -311,6 +316,7 @@ struct RunnerArtifacts {
     report: BatchReport,
     process: ProcessResult,
     paths: ReportPaths,
+    inputs: BTreeMap<PathBuf, String>,
 }
 
 /// Record spellings while the directories still exist, including resolved
@@ -332,6 +338,7 @@ struct ExecutionReceipt {
 struct RunnerEvidence {
     process: ProcessResult,
     paths: ReportPaths,
+    inputs: BTreeMap<PathBuf, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -345,6 +352,7 @@ struct RunContract {
     manifest_sha256: Option<String>,
     environment_sha256: String,
     provenance: RunProvenance,
+    prerequisites: prerequisites::Evidence,
 }
 
 #[derive(Debug)]
@@ -798,9 +806,8 @@ impl FrozenCompatibilityManifest {
 
     fn executable_files(&self, repo_root: &Path) -> Result<Vec<PathBuf>, String> {
         self.entries
-            .iter()
-            .filter(|(_, names)| !names.is_empty())
-            .map(|(file, _)| resolve_manifest_path_from_cli(repo_root, file))
+            .keys()
+            .map(|file| resolve_manifest_path_from_cli(repo_root, file))
             .collect()
     }
 
@@ -809,11 +816,7 @@ impl FrozenCompatibilityManifest {
             path: self.contract.manifest_path.into(),
             sha256: self.sha256.clone(),
             recorded_files: self.entries.len(),
-            executed_files: self
-                .entries
-                .values()
-                .filter(|names| !names.is_empty())
-                .count(),
+            executed_files: self.entries.len(),
             historical_load_errors: self.historical_load_errors.len(),
             required_outcomes: self.entries.values().map(Vec::len).sum(),
             compared_outcomes,
@@ -1121,6 +1124,7 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("list")?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
+    let prerequisites = Prerequisites::prepare(&context.local.emacs_repo, &files, &artifact_root)?;
     let oracle_checkout = IsolatedTestCheckout::clone(
         &context.local.emacs_repo,
         &context.lock.emacs_repo_commit,
@@ -1132,15 +1136,17 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
         let per_file_dir = per_file_artifact_dir(&artifact_root, &relative);
         oracle_checkout.restore()?;
         oracle_checkout.prepare_runtime_libraries()?;
-        let oracle = run_oracle(
-            &context.local,
-            &oracle_checkout.checkout,
-            &relative,
-            &oracle_checkout.file(&relative),
-            &selector,
-            &per_file_dir,
+        let oracle = run_oracle(RunnerRequest {
+            binary: &context.local.emacs_binary,
+            load_path_repo: &context.local.emacs_repo,
+            test_repo: &oracle_checkout.checkout,
+            relative_file: &relative,
+            file: &oracle_checkout.file(&relative),
+            selector: &selector,
+            artifact_dir: &per_file_dir,
             timeout,
-        )?;
+            prerequisites: &prerequisites,
+        })?;
         let filtered = compat::filter_report_by_name(&oracle.report, name_filter.as_ref());
         match filtered.file_status {
             FileStatus::Loaded => {
@@ -1166,7 +1172,7 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    prerequisites.verify()
 }
 
 /// A summary from a tree that has not passed the anti-cheat gates is not
@@ -1929,7 +1935,7 @@ fn record_execution(
         }
         write_json(
             &directory.join(format!("{name}.execution.json")),
-            &serde_json::json!({ "process": runner.process, "paths": runner.paths }),
+            &serde_json::json!({ "process": runner.process, "paths": runner.paths, "inputs": runner.inputs }),
             "runner execution evidence",
         )?;
         write_raw_log(&directory.join(format!("{name}.log")), &runner.process)?;
@@ -2002,6 +2008,7 @@ fn resume_execution(
             report,
             process: evidence.process,
             paths: evidence.paths,
+            inputs: evidence.inputs,
         })
     };
     let runners = (read_runner("oracle")?, read_runner("emaxx")?);
@@ -2084,6 +2091,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         frozen_manifest,
         resume_root,
     } = plan;
+    let prerequisites = Prerequisites::prepare(&context.local.emacs_repo, &files, artifact_root)?;
     let contract = RunContract {
         version: 1,
         mode: mode.into(),
@@ -2097,6 +2105,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         manifest_sha256: frozen_manifest.map(|manifest| manifest.sha256.clone()),
         environment_sha256: execution_environment_fingerprint(),
         provenance: provenance.clone(),
+        prerequisites: prerequisites.evidence.clone(),
     };
     if let Some(resume_root) = resume_root {
         validate_resume_contract(resume_root, &contract)?;
@@ -2156,19 +2165,21 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         } else {
             oracle_checkout.restore()?;
             oracle_checkout.prepare_runtime_libraries()?;
-            let oracle = run_oracle(
-                &context.local,
-                &oracle_checkout.checkout,
-                &relative,
-                &oracle_checkout.file(&relative),
+            let oracle = run_oracle(RunnerRequest {
+                binary: &context.local.emacs_binary,
+                load_path_repo: &context.local.emacs_repo,
+                test_repo: &oracle_checkout.checkout,
+                relative_file: &relative,
+                file: &oracle_checkout.file(&relative),
                 selector,
-                &per_file_dir,
+                artifact_dir: &per_file_dir,
                 timeout,
-            )?;
+                prerequisites: &prerequisites,
+            })?;
             emaxx_checkout.restore()?;
             emaxx_checkout.prepare_runtime_libraries()?;
             let emaxx_file = emaxx_checkout.file(&relative);
-            let emaxx = run_emaxx(EmaxxRun {
+            let emaxx = run_emaxx(RunnerRequest {
                 binary: &subject.binary,
                 load_path_repo: &context.local.emacs_repo,
                 test_repo: &emaxx_checkout.checkout,
@@ -2177,6 +2188,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
                 selector,
                 artifact_dir: &per_file_dir,
                 timeout,
+                prerequisites: &prerequisites,
             })?;
 
             // Commit the receipt only after both independent executions and
@@ -2294,6 +2306,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         aggregate.total_files,
         aggregate.unsuccessful_files.len(),
     );
+    prerequisites.verify()?;
     verify_run_inputs_unchanged(provenance)?;
     if execution_environment_fingerprint() != contract.environment_sha256 {
         return Err("execution environment changed during compatibility run".into());
@@ -3121,6 +3134,14 @@ fn configure_isolated_temp_directory(
     command: &mut Command,
     runner: &str,
 ) -> Result<RunnerTempDirectory, String> {
+    let directory = make_runner_temp_directory(runner)?;
+    for variable in ["TMPDIR", "TMP", "TEMP"] {
+        command.env(variable, &directory.path);
+    }
+    Ok(directory)
+}
+
+fn make_runner_temp_directory(runner: &str) -> Result<RunnerTempDirectory, String> {
     // Darwin's per-user TMPDIR alone can consume most of sun_path. Use a
     // short, canonical root on Unix, leaving room for upstream's nested
     // socket names. Canonical paths also keep LSP project identities stable.
@@ -3149,12 +3170,6 @@ fn configure_isolated_temp_directory(
             Err(error) => return Err(format!("create {}: {error}", path.display())),
         }
     };
-    // Keep each side independent of the developer's shared temp directory
-    // and of artifacts left by a crashed peer run.  Cover Unix and Windows
-    // conventions; unused variables are harmless on either platform.
-    for variable in ["TMPDIR", "TMP", "TEMP"] {
-        command.env(variable, &temp_directory);
-    }
     Ok(RunnerTempDirectory {
         path: temp_directory,
     })
@@ -3190,15 +3205,16 @@ fn configure_loaded_marker(command: &mut Command, path: &Path) -> Result<(), Str
     Ok(())
 }
 
-fn run_oracle(
-    local: &OracleLocalConfig,
-    repo_root: &Path,
-    relative_file: &str,
-    file: &Path,
-    selector: &str,
-    per_file_dir: &Path,
-    timeout: Option<Duration>,
-) -> Result<RunnerArtifacts, String> {
+fn run_oracle(request: RunnerRequest<'_>) -> Result<RunnerArtifacts, String> {
+    let repo_root = request.test_repo;
+    let relative_file = request.relative_file;
+    let file = request.file;
+    let selector = request.selector;
+    let per_file_dir = request.artifact_dir;
+    let timeout = request.timeout;
+    let prepared = request
+        .prerequisites
+        .runner(request.binary, "oracle", relative_file)?;
     fs::create_dir_all(per_file_dir)
         .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
     let result_path = per_file_dir.join("oracle.json");
@@ -3206,8 +3222,9 @@ fn run_oracle(
     clear_runner_outputs(&result_path, &loaded_marker)?;
     let helper_path = compat::oracle_helper_path();
     let test_directory = repo_root.join("test");
-    let mut command = Command::new(&local.emacs_binary);
+    let mut command = Command::new(&prepared.binary);
     configure_test_environment(&mut command, &test_directory);
+    request.prerequisites.configure(&mut command)?;
     let temp_directory = configure_isolated_temp_directory(&mut command, "oracle")?;
     configure_isolated_native_comp_cache(&mut command, &temp_directory.path)?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
@@ -3231,19 +3248,21 @@ fn run_oracle(
     command.arg(format!("(emaxx-compat-run (quote {selector}))"));
 
     let process = run_command(command, timeout, &loaded_marker, Some(&result_path))?;
+    prepared.verify()?;
     let report =
         load_or_synthesize_report(&result_path, "oracle", relative_file, selector, &process)?;
     Ok(RunnerArtifacts {
         report,
         process,
         paths: ReportPaths {
-            checkout: path_spellings(repo_root),
+            checkout: runner_path_spellings(repo_root, &prepared),
             temporary: path_spellings(&temp_directory.path),
         },
+        inputs: prepared.inputs,
     })
 }
 
-struct EmaxxRun<'a> {
+struct RunnerRequest<'a> {
     binary: &'a Path,
     load_path_repo: &'a Path,
     test_repo: &'a Path,
@@ -3252,9 +3271,10 @@ struct EmaxxRun<'a> {
     selector: &'a str,
     artifact_dir: &'a Path,
     timeout: Option<Duration>,
+    prerequisites: &'a Prerequisites,
 }
 
-fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
+fn run_emaxx(request: RunnerRequest<'_>) -> Result<RunnerArtifacts, String> {
     fs::create_dir_all(request.artifact_dir)
         .map_err(|error| format!("create {}: {error}", request.artifact_dir.display()))?;
     let result_path = request.artifact_dir.join("emaxx.json");
@@ -3269,8 +3289,12 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     // runners were executing different forms of the same GNU Lisp.  Read the
     // same tree the oracle reads; the test file still comes from the clone.
     let load_paths = compat::emaxx_upstream_load_path(request.load_path_repo)?;
-    let mut command = Command::new(request.binary);
+    let prepared = request
+        .prerequisites
+        .runner(request.binary, "emaxx", request.relative_file)?;
+    let mut command = Command::new(&prepared.binary);
     configure_test_environment(&mut command, &test_directory);
+    request.prerequisites.configure(&mut command)?;
     // GNU's dumped standard-Lisp load path retains the tree that built it,
     // even while this test executes in a disposable checkout.  Emaxx reads an
     // isolated copy, so pass the equivalent observable provenance separately
@@ -3319,6 +3343,7 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
     command.arg(format!("(emaxx-compat-run (quote {}))", request.selector));
 
     let process = run_command(command, request.timeout, &loaded_marker, Some(&result_path))?;
+    prepared.verify()?;
     let report = load_or_synthesize_report(
         &result_path,
         "emaxx",
@@ -3330,10 +3355,19 @@ fn run_emaxx(request: EmaxxRun<'_>) -> Result<RunnerArtifacts, String> {
         report,
         process,
         paths: ReportPaths {
-            checkout: path_spellings(request.test_repo),
+            checkout: runner_path_spellings(request.test_repo, &prepared),
             temporary: path_spellings(&temp_directory.path),
         },
+        inputs: prepared.inputs,
     })
+}
+
+fn runner_path_spellings(checkout: &Path, prepared: &prerequisites::PreparedRunner) -> Vec<String> {
+    let mut forms = path_spellings(checkout);
+    if let Some(root) = &prepared.root {
+        forms.extend(path_spellings(root));
+    }
+    forms
 }
 
 fn clear_runner_outputs(result: &Path, loaded_marker: &Path) -> Result<(), String> {
@@ -3446,6 +3480,10 @@ fn run_command(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    let executed_command = std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     let wall_started = SystemTime::now();
     let started = Instant::now();
     let mut child = command
@@ -3479,6 +3517,7 @@ fn run_command(
                 .and_then(|completed_at| completed_at.duration_since(started_at).ok())
         });
         Ok(ProcessResult {
+            command: executed_command.clone(),
             exit_code,
             stdout,
             stderr,
@@ -3991,6 +4030,7 @@ mod tests {
                 checkout: vec![format!("/checkout-{runner}")],
                 temporary: vec![format!("/scratch-{runner}")],
             },
+            inputs: BTreeMap::new(),
         }
     }
 
@@ -4174,6 +4214,7 @@ mod tests {
             manifest_sha256: Some("manifest".into()),
             environment_sha256: "environment".into(),
             provenance: test_provenance(),
+            prerequisites: prerequisites::Evidence::default(),
         };
         assert!(validate_resume_contract(&root, &current).is_err());
         write_json(&root.join("contract.json"), &current, "test contract").unwrap();
@@ -4281,7 +4322,7 @@ mod tests {
         // Both platform contracts must load against their own pins; the
         // parse itself enforces sha and counts, so a passing load IS the
         // assertion.  The empty-entry expectation is Darwin-specific
-        // (57 of its 518 entries select nothing under the pinned selector:
+        // (57 of its 519 entries select nothing under the pinned selector:
         // 53 hold only :expensive-test/:unstable tests, 4 define no tests).
         let darwin = FrozenCompatibilityManifest::load(&FROZEN_CONTRACT_DARWIN)
             .expect("load darwin frozen manifest");
@@ -4291,10 +4332,45 @@ mod tests {
                 .values()
                 .filter(|names| !names.is_empty())
                 .count(),
-            461
+            462
         );
         FrozenCompatibilityManifest::load(&FROZEN_CONTRACT_LINUX)
             .expect("load linux frozen manifest");
+    }
+
+    #[test]
+    fn frozen_visits_zero_outcome_files_to_detect_new_selection() {
+        let root = unique_temp_path("frozen-empty-file").unwrap();
+        for directory in Scope::All.roots() {
+            fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        fs::write(root.join("test/src/empty.el"), "").unwrap();
+        let manifest = FrozenCompatibilityManifest {
+            contract: &FROZEN_CONTRACT_DARWIN,
+            path: root.join("manifest.txt"),
+            sha256: "test".into(),
+            entries: BTreeMap::from([("test/src/empty.el".into(), Vec::new())]),
+            historical_load_errors: Vec::new(),
+        };
+        assert_eq!(
+            manifest.executable_files(&root).unwrap(),
+            vec![root.join("test/src/empty.el")]
+        );
+        assert_eq!(manifest.evidence(0).executed_files, 1);
+        let mut report = audit_runner("oracle").report;
+        report.file = "test/src/empty.el".into();
+        assert!(
+            prepare_report(
+                &report,
+                "oracle",
+                "test/src/empty.el",
+                "t",
+                Some(&BTreeSet::new()),
+                None
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4366,6 +4442,7 @@ mod tests {
         timeout_phase: Option<TimeoutPhase>,
     ) -> ProcessResult {
         ProcessResult {
+            command: Vec::new(),
             exit_code: timeout_phase.is_none().then_some(0),
             stdout: String::new(),
             stderr: String::new(),
@@ -4663,6 +4740,7 @@ mod tests {
         ));
         let result_path = root.join("test/lisp/example.compat/emaxx.json");
         let process = ProcessResult {
+            command: Vec::new(),
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),

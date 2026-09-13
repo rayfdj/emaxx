@@ -1,0 +1,176 @@
+name: Ordinary frozen compatibility
+on:
+  push:
+    branches: [fix/frozen-run-success]
+    paths:
+      - src/bin/compat-harness/prerequisites.rs
+      - .github/workflows/frozen-run.yml
+  workflow_dispatch:
+    inputs:
+      validation:
+        description: Oracle preparation, affected ordinary files, final frozen run, or full Rust gate
+        type: choice
+        options: [prepare-oracle, affected, frozen, rust]
+        default: affected
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: emaxx
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: emaxx
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: emacs-mirror/emacs
+          ref: 636f166cfc86aa90d63f592fd99f3fdd9ef95ebd
+          path: emacs
+          persist-credentials: false
+      - name: Install recorded oracle and language server prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config texinfo autoconf automake \
+            libgnutls28-dev gnutls-bin gdb libncurses-dev libgccjit-13-dev libgmp-dev libxml2-dev \
+            libsqlite3-dev zlib1g-dev libtree-sitter-dev libx11-dev libxpm-dev \
+            libjpeg-dev libgif-dev libtiff-dev libpng-dev libxft-dev libxrender-dev \
+            libxt-dev liblcms2-dev libharfbuzz-dev libcairo2-dev librsvg2-dev \
+            libwebp-dev libseccomp-dev libasound2-dev libacl1-dev libselinux1-dev clangd
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          rustup toolchain install 1.75.0 --profile minimal --component rust-analyzer --component rust-src
+          rustup default 1.97.1
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: oracle-cache
+        with:
+          path: emacs
+          key: native-abi-oracle-ubuntu24-636f166c-${{ hashFiles('emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs') }}
+      - name: Build GNU with the existing Linux native ABI configuration
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        working-directory: emacs
+        run: |
+          ./autogen.sh
+          python3 - <<'PY'
+          import json, re, shlex, subprocess
+          from pathlib import Path
+          text = Path('../emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs').read_text()
+          options = re.search(r'NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS: &str = ("[^"\n]*");', text)[1]
+          subprocess.run(['./configure', *shlex.split(json.loads(options))], check=True)
+          PY
+          make -j2
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        with:
+          path: emacs
+          key: native-abi-oracle-ubuntu24-636f166c-${{ hashFiles('emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs') }}
+      - name: Verify GNU native ABI and capture its build identity
+        run: |
+          mkdir -p target/frozen-ci/metadata
+          ../emacs/src/emacs -Q --batch --eval \
+            '(prin1 (list emacs-version emacs-repository-version system-type system-configuration-options system-configuration-features))' \
+            > target/frozen-ci/metadata/oracle.txt
+          rustc --edition 2024 -O tools/generate_native_subrs.rs -o /tmp/generate-native-subrs
+          /tmp/generate-native-subrs ../emacs/src ../emacs/src/emacs /tmp/native-subrs.rs
+          rustfmt --edition 2024 /tmp/native-subrs.rs
+          cmp src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs /tmp/native-subrs.rs
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            emaxx/target/debug
+            emaxx/target/gate
+            emaxx/target/compat-subject
+          key: frozen-build-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            frozen-build-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
+      - name: Build current runner and check Rust formatting and lint
+        run: |
+          cargo clean --package emaxx --profile gate
+          cargo build --locked --profile gate --bin compat-harness -j2
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -j2 -- -D warnings
+      - name: Execute the requested normal validation
+        env:
+          VALIDATION: ${{ inputs.validation || 'prepare-oracle' }}
+        run: |
+          mkdir -p target/frozen-ci
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          source = Path('../emacs').resolve()
+          Path('compat/oracle.local.json').write_text(json.dumps({
+              'format_version': 1,
+              'emacs_binary': str(source / 'src/emacs'),
+              'emacs_repo': str(source),
+          }, indent=2) + '\n')
+          PY
+          run_harness() {
+            env -i HOME="$HOME" PATH="$PATH" LANG=C CARGO_BUILD_JOBS=2 \
+              RUST_MIN_STACK=134217728 RUST_TEST_THREADS=1 target/gate/compat-harness "$@"
+          }
+          if [ "$VALIDATION" = prepare-oracle ]; then
+            # Explicit pin proposal for review. This is NOT a frozen certificate:
+            # the old lock describes an Ubuntu source repack, while existing
+            # native CI uses the pristine GNU revision checked out above.
+            cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-before.json
+            run_harness oracle pin --emacs ../emacs/src/emacs --repo ../emacs
+            cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
+          fi
+          case "$VALIDATION" in
+            prepare-oracle|affected)
+              status=0
+              run_harness run --file test/src/emacs-module-tests.el 2>&1 | tee target/frozen-ci/module.log || status=$?
+              run_harness run --file test/lisp/progmodes/eglot-tests.el 2>&1 | tee target/frozen-ci/eglot.log || status=$?
+              exit "$status"
+              ;;
+            frozen)
+              run_harness frozen 2>&1 | tee target/frozen-ci/frozen.log
+              ;;
+            rust)
+              LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
+                python3 tools/serial_grouped_gate.py --scope full --artifact-root target/frozen-ci/rust
+              ;;
+            *)
+              echo "Unknown validation mode: $VALIDATION" >&2
+              exit 2
+              ;;
+          esac
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            emaxx/target/debug
+            emaxx/target/gate
+            emaxx/target/compat-subject
+          key: frozen-build-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+      - name: Collect only this run's raw compatibility evidence
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import re, shutil
+          from pathlib import Path
+          root = Path('target/frozen-ci')
+          for name in ('module', 'eglot', 'frozen'):
+              log = root / f'{name}.log'
+              if not log.exists():
+                  continue
+              for value in re.findall(r'^Artifacts: (.+)$', log.read_text(), re.M):
+                  source = Path(value)
+                  if source.is_dir():
+                      shutil.copytree(source, root / 'compat' / source.name,
+                          ignore=lambda directory, names: [n for n in names if n == 'tools' or n.startswith('runtime-')])
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ordinary-linux-${{ github.sha }}
+          path: emaxx/target/frozen-ci
+          retention-days: 14
