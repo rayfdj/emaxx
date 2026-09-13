@@ -7,8 +7,10 @@ and environment tables. No Rust value layout is exposed to the library.
 Scoped opaque handles root Lisp values during a foreign call; global references
 retain values independently. Module functions and user pointers participate in
 the existing Lisp reachability pass, including their finalizers. Loaded
-libraries stay resident. Reentrant calls use the interpreter's dynamic handler
-stack to preserve signals, throws and pending nonlocal exits. Assertion mode
+libraries stay resident, including after validation errors. On Unix their
+symbols are globally visible, as GNU's module loader requires. Reentrant calls
+use the interpreter's dynamic handler stack to preserve signals, throws and
+pending nonlocal exits. Assertion mode
 checks expired handles and invalid API use; live foreign objects cannot be
 serialized into a portable dump.
 

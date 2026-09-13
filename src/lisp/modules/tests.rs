@@ -1,6 +1,92 @@
 use super::*;
 
 #[test]
+#[cfg(unix)]
+fn module_libraries_keep_global_symbols_after_rejected_load() {
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-module-symbols-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("current time")
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).expect("module fixture directory");
+    let mut libraries = Vec::new();
+    for (name, source) in [
+        ("rejected", "int emaxx_module_rejected_symbol;"),
+        (
+            "valid",
+            "int plugin_is_GPL_compatible; int emaxx_module_valid_symbol;\n\
+             int emacs_module_init(void *runtime) { (void) runtime; return 0; }",
+        ),
+        (
+            "consumer",
+            "#define _GNU_SOURCE 1\n#include <dlfcn.h>\nint plugin_is_GPL_compatible;\n\
+             int emacs_module_init(void *runtime) { (void) runtime;\n\
+               return dlsym(RTLD_DEFAULT, \"emaxx_module_rejected_symbol\") &&\n\
+                      dlsym(RTLD_DEFAULT, \"emaxx_module_valid_symbol\") ? 0 : 17; }",
+        ),
+    ] {
+        let source_path = directory.join(format!("{name}.c"));
+        std::fs::write(&source_path, source).expect("module fixture source");
+        let library = directory.join(format!(
+            "{name}.{}",
+            if cfg!(target_os = "macos") {
+                "dylib"
+            } else {
+                "so"
+            }
+        ));
+        let mut compiler =
+            std::process::Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
+        compiler.env_clear().envs(
+            super::super::eval::initial_process_environment()
+                .iter()
+                .cloned(),
+        );
+        compiler.args(if cfg!(target_os = "macos") {
+            &["-dynamiclib"][..]
+        } else {
+            &["-shared", "-fPIC"][..]
+        });
+        assert!(
+            compiler
+                .arg(&source_path)
+                .arg("-o")
+                .arg(&library)
+                .status()
+                .expect("compile module fixture")
+                .success()
+        );
+        libraries.push(Value::string(&library.to_string_lossy()));
+    }
+    let mut interpreter = Interpreter::new();
+    let mut environment = Env::new();
+    let error =
+        load(&mut interpreter, &libraries[0], &mut environment).expect_err("missing GPL marker");
+    assert_eq!(
+        super::super::eval::error_condition_value(&error)
+            .car()
+            .expect("condition symbol"),
+        Value::symbol("module-not-gpl-compatible")
+    );
+    assert_eq!(
+        load(&mut interpreter, &libraries[1], &mut environment).expect("valid provider"),
+        Value::T
+    );
+    // dynlib.c opens modules with RTLD_GLOBAL. Fmodule_load does not close
+    // an opened library when its GPL or entry-point checks fail either.
+    assert_eq!(
+        load(&mut interpreter, &libraries[2], &mut environment)
+            .expect("both providers remain globally visible"),
+        Value::T
+    );
+    drop(interpreter);
+    std::fs::remove_dir_all(directory).expect("remove module fixtures");
+}
+
+#[test]
 fn module_time_conversion_floors_and_checks_host_range() {
     let mut interpreter = Interpreter::new();
     let mut environment = Env::new();

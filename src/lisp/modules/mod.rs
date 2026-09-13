@@ -368,13 +368,24 @@ pub(crate) fn load(
     let path = primitives::string_like(file)
         .ok_or_else(|| primitives::wrong_type_argument("stringp", file.clone()))?
         .text;
+    // dynlib.c uses global symbols for modules, unlike native Lisp units.
     // SAFETY: module-load explicitly loads caller-selected native code.
-    let library = unsafe { Library::new(&path) }.map_err(|error| {
+    #[cfg(unix)]
+    let library = unsafe {
+        libloading::os::unix::Library::open(Some(&path), libc::RTLD_LAZY | libc::RTLD_GLOBAL)
+            .map(Library::from)
+    };
+    #[cfg(not(unix))]
+    let library = unsafe { Library::new(&path) };
+    let library = Rc::new(library.map_err(|error| {
         condition(
             "module-open-failed",
             [file.clone(), Value::string(&error.to_string())],
         )
-    })?;
+    })?);
+    // Fmodule_load retains every opened library, even when a later GPL,
+    // entry-point or initialization check signals. Its symbols stay visible.
+    interpreter.modules.libraries.push(Rc::clone(&library));
     // SAFETY: symbol types are the documented emacs-module.h declarations.
     let init = unsafe {
         library
@@ -384,9 +395,6 @@ pub(crate) fn load(
             .get::<unsafe extern "C" fn(*mut Runtime) -> c_int>(b"emacs_module_init")
             .map_err(|_| condition("missing-module-init-function", [file.clone()]))?
     };
-    // GNU retains loaded code, including when initialization signals after
-    // installing functions. Keep the library before entering its initializer.
-    interpreter.modules.libraries.push(Rc::new(library));
     let activation = Activation::new(interpreter, environment);
     let mut runtime = Box::new(Runtime {
         size: std::mem::size_of::<Runtime>() as isize,
@@ -485,12 +493,13 @@ pub(crate) fn print_function(interpreter: &Interpreter, id: u64) -> String {
         // SAFETY: dladdr inspects a live function address and initializes INFO.
         if unsafe { libc::dladdr(address, info.as_mut_ptr()) } != 0 {
             let info = unsafe { info.assume_init() };
-            if !info.dli_sname.is_null() {
+            // GNU's dynlib_addr publishes both names only when both exist.
+            // ELF libraries often have a file name but no dynamic symbol
+            // for a static module function; print only its address then.
+            if !info.dli_sname.is_null() && !info.dli_fname.is_null() {
                 description = unsafe { CStr::from_ptr(info.dli_sname) }
                     .to_string_lossy()
                     .into_owned();
-            }
-            if !info.dli_fname.is_null() {
                 library = Some(
                     unsafe { CStr::from_ptr(info.dli_fname) }
                         .to_string_lossy()
