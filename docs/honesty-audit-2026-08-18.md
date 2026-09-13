@@ -10756,3 +10756,69 @@ the gate binary in a scratch directory: fingerprint, dump, and
 `codesign' step itself cannot run here: the Mac's run of the script is
 its receipt, recorded as pending in the ledger and the handover.
 
+## 2026-09-13 Checkpoint 19u: the fingerprint's comparison operand was a second copy of the pattern
+
+*What prompted it.*  With 19t's signing step the Mac's dump completed
+("Dumping fingerprint: 5734a289...") and the binary then refused its
+own image: "desired fingerprint: b7414c7c..., found fingerprint:
+5734a289..., not built for this Emacs executable".  The dumping
+process (`emacs', the script's copy) and the binary beside the image
+(`emaxx') disagreed about a fingerprint that make-fingerprint had
+written into both, identically, before either was signed.
+
+*Read.*  `executable_fingerprint' returns the embedded bytes when they
+differ from lib/fingerprint.c's default pattern and hashes the file
+otherwise (emaxx's own addition: GNU's pdumper.c uses `fingerprint' as
+it stands, a temacs carrying the pattern).  The comparison operand was
+a `const' holding the pattern's complement, complemented again at run
+time -- written that way so that make-fingerprint, which overwrites
+every occurrence of the pattern in the file (lib-src/make-fingerprint.c
+does the same), would find one copy.  At the release optimization level
+the compiler folds the run-time complement back into a 32-byte constant
+equal to the pattern, in a constant pool: a standalone object of the
+function shows two copies at `-C opt-level=3' on both
+x86_64-unknown-linux-gnu and aarch64-apple-darwin (one at `opt-level=2';
+one and one complement with the fix).  make-fingerprint overwrote both
+copies on the Mac, the embedded bytes then equalled the "default", and
+each process hashed its own file -- the two files differ in the ad-hoc
+signature `codesign' writes for each name, hence two fingerprints.  The
+Linux gate build had emitted the comparison without the second copy
+(the fingerprinted binary holds its digest once, and restoring the
+pattern over it reproduces the embedded digest), which is why 19t's
+Linux verification passed and proved nothing about the Mac.
+
+*Fixed.*  The complement is a static read through `read_volatile', as
+the fingerprint itself is; a volatile load is never folded, and the
+file holds the pattern once and its complement once.  The native-comp
+merge (main 1af8cd54, 2026-09-13) carries the same correction, made
+independently there, with a copy-and-resign control in cli_parity
+(`dumped_fingerprint_survives_copying_and_resigning_the_executable');
+rebased onto it, this checkpoint contributes its control and records.
+Control `the_executable_holds_the_default_fingerprint_once' counts the
+pattern (taken from the linked `EMAXX_FINGERPRINT', not written into
+the test) in the test executable's own bytes and requires exactly one
+occurrence.  On Linux that control passes against the old comparison
+too (that build had one copy); it bites where the second copy is
+emitted, so the Mac's gate run is its receipt, with the Mac's image
+build: the dump's fingerprint and `--fingerprint' must agree.
+
+*Verified.*  Image tests and the new control under the gate profile;
+`cargo fmt --check' and strict clippy exit 0 before and after.  Gate:
+grouped gate run-1789285349491287779-3509, alone on the machine, on
+this tree: the ten library groups passed (batch 49, compat_runtime 84,
+eval_01 361, eval_02 284, eval_03 320, eval_04 251, eval_05 351,
+lightweight 422, primitives 474, tty 56, every group 0 failed) and the
+bins stage; its integration stage failed 16 of 17 in tests/cli.rs
+because an image dumped earlier in the session from the previous link
+of the gate binary was still beside the relinked one, which refused it
+("not built for this Emacs executable", exit 1) as emacs.c's load_pdump
+refuses a stale pdmp -- the environment, not the tree, and the
+launcher now clears the images beside the binary before it builds.
+The six integration binaries were run again alone, as the gate user
+under the gate's C locale, on the same tree without the stale image:
+cli 17, cli_parity 5, ert_runner 3, native_comp_identity 1,
+native_thread_continuations 1, package_lifecycle 5, every one 0
+failed.  (A first rerun under the user's C.UTF-8 locale failed two cli
+tests on curved quotes, which GNU also prints under that locale; the
+tests expect the gate's C locale.)
+

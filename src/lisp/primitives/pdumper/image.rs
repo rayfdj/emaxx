@@ -32,7 +32,8 @@ pub(crate) const VERY_LATE_RELOCS: usize = 2;
 /// lib/fingerprint.c's default `fingerprint': the bytes make-fingerprint
 /// looks for in the linked executable and overwrites, in place, with the
 /// executable's SHA-256 (src/Makefile.in's temacs rule; here
-/// tools/build-image.sh).  Stored complemented so that this comparison
+/// tools/build-image.sh).  Stored complemented, and read through a
+/// volatile load like the fingerprint itself, so that this comparison
 /// operand is not a second copy of the pattern for make-fingerprint to
 /// overwrite; the one copy is `EMAXX_FINGERPRINT' below.
 static DEFAULT_FINGERPRINT_COMPLEMENT: [u8; FINGERPRINT_LEN] = [
@@ -555,6 +556,34 @@ pub(crate) const FIXUP_PLACEHOLDER: u64 = 0xDEAD_F00D;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_executable_holds_the_default_fingerprint_once() {
+        // make-fingerprint overwrites every occurrence of the pattern in
+        // the file; the comparison that tells a fingerprinted binary from
+        // a plain build must therefore not be a second occurrence.  This
+        // test binary is never fingerprinted, so its one copy is
+        // `EMAXX_FINGERPRINT' as linked; the pattern is taken from it
+        // rather than written here, which would be a copy of its own.
+        // SAFETY: a volatile read of a live static of the same type.
+        let pattern = unsafe { std::ptr::read_volatile(&raw const EMAXX_FINGERPRINT) };
+        let executable = std::env::current_exe().expect("locate the test executable");
+        let bytes = std::fs::read(executable).expect("read the test executable");
+        let occurrences = bytes
+            .windows(pattern.len())
+            .filter(|window| *window == pattern)
+            .count();
+        assert_eq!(
+            occurrences, 1,
+            "copies of the default fingerprint in the executable"
+        );
+        let mut complement = [0_u8; FINGERPRINT_LEN];
+        for (out, byte) in complement.iter_mut().zip(pattern) {
+            *out = !byte;
+        }
+        assert_ne!(executable_fingerprint(), &pattern);
+        assert_ne!(executable_fingerprint(), &complement);
+    }
 
     #[test]
     fn header_round_trips_through_its_hundred_bytes() {

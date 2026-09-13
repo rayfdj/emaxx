@@ -761,6 +761,15 @@ binary make-fingerprint had written into ("Killed: 9" at the dump and
 at `--fingerprint`), so the Mac had no image and its timings after
 checkpoint 21 were of a binary rebuilding its Lisp state at every
 start.  The Mac's run of the script is the receipt; Linux is unchanged.
+Checkpoint 19u (2026-09-13, for main): the Mac's dump then completed
+and the binary refused the image: the fingerprint comparison's operand
+(the pattern's complement, complemented at run time) was folded by the
+optimizer into a second copy of the pattern, make-fingerprint
+overwrote both, and each process hashed its own differently signed
+file.  The operand is a static read through a volatile load; control
+`the_executable_holds_the_default_fingerprint_once` (it passes on
+Linux against the old code, whose build emitted one copy; the Mac's
+gate run and the agreeing fingerprints are the receipt).
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)
