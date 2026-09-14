@@ -85,7 +85,7 @@ impl ImageBytes {
             // a failed fstat is FILE_NOT_FOUND, and from the size check on
             // everything that goes wrong is BAD_FILE_TYPE ("not a dump
             // file"): a directory opens and cannot be read.
-            let file = std::fs::File::open(path)?;
+            let file = crate::file_system::File::open(path)?;
             let len = usize::try_from(
                 crate::file_system::file_metadata(&file)
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?

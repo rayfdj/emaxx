@@ -153,7 +153,9 @@ fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &En
         interp.keyboard_input.recent_keys.drain(0..excess);
     }
     if let Some(path) = &interp.keyboard_input.dribble_file
-        && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path)
+        && let Ok(mut file) = crate::file_system::OpenOptions::new()
+            .append(true)
+            .open(path)
     {
         let _ = file.write_all(&dribble_event_bytes(event));
         let _ = file.flush();

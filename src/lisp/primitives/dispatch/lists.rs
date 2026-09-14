@@ -2040,7 +2040,7 @@ define_dispatch!(
                     std::fs::remove_file(&path)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                 }
-                let mut options = std::fs::OpenOptions::new();
+                let mut options = crate::file_system::OpenOptions::new();
                 options.write(true).create_new(true);
                 #[cfg(unix)]
                 {

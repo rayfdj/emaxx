@@ -6,6 +6,126 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod common;
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn linux_entrypoint_preserves_arguments_environment_and_exit_status() {
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        let result = Command::new(binary)
+            .args([
+                "-Q", "--batch", "--eval",
+                "(progn (prin1 (list (getenv \"EMAXX_ENTRY_CONTROL\") (member \"λ argument\" command-line-args))) (kill-emacs 23))",
+                "λ argument",
+            ])
+            .env("EMAXX_ENTRY_CONTROL", "env λ")
+            .output()
+            .unwrap();
+        assert_eq!(
+            result.status.code(),
+            Some(23),
+            "{}: {:?}",
+            binary.display(),
+            result
+        );
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            "(\"env λ\" (\"λ argument\"))"
+        );
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn linux_batch_entrypoint_preserves_inherited_sigpipe() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        for ignored in [false, true] {
+            let mut command = Command::new(binary);
+            command.args([
+                "-Q",
+                "--batch",
+                "--eval",
+                "(progn (signal-process (emacs-pid) 'SIGPIPE) (princ \"survived\"))",
+            ]);
+            // SAFETY: only the async-signal-safe signal call runs between
+            // fork and exec, establishing the child's inherited disposition.
+            unsafe {
+                command.pre_exec(move || {
+                    let handler = if ignored {
+                        libc::SIG_IGN
+                    } else {
+                        libc::SIG_DFL
+                    };
+                    if libc::signal(libc::SIGPIPE, handler) == libc::SIG_ERR {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let result = command.output().unwrap();
+            if ignored {
+                assert!(
+                    result.status.success(),
+                    "{}: {:?}",
+                    binary.display(),
+                    result
+                );
+                assert_eq!(result.stdout, b"survived");
+            } else {
+                assert_eq!(
+                    result.status.signal(),
+                    Some(libc::SIGPIPE),
+                    "{}: {:?}",
+                    binary.display(),
+                    result
+                );
+                assert!(result.stdout.is_empty());
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn linux_entrypoint_reserves_closed_standard_descriptors_with_gnu_access_modes() {
+    use std::os::unix::process::CommandExt;
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        for fd in 0..3 {
+            let expected_mode = if fd == 0 {
+                libc::O_WRONLY
+            } else {
+                libc::O_RDONLY
+            };
+            let program = format!(
+                r#"(with-temp-buffer
+                  (insert-file-contents "/proc/self/fdinfo/{fd}")
+                  (goto-char (point-min))
+                  (re-search-forward "^flags:[ \t]*\\([0-7]+\\)")
+                  (kill-emacs (if (= (logand 3 (string-to-number (match-string 1) 8)) {expected_mode}) 0 17)))"#
+            );
+            let mut command = Command::new(binary);
+            command.args(["-Q", "--batch", "--eval", &program]);
+            // SAFETY: close is async-signal-safe. Only the child's selected
+            // standard descriptor is closed before executing the real editor.
+            unsafe {
+                command.pre_exec(move || {
+                    libc::close(fd);
+                    Ok(())
+                });
+            }
+            let result = command.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{} fd {fd}: {:?}",
+                binary.display(),
+                result
+            );
+        }
+    }
+}
+
 fn unique_temp_path(stem: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "{stem}-{}-{}",

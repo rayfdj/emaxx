@@ -80,8 +80,8 @@ pub(crate) fn executable_fingerprint() -> &'static [u8; FINGERPRINT_LEN] {
         // A failed read must never give unrelated binaries the fingerprint
         // of an empty byte string and thereby bypass image validation.
         let executable = std::env::current_exe().expect("locate executable for dump fingerprint");
-        let mut file =
-            std::fs::File::open(executable).expect("open executable for dump fingerprint");
+        let mut file = crate::file_system::File::open(executable)
+            .expect("open executable for dump fingerprint");
         let mut hasher = sha2::Sha256::new();
         // Streamed through io::copy's buffer: reading the 22 MB executable
         // into a vector cost its copy and the first touch of every page on

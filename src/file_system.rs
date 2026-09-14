@@ -7,8 +7,14 @@
 pub(crate) use std::fs::*;
 
 #[cfg(unix)]
+mod owned_file;
+#[cfg(unix)]
+pub(crate) use owned_file::{File, OpenOptions};
+
+#[cfg(unix)]
 pub(crate) use posix::{
     Metadata, file_metadata, metadata, read, read_open_file, read_to_string, symlink_metadata,
+    write,
 };
 
 #[cfg(not(unix))]
@@ -30,8 +36,9 @@ pub(crate) fn is_directory(path: impl AsRef<std::path::Path>) -> bool {
 
 #[cfg(unix)]
 mod posix {
+    use super::File;
     use std::ffi::CString;
-    use std::fs::{File, Permissions};
+    use std::fs::Permissions;
     use std::io::{self, Read};
     use std::mem::MaybeUninit;
     use std::os::fd::AsRawFd;
@@ -231,12 +238,17 @@ mod posix {
         })
     }
 
+    pub(crate) fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<()> {
+        use std::io::Write;
+        File::create(path)?.write_all(contents.as_ref())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
         use std::io::Write;
         use std::os::unix::ffi::OsStringExt;
-        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::{OpenOptionsExt, symlink};
 
         struct TestDirectory(std::path::PathBuf);
 
@@ -261,6 +273,72 @@ mod posix {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
+        }
+
+        #[test]
+        fn posix_file_ownership_preserves_clones_transfers_and_io() {
+            use std::io::{Seek, SeekFrom};
+            use std::os::fd::{FromRawFd, IntoRawFd};
+
+            let directory = TestDirectory::new();
+            let path = directory.path().join("owned");
+            let mut file = super::super::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+                .expect("new owner");
+            file.write_all(b"original").expect("write");
+            file.seek(SeekFrom::Start(0)).expect("rewind");
+            let mut duplicate = file.try_clone().expect("independent descriptor");
+            let descriptor = file.as_raw_fd();
+            drop(file);
+            assert_eq!(unsafe { libc::fcntl(descriptor, libc::F_GETFL) }, -1);
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+            assert_eq!(
+                read_open_file(&mut duplicate).expect("clone survives"),
+                b"original"
+            );
+            let descriptor = duplicate.into_raw_fd();
+            assert_ne!(unsafe { libc::fcntl(descriptor, libc::F_GETFL) }, -1);
+            // SAFETY: into_raw_fd transferred sole ownership to this scope.
+            let mut transferred = unsafe { File::from_raw_fd(descriptor) };
+            transferred.seek(SeekFrom::Start(0)).expect("shared offset");
+            (&transferred).write_all(b"modified").expect("shared write");
+            assert_eq!(read(&path).expect("persisted contents"), b"modified");
+            assert_eq!(transferred.metadata().expect("descriptor status").len(), 8);
+        }
+
+        #[cfg(debug_assertions)]
+        #[test]
+        fn posix_file_drop_rejects_an_externally_closed_descriptor() {
+            use std::os::unix::process::ExitStatusExt;
+
+            const CHILD: &str = "EMAXX_TEST_EXTERNALLY_CLOSED_FILE";
+            if std::env::var_os(CHILD).is_some() {
+                let directory = TestDirectory::new();
+                let file = File::create(directory.path().join("closed")).expect("live owner");
+                // This child deliberately violates the ownership contract to
+                // prove that destruction retains std's fatal I/O-safety check.
+                assert_eq!(unsafe { libc::close(file.as_raw_fd()) }, 0);
+                drop(file);
+                panic!("an invalid owned descriptor was silently accepted");
+            }
+            let result = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "file_system::posix::tests::posix_file_drop_rejects_an_externally_closed_descriptor",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .expect("run isolated invalid-owner control");
+            assert_eq!(result.status.signal(), Some(libc::SIGABRT));
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("IO Safety violation: owned file descriptor already closed")
+            );
         }
 
         #[test]

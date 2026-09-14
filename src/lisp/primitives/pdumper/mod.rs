@@ -154,7 +154,7 @@ fn write_dump(
     }
     let mut file = {
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
+        crate::file_system::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)

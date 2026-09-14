@@ -1,10 +1,16 @@
 #![deny(clippy::unwrap_used)]
+#![cfg_attr(all(target_os = "linux", target_env = "gnu", not(test)), no_main)]
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod linux_startup;
 
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode};
+use std::process::Command;
+#[cfg(not(all(target_os = "linux", target_env = "gnu", not(test))))]
+use std::process::ExitCode;
 
 use emaxx::batch::{self, BatchRunOptions, BatchRunOutcome};
 use emaxx::lisp::DaemonState;
@@ -131,12 +137,26 @@ section of the Emacs manual or the file BUGS.
 "#,
 ];
 
+#[cfg(not(all(target_os = "linux", target_env = "gnu", not(test))))]
 fn main() -> ExitCode {
+    ExitCode::from(main_status())
+}
+
+// glibc runs its normal ELF initialization, including std's documented argv
+// constructor. Own the application entry instead of std's lang_start, whose
+// pthread stack inspection queries affinity before our main can run.
+#[cfg(all(target_os = "linux", target_env = "gnu", not(test)))]
+#[unsafe(no_mangle)]
+extern "C" fn main(_argc: libc::c_int, _argv: *const *const libc::c_char) -> ! {
+    linux_startup::enter(main_status)
+}
+
+fn main_status() -> u8 {
     match try_main() {
-        Ok(code) => ExitCode::from(code),
+        Ok(code) => code,
         Err(error) => {
             eprintln!("{error}");
-            ExitCode::from(2)
+            2
         }
     }
 }
@@ -538,6 +558,8 @@ fn try_main() -> Result<u8, String> {
             BatchRunOutcome::Restart => restart_current_process(),
         };
     }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    linux_startup::ignore_broken_pipe();
     tty::run(&command_line_args, &options).map(|code| code as u8)
 }
 

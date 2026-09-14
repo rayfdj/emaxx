@@ -333,8 +333,8 @@ pub(crate) fn run_external_process(
         // File.
         let (reader, writer) = unsafe {
             (
-                std::fs::File::from_raw_fd(fds[0]),
-                std::fs::File::from_raw_fd(fds[1]),
+                crate::file_system::File::from_raw_fd(fds[0]),
+                crate::file_system::File::from_raw_fd(fds[1]),
             )
         };
         let stderr_end = writer
@@ -349,7 +349,7 @@ pub(crate) fn run_external_process(
         None
     };
     #[cfg(not(unix))]
-    let mixed_output: Option<std::fs::File> = {
+    let mixed_output: Option<crate::file_system::File> = {
         let _ = stderr;
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());

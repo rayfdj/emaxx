@@ -947,7 +947,7 @@ pub(crate) fn load_file_strict_until_or_error(
 pub(crate) fn load_file_strict_opened(
     interp: &mut eval::Interpreter,
     path: &Path,
-    mut file: std::fs::File,
+    mut file: crate::file_system::File,
     history: &str,
 ) -> Result<(), types::LispError> {
     let bytes = crate::file_system::read_open_file(&mut file).map_err(|error| {

@@ -40,7 +40,7 @@ impl TerminalState {
 
 #[derive(Debug)]
 pub(crate) struct TtyDevice {
-    pub file: std::fs::File,
+    pub file: crate::file_system::File,
     pub width: i64,
     pub height: i64,
     pub colors: i64,
@@ -62,7 +62,7 @@ impl TtyDevice {
             os::fd::AsRawFd,
             os::unix::fs::OpenOptionsExt,
         };
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = crate::file_system::OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)

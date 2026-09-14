@@ -1,6 +1,6 @@
+use crate::file_system as fs;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::Child;

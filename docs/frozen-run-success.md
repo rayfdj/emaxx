@@ -469,4 +469,32 @@ work with alternating before/after order, per-case wall/CPU time, raw reports,
 executable/image hashes and unchanged GNU library fingerprints. It emits no
 frozen certificate. Linux's allocator diagnostic builds the actual pre-change
 commit against the same GNU source and libraries. Both editors pass the local
-measurement control; Linux comparison remains pending.
+measurement control. Linux comparison `34803486525` completed four alternating
+pairs, with all actual workload assertions passing. Median wall times for
+before/after are 0.566765/0.701159 seconds for conses (+23.71%),
+0.319650/0.322279 for vectors (+0.82%), 0.198524/0.211833 for strings (+6.70%),
+and 1.637066/1.630392 for evaluation (-0.41%). These measurements expose an
+allocation regression from using libc on Linux; resolving it remains part of
+the performance work. Raw evidence is in `linux-allocator-comparison-deabfbd/`.
+
+Startup GDB run `34803484275` confirms `sched_getaffinity` is called by
+`pthread_getattr_np` from Rust's `lang_start_internal`, before application
+main. The Linux GNU executable now owns its C ABI entry while retaining
+glibc initialization, std's [documented argument constructor](https://doc.rust-lang.org/std/env/fn.args_os.html), standard-stream
+descriptor protection, the kernel's main-stack guard, and the registered
+guarded stack for batch Lisp. Panics cannot unwind through the C entry;
+ordinary return uses std's flushing/cleanup/exit boundary. GNU's inherited
+SIGPIPE behavior is preserved in batch mode. Other target entry points remain
+unchanged. Three real-binary Linux controls cover arguments/environment/exit,
+both inherited SIGPIPE dispositions, and the actual access modes of all three
+initially closed standard descriptors. Linux execution is still required.
+
+Runtime files now retain std's file-opening and I/O implementations inside a
+private owning wrapper. Its debug validity check uses the permitted F_GETFL
+query, then closes exactly once. Descriptor transfers, clones, process pipes,
+and terminal files use the same owner. Invalid ownership still aborts. Six
+filesystem controls, including an isolated intentional invalid-owner child,
+both existing loader-ownership controls, and four pipe/PTY/EOF controls pass
+on macOS; strict Clippy and formatting pass. Further ordinary macOS validation and Linux sandbox tracing
+remain pending. No filter, upstream test, expected outcome, or comparison rule
+was relaxed for either change.

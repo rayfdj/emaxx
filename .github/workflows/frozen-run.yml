@@ -193,9 +193,16 @@ jobs:
                   --output target/frozen-ci/allocator-diagnostics
                 exit 0
               fi
+              control_status=0
+              EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
+                EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
+                cargo test --locked --profile gate --target-dir target/compat-subject \
+                  --test cli -j2 linux_ -- --test-threads=1 \
+                  2>&1 | tee target/frozen-ci/linux-startup-controls.log || control_status=$?
               python3 tools/diagnose_linux_sandbox.py --oracle-source ../emacs \
                 --emaxx target/compat-subject/gate/emaxx \
-                --output target/frozen-ci/sandbox-diagnostics
+                --output target/frozen-ci/sandbox-diagnostics || control_status=$?
+              exit "$control_status"
               ;;
             prepare-oracle|affected)
               if [ "$VALIDATION" = affected ] && [ -n "$VALIDATION_FILE" ]; then
