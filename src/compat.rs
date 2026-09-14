@@ -166,6 +166,12 @@ pub struct TestOutcome {
     /// None identifies older reports which did not retain that evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected: Option<bool>,
+    /// ERT's measured wall duration, retained for diagnosis, never scoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ns: Option<i64>,
+    /// ERT info contexts (including subprocess output) for the raw outcome.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub infos: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1489,6 +1495,8 @@ mod tests {
         // finding 22: condition type alone scored `(wrong-type-argument foo)'
         // as matching `(wrong-type-argument bar)'.
         let outcome = |message: &str| TestOutcome {
+            duration_ns: None,
+            infos: Vec::new(),
             expected: Some(false),
             name: "t".into(),
             status: TestStatus::Failed,
@@ -1584,6 +1592,8 @@ mod tests {
             }],
             selected_tests: vec!["foo".into()],
             results: vec![TestOutcome {
+                duration_ns: None,
+                infos: Vec::new(),
                 expected: Some(true),
                 name: "foo".into(),
                 status: TestStatus::Passed,
@@ -1607,6 +1617,8 @@ mod tests {
             discovered_tests: oracle.discovered_tests.clone(),
             selected_tests: Vec::new(),
             results: vec![TestOutcome {
+                duration_ns: None,
+                infos: Vec::new(),
                 expected: Some(false),
                 name: "foo".into(),
                 status: TestStatus::Failed,
@@ -1660,6 +1672,8 @@ mod tests {
             selected_tests: vec!["foo".into(), "bar".into()],
             results: vec![
                 TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
                     expected: Some(true),
                     name: "foo".into(),
                     status: TestStatus::Passed,
@@ -1667,6 +1681,8 @@ mod tests {
                     message: None,
                 },
                 TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
                     expected: Some(true),
                     name: "bar".into(),
                     status: TestStatus::Skipped,
@@ -1709,6 +1725,8 @@ mod tests {
             results: ["foo", "foo-extra"]
                 .into_iter()
                 .map(|name| TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
                     expected: Some(true),
                     name: name.into(),
                     status: TestStatus::Passed,
@@ -1743,6 +1761,8 @@ mod tests {
         let outcomes = results
             .iter()
             .map(|(name, status, expected, _)| TestOutcome {
+                duration_ns: None,
+                infos: Vec::new(),
                 name: (*name).into(),
                 status: status.clone(),
                 condition_type: None,

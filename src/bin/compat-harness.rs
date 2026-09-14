@@ -4047,6 +4047,8 @@ mod tests {
                 }],
                 selected_tests: vec!["a".into()],
                 results: vec![compat::TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
                     name: "a".into(),
                     status: TestStatus::Passed,
                     expected: Some(true),
@@ -4331,6 +4333,8 @@ mod tests {
             results: ["foo", "foo-new"]
                 .into_iter()
                 .map(|name| compat::TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
                     expected: Some(true),
                     name: name.into(),
                     status: compat::TestStatus::Passed,

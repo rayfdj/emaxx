@@ -146,7 +146,14 @@ printing test can contaminate the next test's first `prin1-to-string' result."
                             t :json-false))
                   (cons 'condition_type
                         (emaxx-compat--result-condition-type result))
-                  (cons 'message (emaxx-compat--result-message result)))))
+                  (cons 'message (emaxx-compat--result-message result))
+                  (cons 'duration_ns
+                        (truncate (* 1000000000 (ert-test-result-duration result))))
+                  (cons 'infos
+                        (vconcat
+                         (when (ert-test-result-with-condition-p result)
+                           (mapcar #'prin1-to-string
+                                   (ert-test-result-with-condition-infos result))))))))
              selected)))
      (cons 'summary
            (list

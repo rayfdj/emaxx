@@ -374,3 +374,18 @@ The CI setup uses Ubuntu's documented application-profile mechanism to grant
 The general host restriction and GNU filters remain unchanged. The profile
 is included in CI metadata. See
 [Ubuntu's restricted user namespace design](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces).
+
+The calling-thread stack change passes the ordinary Mac module file at
+`run-1789348711211568000-28393`: 38 passes, no skips or unexpected outcomes
+in either editor. The contract and all six raw receipt hashes were verified.
+
+Normal raw test outcomes now also preserve ERT's duration (converted from
+its seconds value to integer nanoseconds) and its printed `ert-info` contexts.
+These are diagnostic data, not extra timing precision or scoring inputs.
+They retain subprocess output that previously disappeared behind a bare
+assertion condition and allow descending per-test timing analysis directly
+from ordinary artifacts. A live three-case control independently checks
+pass, upstream expected failure, and skip in both editors, with the failure's
+info retained and numeric durations on all cases. Eighteen comparison controls,
+formatting and strict Clippy pass. Older reports without these optional fields
+remain readable; provenance still rejects reuse across a reporter change.
