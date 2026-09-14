@@ -1758,11 +1758,7 @@ define_dispatch!(
             }
             "current-cpu-time" => {
                 need_args(name, args, 0)?;
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
-                Ok(Value::list([normalize_bigint_value(BigInt::from(nanos))]))
+                super::misc::current_cpu_time_value()
             }
             "emacs-pid" => {
                 need_args(name, args, 0)?;

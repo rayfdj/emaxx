@@ -1736,6 +1736,20 @@ fn current_time_and_a_nil_time_convert_form_follow_current_time_list() {
 }
 
 #[test]
+fn current_cpu_time_returns_a_readable_tick_pair_in_both_time_modes() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar (lambda (current-time-list)
+                     (let ((cpu (current-cpu-time)))
+                       (list (consp cpu) (integerp (car cpu))
+                             (integerp (cdr cpu)) (> (cdr cpu) 0)
+                             (floatp (float-time cpu)))))
+                   '(nil t))"#,
+        "((t t t t t) (t t t t t))",
+        "current-cpu-time tick pair",
+    );
+}
+
+#[test]
 fn symbol_fast_paths_preserve_nil_and_t_identity() {
     // fns.c:Fget compares property keys with EQ. lread.c:Fmapatoms hands
     // the actual obarray symbols to the callback, including false nil.

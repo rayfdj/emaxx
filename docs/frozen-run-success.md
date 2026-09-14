@@ -331,3 +331,16 @@ reports 406 passed and zero skipped/unexpected in each editor. The contract,
 six raw receipt hashes, outcome uniqueness, and expectedness were verified;
 `linux-buffer-ownership-evidence.json` records that review. Linux formatting,
 Clippy, and runner controls also passed at `3447fda` (CI `34791551669`).
+
+Compiler-child profiling exposed a separate runtime defect before usable CPU
+measurements could be collected: `current-cpu-time` returned wall-clock
+nanoseconds in a one-element list, which `float-time` could not read. It now
+returns a CPU `(TICKS . HZ)` pair independently of `current-time-list`. On
+Unix it shares actual process resource accounting with `get-internal-run-time`;
+that existing primitive retains its old-style list result. The GNU/interpreter
+shape and conversion control passes in both time-list modes. Independent
+running-binary probes after a 300 ms sleep recorded about 0.5 ms GNU / 1.0 ms
+Emaxx CPU, followed by positive CPU time for actual work. Neither reports
+sleep as CPU. Raw measurements and executable hashes are in
+`cpu-time-behavior.json`; strict Clippy and formatting pass. Compiler profiling
+continues from its one-case pilot, without rerunning all 177 tests.

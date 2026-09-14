@@ -1602,7 +1602,7 @@ define_dispatch!(
 );
 
 #[cfg(unix)]
-fn process_cpu_time_value() -> Result<Value, LispError> {
+fn process_cpu_time_parts() -> Result<(i64, i64), LispError> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
     // SAFETY: getrusage initializes the pointed-to rusage structure and does
     // not retain the pointer.
@@ -1625,6 +1625,43 @@ fn process_cpu_time_value() -> Result<Value, LispError> {
         seconds += micros / 1_000_000;
         micros %= 1_000_000;
     }
+    Ok((seconds, micros))
+}
+
+#[cfg(unix)]
+pub(super) fn current_cpu_time_value() -> Result<Value, LispError> {
+    // timefns.c:Fcurrent_cpu_time reports the current process's user plus
+    // system CPU time as (TICKS . HZ), independently of current-time-list.
+    // Kernel resource accounting gives that CPU total at microsecond
+    // resolution, excluding elapsed sleep and subprocess CPU time.
+    let (seconds, micros) = process_cpu_time_parts()?;
+    Ok(Value::cons(
+        normalize_bigint_value(BigInt::from(seconds) * 1_000_000 + micros),
+        Value::Integer(1_000_000),
+    ))
+}
+
+#[cfg(windows)]
+pub(super) fn current_cpu_time_value() -> Result<Value, LispError> {
+    // The Windows C runtime clock uses 1000 ticks per second, as in GNU.
+    // SAFETY: clock takes no arguments and retains no pointers.
+    let ticks = unsafe { libc::clock() };
+    Ok(Value::cons(
+        Value::Integer(i64::from(ticks)),
+        Value::Integer(1000),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn current_cpu_time_value() -> Result<Value, LispError> {
+    Err(LispError::Signal(
+        "Process CPU clock is unavailable on this platform".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn process_cpu_time_value() -> Result<Value, LispError> {
+    let (seconds, micros) = process_cpu_time_parts()?;
     Ok(Value::list([
         Value::Integer(seconds >> 16),
         Value::Integer(seconds & 0xffff),
