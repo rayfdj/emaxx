@@ -1,0 +1,99 @@
+name: Report retained compiler samples
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: emaxx
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: emaxx
+          persist-credentials: false
+      - name: Restore the exact recorded executable cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            emaxx/target/debug
+            emaxx/target/gate
+            emaxx/target/compat-subject
+          key: frozen-build-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-f5b77361e1e97951aa36fd8d78a84cfc0c89bf90
+          fail-on-cache-miss: true
+      - name: Restore the recorded GNU executable
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: emacs
+          key: native-abi-oracle-ubuntu24-636f166c-${{ hashFiles('emaxx/src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs') }}
+          fail-on-cache-miss: true
+      - name: Install the report reader
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-tools-generic
+      - name: Verify retained samples and their original executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p target/compiler-profile-report
+          gh run view 34810712814 --repo rayfdj/emaxx --json headSha,status,conclusion \
+            > target/compiler-profile-report/source-run.json
+          gh run download 34810712814 --repo rayfdj/emaxx --dir target/compiler-profile-source
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          report = Path('target/compiler-profile-report')
+          run = json.loads((report / 'source-run.json').read_text())
+          assert run['status'] == 'completed'
+          assert run['headSha'] == 'f5b77361e1e97951aa36fd8d78a84cfc0c89bf90'
+          root = Path('target/compiler-profile-source') / ('ordinary-linux-' + run['headSha'])
+          evidence = json.loads((root / 'compiler-samples/evidence.json').read_text())
+          assert evidence['inputs_verified_after_execution'] is True
+          def digest(path):
+              with path.open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+          for name, expected in evidence['output_sha256'].items():
+              assert digest(root / 'compiler-samples' / name) == expected, name
+          binaries = {}
+          for path, expected in evidence['input_sha256'].items():
+              if path.endswith('/emaxx') or path.endswith('/src/emacs'):
+                  assert digest(Path(path)) == expected, path
+                  binaries[path] = expected
+          assert len(binaries) == 2
+          samples = root / 'compiler-perf.data'
+          expected = 'ef6c9cfc4d54e9c3cf3224ca3d93417812c96b2e3b42f860551187b7af746178'
+          assert digest(samples) == expected
+          (report / 'verified-inputs.json').write_text(json.dumps({
+              'sample_sha256': expected, 'executables': binaries,
+              'scope': 'Offline reports of existing samples; no editor or test execution',
+              'limitation': 'Other shared objects may be unavailable for symbol resolution'
+          }, indent=2) + '\n')
+          PY
+      - name: Render the existing profile without executing its workload
+        run: |
+          perf_binary=$(python3 - <<'PY'
+          from pathlib import Path
+          print(sorted(Path('/usr/lib/linux-tools').glob('*/perf'))[-1].resolve(strict=True))
+          PY
+          )
+          samples=target/compiler-profile-source/ordinary-linux-f5b77361e1e97951aa36fd8d78a84cfc0c89bf90/compiler-perf.data
+          "$perf_binary" buildid-list -i "$samples" > target/compiler-profile-report/buildids.txt
+          timeout 180 "$perf_binary" report --stdio --no-children --percent-limit 0.2 \
+            -i "$samples" --sort comm,dso,symbol \
+            > target/compiler-profile-report/self.txt 2> target/compiler-profile-report/self-stderr.txt
+          timeout 180 "$perf_binary" report --stdio --children --percent-limit 0.5 \
+            -i "$samples" --sort comm,dso,symbol \
+            > target/compiler-profile-report/callers.txt 2> target/compiler-profile-report/callers-stderr.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: retained-compiler-profile-report
+          path: emaxx/target/compiler-profile-report
+          retention-days: 14

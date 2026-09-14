@@ -217,10 +217,10 @@ jobs:
                 if [ "$sample_status" -ne 0 ]; then
                   exit "$sample_status"
                 fi
-                sudo "$perf_binary" report --stdio --no-children \
+                "$perf_binary" report --stdio --no-children \
                   -i target/frozen-ci/compiler-perf.data --sort comm,dso,symbol \
                   > target/frozen-ci/compiler-perf-self.txt
-                sudo "$perf_binary" report --stdio --children --percent-limit 0.5 \
+                "$perf_binary" report --stdio --children --percent-limit 0.5 \
                   -i target/frozen-ci/compiler-perf.data --sort comm,dso,symbol \
                   > target/frozen-ci/compiler-perf-callers.txt
                 exit 0
