@@ -119,34 +119,6 @@ pub(crate) fn simple_upcase_char(code: u32) -> u32 {
     }
 }
 
-pub(crate) fn simple_downcase_char(code: u32, final_sigma: bool) -> u32 {
-    let code = normalize_case_key(code);
-    match code {
-        0x1E9E => 0x00DF,
-        0x0130 => 0x0069,
-        0x01C4 | 0x01C5 => 0x01C6,
-        0x03A3 => {
-            if final_sigma {
-                0x03C2
-            } else {
-                0x03C3
-            }
-        }
-        0x2167 => 0x2177,
-        _ if is_raw_like_byte_char(code) => code,
-        _ => char::from_u32(code)
-            .map(|ch| single_char_case_mapping(ch.to_lowercase(), code))
-            .unwrap_or(code),
-    }
-}
-
-pub(crate) fn simple_titlecase_char(code: u32) -> u32 {
-    // Without the loaded `titlecase' uniprop table there is nothing to
-    // consult, so this degrades to upcase exactly as casefiddle.c does with a
-    // nil table.  Callers holding a CasingContext go through it instead.
-    simple_upcase_char(normalize_case_key(code))
-}
-
 /// casefiddle.c's `struct casing_context': the Unicode property tables the
 /// current casing operation may consult, resolved once up front.  GNU builds
 /// this per operation (`prepare_casing_context'), never per character, and
@@ -203,15 +175,6 @@ impl CasingContext {
     }
 }
 
-pub(crate) fn case_table_default_value(subtype: Option<&str>, key: u32) -> Option<Value> {
-    let mapped = match subtype {
-        Some("case-table") => simple_downcase_char(key, false),
-        Some("case-table-up") => simple_upcase_char(key),
-        _ => return None,
-    };
-    Some(Value::Integer(denormalize_case_key(key, mapped) as i64))
-}
-
 pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u64), LispError> {
     let down = interp.current_case_table_id();
     let up = match interp.char_table_extra_slot(down, 0) {
@@ -221,11 +184,7 @@ pub(crate) fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u
     Ok((down, up))
 }
 
-pub(crate) fn explicit_case_table_mapping(
-    interp: &Interpreter,
-    table_id: u64,
-    code: u32,
-) -> Option<u32> {
+pub(crate) fn case_table_mapping(interp: &Interpreter, table_id: u64, code: u32) -> Option<u32> {
     for candidate in [Some(code), alternate_case_key(code)].into_iter().flatten() {
         let Some(Value::Integer(mapped)) = interp.char_table_explicit_get(table_id, candidate)
         else {
@@ -234,7 +193,29 @@ pub(crate) fn explicit_case_table_mapping(
         let mapped = u32::try_from(mapped).ok()?;
         return Some(normalize_case_key(mapped));
     }
-    None
+    interp
+        .char_table_get(table_id, code)
+        .and_then(|value| value.as_integer().ok())
+        .and_then(|mapped| u32::try_from(mapped).ok())
+        .map(normalize_case_key)
+}
+
+/// buffer.h: uppercasep and lowercasep use the current case tables, not
+/// Unicode character properties. A character can belong to only one class.
+pub(crate) fn current_case_classes(interp: &Interpreter, code: u32) -> (bool, bool) {
+    let Some(down) = interp.initialized_current_case_table_id() else {
+        return (matches!(code, 0x61..=0x7a), matches!(code, 0x41..=0x5a));
+    };
+    let original = normalize_case_key(code);
+    let uppercase = case_table_mapping(interp, down, code).unwrap_or(original) != original;
+    let lowercase = !uppercase
+        && match interp.char_table_extra_slot(down, 0) {
+            Some(Value::CharTable(up)) => {
+                case_table_mapping(interp, up, code).unwrap_or(original) != original
+            }
+            _ => false,
+        };
+    (lowercase, uppercase)
 }
 
 pub(crate) fn case_symbols_as_words_enabled(interp: &Interpreter, env: &Env) -> bool {
@@ -257,15 +238,12 @@ pub(crate) fn full_upcase_string(
     if let Some(mapped) = context.special_string(interp, "special-uppercase", code) {
         return mapped;
     }
-    if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
+    if let Some(mapped) = case_table_mapping(interp, up_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
             .unwrap_or(ch)
             .to_string();
     }
-    match code {
-        _ if is_raw_like_byte_char(code) => ch.to_string(),
-        _ => ch.to_uppercase().collect(),
-    }
+    ch.to_string()
 }
 
 pub(crate) fn full_downcase_string(
@@ -276,26 +254,19 @@ pub(crate) fn full_downcase_string(
     final_sigma: bool,
 ) -> String {
     let code = ch as u32;
-    // casefiddle.c:case_character post-processes a down-cased capital sigma
-    // at end of word into final sigma, overriding whatever the case table
-    // produced for the character itself.
-    if code == 0x03A3 && final_sigma {
-        return '\u{03C2}'.to_string();
-    }
-    if let Some(mapped) = context.special_string(interp, "special-lowercase", code) {
-        return mapped;
-    }
-    if let Some(mapped) = explicit_case_table_mapping(interp, down_table, code) {
-        return char::from_u32(denormalize_case_key(code, mapped))
-            .unwrap_or(ch)
-            .to_string();
-    }
-    match code {
-        0x03A3 => char::from_u32(simple_downcase_char(code, final_sigma))
-            .unwrap_or(ch)
-            .to_string(),
-        _ if is_raw_like_byte_char(code) => ch.to_string(),
-        _ => ch.to_lowercase().collect(),
+    let mapped = context
+        .special_string(interp, "special-lowercase", code)
+        .unwrap_or_else(|| {
+            case_table_mapping(interp, down_table, code)
+                .and_then(|mapped| char::from_u32(denormalize_case_key(code, mapped)))
+                .unwrap_or(ch)
+                .to_string()
+        });
+    // casefiddle.c applies final sigma only if casing actually changed it.
+    if code == 0x03A3 && final_sigma && mapped != ch.to_string() {
+        '\u{03C2}'.to_string()
+    } else {
+        mapped
     }
 }
 
@@ -314,17 +285,12 @@ pub(crate) fn full_titlecase_string(
     if let Some(mapped) = context.titlecase_char(interp, code) {
         return char::from_u32(mapped).unwrap_or(ch).to_string();
     }
-    if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
+    if let Some(mapped) = case_table_mapping(interp, up_table, code) {
         return char::from_u32(denormalize_case_key(code, mapped))
             .unwrap_or(ch)
             .to_string();
     }
-    match code {
-        _ if is_raw_like_byte_char(code) => ch.to_string(),
-        _ => char::from_u32(denormalize_case_key(code, simple_titlecase_char(code)))
-            .unwrap_or(ch)
-            .to_string(),
-    }
+    ch.to_string()
 }
 
 pub(crate) fn simple_case_char_for_action(
@@ -336,16 +302,14 @@ pub(crate) fn simple_case_char_for_action(
     action: CaseAction,
 ) -> u32 {
     let mapped = match action {
-        CaseAction::Up => explicit_case_table_mapping(interp, up_table, code)
-            .unwrap_or_else(|| simple_upcase_char(code)),
-        CaseAction::Down => explicit_case_table_mapping(interp, down_table, code)
-            .unwrap_or_else(|| simple_downcase_char(code, false)),
+        CaseAction::Up => case_table_mapping(interp, up_table, code).unwrap_or(code),
+        CaseAction::Down => case_table_mapping(interp, down_table, code).unwrap_or(code),
         // casefiddle.c:case_character_impl checks the `titlecase' uniprop
         // before falling back to the case-table upcase mapping.
         CaseAction::Capitalize | CaseAction::UpcaseInitials => context
             .titlecase_char(interp, code)
-            .or_else(|| explicit_case_table_mapping(interp, up_table, code))
-            .unwrap_or_else(|| simple_titlecase_char(code)),
+            .or_else(|| case_table_mapping(interp, up_table, code))
+            .unwrap_or(code),
     };
     denormalize_case_key(code, mapped)
 }
@@ -360,7 +324,6 @@ pub(crate) fn casify_string(
     let context = CasingContext::prepare(interp, action, env);
     let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
     let (down_table, up_table) = current_case_table_ids(interp)?;
-    let ascii_only = interp.is_ascii_case_table(down_table);
     let chars: Vec<char> = input.chars().collect();
     let mut output = String::new();
     let mut in_word = false;
@@ -370,39 +333,23 @@ pub(crate) fn casify_string(
             .get(idx + 1)
             .copied()
             .is_some_and(|next| case_word_char(interp, next, case_symbols_as_words));
-        let explicit_non_ascii_mapping = match action {
-            CaseAction::Down => explicit_case_table_mapping(interp, down_table, ch as u32),
-            CaseAction::Up | CaseAction::Capitalize | CaseAction::UpcaseInitials => {
-                explicit_case_table_mapping(interp, up_table, ch as u32)
+        let piece = match action {
+            CaseAction::Up => full_upcase_string(interp, &context, up_table, ch),
+            CaseAction::Down => {
+                full_downcase_string(interp, &context, down_table, ch, in_word && !next_is_word)
             }
-        };
-        let piece = if ascii_only && !ch.is_ascii() && explicit_non_ascii_mapping.is_none() {
-            ch.to_string()
-        } else {
-            match action {
-                CaseAction::Up => full_upcase_string(interp, &context, up_table, ch),
-                CaseAction::Down => {
+            CaseAction::Capitalize => {
+                if is_word && !in_word {
+                    full_titlecase_string(interp, &context, up_table, ch)
+                } else {
                     full_downcase_string(interp, &context, down_table, ch, in_word && !next_is_word)
                 }
-                CaseAction::Capitalize => {
-                    if is_word && !in_word {
-                        full_titlecase_string(interp, &context, up_table, ch)
-                    } else {
-                        full_downcase_string(
-                            interp,
-                            &context,
-                            down_table,
-                            ch,
-                            in_word && !next_is_word,
-                        )
-                    }
-                }
-                CaseAction::UpcaseInitials => {
-                    if is_word && !in_word {
-                        full_titlecase_string(interp, &context, up_table, ch)
-                    } else {
-                        ch.to_string()
-                    }
+            }
+            CaseAction::UpcaseInitials => {
+                if is_word && !in_word {
+                    full_titlecase_string(interp, &context, up_table, ch)
+                } else {
+                    ch.to_string()
                 }
             }
         };

@@ -155,7 +155,6 @@ mod window;
 pub(crate) use super::eval::is_special_form_name;
 pub(crate) use accessors_random::*;
 pub(crate) use buffers::*;
-pub(crate) use case::case_table_default_value;
 pub(crate) use case::*;
 pub(crate) use coding::*;
 pub(crate) use color_lcms::*;

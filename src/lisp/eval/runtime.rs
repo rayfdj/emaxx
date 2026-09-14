@@ -2091,13 +2091,13 @@ impl Interpreter {
     }
 
     /// The (id, stamp) of TABLE_ID and of every table it inherits from,
-    /// the table first: the identity of everything a syntax rendering of
-    /// the table reads.  A write to any of them, including a change of a
+    /// the table first: the identity of everything an inherited lookup of
+    /// the table reads. A write to any of them, including a change of a
     /// parent link, passes through `find_char_table_mut' and changes the
     /// stamp of the table written.  A missing table contributes a stamp of
     /// zero, which no live table ever carries.
-    pub(crate) fn syntax_table_chain_signature(&self, table_id: u64) -> SyntaxChainSignature {
-        let mut chain = SyntaxChainSignature::with_capacity(2);
+    pub(crate) fn char_table_chain_signature(&self, table_id: u64) -> CharTableChainSignature {
+        let mut chain = CharTableChainSignature::with_capacity(2);
         let mut current = Some(table_id);
         while let Some(id) = current {
             if chain.iter().any(|(seen, _)| *seen == id) {
@@ -2114,7 +2114,7 @@ impl Interpreter {
     }
 
     pub(crate) fn cached_regexp_syntax_classes(&self, table_id: u64) -> Option<[String; 16]> {
-        let chain = self.syntax_table_chain_signature(table_id);
+        let chain = self.char_table_chain_signature(table_id);
         self.regexp_syntax_class_cache
             .borrow()
             .iter()
@@ -2125,7 +2125,7 @@ impl Interpreter {
     /// The hash of the table's sixteen class renderings as cached: what a
     /// syntax-dependent pattern's translation reads from the table.
     pub(crate) fn cached_regexp_syntax_classes_hash(&self, table_id: u64) -> Option<u64> {
-        let chain = self.syntax_table_chain_signature(table_id);
+        let chain = self.char_table_chain_signature(table_id);
         self.regexp_syntax_class_cache
             .borrow()
             .iter()
@@ -2139,7 +2139,7 @@ impl Interpreter {
     /// signature; a change of what a table holds passes through the table
     /// door and so changes that signature.
     pub(crate) fn syntax_table_chain_has_mutable_entries(&self, table_id: u64) -> bool {
-        let chain = self.syntax_table_chain_signature(table_id);
+        let chain = self.char_table_chain_signature(table_id);
         if let Some((_, _, answer)) = self
             .syntax_table_mutable_entries_cache
             .borrow()
@@ -2179,7 +2179,7 @@ impl Interpreter {
         &self,
         table_id: u64,
     ) -> Option<std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>> {
-        let chain = self.syntax_table_chain_signature(table_id);
+        let chain = self.char_table_chain_signature(table_id);
         self.syntax_segment_cache
             .borrow()
             .as_ref()
@@ -2194,7 +2194,7 @@ impl Interpreter {
     ) {
         *self.syntax_segment_cache.borrow_mut() = Some(crate::lisp::eval::SyntaxSegmentCache {
             table_id,
-            chain: self.syntax_table_chain_signature(table_id),
+            chain: self.char_table_chain_signature(table_id),
             segments,
         });
     }
@@ -2202,7 +2202,7 @@ impl Interpreter {
     pub(crate) fn cache_regexp_syntax_classes(&self, table_id: u64, rendered: [String; 16]) {
         // A few tables at a time: a mode that swaps its syntax table around
         // a scan (cc-mode's `c-with-syntax-table') keeps both renderings.
-        let chain = self.syntax_table_chain_signature(table_id);
+        let chain = self.char_table_chain_signature(table_id);
         let mut cache = self.regexp_syntax_class_cache.borrow_mut();
         cache.retain(|entry| entry.table_id != table_id);
         if cache.len() >= 8 {
@@ -2272,11 +2272,6 @@ impl Interpreter {
         if table.id == self.standard_syntax_table_id
             && table.default.is_nil()
             && let Some(value) = primitives::standard_syntax_table_default_value(key)
-        {
-            return Some(value);
-        }
-        if table.default.is_nil()
-            && let Some(value) = primitives::case_table_default_value(table.subtype.as_deref(), key)
         {
             return Some(value);
         }

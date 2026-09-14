@@ -14,8 +14,7 @@ fn replacement_case_action(
 
     for character in matched.chars() {
         let code = character as u32;
-        let lowercase = simple_upcase_char(code) != code;
-        let uppercase = simple_downcase_char(code, false) != code;
+        let (lowercase, uppercase) = current_case_classes(interp, code);
         if lowercase {
             some_lowercase = true;
             if previous_is_word {

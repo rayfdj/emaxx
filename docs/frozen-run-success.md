@@ -549,3 +549,31 @@ terminate with SIGABRT under the same recorded systemd core policy and
 `coredump_filter=00000033`. This establishes reservation size as a cause of the
 runner's crash latency. It does not establish that a smaller editor stack is
 safe: the cons teardown work and ordinary module validation remain required.
+
+The case-table audit found that GNU's `characters.el` deliberately leaves
+non-ASCII-to-ASCII mappings unset, while Emaxx supplied Unicode fallbacks.
+Standard tables now start with GNU's ASCII entries and ordinary nil defaults;
+unchanged GNU Lisp initializes the other mappings. Casing respects actual
+table entries while retaining GNU special/titlecase properties, and final
+sigma requires an actual case change. Lower/upper regexp classes use current
+table predicates, with their union for case-folded matching. Cache keys include
+the down/up tables and parent write stamps even when case folding is disabled.
+Replacement-case classification uses these same predicates.
+
+Six live-GNU/byte8/ASCII/property controls pass. Independent probes agree
+byte-for-byte on the deliberately unset mappings and on switching/mutating
+custom tables. Ordinary Mac regex tests pass 34/34, search 1/1, and casefiddle
+10 passes plus one identical upstream skip, all with zero unexpected outcomes.
+Runs are `run-1789360859451348000-38673`, `run-1789360913431602000-38896`,
+and `run-1789360951970247000-39124`; `ordinary-case-table-evidence.json`
+verifies all 18 raw receipts and their contracts. The first casefiddle launch
+was refused by the subject lock before testing; only that unexecuted file was
+retried. Formatting and strict Clippy pass; Linux validation remains required.
+
+A further adversarial audit found a real success stub in SQLite extension
+loading: Emaxx returned true for an existing allowed filename without loading
+it. A plain-text `pcre.dylib` returns `t` in the published Emaxx binary and
+`nil` in GNU, with both raw probes retained under `sqlite-extension-audit/`.
+The upstream test can miss this because optional modules may be absent.
+This remains open until actual loading and an executable extension control
+replace the stub; it prevents a complete anti-cheating assurance.

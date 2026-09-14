@@ -1045,31 +1045,60 @@ impl Interpreter {
         if let Some(id) = self.standard_case_table_id {
             return id;
         }
-        let Value::CharTable(down_id) = self.make_char_table(Some("case-table".into()), Value::Nil)
-        else {
-            unreachable!("make_char_table returns a char-table");
+        let make = |interp: &mut Self| {
+            let Value::CharTable(id) =
+                interp.make_char_table(Some("case-table".into()), Value::Nil)
+            else {
+                unreachable!("make_char_table returns a char-table");
+            };
+            id
         };
-        let Value::CharTable(up_id) =
-            self.make_char_table(Some("case-table-up".into()), Value::Nil)
-        else {
-            unreachable!("make_char_table returns a char-table");
-        };
-        self.set_char_table_extra_slot(down_id, 0, Value::CharTable(up_id))
-            .expect("new case table accepts upcase slot");
+        let down_id = make(self);
+        let up_id = make(self);
+        let canonical_id = make(self);
+        let equivalent_id = make(self);
+        // casetab.c:init_casetab installs only ASCII mappings. The unchanged
+        // characters.el later populates non-ASCII entries; nil entries must
+        // remain nil rather than acquire implicit Unicode mappings.
+        for code in 0..128u8 {
+            let down = code.to_ascii_lowercase();
+            let up = code.to_ascii_uppercase();
+            let equivalent = if code.is_ascii_uppercase() { down } else { up };
+            for (table, mapped) in [
+                (down_id, down),
+                (up_id, up),
+                (canonical_id, down),
+                (equivalent_id, equivalent),
+            ] {
+                self.char_table_set(table, u32::from(code), Value::Integer(i64::from(mapped)))
+                    .expect("initial case-table entry");
+            }
+        }
+        for (slot, table) in [up_id, canonical_id, equivalent_id].into_iter().enumerate() {
+            self.set_char_table_extra_slot(down_id, slot, Value::CharTable(table))
+                .expect("initial case-table extra slot");
+        }
+        self.set_char_table_extra_slot(canonical_id, 2, Value::CharTable(equivalent_id))
+            .expect("initial canonical equivalence slot");
         self.standard_case_table_id = Some(down_id);
         down_id
     }
 
     pub fn current_case_table_id(&mut self) -> u64 {
+        self.initialized_current_case_table_id()
+            .unwrap_or_else(|| self.ensure_standard_case_table())
+    }
+
+    pub(crate) fn initialized_current_case_table_id(&self) -> Option<u64> {
         if let Some((_, id)) = self
             .buffer_case_tables
             .iter()
             .rev()
             .find(|(buffer_id, _)| *buffer_id == self.current_buffer_id())
         {
-            *id
+            Some(*id)
         } else {
-            self.ensure_standard_case_table()
+            self.standard_case_table_id
         }
     }
 

@@ -116,7 +116,7 @@ struct SyntaxEncodingKey {
     end: usize,
     edit_serial: u64,
     multibyte: bool,
-    syntax_chain: crate::lisp::eval::SyntaxChainSignature,
+    syntax_chain: crate::lisp::eval::CharTableChainSignature,
 }
 
 const SYNTAX_ENCODING_CACHE_LIMIT: usize = 4;
@@ -223,6 +223,7 @@ fn syntax_property_authorities(
 struct PatternFacts {
     syntax_table: bool,
     category_table: bool,
+    case_classes: bool,
     point_assertion: bool,
 }
 
@@ -286,6 +287,7 @@ fn pattern_facts(pattern: &str) -> PatternFacts {
     let facts = PatternFacts {
         syntax_table: pattern_depends_on_syntax_table(pattern),
         category_table: pattern_depends_on_category_table(pattern),
+        case_classes: pattern.contains("[:lower:]") || pattern.contains("[:upper:]"),
         point_assertion: contains_point_assertion(pattern),
     };
     PATTERN_FACTS.with(|memo| {
@@ -1534,6 +1536,107 @@ enum EncodingClass {
     Multibyte,
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct CaseTableSignature {
+    down: crate::lisp::eval::CharTableChainSignature,
+    up: crate::lisp::eval::CharTableChainSignature,
+}
+
+fn current_case_table_signature(interp: &Interpreter) -> CaseTableSignature {
+    let down = interp.initialized_current_case_table_id();
+    let up = down.and_then(|down| match interp.char_table_extra_slot(down, 0) {
+        Some(Value::CharTable(up)) => Some(up),
+        _ => None,
+    });
+    CaseTableSignature {
+        down: down.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
+        up: up.map_or_else(Vec::new, |id| interp.char_table_chain_signature(id)),
+    }
+}
+
+thread_local! {
+    static CASE_CLASS_CACHE: RefCell<HashMap<CaseTableSignature, Rc<[String; 3]>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Render lower, upper and their union from the actual case tables. Entry
+/// boundaries and integer images partition the scalar range into intervals
+/// with constant membership; the image itself is the possible identity point.
+fn rendered_case_classes(interp: &Interpreter) -> Rc<[String; 3]> {
+    let signature = current_case_table_signature(interp);
+    if let Some(rendered) = CASE_CLASS_CACHE.with(|cache| cache.borrow().get(&signature).cloned()) {
+        return rendered;
+    }
+    const END: u32 = char::MAX as u32 + 1;
+    let mut boundaries = vec![0, 0xD800, 0xE000, END];
+    // Byte8 aliases use a different public key from their regex encoding.
+    boundaries.extend(0..=256);
+    boundaries.extend(RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 256);
+    for (id, _) in signature.down.iter().chain(&signature.up) {
+        let Some(table) = interp.find_char_table(*id) else {
+            continue;
+        };
+        for entry in &table.entries {
+            boundaries.push(entry.start.min(END));
+            boundaries.push(entry.end.saturating_add(1).min(END));
+        }
+        for value in std::iter::once(&table.default).chain(table.entries.iter().map(|e| &e.value)) {
+            if let Value::Integer(value) = value
+                && let Ok(value) = u32::try_from(*value)
+                && value < END
+            {
+                boundaries.push(value);
+                boundaries.push(value + 1);
+            }
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut ranges: [Vec<(u32, u32)>; 3] = std::array::from_fn(|_| Vec::new());
+    for pair in boundaries.windows(2) {
+        let (start, end) = (pair[0], pair[1] - 1);
+        if char::from_u32(start).is_none() {
+            continue;
+        }
+        let (lower, upper) = current_case_classes(interp, start);
+        for (ranges, member) in ranges.iter_mut().zip([lower, upper, lower || upper]) {
+            if !member {
+                continue;
+            }
+            if let Some((_, previous_end)) = ranges.last_mut()
+                && *previous_end + 1 == start
+            {
+                *previous_end = end;
+            } else {
+                ranges.push((start, end));
+            }
+        }
+    }
+    let rendered = Rc::new(ranges.map(|ranges| {
+        if ranges.is_empty() {
+            return NEVER_MATCH_ONE_CHAR.to_string();
+        }
+        let mut text = String::from("(?-i:[");
+        for (start, end) in ranges {
+            use std::fmt::Write;
+            write!(text, "\\x{{{start:x}}}").expect("write to String");
+            if start != end {
+                write!(text, "-\\x{{{end:x}}}").expect("write to String");
+            }
+        }
+        text.push_str("])");
+        text
+    }));
+    CASE_CLASS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= 16 {
+            cache.clear();
+        }
+        cache.insert(signature, rendered.clone());
+    });
+    rendered
+}
+
 impl EncodingClass {
     fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -1805,6 +1908,26 @@ fn translate_bracket_expression(
             );
             emitted_atom = true;
         } else if let RegexClassAtom::Posix(name) = &atom
+            && matches!(name.as_str(), "lower" | "upper")
+            && let Some(interp) = interp
+        {
+            // GNU's folded lower/upper classes use their union, without
+            // adding Unicode equivalences absent from the current tables.
+            let index = if case_fold {
+                2
+            } else {
+                usize::from(name == "upper")
+            };
+            encoding_classes.push(rendered_case_classes(interp)[index].clone());
+            record_sentinel_atom_members(
+                &atom,
+                encoding,
+                case_fold,
+                Some(interp),
+                &mut sentinel_original_members,
+            );
+            emitted_atom = true;
+        } else if let RegexClassAtom::Posix(name) = &atom
             && let Some(class) = match name.as_str() {
                 "word" => Some(super::syntax::SyntaxClass::Word),
                 "space" => Some(super::syntax::SyntaxClass::Whitespace),
@@ -1877,6 +2000,19 @@ fn record_sentinel_atom_members(
             RegexClassAtom::Posix(class) => {
                 if let Some(class) = EncodingClass::from_name(class) {
                     *member |= class.contains(entry.original);
+                    continue;
+                }
+                if matches!(class.as_str(), "lower" | "upper")
+                    && let Some(interp) = interp
+                {
+                    let (lower, upper) = current_case_classes(interp, entry.original as u32);
+                    *member |= if case_fold {
+                        lower || upper
+                    } else if class == "lower" {
+                        lower
+                    } else {
+                        upper
+                    };
                     continue;
                 }
                 // regex-emacs.c:139-141: these predicates "use the
@@ -2445,6 +2581,7 @@ struct CompiledElispRegexKey {
     category_table_id: u64,
     category_generation: u64,
     case_generation: u64,
+    case_classes: Option<CaseTableSignature>,
     definition_generation: u64,
     point_assertion: String,
     at_absolute_start: bool,
@@ -2591,7 +2728,7 @@ fn encode_syntax_property_haystack(
         end,
         edit_serial: interp.buffer.edit_serial(),
         multibyte: interp.buffer.is_multibyte(),
-        syntax_chain: interp.syntax_table_chain_signature(interp.current_syntax_table_id()),
+        syntax_chain: interp.char_table_chain_signature(interp.current_syntax_table_id()),
     };
     if interp
         .buffer_local_value(interp.current_buffer_id(), "char-property-alias-alist")
@@ -3455,6 +3592,9 @@ fn compile_elisp_regex_with_case_fold(
         } else {
             0
         },
+        case_classes: facts
+            .case_classes
+            .then(|| current_case_table_signature(interp)),
         // The cons-mutation generation (every `setcar' bumps it) guards a
         // pattern only when its tables hold objects that can change in
         // place; a table built by `modify-syntax-entry' holds immutable

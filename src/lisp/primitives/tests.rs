@@ -16375,6 +16375,60 @@ fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
 }
 
 #[test]
+fn case_tables_preserve_gnu_unset_mappings_and_special_casing() {
+    let program = r#"(list
+      (mapcar (lambda (c)
+                (list (aref (current-case-table) c)
+                      (aref (char-table-extra-slot (current-case-table) 0) c)
+                      (downcase c) (upcase c)
+                      (let ((case-fold-search nil))
+                        (list (string-match-p "[[:lower:]]" (string c))
+                              (string-match-p "[[:upper:]]" (string c))))))
+              '(?ſ ?K ?İ ?ı))
+      (mapcar (lambda (tab)
+                (with-case-table tab
+                  (list (upcase "ßſİıKﬁΣ")
+                        (downcase "ßſİıKﬁΑΣ")
+                        (capitalize "ßſİıKﬁΣ"))))
+              (list (standard-case-table) ascii-case-table)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(((nil nil 383 383 (nil nil)) (nil nil 8490 8490 (nil nil)) (nil nil 304 304 (nil nil)) (nil nil 305 305 (nil nil))) (("SSſİıKFIΣ" "ßſi̇ıKﬁας" "Ssſi̇ıKﬁς") ("SSſİıKFIΣ" "ßſi̇ıKﬁΑΣ" "Ssſi̇ıKﬁΣ")))"#,
+        "case-table defaults and special casing",
+    );
+}
+
+#[test]
+fn case_class_regexps_follow_table_selection_and_mutation_without_case_folding() {
+    let program = r#"(let* ((plain (standard-case-table))
+                           (custom (copy-case-table plain)))
+      (set-case-syntax-pair ?☀ ?☂ custom)
+      (list
+       (mapcar
+        (lambda (tab)
+          (with-case-table tab
+            (let ((case-fold-search nil))
+              (list (string-match-p "[[:lower:]]" "☂")
+                    (string-match-p "[[:upper:]]" "☀")
+                    (string-match-p "[^[:lower:]]" "☂")
+                    (let ((case-fold-search t))
+                      (string-match-p "[[:lower:]]" "☀"))))))
+        (list custom plain custom))
+       (with-case-table custom
+         (let ((case-fold-search nil))
+           (list (string-match-p "[[:lower:]]" "☂")
+                 (progn (aset (char-table-extra-slot custom 0) ?☂ ?☂)
+                        (string-match-p "[[:lower:]]" "☂"))
+                 (progn (aset (char-table-extra-slot custom 0) ?☂ ?☀)
+                        (string-match-p "[[:lower:]]" "☂")))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((0 0 nil 0) (nil nil 0 nil) (0 0 nil 0)) (0 nil 0))",
+        "case-class cache selection and mutation",
+    );
+}
+
+#[test]
 fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);

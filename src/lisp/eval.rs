@@ -1210,17 +1210,17 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
-/// The (id, stamp) of every table in a syntax table's parent chain, the
-/// table itself first: everything a syntax rendering of that table reads.
+/// The (id, stamp) of every table in a character table's parent chain, the
+/// table itself first: everything an inherited lookup of that table reads.
 /// A cache keyed on it survives a write to any table outside the chain,
 /// where one process-wide generation recompiled cc-mode's largest patterns
 /// (hundreds of milliseconds each) whenever any mode touched any table.
-pub(crate) type SyntaxChainSignature = Vec<(u64, u64)>;
+pub(crate) type CharTableChainSignature = Vec<(u64, u64)>;
 
 #[derive(Clone, Debug)]
 struct RegexpSyntaxClassCache {
     table_id: u64,
-    chain: SyntaxChainSignature,
+    chain: CharTableChainSignature,
     rendered: [String; 16],
     /// FNV over the sixteen renderings: two tables that render alike
     /// (cperl-mode copies its table into every buffer) compile a pattern
@@ -1234,7 +1234,7 @@ struct RegexpSyntaxClassCache {
 #[derive(Clone)]
 pub(crate) struct SyntaxSegmentCache {
     table_id: u64,
-    chain: SyntaxChainSignature,
+    chain: CharTableChainSignature,
     pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
 }
 
@@ -5163,7 +5163,7 @@ pub struct InterpreterState {
     /// mutation door (see find_char_table_mut) for the caches derived from
     /// the category and the case tables.  Syntax renderings use none: they
     /// key on the stamps of the tables in the chain they read
-    /// (`syntax_table_chain_signature').
+    /// (`char_table_chain_signature').
     category_context_generation: u64,
     case_context_generation: u64,
     /// The rendered current-table syntax classes are expensive to derive and
@@ -5177,7 +5177,7 @@ pub struct InterpreterState {
     /// bypasses the table door (a cons or mutable string), per table id and
     /// chain signature: the compiled-regexp cache keys a pattern on the
     /// cons-mutation generation only for such a chain.
-    syntax_table_mutable_entries_cache: RefCell<Vec<(u64, SyntaxChainSignature, bool)>>,
+    syntax_table_mutable_entries_cache: RefCell<Vec<(u64, CharTableChainSignature, bool)>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
