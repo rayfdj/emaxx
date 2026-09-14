@@ -11012,3 +11012,19 @@ already gives its `cc' the startup environment for this reason, and
 the sqlite test now does the same.  Not a runtime divergence: the
 runtime's children never saw the leak.
 
+*Gate.*  Grouped gate run-1789401098045433934-25538 on the tree as
+committed (882fd7e3): the ten library groups passed (batch 50,
+compat_runtime 84, eval_01 363, eval_02 284, eval_03 321, eval_04
+254, eval_05 351, lightweight 445, primitives 497, tty 56, every
+group 0 failed) and the bins stage (57); its integration stage failed
+one test of main's, `batch_exit_terminates_owned_children_like_gnu',
+on the oracle's side: the gate was launched under `nohup', so SIGHUP
+was ignored in every descendant, the oracle's `sleep' child included,
+and it survived GNU's hangup at exit.  The launcher (a scratch script,
+not the tree) no longer uses `nohup'; under `setsid' alone the test
+passes, and the six integration binaries run again on the same
+commit as the gate user pass (cli 23, cli_parity 6, ert_runner 3,
+native_comp_identity 1, native_thread_continuations 1,
+package_lifecycle 5, every one 0 failed).  `cargo fmt --check' and
+strict clippy exit 0 before and after.
+
