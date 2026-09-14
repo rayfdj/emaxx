@@ -577,3 +577,13 @@ it. A plain-text `pcre.dylib` returns `t` in the published Emaxx binary and
 The upstream test can miss this because optional modules may be absent.
 This remains open until actual loading and an executable extension control
 replace the stub; it prevents a complete anti-cheating assurance.
+
+Linux sandbox diagnosis `34806574593` at `7d79974` reaches actual Lisp
+execution in both seccomp and bubblewrap: each prints `Hi`, then dies at
+Emaxx's unconditional `ioctl(1, TCGETS)` during stdout cleanup. Every raw output
+hash verifies. [glibc's buffer initialization](https://github.com/bminor/glibc/blob/glibc-2.39/libio/filedoalloc.c)
+queries terminal state only for character devices. Emaxx now follows that
+condition, and flushing an unused stream no longer allocates/probes its buffer.
+The existing actual-process merged stdout/stderr, explicit-flush and traceback
+control passes on Mac, with formatting and strict Clippy clean. Linux's normal
+`emacs-tests.el` is the next validation, not a substituted diagnostic score.
