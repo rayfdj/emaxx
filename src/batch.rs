@@ -1203,7 +1203,7 @@ fn installation_lisp_load_path() -> Result<Vec<PathBuf>, String> {
         return compat::canonicalize_path(&Path::new(&dump_root).join("lisp"))
             .map(|path| vec![path]);
     }
-    let sibling = compat::project_root().join("../emacs");
+    let sibling = compat::configured_gnu_source_root();
     if crate::file_system::is_directory(sibling.join("lisp")) {
         return compat::canonicalize_path(&sibling.join("lisp")).map(|path| vec![path]);
     }

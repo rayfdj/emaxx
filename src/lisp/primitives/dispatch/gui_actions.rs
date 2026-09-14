@@ -251,6 +251,24 @@ define_dispatch!(
                 require_live_frame(interp, args.get(2))?;
                 Err(window_system_frame_required())
             }
+            "x-change-window-property" => {
+                need_arg_range(name, args, 2, 7)?;
+                // xfns.c decodes a live window-system frame before reading
+                // PROP, VALUE or FORMAT. The current frontend owns terminal
+                // frames, which GNU rejects at this same boundary.
+                super::frames::decode_live_frame(interp, args.get(2), true)?;
+                Err(window_system_frame_required())
+            }
+            "x-window-property" | "x-window-property-attributes" | "x-delete-window-property" => {
+                need_arg_range(
+                    name,
+                    args,
+                    1,
+                    if name == "x-window-property" { 6 } else { 3 },
+                )?;
+                super::frames::decode_live_frame(interp, args.get(1), true)?;
+                Err(window_system_frame_required())
+            }
             "x-close-connection" => {
                 need_args(name, args, 1)?;
                 match &args[0] {

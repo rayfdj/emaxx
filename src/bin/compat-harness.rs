@@ -1224,7 +1224,7 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("run")?;
-    let subject = ensure_emaxx_binary(args.subject_root.as_deref())?;
+    let subject = ensure_emaxx_binary(args.subject_root.as_deref(), &context.local.emacs_repo)?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     run_compat_files(
@@ -1306,7 +1306,7 @@ fn run_frozen_compat(args: FrozenArgs) -> Result<u8, String> {
             ));
         }
     }
-    let subject = ensure_emaxx_binary(args.subject_root.as_deref())?;
+    let subject = ensure_emaxx_binary(args.subject_root.as_deref(), &context.local.emacs_repo)?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     run_compat_files(
@@ -1673,7 +1673,7 @@ fn run_landed_compat(args: LandedArgs) -> Result<u8, String> {
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("landed")?;
-    let subject = ensure_emaxx_binary(None)?;
+    let subject = ensure_emaxx_binary(None, &context.local.emacs_repo)?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     run_compat_files(
@@ -1726,7 +1726,7 @@ fn run_regressions_audit(args: RegressionRunArgs) -> Result<u8, String> {
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let artifact_root = make_artifact_root("regressions")?;
-    let subject = ensure_emaxx_binary(None)?;
+    let subject = ensure_emaxx_binary(None, &context.local.emacs_repo)?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
     let entries = manifest_entries_for_file_filter(&manifest, args.file.as_deref())?;
 
@@ -1773,7 +1773,7 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
         .collect::<Result<Vec<_>, _>>()?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let artifact_root = make_artifact_root("regression-add")?;
-    let subject = ensure_emaxx_binary(None)?;
+    let subject = ensure_emaxx_binary(None, &context.local.emacs_repo)?;
     let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     let status = run_compat_files(
@@ -3694,7 +3694,10 @@ fn write_json(path: &Path, value: &impl Serialize, label: &str) -> Result<(), St
     fs::write(path, json).map_err(|error| format!("write {}: {error}", path.display()))
 }
 
-fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, String> {
+fn ensure_emaxx_binary(
+    subject_root: Option<&Path>,
+    gnu_source: &Path,
+) -> Result<SubjectBuild, String> {
     let current = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
     validate_harness_runtime_location(&current)?;
     let harness_layout = emaxx_build_layout(&current)?;
@@ -3721,6 +3724,7 @@ fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, Stri
     // make-fingerprint beside it, as lib-src's is a prerequisite of temacs:
     // tools/build-image.sh runs the sibling.
     let mut build = Command::new("cargo");
+    build.env("EMAXX_GNU_SOURCE_DIRECTORY", gnu_source);
     build.args([
         "build",
         "--quiet",
@@ -3765,7 +3769,7 @@ fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, Stri
             layout.candidate.display()
         ));
     }
-    build_subject_image(&source_root, &layout.candidate)?;
+    build_subject_image(&source_root, &layout.candidate, gnu_source)?;
     let source_after_build = subject_source_fingerprint(&source_root)?;
     if source_after_build != source_sha256 {
         return Err(format!(
@@ -3790,18 +3794,16 @@ fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, Stri
 /// and every runner it starts boots from `emaxx.pdmp' as the oracle boots
 /// from its emacs.pdmp.  Without this the subject rebuilt its Lisp state on
 /// every start (and a stale image beside it was fatal, as in emacs.c).
-fn build_subject_image(source_root: &Path, binary: &Path) -> Result<(), String> {
+fn build_subject_image(source_root: &Path, binary: &Path, gnu_source: &Path) -> Result<(), String> {
     let script = source_root.join("tools").join("build-image.sh");
     let mut image = Command::new(&script);
     image.arg(binary).current_dir(source_root);
     // The dump reads the pinned oracle's lisp/ and native-lisp/, and the
     // dumping process resolves its source provenance as the runners do
     // (EMAXX_DUMP_SOURCE_DIRECTORY with EMACS_TEST_DIRECTORY beside it).
-    if let Ok(local) = compat::load_oracle_local_config() {
-        image
-            .env(compat::DUMP_SOURCE_DIRECTORY_ENV, &local.emacs_repo)
-            .env("EMACS_TEST_DIRECTORY", local.emacs_repo.join("test"));
-    }
+    image
+        .env(compat::DUMP_SOURCE_DIRECTORY_ENV, gnu_source)
+        .env("EMACS_TEST_DIRECTORY", gnu_source.join("test"));
     let output = image
         .output()
         .map_err(|error| format!("run {}: {error}", script.display()))?;

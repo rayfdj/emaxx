@@ -12,11 +12,35 @@ The repository has platform-specific locks:
 | Oracle | Source revision | Platform | Lock |
 | --- | --- | --- | --- |
 | Darwin | `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd` | `aarch64-apple-darwin`, NS/Cocoa | `compat/oracle.lock.json` |
-| Linux | `6ee5c13660b94f2876ea5f9e5df0f626f886740a` | `gnu/linux`, X11 without a toolkit | `compat/oracle.lock.linux.json` |
+| Linux | `636f166cfc86aa90d63f592fd99f3fdd9ef95ebd` | `gnu/linux`, X11 without a toolkit | `compat/oracle.lock.linux.json` |
 
-The Linux revision includes the committed source-repack repairs described in
-`docs/!!!AI_CONTINUATION_INSTRUCTIONS_DO_NOT_SKIP.md`; it is not permission to
-use a different upstream release.
+Linux was deliberately repinned from the historical Ubuntu source repack
+`6ee5c136` to pristine revision `636f166c` on 2026-09-14, matching its existing
+native ABI configuration. The original and proposed locks and actual GNU
+module discovery are retained in CI run `34789196776`.
+
+## Emaxx installation source
+
+`EMAXX_GNU_SOURCE_DIRECTORY` configures the GNU installation tree at Cargo
+build time, corresponding to GNU's configured `epaths.h` paths. It defaults
+to `../emacs` beside the Rust checkout. The ordinary compatibility runner
+sets it explicitly to its validated GNU source tree when building Emaxx.
+The same tree supplies `source-directory`, data/DOC paths, and the system
+native-library path. Changing the build setting makes Cargo rebuild; setting
+it in an already-running binary's environment does not redirect installation
+paths or editor subprocesses.
+
+This distinction matters when the pinned oracle is outside `../emacs`.
+Previously the runner loaded Lisp from its selected oracle while Emaxx's
+installation/native paths still named the sibling checkout. On the Mac that
+sibling contained a different native ABI, so startup silently used bytecode
+instead of the pinned native standard libraries. The original raw image and
+function-kind probes are retained in `target/compat-audit-20260914/`.
+
+For a manual build, set `EMAXX_GNU_SOURCE_DIRECTORY` on `cargo build`, then
+set `EMAXX_DUMP_SOURCE_DIRECTORY` and `EMACS_TEST_DIRECTORY` to that tree and
+its `test/` subdirectory when calling `tools/build-image.sh`. Runtime test
+checkouts remain separate from the build-time installation identity.
 
 ## Required capability floor
 

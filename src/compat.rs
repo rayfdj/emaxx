@@ -332,6 +332,12 @@ pub fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The GNU installation tree configured when this executable was built,
+/// corresponding to GNU's epaths.h paths. This does not read process env.
+pub fn configured_gnu_source_root() -> PathBuf {
+    PathBuf::from(env!("EMAXX_GNU_SOURCE_DIRECTORY"))
+}
+
 pub fn compat_path(relative: &str) -> PathBuf {
     project_root().join(relative)
 }

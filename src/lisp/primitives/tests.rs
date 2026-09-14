@@ -3,8 +3,8 @@ use crate::lisp::reader::Reader;
 use std::io::{Read, Write};
 
 fn upstream_emacs_repo() -> PathBuf {
-    crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
-        .expect("canonical sibling GNU checkout")
+    crate::compat::canonicalize_path(&crate::compat::configured_gnu_source_root())
+        .expect("canonical configured GNU checkout")
 }
 
 /// Call NAME through the interpreter's function cell, exactly as GNU
@@ -7203,23 +7203,68 @@ fn substitute_in_file_name_expands_shell_style_env_vars() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn x_window_properties_validate_the_frame_before_property_arguments() {
+    // xfns.c enters decode_window_system_frame before inspecting property
+    // names, values or formats. These are real primitives in an X-enabled
+    // GNU build even when its current frame is a terminal. Their function
+    // cells must also exist so fset installs normal native trampolines.
+    let program = r#"(prin1
+      (list
+        (mapcar (lambda (name)
+                  (let ((function (symbol-function name)))
+                    (list (subrp function) (subr-arity function))))
+                '(x-change-window-property x-window-property
+                  x-window-property-attributes x-delete-window-property))
+        (mapcar (lambda (form) (condition-case err (eval form t) (error err)))
+                '((x-change-window-property 1 2)
+                  (x-window-property 1)
+                  (x-window-property-attributes 1)
+                  (x-delete-window-property 1)
+                  (x-change-window-property "p" "v" 17)
+                  (x-window-property "p" 17)
+                  (x-window-property-attributes "p" 17)
+                  (x-delete-window-property "p" 17)
+                  (x-change-window-property 1 2 (selected-frame) nil 'bad-format)
+                  (x-window-property 1 (selected-frame) 'bad-type)
+                  (x-window-property-attributes 1 (selected-frame) 'bad-window)
+                  (x-delete-window-property 1 (selected-frame) 'bad-window)))))"#;
+    let frame_error = r#"(error "Window system frame should be used")"#;
+    let type_error = "(wrong-type-argument frame-live-p 17)";
+    let errors = [frame_error; 4]
+        .into_iter()
+        .chain([type_error; 4])
+        .chain([frame_error; 4])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let expected = format!("(((t (2 . 7)) (t (1 . 6)) (t (1 . 3)) (t (1 . 3))) ({errors}))");
+    assert_upstream_primitive_contract(program, &expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program).read().unwrap().unwrap();
+    let value = interp.eval(&form, &mut Vec::new()).unwrap();
+    let expected = Reader::new(&expected).read().unwrap().unwrap();
+    assert_eq!(value, expected);
+}
+
 #[test]
 fn dumped_directory_family_ignores_the_test_harness_variable() {
     // Finding 102: data-directory, doc-directory, installation-directory
     // and emacsclient-program-name were derived from EMACS_TEST_DIRECTORY
     // -- exactly the rule source-directory's own comment bans.  In GNU
     // they are epaths.h constants fixed when the binary is built; here
-    // that means the pinned sibling checkout's paths, whatever the
+    // that means the configured checkout's paths, whatever the
     // harness environment says.
     let repo = crate::compat::canonicalize_path(&upstream_emacs_repo())
-        .expect("sibling GNU checkout")
+        .expect("configured GNU checkout")
         .display()
         .to_string();
     let program = concat!(
-        "(prin1 (list data-directory doc-directory installation-directory ",
+        "(prin1 (list source-directory data-directory doc-directory installation-directory ",
         "emacsclient-program-name))"
     );
-    let expected = format!("(\"{repo}/etc/\" \"{repo}/etc/\" \"{repo}/\" \"emacsclient\")");
+    let expected =
+        format!("(\"{repo}/\" \"{repo}/etc/\" \"{repo}/etc/\" \"{repo}/\" \"emacsclient\")");
     assert_upstream_primitive_contract(program, &expected);
 
     // A hostile EMACS_TEST_DIRECTORY pointing at a fake repo layout --
@@ -7241,8 +7286,10 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
 
     let _env_write = crate::compat::lock_boot_environment_for_write();
     let old = std::env::var("EMACS_TEST_DIRECTORY").ok();
+    let old_configured_source = std::env::var_os("EMAXX_GNU_SOURCE_DIRECTORY");
     unsafe {
         std::env::set_var("EMACS_TEST_DIRECTORY", test_dir.display().to_string());
+        std::env::set_var("EMAXX_GNU_SOURCE_DIRECTORY", &fake_root);
     }
     assert_eq!(
         current_invocation_path(),
@@ -7251,6 +7298,15 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
     );
     assert_eq!(compat_data_directory(), Some(format!("{repo}/etc/")));
     assert_eq!(compat_installation_directory(), Some(format!("{repo}/")));
+    assert_eq!(
+        crate::compat::configured_gnu_source_root(),
+        PathBuf::from(&repo),
+        "a runtime environment variable cannot change the configured installation"
+    );
+    match old_configured_source {
+        Some(value) => unsafe { std::env::set_var("EMAXX_GNU_SOURCE_DIRECTORY", value) },
+        None => unsafe { std::env::remove_var("EMAXX_GNU_SOURCE_DIRECTORY") },
+    }
     if let Some(value) = old {
         unsafe {
             std::env::set_var("EMACS_TEST_DIRECTORY", value);
@@ -7268,7 +7324,7 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
     let values = interp
         .eval(
             &Reader::new(
-                "(list data-directory doc-directory installation-directory \
+                "(list source-directory data-directory doc-directory installation-directory \
                  emacsclient-program-name)",
             )
             .read_all()

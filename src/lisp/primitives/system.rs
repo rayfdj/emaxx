@@ -472,16 +472,14 @@ pub(crate) enum UnameField {
     Release,
 }
 
-/// The pinned sibling GNU checkout as a canonical directory string, or None
+/// The configured GNU checkout as a canonical directory string, or None
 /// when PATH under it is missing.  Finding 102: GNU's Vdata_directory,
 /// Vdoc_directory and Vinstallation_directory are fixed when the binary is
 /// built (epaths.h), so like `source-directory' they name the checkout this
 /// image reconstructs and must never be derived from a harness variable
 /// such as EMACS_TEST_DIRECTORY.
 fn gnu_checkout_directory(relative: &str) -> Option<String> {
-    let path = crate::compat::project_root()
-        .join("../emacs")
-        .join(relative);
+    let path = crate::compat::configured_gnu_source_root().join(relative);
     if !fs::is_directory(&path) {
         return None;
     }
@@ -499,9 +497,9 @@ pub(crate) fn compat_data_directory() -> Option<String> {
 
 /// GNU's Vinstallation_directory: for an uninstalled build, the build
 /// tree's root -- the directory holding src/ and lisp/ (the oracle answers
-/// its checkout root).  The sibling checkout plays that role here.
+/// its checkout root). The configured checkout plays that role here.
 pub(crate) fn compat_installation_directory() -> Option<String> {
-    let root = crate::compat::project_root().join("../emacs");
+    let root = crate::compat::configured_gnu_source_root();
     if !(fs::is_directory(root.join("src")) && fs::is_directory(root.join("lisp"))) {
         return None;
     }

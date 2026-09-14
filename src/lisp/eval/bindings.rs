@@ -607,7 +607,7 @@ impl Interpreter {
             // Lisp this image reconstructs.  It must never be derived from a
             // harness variable such as EMACS_TEST_DIRECTORY.
             "source-directory" => Some(Value::String(
-                crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
+                crate::compat::canonicalize_path(&crate::compat::configured_gnu_source_root())
                     .map(|path| primitives::file_name_as_directory(&path.display().to_string()))
                     .unwrap_or_else(|_| primitives::default_directory())
                     .into(),

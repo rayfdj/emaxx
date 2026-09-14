@@ -19,6 +19,31 @@ section records the latest completed checks; no final frozen success is claimed.
   final summary or final input verification, so this remains incomplete
   evidence. The Linux inventory now adds those seven actual GNU names, keeping
   all prior names: 519 files, 7,928 outcomes. Darwin stays at 7,921.
+- Linux ordinary continuation `34813818081` at `4e4160d` executes all 62
+  remaining files: 61 match and only `x-dnd-tests.el` has unexpected failures
+  (two). All 372 raw receipts verify. Its unchanged upstream Lisp supplies
+  replacements for window-property primitives; missing original Emaxx
+  bindings prevented the normal native trampoline hook from seeing those
+  redefinitions. The window-property family now supplies GNU's live-frame
+  validation and terminal-frame errors, with platform availability still
+  taken from the host C manifest. The original tests and a direct GNU
+  primitive contract will validate this repair on Linux.
+- Mac image inspection found that the normal subject still used the old
+  sibling GNU tree for source/data/DOC/native paths while loading Lisp from
+  the pinned oracle. Its image had zero native units and bytecoded startup
+  functions. The build-time `EMAXX_GNU_SOURCE_DIRECTORY` setting and ordinary
+  runner now configure one installation tree consistently. The GNU-checked
+  directory control passes for the non-sibling pinned Mac tree and confirms
+  that hostile runtime overrides cannot redirect installation paths. This
+  configuration correction is separate from the compact-tag memory pilot.
+  Ordinary Mac X-DND now passes both unchanged tests; all six receipts and
+  its contract verify (`run-1789369035708244000-51850`). Independent probes
+  confirm the pinned source and native `command-line`/`normal-top-level` in
+  both editors. Emaxx loads 174 native units; GNU loads 182, which is recorded
+  as a preload difference rather than an equal-count claim. The initial
+  attempt stopped before editor tests because the new pure compile-time
+  path accessor needed an explicit audit-list entry; that reviewed entry
+  retains all existing oracle-delegation bans.
 - `run --from-file PATH` executes an inclusive ordinary continuation in the
   same canonical order, optionally ending at `--through-file`. A missing or
   reversed endpoint fails. These options are unavailable in `frozen`; they
@@ -28,7 +53,9 @@ section records the latest completed checks; no final frozen success is claimed.
   image-state explanation in the final audit group. That documentation was
   corrected, and the three relevant image/audit controls passed without
   repeating the completed library groups. The continued binary tests pass
-  all 58 cases on both platforms.
+  58 cases on Mac and 59 on Linux. Linux continuation `34812783853`
+  also passes all six integration targets (37 tests), including the actual
+  large-list process and both command-line locales; its raw stage logs verify.
 - The integration continuation exposed a separate native cons-encoding stack
   overflow. `34631ba` registers canonical cells and encodes their fields with
   an explicit worklist, preserving shared and cyclic identities. All 93
