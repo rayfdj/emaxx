@@ -84,6 +84,21 @@ section records the latest completed checks; no final frozen success is claimed.
   Inclusive samples point to compiler class enumeration/native callbacks,
   symbol/value work, GC and image loading. Percentages overlap and cannot
   be added or extrapolated into an 80-case CPU total.
+- Compact internal dump tags retain the existing explicit 32-bit image
+  encoding while reducing the loader's dense table footprint. A matched
+  Mac pilot at `4e4160d` used the same configured GNU source, native preload,
+  image layout and 41,465,448-byte image size. Across eight alternating pairs
+  for each of startup and loading `comp`, median peak RSS fell from 222.09
+  to 184.26 MiB (17.04%). Median wall times changed by less than 1%; this is
+  a memory improvement, not evidence of a compiler latency improvement.
+  All 32 processes completed with the expected output, and input and raw
+  output hashes verify. The 17 existing dump-image controls and strict
+  Mac Clippy pass. Linux validation remains pending.
+- The Linux X-DND attempt at `8c023a2` (`34815944593`) stopped during Clippy
+  before the editor tests: the new Linux-only control used prohibited
+  `unwrap()` calls. These now have explanatory `expect()` messages. No
+  runtime behavior or test assertion changed; only affected validation
+  needs continuation.
 
 Still open: the six strict Mac build-feature skip diagnostics, the final
 complete ordinary frozen results on both platforms, remaining performance

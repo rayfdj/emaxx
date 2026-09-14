@@ -202,8 +202,10 @@ impl DumpHeader {
 /// The object classes an image records, the counterpart of the
 /// `Lisp_Type' a GNU object-start entry carries.  Emaxx's heap has more
 /// classes than GNU's five tags, so the entry carries one of these.
+/// Keep the loader's dense tag tables compact. The image writer encodes
+/// these tags explicitly as u32, independently of their Rust layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u32)]
+#[repr(u8)]
 pub(crate) enum DumpType {
     Cons = 1,
     /// An immutable host string (`Value::String').
