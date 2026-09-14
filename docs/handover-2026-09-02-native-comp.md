@@ -779,6 +779,13 @@ under target/compat-subject on every run, as make builds emacs.pdmp
 from emacs -- its runners booted cold before (the Mac's 9.4 s setup per
 file); tests/cli.rs refreshes the image beside the gate binary.  The
 Mac oracle's own timeout on that test is unexplained and stays open.
+Checkpoint 19w (2026-09-14, for main): the per-file floor's first
+cut -- `string-match` in place, a front of eight recently used
+compiled patterns before the regexp cache (search.c's searchbufs),
+`get` walking the plist in place, `mapatoms` over the shared
+enumeration: 11 to 15 percent off `ert-select-tests`; the call path
+(1.4 us a byte-code call, 0.6 us a builtin, 1.0 us a special `setq`)
+is the floor and stays open.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

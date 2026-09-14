@@ -1077,6 +1077,17 @@ define_dispatch!(
             }
             "get" => {
                 need_args(name, args, 2)?;
+                // fns.c:Fget on two bare symbols with no overriding plist
+                // environment: plist_get on the symbol's plist, nothing
+                // else read (the general path below resolves positioned
+                // symbols and the overriding alist first).
+                if let (Value::Symbol(symbol), Value::Symbol(property)) = (&args[0], &args[1])
+                    && interp.overriding_plist_environment_is_nil()
+                {
+                    return Ok(interp
+                        .get_symbol_property_of(symbol, property)
+                        .unwrap_or(Value::Nil));
+                }
                 // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
                 // XSYMBOL to the same underlying bare symbol.
                 let symbol = checked_symbol_identity(interp, &args[0], env)?;
@@ -1582,6 +1593,25 @@ define_dispatch!(
                     .or_else(|| interp.lookup_var("obarray", env))
                     .unwrap_or(Value::Nil);
                 let obarray = coerce_legacy_vector_obarray(interp, &obarray)?;
+                // The standard obarray: walk the shared enumeration in place
+                // (lread.c walks the buckets; a symbol interned during the
+                // walk joins a fresh enumeration, which this snapshot does
+                // not see, as GNU's walk need not) instead of copying every
+                // symbol into a vector first -- a quarter of a walk's cost.
+                if let Value::Record(id) = &obarray
+                    && interp.is_standard_obarray_id(*id)
+                {
+                    let symbols = interp.known_symbols_shared();
+                    for symbol in symbols.iter() {
+                        let symbol = match symbol.as_str() {
+                            "nil" => Value::Nil,
+                            "t" => Value::T,
+                            _ => Value::Symbol(symbol.clone()),
+                        };
+                        call_function_value(interp, &args[0], &[symbol], env)?;
+                    }
+                    return Ok(Value::Nil);
+                }
                 let symbols = obarray_symbols(interp, &obarray)?;
                 for symbol in symbols {
                     // Resolve a symbol's current function cell on every

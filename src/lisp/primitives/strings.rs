@@ -138,6 +138,17 @@ pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
     }
 }
 
+/// The text of a string VALUE without copying it when the string is a
+/// shared text (`Value::String'): what a primitive reads and never keeps.
+/// A `StringObject' is copied out of its cell as `string_like' copies it.
+pub(crate) fn borrowed_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
+    match value {
+        Value::String(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
+        Value::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text.clone())),
+        _ => None,
+    }
+}
+
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value {
         Value::String(text) => Some(StringLike {

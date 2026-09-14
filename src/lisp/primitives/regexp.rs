@@ -3485,14 +3485,35 @@ pub(super) fn compile_elisp_regex(
     point_assertion: &str,
     at_absolute_start: bool,
 ) -> Result<Rc<CompiledElispRegex>, LispError> {
-    compile_elisp_regex_with_syntax_properties(
+    compile_elisp_regex_text(
+        interp,
+        &pattern.text,
+        env,
+        point_assertion,
+        at_absolute_start,
+    )
+}
+
+/// The same for a pattern the caller holds as text (a string primitive's
+/// argument, read in place).
+pub(super) fn compile_elisp_regex_text(
+    interp: &Interpreter,
+    pattern: &str,
+    env: &Env,
+    point_assertion: &str,
+    at_absolute_start: bool,
+) -> Result<Rc<CompiledElispRegex>, LispError> {
+    let case_fold = interp
+        .lookup_var("case-fold-search", env)
+        .is_some_and(|value| value.is_truthy());
+    compile_elisp_regex_text_with_case_fold(
         interp,
         pattern,
-        env,
         point_assertion,
         at_absolute_start,
         None,
         RegexpCategoryScope::Standard,
+        case_fold,
     )
 }
 
@@ -3542,8 +3563,122 @@ fn compile_elisp_regex_with_case_fold(
     category_scope: RegexpCategoryScope,
     case_fold: bool,
 ) -> Result<Rc<CompiledElispRegex>, LispError> {
-    let pattern_text = pattern.text.clone();
+    compile_elisp_regex_text_with_case_fold(
+        interp,
+        &pattern.text,
+        point_assertion,
+        at_absolute_start,
+        encoding,
+        category_scope,
+        case_fold,
+    )
+}
+
+/// search.c's searchbufs: the compiled patterns used most recently, checked
+/// first and by the fields the table key compares -- the pattern text in
+/// place, then only the table stamps this pattern's translation read --
+/// before the pattern is copied and hashed for the table.  A hit here is
+/// exactly a table hit for the same key.  Only translations without a
+/// syntax-property encoding are kept (the key's sentinel table is Plain,
+/// nothing of the registry needed).
+struct FrontRegexEntry {
+    key: CompiledElispRegexKey,
+    depends_on_syntax_table: bool,
+    depends_on_category_table: bool,
+    case_classes: bool,
+    compiled: Rc<CompiledElispRegex>,
+}
+
+const FRONT_REGEX_CACHE_LIMIT: usize = 8;
+
+thread_local! {
+    static FRONT_REGEX_CACHE: std::cell::RefCell<Vec<FrontRegexEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The key's `definition_generation' field for a pattern that does or
+/// does not depend on the tables.
+fn definition_generation_field(interp: &Interpreter, depends_on_tables: bool) -> u64 {
+    if depends_on_tables
+        && interp.syntax_table_chain_has_mutable_entries(interp.current_syntax_table_id())
+    {
+        interp.current_definition_generation()
+    } else {
+        0
+    }
+}
+
+fn front_regex_lookup(
+    interp: &Interpreter,
+    pattern_text: &str,
+    point_assertion: &str,
+    at_absolute_start: bool,
+    category_table_id: Option<u64>,
+    case_fold: bool,
+) -> Option<Rc<CompiledElispRegex>> {
+    FRONT_REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let position = cache.iter().position(|entry| {
+            let key = &entry.key;
+            let depends_on_tables =
+                entry.depends_on_syntax_table || entry.depends_on_category_table;
+            key.at_absolute_start == at_absolute_start
+                && key.case_fold == case_fold
+                && key.pattern == pattern_text
+                && key.point_assertion == point_assertion
+                && (!entry.depends_on_syntax_table
+                    || key.syntax_classes_hash == syntax_classes_fingerprint(interp))
+                && (!depends_on_tables
+                    || (key.category_table_id == category_table_id.unwrap_or(0)
+                        && key.definition_generation == definition_generation_field(interp, true)))
+                && (!entry.depends_on_category_table
+                    || key.category_generation == interp.category_context_generation())
+                && (!case_fold || key.case_generation == interp.case_context_generation())
+                && key.case_classes
+                    == entry
+                        .case_classes
+                        .then(|| current_case_table_signature(interp))
+        })?;
+        if position != 0 {
+            let entry = cache.remove(position);
+            cache.insert(0, entry);
+        }
+        Some(Rc::clone(&cache[0].compiled))
+    })
+}
+
+fn front_regex_remember(entry: FrontRegexEntry) {
+    FRONT_REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.retain(|kept| kept.key != entry.key);
+        cache.insert(0, entry);
+        cache.truncate(FRONT_REGEX_CACHE_LIMIT);
+    });
+}
+
+fn compile_elisp_regex_text_with_case_fold(
+    interp: &Interpreter,
+    pattern: &str,
+    point_assertion: &str,
+    at_absolute_start: bool,
+    encoding: Option<&SyntaxPropertyEncoding>,
+    category_scope: RegexpCategoryScope,
+    case_fold: bool,
+) -> Result<Rc<CompiledElispRegex>, LispError> {
     let category_table_id = category_scope.table_id(interp);
+    if encoding.is_none()
+        && let Some(compiled) = front_regex_lookup(
+            interp,
+            pattern,
+            point_assertion,
+            at_absolute_start,
+            category_table_id,
+            case_fold,
+        )
+    {
+        return Ok(compiled);
+    }
+    let pattern_text = pattern.to_string();
     // Translation is the single owner of Emacs regexp grammar.  A pattern
     // that depends on mutable runtime tables is keyed by the identity of
     // those tables plus the shared write generation (a table-independent
@@ -3622,6 +3757,15 @@ fn compile_elisp_regex_with_case_fold(
     if let Some(compiled) =
         COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().get(&key, needed))
     {
+        if encoding.is_none() {
+            front_regex_remember(FrontRegexEntry {
+                key,
+                depends_on_syntax_table,
+                depends_on_category_table,
+                case_classes: facts.case_classes,
+                compiled: Rc::clone(&compiled),
+            });
+        }
         return Ok(compiled);
     }
     #[cfg(test)]
@@ -3644,8 +3788,8 @@ fn compile_elisp_regex_with_case_fold(
         .as_ref()
         .map_or(0, |snapshot| snapshot.sentinels.len());
     let encoding = registry_snapshot.as_ref().or(encoding);
-    validate_elisp_regex(&pattern.text)?;
-    enforce_elisp_repeat_limit(&pattern.text)?;
+    validate_elisp_regex(&pattern_text)?;
+    enforce_elisp_repeat_limit(&pattern_text)?;
     let translated = translate_elisp_regex_with_point(
         &pattern_text,
         point_assertion,
@@ -3664,13 +3808,22 @@ fn compile_elisp_regex_with_case_fold(
         regex: build_fancy_regex(&rendered)
             .map_err(|error| invalid_regexp_error(error.to_string()))?,
         linear_boundary_prefilter: linear_boundary_prefilter(&rendered),
-        capture_mapping: elisp_capture_mapping(&pattern.text)?,
+        capture_mapping: elisp_capture_mapping(&pattern_text)?,
     });
     COMPILED_ELISP_REGEX_CACHE.with(|cache| {
         cache
             .borrow_mut()
-            .insert(key, Rc::clone(&compiled), registry_len)
+            .insert(key.clone(), Rc::clone(&compiled), registry_len)
     });
+    if encoding.is_none() {
+        front_regex_remember(FrontRegexEntry {
+            key,
+            depends_on_syntax_table,
+            depends_on_category_table,
+            case_classes: facts.case_classes,
+            compiled: Rc::clone(&compiled),
+        });
+    }
     Ok(compiled)
 }
 
@@ -4160,15 +4313,17 @@ pub(super) fn string_match_impl(
             args.len(),
         ));
     }
-    let pattern = string_like(&args[0])
+    // Both strings are read in place (search.c's string_match_1 reads the
+    // objects' data): a copy of each per call was most of a short match.
+    let pattern = borrowed_text(&args[0])
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0].clone()))?;
-    let haystack = string_like(&args[1])
+    let haystack = borrowed_text(&args[1])
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[1].clone()))?;
     // The overwhelmingly common no-START path searches the original string.
     // Counting and copying the full haystack made it O(n) before the regex
     // engine even ran (particularly painful for large buffers/Unicode data).
     let start = if let Some(start) = args.get(2) {
-        normalize_string_index(Some(start), 0, haystack.text.chars().count() as i64)? as usize
+        normalize_string_index(Some(start), 0, haystack.chars().count() as i64)? as usize
     } else {
         0
     };
@@ -4177,7 +4332,7 @@ pub(super) fn string_match_impl(
     // `\\`' means the true string start.  Slicing the tail off made the
     // slice boundary a bogus beginning-of-line (org-persist's
     // `(replace-regexp-in-string "^.." ...)' split every two characters).
-    let text = haystack.text.as_str();
+    let text: &str = &haystack;
     let byte_start = if start == 0 {
         0
     } else if text.is_ascii() {
@@ -4188,7 +4343,7 @@ pub(super) fn string_match_impl(
             .map(|(byte, _)| byte)
             .unwrap_or(text.len())
     };
-    let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+    let regex = compile_elisp_regex_text(interp, &pattern, env, "", true)?;
     let captures = regex
         .captures_from_pos(text, byte_start)
         .map_err(|error| LispError::Signal(error.to_string()))?;

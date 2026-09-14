@@ -7759,6 +7759,64 @@ fn system_move_file_to_trash_preserves_gnu_missing_file_contract() {
     );
 }
 
+#[test]
+fn get_walks_the_plist_as_plist_get_does() {
+    // fns.c:Fget with no overriding plist environment is plist_get on the
+    // symbol's plist: pairs read in place, a key compared by EQ, an odd
+    // tail or a non-list plist nil, a circular plist nil (FOR_EACH_TAIL_SAFE
+    // breaks out).  The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    for (form, expected) in [
+        (
+            "(progn (setplist 'plist-x '(a 1 b)) (list (get 'plist-x 'a) (get 'plist-x 'b) (get 'plist-x 1)))",
+            "(1 nil nil)",
+        ),
+        (
+            "(let ((l (list 'a 1 'b 2))) (setcdr (nthcdr 3 l) l) (setplist 'plist-y l) (list (get 'plist-y 'a) (get 'plist-y 'b) (get 'plist-y 'zz)))",
+            "(1 2 nil)",
+        ),
+        (
+            "(progn (setplist 'plist-z '(nil 5 t 6)) (list (get 'plist-z nil) (get 'plist-z t)))",
+            "(5 6)",
+        ),
+        ("(progn (setplist 'plist-w '(p)) (get 'plist-w 'p))", "nil"),
+        (
+            "(progn (setplist 'plist-v 'not-a-list) (get 'plist-v 'p))",
+            "nil",
+        ),
+        (
+            "(progn (setplist 'plist-u '(a 1 . 7)) (list (get 'plist-u 'a) (get 'plist-u 'b)))",
+            "(1 nil)",
+        ),
+    ] {
+        let value = crate::test_support::eval_lisp(&mut interp, &mut env, form)
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(value.to_string(), expected, "{form}");
+    }
+}
+
+#[test]
+fn mapatoms_walks_the_standard_obarray_in_place() {
+    // lread.c:Fmapatoms calls FUNCTION on every symbol of the obarray, nil
+    // and t as the objects they are; a symbol interned by the callback
+    // joins the obarray without disturbing the walk.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = Vec::new();
+    let value = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(let ((n 0) (seen nil))
+           (mapatoms #'(lambda (s)
+                       (setq n (1+ n))
+                       (when (memq s '(nil t)) (push s seen))
+                       (when (= n 1) (intern \"mapatoms-walk-newcomer\"))))
+           (list (length seen) (> n 100) (intern-soft \"mapatoms-walk-newcomer\")))",
+    )
+    .expect("mapatoms over the standard obarray");
+    assert_eq!(value.to_string(), "(2 t mapatoms-walk-newcomer)");
+}
+
 #[cfg(unix)]
 #[test]
 fn failed_deletions_report_as_fileio_c_does() {
@@ -16795,7 +16853,19 @@ fn sqlite_extension_loading_executes_real_code_and_rejects_invalid_files() {
     };
     let module_name = format!("pcre.{suffix}");
     let module = directory.0.join(&module_name);
-    let compiled = std::process::Command::new("cc")
+    let mut compiler = std::process::Command::new("cc");
+    // The child gets the process's startup environment, as a GNU child
+    // built from `process-environment' would: an in-process libgccjit
+    // compile earlier in this test process exports its own GCC_EXEC_PREFIX
+    // into the host environment, and a system cc of another GCC version
+    // then looks for its cc1 under that prefix and finds nothing (the gate
+    // on a box with libgccjit 14 beside gcc 13).
+    compiler.env_clear().envs(
+        crate::lisp::eval::initial_process_environment()
+            .iter()
+            .cloned(),
+    );
+    let compiled = compiler
         .args(if cfg!(target_os = "macos") {
             &["-dynamiclib"][..]
         } else {

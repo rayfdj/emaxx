@@ -3762,6 +3762,50 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
 }
 
 #[test]
+fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
+    // search.c keeps the most recently used compiled patterns in front of
+    // its cache; the front here is checked by exactly the fields the table
+    // key compares, so a repeated `string-match' compiles nothing and a
+    // change to what the translation read -- the current syntax table for
+    // a `\\s-' pattern, `case-fold-search' for any -- compiles again.
+    // Match positions are GNU's.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut step = |form: &str, expected: Value, compiles_delta: usize| {
+        crate::lisp::primitives::reset_elisp_regex_compile_count();
+        assert_eq!(eval_str_with(&mut interp, form), expected, "{form}");
+        assert_eq!(
+            crate::lisp::primitives::elisp_regex_compile_count(),
+            compiles_delta,
+            "compiles during {form}"
+        );
+    };
+    step(
+        r#"(let ((n 0) (i 0)) (while (< i 50) (setq i (1+ i)) (when (string-match "b\\s-c" "ab cd") (setq n (1+ n)))) n)"#,
+        Value::Integer(50),
+        1,
+    );
+    step(r#"(string-match "b\\s-c" "ab_cd")"#, Value::Nil, 0);
+    step(
+        r#"(with-current-buffer (get-buffer-create "*front-syntax*")
+             (set-syntax-table (make-syntax-table))
+             (modify-syntax-entry ?_ " ")
+             (string-match "b\\s-c" "ab_cd"))"#,
+        Value::Integer(1),
+        1,
+    );
+    step(
+        r#"(let ((case-fold-search nil)) (list (string-match "B" "abc") (string-match "B" "aBc")))"#,
+        Value::list([Value::Nil, Value::Integer(1)]),
+        1,
+    );
+    step(
+        r#"(let ((case-fold-search t) (i 0)) (while (< i 10) (setq i (1+ i)) (string-match "B" "abc")) (match-beginning 0))"#,
+        Value::Integer(1),
+        1,
+    );
+}
+
+#[test]
 fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
     // search.c's compile_pattern cache keys on the syntax table object;
     // the regex crate's compile costs milliseconds where GNU's costs

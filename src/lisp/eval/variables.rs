@@ -545,26 +545,49 @@ impl Interpreter {
         property: &SymbolName,
     ) -> Option<Value> {
         let index = self.symbol_property_index_of(symbol)?;
-        let mut tail = self.symbol_properties[index].1.clone();
-        let mut tortoise = Brent::new(&tail);
-        while let Value::Cons(cell) = tail {
-            let rest = cell.cdr.borrow().clone();
-            let (value_cell, next_cell) = rest.cons_cells()?;
+        // fns.c:plist_get: the walk reads each cell in place -- no Lisp
+        // object is copied per pair (a clone of every car and cdr made the
+        // walk three refcount round trips a pair) -- with
+        // FOR_EACH_TAIL_SAFE's Brent cycle check on the cell identities.
+        let mut cell = match &self.symbol_properties[index].1 {
+            Value::Cons(cell) => std::rc::Rc::clone(cell),
+            _ => return None,
+        };
+        let mut tortoise = crate::lisp::types::ConsCell::identity(&cell);
+        let (mut power, mut steps) = (2usize, 0usize);
+        loop {
             let matches = match &*cell.car.borrow() {
                 Value::Symbol(key) => key == property,
                 Value::Nil => property == "nil",
                 Value::T => property == "t",
                 _ => false,
             };
-            if matches {
-                return Some(value_cell.borrow().clone());
-            }
-            tail = next_cell.borrow().clone();
-            if tortoise.cycle(&tail) {
+            let next = {
+                let rest = cell.cdr.borrow();
+                let Value::Cons(value_cell) = &*rest else {
+                    return None;
+                };
+                if matches {
+                    return Some(value_cell.car.borrow().clone());
+                }
+                let after = value_cell.cdr.borrow();
+                match &*after {
+                    Value::Cons(next) => std::rc::Rc::clone(next),
+                    _ => return None,
+                }
+            };
+            cell = next;
+            steps += 1;
+            let identity = crate::lisp::types::ConsCell::identity(&cell);
+            if identity == tortoise {
                 return None;
             }
+            if steps == power {
+                tortoise = identity;
+                power <<= 1;
+                steps = 0;
+            }
         }
-        None
     }
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
@@ -1371,6 +1394,12 @@ impl Interpreter {
 
     pub(crate) fn overriding_plist_environment_value(&self) -> Value {
         self.overriding_plist_environment.clone()
+    }
+
+    /// fns.c:Fget's `NILP (Voverriding_plist_environment)' read.
+    #[inline]
+    pub(crate) fn overriding_plist_environment_is_nil(&self) -> bool {
+        self.overriding_plist_environment.is_nil()
     }
 
     pub(crate) fn max_lisp_eval_depth_value(&self) -> i64 {

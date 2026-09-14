@@ -10904,3 +10904,111 @@ copy-and-resign control included), ert_runner 3, native_comp_identity
 1, native_thread_continuations 1, package_lifecycle 5, every one 0
 failed; fmt and strict clippy exit 0 before and after.
 
+## 2026-09-14 Checkpoint 19w: the per-file floor, first cut
+
+*What prompted it.*  Of the 363 files the Mac frozen run flags at
+two times GNU or more, some two hundred are files whose test phase is
+3 to 10 ms in GNU and 24 to 30 ms here: one cost, paid per file.  On
+this box a file with one trivial test spends 104 ms in the harness's
+test phase (`emaxx-compat-run') against GNU's 14.
+
+*Read.*  The phase is `ert-select-tests' with universe `t', which is
+subr.el's `apropos-internal' (a Lisp function since Emacs 30): a
+`mapatoms' over the 20,000 symbols of the obarray, and for each a
+`string-match' of "" against `symbol-name', then `ert-test-boundp' (a
+`get').  70 ms of the 104 were that walk (GNU 9.9).  Per symbol, the
+pieces measured in byte-compiled loops on this box against GNU's:
+the callback call itself 1.4 us (GNU 0.075); `string-match' on a
+short string 2.6 us (0.17): both strings copied out of their objects
+(`string_like'), the pattern copied twice more on the way to the
+cache and scanned for its table dependencies, the key hashed, and
+`case-fold-search' read by name; `get' 0.55 us (0.05): the plist
+walked with a clone of every car and cdr, the primitive reached
+through the module's string match; `symbol-name' 0.6 us (0.03),
+which is the builtin call path itself; a `setq' of a special variable
+1.0 us (0.03).
+
+*Done.*  `string-match' reads both strings in place (search.c reads
+the objects' data).  The compiled-regexp cache has a front, search.c's
+searchbufs: the eight most recently used compiled patterns, checked
+by exactly the fields the table key compares -- the pattern text in
+place, the point assertion, the anchoring, case folding, and only the
+table stamps the entry's translation read (its syntax-class hash if
+it depends on the syntax table, the category table and generation if
+on that, the case generation and case-table signature as the key
+does) -- so a hit costs no copy and no hash, and is exactly a table
+hit for the same key; translations with a syntax-property encoding
+never enter it.  `get' on two bare symbols with no overriding plist
+environment is plist_get on the symbol's plist read in place, with
+FOR_EACH_TAIL_SAFE's Brent check on the cell identities.  `mapatoms'
+over the standard obarray walks the shared enumeration instead of
+copying every symbol into a vector first.
+
+*Measured.*  Old and new gate binaries built from the same tree,
+interleaved, five rounds each, minimum and median, milliseconds:
+
+| loop | old min / median | new min / median | GNU |
+|---|---|---|---|
+| `apropos-internal' "" `ignore' | 59.6 / 63.2 | 51.0 / 52.6 | 9.2 |
+| `apropos-internal' "^ert-" nil | 48.4 / 51.2 | 43.2 / 45.2 | 11.1 |
+| `ert-select-tests' t t | 68.5 / 75.0 | 59.0 / 64.0 | 9.9 |
+| byte-code loop of `string-match' "" over 20k names | 50.6 / 51.7 | 44.0 / 46.7 | 3.5 |
+| `emaxx-compat-run', one trivial test | 83.7 / 89.8 | 71.9 / 87.5 | 14.4 |
+
+Eleven to fifteen percent off each; the whole phase's median moved
+little (its spread between rounds is larger than the change).  The
+walk's in-place `mapatoms' made no measurable difference on its own
+(the vector was not the cost; the clone per symbol and the call are);
+it is kept for what it does not allocate.  Tried and reverted: hashing
+`SymbolName' by its id instead of its text for every symbol-keyed
+table -- consistent with the text equality, since an id is a function
+of the text -- made the same loops 15 to 25 percent slower (dense
+small integers under FNV probe badly in hashbrown), so the text hash
+stays.
+
+*Open, and what the floor is.*  The call path: a byte-code function
+called from `mapatoms' costs 1.4 us against 75 ns -- the backtrace
+frame with its `catch_unwind', the edebug flag read, `maybe_gc', the
+activation's root registration, the operand stack, the per-symbol
+clone -- and a builtin called from byte code 0.6 us against 30 ns
+(the symbol's resolution, the facts, the module's string match, the
+frame).  A `setq' of a special variable from byte code 1.0 us against
+30 ns.  `case-fold-search' is read by name on every search (three
+name-keyed lookups).  `Value::clone' is an indirect jump per clone
+and every car and cdr read is a `RefCell' borrow; a 20,000-cell list
+walk is memory latency on 80-byte cells.  The `sort' of 20,000
+symbols with `string<' 285 ms against 37 (290,000 predicate calls at
+the call path's cost).  These are the floor; the string and plist
+copies above were what could be taken without touching them.
+
+*Verified.*  Controls `get_walks_the_plist_as_plist_get_does' (the
+oracle's values for a key found, absent, at an odd tail, a non-list
+plist, a circular plist, nil and t keys),
+`mapatoms_walks_the_standard_obarray_in_place' (nil and t as objects,
+a symbol interned by the callback during the walk),
+`string_matches_reuse_the_last_compiled_pattern_under_its_key' (fifty
+matches compile once; a write to the current syntax table or a change
+of `case-fold-search' compiles again; positions the oracle's), and
+the 19q compile-count controls unchanged; fmt and strict clippy exit
+0; the gate below.
+
+*Found by the gate, fixed.*  The first gate on this tree failed one
+library test, main's new
+`sqlite_extension_loading_executes_real_code_and_rejects_invalid_files'
+(PR #72), with "cc: fatal error: cannot execute 'cc1'": it passes
+alone and fails after
+`embedded_native_compilation_builds_uncached_advice_trampolines' in
+the same process (bisected over the group's sequential order; an
+`strace' of the pair shows the system `cc' run with
+`GCC_EXEC_PREFIX=/usr/lib/gcc/x86_64-linux-gnu/14' in its environment
+and searching PATH for cc1).  The in-process libgccjit compile exports
+its own GCC_EXEC_PREFIX into the host environment; this box has
+libgccjit 14 beside gcc 13, so the gcc 13 driver looks under the 14
+prefix and finds nothing (a box where the two versions agree, as the
+PR's CI, never sees it).  A GNU child is built from
+`process-environment', which the leak does not reach, and emaxx's
+Lisp children are (processes.rs); the module-probe test in this file
+already gives its `cc' the startup environment for this reason, and
+the sqlite test now does the same.  Not a runtime divergence: the
+runtime's children never saw the leak.
+
