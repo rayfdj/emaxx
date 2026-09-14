@@ -1465,7 +1465,7 @@ define_dispatch!(
                 // kqueue.c signals file-missing before registering anything;
                 // Emaxx accepted any path and returned a live descriptor
                 // (finding 13's "never fails" half, per the second audit).
-                if let Err(error) = std::fs::metadata(&path) {
+                if let Err(error) = fs::metadata(&path) {
                     return Err(file_operation_error("File does not exist", &error, &path));
                 }
                 let flags = args[1]
@@ -1668,7 +1668,7 @@ define_dispatch!(
                         continue;
                     }
                     // Directories (following symlinks) get a trailing slash.
-                    let is_directory = std::fs::metadata(entry.path())
+                    let is_directory = fs::metadata(entry.path())
                         .map(|metadata| metadata.is_dir())
                         .unwrap_or(false);
                     names.push(if is_directory {
@@ -3228,7 +3228,7 @@ fn signal_process_target_pid(
 /// over the real lstat mode: a file-type character followed by three
 /// permission triads with setuid/setgid/sticky markers.
 #[cfg(unix)]
-fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
+fn file_mode_string_for_metadata(metadata: &fs::Metadata) -> String {
     use std::os::unix::fs::MetadataExt;
     let mode = metadata.mode();
     // The `as u32' casts are needed on macOS, where libc::mode_t is u16;
@@ -3265,7 +3265,7 @@ fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
 }
 
 #[cfg(not(unix))]
-fn file_mode_string_for_metadata(metadata: &std::fs::Metadata) -> String {
+fn file_mode_string_for_metadata(metadata: &fs::Metadata) -> String {
     let writable = !metadata.permissions().readonly();
     let type_char = if metadata.file_type().is_dir() {
         'd'

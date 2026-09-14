@@ -90,6 +90,10 @@ pub(crate) fn production_batch_driver_can_only_call_audited_compat_helpers() {
         "DUMP_SOURCE_DIRECTORY_ENV",
         "boot_environment_read_guard",
         "canonicalize_path",
+        // Like project_root, this only wraps a compile-time env! value in
+        // PathBuf. It neither consults oracle configuration nor executes
+        // another editor; the configured path is part of the built binary.
+        "configured_gnu_source_root",
         "project_root",
         "relative_test_path",
     ];

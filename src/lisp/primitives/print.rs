@@ -1422,6 +1422,21 @@ fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
     }
 }
 
+/// lread.c:readchar returns bytes 0..255 from an unibyte string, rather
+/// than the byte8 character codes it returns from an unibyte buffer.
+/// The reader must therefore see literal Latin-1 characters in this source;
+/// multibyte raw-byte characters and explicit escapes keep their meaning.
+pub(crate) fn reader_string_source_text(source: &Value) -> Result<String, LispError> {
+    let text = string_text(source)?;
+    if string_argument_multibyte(source) || text.is_ascii() {
+        return Ok(text);
+    }
+    Ok(text
+        .chars()
+        .map(|character| raw_byte_from_regex_char(character).map_or(character, char::from))
+        .collect())
+}
+
 pub(crate) fn read_one_form_in_env(
     interp: &mut Interpreter,
     text: &str,
@@ -1523,7 +1538,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             Ok(value)
         }
         _ => {
-            let text = string_text(source)?;
+            let text = reader_string_source_text(source)?;
             read_one_positioned_form(interp, env, &text, 0).map(|(value, _)| value)
         }
     }
@@ -2364,7 +2379,7 @@ fn read_from_lisp_source_raw(
             read_from_callable_source(interp, source, env)
         }
         _ => {
-            let s = string_text(source)?;
+            let s = reader_string_source_text(source)?;
             read_one_form_in_env(interp, &s, env).map(|(value, _)| value)
         }
     }

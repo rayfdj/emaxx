@@ -3,6 +3,17 @@
 This file records the active long-running goal so interrupted sessions can resume
 from the same concrete state.
 
+Current task scope and evidence (2026-09-14) are maintained in
+[`frozen-run-success.md`](frozen-run-success.md) and issues #69–#71. The current
+platform manifests contain 519 files: 7,921 selected outcomes on Darwin and
+7,928 on Linux. The older milestones below retain their historical denominators.
+The user has assigned missing platform/build capabilities to separate issue
+[#73](https://github.com/rayfdj/emaxx/issues/73). Its six Darwin skip-diagnostic
+mismatches must remain explicit; this is not permission to normalize, exclude,
+or mark them as matching. Final ordinary frozen evidence must cover each
+platform's complete inventory and clearly distinguish these known differences
+from all other execution failures and mismatches.
+
 ## Objective
 
 Make `emaxx` 100% compatible with GNU Emacs at the Elisp API boundary by passing

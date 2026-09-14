@@ -4,6 +4,12 @@ use super::symbol_cells::{
 use super::*;
 use crate::lisp::types::SymbolName;
 
+#[derive(Default)]
+struct ReadSymbolContainers {
+    cons: HashSet<usize>,
+    vectors: HashSet<usize>,
+}
+
 impl BacktraceFrame {
     pub(super) fn function_snapshot(&self) -> Value {
         self.source_form()
@@ -656,6 +662,7 @@ impl Interpreter {
         let mut pending = vec![value.clone()];
         let mut seen_cons_cells = HashSet::new();
         let mut seen_strings = HashSet::new();
+        let mut seen_vectors = HashSet::new();
 
         while let Some(current) = pending.pop() {
             match current {
@@ -671,6 +678,9 @@ impl Interpreter {
                         pending.push(cdr.borrow().clone());
                         pending.push(car.borrow().clone());
                     }
+                }
+                Value::Vector(vector) if seen_vectors.insert(Rc::as_ptr(&vector) as usize) => {
+                    pending.extend(vector.slots().iter().cloned());
                 }
                 Value::StringObject(state) if seen_strings.insert(Rc::as_ptr(&state) as usize) => {
                     for span in &state.borrow().props {
@@ -722,29 +732,40 @@ impl Interpreter {
             self.intern_symbols_in_value(&value);
             return Ok(value);
         }
-        self.intern_read_symbols_in_obarray(value, &obarray, &mut HashSet::new())
+        self.intern_read_symbols_in_obarray(value, &obarray, &mut ReadSymbolContainers::default())
     }
 
     fn intern_read_symbols_in_obarray(
         &mut self,
         value: Value,
         obarray: &Value,
-        seen_cons_cells: &mut HashSet<usize>,
+        seen: &mut ReadSymbolContainers,
     ) -> Result<Value, LispError> {
         match value {
             Value::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
                 crate::lisp::primitives::intern_in_obarray(self, obarray, &name)
             }
             Value::Cons(cell) => {
-                if seen_cons_cells.insert(crate::lisp::types::ConsCell::identity(&cell)) {
+                if seen
+                    .cons
+                    .insert(crate::lisp::types::ConsCell::identity(&cell))
+                {
                     let car = cell.car.borrow().clone();
                     let cdr = cell.cdr.borrow().clone();
-                    let car = self.intern_read_symbols_in_obarray(car, obarray, seen_cons_cells)?;
-                    let cdr = self.intern_read_symbols_in_obarray(cdr, obarray, seen_cons_cells)?;
+                    let car = self.intern_read_symbols_in_obarray(car, obarray, seen)?;
+                    let cdr = self.intern_read_symbols_in_obarray(cdr, obarray, seen)?;
                     *cell.car.borrow_mut() = car;
                     *cell.cdr.borrow_mut() = cdr;
                 }
                 Ok(Value::Cons(cell))
+            }
+            Value::Vector(vector) => {
+                if seen.vectors.insert(Rc::as_ptr(&vector) as usize) {
+                    let slots = vector.slots().to_vec();
+                    let mapped = self.intern_read_symbol_fields(&slots, obarray, seen)?;
+                    vector.slots_mut().clone_from_slice(&mapped);
+                }
+                Ok(Value::Vector(vector))
             }
             Value::StringObject(state) => {
                 let mut borrowed = state.borrow_mut();
@@ -753,7 +774,7 @@ impl Interpreter {
                         *property_value = self.intern_read_symbols_in_obarray(
                             property_value.clone(),
                             obarray,
-                            seen_cons_cells,
+                            seen,
                         )?;
                     }
                 }
@@ -769,25 +790,25 @@ impl Interpreter {
                         payload: self.intern_read_symbols_in_obarray(
                             payload.clone(),
                             obarray,
-                            seen_cons_cells,
+                            seen,
                         )?,
                     },
                     ReaderForm::CircularReference(id) => ReaderForm::CircularReference(*id),
                     ReaderForm::HashTable { fields } => ReaderForm::HashTable {
-                        fields: self.intern_read_symbol_fields(fields, obarray, seen_cons_cells)?,
+                        fields: self.intern_read_symbol_fields(fields, obarray, seen)?,
                     },
                     ReaderForm::CharTable { fields } => ReaderForm::CharTable {
-                        fields: self.intern_read_symbol_fields(fields, obarray, seen_cons_cells)?,
+                        fields: self.intern_read_symbol_fields(fields, obarray, seen)?,
                     },
                     ReaderForm::SubCharTable { fields } => ReaderForm::SubCharTable {
-                        fields: self.intern_read_symbol_fields(fields, obarray, seen_cons_cells)?,
+                        fields: self.intern_read_symbol_fields(fields, obarray, seen)?,
                     },
                     ReaderForm::Record { slots } => ReaderForm::Record {
-                        slots: self.intern_read_symbol_fields(slots, obarray, seen_cons_cells)?,
+                        slots: self.intern_read_symbol_fields(slots, obarray, seen)?,
                     },
                     ReaderForm::Closure { kind, slots } => ReaderForm::Closure {
                         kind: *kind,
-                        slots: self.intern_read_symbol_fields(slots, obarray, seen_cons_cells)?,
+                        slots: self.intern_read_symbol_fields(slots, obarray, seen)?,
                     },
                     ReaderForm::BoolVector { bits } => {
                         ReaderForm::BoolVector { bits: bits.clone() }
@@ -813,12 +834,12 @@ impl Interpreter {
         &mut self,
         fields: &[Value],
         obarray: &Value,
-        seen_cons_cells: &mut HashSet<usize>,
+        seen: &mut ReadSymbolContainers,
     ) -> Result<Vec<Value>, LispError> {
         fields
             .iter()
             .cloned()
-            .map(|field| self.intern_read_symbols_in_obarray(field, obarray, seen_cons_cells))
+            .map(|field| self.intern_read_symbols_in_obarray(field, obarray, seen))
             .collect()
     }
 

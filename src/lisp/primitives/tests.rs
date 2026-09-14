@@ -3,8 +3,8 @@ use crate::lisp::reader::Reader;
 use std::io::{Read, Write};
 
 fn upstream_emacs_repo() -> PathBuf {
-    crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
-        .expect("canonical sibling GNU checkout")
+    crate::compat::canonicalize_path(&crate::compat::configured_gnu_source_root())
+        .expect("canonical configured GNU checkout")
 }
 
 /// Call NAME through the interpreter's function cell, exactly as GNU
@@ -18,6 +18,216 @@ fn call_via_lisp(
 ) -> Result<Value, LispError> {
     let function = interp.lookup_function(name, env)?;
     interp.call_function_value(function, Some(name), args, env)
+}
+
+#[test]
+fn native_numeric_predicates_and_sorting_recognize_all_bignums() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp) (require 'sort)
+            (let* ((comp-no-spawn nil) (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   (predicate (native-compile
+                               '(lambda (x)
+                                  (list (numberp x) (integerp x)
+                                        (bignump x) (fixnump x))))))
+              (list
+               (mapcar predicate
+                       (list 1 4000000000000000000 -4000000000000000000
+                             (expt 2 100) 1.5 nil))
+               (with-temp-buffer
+                 (insert "4000000000000000000 b\n0 c\n-5107225293856344518 a\n")
+                 (sort-numeric-fields 1 (point-min) (point-max))
+                 (buffer-string)))))"#,
+        "(((t t nil t) (t t t nil) (t t t nil) (t t t nil) (t nil nil nil) (nil nil nil nil)) \"-5107225293856344518 a\n0 c\n4000000000000000000 b\n\")",
+        "native numeric predicates and numeric-field sorting",
+    );
+}
+
+#[test]
+fn random_default_and_reseeded_values_follow_the_gnu_fixnum_contract() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((valid t))
+            (random "fixnum-range-control")
+            (dotimes (_ 256)
+              (dolist (argument (list nil 'ignored [] 1.5))
+                (let ((value (random argument)))
+                  (unless (and (fixnump value)
+                               (<= most-negative-fixnum value most-positive-fixnum))
+                    (setq valid nil)))))
+            (let* ((first (random "repeatable-control"))
+                   (next (random))
+                   (again (random "repeatable-control")))
+              (list valid (fixnump first) (= first again) (= next (random))
+                    (fixnump (random t))
+                    (= (random 1) 0))))"#,
+        "(t t t t t t)",
+        "random fixnum range, ignored noninteger arguments, and reseeding",
+    );
+}
+
+#[test]
+fn reader_interns_symbols_inside_shared_and_circular_vectors() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((name (concat "vector-reader-" "fresh-symbol"))
+                  (object (read (concat "#1=[" name " #1#]"))))
+            (list (eq (aref object 0) (intern-soft name))
+                  (eq object (aref object 1))
+                  (progn (unintern name) (null (intern-soft name)))))"##,
+        "(t t t)",
+        "reader vector symbols and circular identity",
+    );
+}
+
+#[test]
+fn reader_interns_vector_symbols_in_the_dynamic_obarray() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((name (concat "private-vector-" "fresh-symbol"))
+                  (standard obarray)
+                  (obarray (obarray-make))
+                  (object (read (concat "[#1=[" name "] #1# #:" name "]"))))
+            (list (eq (aref (aref object 0) 0) (intern-soft name))
+                  (eq (aref object 0) (aref object 1))
+                  (not (eq (aref object 2) (intern-soft name)))
+                  (null (intern-soft name standard))))"#,
+        "(t t t t)",
+        "reader vectors use private obarray identities",
+    );
+}
+
+#[test]
+fn native_loader_interns_symbols_inside_relocation_vectors() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp)
+            (let* ((source (make-temp-file "native-vector-symbols-" nil ".el"))
+                   (name (concat "native-vector-" "fresh-symbol"))
+                   (comp-no-spawn nil)
+                   (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   eln)
+              (unwind-protect
+                  (progn
+                    (with-temp-file source
+                      (insert ";;; -*- lexical-binding: t -*-\n"
+                              "(defun native-vector-symbol-reader () '[" name "])"))
+                    (setq eln (native-compile source))
+                    (unintern name)
+                    (native-elisp-load eln)
+                    (list (native-comp-function-p
+                           (symbol-function 'native-vector-symbol-reader))
+                          (eq (aref (native-vector-symbol-reader) 0)
+                              (intern-soft name))))
+                (delete-file source)
+                (when (and eln (file-exists-p eln)) (delete-file eln)))))"#,
+        "(t t)",
+        "native relocation vectors register their read symbols",
+    );
+}
+
+#[test]
+fn atan_treats_an_explicit_nil_second_argument_as_omitted_like_gnu() {
+    // floatfns.c:Fatan selects atan, rather than atan2, when X is nil.
+    assert_oracle_contract_matches_interpreter(
+        "(list (= (atan 1) (atan 1 nil))
+               (= (atan 1 1) (atan 1))
+               (< (atan -1 -1) (atan -1 nil))
+               (= (atan 0 nil) 0))",
+        "(t t t t)",
+        "atan optional argument",
+    );
+}
+
+#[test]
+fn buffer_lookup_preserves_object_identity_after_rename_or_kill() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((buffer (generate-new-buffer "identity-before"))
+                  (old-name (buffer-name buffer)) replacement)
+            (unwind-protect
+                (progn
+                  (with-current-buffer buffer (rename-buffer "identity-after" t))
+                  (setq replacement (get-buffer-create old-name))
+                  (list (eq buffer (get-buffer buffer))
+                        (eq buffer (get-buffer-create buffer))
+                        (progn (kill-buffer buffer) (eq buffer (get-buffer buffer)))
+                        (eq buffer (get-buffer-create buffer))
+                        (eq replacement (get-buffer old-name))
+                        (buffer-live-p buffer)))
+              (when (buffer-live-p buffer) (kill-buffer buffer))
+              (when (buffer-live-p replacement) (kill-buffer replacement))))"#,
+        "(t t t t t nil)",
+        "buffer object lookup after rename and death",
+    );
+}
+
+#[test]
+fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp)
+            (let* ((comp-no-spawn nil)
+                   (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   (getter (native-compile
+                            '(lambda (buffer)
+                               (list (eq buffer (get-buffer buffer))
+                                     (eq buffer (get-buffer-create buffer))))))
+                   (buffer (generate-new-buffer "native-identity-before"))
+                   (old-name (buffer-name buffer)) replacement)
+              (unwind-protect
+                  (progn
+                    (with-current-buffer buffer
+                      (rename-buffer "native-identity-after" t))
+                    (setq replacement (get-buffer-create old-name))
+                    (list (native-comp-function-p getter)
+                          (funcall getter buffer)
+                          (progn (kill-buffer buffer) (funcall getter buffer))
+                          (eq replacement (get-buffer old-name))))
+                (when (buffer-live-p buffer) (kill-buffer buffer))
+                (when (buffer-live-p replacement) (kill-buffer replacement)))))"#,
+        "(t (t t) (t t) t)",
+        "native buffer object lookup after rename and death",
+    );
+}
+
+#[test]
+fn keymap_parent_resolves_symbol_function_cells_before_installing() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((parent (make-sparse-keymap))
+                  (child (make-sparse-keymap))
+                  (replacement (make-sparse-keymap))
+                  (parent-symbol (make-symbol "parent"))
+                  (alias (make-symbol "parent-alias")))
+            (fset parent-symbol parent)
+            (fset alias parent-symbol)
+            (list (eq (set-keymap-parent child alias) parent)
+                  (eq (keymap-parent child) parent)
+                  (progn (fset parent-symbol replacement)
+                         (eq (keymap-parent child) parent))
+                  (progn (define-key child [3] 'ignore)
+                         (lookup-key child [3]))
+                  (keymapp (copy-keymap alias))))"#,
+        "(t t t ignore t)",
+        "symbolic keymap parent resolution",
+    );
+}
+
+#[test]
+fn read_string_nil_default_returns_empty_input_like_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'ert-x)
+            (mapcar
+             (lambda (form)
+               (ert-simulate-keys (list ?\r) (eval form t)))
+             '((read-string "")
+               (read-string "" nil nil nil)
+               (read-string "" nil nil '(nil))
+               (read-string "" nil nil '("fallback"))
+               (read-string "" nil nil 17))))"#,
+        r#"("" "" nil "fallback" 17)"#,
+        "read-string nil and non-nil defaults",
+    );
 }
 
 #[test]
@@ -101,6 +311,94 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
         upstream_primitive_contract_output(program),
         expected,
         "oracle disagreed; program sent was:\n{program}"
+    );
+}
+
+#[test]
+fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+            (insert "abc")
+            (goto-char (point-min))
+            (makunbound 'last-looking-at-pattern)
+            (list
+             (progn (looking-at "a") (boundp 'last-looking-at-pattern))
+             (progn (posix-looking-at "a") (boundp 'last-looking-at-pattern))
+             (progn (set 'last-looking-at-pattern 'sentinel)
+                    (looking-at "b")
+                    (symbol-value 'last-looking-at-pattern))
+             (progn (posix-looking-at "b")
+                    (symbol-value 'last-looking-at-pattern))))"#,
+        "(nil nil sentinel sentinel)",
+        "looking-at variable side effects",
+    );
+}
+
+#[test]
+fn mapatoms_honors_dynamic_obarrays_legacy_conversion_and_function_cells() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar
+          (lambda (form) (condition-case err (eval form t) (error err)))
+          '((let ((obarray (obarray-make)) seen)
+              (intern "first" obarray)
+              (intern "second" obarray)
+              (mapatoms (lambda (symbol) (push (symbol-name symbol) seen)))
+              (sort seen #'string<))
+            (mapatoms 42 (obarray-make))
+            (mapatoms 42 17)
+            (let ((table (vector 0)))
+              (list (mapatoms 42 table) (obarrayp (aref table 0))))
+            (let ((table (obarray-make)) (callback (make-symbol "callback")) (count 0))
+              (intern "first" table)
+              (intern "second" table)
+              (fset callback
+                    (lambda (_)
+                      (setq count (1+ count))
+                      (fset callback (lambda (_) (setq count (+ count 10))))))
+              (mapatoms callback table)
+              count)))"#,
+        r#"(("first" "second") nil (wrong-type-argument obarrayp 17) (nil t) 11)"#,
+        "mapatoms obarray and callback contract",
+    );
+}
+
+#[test]
+fn native_mapatoms_preserves_collection_redefinition_and_nonlocal_exit() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+          (require 'comp)
+          (let* ((comp-no-spawn nil)
+                 (comp-running-batch-compilation t)
+                 (native-comp-jit-compilation nil)
+                 (caller (native-compile
+                          '(lambda (function table) (mapatoms function table))))
+                 (native-callback (native-compile
+                                   '(lambda (symbol)
+                                      (garbage-collect)
+                                      (set symbol 1))))
+                 (table (obarray-make))
+                 (first (intern "first" table))
+                 (second (intern "second" table))
+                 (callback (make-symbol "callback"))
+                 (count 0))
+            (list
+             (native-comp-function-p caller)
+             (native-comp-function-p native-callback)
+             (progn (funcall caller native-callback table)
+                    (list (symbol-value first) (symbol-value second)))
+             (progn
+               (fset callback
+                     (lambda (_)
+                       (garbage-collect)
+                       (setq count (1+ count))
+                       (fset callback (lambda (_) (setq count (+ count 10))))))
+               (funcall caller callback table)
+               count)
+             (catch 'done (funcall caller (lambda (_) (throw 'done 42)) table))
+             (funcall caller 42 (obarray-make))
+             (condition-case err (funcall caller 42 table) (error (car err))))))"#,
+        "(t t (1 1) 11 42 nil invalid-function)",
+        "native mapatoms callback contract",
     );
 }
 
@@ -1732,6 +2030,20 @@ fn current_time_and_a_nil_time_convert_form_follow_current_time_list() {
         program,
         "(cons 4 (0 1 500000 0) (1 2 3 4) (0 100 0 0) (0 0 333333 333333) (1000000000 (100 . 1) (1 . 1) t 1000000000))",
         "current-time-list forms",
+    );
+}
+
+#[test]
+fn current_cpu_time_returns_a_readable_tick_pair_in_both_time_modes() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar (lambda (current-time-list)
+                     (let ((cpu (current-cpu-time)))
+                       (list (consp cpu) (integerp (car cpu))
+                             (integerp (cdr cpu)) (> (cdr cpu) 0)
+                             (floatp (float-time cpu)))))
+                   '(nil t))"#,
+        "((t t t t t) (t t t t t))",
+        "current-cpu-time tick pair",
     );
 }
 
@@ -7189,23 +7501,76 @@ fn substitute_in_file_name_expands_shell_style_env_vars() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn x_window_properties_validate_the_frame_before_property_arguments() {
+    // xfns.c enters decode_window_system_frame before inspecting property
+    // names, values or formats. These are real primitives in an X-enabled
+    // GNU build even when its current frame is a terminal. Their function
+    // cells must also exist so fset installs normal native trampolines.
+    let program = r#"(prin1
+      (list
+        (mapcar (lambda (name)
+                  (let ((function (symbol-function name)))
+                    (list (subrp function) (subr-arity function))))
+                '(x-change-window-property x-window-property
+                  x-window-property-attributes x-delete-window-property))
+        (mapcar (lambda (form) (condition-case err (eval form t) (error err)))
+                '((x-change-window-property 1 2)
+                  (x-window-property 1)
+                  (x-window-property-attributes 1)
+                  (x-delete-window-property 1)
+                  (x-change-window-property "p" "v" 17)
+                  (x-window-property "p" 17)
+                  (x-window-property-attributes "p" 17)
+                  (x-delete-window-property "p" 17)
+                  (x-change-window-property 1 2 (selected-frame) nil 'bad-format)
+                  (x-window-property 1 (selected-frame) 'bad-type)
+                  (x-window-property-attributes 1 (selected-frame) 'bad-window)
+                  (x-delete-window-property 1 (selected-frame) 'bad-window)))))"#;
+    let frame_error = r#"(error "Window system frame should be used")"#;
+    let type_error = "(wrong-type-argument frame-live-p 17)";
+    let errors = [frame_error; 4]
+        .into_iter()
+        .chain([type_error; 4])
+        .chain([frame_error; 4])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let expected = format!("(((t (2 . 7)) (t (1 . 6)) (t (1 . 3)) (t (1 . 3))) ({errors}))");
+    assert_upstream_primitive_contract(program, &expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let form = Reader::new(program)
+        .read()
+        .expect("window-property contract is valid Lisp")
+        .expect("window-property contract contains a form");
+    let value = interp
+        .eval(&form, &mut Vec::new())
+        .expect("window-property contract catches the expected frame errors");
+    let expected = Reader::new(&expected)
+        .read()
+        .expect("expected window-property results are valid Lisp")
+        .expect("expected window-property results contain a form");
+    assert_eq!(value, expected);
+}
+
 #[test]
 fn dumped_directory_family_ignores_the_test_harness_variable() {
     // Finding 102: data-directory, doc-directory, installation-directory
     // and emacsclient-program-name were derived from EMACS_TEST_DIRECTORY
     // -- exactly the rule source-directory's own comment bans.  In GNU
     // they are epaths.h constants fixed when the binary is built; here
-    // that means the pinned sibling checkout's paths, whatever the
+    // that means the configured checkout's paths, whatever the
     // harness environment says.
     let repo = crate::compat::canonicalize_path(&upstream_emacs_repo())
-        .expect("sibling GNU checkout")
+        .expect("configured GNU checkout")
         .display()
         .to_string();
     let program = concat!(
-        "(prin1 (list data-directory doc-directory installation-directory ",
+        "(prin1 (list source-directory data-directory doc-directory installation-directory ",
         "emacsclient-program-name))"
     );
-    let expected = format!("(\"{repo}/etc/\" \"{repo}/etc/\" \"{repo}/\" \"emacsclient\")");
+    let expected =
+        format!("(\"{repo}/\" \"{repo}/etc/\" \"{repo}/etc/\" \"{repo}/\" \"emacsclient\")");
     assert_upstream_primitive_contract(program, &expected);
 
     // A hostile EMACS_TEST_DIRECTORY pointing at a fake repo layout --
@@ -7227,8 +7592,10 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
 
     let _env_write = crate::compat::lock_boot_environment_for_write();
     let old = std::env::var("EMACS_TEST_DIRECTORY").ok();
+    let old_configured_source = std::env::var_os("EMAXX_GNU_SOURCE_DIRECTORY");
     unsafe {
         std::env::set_var("EMACS_TEST_DIRECTORY", test_dir.display().to_string());
+        std::env::set_var("EMAXX_GNU_SOURCE_DIRECTORY", &fake_root);
     }
     assert_eq!(
         current_invocation_path(),
@@ -7237,6 +7604,15 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
     );
     assert_eq!(compat_data_directory(), Some(format!("{repo}/etc/")));
     assert_eq!(compat_installation_directory(), Some(format!("{repo}/")));
+    assert_eq!(
+        crate::compat::configured_gnu_source_root(),
+        PathBuf::from(&repo),
+        "a runtime environment variable cannot change the configured installation"
+    );
+    match old_configured_source {
+        Some(value) => unsafe { std::env::set_var("EMAXX_GNU_SOURCE_DIRECTORY", value) },
+        None => unsafe { std::env::remove_var("EMAXX_GNU_SOURCE_DIRECTORY") },
+    }
     if let Some(value) = old {
         unsafe {
             std::env::set_var("EMACS_TEST_DIRECTORY", value);
@@ -7254,7 +7630,7 @@ fn dumped_directory_family_ignores_the_test_harness_variable() {
     let values = interp
         .eval(
             &Reader::new(
-                "(list data-directory doc-directory installation-directory \
+                "(list source-directory data-directory doc-directory installation-directory \
                  emacsclient-program-name)",
             )
             .read_all()
@@ -12006,11 +12382,12 @@ fn dropping_an_interpreter_terminates_and_reaps_its_child() {
 #[test]
 fn interpreter_drop_releases_a_pty_child_that_ignores_hangup_and_never_blocks() {
     // The teardown contract for a child on a pseudo-terminal that neither
-    // reads nor exits on SIGHUP and writes without pause: the hangup goes
-    // to the terminal's foreground group as kill_buffer_processes sends
-    // it, the terminal closes before the reap, and the drop returns
+    // reads nor exits on SIGHUP and writes without pause: the embedded
+    // owner's hangup goes to the terminal's foreground group, the terminal
+    // closes before the reap, and the drop returns
     // promptly with the child gone.  (A Darwin python-tests.el run sat in
-    // the old unbounded wait with the terminal still open.)
+    // the old unbounded wait with the terminal still open.) GNU's process
+    // exit is a separate path: it signals the child's group without reaping.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let program = r#"
         (make-process
@@ -16357,6 +16734,171 @@ fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
             .iter()
             .any(|item| item.to_string().contains("keymap-tests-command")),
         "mapped keymap items should include runtime bindings: {items:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_extension_loading_executes_real_code_and_rejects_invalid_files() {
+    crate::test_support::mark_process_test();
+    struct Directory(PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = Directory(std::env::temp_dir().join(format!(
+        "emaxx-sqlite-extension-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).expect("timestamp").as_nanos(),
+    )));
+    fs::create_dir(&directory.0).expect("private extension directory");
+    // Use the extension ABI header belonging to the locked SQLite dependency.
+    // Apple's SDK header disables its extension API macros; this fixture uses
+    // the API pointer supplied by the database and links no system SQLite.
+    let metadata = std::process::Command::new("cargo")
+        .args([
+            "metadata",
+            "--locked",
+            "--offline",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            env!("EMAXX_RUST_TARGET"),
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("locked Cargo metadata");
+    assert!(
+        metadata.status.success(),
+        "{}",
+        String::from_utf8_lossy(&metadata.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&metadata.stdout).expect("metadata JSON");
+    let packages = metadata["packages"].as_array().expect("package inventory");
+    let sqlite = packages
+        .iter()
+        .filter(|package| package["name"] == "libsqlite3-sys")
+        .collect::<Vec<_>>();
+    assert_eq!(sqlite.len(), 1, "one locked SQLite ABI provider");
+    let manifest = Path::new(
+        sqlite[0]["manifest_path"]
+            .as_str()
+            .expect("SQLite manifest"),
+    );
+    let headers = manifest.parent().expect("SQLite source").join("sqlite3");
+    let suffix = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    let module_name = format!("pcre.{suffix}");
+    let module = directory.0.join(&module_name);
+    let compiled = std::process::Command::new("cc")
+        .args(if cfg!(target_os = "macos") {
+            &["-dynamiclib"][..]
+        } else {
+            &["-shared", "-fPIC"][..]
+        })
+        .args(["-Wall", "-Wextra", "-Werror", "-I"])
+        .arg(headers)
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sqlite-extension.c"))
+        .arg("-o")
+        .arg(&module)
+        .output()
+        .expect("compile the actual SQLite extension");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    fs::write(
+        directory.0.join("rot13.so"),
+        b"An invalid shared library.\n",
+    )
+    .expect("invalid module");
+    fs::write(
+        directory.0.join("rot13.DLL"),
+        b"An invalid shared library.\n",
+    )
+    .expect("DLL suffix control");
+    let program = format!(
+        r#"(let ((default-directory {directory:?}) (db (sqlite-open)))
+      (unwind-protect
+          (list
+           (sqlite-load-extension db "rot13.so")
+           (condition-case failure (sqlite-load-extension db "not-allowed.so")
+             (sqlite-error failure))
+           (condition-case failure (sqlite-load-extension db "pcre.so/")
+             (sqlite-error failure))
+           (sqlite-load-extension db "rot13.DLL")
+           (sqlite-load-extension db {module_name:?})
+           (sqlite-select db "select extension_probe(20)")
+           (condition-case nil
+               (progn (sqlite-execute db "select load_extension('pcre')") nil)
+             (sqlite-error t)))
+        (sqlite-close db)))"#,
+        directory = format!("{}/", directory.0.display())
+    );
+    assert_oracle_contract_matches_interpreter(
+        &program,
+        "(nil (sqlite-error \"Module name not on allowlist\") (sqlite-error \"Module name not on allowlist\") nil t ((37)) t)",
+        "real SQLite extension loading",
+    );
+}
+
+#[test]
+fn case_tables_preserve_gnu_unset_mappings_and_special_casing() {
+    let program = r#"(list
+      (mapcar (lambda (c)
+                (list (aref (current-case-table) c)
+                      (aref (char-table-extra-slot (current-case-table) 0) c)
+                      (downcase c) (upcase c)
+                      (let ((case-fold-search nil))
+                        (list (string-match-p "[[:lower:]]" (string c))
+                              (string-match-p "[[:upper:]]" (string c))))))
+              '(?ſ ?K ?İ ?ı))
+      (mapcar (lambda (tab)
+                (with-case-table tab
+                  (list (upcase "ßſİıKﬁΣ")
+                        (downcase "ßſİıKﬁΑΣ")
+                        (capitalize "ßſİıKﬁΣ"))))
+              (list (standard-case-table) ascii-case-table)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(((nil nil 383 383 (nil nil)) (nil nil 8490 8490 (nil nil)) (nil nil 304 304 (nil nil)) (nil nil 305 305 (nil nil))) (("SSſİıKFIΣ" "ßſi̇ıKﬁας" "Ssſi̇ıKﬁς") ("SSſİıKFIΣ" "ßſi̇ıKﬁΑΣ" "Ssſi̇ıKﬁΣ")))"#,
+        "case-table defaults and special casing",
+    );
+}
+
+#[test]
+fn case_class_regexps_follow_table_selection_and_mutation_without_case_folding() {
+    let program = r#"(let* ((plain (standard-case-table))
+                           (custom (copy-case-table plain)))
+      (set-case-syntax-pair ?☀ ?☂ custom)
+      (list
+       (mapcar
+        (lambda (tab)
+          (with-case-table tab
+            (let ((case-fold-search nil))
+              (list (string-match-p "[[:lower:]]" "☂")
+                    (string-match-p "[[:upper:]]" "☀")
+                    (string-match-p "[^[:lower:]]" "☂")
+                    (let ((case-fold-search t))
+                      (string-match-p "[[:lower:]]" "☀"))))))
+        (list custom plain custom))
+       (with-case-table custom
+         (let ((case-fold-search nil))
+           (list (string-match-p "[[:lower:]]" "☂")
+                 (progn (aset (char-table-extra-slot custom 0) ?☂ ?☂)
+                        (string-match-p "[[:lower:]]" "☂"))
+                 (progn (aset (char-table-extra-slot custom 0) ?☂ ?☀)
+                        (string-match-p "[[:lower:]]" "☂")))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((0 0 nil 0) (nil nil 0 nil) (0 0 nil 0)) (0 nil 0))",
+        "case-class cache selection and mutation",
     );
 }
 
@@ -24270,6 +24812,35 @@ fn load_history_lists_a_repeated_definition_twice_as_gnu_does() {
         ])
     );
     std::fs::remove_file(&path).expect("remove the fixture file");
+}
+
+#[test]
+fn reader_distinguishes_unibyte_string_characters_from_byte8_sources() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((plain (unibyte-string 34 255 34))
+                   (raw (string-to-multibyte plain))
+                   (escaped (unibyte-string 34 92 51 55 55 34)))
+              (mapcar
+               (lambda (source)
+                 (list
+                  (let ((value (read source)))
+                    (list (multibyte-string-p value) (string-to-list value)))
+                  (let* ((pair (read-from-string (concat "x" source "tail")
+                                                 1 (1+ (length source))))
+                         (value (car pair)))
+                    (list (multibyte-string-p value) (string-to-list value) (cdr pair)))
+                  (let ((value (read-positioning-symbols source)))
+                    (list (multibyte-string-p value) (string-to-list value)))
+                  (with-temp-buffer
+                    (set-buffer-multibyte nil)
+                    (insert source)
+                    (goto-char (point-min))
+                    (let ((value (read (current-buffer))))
+                      (list (multibyte-string-p value) (string-to-list value) (point))))))
+               (list plain raw escaped)))"#,
+        "(((t (255)) (t (255) 4) (t (255)) (nil (255) 4)) ((nil (255)) (nil (255) 4) (nil (255)) (nil (255) 4)) ((nil (255)) (nil (255) 7) (nil (255)) (nil (255) 7)))",
+        "string bytes, raw-byte characters, octal escapes, and buffer bytes",
+    );
 }
 
 /// lread.c reads a symbol inside a vector as a symbol with position under

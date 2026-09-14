@@ -394,15 +394,18 @@ fn dumped_fingerprint_survives_copying_and_resigning_the_executable() {
     // Dumped native units are relative to each executable directory.
     // Mirror their relative layout under the corpus without changing either
     // editor's original executable, dump, or native libraries.
-    let native = oracle()
-        .parent()
-        .unwrap()
-        .join("../native-lisp")
-        .canonicalize()
-        .unwrap();
-    let native_link = corpus.directory.join(native.strip_prefix("/").unwrap());
-    std::fs::create_dir_all(native_link.parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(&native, &native_link).unwrap();
+    let native_roots = [
+        oracle().parent().unwrap().join("../native-lisp"),
+        emaxx::compat::configured_gnu_source_root().join("native-lisp"),
+    ]
+    .map(|path| path.canonicalize().unwrap())
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    for native in native_roots {
+        let native_link = corpus.directory.join(native.strip_prefix("/").unwrap());
+        std::fs::create_dir_all(native_link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&native, &native_link).unwrap();
+    }
     for (name, binary) in [("gnu", oracle()), ("emaxx", emaxx().to_path_buf())] {
         let expected = corpus.run(&binary, &["--fingerprint"]);
         assert_eq!(expected.2, Some(0), "{name}: {expected:?}");

@@ -14,8 +14,7 @@ fn replacement_case_action(
 
     for character in matched.chars() {
         let code = character as u32;
-        let lowercase = simple_upcase_char(code) != code;
-        let uppercase = simple_downcase_char(code, false) != code;
+        let (lowercase, uppercase) = current_case_classes(interp, code);
         if lowercase {
             some_lowercase = true;
             if previous_is_word {
@@ -501,12 +500,6 @@ define_dispatch!(
             }
             "looking-at" | "posix-looking-at" => {
                 need_arg_range(name, args, 1, 2)?;
-                let pattern = string_text(&args[0])?;
-                interp.set_variable(
-                    "last-looking-at-pattern",
-                    Value::String(pattern.clone().into()),
-                    &mut env.clone(),
-                );
                 regexp::looking_at_impl(
                     interp,
                     &args[0],

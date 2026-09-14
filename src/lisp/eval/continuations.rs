@@ -37,14 +37,38 @@ pub(super) struct ThreadContinuation {
 struct ResumeContext {
     editor: *const InterpreterState,
     yielder: Rc<Cell<*const ThreadYielder>>,
-    stack_base: usize,
 }
 
 thread_local! {
     static CURRENT_RESUME: Cell<*const ResumeContext> = const { Cell::new(std::ptr::null()) };
+    static CURRENT_STACK_BASE: Cell<Option<*const usize>> = const { Cell::new(None) };
 }
 
 struct ResumeGuard(*const ResumeContext);
+struct StackBaseGuard(Option<*const usize>);
+
+impl StackBaseGuard {
+    fn enter(base: usize) -> Self {
+        Self(CURRENT_STACK_BASE.replace(Some(base as *const usize)))
+    }
+}
+
+impl Drop for StackBaseGuard {
+    fn drop(&mut self) {
+        CURRENT_STACK_BASE.set(self.0);
+    }
+}
+
+/// Run on an owned stack while publishing its physical upper bound to native
+/// collection. The OS thread's pthread stack attributes describe its original
+/// stack, so they cannot be used while an alternate stack is active.
+pub(crate) fn on_stack<R>(stack: DefaultStack, body: impl FnOnce() -> R) -> R {
+    let base = stack.base().get();
+    corosensei::on_stack(stack, || {
+        let _guard = StackBaseGuard::enter(base);
+        body()
+    })
+}
 
 impl Drop for ResumeGuard {
     fn drop(&mut self) {
@@ -97,9 +121,9 @@ impl ThreadContinuation {
         let context = ResumeContext {
             editor: std::ptr::from_ref(&*state),
             yielder: Rc::clone(&self.yielder),
-            stack_base: self.stack_base,
         };
         let _guard = ResumeGuard(CURRENT_RESUME.replace(std::ptr::from_ref(&context)));
+        let _stack_guard = StackBaseGuard::enter(self.stack_base);
         self.coroutine.resume(state)
     }
 
@@ -168,17 +192,56 @@ fn suspend_payload(interpreter: &mut Interpreter) {
 }
 
 pub(crate) fn current_stack_base() -> Option<*const usize> {
-    CURRENT_RESUME.with(|current| {
-        let context = current.get();
-        // SAFETY: same private resume-scope lifetime as can_suspend. This is
-        // the physical stack bound even for a nested independent interpreter.
-        (!context.is_null()).then(|| unsafe { (*context).stack_base as *const usize })
-    })
+    CURRENT_STACK_BASE.get()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alternate_stack_bounds_restore_after_nested_resume_and_panic() {
+        assert!(current_stack_base().is_none());
+        let stack = DefaultStack::new(LISP_THREAD_STACK_BYTES).expect("outer stack");
+        let base = stack.base().get() as *const usize;
+        on_stack(stack, || {
+            assert_eq!(current_stack_base(), Some(base));
+            let nested = DefaultStack::new(LISP_THREAD_STACK_BYTES).expect("nested stack");
+            let nested_base = nested.base().get() as *const usize;
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| on_stack(nested, || {
+                    assert_eq!(current_stack_base(), Some(nested_base));
+                    panic!("restore the caller's stack bound");
+                })))
+                .is_err()
+            );
+            assert_eq!(current_stack_base(), Some(base));
+            let mut interpreter = Interpreter::new();
+            let mut continuation = ThreadContinuation::with_body(|interpreter| {
+                let child_base = current_stack_base().expect("resumed stack bound");
+                suspend(interpreter)?;
+                assert_eq!(current_stack_base(), Some(child_base));
+                Ok(Value::Nil)
+            })
+            .expect("resumable stack");
+            assert_ne!(continuation.stack_base, base as usize);
+            let state = interpreter.state.take().expect("driver owns state");
+            let CoroutineResult::Yield(state) = continuation.resume(state) else {
+                panic!("child must suspend");
+            };
+            assert_eq!(current_stack_base(), Some(base));
+            let CoroutineResult::Return(completion) = continuation.resume(state) else {
+                panic!("child must return");
+            };
+            interpreter.state = Some(completion.state);
+            assert_eq!(
+                completion.result.expect("no panic").expect("Lisp result"),
+                Value::Nil
+            );
+            assert_eq!(current_stack_base(), Some(base));
+        });
+        assert!(current_stack_base().is_none());
+    }
 
     #[test]
     fn dropping_editor_resumes_suspended_native_and_rust_frames_to_termination() {

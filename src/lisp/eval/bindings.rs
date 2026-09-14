@@ -607,7 +607,7 @@ impl Interpreter {
             // Lisp this image reconstructs.  It must never be derived from a
             // harness variable such as EMACS_TEST_DIRECTORY.
             "source-directory" => Some(Value::String(
-                crate::compat::canonicalize_path(&crate::compat::project_root().join("../emacs"))
+                crate::compat::canonicalize_path(&crate::compat::configured_gnu_source_root())
                     .map(|path| primitives::file_name_as_directory(&path.display().to_string()))
                     .unwrap_or_else(|_| primitives::default_directory())
                     .into(),
@@ -943,17 +943,6 @@ impl Interpreter {
             .iter()
             .map(|symbol| symbol.as_str().to_string())
             .collect()
-    }
-
-    /// The initial obarray's symbols, in `known_symbol_names' order, as
-    /// symbol objects: what `mapatoms' hands its function.  The sources
-    /// that hold symbol objects (the value cells, the interned list) give
-    /// them as they are; only the name-keyed lists resolve through the
-    /// interned-name table.  No per-symbol string is allocated (the loadup
-    /// obarray holds twenty thousand names, and ERT's test selection walks
-    /// it on every batch run: `mapatoms' was 22 ms against GNU's 3.6).
-    pub(crate) fn known_symbols(&self) -> Vec<crate::lisp::types::SymbolName> {
-        self.known_symbols_shared().as_ref().clone()
     }
 
     /// The obarray's symbols, enumerated once per change of the tables

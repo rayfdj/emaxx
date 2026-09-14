@@ -1,6 +1,6 @@
+use crate::file_system as fs;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::Child;
@@ -1210,17 +1210,17 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
-/// The (id, stamp) of every table in a syntax table's parent chain, the
-/// table itself first: everything a syntax rendering of that table reads.
+/// The (id, stamp) of every table in a character table's parent chain, the
+/// table itself first: everything an inherited lookup of that table reads.
 /// A cache keyed on it survives a write to any table outside the chain,
 /// where one process-wide generation recompiled cc-mode's largest patterns
 /// (hundreds of milliseconds each) whenever any mode touched any table.
-pub(crate) type SyntaxChainSignature = Vec<(u64, u64)>;
+pub(crate) type CharTableChainSignature = Vec<(u64, u64)>;
 
 #[derive(Clone, Debug)]
 struct RegexpSyntaxClassCache {
     table_id: u64,
-    chain: SyntaxChainSignature,
+    chain: CharTableChainSignature,
     rendered: [String; 16],
     /// FNV over the sixteen renderings: two tables that render alike
     /// (cperl-mode copies its table into every buffer) compile a pattern
@@ -1234,7 +1234,7 @@ struct RegexpSyntaxClassCache {
 #[derive(Clone)]
 pub(crate) struct SyntaxSegmentCache {
     table_id: u64,
-    chain: SyntaxChainSignature,
+    chain: CharTableChainSignature,
     pub(crate) segments: std::rc::Rc<Vec<(u32, u32, crate::lisp::primitives::syntax::SyntaxClass)>>,
 }
 
@@ -2135,6 +2135,9 @@ impl std::fmt::Debug for SerialRuntime {
 
 pub(crate) struct RunningProcess {
     pub(crate) child: Child,
+    /// Embedded owners terminate and reap children when dropped. A leaving
+    /// Unix CLI instead sends GNU's SIGHUP and leaves reaping to the host.
+    pub(crate) terminate_on_drop: bool,
     /// Writable master for a pseudo-terminal connected to child stdin.
     pub(crate) pty_input: Option<fs::File>,
     /// Readable master for a pseudo-terminal connected to child output.
@@ -2150,20 +2153,39 @@ pub(crate) struct RunningProcess {
     pub(crate) pty_slave_name: Option<String>,
 }
 
+impl RunningProcess {
+    #[cfg(unix)]
+    pub(crate) fn hang_up_for_process_exit(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            // process.c:kill_buffer_processes uses CURRENT-GROUP=nil:
+            // signal the child's process group, not the tty foreground
+            // group. GNU neither waits nor escalates an ignored SIGHUP.
+            // SAFETY: this unreaped Child owns the PID; configure_emacs_spawn
+            // made the child lead its own process group.
+            unsafe {
+                libc::kill(-(self.child.id() as libc::pid_t), libc::SIGHUP);
+            }
+        }
+        self.terminate_on_drop = false;
+    }
+}
+
 impl Drop for RunningProcess {
     fn drop(&mut self) {
+        if !self.terminate_on_drop {
+            // Child and the remaining fields still close their descriptors.
+            return;
+        }
         // `Child' closes its pipe handles but deliberately leaves a running
         // child alive.  Every RunningProcess is owned by one interpreter, so
         // dropping an uninstalled runtime after a later setup error -- or
         // dropping the interpreter itself -- must terminate and reap it.
         //
-        // process.c's kill_buffer_processes, run by shut_down_emacs, hangs
-        // up the terminal's foreground group (process_send_signal with
-        // SIGHUP and CURRENT-GROUP) and never waits for anything; the
-        // children a leaving Emacs still has go to the init process.  The
-        // same hangup goes first here.  Reaping is emaxx's (a Rust Child
-        // must be waited for, or a long test process accumulates zombies),
-        // in an order that cannot block: the pseudo-terminal's master ends
+        // This returning owner must not leave children or zombies behind
+        // in an embedding process. Hangup goes first, followed by bounded
+        // termination/reaping. The process-owning CLI instead uses
+        // hang_up_for_process_exit and disarms this guard, matching GNU.
+        // Reaping here proceeds in a bounded order: the terminal's master ends
         // close before the wait, so a child stuck on the terminal (a REPL
         // reading its input, output nobody drains any more) is released,
         // and the wait is bounded -- a child not reaped by then is left to
@@ -2193,8 +2215,8 @@ impl Drop for RunningProcess {
             }
             if let Ok(None) = self.child.try_wait() {
                 // SAFETY: a signal to the child's own process group, which
-                // `setsid' made it lead (or the terminal's foreground group,
-                // as GNU addresses it); the pid is this Child's, unreaped.
+                // `setsid' made it lead, or the terminal's foreground group
+                // when present; the pid is this Child's, unreaped.
                 unsafe {
                     libc::kill(-group, libc::SIGHUP);
                 }
@@ -3236,6 +3258,9 @@ pub(crate) struct MarkSetSizes {
 
 struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
+    /// Mark before enqueueing so cycles terminate. Drain every root's reachable
+    /// graph before the weak-table fixed point or either heap can be swept.
+    pending: smallvec::SmallVec<[Value; 16]>,
     /// This collection's number: a cons, string, vector or symbol is
     /// marked by carrying it (alloc.c's mark bit, on the object); the
     /// other kinds are marked by address or id below.
@@ -3260,6 +3285,7 @@ impl Default for LispReachability<'_, '_> {
     fn default() -> Self {
         Self {
             native: None,
+            pending: smallvec::SmallVec::new(),
             epoch: crate::lisp::types::begin_mark_epoch(),
             big_integers: MarkedAddresses::default(),
             floats: MarkedAddresses::default(),
@@ -3288,6 +3314,7 @@ pub(crate) struct WeakHashReachability {
     /// the slots C keeps them in (buffer marks, process marks, the
     /// excursions and restrictions on the specpdl, the undo lists).
     pub(crate) live_markers: MarkedIds,
+    pub(crate) live_overlays: MarkedIds,
 }
 
 pub(crate) type WeakHashTableReachability = (u64, Vec<(Value, Value)>, Vec<bool>);
@@ -3324,22 +3351,40 @@ impl LispReachability<'_, '_> {
     }
 
     fn mark_env(&mut self, interp: &Interpreter, env: &Env) -> bool {
+        let changed = self.enqueue_env(env);
+        self.trace_pending(interp);
+        changed
+    }
+
+    fn enqueue_env(&mut self, env: &Env) -> bool {
         let mut changed = false;
         for frame in env {
             for (symbol, value) in frame {
                 // alloc.c marks both halves of GNU's (SYMBOL . VALUE)
                 // lexical binding, even before a closure captures it.
-                changed |= self.mark(interp, &Value::Symbol(symbol.clone()));
-                changed |= self.mark(interp, value);
+                changed |= self.enqueue(&Value::Symbol(symbol.clone()));
+                changed |= self.enqueue(value);
             }
             if let Some(environment) = frame.lisp_environment() {
-                changed |= self.mark(interp, environment);
+                changed |= self.enqueue(environment);
             }
         }
         changed
     }
 
     fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
+        let changed = self.enqueue(value);
+        self.trace_pending(interp);
+        changed
+    }
+
+    fn trace_pending(&mut self, interp: &Interpreter) {
+        while let Some(value) = self.pending.pop() {
+            self.trace_fields(interp, &value);
+        }
+    }
+
+    fn enqueue(&mut self, value: &Value) -> bool {
         let newly_marked = match value {
             Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
                 false
@@ -3365,7 +3410,11 @@ impl LispReachability<'_, '_> {
         if !newly_marked {
             return false;
         }
+        self.pending.push(value.clone());
+        true
+    }
 
+    fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
         // alloc.c completes one graph traversal before sweeping either
         // vectors or conses. Follow native words here, including edges
         // discovered by the weak-table fixed point, rather than sweeping
@@ -3373,19 +3422,19 @@ impl LispReachability<'_, '_> {
         if let Some(native) = self.native.as_deref_mut() {
             let (native_cons, children) = native.trace_lisp_value(value);
             for child in &children {
-                self.mark(interp, child);
+                self.enqueue(child);
             }
             if native_cons {
                 // Generated code's current car/cdr words are authoritative;
                 // tracing a stale typed mirror would retain replaced edges.
-                return true;
+                return;
             }
         }
 
         match value {
             Value::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals.
-                self.mark(interp, &symbol.lisp_name());
+                self.enqueue(&symbol.lisp_name());
             }
             Value::Finalizer(id) => {
                 // A reached Lisp_Finalizer is a pseudovector whose one Lisp
@@ -3393,7 +3442,7 @@ impl LispReachability<'_, '_> {
                 // pass and its function marked separately
                 // (alloc.c:mark_finalizer_list).
                 if let Some(function) = interp.finalizer_function(*id) {
-                    self.mark(interp, &function);
+                    self.enqueue(&function);
                 }
             }
             Value::StringObject(value) => {
@@ -3404,15 +3453,15 @@ impl LispReachability<'_, '_> {
                     .flat_map(|span| span.props.iter().map(|(_, value)| value.clone()))
                     .collect::<Vec<_>>();
                 for child in &children {
-                    self.mark(interp, child);
+                    self.enqueue(child);
                 }
             }
             Value::Cons(cell) => {
                 // The two words, read in place.
                 let car = cell.car.borrow().clone();
-                self.mark(interp, &car);
+                self.enqueue(&car);
                 let cdr = cell.cdr.borrow().clone();
-                self.mark(interp, &cdr);
+                self.enqueue(&cdr);
             }
             Value::Vector(vector) => {
                 // Slot by slot: cloning the slot vector per reached vector
@@ -3424,20 +3473,20 @@ impl LispReachability<'_, '_> {
                         None => break,
                     };
                     index += 1;
-                    self.mark(interp, &child);
+                    self.enqueue(&child);
                 }
             }
             Value::Lambda(lambda) => {
                 for symbol in lambda.params.iter() {
-                    self.mark(interp, &Value::Symbol(symbol.clone()));
+                    self.enqueue(&Value::Symbol(symbol.clone()));
                 }
                 if let Some(value) = &lambda.public_parameters {
-                    self.mark(interp, value);
+                    self.enqueue(value);
                 }
                 for value in lambda.body.iter() {
-                    self.mark(interp, value);
+                    self.enqueue(value);
                 }
-                self.mark_env(interp, &lambda.env.borrow());
+                self.enqueue_env(&lambda.env.borrow());
                 for value in [
                     lambda.documentation.as_ref(),
                     lambda.interactive.as_ref(),
@@ -3446,11 +3495,21 @@ impl LispReachability<'_, '_> {
                 .into_iter()
                 .flatten()
                 {
-                    self.mark(interp, value);
+                    self.enqueue(value);
                 }
             }
             Value::Buffer(buffer) => {
                 buffer.name.mark_bit().mark(self.epoch);
+            }
+            Value::Overlay(id) => {
+                // alloc.c:mark_overlay follows the plist whether the overlay
+                // was reached through a buffer or through another Lisp object.
+                if let Some(overlay) = interp.find_overlay(*id) {
+                    for (key, value) in &overlay.plist {
+                        self.enqueue(key);
+                        self.enqueue(value);
+                    }
+                }
             }
             Value::CharTable(id) => {
                 if let Some(table) = interp.find_char_table(*id) {
@@ -3459,7 +3518,7 @@ impl LispReachability<'_, '_> {
                         .chain(table.entries.iter().map(|entry| entry.value.clone()))
                         .collect::<Vec<_>>();
                     for child in &children {
-                        self.mark(interp, child);
+                        self.enqueue(child);
                     }
                 }
             }
@@ -3474,13 +3533,13 @@ impl LispReachability<'_, '_> {
                         )
                         .collect::<Vec<_>>();
                     for child in &children {
-                        self.mark(interp, child);
+                        self.enqueue(child);
                     }
                 }
             }
             Value::Record(id) => {
                 let Some(record) = interp.find_record(*id) else {
-                    return true;
+                    return;
                 };
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
@@ -3512,7 +3571,7 @@ impl LispReachability<'_, '_> {
                     children.extend(thread.outcome.iter().cloned());
                 }
                 for child in &children {
-                    self.mark(interp, child);
+                    self.enqueue(child);
                 }
             }
             Value::ReaderForm(form) => {
@@ -3528,7 +3587,7 @@ impl LispReachability<'_, '_> {
                     | ReaderForm::PositionedSymbol { .. } => &[],
                 };
                 for child in children {
-                    self.mark(interp, child);
+                    self.enqueue(child);
                 }
             }
             Value::Nil
@@ -3539,11 +3598,9 @@ impl LispReachability<'_, '_> {
             | Value::String(_)
             | Value::BuiltinFunc(_)
             | Value::Marker(_)
-            | Value::Overlay(_)
             | Value::Terminal(_)
             | Value::Unbound => {}
         }
-        true
     }
 }
 
@@ -3782,8 +3839,8 @@ impl Interpreter {
         !self.doomed_finalizers.is_empty()
     }
 
-    /// The overlay's holding buffer: the buffer whose overlay list has it
-    /// (a deleted overlay stays on the list of its last buffer).
+    /// The buffer whose overlay list holds the object, if any. Detached
+    /// overlays do not need a live buffer to retain their properties.
     pub(crate) fn overlay_holder_id(&self, id: u64) -> Option<u64> {
         if self.buffer.overlays.iter().any(|ov| ov.id == id) {
             return Some(self.current_buffer_id);
@@ -3862,11 +3919,15 @@ impl Interpreter {
         self.markers[index] = state;
     }
 
-    /// Install an overlay on the list of buffer HOLDER (the current
-    /// buffer's when that buffer is not live).
+    /// Restore an overlay from an image, independently owning detached ones.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_overlay(&mut self, holder: u64, overlay: crate::overlay::Overlay) {
         self.next_overlay_id = self.next_overlay_id.max(overlay.id + 1);
+        self.take_overlay(overlay.id);
+        if overlay.is_dead() {
+            self.detached_overlays.insert(overlay.id, overlay);
+            return;
+        }
         let holder = if self.get_buffer_by_id(holder).is_some() {
             holder
         } else {
@@ -3875,7 +3936,6 @@ impl Interpreter {
         let buffer = self
             .get_buffer_by_id_mut(holder)
             .expect("the current buffer is live");
-        buffer.overlays.retain(|ov| ov.id != overlay.id);
         buffer.overlays.push(overlay);
     }
 
@@ -4359,6 +4419,7 @@ impl Interpreter {
             live_records: marked.records,
             live_finalizers: marked.finalizers,
             live_markers: marked.markers,
+            live_overlays: marked.overlays,
         }
     }
 
@@ -4413,8 +4474,8 @@ impl Interpreter {
                     .iter()
                     .flat_map(|(_, buffer)| &buffer.overlays),
             )
-            .filter(|overlay| !overlay.is_dead())
-            .count();
+            .count()
+            .saturating_add(self.detached_overlays.len());
         let char_table_slots = self
             .char_tables
             .iter()
@@ -4775,6 +4836,12 @@ impl Interpreter {
             for (_, buffer) in &mut clone.inactive_buffers {
                 buffer.rewrite_lisp_values(&mut copy);
             }
+            for overlay in clone.detached_overlays.values_mut() {
+                for (key, value) in &mut overlay.plist {
+                    *key = copy(key);
+                    *value = copy(value);
+                }
+            }
         }
 
         // Identity-keyed caches: the copied cells have fresh identities, so
@@ -5123,6 +5190,9 @@ pub struct InterpreterState {
     next_buffer_id: u64,
     /// Next overlay ID for identity tracking.
     next_overlay_id: u64,
+    /// Deleted overlays remain Lisp objects even after their buffer dies.
+    /// This allocation table is swept by Lisp reachability, not a GC root.
+    detached_overlays: HashMap<u64, crate::overlay::Overlay>,
     /// Next marker ID for identity tracking.
     next_marker_id: u64,
     /// All markers currently known to the interpreter.
@@ -5140,7 +5210,7 @@ pub struct InterpreterState {
     /// mutation door (see find_char_table_mut) for the caches derived from
     /// the category and the case tables.  Syntax renderings use none: they
     /// key on the stamps of the tables in the chain they read
-    /// (`syntax_table_chain_signature').
+    /// (`char_table_chain_signature').
     category_context_generation: u64,
     case_context_generation: u64,
     /// The rendered current-table syntax classes are expensive to derive and
@@ -5154,7 +5224,7 @@ pub struct InterpreterState {
     /// bypasses the table door (a cons or mutable string), per table id and
     /// chain signature: the compiled-regexp cache keys a pattern on the
     /// cons-mutation generation only for such a chain.
-    syntax_table_mutable_entries_cache: RefCell<Vec<(u64, SyntaxChainSignature, bool)>>,
+    syntax_table_mutable_entries_cache: RefCell<Vec<(u64, CharTableChainSignature, bool)>>,
     /// Indexed storage for GNU `equal' hash tables.  Record slots retain
     /// metadata compatibility, while this sidecar gives structured Lisp keys
     /// the same hashed lookup shape as Emacs's native implementation.
@@ -6036,6 +6106,7 @@ impl Interpreter {
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
             next_overlay_id: 1,
+            detached_overlays: HashMap::new(),
             next_marker_id: 1,
             markers: Vec::new(),
             markers_by_buffer: HashMap::new(),

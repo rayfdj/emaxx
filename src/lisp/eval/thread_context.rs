@@ -142,8 +142,24 @@ impl Interpreter {
     }
 }
 
-impl Drop for Interpreter {
-    fn drop(&mut self) {
+impl Interpreter {
+    /// Release resources with external effects before the batch CLI exits.
+    /// The OS reclaims Lisp storage; embedded callers still drop it normally.
+    pub(crate) fn release_external_resources_for_exit(&mut self) {
+        self.unwind_suspended_threads_for_shutdown();
+        if self.state.is_some() {
+            #[cfg(unix)]
+            for process in &mut self.process_states {
+                if let Some(runtime) = &mut process.runtime {
+                    runtime.hang_up_for_process_exit();
+                }
+            }
+            self.process_states.clear();
+            self.terminals.clear();
+        }
+    }
+
+    fn unwind_suspended_threads_for_shutdown(&mut self) {
         if self.state.is_none() || self.continuations.threads.is_empty() {
             return;
         }
@@ -159,5 +175,11 @@ impl Drop for Interpreter {
                 Err(error) => panic!("Unable to unwind suspended Lisp thread: {error}"),
             }
         }
+    }
+}
+
+impl Drop for Interpreter {
+    fn drop(&mut self) {
+        self.unwind_suspended_threads_for_shutdown();
     }
 }

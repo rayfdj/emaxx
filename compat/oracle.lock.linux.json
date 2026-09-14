@@ -1,10 +1,10 @@
 {
   "format_version": 2,
   "emacs_version": "30.2",
-  "emacs_repo_commit": "6ee5c13660b94f2876ea5f9e5df0f626f886740a",
+  "emacs_repo_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
   "system_type": "gnu/linux",
   "native_compilation": true,
-  "emacs_binary_sha256": "8172478ab79bf417976053fc5333141bbeb5717caf552532465da5fa6eb4d8df",
+  "emacs_binary_sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
   "selector_default": "(not (or (tag :expensive-test) (tag :unstable)))",
   "selector_expensive": "(not (tag :unstable))",
   "selector_all": "t",

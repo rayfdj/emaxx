@@ -3519,6 +3519,86 @@ fn failed_counted_searches_restore_point_unless_noerror_requests_the_bound() {
 }
 
 #[test]
+fn detached_overlay_properties_survive_buffer_teardown_and_bulk_deletion() {
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"(let* ((buffer (generate-new-buffer " *overlay-teardown*"))
+                      (overlay (make-overlay 1 1 buffer))
+                      (token (list 'kept)))
+                 (unwind-protect
+                     (progn
+                       (overlay-put overlay 'payload token)
+                       (delete-all-overlays buffer)
+                       (garbage-collect)
+                       (and (null (overlay-buffer overlay))
+                            (eq token (overlay-get overlay 'payload))
+                            (progn (move-overlay overlay 1 1 buffer)
+                                   (kill-buffer buffer)
+                                   (garbage-collect)
+                                   (and (null (overlay-buffer overlay))
+                                        (eq token (overlay-get overlay 'payload))))
+                            (with-temp-buffer
+                              (move-overlay overlay 1 1)
+                              (delete-all-overlays)
+                              (garbage-collect)
+                              (eq token (overlay-get overlay 'payload)))))
+                   (when (buffer-live-p buffer) (kill-buffer buffer))))"#,
+        ),
+        Value::T,
+    );
+}
+
+#[test]
+fn overlay_identity_survives_buffer_moves_cloning_deletion_and_gc() {
+    // GNU keeps deleted overlays' properties and gives indirect clones
+    // distinct overlay identities, including for overlays moved between buffers.
+    assert_eq!(
+        eval_str_with_upstream_batch(
+            r#"
+            (let ((first-buffer (generate-new-buffer " *overlay-owner-a*"))
+                  (second-buffer (generate-new-buffer " *overlay-owner-b*")))
+              (unwind-protect
+                  (with-current-buffer first-buffer
+                    (insert "abc")
+                    (let ((first (make-overlay 1 2))
+                          (second (make-overlay 2 3))
+                          (token (list 'retained)))
+                      (overlay-put first 'payload token)
+                      (with-current-buffer second-buffer
+                        (insert "xyz")
+                        (move-overlay first 2 3 (current-buffer)))
+                      (garbage-collect)
+                      (let ((copy (copy-overlay first)))
+                        (and (not (eq first copy))
+                             (eq (overlay-buffer copy) second-buffer)
+                             (eq (overlay-buffer second) first-buffer)
+                             (eq (overlay-get first 'payload) token)
+                             (eq (overlay-get copy 'payload) token)
+                             (progn (delete-overlay first)
+                                    (garbage-collect)
+                                    (null (overlay-buffer first)))
+                             (progn (move-overlay first 1 2 first-buffer)
+                                    (and (eq (overlay-buffer first) first-buffer)
+                                         (eq (overlay-get first 'payload) token)))
+                             (with-current-buffer second-buffer
+                               (equal (overlays-at 2) (list copy)))
+                             (let ((clone (clone-indirect-buffer " *overlay-clone*" nil)))
+                               (unwind-protect
+                                   (with-current-buffer clone
+                                     (let ((overlays (append (car (overlay-lists)) (cdr (overlay-lists)))))
+                                       (and (= (length overlays) 2)
+                                            (not (memq first overlays))
+                                            (not (memq second overlays)))))
+                                 (kill-buffer clone)))))))
+                (kill-buffer first-buffer)
+                (kill-buffer second-buffer)))
+            "#,
+        ),
+        Value::T,
+    );
+}
+
+#[test]
 fn overlay_enumeration_matches_gnu_interval_tree_order() {
     assert_eq!(
         eval_str(
@@ -6403,6 +6483,57 @@ fn regexp_word_class_does_not_cache_mutable_syntax_table_entries() {
             Value::Integer('.' as i64),
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn regexp_encoding_classes_preserve_membership_under_case_folding() {
+    // Checked against GNU 30.2: these classes use bitmap/BIT_MULTIBYTE
+    // membership, including when syntax properties encode the haystack.
+    assert_eq!(
+        eval_str(
+            r#"
+            (not
+             (memq nil
+              (mapcar
+               (lambda (case-fold-search)
+                 (and
+                  (equal
+                   (mapcar
+                    (lambda (class)
+                      (let ((pattern (concat "\\`[[:" class ":]]+\\'")))
+                        (mapcar (lambda (text) (not (null (string-match-p pattern text))))
+                                (list "sSkK" "éÉſK" (string #xE010) (unibyte-string 255)))))
+                    '("ascii" "nonascii" "multibyte" "unibyte"))
+                   '((t nil nil nil) (nil t t nil) (nil t t nil) (t nil nil nil)))
+                  (equal
+                   (mapcar (lambda (pair) (not (null (string-match-p (car pair) (cadr pair)))))
+                    '(("\\`[[:nonascii:]a-c]+\\'" "bé")
+                      ("\\`[^[:nonascii:]a-c]+\\'" "sSK")
+                      ("\\`[^[:nonascii:]a-c]+\\'" "sés")
+                      ("\\`[[:nonascii:][:digit:]]+\\'" "é0K")
+                      ("\\`[[:ascii:]é]+\\'" "éÉ")
+                      ("\\`[[:ascii:]é]+\\'" "ſ")
+                      ("\\`[[:nonascii:]a-c]+\\'" "Bé")))
+                   (list t t nil t case-fold-search nil case-fold-search))
+                  (with-temp-buffer
+                    (insert "sékK")
+                    (put-text-property 1 5 'syntax-table (string-to-syntax "|"))
+                    (let ((parse-sexp-lookup-properties t))
+                      (equal
+                       (mapcar
+                        (lambda (class)
+                          (mapcar
+                           (lambda (position)
+                             (goto-char position)
+                             (looking-at-p (concat "[[:" class ":]]\\s|")))
+                           '(1 2 3)))
+                        '("ascii" "nonascii" "multibyte" "unibyte"))
+                       '((t nil t) (nil t nil) (nil t nil) (t nil t)))))))
+               '(nil t))))
+            "#,
+        ),
+        Value::T,
     );
 }
 

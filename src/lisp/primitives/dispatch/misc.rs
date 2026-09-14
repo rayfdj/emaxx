@@ -410,7 +410,7 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let s = string_text(&args[0])?;
+                let s = reader_string_source_text(&args[0])?;
                 let chars: Vec<char> = s.chars().collect();
                 let start = normalize_string_index(args.get(1), 0, chars.len() as i64)? as usize;
                 let end =
@@ -1572,28 +1572,21 @@ define_dispatch!(
 
             "mapatoms" => {
                 need_arg_range(name, args, 1, 2)?;
-                let callback = resolve_callable(interp, &args[0], env)?;
-                let obarray = args.get(1).cloned().unwrap_or(Value::Nil);
-                let symbols = if obarray.is_nil() {
-                    interp
-                        .known_symbols()
-                        .into_iter()
-                        .map(|symbol| match symbol.as_str() {
-                            "nil" => Value::Nil,
-                            "t" => Value::T,
-                            _ => Value::Symbol(symbol),
-                        })
-                        .collect()
-                } else {
-                    obarray_symbols(interp, &obarray)?
-                };
+                // lread.c:Fmapatoms checks the selected obarray before
+                // calling FUNCTION. A nil argument uses the dynamically
+                // bound obarray, and legacy vectors are converted on use.
+                let obarray = args
+                    .get(1)
+                    .filter(|value| !value.is_nil())
+                    .cloned()
+                    .or_else(|| interp.lookup_var("obarray", env))
+                    .unwrap_or(Value::Nil);
+                let obarray = coerce_legacy_vector_obarray(interp, &obarray)?;
+                let symbols = obarray_symbols(interp, &obarray)?;
                 for symbol in symbols {
-                    interp.call_function_value(
-                        callback.clone(),
-                        args[0].as_symbol().ok(),
-                        &[symbol],
-                        env,
-                    )?;
+                    // Resolve a symbol's current function cell on every
+                    // call, as call1 does. Empty obarrays never call it.
+                    call_function_value(interp, &args[0], &[symbol], env)?;
                 }
                 Ok(Value::Nil)
             }
@@ -1602,7 +1595,7 @@ define_dispatch!(
 );
 
 #[cfg(unix)]
-fn process_cpu_time_value() -> Result<Value, LispError> {
+fn process_cpu_time_parts() -> Result<(i64, i64), LispError> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
     // SAFETY: getrusage initializes the pointed-to rusage structure and does
     // not retain the pointer.
@@ -1625,6 +1618,43 @@ fn process_cpu_time_value() -> Result<Value, LispError> {
         seconds += micros / 1_000_000;
         micros %= 1_000_000;
     }
+    Ok((seconds, micros))
+}
+
+#[cfg(unix)]
+pub(super) fn current_cpu_time_value() -> Result<Value, LispError> {
+    // timefns.c:Fcurrent_cpu_time reports the current process's user plus
+    // system CPU time as (TICKS . HZ), independently of current-time-list.
+    // Kernel resource accounting gives that CPU total at microsecond
+    // resolution, excluding elapsed sleep and subprocess CPU time.
+    let (seconds, micros) = process_cpu_time_parts()?;
+    Ok(Value::cons(
+        normalize_bigint_value(BigInt::from(seconds) * 1_000_000 + micros),
+        Value::Integer(1_000_000),
+    ))
+}
+
+#[cfg(windows)]
+pub(super) fn current_cpu_time_value() -> Result<Value, LispError> {
+    // The Windows C runtime clock uses 1000 ticks per second, as in GNU.
+    // SAFETY: clock takes no arguments and retains no pointers.
+    let ticks = unsafe { libc::clock() };
+    Ok(Value::cons(
+        Value::Integer(i64::from(ticks)),
+        Value::Integer(1000),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn current_cpu_time_value() -> Result<Value, LispError> {
+    Err(LispError::Signal(
+        "Process CPU clock is unavailable on this platform".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn process_cpu_time_value() -> Result<Value, LispError> {
+    let (seconds, micros) = process_cpu_time_parts()?;
     Ok(Value::list([
         Value::Integer(seconds >> 16),
         Value::Integer(seconds & 0xffff),
@@ -2151,7 +2181,7 @@ fn lisp_source_root(interp: &Interpreter) -> Option<PathBuf> {
     crate::lisp::primitives::compat_data_directory()
         .map(PathBuf::from)
         .and_then(|etc| etc.parent().map(|root| root.join("lisp")))
-        .filter(|root| root.is_dir())
+        .filter(|root| fs::is_directory(root))
         .or_else(|| {
             interp
                 .configured_load_path()
@@ -2165,7 +2195,7 @@ fn builtin_doc_from_doc_file(interp: &Interpreter, function: &str) -> Option<Str
     let path = crate::lisp::primitives::compat_data_directory()
         .map(PathBuf::from)
         .map(|etc| etc.join("DOC"))
-        .filter(|path| path.is_file())
+        .filter(|path| fs::is_regular_file(path))
         .or_else(|| {
             lisp_source_root(interp)?
                 .parent()

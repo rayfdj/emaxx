@@ -1,7 +1,36 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
+    // Like GNU's configured epaths.h, the installation source is a build
+    // input. Runtime test-directory variables must not redirect it.
+    println!("cargo:rerun-if-env-changed=EMAXX_GNU_SOURCE_DIRECTORY");
+    let source = match env::var_os("EMAXX_GNU_SOURCE_DIRECTORY") {
+        Some(source) => {
+            let source = PathBuf::from(source)
+                .canonicalize()
+                .expect("resolve configured GNU source directory");
+            assert!(
+                source.is_dir(),
+                "EMAXX_GNU_SOURCE_DIRECTORY must be a directory"
+            );
+            source
+        }
+        None => {
+            let source =
+                Path::new(&env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"))
+                    .join("../emacs");
+            source.canonicalize().unwrap_or(source)
+        }
+    };
+    println!(
+        "cargo:rustc-env=EMAXX_GNU_SOURCE_DIRECTORY={}",
+        source.display()
+    );
+    println!(
+        "cargo:rustc-env=EMAXX_RUST_TARGET={}",
+        env::var("TARGET").expect("Cargo must provide the Rust target")
+    );
     let out_dir = env::var("OUT_DIR").expect("Cargo must provide OUT_DIR to build scripts");
     let out_dir = Path::new(&out_dir);
     let build_dir = out_dir

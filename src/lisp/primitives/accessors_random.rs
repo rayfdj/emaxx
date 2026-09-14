@@ -55,3 +55,9 @@ pub(crate) fn random_bigint_below(limit: &BigInt) -> BigInt {
 pub(crate) fn rand_simple() -> i64 {
     next_random_u64() as i64
 }
+
+/// fns.c:Frandom passes unrestricted bits through lisp.h:make_ufixnum,
+/// retaining and sign-extending the 62-bit fixnum payload.
+pub(crate) fn random_fixnum() -> i64 {
+    (rand_simple() << 2) >> 2
+}

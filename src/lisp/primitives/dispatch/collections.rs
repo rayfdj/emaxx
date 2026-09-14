@@ -348,21 +348,21 @@ define_dispatch!(
             }
             "random" => {
                 if args.is_empty() || args[0].is_nil() {
-                    Ok(Value::Integer(rand_simple()))
+                    Ok(Value::Integer(random_fixnum()))
                 } else {
                     match &args[0] {
                         Value::T => {
                             set_random_seed(nondeterministic_random_seed());
-                            Ok(Value::Integer(rand_simple()))
+                            Ok(Value::Integer(random_fixnum()))
                         }
                         Value::String(_) | Value::StringObject(_) => {
                             let seed = string_like(&args[0])
                                 .expect("string variants should be string-like")
                                 .text;
                             set_random_seed(random_seed_from_bytes(seed.as_bytes()));
-                            Ok(Value::Integer(rand_simple()))
+                            Ok(Value::Integer(random_fixnum()))
                         }
-                        _ => {
+                        Value::Integer(_) | Value::BigInteger(_) => {
                             let limit = integer_like_bigint(interp, &args[0])?;
                             if limit <= BigInt::zero() {
                                 Err(LispError::SignalValue(Value::list([
@@ -373,6 +373,8 @@ define_dispatch!(
                                 Ok(normalize_bigint_value(random_bigint_below(&limit)))
                             }
                         }
+                        // Frandom treats other objects like an omitted limit.
+                        _ => Ok(Value::Integer(random_fixnum())),
                     }
                 }
             }

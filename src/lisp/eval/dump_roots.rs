@@ -265,6 +265,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("next_buffer_id", "carried in the remembered scalars"),
     ("next_overlay_id", "carried in the remembered scalars"),
+    (
+        "detached_overlays",
+        "an allocation table, not a Lisp root; reachable deleted overlays are written by dump_overlay and restored here by install_overlay, as GNU pdumper.c:dump_overlay carries their Lisp fields",
+    ),
     ("next_marker_id", "carried in the remembered scalars"),
     ("markers", "installed per marker record"),
     ("markers_by_buffer", "the index install_marker keeps"),

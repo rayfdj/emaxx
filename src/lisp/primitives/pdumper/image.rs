@@ -80,8 +80,8 @@ pub(crate) fn executable_fingerprint() -> &'static [u8; FINGERPRINT_LEN] {
         // A failed read must never give unrelated binaries the fingerprint
         // of an empty byte string and thereby bypass image validation.
         let executable = std::env::current_exe().expect("locate executable for dump fingerprint");
-        let mut file =
-            std::fs::File::open(executable).expect("open executable for dump fingerprint");
+        let mut file = crate::file_system::File::open(executable)
+            .expect("open executable for dump fingerprint");
         let mut hasher = sha2::Sha256::new();
         // Streamed through io::copy's buffer: reading the 22 MB executable
         // into a vector cost its copy and the first touch of every page on
@@ -202,8 +202,10 @@ impl DumpHeader {
 /// The object classes an image records, the counterpart of the
 /// `Lisp_Type' a GNU object-start entry carries.  Emaxx's heap has more
 /// classes than GNU's five tags, so the entry carries one of these.
+/// Keep the loader's dense tag tables compact. The image writer encodes
+/// these tags explicitly as u32, independently of their Rust layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u32)]
+#[repr(u8)]
 pub(crate) enum DumpType {
     Cons = 1,
     /// An immutable host string (`Value::String').

@@ -387,16 +387,24 @@ define_dispatch!(
             "set-keymap-parent" => {
                 keymap_arguments_current(interp, args)?;
                 need_args(name, args, 2)?;
+                // Fset_keymap_parent resolves a symbolic parent without
+                // autoloading it, and installs and returns that actual map.
+                let parent = if args[1].is_nil() {
+                    Value::Nil
+                } else {
+                    resolve_keymap_without_autoload(interp, &args[1], env)?
+                };
+                ensure_runtime_keymap_current(interp, &parent)?;
                 if let Some(id) = keymap_record_id(interp, &args[0])
                     && let Some(record) = interp.find_record_mut(id)
                 {
                     if record.slots.len() <= KEYMAP_PARENT_SLOT {
                         record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
                     }
-                    record.slots[KEYMAP_PARENT_SLOT] = args[1].clone();
+                    record.slots[KEYMAP_PARENT_SLOT] = parent.clone();
                     refresh_runtime_keymap_public_view(interp, id)?;
                     // keymap.c:Fset_keymap_parent returns the installed parent.
-                    return Ok(args[1].clone());
+                    return Ok(parent);
                 }
                 Ok(Value::Nil)
             }
@@ -1758,11 +1766,7 @@ define_dispatch!(
             }
             "current-cpu-time" => {
                 need_args(name, args, 0)?;
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
-                Ok(Value::list([normalize_bigint_value(BigInt::from(nanos))]))
+                super::misc::current_cpu_time_value()
             }
             "emacs-pid" => {
                 need_args(name, args, 0)?;

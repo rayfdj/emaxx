@@ -1,6 +1,37 @@
 # Oracle Test Inventory
 
-Regenerated on 2026-08-26 with:
+Regenerated on 2026-08-26 and extended on 2026-09-14 with 38 module tests.
+The extension comes from the pinned GNU oracle's actual discovery and
+successful ordinary module run, retained in
+`target/compat/run-1789340763686766000-79353/`. All 7,883 previous outcome
+names remain; only the historical module load-error line was replaced.
+The normal runner now builds the unchanged fixture using GNU's Makefile.
+
+The Linux manifest was independently extended from GNU's actual 38-test
+module discovery in ordinary run `run-1789342303344350652-26168`, downloaded
+from GitHub run `34789196776`. GNU and Emaxx each passed 37 tests and skipped
+the same platform-specific test, with zero unexpected outcomes. All 7,883
+previous Linux names remain. Both platform manifests now contain 519 files
+and 7,921 outcomes; their identical bytes were verified after independently
+using each platform's discovery, not by copying results between editors.
+
+Linux frozen attempt `34811016486` subsequently discovered seven Mercurial
+backend tests in `test/lisp/vc/vc-tests.el`. Both editors independently passed
+all 14 Git/Mercurial tests. The inventory guard stopped the incomplete run
+because those seven names were unmanifested; its raw reports remain retained.
+The Linux manifest now includes these actual GNU selections: 519 files and
+7,928 outcomes, with every prior name preserved. CI explicitly installs
+Mercurial. The Darwin contract remains at 519 files and 7,921 outcomes.
+
+Linux's oracle lock now records pristine GNU revision `636f166c`, matching
+the already committed native ABI configuration, instead of the older Ubuntu
+source repack `6ee5c136`. The reviewed executable hash is
+`5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf`.
+The original and proposed pins and build metadata are retained in that CI
+artifact. Final frozen runs validate this pin and the entire inventory;
+the module extension is not a claim that those final runs have passed.
+
+Full regeneration, with the documented Rust/clangd prerequisites installed:
 
 ```sh
 cargo run --quiet --bin compat-harness -- list --scope all | tail -n +2 > compat/oracle_tests_all.txt
@@ -37,29 +68,31 @@ Oracle pin:
 
 Counts:
 
-- Harness-selected oracle tests: 7883
+- Harness-selected oracle tests: 7921
 - Source-tree literal `ert-deftest` forms are not the compatibility count.
   Static grep-style counts vary with the pattern used and miss tests generated
   while files load.
-- Files with oracle load errors: 1
+- Files with oracle load errors: 0
 
 Canonical progress denominator and order:
 
-- Use `compat/oracle_tests_all.txt` as the only ordered compatibility manifest.
+- Use `compat/oracle_tests_all.txt` on macOS and
+  `compat/oracle_tests_all_linux.txt` on Linux as the ordered manifest.
 - Count test selectors with:
 
   ```sh
   awk 'BEGIN{count=0; files=0} /^[^ ].*: discovered=/{files++; next} /^  /{count++} END{print "files", files; print "tests", count}' compat/oracle_tests_all.txt
   ```
 
-- The expected result is `files 518` and `tests 7883`.
+- The expected Darwin result is `files 519` and `tests 7921`; Linux is
+  `files 519` and `tests 7928`.
 
 The harness-selected count is the compatibility ordering source. It is not the
 same thing as any count inferred directly from the Emacs source tree because
 Emacs test files can generate tests while loading, and the harness applies ERT
 selection after load.
 
-Load-error files:
+Historical load-error file (resolved by the 2026-09-14 extension):
 
 - `test/src/emacs-module-tests.el`: cannot open `emacs-module-resources/mod-test`
   (needs a separately compiled C dynamic module)

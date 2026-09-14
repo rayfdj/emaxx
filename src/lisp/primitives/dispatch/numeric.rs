@@ -300,11 +300,13 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let y = numeric_to_f64(interp, &args[0])?;
-                Ok(Value::float(if let Some(x) = args.get(1) {
-                    y.atan2(numeric_to_f64(interp, x)?)
-                } else {
-                    y.atan()
-                }))
+                Ok(Value::float(
+                    if let Some(x) = args.get(1).filter(|x| !x.is_nil()) {
+                        y.atan2(numeric_to_f64(interp, x)?)
+                    } else {
+                        y.atan()
+                    },
+                ))
             }
             "copysign" => {
                 need_args(name, args, 2)?;

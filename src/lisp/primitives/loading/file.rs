@@ -381,7 +381,7 @@ fn safe_to_load_version(
     file: &mut fs::File,
     env: &mut Env,
 ) -> Result<i32, LispError> {
-    if file.metadata().is_ok_and(|metadata| !metadata.is_file()) {
+    if fs::file_metadata(file).is_ok_and(|metadata| !metadata.is_file()) {
         return Ok(0);
     }
     let mut header = [0u8; 512];

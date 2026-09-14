@@ -2040,7 +2040,7 @@ define_dispatch!(
                     std::fs::remove_file(&path)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
                 }
-                let mut options = std::fs::OpenOptions::new();
+                let mut options = crate::file_system::OpenOptions::new();
                 options.write(true).create_new(true);
                 #[cfg(unix)]
                 {
@@ -2361,7 +2361,7 @@ define_dispatch!(
                         // read-from-minibuffer's DEFAULT is only history input
                         // and does not replace an empty return value.
                         if name == "read-string"
-                            && let Some(default) = args.get(3)
+                            && let Some(default) = args.get(3).filter(|value| !value.is_nil())
                         {
                             let default = match default.cons_values() {
                                 Some((head, _)) => head,

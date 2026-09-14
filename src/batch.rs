@@ -75,16 +75,59 @@ struct PerfRequest {
     samples: u32,
 }
 
+/// Run the batch interpreter on a guarded stack on the calling OS thread.
+pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
+    with_batch_stack(|| run_batch(options))?
+}
+
+/// Run the batch CLI with its interpreter alive through FINISH.
+///
+/// emacs.c:Fkill_emacs ends shutdown with exit or exec, without walking and
+/// freeing the Lisp heap. FINISH owns process termination; if it returns,
+/// ordinary Rust Drop still releases the interpreter.
+pub fn run_batch_process_with_large_stack(
+    options: BatchRunOptions,
+    finish: impl FnOnce(BatchRunOutcome) -> Result<u8, String>,
+) -> Result<u8, String> {
+    with_batch_stack(|| {
+        let actions = batch_actions(&options);
+        let mut interpreter = initialize_batch_interpreter(&options)?;
+        let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
+        interpreter.release_external_resources_for_exit();
+        crate::lisp::flush_batch_stdout();
+        finish(outcome)
+    })?
+}
+
+fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
+    // Cons chains are released iteratively, so list length no longer dictates
+    // stack capacity. Use the same guarded reservation as Lisp threads; Rust
+    // evaluator frames still need more room than GNU's C frames. Keep GNU's
+    // calling OS thread: an extra worker and join would introduce a blocking
+    // futex that GNU's seccomp policy deliberately does not permit. Native
+    // roots stay on this stack, and only touched pages commit.
+    let stack = corosensei::stack::DefaultStack::new(128 * 1024 * 1024)
+        .map_err(|error| format!("allocate batch stack: {error}"))?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::lisp::eval::continuations::on_stack(stack, body)
+    }))
+    .map_err(|_| "batch runtime panicked".to_string())
+}
+
 pub fn run_batch(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
-    let actions = options
+    let actions = batch_actions(&options);
+    run_batch_with_actions(options, actions)
+}
+
+fn batch_actions(options: &BatchRunOptions) -> Vec<BatchAction> {
+    options
         .load
         .iter()
         .cloned()
         .map(BatchAction::Load)
         .chain(options.eval.iter().cloned().map(BatchAction::Eval))
         .chain(options.funcall.iter().cloned().map(BatchAction::Funcall))
-        .collect();
-    run_batch_with_actions(options, actions)
+        .collect()
 }
 
 pub fn run_batch_with_actions(
@@ -92,11 +135,19 @@ pub fn run_batch_with_actions(
     actions: Vec<BatchAction>,
 ) -> Result<BatchRunOutcome, String> {
     let mut interpreter = initialize_batch_interpreter(&options)?;
+    run_initialized_batch(&mut interpreter, &options, &actions)
+}
+
+fn run_initialized_batch(
+    interpreter: &mut Interpreter,
+    options: &BatchRunOptions,
+    actions: &[BatchAction],
+) -> Result<BatchRunOutcome, String> {
     if let Some(termination) = interpreter.take_pending_termination() {
         return Ok(termination.into());
     }
     if let Some(command_line_args) = &options.startup_command_line_args {
-        return run_batch_through_normal_top_level(&mut interpreter, command_line_args);
+        return run_batch_through_normal_top_level(interpreter, command_line_args);
     }
     let eval_expressions = actions
         .iter()
@@ -111,7 +162,7 @@ pub fn run_batch_with_actions(
     let selector_string =
         env::var("EMAXX_COMPAT_SELECTOR").unwrap_or_else(|_| "(quote t)".to_string());
     let mut eval_env: Env = Vec::new();
-    for action in &actions {
+    for action in actions {
         match action {
             BatchAction::Load(target) => {
                 let resolved = PathBuf::from(target);
@@ -120,7 +171,7 @@ pub fn run_batch_with_actions(
                         return Ok(termination.into());
                     }
                     let mut error_text = error.to_string();
-                    let backtrace = format_backtrace_summary(&interpreter);
+                    let backtrace = format_backtrace_summary(interpreter);
                     if !backtrace.is_empty() {
                         error_text.push_str(" | backtrace: ");
                         error_text.push_str(&backtrace);
@@ -145,9 +196,9 @@ pub fn run_batch_with_actions(
                     // at all.  The report is for the harness; the message is
                     // for whoever ran the command.
                     emit_unhandled_batch_error(
-                        &mut interpreter,
+                        interpreter,
                         &error,
-                        &command_line_bottom_frames(&actions, Some(&resolved)),
+                        &command_line_bottom_frames(actions, Some(&resolved)),
                     );
                     return Ok(BatchRunOutcome::Exit(255));
                 }
@@ -183,9 +234,9 @@ pub fn run_batch_with_actions(
                         Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                         Err(error) => {
                             emit_unhandled_batch_error(
-                                &mut interpreter,
+                                interpreter,
                                 &error,
-                                &command_line_bottom_frames(&actions, None),
+                                &command_line_bottom_frames(actions, None),
                             );
                             return Ok(BatchRunOutcome::Exit(255));
                         }
@@ -202,9 +253,9 @@ pub fn run_batch_with_actions(
                     Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                     Err(error) => {
                         emit_unhandled_batch_error(
-                            &mut interpreter,
+                            interpreter,
                             &error,
-                            &command_line_bottom_frames(&actions, None),
+                            &command_line_bottom_frames(actions, None),
                         );
                         return Ok(BatchRunOutcome::Exit(255));
                     }
@@ -1183,8 +1234,8 @@ fn installation_lisp_load_path() -> Result<Vec<PathBuf>, String> {
         return compat::canonicalize_path(&Path::new(&dump_root).join("lisp"))
             .map(|path| vec![path]);
     }
-    let sibling = compat::project_root().join("../emacs");
-    if sibling.join("lisp").is_dir() {
+    let sibling = compat::configured_gnu_source_root();
+    if crate::file_system::is_directory(sibling.join("lisp")) {
         return compat::canonicalize_path(&sibling.join("lisp")).map(|path| vec![path]);
     }
     Ok(Vec::new())
@@ -1503,6 +1554,27 @@ fn xml_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn batch_stack_preserves_the_calling_thread_and_unwinds_back_to_it() {
+        thread_local! {
+            static CALLER_VALUE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        }
+        let thread = std::thread::current().id();
+        CALLER_VALUE.set(41);
+        let result = super::with_batch_stack(|| {
+            assert_eq!(std::thread::current().id(), thread);
+            assert_eq!(CALLER_VALUE.get(), 41);
+            CALLER_VALUE.set(42);
+            "finished"
+        })
+        .expect("run on the batch stack");
+        assert_eq!(result, "finished");
+        assert_eq!(CALLER_VALUE.get(), 42);
+        assert!(super::with_batch_stack(|| panic!("unwind control")).is_err());
+        assert_eq!(std::thread::current().id(), thread);
+        assert_eq!(CALLER_VALUE.get(), 42);
+    }
+
     #[test]
     fn safe_startup_hooks_inhibit_quit_and_observe_live_global_values() {
         // keyboard.c:safe_run_hooks specbinds inhibit-quit, and

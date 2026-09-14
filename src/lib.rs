@@ -2,9 +2,17 @@
 #![allow(clippy::result_large_err)]
 #![recursion_limit = "512"]
 
-// Cons cells are two small heap allocations each, so the interpreter's
-// throughput is allocator-bound on list-heavy code; mimalloc's small-object
-// paths run several times faster than glibc malloc there.
+#[cfg(any(target_os = "linux", test))]
+mod allocator;
+
+// GNU's inherited sandbox excludes mimalloc's startup sysinfo and libc's
+// optional mremap realloc optimization. Use the host allocation backend with
+// Rust's allocate/copy/free reallocation contract on Linux.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: allocator::HostAllocator = allocator::HostAllocator;
+
+#[cfg(not(target_os = "linux"))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -21,6 +29,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// enumerator 15 of `mi_option_t' in the bundled mimalloc 2 and 3
 /// headers); an environment setting (MIMALLOC_PURGE_DELAY) is left as
 /// the user set it.
+#[cfg(not(target_os = "linux"))]
 pub fn tune_allocator() {
     use std::os::raw::{c_int, c_long};
     unsafe extern "C" {
@@ -41,9 +50,14 @@ pub fn tune_allocator() {
     }
 }
 
+/// The Linux runtime uses the host allocator without custom tuning.
+#[cfg(target_os = "linux")]
+pub fn tune_allocator() {}
+
 pub mod batch;
 pub mod buffer;
 pub mod compat;
+pub(crate) mod file_system;
 pub mod lisp;
 pub mod overlay;
 pub mod perf;

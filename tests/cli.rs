@@ -6,6 +6,272 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod common;
 
+#[cfg(unix)]
+struct ExitProbeChild(u32);
+
+#[cfg(unix)]
+impl Drop for ExitProbeChild {
+    fn drop(&mut self) {
+        // SAFETY: the probe started this child, which sleeps for 30 seconds;
+        // terminate it after checking that it survived its parent's exit.
+        unsafe { libc::kill(self.0 as libc::pid_t, libc::SIGTERM) };
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_exit_and_restart_preserve_a_childs_ignored_hangup_like_gnu() {
+    let oracle = emaxx::compat::configured_gnu_source_root().join("src/emacs");
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        for restart in [false, true] {
+            let marker = unique_temp_path("child-exit-restart");
+            let marker_literal =
+                serde_json::to_string(marker.to_str().expect("temporary path is UTF-8"))
+                    .expect("quote restart marker for Lisp");
+            let restart_lisp = if restart { "t" } else { "nil" };
+            let program = format!(
+                r#"(if (file-exists-p {marker_literal})
+                     (kill-emacs 0)
+                   (let ((process-connection-type nil))
+                     (with-temp-buffer
+                       (let ((child (start-process "exit-child" (current-buffer)
+                                      "/bin/sh" "-c"
+                                      "trap '' HUP; printf ready; exec /bin/sleep 30")))
+                         (set-process-query-on-exit-flag child nil)
+                         (while (= (buffer-size) 0) (accept-process-output child 1))
+                         (with-temp-file {marker_literal}
+                           (insert (number-to-string (process-id child))))
+                         (kill-emacs 0 {restart_lisp})))))"#
+            );
+            let output = Command::new(binary)
+                .args(["-Q", "--batch", "--eval", &program])
+                .output()
+                .expect("run editor with a child that ignores hangup");
+            assert!(
+                output.status.success(),
+                "{} with restart={restart}: {output:?}",
+                binary.display()
+            );
+            // GNU need not flush piped stdout before exec in batch mode.
+            // A file preserves the child identity across the restart.
+            let pid_text = std::fs::read_to_string(&marker).expect("child PID marker");
+            std::fs::remove_file(&marker).expect("remove child PID marker");
+            let pid = pid_text.parse::<u32>().expect("numeric process ID");
+            let _cleanup = ExitProbeChild(pid);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let status = Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .expect("inspect child process state");
+            let state = String::from_utf8_lossy(&status.stdout);
+            assert!(
+                status.status.success() && !state.trim_start().starts_with('Z'),
+                "{} killed child {pid} despite its ignored SIGHUP: {status:?}",
+                binary.display()
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_exit_terminates_owned_children_like_gnu() {
+    let oracle = emaxx::compat::configured_gnu_source_root().join("src/emacs");
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        let output = Command::new(binary)
+            .args([
+                "-Q",
+                "--batch",
+                "--eval",
+                "(let ((process-connection-type nil))
+                   (let ((child (start-process \"exit-child\" nil \"/bin/sleep\" \"30\")))
+                     (set-process-query-on-exit-flag child nil)
+                     (princ (process-id child))
+                     (kill-emacs 0)))",
+            ])
+            .output()
+            .expect("run editor with an owned child");
+        assert!(output.status.success(), "{}: {output:?}", binary.display());
+        let pid = std::str::from_utf8(&output.stdout)
+            .expect("printed process ID")
+            .parse::<u32>()
+            .expect("numeric process ID");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let status = Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .expect("inspect child process state");
+            let state = String::from_utf8_lossy(&status.stdout);
+            // A zombie has terminated and is awaiting the host's reaper.
+            if status.status.code() == Some(1) || state.trim_start().starts_with('Z') {
+                break;
+            }
+            assert!(status.status.success(), "ps failed: {status:?}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} left child {pid} running after exit: {state}",
+                binary.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+#[test]
+fn batch_large_lists_complete_and_release_without_exhausting_the_stack() {
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    // This is the list size used by GNU's Bug#24264 regression. Exercise the
+    // actual batch process, including collection and process termination.
+    let program = r#"(progn
+      (let ((values (make-list 8000005 37)))
+        (prin1 (list (length values) (car values) (car (last values)))))
+      (garbage-collect)
+      (princ " done"))"#;
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        let result = Command::new(binary)
+            .args(["-Q", "--batch", "--eval", program])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}: {:?}",
+            binary.display(),
+            result
+        );
+        assert_eq!(result.stdout, b"(8000005 37 37) done");
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn linux_entrypoint_preserves_arguments_environment_and_exit_status() {
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    for (locale, expected) in [
+        ("C", "(\"env λ\" nil)"),
+        ("C.UTF-8", "(\"env λ\" (\"λ argument\"))"),
+    ] {
+        for binary in [oracle.as_path(), common::emaxx(false)] {
+            let result = Command::new(binary)
+            .args([
+                "-Q", "--batch", "--eval",
+                "(progn (prin1 (list (getenv \"EMAXX_ENTRY_CONTROL\") (member \"λ argument\" command-line-args))) (kill-emacs 23))",
+                "λ argument",
+            ])
+            .env("LC_ALL", locale)
+            .env("LANG", locale)
+            .env("EMAXX_ENTRY_CONTROL", "env λ")
+            .output()
+            .unwrap();
+            assert_eq!(
+                result.status.code(),
+                Some(23),
+                "{} under {locale}: {:?}",
+                binary.display(),
+                result
+            );
+            assert_eq!(
+                String::from_utf8(result.stdout).unwrap(),
+                expected,
+                "{} under {locale}",
+                binary.display()
+            );
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn linux_batch_entrypoint_preserves_inherited_sigpipe() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        for ignored in [false, true] {
+            let mut command = Command::new(binary);
+            command.args([
+                "-Q",
+                "--batch",
+                "--eval",
+                "(progn (signal-process (emacs-pid) 'SIGPIPE) (princ \"survived\"))",
+            ]);
+            // SAFETY: only the async-signal-safe signal call runs between
+            // fork and exec, establishing the child's inherited disposition.
+            unsafe {
+                command.pre_exec(move || {
+                    let handler = if ignored {
+                        libc::SIG_IGN
+                    } else {
+                        libc::SIG_DFL
+                    };
+                    if libc::signal(libc::SIGPIPE, handler) == libc::SIG_ERR {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let result = command.output().unwrap();
+            if ignored {
+                assert!(
+                    result.status.success(),
+                    "{}: {:?}",
+                    binary.display(),
+                    result
+                );
+                assert_eq!(result.stdout, b"survived");
+            } else {
+                assert_eq!(
+                    result.status.signal(),
+                    Some(libc::SIGPIPE),
+                    "{}: {:?}",
+                    binary.display(),
+                    result
+                );
+                assert!(result.stdout.is_empty());
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn linux_entrypoint_reserves_closed_standard_descriptors_with_gnu_access_modes() {
+    use std::os::unix::process::CommandExt;
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        for fd in 0..3 {
+            let expected_mode = if fd == 0 {
+                libc::O_WRONLY
+            } else {
+                libc::O_RDONLY
+            };
+            let program = format!(
+                r#"(with-temp-buffer
+                  (insert-file-contents "/proc/self/fdinfo/{fd}")
+                  (goto-char (point-min))
+                  (re-search-forward "^flags:[ \t]*\\([0-7]+\\)")
+                  (kill-emacs (if (= (logand 3 (string-to-number (match-string 1) 8)) {expected_mode}) 0 17)))"#
+            );
+            let mut command = Command::new(binary);
+            command.args(["-Q", "--batch", "--eval", &program]);
+            // SAFETY: close is async-signal-safe. Only the child's selected
+            // standard descriptor is closed before executing the real editor.
+            unsafe {
+                command.pre_exec(move || {
+                    libc::close(fd);
+                    Ok(())
+                });
+            }
+            let result = command.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{} fd {fd}: {:?}",
+                binary.display(),
+                result
+            );
+        }
+    }
+}
+
 fn unique_temp_path(stem: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "{stem}-{}-{}",

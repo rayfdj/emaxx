@@ -1970,7 +1970,7 @@ impl DumpContext {
     /// dump_overlay: the Lisp fields (buffer, plist) and the interval
     /// node's bounds and advance flags.  A live overlay's buffer is a
     /// field, so the buffer is dumped too, and refuses; only a deleted
-    /// overlay gets through, with the buffer whose list still holds it.
+    /// overlay gets through. Detached objects need no holding buffer.
     fn dump_overlay(
         &mut self,
         interp: &Interpreter,

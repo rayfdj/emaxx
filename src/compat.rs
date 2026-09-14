@@ -162,6 +162,16 @@ pub struct TestOutcome {
     pub status: TestStatus,
     pub condition_type: Option<String>,
     pub message: Option<String>,
+    /// ERT evaluates expected-result types, including arbitrary predicates.
+    /// None identifies older reports which did not retain that evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<bool>,
+    /// ERT's measured wall duration, retained for diagnosis, never scoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ns: Option<i64>,
+    /// ERT info contexts (including subprocess output) for the raw outcome.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub infos: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -320,6 +330,12 @@ impl OracleLocalConfig {
 
 pub fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The GNU installation tree configured when this executable was built,
+/// corresponding to GNU's epaths.h paths. This does not read process env.
+pub fn configured_gnu_source_root() -> PathBuf {
+    PathBuf::from(env!("EMAXX_GNU_SOURCE_DIRECTORY"))
 }
 
 pub fn compat_path(relative: &str) -> PathBuf {
@@ -528,6 +544,10 @@ pub fn configure_upstream_like_env_with_home(
 ) {
     command.env("LANG", "C");
     command.env("HOME", home);
+    // The tests create real child PTYs, independently of the batch runner's
+    // terminal. Give those terminals the same portable terminfo entry in
+    // both editors; an absent or dumb TERM would silently skip frame tests.
+    command.env("TERM", "xterm");
     command.env("EMACS_TEST_DIRECTORY", emacs_test_directory);
     for key in UNSET_ENV_VARS {
         command.env_remove(key);
@@ -1011,16 +1031,7 @@ pub fn filter_report_by_name(report: &BatchReport, regex: Option<&Regex>) -> Bat
         .filter(|result| regex.is_match(&result.name))
         .cloned()
         .collect::<Vec<_>>();
-    let mut summary = BatchSummary::default();
-    for result in &results {
-        summary.total += 1;
-        match result.status {
-            TestStatus::Passed => summary.passed += 1,
-            TestStatus::Failed => summary.failed += 1,
-            TestStatus::Skipped => summary.skipped += 1,
-        }
-    }
-    summary.unexpected = summary.failed;
+    let summary = summarize_outcomes(&results);
     BatchReport {
         runner: report.runner.clone(),
         file: report.file.clone(),
@@ -1053,16 +1064,7 @@ pub fn filter_report_by_exact_names(report: &BatchReport, names: &BTreeSet<Strin
         .filter(|result| names.contains(&result.name))
         .cloned()
         .collect::<Vec<_>>();
-    let mut summary = BatchSummary::default();
-    for result in &results {
-        summary.total += 1;
-        match result.status {
-            TestStatus::Passed => summary.passed += 1,
-            TestStatus::Failed => summary.failed += 1,
-            TestStatus::Skipped => summary.skipped += 1,
-        }
-    }
-    summary.unexpected = summary.failed;
+    let summary = summarize_outcomes(&results);
     BatchReport {
         runner: report.runner.clone(),
         file: report.file.clone(),
@@ -1074,6 +1076,106 @@ pub fn filter_report_by_exact_names(report: &BatchReport, names: &BTreeSet<Strin
         results,
         summary,
     }
+}
+
+fn summarize_outcomes(results: &[TestOutcome]) -> BatchSummary {
+    let mut summary = BatchSummary::default();
+    for result in results {
+        summary.total += 1;
+        match result.status {
+            TestStatus::Passed => summary.passed += 1,
+            TestStatus::Failed => summary.failed += 1,
+            TestStatus::Skipped => summary.skipped += 1,
+        }
+        summary.unexpected += usize::from(result.expected == Some(false));
+    }
+    summary
+}
+
+/// Validate the original report before a scope filter can discard evidence
+/// or rebuild its summary. This does not judge outcomes outside that scope.
+pub fn report_integrity_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
+    let mut issues = Vec::new();
+    let selected = report.selected_tests.iter().collect::<BTreeSet<_>>();
+    let completed = report
+        .results
+        .iter()
+        .map(|test| &test.name)
+        .collect::<BTreeSet<_>>();
+    if selected != completed
+        || selected.len() != report.selected_tests.len()
+        || completed.len() != report.results.len()
+    {
+        issues.push(ComparisonIssue {
+            kind: "result_coverage".into(),
+            detail: format!(
+                "{} did not report exactly one result for every selected test",
+                report.runner
+            ),
+        });
+    }
+    let discovered = report
+        .discovered_tests
+        .iter()
+        .map(|test| &test.name)
+        .collect::<BTreeSet<_>>();
+    if discovered.len() != report.discovered_tests.len() || !selected.is_subset(&discovered) {
+        issues.push(ComparisonIssue {
+            kind: "discovery_coverage".into(),
+            detail: format!(
+                "{} discovery is duplicated or omits selected tests",
+                report.runner
+            ),
+        });
+    }
+    for result in &report.results {
+        if result.expected.is_none() {
+            issues.push(ComparisonIssue {
+                kind: "missing_expectation_evidence".into(),
+                detail: format!(
+                    "{} test `{}` has no ERT expectation evidence",
+                    report.runner, result.name
+                ),
+            });
+        }
+    }
+    if report.summary != summarize_outcomes(&report.results) {
+        issues.push(ComparisonIssue {
+            kind: "summary_mismatch".into(),
+            detail: format!(
+                "{} summary disagrees with its individual results",
+                report.runner
+            ),
+        });
+    }
+    issues
+}
+
+/// Matching outcomes are useful parity evidence even when neither editor
+/// succeeded. Keep execution failures separate from the parity comparison.
+pub fn report_execution_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
+    let mut issues = report_integrity_issues(report);
+    if report.file_status == FileStatus::LoadError {
+        issues.push(ComparisonIssue {
+            kind: "load_error".into(),
+            detail: format!(
+                "{} did not load {}: {:?}",
+                report.runner, report.file, report.file_error
+            ),
+        });
+    }
+    for result in &report.results {
+        if result.expected == Some(false) {
+            issues.push(ComparisonIssue {
+                kind: "unexpected_outcome".into(),
+                detail: format!(
+                    "{} test `{}`: {:?}, expected=false",
+                    report.runner, result.name, result.status
+                ),
+            });
+        }
+    }
+    issues
 }
 
 pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> ComparisonReport {
@@ -1124,6 +1226,26 @@ pub fn compare_reports_normalized(
         .iter()
         .map(|test| test.name.clone())
         .collect::<Vec<_>>();
+    let expected_metadata = expected
+        .discovered_tests
+        .iter()
+        .map(|test| (&test.name, &test.expected_result))
+        .collect::<BTreeMap<_, _>>();
+    let actual_metadata = actual
+        .discovered_tests
+        .iter()
+        .map(|test| (&test.name, &test.expected_result))
+        .collect::<BTreeMap<_, _>>();
+    for (name, left) in &expected_metadata {
+        if let Some(right) = actual_metadata.get(name)
+            && left != right
+        {
+            issues.push(ComparisonIssue {
+                kind: "expected_result".into(),
+                detail: format!("test `{name}` expected-result differed: {left} vs {right}"),
+            });
+        }
+    }
     if expected_discovered.iter().collect::<BTreeSet<_>>()
         != actual_discovered.iter().collect::<BTreeSet<_>>()
     {
@@ -1157,6 +1279,8 @@ pub fn compare_reports_normalized(
         match (expected_results.get(&name), actual_results.get(&name)) {
             (Some(left), Some(right)) => {
                 let same_status = left.status == right.status;
+                let same_expectation = left.expected == right.expected
+                    && expected_metadata.get(&name) == actual_metadata.get(&name);
                 let both_passed =
                     left.status == TestStatus::Passed && right.status == TestStatus::Passed;
                 let same_condition = left.condition_type == right.condition_type || both_passed;
@@ -1168,10 +1292,19 @@ pub fn compare_reports_normalized(
                 let normalized_left = left.message.as_deref().map(normalize_message);
                 let normalized_right = right.message.as_deref().map(normalize_message);
                 let same_message = both_passed || normalized_left == normalized_right;
-                if same_status && same_condition && same_message {
+                if same_status && same_condition && same_message && same_expectation {
                     matching_outcomes += 1;
                 } else {
                     mismatching_outcomes += 1;
+                }
+                if left.expected != right.expected {
+                    issues.push(ComparisonIssue {
+                        kind: "result_expectation".into(),
+                        detail: format!(
+                            "test `{name}` ERT expectedness differed: {:?} vs {:?}",
+                            left.expected, right.expected
+                        ),
+                    });
                 }
                 if same_status && same_condition && !same_message {
                     issues.push(ComparisonIssue {
@@ -1372,6 +1505,9 @@ mod tests {
         // finding 22: condition type alone scored `(wrong-type-argument foo)'
         // as matching `(wrong-type-argument bar)'.
         let outcome = |message: &str| TestOutcome {
+            duration_ns: None,
+            infos: Vec::new(),
+            expected: Some(false),
             name: "t".into(),
             status: TestStatus::Failed,
             condition_type: Some("wrong-type-argument".into()),
@@ -1421,6 +1557,37 @@ mod tests {
     }
 
     #[test]
+    fn skips_require_matching_output_and_never_match_a_pass() {
+        let mut oracle =
+            filter_report_by_exact_names(&expectation_report(), &BTreeSet::from(["skip".into()]));
+        oracle.results[0].condition_type = Some("ert-test-skipped".into());
+        oracle.results[0].message = Some(
+            r#"(ert-test-skipped ((skip-unless (string-match-p "SECCOMP" system-configuration-features)) :form (string-match-p "SECCOMP" "MODULES") :value nil))"#.into(),
+        );
+        let mut emaxx = oracle.clone();
+        emaxx.runner = "emaxx".into();
+        assert!(compare_reports(&oracle, &emaxx).matches);
+        assert_eq!(emaxx.summary.passed, 0);
+        assert_eq!(emaxx.summary.skipped, 1);
+
+        emaxx.results[0].message = oracle.results[0]
+            .message
+            .as_ref()
+            .map(|message| message.replace("MODULES", ""));
+        let different = compare_reports(&oracle, &emaxx);
+        assert!(!different.matches);
+        assert_eq!(different.matching_outcomes, 0);
+        assert_eq!(different.mismatching_outcomes, 1);
+
+        emaxx.results[0].status = TestStatus::Passed;
+        emaxx.results[0].condition_type = None;
+        emaxx.results[0].message = None;
+        emaxx.summary = summarize_outcomes(&emaxx.results);
+        assert!(!compare_reports(&oracle, &emaxx).matches);
+        assert!(!compare_reports(&emaxx, &oracle).matches);
+    }
+
+    #[test]
     fn compare_reports_flags_selection_and_status_differences() {
         let oracle = BatchReport {
             runner: "oracle".into(),
@@ -1435,6 +1602,9 @@ mod tests {
             }],
             selected_tests: vec!["foo".into()],
             results: vec![TestOutcome {
+                duration_ns: None,
+                infos: Vec::new(),
+                expected: Some(true),
                 name: "foo".into(),
                 status: TestStatus::Passed,
                 condition_type: None,
@@ -1457,6 +1627,9 @@ mod tests {
             discovered_tests: oracle.discovered_tests.clone(),
             selected_tests: Vec::new(),
             results: vec![TestOutcome {
+                duration_ns: None,
+                infos: Vec::new(),
+                expected: Some(false),
                 name: "foo".into(),
                 status: TestStatus::Failed,
                 condition_type: Some("error".into()),
@@ -1509,12 +1682,18 @@ mod tests {
             selected_tests: vec!["foo".into(), "bar".into()],
             results: vec![
                 TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
+                    expected: Some(true),
                     name: "foo".into(),
                     status: TestStatus::Passed,
                     condition_type: None,
                     message: None,
                 },
                 TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
+                    expected: Some(true),
                     name: "bar".into(),
                     status: TestStatus::Skipped,
                     condition_type: Some("ert-test-skipped".into()),
@@ -1556,6 +1735,9 @@ mod tests {
             results: ["foo", "foo-extra"]
                 .into_iter()
                 .map(|name| TestOutcome {
+                    duration_ns: None,
+                    infos: Vec::new(),
+                    expected: Some(true),
                     name: name.into(),
                     status: TestStatus::Passed,
                     condition_type: None,
@@ -1579,10 +1761,137 @@ mod tests {
         assert_eq!(filtered.summary.passed, 1);
     }
 
+    fn expectation_report() -> BatchReport {
+        let results = [
+            ("expected-failure", TestStatus::Failed, true, ":failed"),
+            ("unexpected-pass", TestStatus::Passed, false, ":failed"),
+            ("compound", TestStatus::Passed, true, "(or :passed :failed)"),
+            ("skip", TestStatus::Skipped, true, ":passed"),
+        ];
+        let outcomes = results
+            .iter()
+            .map(|(name, status, expected, _)| TestOutcome {
+                duration_ns: None,
+                infos: Vec::new(),
+                name: (*name).into(),
+                status: status.clone(),
+                condition_type: None,
+                message: None,
+                expected: Some(*expected),
+            })
+            .collect::<Vec<_>>();
+        BatchReport {
+            runner: "oracle".into(),
+            file: "expectations.el".into(),
+            selector: "t".into(),
+            file_status: FileStatus::Loaded,
+            file_error: None,
+            discovered_tests: results
+                .iter()
+                .map(|(name, _, _, expected)| DiscoveredTest {
+                    name: (*name).into(),
+                    tags: Vec::new(),
+                    expected_result: (*expected).into(),
+                })
+                .collect(),
+            selected_tests: outcomes.iter().map(|test| test.name.clone()).collect(),
+            summary: summarize_outcomes(&outcomes),
+            results: outcomes,
+        }
+    }
+
+    #[test]
+    fn matching_unexpected_results_and_load_errors_are_not_success() {
+        let report = expectation_report();
+        assert!(compare_reports(&report, &report).matches);
+        let issues = report_execution_issues(&report);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, "unexpected_outcome");
+        assert!(issues[0].detail.contains("unexpected-pass"));
+        let load_error = BatchReport::load_error("oracle", "module.el", "t", "missing fixture");
+        assert!(compare_reports(&load_error, &load_error).matches);
+        assert_eq!(report_execution_issues(&load_error)[0].kind, "load_error");
+    }
+
+    #[test]
+    fn report_filters_preserve_ert_expectedness_instead_of_counting_failures() {
+        let report = expectation_report();
+        let names = BTreeSet::from(["expected-failure".into(), "compound".into(), "skip".into()]);
+        let exact = filter_report_by_exact_names(&report, &names);
+        let regex = Regex::new("^(expected-failure|compound|skip)$").expect("valid test filter");
+        assert_eq!(filter_report_by_name(&report, Some(&regex)), exact);
+        assert_eq!(exact.summary.failed, 1);
+        assert_eq!(exact.summary.unexpected, 0);
+        assert!(report_execution_issues(&exact).is_empty());
+        let unexpected =
+            filter_report_by_exact_names(&report, &BTreeSet::from(["unexpected-pass".into()]));
+        assert_eq!(unexpected.summary.failed, 0);
+        assert_eq!(unexpected.summary.unexpected, 1);
+    }
+
+    #[test]
+    fn equal_statuses_with_different_expectations_do_not_match() {
+        let report = expectation_report();
+        let mut actual = report.clone();
+        actual.discovered_tests[2].expected_result = ":failed".into();
+        actual.results[2].expected = Some(false);
+        let comparison = compare_reports(&report, &actual);
+        assert!(!comparison.matches);
+        assert_eq!(comparison.mismatching_outcomes, 1);
+        assert!(
+            comparison
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "expected_result")
+        );
+    }
+
+    #[test]
+    fn incomplete_or_inconsistent_reports_cannot_certify_success() {
+        let mut report = expectation_report();
+        report.results[0].expected = None;
+        report.results.pop();
+        let issues = report_execution_issues(&report);
+        for kind in [
+            "result_coverage",
+            "missing_expectation_evidence",
+            "summary_mismatch",
+        ] {
+            assert!(issues.iter().any(|issue| issue.kind == kind), "{kind}");
+        }
+        let mut report = expectation_report();
+        report.results.push(report.results[0].clone());
+        assert!(
+            report_execution_issues(&report)
+                .iter()
+                .any(|issue| issue.kind == "result_coverage")
+        );
+    }
+
+    #[test]
+    fn raw_integrity_is_independent_of_outcome_expectations_and_filtering() {
+        let mut report = expectation_report();
+        assert!(report_integrity_issues(&report).is_empty());
+        report.summary.unexpected = 99;
+        assert!(
+            report_integrity_issues(&report)
+                .iter()
+                .any(|issue| issue.kind == "summary_mismatch")
+        );
+        report.summary = summarize_outcomes(&report.results);
+        report.discovered_tests.pop();
+        assert!(
+            report_integrity_issues(&report)
+                .iter()
+                .any(|issue| issue.kind == "discovery_coverage")
+        );
+    }
+
     #[test]
     fn upstream_like_env_sets_expected_variables() {
         let mut command = Command::new("env");
         command.env("EMACSLOADPATH", "bad");
+        command.env("TERM", "dumb");
         command.env("EMACS_TEST_VERBOSE", "1");
         configure_upstream_like_env(&mut command, Path::new("/tmp/emacs/test"));
         let envs = command
@@ -1595,6 +1904,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         assert_eq!(envs.get("LANG"), Some(&Some("C".to_string())));
+        assert_eq!(envs.get("TERM"), Some(&Some("xterm".to_string())));
         assert_eq!(envs.get("HOME"), Some(&Some("/nonexistent".to_string())));
         assert_eq!(
             envs.get("EMACS_TEST_DIRECTORY"),

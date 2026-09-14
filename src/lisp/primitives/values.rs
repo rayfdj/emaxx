@@ -691,9 +691,9 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         Value::String(text) => Ok(text.as_str().chars().count() as i64),
         Value::StringObject(state) => Ok(state.borrow().text.chars().count() as i64),
         Value::Nil => Ok(0),
-        Value::Vector(_) | Value::Cons(_) if is_vector_value(value) => {
-            Ok(vector_items(value)?.len() as i64)
-        }
+        // fns.c:Flength reads ASIZE directly; taking the size must not
+        // clone or traverse the vector's elements.
+        Value::Vector(vector) => Ok(vector.slots().len() as i64),
         // fns.c Flength: a char-table's length is MAX_CHAR (0x3FFFFF),
         // not the number of covered codepoints.
         Value::CharTable(_) => Ok(0x3f_ffff),

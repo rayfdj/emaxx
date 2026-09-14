@@ -1,5 +1,4 @@
-use std::ffi::CStr;
-use std::path::Path;
+use std::ffi::{CStr, CString};
 
 use num_traits::ToPrimitive;
 use rusqlite::ffi;
@@ -41,7 +40,7 @@ define_dispatch!(
         interp: &mut Interpreter,
         name: &str,
         args: &[Value],
-        _env: &mut Env,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         match name {
             "sqlite-open" => sqlite_open(interp, args),
@@ -52,7 +51,7 @@ define_dispatch!(
             "sqlite-transaction" => sqlite_transaction(interp, args),
             "sqlite-commit" => sqlite_commit(interp, args),
             "sqlite-rollback" => sqlite_rollback(interp, args),
-            "sqlite-load-extension" => sqlite_load_extension(interp, args),
+            "sqlite-load-extension" => sqlite_load_extension(interp, args, env),
             "sqlite-next" => sqlite_next(interp, args),
             "sqlite-columns" => sqlite_columns(interp, args),
             "sqlite-more-p" => sqlite_more_p(interp, args),
@@ -215,19 +214,67 @@ fn sqlite_rollback(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Li
     sqlite_exec(database_connection(interp, id)?, "rollback")
 }
 
-fn sqlite_load_extension(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+fn sqlite_load_extension(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
     need_args("sqlite-load-extension", args, 2, 2)?;
     let id = sqlite_id(&args[0])?;
     let _ = database_connection(interp, id)?;
     let module = string_text(&args[1])?;
-    if !allowed_module_name(&module) {
-        return Err(LispError::Signal("Module name not on allowlist".into()));
+    let basename = super::primitives::call(
+        interp,
+        "file-name-nondirectory",
+        std::slice::from_ref(&args[1]),
+        env,
+    )?;
+    if !allowed_module_name(&string_text(&basename)?) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("sqlite-error"),
+            Value::string("Module name not on allowlist"),
+        ])));
     }
-    Ok(if Path::new(&module).is_file() {
-        Value::T
-    } else {
-        Value::Nil
-    })
+    // GNU resolves Lisp filenames before enabling loading. No Lisp call or
+    // error can then escape while the connection permits C-API extensions.
+    let path = super::primitives::expand_file_name_runtime(interp, env, &module, None)?;
+    let path = CString::new(path).map_err(|_| LispError::Signal("Invalid file name".into()))?;
+    let connection = database_connection(interp, id)?;
+    // SAFETY: the live Connection remains borrowed for the entire synchronous
+    // call. SQLite keeps the loaded library alive until this connection closes.
+    // db_config enables only the C API, never the SQL load_extension function.
+    let loaded = unsafe {
+        let db = connection.handle();
+        if ffi::sqlite3_db_config(
+            db,
+            ffi::SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION,
+            1,
+            std::ptr::null_mut::<libc::c_int>(),
+        ) != ffi::SQLITE_OK
+        {
+            return Ok(Value::Nil);
+        }
+        let _disable = DisableExtensionLoading(connection);
+        ffi::sqlite3_load_extension(db, path.as_ptr(), std::ptr::null(), std::ptr::null_mut())
+            == ffi::SQLITE_OK
+    };
+    Ok(if loaded { Value::T } else { Value::Nil })
+}
+
+struct DisableExtensionLoading<'a>(&'a Connection);
+
+impl Drop for DisableExtensionLoading<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the guard's borrow keeps the Connection live through cleanup.
+        unsafe {
+            ffi::sqlite3_db_config(
+                self.0.handle(),
+                ffi::SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION,
+                0,
+                std::ptr::null_mut::<libc::c_int>(),
+            );
+        }
+    }
 }
 
 fn sqlite_next(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
@@ -553,13 +600,11 @@ fn allowed_module_name(module: &str) -> bool {
         "vss0",
         "zipfile",
     ];
-    let Some(name) = Path::new(module).file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    let name = name.strip_prefix("libsqlite3_mod_").unwrap_or(name);
+    let name = module.strip_prefix("libsqlite3_mod_").unwrap_or(module);
     allowlist.iter().any(|allowed| {
         name.len() > allowed.len()
             && name.starts_with(allowed)
-            && matches!(&name[allowed.len()..], ".so" | ".dylib" | ".dll")
+            && (matches!(&name[allowed.len()..], ".so" | ".dylib")
+                || name[allowed.len()..].eq_ignore_ascii_case(".dll"))
     })
 }

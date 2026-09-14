@@ -34,13 +34,19 @@ fn stdout_mode() -> (usize, bool) {
     // zeroed stat buffer owned by this frame.
     unsafe {
         let mut status: libc::stat = std::mem::zeroed();
-        let capacity =
-            if libc::fstat(libc::STDOUT_FILENO, &mut status) == 0 && status.st_blksize > 0 {
-                status.st_blksize as usize
-            } else {
-                8192
-            };
-        (capacity, libc::isatty(libc::STDOUT_FILENO) == 1)
+        let known = libc::fstat(libc::STDOUT_FILENO, &mut status) == 0;
+        let capacity = if known && status.st_blksize > 0 {
+            status.st_blksize as usize
+        } else {
+            8192
+        };
+        // Like _IO_file_doallocate, ask about terminal state only for a
+        // character device. The ioctl is unnecessary for files and pipes,
+        // and GNU's inherited sandbox does not permit that query on stdout.
+        let line_buffered = known
+            && status.st_mode & libc::S_IFMT == libc::S_IFCHR
+            && libc::isatty(libc::STDOUT_FILENO) == 1;
+        (capacity, line_buffered)
     }
 }
 
@@ -63,12 +69,19 @@ fn with_stdout<T>(
 
 /// Write BYTES to the batch stdout through the stdio-style buffer.
 pub(crate) fn write(bytes: &[u8]) -> std::io::Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
     with_stdout(|stdout| stdout.write(bytes))
 }
 
 /// `fflush (stdout)': hand the buffered bytes to the descriptor now.
 pub(crate) fn flush() -> std::io::Result<()> {
-    with_stdout(BatchStdout::flush)
+    let mut guard = STDOUT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // fflush of an unused stream does not allocate a buffer or probe its fd.
+    guard.as_mut().map_or(Ok(()), BatchStdout::flush)
 }
 
 impl BatchStdout {
