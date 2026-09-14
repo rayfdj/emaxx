@@ -50,7 +50,8 @@ def main():
         "commands": [],
     }
     for name in ("kernel/apparmor_restrict_unprivileged_userns",
-                 "kernel/unprivileged_userns_clone", "user/max_user_namespaces"):
+                 "kernel/unprivileged_userns_clone", "user/max_user_namespaces",
+                 "kernel/core_pattern", "fs/suid_dumpable"):
         path = Path("/proc/sys") / name
         if path.is_file():
             evidence["kernel_settings"][name] = path.read_text().strip()

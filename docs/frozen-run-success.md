@@ -417,3 +417,20 @@ the newer-oracle staged profile (GNU 75.60 seconds, Emaxx 79.36); differences
 between those environments are not a measured code improvement. Raw results
 and descending timings are in `perf-ownership-comparison/comp-tests/` under
 the audit artifact directory.
+
+Linux GDB diagnostic `34796053074` confirms the unfixed bootstrap SIGSEGV
+in `NativeRuntime::collect_native_heap_now`, called from GNU's native
+after-load code. At the repaired `73cdeab`, Linux runner checks pass and
+sandbox diagnostic `34796264324` successfully builds the image. GNU now
+passes both sandbox probes; the scoped bubblewrap prerequisite works.
+Emaxx's next rejected calls are `statx` while locating the data directory
+under `--seccomp`, and `sysinfo` during early process startup when bubblewrap
+installs the filter before execution. These remain failures; neither filter
+nor outcome expectations were changed. The traces are retained under
+`linux-sandbox-diagnostics-73cdeab/`.
+
+Ordinary Mac module and thread files at `73cdeab` independently pass 38/38
+and 32/32 in both editors with no skips or unexpected results. Their runs
+are `run-1789349643024911000-31483` and `run-1789349662394812000-31482`;
+`ordinary-stack-bounds-evidence.json` records verification of their contracts
+and all six raw receipt hashes each.

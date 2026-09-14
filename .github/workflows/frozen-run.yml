@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics]
+        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics]
         default: affected
       file:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
@@ -134,11 +134,21 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
           fi
           case "$VALIDATION" in
-            sandbox-diagnostics|image-diagnostics)
+            sandbox-diagnostics|image-diagnostics|startup-diagnostics)
               # Diagnostic children only; this does not replace an ordinary
               # run or alter the kernel filter or its expected behavior.
               cargo build --locked --profile gate --target-dir target/compat-subject \
                 --bin emaxx --bin make-fingerprint -j2
+              if [ "$VALIDATION" = startup-diagnostics ]; then
+                # Capture the caller of the startup syscall rejected by
+                # the inherited GNU filter. This stops for inspection and
+                # makes no claim about the editor's eventual exit status.
+                gdb --batch -ex 'catch syscall sysinfo' -ex run -ex bt \
+                  --args "$PWD/target/compat-subject/gate/emaxx" \
+                    --quick --batch '--eval=(message "Hi")' \
+                    2>&1 | tee target/frozen-ci/startup-backtrace.log
+                exit 0
+              fi
               if [ "$VALIDATION" = image-diagnostics ]; then
                 # Stop at the actual bootstrap fault and retain its native
                 # backtrace. This diagnostic never certifies frozen outcomes.
