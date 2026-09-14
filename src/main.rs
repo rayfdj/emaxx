@@ -529,7 +529,7 @@ fn try_main() -> Result<u8, String> {
         ..Default::default()
     };
     if noninteractive {
-        let outcome = run_batch_with_large_stack(options)?;
+        let outcome = batch::run_batch_with_large_stack(options)?;
         // exit() and shut_down_emacs's reset_sys_modes flush stdio's stdout
         // before the process goes away or re-executes itself.
         emaxx::lisp::flush_batch_stdout();
@@ -861,26 +861,6 @@ fn sort_args(argv: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
-    with_batch_stack(|| batch::run_batch(options))?
-}
-
-fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
-    // Dropping an N-element list recurses N deep through the cons chain;
-    // upstream tests build 8-million-element lists (Bug#24264), so the
-    // runtime needs stack for teardown as well as evaluation. Keep GNU's
-    // calling OS thread: an extra worker and join introduce a blocking
-    // futex that GNU's seccomp policy deliberately does not permit.
-    // The established stack backend reserves virtual memory with a guard
-    // page; only touched pages commit. Native roots stay on this stack.
-    let stack = corosensei::stack::DefaultStack::new(8 * 1024 * 1024 * 1024)
-        .map_err(|error| format!("allocate batch stack: {error}"))?;
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        corosensei::on_stack(stack, body)
-    }))
-    .map_err(|_| "batch runtime panicked".to_string())
-}
-
 #[cfg(unix)]
 fn restart_current_process() -> Result<u8, String> {
     let mut args = std::env::args_os();
@@ -907,27 +887,6 @@ fn restart_current_process() -> Result<u8, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn batch_stack_preserves_the_calling_thread_and_unwinds_back_to_it() {
-        thread_local! {
-            static CALLER_VALUE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-        }
-        let thread = std::thread::current().id();
-        CALLER_VALUE.set(41);
-        let result = with_batch_stack(|| {
-            assert_eq!(std::thread::current().id(), thread);
-            assert_eq!(CALLER_VALUE.get(), 41);
-            CALLER_VALUE.set(42);
-            "finished"
-        })
-        .expect("run on the batch stack");
-        assert_eq!(result, "finished");
-        assert_eq!(CALLER_VALUE.get(), 42);
-        assert!(with_batch_stack(|| panic!("unwind control")).is_err());
-        assert_eq!(std::thread::current().id(), thread);
-        assert_eq!(CALLER_VALUE.get(), 42);
-    }
 
     fn sorted(args: &[&str]) -> Vec<String> {
         let mut argv = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();

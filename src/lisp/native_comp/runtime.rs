@@ -5057,6 +5057,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_gc_preserves_roots_on_registered_alternate_stack() {
+        extern "C" fn collect_with_native_only_root() -> NativeWord {
+            let word = std::hint::black_box(with_active_heap(|heap| {
+                heap.cons((73 << FIXNUM_BITS) | TAG_FIXNUM_LOW, 0)
+            }));
+            with_active(|active| {
+                let runtime = unsafe { &mut *active.runtime };
+                runtime.heap.collect(
+                    std::ptr::from_ref(&word),
+                    &[],
+                    unsafe { &mut *active.interpreter },
+                    unsafe { &*active.environment },
+                );
+                if runtime
+                    .heap
+                    .native_cons_is_live(word.wrapping_sub(TAG_CONS) as *const NativeCons)
+                {
+                    word
+                } else {
+                    0
+                }
+            })
+        }
+
+        const STACK_BYTES: usize = 4 * 1024 * 1024;
+        let stack = corosensei::stack::DefaultStack::new(STACK_BYTES).expect("owned stack");
+        let original_base = current_native_stack_bottom();
+        crate::lisp::eval::continuations::on_stack(stack, || {
+            let marker = 0_usize;
+            let marker_address = std::ptr::from_ref(&marker) as usize;
+            let base = current_native_stack_bottom() as usize;
+            assert!(base > marker_address && base - marker_address < STACK_BYTES);
+            assert_ne!(base, original_base as usize);
+            let mut interpreter = Interpreter::new();
+            let mut runtime = NativeRuntime::default();
+            let result = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut Env::new(),
+                    collect_with_native_only_root as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[],
+                )
+                .expect("native collection on the active physical stack");
+            assert_eq!(result, Value::list([Value::Integer(73)]));
+        });
+        assert_eq!(current_native_stack_bottom(), original_base);
+    }
+
+    #[test]
     fn native_execution_lock_survives_non_lifo_activation_returns() {
         let first = NativeExecutionGuard::enter();
         let second = NativeExecutionGuard::enter();

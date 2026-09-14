@@ -14,6 +14,11 @@ editors completed successfully with no unexpected ERT outcomes. A matching
 load error or unexpected failure fails the command. So does an unexpected
 pass. Legitimate upstream expected failures and skips remain valid.
 
+Platform skips require matching output and remain separate from passes.
+Different feature-list diagnostics still fail comparison. A test that is
+unsupported on Darwin must execute successfully on Linux when supported
+there, and the converse applies to Darwin-only functionality.
+
 The shared Lisp reporter asks `ert-test-result-expected-p` for each result,
 including compound and predicate expectations. Rust retains that decision
 when filtering reports and compares each test's declared expectation between
@@ -353,8 +358,9 @@ correctly fail the run. Contract and six raw receipt hashes were verified.
 `linux-sandbox-1eabcb9/` retains the reports. These are newly exposed failures,
 not resolved skips. The diagnostic workflow mode runs the real binaries and
 unchanged filters under strace with empty environments, and separately probes
-bubblewrap namespace creation. Diagnostic children disable core files to
-capture termination promptly; ordinary runs are unchanged. This mode emits
+bubblewrap namespace creation. Diagnostic children set a zero core-size
+resource limit; Linux's configured core handler can still delay termination.
+Ordinary runs are unchanged. This mode emits
 no compatibility certificate and returns failure for failed commands.
 
 Linux diagnostic `34792804162` at `8186acc` identifies the first rejected
@@ -389,3 +395,25 @@ pass, upstream expected failure, and skip in both editors, with the failure's
 info retained and numeric durations on all cases. Eighteen comparison controls,
 formatting and strict Clippy pass. Older reports without these optional fields
 remain readable; provenance still rejects reuse across a reporter change.
+
+Linux continuation `34795453212` at `16d7787` exposes an image-bootstrap
+SIGSEGV before sandbox tracing. The alternate batch stack was not registered
+with native GC, which therefore used the original pthread stack boundary.
+The repair gives owned stacks a scoped physical bound, shared by batch
+execution and continuation resumes, restoring it after suspension, return,
+and panic. Two new controls pass locally, including actual collection of a
+native-only stack root; all five continuation controls, 15 native-GC controls,
+and the calling-thread control pass. Formatting and strict Clippy pass.
+Linux confirmation is pending; the GDB diagnostic at `1bb749e` preserves the
+unfixed bootstrap backtrace. The successful Mac module run alone did not
+exercise this fault.
+
+The saved-binary before/after comparison of the ownership/vector changes
+completed all 80 native return-type tests with 80 passes each, using the same
+older GNU source and matching ABI. Total test durations were 97.211254 and
+95.492610 seconds respectively: 1.77% in one sequential pair, insufficient to
+claim the compiler latency issue resolved. This comparison is separate from
+the newer-oracle staged profile (GNU 75.60 seconds, Emaxx 79.36); differences
+between those environments are not a measured code improvement. Raw results
+and descending timings are in `perf-ownership-comparison/comp-tests/` under
+the audit artifact directory.
