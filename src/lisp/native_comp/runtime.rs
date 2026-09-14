@@ -4411,7 +4411,26 @@ impl NativeHeap {
 
     pub(crate) fn encode(&mut self, value: &Value) -> Result<NativeWord, String> {
         let _sync_guard = ConsSyncGuard::enter();
-        self.encode_inner(value, &mut IdentitySet::default())
+        let mut pending = smallvec::SmallVec::<[SharedCons; 16]>::new();
+        let word = self.encode_inner(value, &mut pending)?;
+        // GNU already stores Lisp words in each cons. Populate our canonical
+        // prefixes without putting the Lisp graph's depth on the Rust stack.
+        // Register a cell before queuing its fields, so shared and cyclic
+        // edges reuse its address while the worklist finishes the graph.
+        while let Some(cell) = pending.pop() {
+            let car = cell.car.borrow().clone();
+            let cdr = cell.cdr.borrow().clone();
+            let car = self.encode_inner(&car, &mut pending)?;
+            let cdr = self.encode_inner(&cdr, &mut pending)?;
+            let native = ConsCell::native_words(&cell);
+            unsafe {
+                (*native).set_car(car);
+                (*native).set_cdr(cdr);
+            }
+            cell.set_native_words_agreed([car, cdr]);
+            self.track_cons(native, &cell);
+        }
+        Ok(word)
     }
 
     /// Return the object selected by GNU's `XUNTAG`/typed-pointer access.
@@ -4597,7 +4616,7 @@ impl NativeHeap {
                 }
             } else if rust_dirty {
                 let field_value = slot.borrow().clone();
-                let word = self.encode_inner(&field_value, &mut IdentitySet::default())?;
+                let word = self.encode(&field_value)?;
                 if word != current[field] {
                     unsafe {
                         if field == 0 {
@@ -4627,7 +4646,7 @@ impl NativeHeap {
     fn encode_inner(
         &mut self,
         value: &Value,
-        encoding_conses: &mut IdentitySet,
+        pending: &mut smallvec::SmallVec<[SharedCons; 16]>,
     ) -> Result<NativeWord, String> {
         match value {
             Value::Nil => Ok(0),
@@ -4656,7 +4675,7 @@ impl NativeHeap {
                     .wrapping_shl(FIXNUM_BITS)
                     .wrapping_add(TAG_FIXNUM_LOW as i64) as usize)
             }
-            Value::Cons(cell) => self.encode_cons(cell, encoding_conses),
+            Value::Cons(cell) => self.encode_cons(cell, pending),
             _ => {
                 let (identity, tag) = handle_identity(value)?;
                 self.encode_handle(identity, value, tag)
@@ -4667,7 +4686,7 @@ impl NativeHeap {
     fn encode_cons(
         &mut self,
         cell: &SharedCons,
-        encoding_conses: &mut IdentitySet,
+        pending: &mut smallvec::SmallVec<[SharedCons; 16]>,
     ) -> Result<NativeWord, String> {
         let identity = ConsCell::identity(cell);
         let existing = cell.attached_native_address().and_then(|address| {
@@ -4712,20 +4731,7 @@ impl NativeHeap {
             self.track_cons(native, &value);
             return Ok(address + TAG_CONS);
         }
-        if !encoding_conses.insert(identity) {
-            return Ok(address + TAG_CONS);
-        }
-        let car = cell.car.borrow().clone();
-        let cdr = cell.cdr.borrow().clone();
-        let car = self.encode_inner(&car, encoding_conses)?;
-        let cdr = self.encode_inner(&cdr, encoding_conses)?;
-        unsafe {
-            (*native).set_car(car);
-            (*native).set_cdr(cdr);
-        }
-        cell.set_native_words_agreed([car, cdr]);
-        self.track_cons(native, cell);
-        encoding_conses.remove(&identity);
+        pending.push(cell.clone());
         Ok(address + TAG_CONS)
     }
 
@@ -8388,6 +8394,62 @@ mod tests {
         assert_eq!(heap.native_call_depth, 0);
         assert!(heap.touched.conses.is_empty());
         assert!(heap.touched.cons_set.is_empty());
+    }
+
+    #[test]
+    fn native_encoding_deep_shared_and_cyclic_conses_uses_bounded_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                for through_car in [false, true] {
+                    let leaf = Value::cons(Value::Integer(37), Value::Nil);
+                    let mut root = leaf.clone();
+                    for _ in 0..100_000 {
+                        root = if through_car {
+                            Value::cons(root, Value::Nil)
+                        } else {
+                            Value::cons(Value::Nil, root)
+                        };
+                    }
+                    let mut heap = NativeHeapOwner::new();
+                    let shared = Value::cons(root.clone(), root.clone());
+                    let word = heap.encode(&shared).expect("deep shared graph");
+                    let native = word.wrapping_sub(TAG_CONS) as *const NativeCons;
+                    let mut next = unsafe { (*native).car() };
+                    assert_eq!(next, unsafe { (*native).cdr() });
+                    for _ in 0..100_000 {
+                        assert_eq!(next & TAG_MASK, TAG_CONS);
+                        let native = next.wrapping_sub(TAG_CONS) as *const NativeCons;
+                        next = unsafe {
+                            if through_car {
+                                assert_eq!((*native).cdr(), 0);
+                                (*native).car()
+                            } else {
+                                assert_eq!((*native).car(), 0);
+                                (*native).cdr()
+                            }
+                        };
+                    }
+                    assert_eq!(next, heap.encode(&leaf).expect("same leaf address"));
+                    assert_eq!(heap.cons_values.len(), 100_002);
+                    assert_eq!(heap.encode(&shared).expect("encode again"), word);
+                }
+
+                let cycle = Value::cons(Value::Integer(37), Value::Nil);
+                let Value::Cons(cell) = &cycle else {
+                    unreachable!();
+                };
+                *cell.cdr.borrow_mut() = cycle.clone();
+                let mut heap = NativeHeapOwner::new();
+                let word = heap.encode(&cycle).expect("cyclic graph");
+                let native = word.wrapping_sub(TAG_CONS) as *const NativeCons;
+                assert_eq!(unsafe { (*native).cdr() }, word);
+                assert_eq!(heap.cons_values.len(), 1);
+                *cell.cdr.borrow_mut() = Value::Nil;
+            })
+            .expect("small-stack worker")
+            .join()
+            .expect("native graph encoding completes");
     }
 
     #[test]
