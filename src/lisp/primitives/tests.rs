@@ -124,6 +124,74 @@ fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     );
 }
 
+#[test]
+fn mapatoms_honors_dynamic_obarrays_legacy_conversion_and_function_cells() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(mapcar
+          (lambda (form) (condition-case err (eval form t) (error err)))
+          '((let ((obarray (obarray-make)) seen)
+              (intern "first" obarray)
+              (intern "second" obarray)
+              (mapatoms (lambda (symbol) (push (symbol-name symbol) seen)))
+              (sort seen #'string<))
+            (mapatoms 42 (obarray-make))
+            (mapatoms 42 17)
+            (let ((table (vector 0)))
+              (list (mapatoms 42 table) (obarrayp (aref table 0))))
+            (let ((table (obarray-make)) (callback (make-symbol "callback")) (count 0))
+              (intern "first" table)
+              (intern "second" table)
+              (fset callback
+                    (lambda (_)
+                      (setq count (1+ count))
+                      (fset callback (lambda (_) (setq count (+ count 10))))))
+              (mapatoms callback table)
+              count)))"#,
+        r#"(("first" "second") nil (wrong-type-argument obarrayp 17) (nil t) 11)"#,
+        "mapatoms obarray and callback contract",
+    );
+}
+
+#[test]
+fn native_mapatoms_preserves_collection_redefinition_and_nonlocal_exit() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+          (require 'comp)
+          (let* ((comp-no-spawn nil)
+                 (comp-running-batch-compilation t)
+                 (native-comp-jit-compilation nil)
+                 (caller (native-compile
+                          '(lambda (function table) (mapatoms function table))))
+                 (native-callback (native-compile
+                                   '(lambda (symbol)
+                                      (garbage-collect)
+                                      (set symbol 1))))
+                 (table (obarray-make))
+                 (first (intern "first" table))
+                 (second (intern "second" table))
+                 (callback (make-symbol "callback"))
+                 (count 0))
+            (list
+             (native-comp-function-p caller)
+             (native-comp-function-p native-callback)
+             (progn (funcall caller native-callback table)
+                    (list (symbol-value first) (symbol-value second)))
+             (progn
+               (fset callback
+                     (lambda (_)
+                       (garbage-collect)
+                       (setq count (1+ count))
+                       (fset callback (lambda (_) (setq count (+ count 10))))))
+               (funcall caller callback table)
+               count)
+             (catch 'done (funcall caller (lambda (_) (throw 'done 42)) table))
+             (funcall caller 42 (obarray-make))
+             (condition-case err (funcall caller 42 table) (error (car err))))))"#,
+        "(t t (1 1) 11 42 nil invalid-function)",
+        "native mapatoms callback contract",
+    );
+}
+
 /// Ask the pinned oracle a question and return its stdout verbatim.  For
 /// contract elements that are properties of the oracle's OWN build or host
 /// libraries (configure-time paths, linked-library versions, per-build

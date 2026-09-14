@@ -945,17 +945,6 @@ impl Interpreter {
             .collect()
     }
 
-    /// The initial obarray's symbols, in `known_symbol_names' order, as
-    /// symbol objects: what `mapatoms' hands its function.  The sources
-    /// that hold symbol objects (the value cells, the interned list) give
-    /// them as they are; only the name-keyed lists resolve through the
-    /// interned-name table.  No per-symbol string is allocated (the loadup
-    /// obarray holds twenty thousand names, and ERT's test selection walks
-    /// it on every batch run: `mapatoms' was 22 ms against GNU's 3.6).
-    pub(crate) fn known_symbols(&self) -> Vec<crate::lisp::types::SymbolName> {
-        self.known_symbols_shared().as_ref().clone()
-    }
-
     /// The obarray's symbols, enumerated once per change of the tables
     /// they are drawn from: `mapatoms' and completion walk twenty thousand
     /// symbols, and comp.el's `comp--all-classes' does so for every

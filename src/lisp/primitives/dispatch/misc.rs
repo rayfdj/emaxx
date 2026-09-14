@@ -1572,28 +1572,21 @@ define_dispatch!(
 
             "mapatoms" => {
                 need_arg_range(name, args, 1, 2)?;
-                let callback = resolve_callable(interp, &args[0], env)?;
-                let obarray = args.get(1).cloned().unwrap_or(Value::Nil);
-                let symbols = if obarray.is_nil() {
-                    interp
-                        .known_symbols()
-                        .into_iter()
-                        .map(|symbol| match symbol.as_str() {
-                            "nil" => Value::Nil,
-                            "t" => Value::T,
-                            _ => Value::Symbol(symbol),
-                        })
-                        .collect()
-                } else {
-                    obarray_symbols(interp, &obarray)?
-                };
+                // lread.c:Fmapatoms checks the selected obarray before
+                // calling FUNCTION. A nil argument uses the dynamically
+                // bound obarray, and legacy vectors are converted on use.
+                let obarray = args
+                    .get(1)
+                    .filter(|value| !value.is_nil())
+                    .cloned()
+                    .or_else(|| interp.lookup_var("obarray", env))
+                    .unwrap_or(Value::Nil);
+                let obarray = coerce_legacy_vector_obarray(interp, &obarray)?;
+                let symbols = obarray_symbols(interp, &obarray)?;
                 for symbol in symbols {
-                    interp.call_function_value(
-                        callback.clone(),
-                        args[0].as_symbol().ok(),
-                        &[symbol],
-                        env,
-                    )?;
+                    // Resolve a symbol's current function cell on every
+                    // call, as call1 does. Empty obarrays never call it.
+                    call_function_value(interp, &args[0], &[symbol], env)?;
                 }
                 Ok(Value::Nil)
             }

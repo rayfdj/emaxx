@@ -128,6 +128,39 @@ section records the latest completed checks; no final frozen success is claimed.
   `tools/measure_upstream_pair.py` retains commands, private environments,
   reports, timings and hashes; it does not alter upstream tests or compiler
   passes. Formatting and strict Mac Clippy pass for the correction.
+- Linux ordinary validation of that correction at `2e67b6a`
+  (`34818540299`) passes the new GNU contract control and all 17 unchanged
+  Semantic tests independently in both editors, with zero skips or unexpected
+  outcomes. Its six raw receipts, contract and summary verify; formatting
+  and strict Clippy pass. The branch runner checks also pass (`34818440161`).
+- Linux Simple profiling at `890becd` (`34818140305`) completes all 53
+  unchanged tests: 50 passes and three matching legitimate skips in each
+  editor. All six receipts, contract, profile and exact executable hashes
+  verify. The two dominant shell-command tests execute 50 and 20 fresh
+  editor processes respectively. The profile identifies image loading,
+  allocation and interpreter destruction as repeated work. Its instrumented
+  timings are not substituted for the ordinary uninstrumented measurements.
+- A compiler `mapatoms` shortcut was rejected: four alternating pairs of
+  eight unchanged compiler tests increased median summed test-body time
+  from 10.615654 to 10.982802 seconds (3.46%). All 72 independently executed
+  GNU/subject outcomes passed and input/raw-output hashes verify. The rejected
+  native shortcut is not part of the implementation. Investigation also
+  found three independent GNU behavior differences: the dynamic default
+  obarray, legacy vector conversion, and callback function-cell redefinition.
+  Their separate correctness repair passes all four `mapatoms` controls,
+  including GNU-checked interpreted and native callbacks, GC and nonlocal
+  exit. Ordinary Linux validation remains pending.
+- A GC candidate avoids searching conservative pointer candidates when the
+  same attached cons has already been marked in the current pass. It retains
+  the pointer-identity check, original root set, weak-table fixed point,
+  thresholds and sweep. All 93 native-runtime controls and the existing
+  weak-reference controls pass. Four alternating pairs of the three unchanged
+  upstream sort tests reduce median summed body time from 12.209058 to
+  11.360349 seconds (6.95%); one individual pair is slightly slower. The
+  complete Semantic file changes from 15.407613 to 15.304161 seconds (0.67%),
+  which does not establish a meaningful Semantic speedup. Both comparisons
+  retain all raw reports and verify input/output hashes. These diagnostic
+  selections do not replace the complete ordinary inventory.
 
 Still open in this effort: complete ordinary frozen results on both platforms,
 remaining performance work and adversarial review. The six strict Mac
