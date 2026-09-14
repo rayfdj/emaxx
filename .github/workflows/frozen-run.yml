@@ -5,10 +5,10 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
         default: affected
       file:
-        description: Upstream file for affected mode, or inclusive start file for remaining mode
+        description: Upstream file for affected/ordinary-samples mode, or inclusive start for remaining mode
         type: string
         default: ''
       rust_filter:
@@ -68,8 +68,8 @@ jobs:
           bwrap --ro-bind / / -- /bin/true
           mkdir -p target/frozen-ci/metadata
           cp compat/ci-bwrap.apparmor target/frozen-ci/metadata/
-      - name: Install process-scoped compiler sampling tools
-        if: inputs.validation == 'compiler-samples'
+      - name: Install process-scoped sampling tools
+        if: inputs.validation == 'compiler-samples' || inputs.validation == 'ordinary-samples'
         run: sudo apt-get install -y linux-tools-generic
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: oracle-cache
@@ -153,10 +153,11 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
           fi
           case "$VALIDATION" in
-            sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics|compiler-diagnostics|compiler-samples)
+            sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics|compiler-diagnostics|compiler-samples|ordinary-samples)
               # Diagnostic children only; this does not replace an ordinary
               # run or alter the kernel filter or its expected behavior.
-              cargo build --locked --profile gate --target-dir target/compat-subject \
+              EMAXX_GNU_SOURCE_DIRECTORY="$(realpath ../emacs)" \
+                cargo build --locked --profile gate --target-dir target/compat-subject \
                 --bin emaxx --bin make-fingerprint -j2
               if [ "$VALIDATION" = startup-diagnostics ]; then
                 # Capture the caller of the startup syscall rejected by
@@ -184,6 +185,60 @@ jobs:
               EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
                 EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
                 tools/build-image.sh target/compat-subject/gate/emaxx
+              if [ "$VALIDATION" = ordinary-samples ]; then
+                test -n "$VALIDATION_FILE"
+                # Profile one complete ordinary file with unchanged tests
+                # and runner setup. Prebuild to avoid Rust compilation during
+                # the sampled run. Timings are diagnostic, not a frozen
+                # certificate or an uninstrumented performance comparison.
+                perf_binary=$(python3 - <<'PY'
+          from pathlib import Path
+          candidates = sorted(Path('/usr/lib/linux-tools').glob('*/perf'))
+          if not candidates:
+              raise SystemExit('Installed Linux perf executable was not found')
+          print(candidates[-1].resolve(strict=True))
+          PY
+                )
+                diagnostic_user=$(id -un)
+                sample_status=0
+                sudo "$perf_binary" record -e cpu-clock:u -F 199 \
+                  --call-graph dwarf,8192 -o "$PWD/target/frozen-ci/ordinary-perf.data" \
+                  -- sudo -u "$diagnostic_user" -- env -i HOME="$HOME" PATH="$PATH" \
+                  LANG=C CARGO_BUILD_JOBS=2 RUST_MIN_STACK=134217728 RUST_TEST_THREADS=1 \
+                  target/gate/compat-harness run --file "$VALIDATION_FILE" \
+                  2>&1 | tee target/frozen-ci/ordinary-perf.log || sample_status=$?
+                if [ -f target/frozen-ci/ordinary-perf.data ]; then
+                  sudo chown "$diagnostic_user" target/frozen-ci/ordinary-perf.data
+                fi
+                # Keep the exact subject for offline symbolization even if
+                # a later report step fails. No editor is rerun for reports.
+                cp target/compat-subject/gate/emaxx target/frozen-ci/ordinary-perf-emaxx
+                "$perf_binary" buildid-list -i target/frozen-ci/ordinary-perf.data \
+                  > target/frozen-ci/ordinary-perf-buildids.txt
+                timeout 180 "$perf_binary" report --stdio --no-children --comms=emaxx \
+                  -i target/frozen-ci/ordinary-perf.data --sort comm,dso,symbol \
+                  > target/frozen-ci/ordinary-perf-self.txt
+                timeout 180 "$perf_binary" report --stdio --children --comms=emaxx \
+                  --percent-limit 0.5 -i target/frozen-ci/ordinary-perf.data --sort comm,dso,symbol \
+                  > target/frozen-ci/ordinary-perf-callers.txt
+                python3 - <<'PY'
+          import hashlib, json, re
+          from pathlib import Path
+          root = Path('target/frozen-ci')
+          if not re.search(r'^\s*[0-9.]+%\s+emaxx\s+', (root / 'ordinary-perf-self.txt').read_text(), re.M):
+              raise SystemExit('The retained profile has no symbolized Emaxx samples')
+          inputs = {}
+          for name in ('ordinary-perf.data', 'ordinary-perf-emaxx'):
+              with (root / name).open('rb') as source:
+                  inputs[name] = hashlib.file_digest(source, 'sha256').hexdigest()
+          (root / 'ordinary-perf-metadata.json').write_text(json.dumps({
+              'kind': 'diagnostic_only', 'frequency_hz': 199, 'call_graph': 'dwarf,8192',
+              'report_scope': 'Emaxx process samples, including startup; no kernel samples',
+              'sha256': inputs,
+          }, indent=2) + '\n')
+          PY
+                exit "$sample_status"
+              fi
               if [ "$VALIDATION" = compiler-samples ]; then
                 # Sample only this diagnostic process tree. The editors run
                 # under the ordinary runner account; no global perf policy is
@@ -359,7 +414,7 @@ jobs:
           import re, shutil
           from pathlib import Path
           root = Path('target/frozen-ci')
-          for name in ('module', 'eglot', 'affected', 'remaining', 'frozen'):
+          for name in ('module', 'eglot', 'affected', 'remaining', 'frozen', 'ordinary-perf'):
               log = root / f'{name}.log'
               if not log.exists():
                   continue
