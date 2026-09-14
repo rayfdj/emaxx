@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics]
+        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics]
         default: affected
       file:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
@@ -134,11 +134,24 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
           fi
           case "$VALIDATION" in
-            sandbox-diagnostics)
+            sandbox-diagnostics|image-diagnostics)
               # Diagnostic children only; this does not replace an ordinary
               # run or alter the kernel filter or its expected behavior.
               cargo build --locked --profile gate --target-dir target/compat-subject \
                 --bin emaxx --bin make-fingerprint -j2
+              if [ "$VALIDATION" = image-diagnostics ]; then
+                # Stop at the actual bootstrap fault and retain its native
+                # backtrace. This diagnostic never certifies frozen outcomes.
+                EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
+                  EMACS_TEST_DIRECTORY="$PWD/../emacs/test" LC_ALL=C \
+                  gdb --batch --return-child-result -ex run -ex 'thread apply all bt' \
+                    --args "$PWD/target/compat-subject/gate/emaxx" \
+                    -batch -l loadup --temacs=pdump \
+                    --bin-dest "$PWD/target/compat-subject/gate/" \
+                    --eln-dest "$PWD/../emacs/" \
+                    2>&1 | tee target/frozen-ci/image-backtrace.log
+                exit 0
+              fi
               EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
                 EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
                 tools/build-image.sh target/compat-subject/gate/emaxx
