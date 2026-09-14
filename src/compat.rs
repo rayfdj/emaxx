@@ -1539,6 +1539,37 @@ mod tests {
     }
 
     #[test]
+    fn skips_require_matching_output_and_never_match_a_pass() {
+        let mut oracle =
+            filter_report_by_exact_names(&expectation_report(), &BTreeSet::from(["skip".into()]));
+        oracle.results[0].condition_type = Some("ert-test-skipped".into());
+        oracle.results[0].message = Some(
+            r#"(ert-test-skipped ((skip-unless (string-match-p "SECCOMP" system-configuration-features)) :form (string-match-p "SECCOMP" "MODULES") :value nil))"#.into(),
+        );
+        let mut emaxx = oracle.clone();
+        emaxx.runner = "emaxx".into();
+        assert!(compare_reports(&oracle, &emaxx).matches);
+        assert_eq!(emaxx.summary.passed, 0);
+        assert_eq!(emaxx.summary.skipped, 1);
+
+        emaxx.results[0].message = oracle.results[0]
+            .message
+            .as_ref()
+            .map(|message| message.replace("MODULES", ""));
+        let different = compare_reports(&oracle, &emaxx);
+        assert!(!different.matches);
+        assert_eq!(different.matching_outcomes, 0);
+        assert_eq!(different.mismatching_outcomes, 1);
+
+        emaxx.results[0].status = TestStatus::Passed;
+        emaxx.results[0].condition_type = None;
+        emaxx.results[0].message = None;
+        emaxx.summary = summarize_outcomes(&emaxx.results);
+        assert!(!compare_reports(&oracle, &emaxx).matches);
+        assert!(!compare_reports(&emaxx, &oracle).matches);
+    }
+
+    #[test]
     fn compare_reports_flags_selection_and_status_differences() {
         let oracle = BatchReport {
             runner: "oracle".into(),

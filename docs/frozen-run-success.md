@@ -306,3 +306,28 @@ The workflow caches build outputs, never compatibility results.
 Issue #69 remains open until complete ordinary frozen artifacts on both
 platforms meet its acceptance criteria. Completed valid file evidence is
 retained during iteration; final integration will receive its own full runs.
+
+The platform policy remains strict after the user's September 14 clarification:
+unsupported-platform tests may retain GNU's own skips only with matching
+output; supported-platform tests must execute and succeed in both editors.
+A proposed relaxation accepting equal skip predicates with different evaluated
+diagnostics was removed before publication. A regression control keeps those
+different messages, and pass-versus-skip in either direction, mismatching.
+The aggregate now records each editor's actual pass/failure/skip/unexpected
+counts separately from the parity count. In particular, the six Darwin
+seccomp skips still differ in their feature-list diagnostics and remain open;
+they have not been relabeled as passes or silently accepted.
+
+The Linux setup review also found that isolated checkouts omitted GNU's two
+generated seccomp BPF filters. Their absence could skip tests on the very
+platform where they should execute. Both filters now enter the existing
+isolated-copy, restore, and provenance checks. Linux preparation requires
+them and bubblewrap, and CI installs bubblewrap. Missing filters fail setup
+instead of reducing coverage. The setup is conditional on Linux; Darwin
+continues to use the unchanged upstream platform guards.
+
+Linux ordinary buffer validation at `44d4aee`, CI run `34791254409`, independently
+reports 406 passed and zero skipped/unexpected in each editor. The contract,
+six raw receipt hashes, outcome uniqueness, and expectedness were verified;
+`linux-buffer-ownership-evidence.json` records that review. Linux formatting,
+Clippy, and runner controls also passed at `3447fda` (CI `34791551669`).

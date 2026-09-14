@@ -61,6 +61,22 @@ impl Prerequisites {
         if files.iter().any(|file| file.ends_with(MODULE)) {
             prepared.prepare_module(artifact)?;
         }
+        #[cfg(target_os = "linux")]
+        if files
+            .iter()
+            .any(|file| file.ends_with("test/src/emacs-tests.el"))
+        {
+            // GNU's normal lib-src build produces these filters. Their
+            // absence must fail setup, not silently skip supported tests.
+            for name in ["seccomp-filter.bpf", "seccomp-filter-exec.bpf"] {
+                prepared.record_input(&source.join("lib-src").join(name)).map_err(|error| {
+                    format!("Linux sandbox tests need GNU's {name}; build the oracle with libseccomp development files installed: {error}")
+                })?;
+            }
+            let bwrap = resolve_program(std::ffi::OsStr::new("bwrap"))
+                .map_err(|error| format!("Linux sandbox tests require bubblewrap: {error}"))?;
+            prepared.record_tool("bwrap", bwrap)?;
+        }
         write_json(
             &artifact.join("prerequisites.json"),
             &prepared.evidence,
@@ -498,6 +514,22 @@ mod tests {
     fn missing_prerequisites_fail_instead_of_selecting_fewer_tests() {
         assert!(resolve_program("/definitely-missing-emaxx-audit-server".as_ref()).is_err());
         assert!(make_variable("CC = cc\n", "SO").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_linux_filters_fail_before_the_sandbox_tests_can_skip() {
+        let root = super::super::unique_temp_path("missing-filter-control").unwrap();
+        fs::create_dir_all(root.join("lib-src")).unwrap();
+        for missing in ["seccomp-filter.bpf", "seccomp-filter-exec.bpf"] {
+            let error =
+                Prerequisites::prepare(&root, &[root.join("test/src/emacs-tests.el")], &root)
+                    .err()
+                    .expect("missing filter must fail preparation");
+            assert!(error.contains(missing), "{error}");
+            fs::write(root.join("lib-src").join(missing), [0, 1, 2, 255]).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

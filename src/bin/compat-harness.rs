@@ -580,6 +580,10 @@ fn isolated_test_support_inputs(repo_root: &Path) -> Result<Vec<PathBuf>, String
     files.retain(|path| {
         (path.starts_with("lisp") && path.extension().is_some_and(|extension| extension == "el")
             || libexec_test_helper(path)
+            || matches!(
+                path.to_str(),
+                Some("lib-src/seccomp-filter.bpf" | "lib-src/seccomp-filter-exec.bpf")
+            )
             || generated_charset_map(path)
             || path == Path::new("etc/DOC"))
             && repo_root.join(path).is_file()
@@ -651,6 +655,9 @@ struct AggregateReport {
     mismatching_outcomes: usize,
     #[serde(default)]
     total_outcomes: usize,
+    /// Actual ERT outcomes, including skips and expected failures separately.
+    #[serde(default)]
+    runner_summaries: BTreeMap<String, compat::BatchSummary>,
     files: Vec<String>,
     mismatches: Vec<String>,
     #[serde(default)]
@@ -2134,6 +2141,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
     let mut performance_regressions = Vec::new();
     let mut relative_files = Vec::new();
     let mut compared_outcomes = 0usize;
+    let mut runner_summaries = BTreeMap::new();
     let oracle_checkout = IsolatedTestCheckout::clone(
         &context.local.emacs_repo,
         &context.lock.emacs_repo_commit,
@@ -2233,6 +2241,8 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             name_filter,
         )?;
         execution_issues.extend(emaxx_issues);
+        accumulate_runner_summary(&mut runner_summaries, &oracle_report);
+        accumulate_runner_summary(&mut runner_summaries, &emaxx_report);
         if let Some(names) = &required_names {
             compared_outcomes += names.len();
         }
@@ -2290,6 +2300,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         matching_outcomes,
         mismatching_outcomes,
         total_outcomes: matching_outcomes + mismatching_outcomes,
+        runner_summaries,
         files: relative_files,
         mismatches,
         unsuccessful_files,
@@ -2326,7 +2337,26 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         aggregate.unsuccessful_files.len(),
     );
 
+    for (runner, summary) in &aggregate.runner_summaries {
+        println!(
+            "OUTCOMES {runner}: {} passed, {} failed, {} skipped; {} unexpected",
+            summary.passed, summary.failed, summary.skipped, summary.unexpected,
+        );
+    }
+
     Ok(compatibility_exit_status(&aggregate))
+}
+
+fn accumulate_runner_summary(
+    summaries: &mut BTreeMap<String, compat::BatchSummary>,
+    report: &BatchReport,
+) {
+    let total = summaries.entry(report.runner.clone()).or_default();
+    total.total += report.summary.total;
+    total.passed += report.summary.passed;
+    total.failed += report.summary.failed;
+    total.skipped += report.summary.skipped;
+    total.unexpected += report.summary.unexpected;
 }
 
 fn compatibility_exit_status(aggregate: &AggregateReport) -> u8 {
@@ -4516,6 +4546,7 @@ mod tests {
             matching_outcomes: 0,
             mismatching_outcomes: 0,
             total_outcomes: 0,
+            runner_summaries: BTreeMap::new(),
             matching_files: 1,
             mismatching_files: 0,
             files: vec!["a.el".into()],
@@ -4546,6 +4577,34 @@ mod tests {
         summary.unsuccessful_files.push("a.el".into());
         assert_eq!(summary.mismatching_files, 0);
         assert_eq!(compatibility_exit_status(&summary), 1);
+    }
+
+    #[test]
+    fn aggregate_preserves_each_runners_pass_fail_and_skip_counts() {
+        let mut summaries = BTreeMap::new();
+        let oracle = audit_runner("oracle").report;
+        let mut emaxx = audit_runner("emaxx").report;
+        emaxx.summary = compat::BatchSummary {
+            total: 3,
+            passed: 1,
+            failed: 1,
+            skipped: 1,
+            unexpected: 0,
+        };
+        accumulate_runner_summary(&mut summaries, &oracle);
+        accumulate_runner_summary(&mut summaries, &emaxx);
+        accumulate_runner_summary(&mut summaries, &emaxx);
+        assert_eq!(summaries["oracle"], oracle.summary);
+        assert_eq!(
+            summaries["emaxx"],
+            compat::BatchSummary {
+                total: 6,
+                passed: 2,
+                failed: 2,
+                skipped: 2,
+                unexpected: 0,
+            }
+        );
     }
 
     #[test]
@@ -5155,7 +5214,7 @@ mod tests {
         git_ok(&source, &["init", "--quiet"]);
         fs::write(
             source.join(".gitignore"),
-            "*.elc\nlisp/loaddefs.el\nlib-src/emacsclient\netc/charsets/*.map\netc/DOC\n",
+            "*.elc\nlisp/loaddefs.el\nlib-src/emacsclient\nlib-src/*.bpf\netc/charsets/*.map\netc/DOC\n",
         )
         .unwrap();
         fs::write(source.join("fixture.el"), "(pristine)\n").unwrap();
@@ -5163,6 +5222,11 @@ mod tests {
         fs::write(source.join("lisp/loaddefs.el"), "(generated-pristine)\n").unwrap();
         fs::create_dir(source.join("lib-src")).unwrap();
         fs::write(source.join("lib-src/emacsclient"), "helper\n").unwrap();
+        let filters = ["seccomp-filter.bpf", "seccomp-filter-exec.bpf"];
+        for name in filters {
+            fs::write(source.join("lib-src").join(name), [0, 1, 2, 255]).unwrap();
+        }
+        fs::write(source.join("lib-src/unrelated.bpf"), "not a test input").unwrap();
         fs::create_dir_all(source.join("etc/charsets")).unwrap();
         fs::write(source.join("etc/charsets/IBM038.map"), "0x81 0x0061\n").unwrap();
         fs::write(source.join("etc/DOC"), "generated-doc\n").unwrap();
@@ -5194,6 +5258,12 @@ mod tests {
 
         let checkout = IsolatedTestCheckout::clone(&source, commit.trim(), "test").unwrap();
         assert!(!checkout.file("stale.elc").exists());
+        assert!(!checkout.file("lib-src/unrelated.bpf").exists());
+        for name in filters {
+            let path = checkout.file(&format!("lib-src/{name}"));
+            assert_eq!(fs::read(&path).unwrap(), [0, 1, 2, 255]);
+            fs::write(path, "mutated filter").unwrap();
+        }
         assert_eq!(
             fs::read_to_string(checkout.file("lisp/loaddefs.el")).unwrap(),
             "(generated-pristine)\n"
@@ -5222,6 +5292,12 @@ mod tests {
         fs::write(checkout.file("generated.elc"), "generated").unwrap();
 
         checkout.restore().unwrap();
+        for name in filters {
+            assert_eq!(
+                fs::read(checkout.file(&format!("lib-src/{name}"))).unwrap(),
+                [0, 1, 2, 255],
+            );
+        }
         assert_eq!(
             fs::read_to_string(checkout.file("fixture.el")).unwrap(),
             "(pristine)\n"
