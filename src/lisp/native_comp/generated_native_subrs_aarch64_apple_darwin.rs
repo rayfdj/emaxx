@@ -7,7 +7,7 @@ use super::abi::{NativeMaxArgs, NativeSubr};
 // active subroutine table is emitted below.  They describe the .eln
 // ABI target, not Emaxx's user-visible host configuration.
 pub(crate) const NATIVE_ABI_VERSION: &str = "6";
-pub(crate) const NATIVE_ABI_SYSTEM_CONFIGURATION: &str = "aarch64-apple-darwin25.5.0";
+pub(crate) const NATIVE_ABI_SYSTEM_CONFIGURATION: &str = "aarch64-apple-darwin25.6.0";
 pub(crate) const NATIVE_ABI_SYSTEM_CONFIGURATION_OPTIONS: &str = "--with-native-compilation=aot --with-xml2 --with-gnutls --with-modules --with-rsvg --with-webp --with-ns --disable-ns-self-contained --with-tree-sitter --without-dbus 'CFLAGS=-DFD_SETSIZE=10000 -DDARWIN_UNLIMITED_SELECT -I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'CPPFLAGS=-I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'LDFLAGS=-L/opt/homebrew/opt/sqlite/lib -L/opt/homebrew/lib/gcc/15 -Wl,-rpath,/opt/homebrew/lib/gcc/15 '";
 
 pub(crate) const NATIVE_SUBRS: &[NativeSubr] = &[

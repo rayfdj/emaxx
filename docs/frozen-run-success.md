@@ -183,10 +183,27 @@ no expectation was rewritten. Rustfmt and strict Clippy pass.
 SHR's missing callback has a parser cause: the upstream test supplies an
 unfinished image tag. GNU links Homebrew libxml2 2.15.3 and returns an empty
 body; Emaxx links macOS libxml2 2.9.13 and retains the image. Both invoke the
-same documented parser options. A separate build of unchanged GNU source with
-the same macOS parser dependency is in progress. Its success, native ABI and
-explicit oracle pin change still require verification; the current pin has
-not been altered.
+same documented parser options. A separate full build of unchanged GNU
+source with Apple's libxml2 2.9.13 now passes SHR through the ordinary runner.
+The build recipe is `tools/build_macos_oracle.py`; it preserves the committed
+GNU configure options and exposes the actual SDK xml2-config flags through
+pkg-config, without editing GNU sources or updating pins automatically.
+
+The explicitly reviewed new Mac oracle hash is
+`591acf7b5da3582dca93367b6a69935dbff9c69a9310f05a1927fa230b428f8d`.
+The old `7d8944fe` build and its pin/configuration remain retained. The new
+checkout is pristine revision `636f166c`; otool confirms system libxml2.
+Regenerating the native ABI from the completed build changes only the host
+configuration from Darwin 25.5.0 to 25.6.0. Subroutine order, ABI version and
+configure options are unchanged. Emaxx and its image were rebuilt against
+that actual ABI and GNU library tree.
+
+Ordinary validation on the new pair: SHR 4/4, XML 1/1 and modules 38/38 pass
+in each editor with zero unexpected outcomes. The receipts and contracts
+validate in `run-1789344114951647000-22759`,
+`run-1789344146348364000-22964`, and
+`run-1789344164000459000-23126`. These replace the failing SHR setup with a
+working dependency combination, not a matching failure or changed assertion.
 
 ## Still open
 
@@ -266,9 +283,16 @@ An explicit single-file workflow input permits continuing with Eglot while
 retaining the valid module result. Dispatch controls when validation runs;
 publishing a workflow correction does not silently restart all affected files.
 
-Final cross-platform regexp validation, GNU's SHR dependency correction, and
-features-string diagnostics remain open in #69. Runtime and native compilation measurements/fixes remain
+Final cross-platform frozen validation and feature/skip diagnostics remain
+open in #69. Runtime and native compilation measurements/fixes remain
 tracked in #70 and #71.
+
+Linux's single-file Eglot continuation at `ea61026` (CI run `34790872047`,
+ordinary artifact `run-1789343728748794028-6642`) has 45 passes, seven skips
+and zero unexpected outcomes in each editor; all 52 outcomes match. The
+raw contract and six receipt hashes were verified. The original GNU timeout
+remains recorded as intermittent; a successful continuation does not prove
+its root cause is fixed or substitute for final frozen validation.
 
 Linux Rust checks for commit `fdca75e` passed, but those checks are not an
 ordinary Linux frozen-success certificate. The new `frozen-run.yml` workflow
