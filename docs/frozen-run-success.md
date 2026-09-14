@@ -587,3 +587,31 @@ condition, and flushing an unused stream no longer allocates/probes its buffer.
 The existing actual-process merged stdout/stderr, explicit-flush and traceback
 control passes on Mac, with formatting and strict Clippy clean. Linux's normal
 `emacs-tests.el` is the next validation, not a substituted diagnostic score.
+
+Ordinary Linux run `34807373691` at `aa74d95` now passes the complete
+`emacs-tests.el`: seven actual passes in each editor, no skips or unexpected
+outcomes. All six raw receipts and the run contract verify. Emaxx still takes
+59.125 seconds versus GNU's 0.500 seconds, so crash-handler/stack performance
+remains open. Ordinary Linux regex `34807099781` and casefiddle `34807101531`
+also pass at `2dc211f` (34 passes, and 10 passes plus one identical skip).
+Their 12 raw receipts verify in `linux-case-table-receipts.json`.
+
+SQLite extension loading now calls the real SQLite C API after GNU's basename
+allowlist and Lisp filename expansion. A guard borrowing the live connection
+disables C-API loading again; SQL extension loading is never enabled. Invalid
+existing libraries return nil, and disallowed names signal `sqlite-error`.
+The control compiles a genuine extension against the locked dependency's ABI
+header, loads it separately in GNU and Emaxx, executes its registered SQL
+function, and verifies inside that function that C-API loading is disabled.
+It also covers invalid files, relative paths, trailing separators, DLL suffix
+case and the disabled SQL loader. This passes on Mac; ordinary SQLite passes
+all 12 upstream tests in each editor with zero unexpected outcomes
+(`run-1789361635066000000-40091`, six verified raw receipts). Formatting,
+strict Clippy and the fixture's C compiler warnings check pass.
+
+The first SQLite control incorrectly expected `sqlite-select` to signal an
+execution-time error which GNU suppresses. Only that control was corrected to
+use `sqlite-execute` and rerun; its initial failed output remains retained.
+Linux validation is pending. The CI affected-file path accepts an optional
+quoted Rust test filter so the actual extension control can accompany the
+normal upstream SQLite file without rerunning the full Rust suite.

@@ -16374,6 +16374,109 @@ fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn sqlite_extension_loading_executes_real_code_and_rejects_invalid_files() {
+    crate::test_support::mark_process_test();
+    struct Directory(PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = Directory(std::env::temp_dir().join(format!(
+        "emaxx-sqlite-extension-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).expect("timestamp").as_nanos(),
+    )));
+    fs::create_dir(&directory.0).expect("private extension directory");
+    // Use the extension ABI header belonging to the locked SQLite dependency.
+    // Apple's SDK header disables its extension API macros; this fixture uses
+    // the API pointer supplied by the database and links no system SQLite.
+    let metadata = std::process::Command::new("cargo")
+        .args(["metadata", "--locked", "--offline", "--format-version", "1"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("locked Cargo metadata");
+    assert!(
+        metadata.status.success(),
+        "{}",
+        String::from_utf8_lossy(&metadata.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&metadata.stdout).expect("metadata JSON");
+    let packages = metadata["packages"].as_array().expect("package inventory");
+    let sqlite = packages
+        .iter()
+        .filter(|package| package["name"] == "libsqlite3-sys")
+        .collect::<Vec<_>>();
+    assert_eq!(sqlite.len(), 1, "one locked SQLite ABI provider");
+    let manifest = Path::new(
+        sqlite[0]["manifest_path"]
+            .as_str()
+            .expect("SQLite manifest"),
+    );
+    let headers = manifest.parent().expect("SQLite source").join("sqlite3");
+    let suffix = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    let module_name = format!("pcre.{suffix}");
+    let module = directory.0.join(&module_name);
+    let compiled = std::process::Command::new("cc")
+        .args(if cfg!(target_os = "macos") {
+            &["-dynamiclib"][..]
+        } else {
+            &["-shared", "-fPIC"][..]
+        })
+        .args(["-Wall", "-Wextra", "-Werror", "-I"])
+        .arg(headers)
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sqlite-extension.c"))
+        .arg("-o")
+        .arg(&module)
+        .output()
+        .expect("compile the actual SQLite extension");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    fs::write(
+        directory.0.join("rot13.so"),
+        b"An invalid shared library.\n",
+    )
+    .expect("invalid module");
+    fs::write(
+        directory.0.join("rot13.DLL"),
+        b"An invalid shared library.\n",
+    )
+    .expect("DLL suffix control");
+    let program = format!(
+        r#"(let ((default-directory {directory:?}) (db (sqlite-open)))
+      (unwind-protect
+          (list
+           (sqlite-load-extension db "rot13.so")
+           (condition-case failure (sqlite-load-extension db "not-allowed.so")
+             (sqlite-error failure))
+           (condition-case failure (sqlite-load-extension db "pcre.so/")
+             (sqlite-error failure))
+           (sqlite-load-extension db "rot13.DLL")
+           (sqlite-load-extension db {module_name:?})
+           (sqlite-select db "select extension_probe(20)")
+           (condition-case nil
+               (progn (sqlite-execute db "select load_extension('pcre')") nil)
+             (sqlite-error t)))
+        (sqlite-close db)))"#,
+        directory = format!("{}/", directory.0.display())
+    );
+    assert_oracle_contract_matches_interpreter(
+        &program,
+        "(nil (sqlite-error \"Module name not on allowlist\") (sqlite-error \"Module name not on allowlist\") nil t ((37)) t)",
+        "real SQLite extension loading",
+    );
+}
+
 #[test]
 fn case_tables_preserve_gnu_unset_mappings_and_special_casing() {
     let program = r#"(list

@@ -11,6 +11,10 @@ on:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
         type: string
         default: ''
+      rust_filter:
+        description: Optional targeted Rust control to accompany an affected ordinary file
+        type: string
+        default: ''
       startup_syscall:
         description: Syscall to inspect in startup-diagnostics mode
         type: choice
@@ -114,6 +118,7 @@ jobs:
         env:
           VALIDATION: ${{ inputs.validation || 'prepare-oracle' }}
           VALIDATION_FILE: ${{ inputs.file }}
+          VALIDATION_RUST_FILTER: ${{ inputs.rust_filter }}
           STARTUP_SYSCALL: ${{ inputs.startup_syscall || 'sysinfo' }}
         run: |
           mkdir -p target/frozen-ci
@@ -208,6 +213,11 @@ jobs:
               ;;
             prepare-oracle|affected)
               if [ "$VALIDATION" = affected ] && [ -n "$VALIDATION_FILE" ]; then
+                if [ -n "$VALIDATION_RUST_FILTER" ]; then
+                  EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
+                    cargo test --locked --profile gate --lib -j2 "$VALIDATION_RUST_FILTER" \
+                      -- --test-threads=1 2>&1 | tee target/frozen-ci/runtime-control.log
+                fi
                 run_harness run --file "$VALIDATION_FILE" 2>&1 | tee target/frozen-ci/affected.log
                 exit 0
               fi
