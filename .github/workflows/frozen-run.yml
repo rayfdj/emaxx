@@ -45,6 +45,16 @@ jobs:
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
           rustup toolchain install 1.75.0 --profile minimal --component rust-analyzer --component rust-src
           rustup default 1.97.1
+      - name: Enable bubblewrap's required user namespaces
+        run: |
+          # Grant the installed sandbox executable its required namespace
+          # capability, following Ubuntu's application-profile mechanism.
+          # The host's general namespace restriction and GNU's BPF filters
+          # remain in force. This VM is discarded after the job.
+          sudo apparmor_parser -r compat/ci-bwrap.apparmor
+          bwrap --ro-bind / / -- /bin/true
+          mkdir -p target/frozen-ci/metadata
+          cp compat/ci-bwrap.apparmor target/frozen-ci/metadata/
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: oracle-cache
         with:

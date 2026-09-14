@@ -356,3 +356,21 @@ unchanged filters under strace with empty environments, and separately probes
 bubblewrap namespace creation. Diagnostic children disable core files to
 capture termination promptly; ordinary runs are unchanged. This mode emits
 no compatibility certificate and returns failure for failed commands.
+
+Linux diagnostic `34792804162` at `8186acc` identifies the first rejected
+syscall: the original main thread blocks in
+`futex(FUTEX_WAIT_BITSET|FUTEX_CLOCK_REALTIME)` joining the extra batch worker.
+GNU's unchanged filter permits only `FUTEX_WAKE_PRIVATE`. Batch execution now
+uses the already adopted corosensei stack backend on the calling OS thread,
+preserving large virtual stack capacity and its guard page without the extra
+worker/join. The thread-identity, TLS and panic-unwind control passes, as do
+formatting and strict Clippy. Further Linux tracing and ordinary validation
+remain required; this does not claim that no later syscall will be rejected.
+
+The independent bubblewrap namespace probe fails with "setting up uid map:
+Permission denied", while the Ubuntu runner enables restricted user namespaces.
+The CI setup uses Ubuntu's documented application-profile mechanism to grant
+`userns` to `/usr/bin/bwrap` only, then verifies actual namespace creation.
+The general host restriction and GNU filters remain unchanged. The profile
+is included in CI metadata. See
+[Ubuntu's restricted user namespace design](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces).
