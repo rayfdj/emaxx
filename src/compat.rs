@@ -544,6 +544,10 @@ pub fn configure_upstream_like_env_with_home(
 ) {
     command.env("LANG", "C");
     command.env("HOME", home);
+    // The tests create real child PTYs, independently of the batch runner's
+    // terminal. Give those terminals the same portable terminfo entry in
+    // both editors; an absent or dumb TERM would silently skip frame tests.
+    command.env("TERM", "xterm");
     command.env("EMACS_TEST_DIRECTORY", emacs_test_directory);
     for key in UNSET_ENV_VARS {
         command.env_remove(key);
@@ -1887,6 +1891,7 @@ mod tests {
     fn upstream_like_env_sets_expected_variables() {
         let mut command = Command::new("env");
         command.env("EMACSLOADPATH", "bad");
+        command.env("TERM", "dumb");
         command.env("EMACS_TEST_VERBOSE", "1");
         configure_upstream_like_env(&mut command, Path::new("/tmp/emacs/test"));
         let envs = command
@@ -1899,6 +1904,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         assert_eq!(envs.get("LANG"), Some(&Some("C".to_string())));
+        assert_eq!(envs.get("TERM"), Some(&Some("xterm".to_string())));
         assert_eq!(envs.get("HOME"), Some(&Some("/nonexistent".to_string())));
         assert_eq!(
             envs.get("EMACS_TEST_DIRECTORY"),

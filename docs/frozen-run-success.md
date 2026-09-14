@@ -13,6 +13,30 @@ profiling findings, and acceptance criteria.
 The chronological evidence below includes failed intermediate attempts. This
 section records the latest completed checks; no final frozen success is claimed.
 
+- Linux frozen run `34826268382` at `03a3814` completes all 519 files and
+  7,928 matching outcomes: 7,667 passes, 214 skips and 47 expected failures
+  per editor, with zero unexpected outcomes. All 3,114 raw receipt hashes
+  verify, as do all selected/result names and 1,038 successful process exits.
+  This is a complete result for that revision, not the later primitive fixes.
+  A named-case audit of the original 26 failures found 23 actual Linux
+  passes and three shared server skips caused by the clean invocation
+  omitting `TERM`. Those three skips do not close the original failures.
+  The common test environment now supplies `TERM=xterm` for the real child
+  PTYs used by both editors. This changes test preparation, with no editor
+  runtime or upstream assertion changes. All seven unchanged server cases
+  pass independently on Mac with that environment; the focused environment
+  control, rustfmt and strict Clippy pass. Linux ordinary verification remains
+  required. The original 214-skip artifact and named-case audit are retained.
+- All four primitive fixes in `1ee9fce` pass their ordinary Linux files and
+  accompanying Rust controls: Solar (`34829836880`), Eshell arguments
+  (`34829839814`), ERC (`34829842376`), and Eshell unload (`34829845717`).
+  Mac ordinary continuation `run-1789379366981112000-16201` passes Tramp's
+  59 outcomes with the unchanged 180-second deadline: GNU's test phase takes
+  122.711 seconds and Emaxx's 153.081 seconds. Its six receipts verify.
+  The earlier timed-out attempt overlapped isolated Rust builds, so elapsed
+  time differences cannot be attributed solely to primitive repairs.
+  The continuation has exposed additional Pascal/Ruby indentation and
+  numeric-field sorting failures, which remain under investigation.
 - The ordinary Mac attempt at `03a3814`
   (`frozen-1789376872886057000-67964`) completed 318 file comparisons,
   including matching Comint and SHR, then stopped at Tramp: GNU completed
@@ -43,8 +67,7 @@ section records the latest completed checks; no final frozen success is claimed.
   controls, 60 binary tests, and 39 tests across all six integration targets.
   Actual stage result counts and raw log hashes verify. This includes
   native compilation, native thread continuations, and batch exit/restart
-  child-process behavior. Linux full frozen run `34826268382` is still in
-  progress; its status must not be reported as success before completion.
+  child-process behavior. The complete frozen result is recorded above.
 - The ordinary Linux frozen attempt at `c469a18` (`34811016486`) completed
   457 matching files with zero unexpected outcomes, then stopped at
   `test/lisp/vc/vc-tests.el` because GNU selected seven Mercurial tests absent
