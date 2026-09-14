@@ -4,6 +4,45 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[test]
+fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth() {
+    thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let interp = Interpreter::new();
+            let leaf = Value::String("deep reachable leaf".into());
+            for along_car in [false, true] {
+                let mut root = leaf.clone();
+                for _ in 0..100_000 {
+                    root = if along_car {
+                        Value::cons(root, Value::Nil)
+                    } else {
+                        Value::cons(Value::Nil, root)
+                    };
+                }
+                let mut reached = LispReachability::default();
+                assert!(reached.mark(&interp, &root));
+                assert!(reached.contains(&leaf));
+                assert!(!reached.mark(&interp, &root));
+                assert!(reached.pending.is_empty());
+                drop(root);
+            }
+            let cycle = Value::cons(Value::vector([leaf.clone()]), Value::Nil);
+            let Value::Cons(cell) = &cycle else {
+                unreachable!("constructed cons");
+            };
+            *cell.cdr.borrow_mut() = cycle.clone();
+            let mut reached = LispReachability::default();
+            assert!(reached.mark(&interp, &cycle));
+            assert!(reached.contains(&leaf));
+            assert!(reached.pending.is_empty());
+            *cell.cdr.borrow_mut() = Value::Nil;
+        })
+        .expect("small-stack collector control")
+        .join()
+        .expect("the complete reachable graph is marked without overflowing");
+}
+
 fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
     let rendered_error = match &error {
         LispError::SignalValue(value) => {

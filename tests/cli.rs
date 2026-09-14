@@ -6,6 +6,31 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod common;
 
+#[test]
+fn batch_large_lists_complete_and_release_without_exhausting_the_stack() {
+    let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
+    // This is the list size used by GNU's Bug#24264 regression. Exercise the
+    // actual batch process, including collection and interpreter teardown.
+    let program = r#"(progn
+      (let ((values (make-list 8000005 37)))
+        (prin1 (list (length values) (car values) (car (last values)))))
+      (garbage-collect)
+      (princ " done"))"#;
+    for binary in [oracle.as_path(), common::emaxx(false)] {
+        let result = Command::new(binary)
+            .args(["-Q", "--batch", "--eval", program])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}: {:?}",
+            binary.display(),
+            result
+        );
+        assert_eq!(result.stdout, b"(8000005 37 37) done");
+    }
+}
+
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[test]
 fn linux_entrypoint_preserves_arguments_environment_and_exit_status() {

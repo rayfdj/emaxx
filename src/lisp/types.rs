@@ -1858,8 +1858,67 @@ impl ConsCell {
 }
 
 impl Drop for ConsCell {
+    #[inline]
     fn drop(&mut self) {
         LIVE_CONSES.with(|count| count.set(count.get().saturating_sub(1)));
+        if matches!(self.car.value.get_mut(), Value::Cons(_))
+            || matches!(self.cdr.value.get_mut(), Value::Cons(_))
+        {
+            self.drop_cons_fields();
+        }
+    }
+}
+
+impl ConsCell {
+    fn take_owned_fields(&mut self) -> (Value, Value) {
+        (
+            std::mem::replace(self.car.value.get_mut(), Value::Nil),
+            std::mem::replace(self.cdr.value.get_mut(), Value::Nil),
+        )
+    }
+
+    /// Release uniquely owned cons trees iteratively. Shared/native owners
+    /// retain their cells, and weak observers do not keep dead cells alive.
+    fn drop_cons_fields(&mut self) {
+        let mut pending = smallvec::SmallVec::<[Value; 8]>::new();
+        let (mut next, cdr) = self.take_owned_fields();
+        if !cdr.is_nil() {
+            pending.push(cdr);
+        }
+        loop {
+            match next {
+                Value::Cons(mut owner) => {
+                    // The usual path leaves the cell in its allocation,
+                    // avoiding a move of the complete native/borrow metadata.
+                    let fields = if let Some(cell) = Rc::get_mut(&mut owner) {
+                        Some(cell.take_owned_fields())
+                    } else {
+                        // Weak observers preclude get_mut but not try_unwrap.
+                        // A genuinely shared cell is simply released unchanged.
+                        Rc::try_unwrap(owner)
+                            .ok()
+                            .map(|mut cell| cell.take_owned_fields())
+                    };
+                    if let Some((car, cdr)) = fields {
+                        next = car;
+                        if matches!(next, Value::Cons(_)) {
+                            if !cdr.is_nil() {
+                                pending.push(cdr);
+                            }
+                        } else {
+                            drop(next);
+                            next = cdr;
+                        }
+                        continue;
+                    }
+                }
+                other => drop(other),
+            }
+            let Some(value) = pending.pop() else {
+                break;
+            };
+            next = value;
+        }
     }
 }
 
@@ -3484,6 +3543,55 @@ mod tests {
         };
 
         assert!(Rc::ptr_eq(&text.0, &cloned_text.0));
+    }
+
+    #[test]
+    fn cons_destruction_handles_deep_car_and_cdr_chains_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let before = census_live_conses();
+                for along_car in [false, true] {
+                    let mut root = Value::Nil;
+                    for _ in 0..100_000 {
+                        root = if along_car {
+                            Value::cons(root, Value::Nil)
+                        } else {
+                            Value::cons(Value::Nil, root)
+                        };
+                    }
+                    assert_eq!(census_live_conses(), before + 100_000);
+                    drop(root);
+                    assert_eq!(census_live_conses(), before);
+                }
+            })
+            .expect("small-stack worker")
+            .join()
+            .expect("deep cons destruction completes without stack overflow");
+    }
+
+    #[test]
+    fn cons_destruction_preserves_shared_tails_and_expires_weak_observers() {
+        let before = census_live_conses();
+        let tail = Value::cons(Value::Integer(37), Value::Nil);
+        let identity = tail.cons_id();
+        let nested = Value::cons(tail.clone(), Value::Nil);
+        let Value::Cons(cell) = &nested else {
+            unreachable!("constructed cons");
+        };
+        let weak = Rc::downgrade(cell);
+        let root = Value::cons(nested, tail.clone());
+        assert_eq!(census_live_conses(), before + 3);
+        drop(root);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(census_live_conses(), before + 1);
+        assert_eq!(tail.cons_id(), identity);
+        assert!(matches!(
+            tail.car().expect("shared tail"),
+            Value::Integer(37)
+        ));
+        drop(tail);
+        assert_eq!(census_live_conses(), before);
     }
 
     #[test]

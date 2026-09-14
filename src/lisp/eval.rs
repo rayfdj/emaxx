@@ -3236,6 +3236,9 @@ pub(crate) struct MarkSetSizes {
 
 struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
+    /// Mark before enqueueing so cycles terminate. Drain every root's reachable
+    /// graph before the weak-table fixed point or either heap can be swept.
+    pending: smallvec::SmallVec<[Value; 16]>,
     /// This collection's number: a cons, string, vector or symbol is
     /// marked by carrying it (alloc.c's mark bit, on the object); the
     /// other kinds are marked by address or id below.
@@ -3260,6 +3263,7 @@ impl Default for LispReachability<'_, '_> {
     fn default() -> Self {
         Self {
             native: None,
+            pending: smallvec::SmallVec::new(),
             epoch: crate::lisp::types::begin_mark_epoch(),
             big_integers: MarkedAddresses::default(),
             floats: MarkedAddresses::default(),
@@ -3325,22 +3329,40 @@ impl LispReachability<'_, '_> {
     }
 
     fn mark_env(&mut self, interp: &Interpreter, env: &Env) -> bool {
+        let changed = self.enqueue_env(env);
+        self.trace_pending(interp);
+        changed
+    }
+
+    fn enqueue_env(&mut self, env: &Env) -> bool {
         let mut changed = false;
         for frame in env {
             for (symbol, value) in frame {
                 // alloc.c marks both halves of GNU's (SYMBOL . VALUE)
                 // lexical binding, even before a closure captures it.
-                changed |= self.mark(interp, &Value::Symbol(symbol.clone()));
-                changed |= self.mark(interp, value);
+                changed |= self.enqueue(&Value::Symbol(symbol.clone()));
+                changed |= self.enqueue(value);
             }
             if let Some(environment) = frame.lisp_environment() {
-                changed |= self.mark(interp, environment);
+                changed |= self.enqueue(environment);
             }
         }
         changed
     }
 
     fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
+        let changed = self.enqueue(value);
+        self.trace_pending(interp);
+        changed
+    }
+
+    fn trace_pending(&mut self, interp: &Interpreter) {
+        while let Some(value) = self.pending.pop() {
+            self.trace_fields(interp, &value);
+        }
+    }
+
+    fn enqueue(&mut self, value: &Value) -> bool {
         let newly_marked = match value {
             Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
                 false
@@ -3366,7 +3388,11 @@ impl LispReachability<'_, '_> {
         if !newly_marked {
             return false;
         }
+        self.pending.push(value.clone());
+        true
+    }
 
+    fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
         // alloc.c completes one graph traversal before sweeping either
         // vectors or conses. Follow native words here, including edges
         // discovered by the weak-table fixed point, rather than sweeping
@@ -3374,19 +3400,19 @@ impl LispReachability<'_, '_> {
         if let Some(native) = self.native.as_deref_mut() {
             let (native_cons, children) = native.trace_lisp_value(value);
             for child in &children {
-                self.mark(interp, child);
+                self.enqueue(child);
             }
             if native_cons {
                 // Generated code's current car/cdr words are authoritative;
                 // tracing a stale typed mirror would retain replaced edges.
-                return true;
+                return;
             }
         }
 
         match value {
             Value::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals.
-                self.mark(interp, &symbol.lisp_name());
+                self.enqueue(&symbol.lisp_name());
             }
             Value::Finalizer(id) => {
                 // A reached Lisp_Finalizer is a pseudovector whose one Lisp
@@ -3394,7 +3420,7 @@ impl LispReachability<'_, '_> {
                 // pass and its function marked separately
                 // (alloc.c:mark_finalizer_list).
                 if let Some(function) = interp.finalizer_function(*id) {
-                    self.mark(interp, &function);
+                    self.enqueue(&function);
                 }
             }
             Value::StringObject(value) => {
@@ -3405,15 +3431,15 @@ impl LispReachability<'_, '_> {
                     .flat_map(|span| span.props.iter().map(|(_, value)| value.clone()))
                     .collect::<Vec<_>>();
                 for child in &children {
-                    self.mark(interp, child);
+                    self.enqueue(child);
                 }
             }
             Value::Cons(cell) => {
                 // The two words, read in place.
                 let car = cell.car.borrow().clone();
-                self.mark(interp, &car);
+                self.enqueue(&car);
                 let cdr = cell.cdr.borrow().clone();
-                self.mark(interp, &cdr);
+                self.enqueue(&cdr);
             }
             Value::Vector(vector) => {
                 // Slot by slot: cloning the slot vector per reached vector
@@ -3425,20 +3451,20 @@ impl LispReachability<'_, '_> {
                         None => break,
                     };
                     index += 1;
-                    self.mark(interp, &child);
+                    self.enqueue(&child);
                 }
             }
             Value::Lambda(lambda) => {
                 for symbol in lambda.params.iter() {
-                    self.mark(interp, &Value::Symbol(symbol.clone()));
+                    self.enqueue(&Value::Symbol(symbol.clone()));
                 }
                 if let Some(value) = &lambda.public_parameters {
-                    self.mark(interp, value);
+                    self.enqueue(value);
                 }
                 for value in lambda.body.iter() {
-                    self.mark(interp, value);
+                    self.enqueue(value);
                 }
-                self.mark_env(interp, &lambda.env.borrow());
+                self.enqueue_env(&lambda.env.borrow());
                 for value in [
                     lambda.documentation.as_ref(),
                     lambda.interactive.as_ref(),
@@ -3447,7 +3473,7 @@ impl LispReachability<'_, '_> {
                 .into_iter()
                 .flatten()
                 {
-                    self.mark(interp, value);
+                    self.enqueue(value);
                 }
             }
             Value::Buffer(buffer) => {
@@ -3458,8 +3484,8 @@ impl LispReachability<'_, '_> {
                 // was reached through a buffer or through another Lisp object.
                 if let Some(overlay) = interp.find_overlay(*id) {
                     for (key, value) in &overlay.plist {
-                        self.mark(interp, key);
-                        self.mark(interp, value);
+                        self.enqueue(key);
+                        self.enqueue(value);
                     }
                 }
             }
@@ -3470,7 +3496,7 @@ impl LispReachability<'_, '_> {
                         .chain(table.entries.iter().map(|entry| entry.value.clone()))
                         .collect::<Vec<_>>();
                     for child in &children {
-                        self.mark(interp, child);
+                        self.enqueue(child);
                     }
                 }
             }
@@ -3485,13 +3511,13 @@ impl LispReachability<'_, '_> {
                         )
                         .collect::<Vec<_>>();
                     for child in &children {
-                        self.mark(interp, child);
+                        self.enqueue(child);
                     }
                 }
             }
             Value::Record(id) => {
                 let Some(record) = interp.find_record(*id) else {
-                    return true;
+                    return;
                 };
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
@@ -3523,7 +3549,7 @@ impl LispReachability<'_, '_> {
                     children.extend(thread.outcome.iter().cloned());
                 }
                 for child in &children {
-                    self.mark(interp, child);
+                    self.enqueue(child);
                 }
             }
             Value::ReaderForm(form) => {
@@ -3539,7 +3565,7 @@ impl LispReachability<'_, '_> {
                     | ReaderForm::PositionedSymbol { .. } => &[],
                 };
                 for child in children {
-                    self.mark(interp, child);
+                    self.enqueue(child);
                 }
             }
             Value::Nil
@@ -3553,7 +3579,6 @@ impl LispReachability<'_, '_> {
             | Value::Terminal(_)
             | Value::Unbound => {}
         }
-        true
     }
 }
 

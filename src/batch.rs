@@ -81,14 +81,13 @@ pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOu
 }
 
 fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
-    // Dropping an N-element list recurses N deep through the cons chain;
-    // upstream tests build 8-million-element lists (Bug#24264), so the
-    // runtime needs stack for teardown as well as evaluation. Keep GNU's
-    // calling OS thread: an extra worker and join introduce a blocking
-    // futex that GNU's seccomp policy deliberately does not permit.
-    // The established stack backend reserves virtual memory with a guard
-    // page; only touched pages commit. Native roots stay on this stack.
-    let stack = corosensei::stack::DefaultStack::new(8 * 1024 * 1024 * 1024)
+    // Cons chains are released iteratively, so list length no longer dictates
+    // stack capacity. Use the same guarded reservation as Lisp threads; Rust
+    // evaluator frames still need more room than GNU's C frames. Keep GNU's
+    // calling OS thread: an extra worker and join would introduce a blocking
+    // futex that GNU's seccomp policy deliberately does not permit. Native
+    // roots stay on this stack, and only touched pages commit.
+    let stack = corosensei::stack::DefaultStack::new(128 * 1024 * 1024)
         .map_err(|error| format!("allocate batch stack: {error}"))?;
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::lisp::eval::continuations::on_stack(stack, body)
