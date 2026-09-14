@@ -191,6 +191,8 @@ jobs:
                   --binary "before=$PWD/target/allocator-before/gate/emaxx" \
                   --binary "after=$PWD/target/compat-subject/gate/emaxx" \
                   --output target/frozen-ci/allocator-diagnostics
+                python3 tools/measure_core_latency.py \
+                  --output target/frozen-ci/core-diagnostics
                 exit 0
               fi
               control_status=0

@@ -495,6 +495,38 @@ query, then closes exactly once. Descriptor transfers, clones, process pipes,
 and terminal files use the same owner. Invalid ownership still aborts. Six
 filesystem controls, including an isolated intentional invalid-owner child,
 both existing loader-ownership controls, and four pipe/PTY/EOF controls pass
-on macOS; strict Clippy and formatting pass. Further ordinary macOS validation and Linux sandbox tracing
-remain pending. No filter, upstream test, expected outcome, or comparison rule
+on macOS; strict Clippy and formatting pass. At `d0ac7d0`, ordinary Mac file
+I/O passes 13 tests with three matching skips, and modules pass 38 tests in
+each editor. Their runs are `run-1789358536418956000-36428` and
+`run-1789358626191636000-36427`; `ordinary-owned-file-evidence.json` verifies
+their contracts and all raw receipts. Linux sandbox tracing remains pending. No filter, upstream test, expected outcome, or comparison rule
 was relaxed for either change.
+
+At `d0ac7d0`, Linux runner checks pass (`34804575549`), as do all three
+real-binary startup controls in `34804575854`. Both sandbox probes get past
+descriptor cleanup and affinity initialization, then fail at libc's `mremap`
+while growing a Rust allocation. GNU's unchanged probes still pass. Linux now
+uses a small `GlobalAlloc` wrapper around `System`, retaining the standard
+trait's allocate/copy/free reallocation instead of libc's optional `mremap`
+path. The backend still supplies real allocation, alignment and zeroing;
+there are no intercepted or fabricated syscall results. A control exercises
+zeroing, growth, shrinkage and content/alignment preservation for four
+alignments and allocations up to one MiB; it passes on macOS, with formatting
+and strict Clippy clean. Linux execution remains required.
+
+The separate iterative-cons experiment is retained, not published in the
+runtime. It completes 100,000-cell car/cdr chains on a 256 KiB stack and passes
+the 28 type and 15 native-GC controls, but the revised version still increases
+the Mac list workload median from 0.268138 to 0.290957 seconds (+8.51%) over
+four alternating pairs. The exact patch, saved binaries/images and verified
+raw reports are under `cons-destruction-tail-*` in the audit directory.
+The earlier +9.33% version is also retained. One premature measurement that
+started before the rebuild finished is explicitly marked `REJECTED.md` and
+excluded. Batch stack capacity has not changed. Allocation cost and Linux's
+roughly 29-second crash-handler delay remain open performance work.
+
+The allocator diagnostic also runs `tools/measure_core_latency.py`: independent
+children reserve zero, 128 MiB or 8 GiB with the same guard/mapping permissions,
+then deliberately abort. Reversed execution order, actual memory maps, limits,
+host core policy, exits and timings are retained. This will test whether the
+reservation causes the delay; it neither scores tests nor changes editor policy.

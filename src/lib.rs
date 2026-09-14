@@ -2,9 +2,16 @@
 #![allow(clippy::result_large_err)]
 #![recursion_limit = "512"]
 
-// Linux uses Rust's system allocator, backed by the same libc allocator as
-// GNU Emacs. Mimalloc's pre-main constructor issues sysinfo, which is outside
-// GNU's inherited seccomp policy. Other targets retain their existing backend.
+#[cfg(any(target_os = "linux", test))]
+mod allocator;
+
+// GNU's inherited sandbox excludes mimalloc's startup sysinfo and libc's
+// optional mremap realloc optimization. Use the host allocation backend with
+// Rust's allocate/copy/free reallocation contract on Linux.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: allocator::HostAllocator = allocator::HostAllocator;
+
 #[cfg(not(target_os = "linux"))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
