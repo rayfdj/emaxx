@@ -199,6 +199,7 @@ jobs:
           PY
                 )
                 diagnostic_user=$(id -un)
+                sample_status=0
                 sudo "$perf_binary" record -e cpu-clock:u -F 997 \
                   --call-graph dwarf,16384 -o "$PWD/target/frozen-ci/compiler-perf.data" \
                   -- sudo -u "$diagnostic_user" -- env "PATH=$PATH" \
@@ -206,7 +207,16 @@ jobs:
                     --emaxx target/compat-subject/gate/emaxx \
                     --selector '"^comp-tests-ret-type-spec-[1-8]$"' \
                     --output target/frozen-ci/compiler-samples \
-                  2>&1 | tee target/frozen-ci/compiler-perf.log
+                  2>&1 | tee target/frozen-ci/compiler-perf.log || sample_status=$?
+                # perf deliberately creates a private file for its recorder.
+                # Hand that one file to the job account so raw evidence can
+                # be uploaded even when the diagnostic itself failed.
+                if [ -f target/frozen-ci/compiler-perf.data ]; then
+                  sudo chown "$diagnostic_user" target/frozen-ci/compiler-perf.data
+                fi
+                if [ "$sample_status" -ne 0 ]; then
+                  exit "$sample_status"
+                fi
                 sudo "$perf_binary" report --stdio --no-children \
                   -i target/frozen-ci/compiler-perf.data --sort comm,dso,symbol \
                   > target/frozen-ci/compiler-perf-self.txt
