@@ -3,6 +3,8 @@
 Tracking: [correctness #69](https://github.com/rayfdj/emaxx/issues/69),
 [runtime performance #70](https://github.com/rayfdj/emaxx/issues/70), and
 [compiler latency #71](https://github.com/rayfdj/emaxx/issues/71).
+Missing platform/build capabilities are tracked separately in
+[#73](https://github.com/rayfdj/emaxx/issues/73), per the user's 2026-09-14 scope decision.
 The issues retain the original run identity, all 363 files sorted by slowdown,
 profiling findings, and acceptance criteria.
 
@@ -84,6 +86,13 @@ section records the latest completed checks; no final frozen success is claimed.
   Inclusive samples point to compiler class enumeration/native callbacks,
   symbol/value work, GC and image loading. Percentages overlap and cannot
   be added or extrapolated into an 80-case CPU total.
+- Ordinary Mac `comp-tests.el` at `890becd` passes all 177 unchanged tests
+  independently in both editors, with zero skips or unexpected outcomes.
+  All six raw receipts and the contract verify for
+  `run-1789369833919072000-52525`. This run uses the corrected native
+  installation paths and compact internal image tags. Whole test phases
+  take 98.030 seconds for GNU and 123.248 seconds for Emaxx; these are
+  ordinary run timings, not a controlled before/after optimization trial.
 - Compact internal dump tags retain the existing explicit 32-bit image
   encoding while reducing the loader's dense table footprint. A matched
   Mac pilot at `4e4160d` used the same configured GNU source, native preload,
@@ -97,12 +106,34 @@ section records the latest completed checks; no final frozen success is claimed.
 - The Linux X-DND attempt at `8c023a2` (`34815944593`) stopped during Clippy
   before the editor tests: the new Linux-only control used prohibited
   `unwrap()` calls. These now have explanatory `expect()` messages. No
-  runtime behavior or test assertion changed; only affected validation
-  needs continuation.
+  runtime behavior or test assertion changed. Continued Linux job
+  `34816493234` at `890becd` now passes the actual primitive control
+  (one test) and both unchanged X-DND tests independently in each editor.
+  All six raw receipts and the contract verify.
+- Linux Semantic profiling (`34816503151`, `890becd`) retains 14,921
+  process-tree samples with zero reported losses and all 17 unchanged
+  tests passing in each editor. The six receipts, profile and exact
+  executable hashes verify. Emaxx-only samples identify symbol lookup,
+  regexp handling and native GC; inclusive percentages overlap, and
+  unknown/truncated unwind roots remain visible.
+- That profile exposed an unused, non-GNU side effect: `looking-at` and
+  `posix-looking-at` copied every pattern into `last-looking-at-pattern`.
+  Removing the assignment preserves unrelated Lisp bindings, verified by
+  a direct GNU/Emaxx contract control. Four alternating Mac pairs of the
+  complete unchanged Semantic file reduced median summed test-body time
+  from 15.230375 to 14.743021 seconds (3.20%). GNU and all eight subject
+  processes pass the same 17 tests: 153 independent outcomes, with all
+  raw output and input hashes verified. This diagnostic comparison does
+  not replace ordinary frozen validation. The new generic
+  `tools/measure_upstream_pair.py` retains commands, private environments,
+  reports, timings and hashes; it does not alter upstream tests or compiler
+  passes. Formatting and strict Mac Clippy pass for the correction.
 
-Still open: the six strict Mac build-feature skip diagnostics, the final
-complete ordinary frozen results on both platforms, remaining performance
-work and adversarial review. Shared-library bytes are not yet covered by the
+Still open in this effort: complete ordinary frozen results on both platforms,
+remaining performance work and adversarial review. The six strict Mac
+build-feature skip diagnostics belong to separate follow-up #73. They must
+remain visible in final Mac output; a run containing them is not all-green.
+This scope decision changes neither comparisons nor the selected inventory. Shared-library bytes are not yet covered by the
 run provenance. A roughly three-minute Mac harness preparation delay was
 observed before a reader run, but its attempted process sample arrived after
 exit and did not establish the cause. The measured Mac vector-allocation

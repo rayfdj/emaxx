@@ -104,6 +104,26 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
     );
 }
 
+#[test]
+fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+            (insert "abc")
+            (goto-char (point-min))
+            (makunbound 'last-looking-at-pattern)
+            (list
+             (progn (looking-at "a") (boundp 'last-looking-at-pattern))
+             (progn (posix-looking-at "a") (boundp 'last-looking-at-pattern))
+             (progn (set 'last-looking-at-pattern 'sentinel)
+                    (looking-at "b")
+                    (symbol-value 'last-looking-at-pattern))
+             (progn (posix-looking-at "b")
+                    (symbol-value 'last-looking-at-pattern))))"#,
+        "(nil nil sentinel sentinel)",
+        "looking-at variable side effects",
+    );
+}
+
 /// Ask the pinned oracle a question and return its stdout verbatim.  For
 /// contract elements that are properties of the oracle's OWN build or host
 /// libraries (configure-time paths, linked-library versions, per-build

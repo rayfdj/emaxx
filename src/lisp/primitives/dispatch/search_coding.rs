@@ -500,12 +500,6 @@ define_dispatch!(
             }
             "looking-at" | "posix-looking-at" => {
                 need_arg_range(name, args, 1, 2)?;
-                let pattern = string_text(&args[0])?;
-                interp.set_variable(
-                    "last-looking-at-pattern",
-                    Value::String(pattern.clone().into()),
-                    &mut env.clone(),
-                );
                 regexp::looking_at_impl(
                     interp,
                     &args[0],
