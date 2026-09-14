@@ -453,3 +453,20 @@ the existing file-metadata/primitive controls pass on macOS. A standalone
 image builds successfully; formatting and strict Clippy pass. The initial
 raw-filename fixture was corrected after a direct host probe confirmed that
 macOS rejects non-UTF-8 names with EILSEQ; Linux's raw-filename check remains.
+
+At `7d03d07`, ordinary Mac file I/O has 13 passes and three matching skips;
+modules have 38 passes in each editor. The respective runs are
+`run-1789356578632207000-34575` and `run-1789356592583083000-34574`, with
+receipt verification in `ordinary-posix-startup-evidence.json`. Linux runner
+checks pass (`34802665509`). Its sandbox trace (`34802665698`) gets beyond
+the earlier `statx` and allocator calls, then rejects `fcntl(F_GETFD)` when
+Rust drops the image descriptor and `sched_getaffinity` during inherited-filter
+startup. GNU still passes both probes. The trace also records the host's
+systemd core-dump pipe; a zero RLIMIT_CORE did not prevent its delay.
+
+`tools/measure_allocators.py` measures actual cons, vector, string and evaluator
+work with alternating before/after order, per-case wall/CPU time, raw reports,
+executable/image hashes and unchanged GNU library fingerprints. It emits no
+frozen certificate. Linux's allocator diagnostic builds the actual pre-change
+commit against the same GNU source and libraries. Both editors pass the local
+measurement control; Linux comparison remains pending.

@@ -5,12 +5,17 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics]
+        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics]
         default: affected
       file:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
         type: string
         default: ''
+      startup_syscall:
+        description: Syscall to inspect in startup-diagnostics mode
+        type: choice
+        options: [sysinfo, sched_getaffinity]
+        default: sysinfo
 permissions:
   contents: read
 jobs:
@@ -109,6 +114,7 @@ jobs:
         env:
           VALIDATION: ${{ inputs.validation || 'prepare-oracle' }}
           VALIDATION_FILE: ${{ inputs.file }}
+          STARTUP_SYSCALL: ${{ inputs.startup_syscall || 'sysinfo' }}
         run: |
           mkdir -p target/frozen-ci
           python3 - <<'PY'
@@ -134,7 +140,7 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
           fi
           case "$VALIDATION" in
-            sandbox-diagnostics|image-diagnostics|startup-diagnostics)
+            sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics)
               # Diagnostic children only; this does not replace an ordinary
               # run or alter the kernel filter or its expected behavior.
               cargo build --locked --profile gate --target-dir target/compat-subject \
@@ -143,7 +149,7 @@ jobs:
                 # Capture the caller of the startup syscall rejected by
                 # the inherited GNU filter. This stops for inspection and
                 # makes no claim about the editor's eventual exit status.
-                gdb --batch -ex 'catch syscall sysinfo' -ex run -ex bt \
+                gdb --batch -ex "catch syscall $STARTUP_SYSCALL" -ex run -ex bt \
                   --args "$PWD/target/compat-subject/gate/emaxx" \
                     --quick --batch '--eval=(message "Hi")' \
                     2>&1 | tee target/frozen-ci/startup-backtrace.log
@@ -165,6 +171,28 @@ jobs:
               EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
                 EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
                 tools/build-image.sh target/compat-subject/gate/emaxx
+              if [ "$VALIDATION" = allocator-diagnostics ]; then
+                # Build the actual pre-change implementation against the
+                # same GNU libraries; retained scores are never inputs.
+                baseline_root="$RUNNER_TEMP/allocator-before"
+                mkdir -p "$baseline_root"
+                git worktree add --detach "$baseline_root/emaxx" \
+                  fb45ffdf253d23d4442cf87c56ae4d4291b86562
+                ln -s "$PWD/../emacs" "$baseline_root/emacs"
+                cargo build --locked --profile gate \
+                  --manifest-path "$baseline_root/emaxx/Cargo.toml" \
+                  --target-dir "$PWD/target/allocator-before" \
+                  --bin emaxx --bin make-fingerprint -j2
+                EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
+                  EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
+                  "$baseline_root/emaxx/tools/build-image.sh" \
+                    "$PWD/target/allocator-before/gate/emaxx"
+                python3 tools/measure_allocators.py --oracle-source ../emacs \
+                  --binary "before=$PWD/target/allocator-before/gate/emaxx" \
+                  --binary "after=$PWD/target/compat-subject/gate/emaxx" \
+                  --output target/frozen-ci/allocator-diagnostics
+                exit 0
+              fi
               python3 tools/diagnose_linux_sandbox.py --oracle-source ../emacs \
                 --emaxx target/compat-subject/gate/emaxx \
                 --output target/frozen-ci/sandbox-diagnostics
