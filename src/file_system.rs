@@ -34,6 +34,26 @@ pub(crate) fn is_directory(path: impl AsRef<std::path::Path>) -> bool {
     metadata(path).is_ok_and(|status| status.is_dir())
 }
 
+pub(crate) fn is_regular_file(path: impl AsRef<std::path::Path>) -> bool {
+    metadata(path).is_ok_and(|status| status.is_file())
+}
+
+/// GNU file_access_p(F_OK): existence under the process's effective identity.
+#[cfg(unix)]
+pub(crate) fn file_exists(path: impl AsRef<std::path::Path>) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_ref().as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: the path remains NUL terminated for the synchronous access check.
+    unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::F_OK, libc::AT_EACCESS) == 0 }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn file_exists(path: impl AsRef<std::path::Path>) -> bool {
+    metadata(path).is_ok()
+}
+
 #[cfg(unix)]
 mod posix {
     use super::File;

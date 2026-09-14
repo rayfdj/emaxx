@@ -1550,7 +1550,7 @@ pub(super) fn load_dumped_unit(
     // Check just once if this is a local build or Emacs was installed.
     let eln_fname = if *installation_state == InstallationState::Unknown {
         let installed = format!("{execdir}{cu_file1}");
-        let eln_fname = if Path::new(&installed).exists() {
+        let eln_fname = if crate::file_system::file_exists(&installed) {
             *installation_state = InstallationState::Installed;
             installed
         } else {

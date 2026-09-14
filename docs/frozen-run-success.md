@@ -530,3 +530,22 @@ children reserve zero, 128 MiB or 8 GiB with the same guard/mapping permissions,
 then deliberately abort. Reversed execution order, actual memory maps, limits,
 host core policy, exits and timings are retained. This will test whether the
 reservation causes the delay; it neither scores tests nor changes editor policy.
+
+At `33e1f3a`, Linux runner checks pass (`34805538780`), as do all three
+real-binary startup controls. Sandbox diagnosis `34805538676` passes allocation
+growth and reaches native-unit discovery, where `Path::exists` issues the next
+rejected `statx`. The diagnostic timed out during that process's crash handling,
+so it did not run Emaxx's bubblewrap probe; this is not a sandbox pass. Native
+unit existence now uses GNU's effective-identity `faccessat(F_OK)` check, and
+native source/DOC file predicates use the existing POSIX metadata layer.
+Diagnostic timeouts now stop the whole owned process group, record the timeout,
+and continue to the other independent probes. Raw output hashes are retained.
+
+Allocator/core diagnosis `34805541412` completes with all eight allocation
+reports independently hash-checked. The core experiment's six raw stdout/stderr
+receipts also verify: median abort-to-reap time is 0.214326 seconds without a
+reservation, 0.465244 with 128 MiB and 27.674419 with 8 GiB. All children actually
+terminate with SIGABRT under the same recorded systemd core policy and
+`coredump_filter=00000033`. This establishes reservation size as a cause of the
+runner's crash latency. It does not establish that a smaller editor stack is
+safe: the cons teardown work and ordinary module validation remain required.

@@ -2188,7 +2188,7 @@ fn lisp_source_root(interp: &Interpreter) -> Option<PathBuf> {
     crate::lisp::primitives::compat_data_directory()
         .map(PathBuf::from)
         .and_then(|etc| etc.parent().map(|root| root.join("lisp")))
-        .filter(|root| root.is_dir())
+        .filter(|root| fs::is_directory(root))
         .or_else(|| {
             interp
                 .configured_load_path()
@@ -2202,7 +2202,7 @@ fn builtin_doc_from_doc_file(interp: &Interpreter, function: &str) -> Option<Str
     let path = crate::lisp::primitives::compat_data_directory()
         .map(PathBuf::from)
         .map(|etc| etc.join("DOC"))
-        .filter(|path| path.is_file())
+        .filter(|path| fs::is_regular_file(path))
         .or_else(|| {
             lisp_source_root(interp)?
                 .parent()

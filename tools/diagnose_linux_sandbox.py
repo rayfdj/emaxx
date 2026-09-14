@@ -9,8 +9,10 @@ from pathlib import Path
 import resource
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 
 def no_core_dump():
@@ -60,12 +62,25 @@ def main():
         if trace:
             command = [tools["strace"], "-ff", "-tt", "-T", "-s", "160",
                        "-o", str(output / (label + ".strace")), *command]
+        started = time.monotonic()
+        timed_out = False
         with (output / (label + ".stdout")).open("wb") as stdout, \
                 (output / (label + ".stderr")).open("wb") as stderr:
-            process = subprocess.run(command, env={}, cwd=output, stdout=stdout,
-                                     stderr=stderr, preexec_fn=no_core_dump, timeout=60)
+            with subprocess.Popen(command, env={}, cwd=output, stdout=stdout,
+                                  stderr=stderr, preexec_fn=no_core_dump,
+                                  start_new_session=True) as process:
+                try:
+                    process.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    # The group owns strace and its actual traced descendants.
+                    # Do not leave a crashed editor behind or lose later probes.
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
         evidence["commands"].append(dict(label=label, command=command,
-                                         exit_code=process.returncode))
+                                         exit_code=process.returncode,
+                                         timed_out=timed_out,
+                                         seconds=time.monotonic() - started))
         (output / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
         print(label, "exit", process.returncode, flush=True)
 
@@ -82,6 +97,11 @@ def main():
     for path, digest in evidence["inputs_sha256"].items():
         if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
             raise RuntimeError("Diagnostic input changed: " + path)
+    evidence["outputs_sha256"] = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(output.iterdir()) if path.name != "evidence.json"
+    }
+    (output / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print("DIAGNOSTIC ONLY: no compatibility outcomes are certified.", flush=True)
     return int(any(command["exit_code"] for command in evidence["commands"]))
 

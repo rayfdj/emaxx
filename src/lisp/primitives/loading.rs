@@ -873,9 +873,9 @@ pub(crate) fn maybe_swap_for_native(
 
     let mut source = resolved.to_path_buf();
     source.set_extension("el");
-    if !source.is_file() {
+    if !fs::is_regular_file(&source) {
         let compressed = PathBuf::from(format!("{}.gz", source.display()));
-        if !compressed.is_file() {
+        if !fs::is_regular_file(&compressed) {
             return Ok(resolved.to_path_buf());
         }
         source = compressed;
