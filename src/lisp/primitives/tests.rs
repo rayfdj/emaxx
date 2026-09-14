@@ -7241,9 +7241,17 @@ fn x_window_properties_validate_the_frame_before_property_arguments() {
     let expected = format!("(((t (2 . 7)) (t (1 . 6)) (t (1 . 3)) (t (1 . 3))) ({errors}))");
     assert_upstream_primitive_contract(program, &expected);
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let form = Reader::new(program).read().unwrap().unwrap();
-    let value = interp.eval(&form, &mut Vec::new()).unwrap();
-    let expected = Reader::new(&expected).read().unwrap().unwrap();
+    let form = Reader::new(program)
+        .read()
+        .expect("window-property contract is valid Lisp")
+        .expect("window-property contract contains a form");
+    let value = interp
+        .eval(&form, &mut Vec::new())
+        .expect("window-property contract catches the expected frame errors");
+    let expected = Reader::new(&expected)
+        .read()
+        .expect("expected window-property results are valid Lisp")
+        .expect("expected window-property results contain a form");
     assert_eq!(value, expected);
 }
 
