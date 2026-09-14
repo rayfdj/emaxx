@@ -12172,11 +12172,12 @@ fn dropping_an_interpreter_terminates_and_reaps_its_child() {
 #[test]
 fn interpreter_drop_releases_a_pty_child_that_ignores_hangup_and_never_blocks() {
     // The teardown contract for a child on a pseudo-terminal that neither
-    // reads nor exits on SIGHUP and writes without pause: the hangup goes
-    // to the terminal's foreground group as kill_buffer_processes sends
-    // it, the terminal closes before the reap, and the drop returns
+    // reads nor exits on SIGHUP and writes without pause: the embedded
+    // owner's hangup goes to the terminal's foreground group, the terminal
+    // closes before the reap, and the drop returns
     // promptly with the child gone.  (A Darwin python-tests.el run sat in
-    // the old unbounded wait with the terminal still open.)
+    // the old unbounded wait with the terminal still open.) GNU's process
+    // exit is a separate path: it signals the child's group without reaping.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let program = r#"
         (make-process

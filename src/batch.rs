@@ -80,6 +80,25 @@ pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOu
     with_batch_stack(|| run_batch(options))?
 }
 
+/// Run the batch CLI with its interpreter alive through FINISH.
+///
+/// emacs.c:Fkill_emacs ends shutdown with exit or exec, without walking and
+/// freeing the Lisp heap. FINISH owns process termination; if it returns,
+/// ordinary Rust Drop still releases the interpreter.
+pub fn run_batch_process_with_large_stack(
+    options: BatchRunOptions,
+    finish: impl FnOnce(BatchRunOutcome) -> Result<u8, String>,
+) -> Result<u8, String> {
+    with_batch_stack(|| {
+        let actions = batch_actions(&options);
+        let mut interpreter = initialize_batch_interpreter(&options)?;
+        let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
+        interpreter.release_external_resources_for_exit();
+        crate::lisp::flush_batch_stdout();
+        finish(outcome)
+    })?
+}
+
 fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
     // Cons chains are released iteratively, so list length no longer dictates
     // stack capacity. Use the same guarded reservation as Lisp threads; Rust
@@ -96,15 +115,19 @@ fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
 }
 
 pub fn run_batch(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
-    let actions = options
+    let actions = batch_actions(&options);
+    run_batch_with_actions(options, actions)
+}
+
+fn batch_actions(options: &BatchRunOptions) -> Vec<BatchAction> {
+    options
         .load
         .iter()
         .cloned()
         .map(BatchAction::Load)
         .chain(options.eval.iter().cloned().map(BatchAction::Eval))
         .chain(options.funcall.iter().cloned().map(BatchAction::Funcall))
-        .collect();
-    run_batch_with_actions(options, actions)
+        .collect()
 }
 
 pub fn run_batch_with_actions(
@@ -112,11 +135,19 @@ pub fn run_batch_with_actions(
     actions: Vec<BatchAction>,
 ) -> Result<BatchRunOutcome, String> {
     let mut interpreter = initialize_batch_interpreter(&options)?;
+    run_initialized_batch(&mut interpreter, &options, &actions)
+}
+
+fn run_initialized_batch(
+    interpreter: &mut Interpreter,
+    options: &BatchRunOptions,
+    actions: &[BatchAction],
+) -> Result<BatchRunOutcome, String> {
     if let Some(termination) = interpreter.take_pending_termination() {
         return Ok(termination.into());
     }
     if let Some(command_line_args) = &options.startup_command_line_args {
-        return run_batch_through_normal_top_level(&mut interpreter, command_line_args);
+        return run_batch_through_normal_top_level(interpreter, command_line_args);
     }
     let eval_expressions = actions
         .iter()
@@ -131,7 +162,7 @@ pub fn run_batch_with_actions(
     let selector_string =
         env::var("EMAXX_COMPAT_SELECTOR").unwrap_or_else(|_| "(quote t)".to_string());
     let mut eval_env: Env = Vec::new();
-    for action in &actions {
+    for action in actions {
         match action {
             BatchAction::Load(target) => {
                 let resolved = PathBuf::from(target);
@@ -140,7 +171,7 @@ pub fn run_batch_with_actions(
                         return Ok(termination.into());
                     }
                     let mut error_text = error.to_string();
-                    let backtrace = format_backtrace_summary(&interpreter);
+                    let backtrace = format_backtrace_summary(interpreter);
                     if !backtrace.is_empty() {
                         error_text.push_str(" | backtrace: ");
                         error_text.push_str(&backtrace);
@@ -165,9 +196,9 @@ pub fn run_batch_with_actions(
                     // at all.  The report is for the harness; the message is
                     // for whoever ran the command.
                     emit_unhandled_batch_error(
-                        &mut interpreter,
+                        interpreter,
                         &error,
-                        &command_line_bottom_frames(&actions, Some(&resolved)),
+                        &command_line_bottom_frames(actions, Some(&resolved)),
                     );
                     return Ok(BatchRunOutcome::Exit(255));
                 }
@@ -203,9 +234,9 @@ pub fn run_batch_with_actions(
                         Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                         Err(error) => {
                             emit_unhandled_batch_error(
-                                &mut interpreter,
+                                interpreter,
                                 &error,
-                                &command_line_bottom_frames(&actions, None),
+                                &command_line_bottom_frames(actions, None),
                             );
                             return Ok(BatchRunOutcome::Exit(255));
                         }
@@ -222,9 +253,9 @@ pub fn run_batch_with_actions(
                     Err(LispError::Terminate(termination)) => return Ok(termination.into()),
                     Err(error) => {
                         emit_unhandled_batch_error(
-                            &mut interpreter,
+                            interpreter,
                             &error,
-                            &command_line_bottom_frames(&actions, None),
+                            &command_line_bottom_frames(actions, None),
                         );
                         return Ok(BatchRunOutcome::Exit(255));
                     }

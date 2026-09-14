@@ -549,14 +549,10 @@ fn try_main() -> Result<u8, String> {
         ..Default::default()
     };
     if noninteractive {
-        let outcome = batch::run_batch_with_large_stack(options)?;
-        // exit() and shut_down_emacs's reset_sys_modes flush stdio's stdout
-        // before the process goes away or re-executes itself.
-        emaxx::lisp::flush_batch_stdout();
-        return match outcome {
-            BatchRunOutcome::Exit(code) => Ok(code as u8),
+        return batch::run_batch_process_with_large_stack(options, |outcome| match outcome {
+            BatchRunOutcome::Exit(code) => std::process::exit(code),
             BatchRunOutcome::Restart => restart_current_process(),
-        };
+        });
     }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     linux_startup::ignore_broken_pipe();

@@ -149,7 +149,9 @@ section records the latest completed checks; no final frozen success is claimed.
   obarray, legacy vector conversion, and callback function-cell redefinition.
   Their separate correctness repair passes all four `mapatoms` controls,
   including GNU-checked interpreted and native callbacks, GC and nonlocal
-  exit. Ordinary Linux validation remains pending.
+  exit. Ordinary Linux validation at `a91caeb` (`34820686907`) passes
+  these four controls and all 81 unchanged `test/src/fns-tests.el` tests
+  independently in each editor. All six raw receipts and the contract verify.
 - A GC candidate avoids searching conservative pointer candidates when the
   same attached cons has already been marked in the current pass. It retains
   the pointer-identity check, original root set, weak-table fixed point,
@@ -161,6 +163,70 @@ section records the latest completed checks; no final frozen success is claimed.
   which does not establish a meaningful Semantic speedup. Both comparisons
   retain all raw reports and verify input/output hashes. These diagnostic
   selections do not replace the complete ordinary inventory.
+- The same revision passes all 93 native-runtime controls and the three
+  unchanged `test/lisp/emacs-lisp/comp-tests.el` native-cache tests on Linux
+  (`34820694713`), with all six receipts and the contract verified. This is
+  the separate cache test file, not the 177-test `test/src/comp-tests.el`
+  compiler inventory. Full compiler job `34821076055` now passes all 177
+  tests independently in each editor, with zero skips or unexpected outcomes.
+  Its six receipts and contract verify, as does the 93-control stage. Ordinary
+  test phases take GNU 15.214 seconds and Emaxx 93.052 seconds; no controlled
+  compiler speedup is claimed from these run timings.
+- The remaining Linux profiles at `2e67b6a` pass the one track-changes test
+  (`34820154251`) and all 37 package tests (`34820160611`). Both sets of
+  six receipts, contracts, profiles and exact executable hashes verify;
+  both recordings report zero lost samples. Track-changes samples identify
+  native time-value decoding and mirror reconciliation during timer work.
+  The independent random seeds differ (GNU 12399781, Emaxx 16390989), so
+  their observed times are not a controlled paired ratio. Package samples
+  identify file-truename and file-name-handler lookup, with symbol/regexp
+  work. Inclusive percentages overlap, and external GPG/wait time is not
+  attributed by the Emaxx-only report. Full details and descending per-case
+  gaps are retained in issue #70 and the local reviewed profile artifacts.
+- A second compiler pilot resolved existing symbol-cell names once per
+  lookup. Existing GNU variable/buffer-local/uninterned controls and strict
+  Clippy passed, but four alternating pairs changed compiler body time by
+  only 0.91% and Semantic by 0.15%. Neither establishes a meaningful gain,
+  so the 16-line candidate is excluded. Its patch, executable, image and
+  all 225 independent passing outcomes remain retained with verified hashes.
+  An initial filename error selected zero GNU tests and was rejected before
+  either subject ran; it is retained separately as failed diagnostic evidence.
+
+- Process-tree profiles identified repeated heap destruction at the end of
+  compiler and shell-command children. The batch CLI now keeps its interpreter
+  alive through process exit or restart, after releasing suspended threads,
+  process connections and terminal state. GNU similarly ends shutdown with
+  exit/exec without walking the Lisp heap. Returning Rust library calls retain
+  ordinary Drop, including bounded child cleanup; a failed restart still drops
+  its interpreter. Unix CLI shutdown now sends SIGHUP to the child's process
+  group without escalating an ignored signal, matching GNU's
+  `kill_buffer_processes`. Direct GNU/Emaxx controls cover normal children and
+  ignored-SIGHUP children through exit and restart.
+  The first restart control wrongly assumed GNU flushed piped stdout before
+  exec. Its failed log is retained; the corrected control records the PID in
+  a temporary file and passes all four editor/exit-or-restart combinations.
+  Emaxx's existing explicit stdout flush remains a separate observable restart
+  difference, so these checks do not claim complete restart output parity.
+  Four alternating pairs of eight unchanged compiler tests produce 72 actual
+  passing outcomes and reduce median body time from
+  9.340945 to 8.946665 seconds
+  (4.22%). Four pairs of the two unchanged Simple shell-command cases
+  produce 18 actual passing outcomes and reduce the median from
+  21.141074 to 19.119371 seconds
+  (9.56%). Every individual pair and raw result is retained; input and
+  output hashes verify. These isolate the shutdown change against the same
+  configured installation/native preload; they are Mac diagnostic selections,
+  not complete frozen runs or measurements of combined optimization gains.
+  Combined validation passes all 20 CLI cases and five of six parity checks.
+  The copied-executable fingerprint fixture initially mirrored only the old
+  sibling GNU native-library tree, so the configured Emaxx image could not
+  resolve its own native units after the copy. The fixture now mirrors both
+  actual native roots, deduplicating them when equal; its fingerprint equality
+  assertion is unchanged. That single check now passes (9.91 seconds), as
+  does the unfinished real-native-thread contract (5.54 seconds, six paired
+  GNU/Emaxx scenarios). The 25 completed passing checks were retained. Rustfmt,
+  strict all-target/all-feature Clippy (13.55 seconds) and the current runner
+  build pass; the original failed fixture log remains available.
 
 Still open in this effort: complete ordinary frozen results on both platforms,
 remaining performance work and adversarial review. The six strict Mac

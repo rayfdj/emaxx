@@ -2135,6 +2135,9 @@ impl std::fmt::Debug for SerialRuntime {
 
 pub(crate) struct RunningProcess {
     pub(crate) child: Child,
+    /// Embedded owners terminate and reap children when dropped. A leaving
+    /// Unix CLI instead sends GNU's SIGHUP and leaves reaping to the host.
+    pub(crate) terminate_on_drop: bool,
     /// Writable master for a pseudo-terminal connected to child stdin.
     pub(crate) pty_input: Option<fs::File>,
     /// Readable master for a pseudo-terminal connected to child output.
@@ -2150,20 +2153,39 @@ pub(crate) struct RunningProcess {
     pub(crate) pty_slave_name: Option<String>,
 }
 
+impl RunningProcess {
+    #[cfg(unix)]
+    pub(crate) fn hang_up_for_process_exit(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            // process.c:kill_buffer_processes uses CURRENT-GROUP=nil:
+            // signal the child's process group, not the tty foreground
+            // group. GNU neither waits nor escalates an ignored SIGHUP.
+            // SAFETY: this unreaped Child owns the PID; configure_emacs_spawn
+            // made the child lead its own process group.
+            unsafe {
+                libc::kill(-(self.child.id() as libc::pid_t), libc::SIGHUP);
+            }
+        }
+        self.terminate_on_drop = false;
+    }
+}
+
 impl Drop for RunningProcess {
     fn drop(&mut self) {
+        if !self.terminate_on_drop {
+            // Child and the remaining fields still close their descriptors.
+            return;
+        }
         // `Child' closes its pipe handles but deliberately leaves a running
         // child alive.  Every RunningProcess is owned by one interpreter, so
         // dropping an uninstalled runtime after a later setup error -- or
         // dropping the interpreter itself -- must terminate and reap it.
         //
-        // process.c's kill_buffer_processes, run by shut_down_emacs, hangs
-        // up the terminal's foreground group (process_send_signal with
-        // SIGHUP and CURRENT-GROUP) and never waits for anything; the
-        // children a leaving Emacs still has go to the init process.  The
-        // same hangup goes first here.  Reaping is emaxx's (a Rust Child
-        // must be waited for, or a long test process accumulates zombies),
-        // in an order that cannot block: the pseudo-terminal's master ends
+        // This returning owner must not leave children or zombies behind
+        // in an embedding process. Hangup goes first, followed by bounded
+        // termination/reaping. The process-owning CLI instead uses
+        // hang_up_for_process_exit and disarms this guard, matching GNU.
+        // Reaping here proceeds in a bounded order: the terminal's master ends
         // close before the wait, so a child stuck on the terminal (a REPL
         // reading its input, output nobody drains any more) is released,
         // and the wait is bounded -- a child not reaped by then is left to
@@ -2193,8 +2215,8 @@ impl Drop for RunningProcess {
             }
             if let Ok(None) = self.child.try_wait() {
                 // SAFETY: a signal to the child's own process group, which
-                // `setsid' made it lead (or the terminal's foreground group,
-                // as GNU addresses it); the pid is this Child's, unreaped.
+                // `setsid' made it lead, or the terminal's foreground group
+                // when present; the pid is this Child's, unreaped.
                 unsafe {
                     libc::kill(-group, libc::SIGHUP);
                 }

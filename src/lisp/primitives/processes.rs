@@ -549,6 +549,7 @@ pub(crate) fn spawn_persistent_process(
     // subprocess whose runtime was never installed in the interpreter.
     let runtime = RunningProcess {
         child,
+        terminate_on_drop: true,
         pty_input,
         pty_output,
         pty_slave_guard,
