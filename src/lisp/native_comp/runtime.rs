@@ -4000,12 +4000,15 @@ impl NativeMark<'_> {
     pub(crate) fn trace_lisp_value(&mut self, value: &Value) -> (bool, Vec<Value>) {
         if let Value::Cons(cell) = value {
             if let Some(address) = cell.attached_native_address()
-                && self
-                    .heap
-                    .cons_values
-                    .get(&address)
-                    .is_some_and(|mirror| Rc::ptr_eq(&mirror.value, cell))
+                && let Some(mirror) = self.heap.cons_values.get(&address)
+                && Rc::ptr_eq(&mirror.value, cell)
             {
+                // The native walk already supplied this cell's car/cdr
+                // edges. Re-entering the conservative pointer search for
+                // the typed view only repeats address-map lookups.
+                if mirror.gc_marked {
+                    return (true, Vec::new());
+                }
                 // Reuse this mark pass's work stack, as alloc.c does,
                 // instead of allocating a temporary stack for every cons.
                 self.pending.push(address + TAG_CONS);
