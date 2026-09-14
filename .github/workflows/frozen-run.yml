@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       validation:
-        description: Oracle preparation, affected ordinary files, final frozen run, or full Rust gate
+        description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust]
+        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics]
         default: affected
       file:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
@@ -41,7 +41,7 @@ jobs:
             libsqlite3-dev zlib1g-dev libtree-sitter-dev libx11-dev libxpm-dev \
             libjpeg-dev libgif-dev libtiff-dev libpng-dev libxft-dev libxrender-dev \
             libxt-dev liblcms2-dev libharfbuzz-dev libcairo2-dev librsvg2-dev \
-            libwebp-dev libseccomp-dev libasound2-dev libacl1-dev libselinux1-dev clangd bubblewrap
+            libwebp-dev libseccomp-dev libasound2-dev libacl1-dev libselinux1-dev clangd bubblewrap strace
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
           rustup toolchain install 1.75.0 --profile minimal --component rust-analyzer --component rust-src
           rustup default 1.97.1
@@ -95,7 +95,7 @@ jobs:
           cargo build --locked --profile gate --bin compat-harness -j2
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets --all-features -j2 -- -D warnings
-      - name: Execute the requested normal validation
+      - name: Execute the requested validation or diagnosis
         env:
           VALIDATION: ${{ inputs.validation || 'prepare-oracle' }}
           VALIDATION_FILE: ${{ inputs.file }}
@@ -124,6 +124,18 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
           fi
           case "$VALIDATION" in
+            sandbox-diagnostics)
+              # Diagnostic children only; this does not replace an ordinary
+              # run or alter the kernel filter or its expected behavior.
+              cargo build --locked --profile gate --target-dir target/compat-subject \
+                --bin emaxx --bin make-fingerprint -j2
+              EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
+                EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
+                tools/build-image.sh target/compat-subject/gate/emaxx
+              python3 tools/diagnose_linux_sandbox.py --oracle-source ../emacs \
+                --emaxx target/compat-subject/gate/emaxx \
+                --output target/frozen-ci/sandbox-diagnostics
+              ;;
             prepare-oracle|affected)
               if [ "$VALIDATION" = affected ] && [ -n "$VALIDATION_FILE" ]; then
                 run_harness run --file "$VALIDATION_FILE" 2>&1 | tee target/frozen-ci/affected.log

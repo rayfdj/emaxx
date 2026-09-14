@@ -344,3 +344,15 @@ Emaxx CPU, followed by positive CPU time for actual work. Neither reports
 sleep as CPU. Raw measurements and executable hashes are in
 `cpu-time-behavior.json`; strict Clippy and formatting pass. Compiler profiling
 continues from its one-case pilot, without rerunning all 177 tests.
+
+The Linux sandbox continuation at `1eabcb9`, CI `34792206493`, executed
+all seven tests with zero skips. GNU passed six and failed bubblewrap's
+stdout test; Emaxx passed five and additionally received SIGSYS ("Bad system
+call") in the seccomp stdout test. Matching unexpected bubblewrap failures
+correctly fail the run. Contract and six raw receipt hashes were verified.
+`linux-sandbox-1eabcb9/` retains the reports. These are newly exposed failures,
+not resolved skips. The diagnostic workflow mode runs the real binaries and
+unchanged filters under strace with empty environments, and separately probes
+bubblewrap namespace creation. Diagnostic children disable core files to
+capture termination promptly; ordinary runs are unchanged. This mode emits
+no compatibility certificate and returns failure for failed commands.
