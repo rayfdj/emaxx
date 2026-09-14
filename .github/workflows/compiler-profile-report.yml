@@ -1,5 +1,8 @@
 name: Report retained compiler samples
 on:
+  push:
+    branches: [fix/frozen-run-success]
+    paths: [.github/workflows/compiler-profile-report.yml]
   workflow_dispatch:
 permissions:
   contents: read
