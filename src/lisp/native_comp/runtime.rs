@@ -3333,7 +3333,11 @@ extern "C" fn runtime_pseudovector_typep(value: NativeWord, code: i32) -> bool {
         Ok(value) => {
             let interpreter = unsafe { &mut *active.interpreter };
             match code {
-                2 => matches!(value, Value::BigInteger(_)),
+                2 => {
+                    matches!(value, Value::BigInteger(_))
+                        || matches!(value, Value::Integer(integer)
+                            if !(MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer))
+                }
                 6 => symbol_with_pos_parts(interpreter, &value).is_some(),
                 _ => false,
             }

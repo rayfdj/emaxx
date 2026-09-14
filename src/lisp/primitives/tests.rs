@@ -21,6 +21,111 @@ fn call_via_lisp(
 }
 
 #[test]
+fn native_numeric_predicates_and_sorting_recognize_all_bignums() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp) (require 'sort)
+            (let* ((comp-no-spawn nil) (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   (predicate (native-compile
+                               '(lambda (x)
+                                  (list (numberp x) (integerp x)
+                                        (bignump x) (fixnump x))))))
+              (list
+               (mapcar predicate
+                       (list 1 4000000000000000000 -4000000000000000000
+                             (expt 2 100) 1.5 nil))
+               (with-temp-buffer
+                 (insert "4000000000000000000 b\n0 c\n-5107225293856344518 a\n")
+                 (sort-numeric-fields 1 (point-min) (point-max))
+                 (buffer-string)))))"#,
+        "(((t t nil t) (t t t nil) (t t t nil) (t t t nil) (t nil nil nil) (nil nil nil nil)) \"-5107225293856344518 a\n0 c\n4000000000000000000 b\n\")",
+        "native numeric predicates and numeric-field sorting",
+    );
+}
+
+#[test]
+fn random_default_and_reseeded_values_follow_the_gnu_fixnum_contract() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((valid t))
+            (random "fixnum-range-control")
+            (dotimes (_ 256)
+              (dolist (argument (list nil 'ignored [] 1.5))
+                (let ((value (random argument)))
+                  (unless (and (fixnump value)
+                               (<= most-negative-fixnum value most-positive-fixnum))
+                    (setq valid nil)))))
+            (let* ((first (random "repeatable-control"))
+                   (next (random))
+                   (again (random "repeatable-control")))
+              (list valid (fixnump first) (= first again) (= next (random))
+                    (fixnump (random t))
+                    (= (random 1) 0))))"#,
+        "(t t t t t t)",
+        "random fixnum range, ignored noninteger arguments, and reseeding",
+    );
+}
+
+#[test]
+fn reader_interns_symbols_inside_shared_and_circular_vectors() {
+    assert_oracle_contract_matches_interpreter(
+        r##"(let* ((name (concat "vector-reader-" "fresh-symbol"))
+                  (object (read (concat "#1=[" name " #1#]"))))
+            (list (eq (aref object 0) (intern-soft name))
+                  (eq object (aref object 1))
+                  (progn (unintern name) (null (intern-soft name)))))"##,
+        "(t t t)",
+        "reader vector symbols and circular identity",
+    );
+}
+
+#[test]
+fn reader_interns_vector_symbols_in_the_dynamic_obarray() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((name (concat "private-vector-" "fresh-symbol"))
+                  (standard obarray)
+                  (obarray (obarray-make))
+                  (object (read (concat "[#1=[" name "] #1# #:" name "]"))))
+            (list (eq (aref (aref object 0) 0) (intern-soft name))
+                  (eq (aref object 0) (aref object 1))
+                  (not (eq (aref object 2) (intern-soft name)))
+                  (null (intern-soft name standard))))"#,
+        "(t t t t)",
+        "reader vectors use private obarray identities",
+    );
+}
+
+#[test]
+fn native_loader_interns_symbols_inside_relocation_vectors() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp)
+            (let* ((source (make-temp-file "native-vector-symbols-" nil ".el"))
+                   (name (concat "native-vector-" "fresh-symbol"))
+                   (comp-no-spawn nil)
+                   (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   eln)
+              (unwind-protect
+                  (progn
+                    (with-temp-file source
+                      (insert ";;; -*- lexical-binding: t -*-\n"
+                              "(defun native-vector-symbol-reader () '[" name "])"))
+                    (setq eln (native-compile source))
+                    (unintern name)
+                    (native-elisp-load eln)
+                    (list (native-comp-function-p
+                           (symbol-function 'native-vector-symbol-reader))
+                          (eq (aref (native-vector-symbol-reader) 0)
+                              (intern-soft name))))
+                (delete-file source)
+                (when (and eln (file-exists-p eln)) (delete-file eln)))))"#,
+        "(t t)",
+        "native relocation vectors register their read symbols",
+    );
+}
+
+#[test]
 fn atan_treats_an_explicit_nil_second_argument_as_omitted_like_gnu() {
     // floatfns.c:Fatan selects atan, rather than atan2, when X is nil.
     assert_oracle_contract_matches_interpreter(

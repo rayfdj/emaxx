@@ -25,8 +25,10 @@ section records the latest completed checks; no final frozen success is claimed.
   PTYs used by both editors. This changes test preparation, with no editor
   runtime or upstream assertion changes. All seven unchanged server cases
   pass independently on Mac with that environment; the focused environment
-  control, rustfmt and strict Clippy pass. Linux ordinary verification remains
-  required. The original 214-skip artifact and named-case audit are retained.
+  control, rustfmt and strict Clippy pass. Linux ordinary gate `34831517325`
+  at `13a8546` also passes all seven tests, including the three original
+  server cases, plus the environment control; all six raw receipt hashes
+  verify. The original 214-skip artifact and named-case audit are retained.
 - All four primitive fixes in `1ee9fce` pass their ordinary Linux files and
   accompanying Rust controls: Solar (`34829836880`), Eshell arguments
   (`34829839814`), ERC (`34829842376`), and Eshell unload (`34829845717`).
@@ -35,8 +37,40 @@ section records the latest completed checks; no final frozen success is claimed.
   122.711 seconds and Emaxx's 153.081 seconds. Its six receipts verify.
   The earlier timed-out attempt overlapped isolated Rust builds, so elapsed
   time differences cannot be attributed solely to primitive repairs.
-  The continuation has exposed additional Pascal/Ruby indentation and
-  numeric-field sorting failures, which remain under investigation.
+  The complete continuation covers 201 files and 3,442 outcomes: 3,433
+  match, three are unexpected runtime failures, and six retain the Mac
+  capability diagnostic differences assigned to #73. All 1,206 raw receipt
+  hashes verify. It is not combined with the earlier revision into a frozen
+  certificate. The additional runtime failures expose the defects below.
+- Pascal and Ruby indentation lose keyword identities when native relocation
+  vectors contain symbols absent from the standard obarray. Both the reader's
+  standard-obarray walk and its private-obarray identity mapping now traverse
+  vectors, retaining shared and circular vector identity. An older `890becd`
+  binary reproduces both failures, so they do not originate in the recent
+  four-primitive repair. Three GNU-checked controls cover circular/shared
+  vectors, a dynamically bound private obarray, and actual native relocation
+  loading; adjacent symbol controls also pass.
+- Native numeric predicates misclassify integers outside the 62-bit fixnum
+  range when their values still fit Rust's `i64`. The bridge already represents
+  these as GNU bignums; the pseudovector predicate now recognizes that same
+  representation as well as arbitrary-precision integers. A real native-compiled
+  control checks both representations and numeric-field sorting with explicit
+  large integers, independently of random generation.
+- Unrestricted `random` used the full signed 64-bit value range. It now retains
+  and sign-extends the 62-bit payload, following `Frandom`/`make_ufixnum`.
+  Noninteger, nonstring arguments follow GNU's unrestricted branch; positive
+  integer limits retain the existing bounded generator. This repairs the value
+  and argument contracts without claiming the underlying PRNG is GNU's exact
+  algorithm. Four random-related controls pass, including deterministic reseeding
+  and actual fixnum range checks. All 94 native-runtime controls, rustfmt, and
+  all-target/all-feature Clippy with `-D warnings` pass for the combined candidate.
+  Independent Mac checks of unchanged upstream files now match: Pascal has
+  one pass, numeric sorting five, and Ruby 106 passes plus two declared
+  expected failures in each editor. Raw outputs and input hashes verify in
+  `vector-numeric-random-upstream-reviewed.json`. The first manual image
+  command omitted the required test-directory environment; only that failed
+  preparation step was continued. Ordinary cross-platform validation of the
+  published three-fix implementation remains required.
 - The ordinary Mac attempt at `03a3814`
   (`frozen-1789376872886057000-67964`) completed 318 file comparisons,
   including matching Comint and SHR, then stopped at Tramp: GNU completed
