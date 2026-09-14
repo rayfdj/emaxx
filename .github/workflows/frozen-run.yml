@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics]
+        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics]
         default: affected
       file:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
@@ -15,6 +15,10 @@ on:
         description: Optional targeted Rust control to accompany an affected ordinary file
         type: string
         default: ''
+      baseline_revision:
+        description: Full commit ID for the before binary in allocator diagnostics
+        type: string
+        default: fb45ffdf253d23d4442cf87c56ae4d4291b86562
       startup_syscall:
         description: Syscall to inspect in startup-diagnostics mode
         type: choice
@@ -45,7 +49,7 @@ jobs:
       - name: Install recorded oracle and language server prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config texinfo autoconf automake \
+          sudo apt-get install -y build-essential pkg-config texinfo autoconf automake time \
             libgnutls28-dev gnutls-bin gdb libncurses-dev libgccjit-13-dev libgmp-dev libxml2-dev \
             libsqlite3-dev zlib1g-dev libtree-sitter-dev libx11-dev libxpm-dev \
             libjpeg-dev libgif-dev libtiff-dev libpng-dev libxft-dev libxrender-dev \
@@ -119,6 +123,7 @@ jobs:
           VALIDATION: ${{ inputs.validation || 'prepare-oracle' }}
           VALIDATION_FILE: ${{ inputs.file }}
           VALIDATION_RUST_FILTER: ${{ inputs.rust_filter }}
+          BASELINE_REVISION: ${{ inputs.baseline_revision || 'fb45ffdf253d23d4442cf87c56ae4d4291b86562' }}
           STARTUP_SYSCALL: ${{ inputs.startup_syscall || 'sysinfo' }}
         run: |
           mkdir -p target/frozen-ci
@@ -145,7 +150,7 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
           fi
           case "$VALIDATION" in
-            sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics)
+            sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics|compiler-diagnostics)
               # Diagnostic children only; this does not replace an ordinary
               # run or alter the kernel filter or its expected behavior.
               cargo build --locked --profile gate --target-dir target/compat-subject \
@@ -176,13 +181,20 @@ jobs:
               EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
                 EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
                 tools/build-image.sh target/compat-subject/gate/emaxx
+              if [ "$VALIDATION" = compiler-diagnostics ]; then
+                python3 tools/profile_native_compiler.py --oracle-source ../emacs \
+                  --emaxx target/compat-subject/gate/emaxx \
+                  --selector '"^comp-tests-ret-type-spec-"' \
+                  --output target/frozen-ci/compiler-diagnostics
+                exit 0
+              fi
               if [ "$VALIDATION" = allocator-diagnostics ]; then
                 # Build the actual pre-change implementation against the
                 # same GNU libraries; retained scores are never inputs.
                 baseline_root="$RUNNER_TEMP/allocator-before"
                 mkdir -p "$baseline_root"
-                git worktree add --detach "$baseline_root/emaxx" \
-                  fb45ffdf253d23d4442cf87c56ae4d4291b86562
+                [[ "$BASELINE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+                git worktree add --detach "$baseline_root/emaxx" "$BASELINE_REVISION"
                 ln -s "$PWD/../emacs" "$baseline_root/emacs"
                 cargo build --locked --profile gate \
                   --manifest-path "$baseline_root/emaxx/Cargo.toml" \

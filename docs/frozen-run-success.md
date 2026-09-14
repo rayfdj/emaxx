@@ -615,3 +615,58 @@ use `sqlite-execute` and rerun; its initial failed output remains retained.
 Linux validation is pending. The CI affected-file path accepts an optional
 quoted Rust test filter so the actual extension control can accompany the
 normal upstream SQLite file without rerunning the full Rust suite.
+
+The next cons-teardown revision empties uniquely owned cells in their existing
+allocations, using `Rc::try_unwrap` only when weak observers prevent
+`Rc::get_mut`. It preserves shared/native ownership and expires weak observers.
+All 28 value controls and 15 native-GC controls pass, including 100,000-cell
+car/cdr chains on a 256 KiB stack. This bounds teardown of cons trees; it does
+not claim constant-stack destruction of arbitrary mixed object graphs.
+
+Four alternating Mac pairs against the saved, normally validated `679bf45`
+binary all complete with the expected workload values. Cons workload median
+wall time changes from 0.345746 to 0.277783 seconds (19.66% lower), with the
+candidate faster in each pair. Other workload medians do not regress, but their
+variation does not establish a causal speedup. All eight raw report hashes
+verify in `cons-in-place-mac-comparison/`. Both builds and image creation had
+completed before this measurement. The batch reservation is now 128 MiB,
+matching Lisp threads; guarded same-thread execution and native stack bounds
+are retained. This teardown-only candidate did not yet pass the actual large
+list process control: its crash frames show recursive `LispReachability::mark`
+exhausting the 128 MiB stack. The failure is retained in
+`cons-stack-large-list-crash-frames.log` and is not counted as a pass.
+
+The collector now marks objects before queueing their fields and drains the
+reachable graph before weak-table convergence or sweeping. This removes Rust
+recursion across Lisp graph edges, preserves the current native words as the
+authority, and terminates on cycles. All 21 targeted collector, native-GC,
+weak-table, finalizer, marker and stack controls pass. The actual batch process
+now constructs, reads and releases an 8,000,005-element list in both GNU and
+Emaxx with the 128 MiB reservation (`iterative-gc-large-list-control.log`).
+The combined implementation completes four alternating Mac allocation pairs
+with all eight raw report hashes and expected values verified in
+`iterative-gc-mac-comparison/`. Cons median changes 0.290779 to 0.267034 seconds
+(-8.17%); vectors 0.115886 to 0.124855 (+7.74%); strings 0.079306 to 0.079728
+(+0.53%); evaluation 0.759668 to 0.751860 (-1.03%). The vector cost remains
+visible; this is not a uniform speedup. Ordinary Mac modules then pass 38/38
+in both editors with zero unexpected outcomes at
+`run-1789362997395408000-41819`; all six raw receipts and the contract verify.
+Formatting and strict Clippy pass. Actual Linux crash-latency and allocation
+validation remain required.
+
+Linux SQLite control job `34807858244` stopped before runtime assertions:
+unfiltered offline Cargo metadata requested an absent Android dependency.
+`71af918` restricts the query to Cargo's actual target. The unchanged real
+module control passes again on Mac, with formatting and strict Clippy clean;
+Linux resumes only that control and the unexecuted ordinary SQLite file in
+`34808702941`. The initial failed evidence remains retained.
+
+Compiler attribution now has a portable diagnostic script with explicit GNU
+source and Emaxx paths. It retains pass lists, raw independent test results,
+child inputs and resource usage, process identity/CPU samples, and hashes of
+inputs/outputs verified after execution. Linux reads descendants from each
+task's `/proc` children; Darwin uses libproc. Sampling can miss short-lived
+children, so actual `/usr/bin/time` usage remains available for each compiler
+invocation. A real parent/child sampler control and one unchanged upstream
+compiler test pass on Mac, with all output hashes verified. The diagnostic is
+separate from normal frozen certification; Linux attribution remains pending.
