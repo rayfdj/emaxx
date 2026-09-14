@@ -482,7 +482,7 @@ fn gnu_checkout_directory(relative: &str) -> Option<String> {
     let path = crate::compat::project_root()
         .join("../emacs")
         .join(relative);
-    if !path.is_dir() {
+    if !fs::is_directory(&path) {
         return None;
     }
     crate::compat::canonicalize_path(&path)
@@ -502,7 +502,7 @@ pub(crate) fn compat_data_directory() -> Option<String> {
 /// its checkout root).  The sibling checkout plays that role here.
 pub(crate) fn compat_installation_directory() -> Option<String> {
     let root = crate::compat::project_root().join("../emacs");
-    if !(root.join("src").is_dir() && root.join("lisp").is_dir()) {
+    if !(fs::is_directory(root.join("src")) && fs::is_directory(root.join("lisp"))) {
         return None;
     }
     gnu_checkout_directory(".")

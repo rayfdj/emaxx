@@ -87,7 +87,7 @@ impl ImageBytes {
             // file"): a directory opens and cannot be read.
             let file = std::fs::File::open(path)?;
             let len = usize::try_from(
-                file.metadata()
+                crate::file_system::file_metadata(&file)
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?
                     .len(),
             )
@@ -95,9 +95,8 @@ impl ImageBytes {
             if len == 0 {
                 return Ok(Self::Owned(Vec::new()));
             }
-            #[cfg(target_os = "linux")]
-            let flags = libc::MAP_PRIVATE | libc::MAP_POPULATE;
-            #[cfg(not(target_os = "linux"))]
+            // GNU's file mapping does not request anonymous-memory
+            // prefaulting flags such as MAP_POPULATE.
             let flags = libc::MAP_PRIVATE;
             // SAFETY: a fresh private read-only mapping of the open file's
             // `len' bytes at an address of the kernel's choosing, unmapped
@@ -115,7 +114,7 @@ impl ImageBytes {
             if address == libc::MAP_FAILED {
                 // A file the host cannot map (a directory, a filesystem
                 // without mmap): read it, and report what the read does.
-                return std::fs::read(path)
+                return crate::file_system::read(path)
                     .map(Self::Owned)
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
             }

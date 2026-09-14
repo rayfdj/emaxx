@@ -758,7 +758,7 @@ fn read_source(path: &Path) -> Result<String, types::LispError> {
 }
 
 fn read_source_bytes(path: &Path) -> Result<Vec<u8>, types::LispError> {
-    std::fs::read(path).map_err(|error| {
+    crate::file_system::read(path).map_err(|error| {
         types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
     })
 }
@@ -950,9 +950,7 @@ pub(crate) fn load_file_strict_opened(
     mut file: std::fs::File,
     history: &str,
 ) -> Result<(), types::LispError> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|error| {
+    let bytes = crate::file_system::read_open_file(&mut file).map_err(|error| {
         primitives::file_operation_error("Reading file", &error, &path.display().to_string())
     })?;
     let result = read_lisp_file_bytes(interp, path, bytes, Some(history), |_| false, |_| false);

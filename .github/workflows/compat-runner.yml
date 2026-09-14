@@ -49,6 +49,7 @@ jobs:
           cargo test --locked --profile gate --lib -j2 alternate_stack -- --test-threads=1 2>&1 | tee target/compat-runner-checks/alternate-stack.log
           cargo test --locked --profile gate --lib -j2 lisp::eval::continuations::tests -- --test-threads=1 2>&1 | tee target/compat-runner-checks/continuations.log
           cargo test --locked --profile gate --lib -j2 batch_stack_preserves -- --test-threads=1 2>&1 | tee target/compat-runner-checks/batch-stack.log
+          cargo test --locked --profile gate --lib -j2 file_system::posix::tests -- --test-threads=1 2>&1 | tee target/compat-runner-checks/posix-files.log
           cargo test --locked --profile gate --bin compat-harness -j2 -- --test-threads=1 2>&1 | tee target/compat-runner-checks/harness.log
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         if: success()

@@ -6,6 +6,7 @@ use super::types::{
     shared_env,
 };
 use crate::buffer::TextPropertySpan;
+use crate::file_system as fs;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
 use fancy_regex::Regex as FancyRegex;
 use flate2::read::GzDecoder;
@@ -22,7 +23,6 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(unix)]
 use std::ffi::CString;
-use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(unix)]

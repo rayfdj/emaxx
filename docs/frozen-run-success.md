@@ -434,3 +434,22 @@ and 32/32 in both editors with no skips or unexpected results. Their runs
 are `run-1789349643024911000-31483` and `run-1789349662394812000-31482`;
 `ordinary-stack-bounds-evidence.json` records verification of their contracts
 and all six raw receipt hashes each.
+
+Startup diagnostic `34796859065` confirms the inherited-filter `sysinfo`
+call comes from `_mi_prim_mem_init -> mi_process_init ->
+_mi_auto_process_init`, before `main`. Linux now uses Rust's system allocator
+(the host libc backend used by GNU), with no mimalloc constructor linked on
+that target. Other targets retain their existing allocator. Linux performance
+comparison remains required; no improvement is claimed for this change.
+
+The runtime now reads file status through POSIX `stat`, `lstat`, and `fstat`,
+as GNU does. Shared file reads retain the selected descriptor and avoid Rust's
+extra `statx` birth-time query. The image mapping no longer requests
+`MAP_POPULATE`, which GNU uses for a different anonymous-memory path rather
+than its file mappings. These changes preserve the unchanged filters; they do
+not interpose syscalls or manufacture failed queries to select a fallback.
+Four host-filesystem controls, two existing descriptor/loading controls, and
+the existing file-metadata/primitive controls pass on macOS. A standalone
+image builds successfully; formatting and strict Clippy pass. The initial
+raw-filename fixture was corrected after a direct host probe confirmed that
+macOS rejects non-UTF-8 names with EILSEQ; Linux's raw-filename check remains.
