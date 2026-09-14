@@ -302,6 +302,7 @@ jobs:
           root = Path('target/frozen-ci/rust-tail').resolve()
           root.mkdir(parents=True, exist_ok=False)
           summary = {'git': gate.git_state(), 'status': 'running', 'stages': [],
+                     'environment': {'LANG': 'C', 'LC_ALL': 'C', 'RUST_TEST_THREADS': '1'},
                      'scope': 'Three image-state controls, all binary and integration targets; not a complete library rerun'}
           try:
               targets = gate.discover_cargo_test_targets(root)
@@ -315,7 +316,10 @@ jobs:
                                         for arg in ('--test', target)), len(targets['integrations'])),
               ]
               for name, arguments, expected in stages:
-                  summary['stages'].append(gate.run_cargo_stage(name, arguments, 'gate', root, expected))
+                  result = gate.run_cargo_stage(name, arguments, 'gate', root, expected)
+                  if arguments[0] == '--lib' and result['results'][0]['passed'] != 1:
+                      raise gate.GateError(f'{name} must execute exactly one control')
+                  summary['stages'].append(result)
                   gate.write_summary(root / 'summary.json', summary)
               summary['status'] = 'passed'
           except BaseException as error:
