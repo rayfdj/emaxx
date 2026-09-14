@@ -16394,7 +16394,15 @@ fn sqlite_extension_loading_executes_real_code_and_rejects_invalid_files() {
     // Apple's SDK header disables its extension API macros; this fixture uses
     // the API pointer supplied by the database and links no system SQLite.
     let metadata = std::process::Command::new("cargo")
-        .args(["metadata", "--locked", "--offline", "--format-version", "1"])
+        .args([
+            "metadata",
+            "--locked",
+            "--offline",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            env!("EMAXX_RUST_TARGET"),
+        ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("locked Cargo metadata");

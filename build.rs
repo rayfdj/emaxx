@@ -2,6 +2,10 @@ use std::env;
 use std::path::Path;
 
 fn main() {
+    println!(
+        "cargo:rustc-env=EMAXX_RUST_TARGET={}",
+        env::var("TARGET").expect("Cargo must provide the Rust target")
+    );
     let out_dir = env::var("OUT_DIR").expect("Cargo must provide OUT_DIR to build scripts");
     let out_dir = Path::new(&out_dir);
     let build_dir = out_dir
