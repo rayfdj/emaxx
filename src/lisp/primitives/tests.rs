@@ -24451,6 +24451,35 @@ fn load_history_lists_a_repeated_definition_twice_as_gnu_does() {
     std::fs::remove_file(&path).expect("remove the fixture file");
 }
 
+#[test]
+fn reader_distinguishes_unibyte_string_characters_from_byte8_sources() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((plain (unibyte-string 34 255 34))
+                   (raw (string-to-multibyte plain))
+                   (escaped (unibyte-string 34 92 51 55 55 34)))
+              (mapcar
+               (lambda (source)
+                 (list
+                  (let ((value (read source)))
+                    (list (multibyte-string-p value) (string-to-list value)))
+                  (let* ((pair (read-from-string (concat "x" source "tail")
+                                                 1 (1+ (length source))))
+                         (value (car pair)))
+                    (list (multibyte-string-p value) (string-to-list value) (cdr pair)))
+                  (let ((value (read-positioning-symbols source)))
+                    (list (multibyte-string-p value) (string-to-list value)))
+                  (with-temp-buffer
+                    (set-buffer-multibyte nil)
+                    (insert source)
+                    (goto-char (point-min))
+                    (let ((value (read (current-buffer))))
+                      (list (multibyte-string-p value) (string-to-list value) (point))))))
+               (list plain raw escaped)))"#,
+        "(((t (255)) (t (255) 4) (t (255)) (nil (255) 4)) ((nil (255)) (nil (255) 4) (nil (255)) (nil (255) 4)) ((nil (255)) (nil (255) 7) (nil (255)) (nil (255) 7)))",
+        "string bytes, raw-byte characters, octal escapes, and buffer bytes",
+    );
+}
+
 /// lread.c reads a symbol inside a vector as a symbol with position under
 /// `read-positioning-symbols' just as it does inside a list; the reader's
 /// placeholder used to stay in the vector, so `type-of' on the element

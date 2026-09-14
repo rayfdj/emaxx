@@ -410,7 +410,7 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let s = string_text(&args[0])?;
+                let s = reader_string_source_text(&args[0])?;
                 let chars: Vec<char> = s.chars().collect();
                 let start = normalize_string_index(args.get(1), 0, chars.len() as i64)? as usize;
                 let end =

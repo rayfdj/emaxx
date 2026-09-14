@@ -35,27 +35,36 @@ fn batch_large_lists_complete_and_release_without_exhausting_the_stack() {
 #[test]
 fn linux_entrypoint_preserves_arguments_environment_and_exit_status() {
     let oracle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../emacs/src/emacs");
-    for binary in [oracle.as_path(), common::emaxx(false)] {
-        let result = Command::new(binary)
+    for (locale, expected) in [
+        ("C", "(\"env λ\" nil)"),
+        ("C.UTF-8", "(\"env λ\" (\"λ argument\"))"),
+    ] {
+        for binary in [oracle.as_path(), common::emaxx(false)] {
+            let result = Command::new(binary)
             .args([
                 "-Q", "--batch", "--eval",
                 "(progn (prin1 (list (getenv \"EMAXX_ENTRY_CONTROL\") (member \"λ argument\" command-line-args))) (kill-emacs 23))",
                 "λ argument",
             ])
+            .env("LC_ALL", locale)
+            .env("LANG", locale)
             .env("EMAXX_ENTRY_CONTROL", "env λ")
             .output()
             .unwrap();
-        assert_eq!(
-            result.status.code(),
-            Some(23),
-            "{}: {:?}",
-            binary.display(),
-            result
-        );
-        assert_eq!(
-            String::from_utf8(result.stdout).unwrap(),
-            "(\"env λ\" (\"λ argument\"))"
-        );
+            assert_eq!(
+                result.status.code(),
+                Some(23),
+                "{} under {locale}: {:?}",
+                binary.display(),
+                result
+            );
+            assert_eq!(
+                String::from_utf8(result.stdout).unwrap(),
+                expected,
+                "{} under {locale}",
+                binary.display()
+            );
+        }
     }
 }
 
