@@ -8,10 +8,23 @@ Missing platform/build capabilities are tracked separately in
 The issues retain the original run identity, all 363 files sorted by slowdown,
 profiling findings, and acceptance criteria.
 
-## Current validation status, 2026-09-14
+## Final results, 2026-09-14
 
-The chronological evidence below includes failed intermediate attempts. This
-section records the latest completed checks; no final frozen success is claimed.
+The [complete final report](frozen-run-result-2026-09-14.md) records ordinary
+frozen runs at `a5084e8` on both platforms. All 26 original unexpected failures
+actually pass in GNU and Emaxx on each host. Linux matches all 7,928 outcomes
+across 519 files. Mac matches 7,915 of 7,921 across 519 files, with zero
+unexpected results and only the six explicit capability diagnostics assigned
+to #73. Mac's strict command exits 1; it is not labeled all-green. All 6,228 raw
+receipt hashes verify. Compiler, module and new runtime controls pass, with
+clean rustfmt and strict Clippy on both platforms. The report includes current
+descending case rankings, measured improvements, audit scope and limitations.
+
+## Earlier validation checkpoints, 2026-09-14
+
+The chronological evidence below includes failed intermediate attempts and
+records what was known at each checkpoint. Pending statements below are
+historical; the complete final results above supersede those checkpoints.
 
 - Linux frozen run `34826268382` at `03a3814` completes all 519 files and
   7,928 matching outcomes: 7,667 passes, 214 skips and 47 expected failures
