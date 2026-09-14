@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples]
+        options: [prepare-oracle, affected, frozen, rust, rust-tail, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples]
         default: affected
       file:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
@@ -288,6 +288,42 @@ jobs:
             rust)
               LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 \
                 python3 tools/serial_grouped_gate.py --scope full --artifact-root target/frozen-ci/rust
+              ;;
+            rust-tail)
+              # Explicit continuation after the documentation-only failure in
+              # the 37197db library gate. Its original results remain failed;
+              # these controls and remaining Cargo targets are separate evidence.
+              LANG=C LC_ALL=C RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=2 python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools')
+          import serial_grouped_gate
+          gate = serial_grouped_gate.gate
+          root = Path('target/frozen-ci/rust-tail').resolve()
+          root.mkdir(parents=True, exist_ok=False)
+          summary = {'git': gate.git_state(), 'status': 'running', 'stages': [],
+                     'scope': 'Three image-state controls, all binary and integration targets; not a complete library rerun'}
+          try:
+              targets = gate.discover_cargo_test_targets(root)
+              summary['cargo_test_targets'] = targets
+              stages = [
+                  ('field-audit', ('--lib', 'interpreter_fields_are_carried_or_documented'), 1),
+                  ('field-inventory', ('--lib', 'every_reset_root_is_a_mark_phase_root'), 1),
+                  ('overlay-image', ('--lib', 'image_round_trips_buffers_markers_finalizers_and_nilled_frames'), 1),
+                  ('bins', ('--bins',), len(targets['bins'])),
+                  ('integration', tuple(arg for target in targets['integrations']
+                                        for arg in ('--test', target)), len(targets['integrations'])),
+              ]
+              for name, arguments, expected in stages:
+                  summary['stages'].append(gate.run_cargo_stage(name, arguments, 'gate', root, expected))
+                  gate.write_summary(root / 'summary.json', summary)
+              summary['status'] = 'passed'
+          except BaseException as error:
+              summary.update(status='failed', error=str(error))
+              raise
+          finally:
+              gate.write_summary(root / 'summary.json', summary)
+          PY
               ;;
             *)
               echo "Unknown validation mode: $VALIDATION" >&2
