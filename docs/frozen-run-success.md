@@ -670,3 +670,28 @@ children, so actual `/usr/bin/time` usage remains available for each compiler
 invocation. A real parent/child sampler control and one unchanged upstream
 compiler test pass on Mac, with all output hashes verified. The diagnostic is
 separate from normal frozen certification; Linux attribution remains pending.
+
+Linux now validates the collector/stack change through ordinary
+`emacs-tests.el` in CI `34809182319`: seven actual passes per editor, no skips
+or unexpected results, with all six raw receipts and the contract verified.
+Emaxx test-body time falls from the prior 59.125 seconds to 1.571324 seconds;
+GNU takes 0.535897 seconds. The forbidden-subprocess case is 1.008877 seconds
+versus GNU's 0.308253, and both allowed-stdout paths succeed. This measures the
+real upstream process/filter behavior, not the standalone core diagnostic.
+
+Linux's corrected SQLite continuation `34808702941` also passes the genuine
+extension control and all 12 ordinary tests in each editor. Raw receipts,
+the contract and control-log hash verify in `linux-sqlite-receipts.json`.
+
+The complete Linux 80-case compiler attribution at `37197db` passes every
+selected test independently. All raw output hashes and final input checks
+verify. GNU test bodies total 9.204063 seconds versus Emaxx's 53.479885.
+For the 80 compiler children inside those tests, aggregate elapsed time is
+7.37 versus 42.99 seconds. Pre-instrumentation Lisp CPU totals 2.432252 versus
+17.092326 seconds; loading `comp` uses 2.500924 versus 13.370486 CPU seconds.
+Backend CPU is 1.417475 versus 5.260953 seconds. These are stage attributions,
+not additive independent costs or complete sampled-process accounting.
+The dominant Linux gap is repeated startup/loading CPU work. The next
+diagnostic samples only the launched compiler process tree, keeps the editors
+under the ordinary runner account, and records eight unchanged upstream cases
+with `perf`; no global profiling policy or compatibility selector is changed.

@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics]
+        options: [prepare-oracle, affected, frozen, rust, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples]
         default: affected
       file:
         description: For affected mode, run only this upstream file; blank runs module and Eglot
@@ -68,6 +68,9 @@ jobs:
           bwrap --ro-bind / / -- /bin/true
           mkdir -p target/frozen-ci/metadata
           cp compat/ci-bwrap.apparmor target/frozen-ci/metadata/
+      - name: Install process-scoped compiler sampling tools
+        if: inputs.validation == 'compiler-samples'
+        run: sudo apt-get install -y linux-tools-generic
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: oracle-cache
         with:
@@ -150,7 +153,7 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
           fi
           case "$VALIDATION" in
-            sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics|compiler-diagnostics)
+            sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics|compiler-diagnostics|compiler-samples)
               # Diagnostic children only; this does not replace an ordinary
               # run or alter the kernel filter or its expected behavior.
               cargo build --locked --profile gate --target-dir target/compat-subject \
@@ -181,6 +184,37 @@ jobs:
               EMAXX_DUMP_SOURCE_DIRECTORY="$PWD/../emacs" \
                 EMACS_TEST_DIRECTORY="$PWD/../emacs/test" \
                 tools/build-image.sh target/compat-subject/gate/emaxx
+              if [ "$VALIDATION" = compiler-samples ]; then
+                # Sample only this diagnostic process tree. The editors run
+                # under the ordinary runner account; no global perf policy is
+                # changed and no unrelated processes are sampled. Eight real
+                # compiler cases provide repeated children; this is not a
+                # compatibility certificate or an uninstrumented benchmark.
+                perf_binary=$(python3 - <<'PY'
+          from pathlib import Path
+          candidates = sorted(Path('/usr/lib/linux-tools').glob('*/perf'))
+          if not candidates:
+              raise SystemExit('Installed Linux perf executable was not found')
+          print(candidates[-1].resolve(strict=True))
+          PY
+                )
+                diagnostic_user=$(id -un)
+                sudo "$perf_binary" record -e cpu-clock:u -F 997 \
+                  --call-graph dwarf,16384 -o "$PWD/target/frozen-ci/compiler-perf.data" \
+                  -- sudo -u "$diagnostic_user" -- env "PATH=$PATH" \
+                  python3 tools/profile_native_compiler.py --oracle-source ../emacs \
+                    --emaxx target/compat-subject/gate/emaxx \
+                    --selector '"^comp-tests-ret-type-spec-[1-8]$"' \
+                    --output target/frozen-ci/compiler-samples \
+                  2>&1 | tee target/frozen-ci/compiler-perf.log
+                sudo "$perf_binary" report --stdio --no-children \
+                  -i target/frozen-ci/compiler-perf.data --sort comm,dso,symbol \
+                  > target/frozen-ci/compiler-perf-self.txt
+                sudo "$perf_binary" report --stdio --children --percent-limit 0.5 \
+                  -i target/frozen-ci/compiler-perf.data --sort comm,dso,symbol \
+                  > target/frozen-ci/compiler-perf-callers.txt
+                exit 0
+              fi
               if [ "$VALIDATION" = compiler-diagnostics ]; then
                 python3 tools/profile_native_compiler.py --oracle-source ../emacs \
                   --emaxx target/compat-subject/gate/emaxx \
