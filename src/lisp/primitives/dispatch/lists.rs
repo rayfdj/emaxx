@@ -2361,7 +2361,7 @@ define_dispatch!(
                         // read-from-minibuffer's DEFAULT is only history input
                         // and does not replace an empty return value.
                         if name == "read-string"
-                            && let Some(default) = args.get(3)
+                            && let Some(default) = args.get(3).filter(|value| !value.is_nil())
                         {
                             let default = match default.cons_values() {
                                 Some((head, _)) => head,

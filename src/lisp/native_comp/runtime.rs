@@ -7934,6 +7934,58 @@ mod tests {
     }
 
     #[test]
+    fn native_funcall_atan_accepts_an_omitted_or_nil_x() {
+        // The native fixed-arity entry pads an omitted X with Qnil.
+        // Solar reaches this ABI through its compiled angle functions.
+        for (arguments, expected) in [
+            (
+                vec![Value::symbol("atan"), Value::Integer(-1)],
+                (-1_f64).atan(),
+            ),
+            (
+                vec![Value::symbol("atan"), Value::Integer(-1), Value::Nil],
+                (-1_f64).atan(),
+            ),
+            (
+                vec![
+                    Value::symbol("atan"),
+                    Value::Integer(-1),
+                    Value::Integer(-1),
+                ],
+                (-1_f64).atan2(-1.0),
+            ),
+            (
+                vec![Value::symbol("atan"), Value::Integer(1), Value::Integer(0)],
+                1_f64.atan2(0.0),
+            ),
+        ] {
+            let mut interpreter = Interpreter::new();
+            let mut environment = Env::new();
+            let mut runtime = NativeRuntime::default();
+            let target = if arguments.len() == 2 {
+                call_funcall_one as *const c_void
+            } else {
+                call_funcall_two as *const c_void
+            };
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        target,
+                        NativeCallingConvention::Fixed,
+                        &arguments,
+                    )
+                    .expect("native arctangent"),
+                Value::float(expected),
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+            assert!(runtime.calls.is_empty());
+        }
+    }
+
+    #[test]
     fn native_funcall_fixed_optional_nil_matches_the_c_abi() {
         for arguments in [
             vec![Value::symbol("truncate"), Value::float(f64::NAN)],

@@ -411,8 +411,7 @@ define_dispatch!(
             "get-buffer" => {
                 need_args(name, args, 1)?;
                 match &args[0] {
-                    Value::Buffer(buffer) if interp.has_buffer_id(buffer.id) => Ok(args[0].clone()),
-                    Value::Buffer(_) => Ok(Value::Nil),
+                    Value::Buffer(_) => Ok(args[0].clone()),
                     _ => match string_like(&args[0]) {
                         Some(name) => match interp.find_buffer(&name.text) {
                             Some((id, buffer_name)) => Ok(Value::buffer(id, buffer_name)),
@@ -428,12 +427,14 @@ define_dispatch!(
             "get-buffer-create" => {
                 need_args(name, args, 1)?;
                 let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
-                let buf_name = match &args[0] {
-                    Value::Buffer(buffer) => buffer.name.clone(),
-                    _ => string_text(&args[0]).map(Into::into).map_err(|_| {
-                        LispError::TypeError("string-or-buffer".into(), args[0].type_name())
-                    })?,
-                };
+                // buffer.c:Fget_buffer_create returns buffer objects as given,
+                // even when renamed or dead; only strings select by name.
+                if matches!(&args[0], Value::Buffer(_)) {
+                    return Ok(args[0].clone());
+                }
+                let buf_name = string_text(&args[0]).map_err(|_| {
+                    LispError::TypeError("string-or-buffer".into(), args[0].type_name())
+                })?;
                 if let Some((id, name)) = interp.find_buffer(&buf_name) {
                     Ok(Value::buffer(id, name))
                 } else {

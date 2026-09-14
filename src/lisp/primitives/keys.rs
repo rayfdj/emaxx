@@ -1047,7 +1047,7 @@ pub(crate) fn count_backward_line_moves(buffer: &crate::buffer::Buffer) -> usize
 /// false): a `(keymap ...)' list is itself, a symbol whose function
 /// indirection is one yields that keymap, and anything else is
 /// `(wrong-type-argument keymapp OBJECT)'.
-fn keymap_list_for_copy(
+pub(crate) fn resolve_keymap_without_autoload(
     interp: &mut Interpreter,
     object: &Value,
     env: &mut Env,
@@ -1161,7 +1161,7 @@ fn copy_keymap_1(
     if let Some(id) = keymap_record_id(interp, keymap) {
         return copy_runtime_keymap(interp, id, depth, env);
     }
-    let keymap = keymap_list_for_copy(interp, keymap, env)?;
+    let keymap = resolve_keymap_without_autoload(interp, keymap, env)?;
     if let Some(id) = keymap_record_id(interp, &keymap) {
         return copy_runtime_keymap(interp, id, depth, env);
     }

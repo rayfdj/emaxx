@@ -13,6 +13,38 @@ profiling findings, and acceptance criteria.
 The chronological evidence below includes failed intermediate attempts. This
 section records the latest completed checks; no final frozen success is claimed.
 
+- The ordinary Mac attempt at `03a3814`
+  (`frozen-1789376872886057000-67964`) completed 318 file comparisons,
+  including matching Comint and SHR, then stopped at Tramp: GNU completed
+  59 outcomes (52 passes, seven skips), while Emaxx exceeded the unchanged
+  180-second test deadline and produced no test results. Its raw timeout
+  and receipt remain intact; this is incomplete evidence, not a certificate.
+  The completed portion exposed four primitive behavior bugs with native
+  GNU libraries. `atan` must treat an explicit nil X as omitted; buffer
+  lookup must return a supplied buffer object even after rename or death;
+  `read-string` must substitute only a non-nil default; `set-keymap-parent`
+  must resolve a symbolic parent's function cell before installing it.
+  The fixes follow `floatfns.c`, `buffer.c`, `minibuf.c`, and `keymap.c`,
+  without application names or test selectors in runtime decisions.
+- Independent Mac diagnostics pass the unchanged upstream Solar file
+  (one test), Eshell arguments (17), ERC (94), and Eshell unload (three)
+  in each editor. The Solar and Eshell-argument fixes were checked as they
+  were implemented; ERC and unload use the combined four-fix candidate.
+  All raw report hashes and actual selected/result rows verify. Evidence
+  is retained under `target/compat-audit-20260914/` in
+  `atan-nil-upstream-solar`, `buffer-identity-upstream-eshell`,
+  `four-primitives-upstream-erc`, and `four-primitives-upstream-eshell-unload`.
+  Eleven focused Rust checks pass, including six new controls for explicit
+  nil arguments, native calls, renamed/dead buffer identity, uninterned
+  symbolic keymap parents, and non-nil minibuffer defaults. Formatting and
+  all-target/all-feature Clippy with `-D warnings` pass. These diagnostics
+  do not substitute for ordinary validation of the published source.
+- Linux continuation `34826271389` at `03a3814` passes three image/audit
+  controls, 60 binary tests, and 39 tests across all six integration targets.
+  Actual stage result counts and raw log hashes verify. This includes
+  native compilation, native thread continuations, and batch exit/restart
+  child-process behavior. Linux full frozen run `34826268382` is still in
+  progress; its status must not be reported as success before completion.
 - The ordinary Linux frozen attempt at `c469a18` (`34811016486`) completed
   457 matching files with zero unexpected outcomes, then stopped at
   `test/lisp/vc/vc-tests.el` because GNU selected seven Mercurial tests absent

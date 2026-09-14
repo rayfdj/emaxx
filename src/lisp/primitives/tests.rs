@@ -21,6 +21,111 @@ fn call_via_lisp(
 }
 
 #[test]
+fn atan_treats_an_explicit_nil_second_argument_as_omitted_like_gnu() {
+    // floatfns.c:Fatan selects atan, rather than atan2, when X is nil.
+    assert_oracle_contract_matches_interpreter(
+        "(list (= (atan 1) (atan 1 nil))
+               (= (atan 1 1) (atan 1))
+               (< (atan -1 -1) (atan -1 nil))
+               (= (atan 0 nil) 0))",
+        "(t t t t)",
+        "atan optional argument",
+    );
+}
+
+#[test]
+fn buffer_lookup_preserves_object_identity_after_rename_or_kill() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((buffer (generate-new-buffer "identity-before"))
+                  (old-name (buffer-name buffer)) replacement)
+            (unwind-protect
+                (progn
+                  (with-current-buffer buffer (rename-buffer "identity-after" t))
+                  (setq replacement (get-buffer-create old-name))
+                  (list (eq buffer (get-buffer buffer))
+                        (eq buffer (get-buffer-create buffer))
+                        (progn (kill-buffer buffer) (eq buffer (get-buffer buffer)))
+                        (eq buffer (get-buffer-create buffer))
+                        (eq replacement (get-buffer old-name))
+                        (buffer-live-p buffer)))
+              (when (buffer-live-p buffer) (kill-buffer buffer))
+              (when (buffer-live-p replacement) (kill-buffer replacement))))"#,
+        "(t t t t t nil)",
+        "buffer object lookup after rename and death",
+    );
+}
+
+#[test]
+fn native_buffer_lookup_preserves_object_identity_after_rename_or_kill() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp)
+            (let* ((comp-no-spawn nil)
+                   (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   (getter (native-compile
+                            '(lambda (buffer)
+                               (list (eq buffer (get-buffer buffer))
+                                     (eq buffer (get-buffer-create buffer))))))
+                   (buffer (generate-new-buffer "native-identity-before"))
+                   (old-name (buffer-name buffer)) replacement)
+              (unwind-protect
+                  (progn
+                    (with-current-buffer buffer
+                      (rename-buffer "native-identity-after" t))
+                    (setq replacement (get-buffer-create old-name))
+                    (list (native-comp-function-p getter)
+                          (funcall getter buffer)
+                          (progn (kill-buffer buffer) (funcall getter buffer))
+                          (eq replacement (get-buffer old-name))))
+                (when (buffer-live-p buffer) (kill-buffer buffer))
+                (when (buffer-live-p replacement) (kill-buffer replacement)))))"#,
+        "(t (t t) (t t) t)",
+        "native buffer object lookup after rename and death",
+    );
+}
+
+#[test]
+fn keymap_parent_resolves_symbol_function_cells_before_installing() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((parent (make-sparse-keymap))
+                  (child (make-sparse-keymap))
+                  (replacement (make-sparse-keymap))
+                  (parent-symbol (make-symbol "parent"))
+                  (alias (make-symbol "parent-alias")))
+            (fset parent-symbol parent)
+            (fset alias parent-symbol)
+            (list (eq (set-keymap-parent child alias) parent)
+                  (eq (keymap-parent child) parent)
+                  (progn (fset parent-symbol replacement)
+                         (eq (keymap-parent child) parent))
+                  (progn (define-key child [3] 'ignore)
+                         (lookup-key child [3]))
+                  (keymapp (copy-keymap alias))))"#,
+        "(t t t ignore t)",
+        "symbolic keymap parent resolution",
+    );
+}
+
+#[test]
+fn read_string_nil_default_returns_empty_input_like_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'ert-x)
+            (mapcar
+             (lambda (form)
+               (ert-simulate-keys (list ?\r) (eval form t)))
+             '((read-string "")
+               (read-string "" nil nil nil)
+               (read-string "" nil nil '(nil))
+               (read-string "" nil nil '("fallback"))
+               (read-string "" nil nil 17))))"#,
+        r#"("" "" nil "fallback" 17)"#,
+        "read-string nil and non-nil defaults",
+    );
+}
+
+#[test]
 fn apply_follows_eval_c_proper_list_contract() {
     let mut interp = Interpreter::new();
     let mut env = Env::new();
