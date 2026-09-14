@@ -5,10 +5,10 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, frozen, rust, rust-tail, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples]
         default: affected
       file:
-        description: For affected mode, run only this upstream file; blank runs module and Eglot
+        description: Upstream file for affected mode, or inclusive start file for remaining mode
         type: string
         default: ''
       rust_filter:
@@ -54,7 +54,7 @@ jobs:
             libsqlite3-dev zlib1g-dev libtree-sitter-dev libx11-dev libxpm-dev \
             libjpeg-dev libgif-dev libtiff-dev libpng-dev libxft-dev libxrender-dev \
             libxt-dev liblcms2-dev libharfbuzz-dev libcairo2-dev librsvg2-dev \
-            libwebp-dev libseccomp-dev libasound2-dev libacl1-dev libselinux1-dev clangd bubblewrap strace
+            libwebp-dev libseccomp-dev libasound2-dev libacl1-dev libselinux1-dev clangd bubblewrap strace mercurial
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
           rustup toolchain install 1.75.0 --profile minimal --component rust-analyzer --component rust-src
           rustup default 1.97.1
@@ -282,6 +282,14 @@ jobs:
               run_harness run --file test/lisp/progmodes/eglot-tests.el 2>&1 | tee target/frozen-ci/eglot.log || status=$?
               exit "$status"
               ;;
+            remaining)
+              # Ordinary continuation only: preserve the failed frozen
+              # artifact and execute the still-unfinished canonical range.
+              # This does not certify a partial inventory as a frozen run.
+              test -n "$VALIDATION_FILE"
+              run_harness run --scope all --from-file "$VALIDATION_FILE" \
+                2>&1 | tee target/frozen-ci/remaining.log
+              ;;
             frozen)
               run_harness frozen 2>&1 | tee target/frozen-ci/frozen.log
               ;;
@@ -351,7 +359,7 @@ jobs:
           import re, shutil
           from pathlib import Path
           root = Path('target/frozen-ci')
-          for name in ('module', 'eglot', 'affected', 'frozen'):
+          for name in ('module', 'eglot', 'affected', 'remaining', 'frozen'):
               log = root / f'{name}.log'
               if not log.exists():
                   continue

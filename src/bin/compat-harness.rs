@@ -61,8 +61,8 @@ const FROZEN_CONTRACT_LINUX: FrozenContract = FrozenContract {
     manifest_path: "compat/oracle_tests_all_linux.txt",
     file_count: 519,
     load_error_count: 0,
-    outcome_count: 7_921,
-    manifest_sha256: "a1f87443aad516a128001595d7c69fbbaace40b420d8cd1e9e5ec178aa2fd615",
+    outcome_count: 7_928,
+    manifest_sha256: "ca3cbd63e3dfe6893ef688b6ef7413e1ef2134eabc5c284bfd50a1edf4554be7",
 };
 
 fn frozen_contract_for_configuration(
@@ -204,6 +204,9 @@ struct RunArgs {
     /// Run the canonical sorted prefix ending with this file.
     #[arg(long, conflicts_with = "file")]
     through_file: Option<String>,
+    /// Start an ordinary run at this file in canonical sorted order.
+    #[arg(long, conflicts_with = "file")]
+    from_file: Option<String>,
     #[arg(long)]
     name: Option<String>,
     /// Source checkout whose Emaxx binary should be built and tested.
@@ -1207,11 +1210,16 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
     enforce_anti_cheat_gates()?;
     let context = load_context()?;
     let selector = compat::resolve_selector(&context.lock, &args.selector)?;
-    let files = selected_files(
+    let mut files = selected_files(
         &context.local.emacs_repo,
         args.scope.into(),
         args.file.as_deref(),
         args.through_file.as_deref(),
+    )?;
+    retain_files_from(
+        &mut files,
+        &context.local.emacs_repo,
+        args.from_file.as_deref(),
     )?;
     let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
@@ -2823,6 +2831,27 @@ fn truncate_files_through(
         ));
     };
     files.truncate(index + 1);
+    Ok(())
+}
+
+fn retain_files_from(
+    files: &mut Vec<PathBuf>,
+    repo_root: &Path,
+    from_file: Option<&str>,
+) -> Result<(), String> {
+    let Some(from_file) = from_file else {
+        return Ok(());
+    };
+    let Some(index) = files
+        .iter()
+        .position(|file| compat::relative_test_path(repo_root, file).as_deref() == Ok(from_file))
+    else {
+        return Err(format!(
+            "no start file matched `{from_file}` in the selected range under {}",
+            repo_root.display()
+        ));
+    };
+    files.drain(..index);
     Ok(())
 }
 
@@ -5135,6 +5164,33 @@ mod tests {
                 PathBuf::from("/repo/test/lisp/a-tests.el"),
                 PathBuf::from("/repo/test/lisp/b-tests.el"),
             ]
+        );
+    }
+
+    #[test]
+    fn from_file_preserves_the_inclusive_tail_and_rejects_missing_or_reversed_ranges() {
+        let root = Path::new("/repo");
+        let original: Vec<_> = ["a", "b", "c"]
+            .map(|name| root.join(format!("test/lisp/{name}-tests.el")))
+            .into();
+        let mut files = original.clone();
+        retain_files_from(&mut files, root, Some("test/lisp/b-tests.el")).unwrap();
+        assert_eq!(files, original[1..]);
+
+        let retained = files.clone();
+        assert!(retain_files_from(&mut files, root, Some("test/lisp/absent.el")).is_err());
+        assert_eq!(files, retained);
+
+        let mut files = original;
+        truncate_files_through(&mut files, root, Some("test/lisp/a-tests.el")).unwrap();
+        assert!(retain_files_from(&mut files, root, Some("test/lisp/c-tests.el")).is_err());
+
+        // Partial runs cannot be labeled frozen, and cannot combine a
+        // canonical range with the separate substring file filter.
+        assert!(Cli::try_parse_from(["compat-harness", "frozen", "--from-file", "x"]).is_err());
+        assert!(
+            Cli::try_parse_from(["compat-harness", "run", "--from-file", "x", "--file", "x"])
+                .is_err()
         );
     }
 

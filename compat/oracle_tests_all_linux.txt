@@ -6837,7 +6837,7 @@ test/lisp/vc/vc-hg-tests.el: discovered=4 selected=4
   vc-hg-annotate-extract-revision-at-line-with-filename
   vc-hg-annotate-extract-revision-at-line-with-user
   vc-hg-annotate-time
-test/lisp/vc/vc-tests.el: discovered=7 selected=7
+test/lisp/vc/vc-tests.el: discovered=14 selected=14
   vc-test-git00-create-repo
   vc-test-git01-register
   vc-test-git02-state
@@ -6845,6 +6845,13 @@ test/lisp/vc/vc-tests.el: discovered=7 selected=7
   vc-test-git04-checkout-model
   vc-test-git05-rename-file
   vc-test-git06-version-diff
+  vc-test-hg00-create-repo
+  vc-test-hg01-register
+  vc-test-hg02-state
+  vc-test-hg03-working-revision
+  vc-test-hg04-checkout-model
+  vc-test-hg05-rename-file
+  vc-test-hg06-version-diff
 test/lisp/version-tests.el: discovered=1 selected=1
   test-emacs-version
 test/lisp/wdired-tests.el: discovered=7 selected=7

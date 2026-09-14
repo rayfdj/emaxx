@@ -6,6 +6,67 @@ Tracking: [correctness #69](https://github.com/rayfdj/emaxx/issues/69),
 The issues retain the original run identity, all 363 files sorted by slowdown,
 profiling findings, and acceptance criteria.
 
+## Current validation status, 2026-09-14
+
+The chronological evidence below includes failed intermediate attempts. This
+section records the latest completed checks; no final frozen success is claimed.
+
+- The ordinary Linux frozen attempt at `c469a18` (`34811016486`) completed
+  457 matching files with zero unexpected outcomes, then stopped at
+  `test/lisp/vc/vc-tests.el` because GNU selected seven Mercurial tests absent
+  from the Linux manifest. Both editors actually passed all 14 Git/Mercurial
+  tests. All 2,748 raw receipts across those 458 files verify. The run has no
+  final summary or final input verification, so this remains incomplete
+  evidence. The Linux inventory now adds those seven actual GNU names, keeping
+  all prior names: 519 files, 7,928 outcomes. Darwin stays at 7,921.
+- `run --from-file PATH` executes an inclusive ordinary continuation in the
+  same canonical order, optionally ending at `--through-file`. A missing or
+  reversed endpoint fails. These options are unavailable in `frozen`; they
+  neither weaken resume identity checks nor certify partial frozen coverage.
+- The original full Rust library runs at `37197db` completed every library
+  group on both platforms. Each found the same missing detached-overlay
+  image-state explanation in the final audit group. That documentation was
+  corrected, and the three relevant image/audit controls passed without
+  repeating the completed library groups. The continued binary tests pass
+  all 58 cases on both platforms.
+- The integration continuation exposed a separate native cons-encoding stack
+  overflow. `34631ba` registers canonical cells and encodes their fields with
+  an explicit worklist, preserving shared and cyclic identities. All 93
+  native-runtime controls pass on Mac and Linux. The actual 8,000,005-element
+  Mac CLI test passes, followed by all six integration targets (34 tests).
+  This bounds initial typed-cons encoding; it is not a claim that every
+  native decoding or dirty-mirror reconciliation path is iterative.
+- Linux ordinary `comp-tests.el` at `34631ba` (`34811829450`) passes all
+  177 tests independently in each editor, with zero skips or unexpected
+  outcomes. The six raw receipts, contract and 93-control log verify.
+  Uninstrumented test-body totals are 15.064615 seconds for GNU and 93.574951
+  for Emaxx. Dedicated attribution does not replace these ordinary results.
+- `68ed488` corrects reading from unibyte Lisp strings: GNU interprets source
+  bytes as Latin-1 characters while unibyte buffer/marker sources retain
+  byte8 behavior. The GNU-checked source-kind matrix and 45 adjacent reader
+  controls pass. Ordinary Mac `lread-tests.el` passes all 52 tests, with six
+  receipts and the contract verified. Actual command-line probes now match
+  GNU under both C and UTF-8 locales, including arguments and exit status.
+  Linux reader CI `34812781624` also passes the actual new reader control
+  and all 52 ordinary tests; its six raw receipts and contract verify.
+- The eight-case Linux compiler recording is retained despite its later
+  report-permission failure. Offline job `34811621252` recovered reports
+  using the exact original executable and profile hashes, without rerunning
+  either editor. There are 27,265 recorded samples and zero reported lost
+  samples; unavailable DSO/unwind details remain explicit limitations.
+  Inclusive samples point to compiler class enumeration/native callbacks,
+  symbol/value work, GC and image loading. Percentages overlap and cannot
+  be added or extrapolated into an 80-case CPU total.
+
+Still open: the six strict Mac build-feature skip diagnostics, the final
+complete ordinary frozen results on both platforms, remaining performance
+work and adversarial review. Shared-library bytes are not yet covered by the
+run provenance. A roughly three-minute Mac harness preparation delay was
+observed before a reader run, but its attempted process sample arrived after
+exit and did not establish the cause. The measured Mac vector-allocation
+regression remains recorded. Formatting and strict Clippy passed for both
+runtime fixes; the current inventory/continuation change has separate checks.
+
 ## Success and parity
 
 `compat-harness run` and `frozen` share their setup and execution checks.

@@ -15,6 +15,14 @@ previous Linux names remain. Both platform manifests now contain 519 files
 and 7,921 outcomes; their identical bytes were verified after independently
 using each platform's discovery, not by copying results between editors.
 
+Linux frozen attempt `34811016486` subsequently discovered seven Mercurial
+backend tests in `test/lisp/vc/vc-tests.el`. Both editors independently passed
+all 14 Git/Mercurial tests. The inventory guard stopped the incomplete run
+because those seven names were unmanifested; its raw reports remain retained.
+The Linux manifest now includes these actual GNU selections: 519 files and
+7,928 outcomes, with every prior name preserved. CI explicitly installs
+Mercurial. The Darwin contract remains at 519 files and 7,921 outcomes.
+
 Linux's oracle lock now records pristine GNU revision `636f166c`, matching
 the already committed native ABI configuration, instead of the older Ubuntu
 source repack `6ee5c136`. The reviewed executable hash is
@@ -76,7 +84,8 @@ Canonical progress denominator and order:
   awk 'BEGIN{count=0; files=0} /^[^ ].*: discovered=/{files++; next} /^  /{count++} END{print "files", files; print "tests", count}' compat/oracle_tests_all.txt
   ```
 
-- The expected result is `files 519` and `tests 7921`.
+- The expected Darwin result is `files 519` and `tests 7921`; Linux is
+  `files 519` and `tests 7928`.
 
 The harness-selected count is the compatibility ordering source. It is not the
 same thing as any count inferred directly from the Emacs source tree because
