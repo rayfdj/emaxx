@@ -11438,4 +11438,13 @@ buffer-local, byte-code and search controls) was then run on the
 committed tree: 318 passed, the four new controls among them by
 name.
 
-*Gate.*  «GATE»
+*Gate.*  Grouped gate run-1789641494229793611-9921 on the tree as
+committed (e1b559b0; the working tree differed by the oracle lock
+alone): the ten library groups (batch 50, compat_runtime 84, eval_01
+372, eval_02 284, eval_03 321, eval_04 254, eval_05 351, lightweight
+447, primitives 497, tty 56 with its 2 ignored), the bins stage (57,
+2, 0 and 1 in 229 s) and the six integration binaries (23, 6, 3, 1, 1
+and 5 in 522 s), 2,718 scheduled and observed; fmt and strict clippy
+exit 0 before and after.  The first launch of the gate on this
+checkpoint stopped at its clippy pre-check (the lints recorded under
+*Verified.*); this run is on the amended commit.
