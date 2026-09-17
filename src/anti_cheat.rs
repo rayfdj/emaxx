@@ -1443,7 +1443,7 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
         .split_once("if record.kind == RecordKind::Thread")
         .expect("reachable thread object visitor")
         .1
-        .split_once("for child in &children")
+        .split_once("Value::ReaderForm(form) =>")
         .expect("end of thread object visitor")
         .0;
     for field in field_pattern.captures_iter(thread_definition) {

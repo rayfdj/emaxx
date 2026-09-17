@@ -24,22 +24,21 @@ pub(crate) fn run_change_hooks(
     // the auto-boundary timer), independent of any change hooks being
     // registered.  The function itself never modifies buffer text, so the
     // reentrancy guard above cannot be tripped by it.
-    if hook_name == "before-change-functions"
-        && !interp.buffer.undo_recording_disabled()
-        && interp
-            .lookup_function("undo-auto--undoable-change", env)
-            .is_ok()
-    {
-        let _ = interp.call_function_value(
-            Value::Symbol("undo-auto--undoable-change".into()),
-            Some("undo-auto--undoable-change"),
-            &[],
-            env,
-        );
+    if hook_name == "before-change-functions" && !interp.buffer.undo_recording_disabled() {
+        thread_local! {
+            static UNDOABLE_CHANGE: crate::lisp::types::SymbolName =
+                crate::lisp::types::SymbolName::intern_str("undo-auto--undoable-change");
+        }
+        let symbol = UNDOABLE_CHANGE.with(Clone::clone);
+        if interp.function_index_has(symbol.as_str()) {
+            // The callee names its own frame (a name given here was
+            // interned again per call).
+            let _ = interp.call_function_value(Value::Symbol(symbol), None, &[], env);
+        }
     }
     let hooks = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
     let combining = interp
-        .lookup_var("combine-after-change-calls", env)
+        .lookup_var_key(cached_symbol!("combine-after-change-calls"), env)
         .is_some_and(|value| value.is_truthy());
     if hook_name == "before-change-functions" {
         if hooks.is_empty() && combining {
@@ -180,10 +179,30 @@ pub(crate) fn hook_values(
             })
             .unwrap_or_default()
     };
-    let current = interp.lookup_var(hook_name, env);
+    // The hook's symbol once (no name hash per hook run): the value and
+    // the buffer's binding are read by it when the name is interned.  The
+    // two change hooks, run per edit, are held interned.
+    let symbol = match hook_name {
+        "before-change-functions" => {
+            Some(cached_symbol!("before-change-functions").with(Clone::clone))
+        }
+        "after-change-functions" => {
+            Some(cached_symbol!("after-change-functions").with(Clone::clone))
+        }
+        _ => crate::lisp::types::SymbolName::interned_cached(hook_name),
+    };
+    let current = match &symbol {
+        Some(symbol) => interp.lookup_var_symbol(symbol, env),
+        None => interp.lookup_var(hook_name, env),
+    };
     let local = buffer_id.is_some_and(|id| {
-        interp.buffer_local_value(id, hook_name).is_some()
-            || interp.buffer_local_hook(id, hook_name).is_some()
+        let has_local_value = match &symbol {
+            Some(symbol) => interp
+                .buffer_local_binding_symbol(id, symbol)
+                .is_some_and(|binding| binding.is_some()),
+            None => interp.buffer_local_value(id, hook_name).is_some(),
+        };
+        has_local_value || interp.buffer_local_hook(id, hook_name).is_some()
     });
     let mut hooks = value_hooks(current);
     if !local {
@@ -530,6 +549,12 @@ pub(crate) fn run_overlay_hook_calls(
     after: bool,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
+    // insdel.c:signal_before_change binds inhibit-modification-hooks only
+    // around hooks it actually runs; an edit with no overlay hooks (nearly
+    // all of them) makes no binding.
+    if calls.is_empty() {
+        return Ok(());
+    }
     let restore = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
     let mut outcome = Ok(());
     'outer: for call in calls {
@@ -570,7 +595,7 @@ pub(crate) fn delete_region_with_hooks(
     let overlay_calls = overlay_change_hook_calls(&interp.buffer, from, to, from);
     run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     let has_before_hooks = interp
-        .lookup_var("before-change-functions", env)
+        .lookup_var_key(cached_symbol!("before-change-functions"), env)
         .map(|value| !value.to_vec().unwrap_or_default().is_empty())
         .or_else(|| {
             interp
@@ -661,9 +686,14 @@ pub(crate) fn ensure_region_modifiable(
         return Ok(());
     }
     let inhibit_read_only = interp
-        .lookup_var("inhibit-read-only", env)
+        .lookup_var_key(cached_symbol!("inhibit-read-only"), env)
         .unwrap_or(Value::Nil);
     let buffer_read_only = buffer_read_only_active(interp, env, &inhibit_read_only);
+    // insdel.c: with no intervals there is no read-only text to verify,
+    // and the buffer's own flag was decided above.
+    if !buffer_read_only && !interp.buffer.has_text_properties() {
+        return Ok(());
+    }
 
     for pos in from..to {
         let read_only = interp.buffer.text_property_at(pos, "read-only");
@@ -674,7 +704,13 @@ pub(crate) fn ensure_region_modifiable(
             {
                 continue;
             }
-            return Err(LispError::Signal("Text is read-only".into()));
+            // textprop.c's text_read_only: the property's string as the
+            // datum, none for any other value.
+            let mut data = vec![Value::Symbol("text-read-only".into())];
+            if matches!(read_only_value, Value::String(_) | Value::StringObject(_)) {
+                data.push(read_only_value);
+            }
+            return Err(LispError::SignalValue(Value::list(data)));
         }
         if buffer_read_only && !suppressor.is_some_and(|value| value.is_truthy()) {
             return Err(buffer_read_only_signal(interp));
@@ -688,7 +724,7 @@ pub(crate) fn ensure_insert_modifiable(
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     let inhibit_read_only = interp
-        .lookup_var("inhibit-read-only", env)
+        .lookup_var_key(cached_symbol!("inhibit-read-only"), env)
         .unwrap_or(Value::Nil);
     if !buffer_read_only_active(interp, env, &inhibit_read_only) {
         return Ok(());
@@ -707,7 +743,7 @@ fn buffer_read_only_active(
     inhibit_read_only: &Value,
 ) -> bool {
     interp
-        .lookup_var("buffer-read-only", env)
+        .lookup_var_key(cached_symbol!("buffer-read-only"), env)
         .is_some_and(|value| value.is_truthy())
         && !inhibit_read_only.is_truthy()
 }

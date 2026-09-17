@@ -792,6 +792,20 @@ store bit for `set_internal` and `specbind` (4x and 2.2x), subr
 function pointers for the hot primitives, `mapatoms` and
 `case-fold-search` by symbol: `ert-select-tests` 47 to 35 ms median
 (with 19w: 75 to 35), the byte-code call (152 ns vs 26) still open.
+Checkpoint 19y (2026-09-17, for main): the search primitives read the
+pattern in place and their variables by held symbol, `looking-at`
+matches at point on regex-automata's meta engine (patterns without
+lookaround), skip-syntax over one scan, the buffer's line scans and
+skips over rope chunks with memchr, the edit path by symbol, the
+collector tracing records in place and marking on pop behind a
+prefetch window, subr pointers for the buffer and search primitives,
+and a variable holding a lambda no longer shadows its name's function
+cell (eval.c's namespaces; the oracle's values): `looking-at`
+869 to 366 ns (GNU 92), one collection 27.3 to 17.9 ms
+(GNU 6.3), semantic-utest-C 14.0 to 7.4 s (GNU 0.75), undo-test4 8.6
+to 5.3 (1.04), fns-tests-sort 7.0 to 5.2 (1.31).  Open: patterns
+with lookaround (fancy-regex's VM scans), the mark word per object,
+the byte-code call.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

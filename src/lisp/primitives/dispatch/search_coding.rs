@@ -311,28 +311,7 @@ define_dispatch!(
         env: &mut crate::lisp::types::Env,
     ) -> Result<Value, LispError> {
         match name {
-            "match-beginning" | "match-end" => {
-                need_args(name, args, 1)?;
-                let index = args[0].as_integer()?;
-                if index < 0 {
-                    return Err(LispError::Signal("Args out of range".into()));
-                }
-                let match_data = interp.last_match_data.as_ref().ok_or_else(|| {
-                    LispError::Signal("No match data, because no search succeeded".into())
-                })?;
-                let result = match_data
-                    .get(index as usize)
-                    .and_then(|entry| *entry)
-                    .map(|(start, end)| {
-                        if name == "match-beginning" {
-                            Value::Integer(start as i64)
-                        } else {
-                            Value::Integer(end as i64)
-                        }
-                    })
-                    .unwrap_or(Value::Nil);
-                Ok(result)
-            }
+            "match-beginning" | "match-end" => match_bound_named(interp, name, args, env),
             "match-data" => {
                 if args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -498,16 +477,7 @@ define_dispatch!(
                 }
                 Ok(Value::Nil)
             }
-            "looking-at" | "posix-looking-at" => {
-                need_arg_range(name, args, 1, 2)?;
-                regexp::looking_at_impl(
-                    interp,
-                    &args[0],
-                    name == "posix-looking-at",
-                    !args.get(1).is_some_and(Value::is_truthy),
-                    env,
-                )
-            }
+            "looking-at" | "posix-looking-at" => looking_at_named(interp, name, args, env),
             "newline-cache-check" => {
                 need_arg_range(name, args, 0, 1)?;
                 if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
@@ -1174,3 +1144,88 @@ define_dispatch!(
         }
     }
 );
+
+/// The `looking-at' family under NAME: one body, each name a subr's
+/// function pointer below.
+fn looking_at_named(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    need_arg_range(name, args, 1, 2)?;
+    regexp::looking_at_impl(
+        interp,
+        &args[0],
+        name == "posix-looking-at",
+        !args.get(1).is_some_and(Value::is_truthy),
+        env,
+    )
+}
+
+/// The `looking-at' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_looking_at(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    looking_at_named(interp, "looking-at", args, env)
+}
+
+/// The `posix-looking-at' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_posix_looking_at(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    looking_at_named(interp, "posix-looking-at", args, env)
+}
+
+/// The `match-beginning' family under NAME: one body, each name a subr's
+/// function pointer below.
+fn match_bound_named(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    need_args(name, args, 1)?;
+    let index = args[0].as_integer()?;
+    if index < 0 {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    let match_data = interp
+        .last_match_data
+        .as_ref()
+        .ok_or_else(|| LispError::Signal("No match data, because no search succeeded".into()))?;
+    let result = match_data
+        .get(index as usize)
+        .and_then(|entry| *entry)
+        .map(|(start, end)| {
+            if name == "match-beginning" {
+                Value::Integer(start as i64)
+            } else {
+                Value::Integer(end as i64)
+            }
+        })
+        .unwrap_or(Value::Nil);
+    Ok(result)
+}
+
+/// The `match-beginning' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_match_beginning(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    match_bound_named(interp, "match-beginning", args, env)
+}
+
+/// The `match-end' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_match_end(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    match_bound_named(interp, "match-end", args, env)
+}

@@ -1086,20 +1086,24 @@ fn registered_unicode_property(
 
 fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Option<Value> {
     // chartab.c:uniprop_table reads Vchar_code_property_alist, the C-owned
-    // symbol value cell.  A caller's same-named lexical binding is not part
-    // of this primitive's state.
-    let mut alist = interp.symbol_value_cell("char-code-property-alist").ok()?;
+    // symbol value cell (by the symbol held here, as the C global is).  A
+    // caller's same-named lexical binding is not part of this primitive's
+    // state.  Fassq: the entries read in place (a copy of each entry, key
+    // and value per step was a fifth of `get-char-code-property').
+    let mut tail = cached_symbol!("char-code-property-alist")
+        .with(|symbol| interp.symbol_value_cell_symbol(symbol))
+        .ok()?;
     loop {
-        let (entry, rest) = alist.cons_values()?;
-        if let Some((key, value)) = entry.cons_values()
-            && key.as_symbol().ok() == Some(property)
-        {
-            return Some(value);
-        }
-        alist = rest;
-        if alist.is_nil() {
+        let Value::Cons(cell) = &tail else {
             return None;
+        };
+        if let Value::Cons(entry) = &*cell.car.borrow()
+            && entry.car.borrow().as_symbol().ok() == Some(property)
+        {
+            return Some(entry.cdr.borrow().clone());
         }
+        let rest = cell.cdr.borrow().clone();
+        tail = rest;
     }
 }
 

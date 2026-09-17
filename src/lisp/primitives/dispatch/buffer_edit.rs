@@ -361,7 +361,7 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── Buffer operations ──
-            "insert" => insert_impl(interp, args, env, false, false),
+            "insert" => direct_insert(interp, args, env),
             "insert-and-inherit" => insert_impl(interp, args, env, true, false),
             "insert-char" => insert_char_impl(interp, args, env),
             "self-insert-command" => {
@@ -521,9 +521,9 @@ define_dispatch!(
                 insert_text_with_hooks(interp, &text, &props, &extended_chars, false, false, env)?;
                 Ok(Value::Nil)
             }
-            "point" => Ok(Value::Integer(interp.buffer.point() as i64)),
-            "point-min" => Ok(Value::Integer(interp.buffer.point_min() as i64)),
-            "point-max" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
+            "point" => direct_point(interp, args, env),
+            "point-min" => direct_point_min(interp, args, env),
+            "point-max" => direct_point_max(interp, args, env),
             "minibuffer-prompt-end" => {
                 let prompt_length = interp
                     .minibuffer_prompt_text()
@@ -537,26 +537,8 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 flush_combined_after_change(interp, env)
             }
-            "goto-char" => {
-                need_args(name, args, 1)?;
-                let pos = position_from_value(interp, &args[0])?;
-                interp.buffer.goto_char(pos);
-                // GNU Fgoto_char returns its POSITION argument unchanged (a
-                // marker stays a marker), not the clamped integer point —
-                // erc-display-msg does (marker-position (goto-char MARKER)).
-                Ok(args[0].clone())
-            }
-            "forward-char" => {
-                let n = if args.is_empty() || args[0].is_nil() {
-                    1
-                } else {
-                    args[0].as_integer()?
-                };
-                match interp.buffer.forward_char(n as isize) {
-                    Ok(_) => Ok(Value::Nil),
-                    Err(e) => Err(e.into()),
-                }
-            }
+            "goto-char" => direct_goto_char(interp, args, env),
+            "forward-char" => direct_forward_char(interp, args, env),
             "forward-word" => {
                 need_arg_range(name, args, 0, 1)?;
                 let n = if args.is_empty() || args[0].is_nil() {
@@ -566,103 +548,14 @@ define_dispatch!(
                 };
                 forward_word(interp, n, env)
             }
-            "skip-chars-forward" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                regexp::skip_chars_forward_impl(interp, &args[0], args.get(1))
-            }
-            "skip-chars-backward" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                regexp::skip_chars_backward_impl(interp, &args[0], args.get(1))
-            }
-            "skip-syntax-forward" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                syntax::skip_syntax_impl(interp, &args[0], args.get(1), true, env)
-            }
-            "skip-syntax-backward" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                syntax::skip_syntax_impl(interp, &args[0], args.get(1), false, env)
-            }
-            "backward-char" => {
-                let n = if args.is_empty() || args[0].is_nil() {
-                    1
-                } else {
-                    args[0].as_integer()?
-                };
-                match interp.buffer.forward_char(-(n as isize)) {
-                    Ok(_) => Ok(Value::Nil),
-                    Err(e) => Err(e.into()),
-                }
-            }
-            "beginning-of-line" => {
-                // GNU constrains bol motion to the current field (fields are
-                // rare; skip the work when the buffer has none).
-                let old_pos = interp.buffer.point();
-                let n = args
-                    .first()
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(1);
-                if n != 1 {
-                    interp.buffer.forward_line((n - 1) as isize);
-                }
-                // After crossing an unterminated final line, GNU's
-                // line-beginning-position leaves point at ZV.  Calling the
-                // ordinary current-line BOL operation there would incorrectly
-                // rewind to that same final line and can make region walkers
-                // loop forever.
-                let crossed_to_unterminated_eob = n > 1
-                    && interp.buffer.point() == interp.buffer.point_max()
-                    && interp.buffer.char_before().is_some_and(|ch| ch != '\n');
-                if !crossed_to_unterminated_eob {
-                    interp.buffer.beginning_of_line();
-                }
-                if buffer_has_field_property(interp) {
-                    let new_pos = interp.buffer.point();
-                    let constrained = super::call(
-                        interp,
-                        "constrain-to-field",
-                        &[
-                            Value::Integer(new_pos as i64),
-                            Value::Integer(old_pos as i64),
-                        ],
-                        env,
-                    )?
-                    .as_integer()? as usize;
-                    interp.buffer.goto_char(constrained);
-                }
-                Ok(Value::Nil)
-            }
-            "end-of-line" => {
-                // (end-of-line N): end of the Nth line counting from the
-                // current one (0 = previous line's end).
-                let n = args
-                    .first()
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(1);
-                if n != 1 {
-                    interp.buffer.forward_line((n - 1) as isize);
-                }
-                interp.buffer.end_of_line();
-                Ok(Value::Nil)
-            }
-            "forward-line" => {
-                let n = if args.is_empty() || args[0].is_nil() {
-                    BigInt::from(1u8)
-                } else {
-                    integer_like_bigint(interp, &args[0])?
-                };
-                Ok(normalize_bigint_value(forward_line_bigint(
-                    &mut interp.buffer,
-                    n,
-                )))
-            }
+            "skip-chars-forward" => direct_skip_chars_forward(interp, args, env),
+            "skip-chars-backward" => direct_skip_chars_backward(interp, args, env),
+            "skip-syntax-forward" => direct_skip_syntax_forward(interp, args, env),
+            "skip-syntax-backward" => direct_skip_syntax_backward(interp, args, env),
+            "backward-char" => direct_backward_char(interp, args, env),
+            "beginning-of-line" => direct_beginning_of_line(interp, args, env),
+            "end-of-line" => direct_end_of_line(interp, args, env),
+            "forward-line" => direct_forward_line(interp, args, env),
             "compute-motion" => {
                 need_args(name, args, 7)?;
                 compute_motion_value(interp, env, args)
@@ -691,143 +584,9 @@ define_dispatch!(
                 let moved = visual_vertical_motion(interp, env, n, goal_col)?;
                 Ok(Value::Integer(moved))
             }
-            "search-forward" | "search-backward" => {
-                if args.is_empty() || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let needle = string_text(&args[0])?;
-                // GNU folds case whenever `case-fold-search' is non-nil; fold
-                // per character so char counts stay aligned with the buffer.
-                let case_fold = interp
-                    .lookup_var("case-fold-search", env)
-                    .is_some_and(|value| value.is_truthy());
-                let fold = |text: &str| -> String {
-                    text.chars()
-                        .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
-                        .collect()
-                };
-                let needle_key = if case_fold {
-                    fold(&needle)
-                } else {
-                    needle.clone()
-                };
-                let noerror = args.get(2).is_some_and(Value::is_truthy);
-                let move_on_failure = search_noerror_moves(args.get(2));
-                let original_point = interp.buffer.point();
-                // GNU repeats the search COUNT times; a negative COUNT searches
-                // in the opposite direction (viper's `F' calls search-forward
-                // with -1).
-                let count = match args.get(3) {
-                    Some(value) if !value.is_nil() => value.as_integer()?,
-                    _ => 1,
-                };
-                let forward = (name == "search-forward") == (count >= 0);
-                let limit = match args.get(1) {
-                    // GNU clamps a BOUND outside the accessible region
-                    // (loaddefs-gen searches backward with (- (point-max) 1000)).
-                    Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
-                        interp.buffer.point_min()
-                    }
-                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-                    _ if forward => interp.buffer.point_max(),
-                    _ => interp.buffer.point_min(),
-                };
-                // search.c's simple search scans the buffer text from point
-                // and stops at the first match; folding and copying the
-                // whole rest of the buffer first made a search that matches
-                // at once cost the buffer's length (330 us for 80 KB).  The
-                // text is read in windows of `SEARCH_WINDOW_CHARS' that
-                // overlap by a needle's length less one, so no match is
-                // split between two windows; each window is folded as the
-                // whole text was.
-                const SEARCH_WINDOW_CHARS: usize = 4096;
-                let needle_chars = needle.chars().count();
-                let window_chars = SEARCH_WINDOW_CHARS.max(2 * needle_chars);
-                let overlap = needle_chars.saturating_sub(1);
-                let mut result = None;
-                for _ in 0..count.unsigned_abs().max(1) {
-                    let point = interp.buffer.point();
-                    result = if forward {
-                        let limit = limit.min(interp.buffer.point_max());
-                        if limit < point {
-                            None
-                        } else {
-                            let mut from = point;
-                            loop {
-                                let to = limit.min(from + window_chars);
-                                let window = interp
-                                    .buffer
-                                    .buffer_substring(from, to)
-                                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                                let window = if case_fold { fold(&window) } else { window };
-                                if let Some(found) = window.find(&needle_key) {
-                                    let start = from + window[..found].chars().count();
-                                    break Some((start, start + needle_chars));
-                                }
-                                if to >= limit {
-                                    break None;
-                                }
-                                from = to - overlap.min(to - from);
-                            }
-                        }
-                    } else {
-                        let limit = limit.max(interp.buffer.point_min());
-                        if limit > point {
-                            None
-                        } else {
-                            let mut to = point;
-                            loop {
-                                let from = limit.max(to.saturating_sub(window_chars));
-                                let window = interp
-                                    .buffer
-                                    .buffer_substring(from, to)
-                                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                                let window = if case_fold { fold(&window) } else { window };
-                                if let Some(found) = window.rfind(&needle_key) {
-                                    let start = from + window[..found].chars().count();
-                                    break Some((start, start + needle_chars));
-                                }
-                                if from <= limit {
-                                    break None;
-                                }
-                                to = from + overlap.min(to - from);
-                            }
-                        }
-                    };
-                    match result {
-                        Some((start, end)) => {
-                            interp.buffer.goto_char(if forward { end } else { start });
-                        }
-                        None => break,
-                    }
-                }
-                match result {
-                    Some((start, end)) => {
-                        interp.last_match_data = Some(vec![Some((start, end))]);
-                        interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                        let point = if forward { end } else { start };
-                        interp.buffer.goto_char(point);
-                        Ok(Value::Integer(point as i64))
-                    }
-                    None if noerror => {
-                        interp.buffer.goto_char(if move_on_failure {
-                            limit
-                        } else {
-                            original_point
-                        });
-                        Ok(Value::Nil)
-                    }
-                    None => {
-                        interp.buffer.goto_char(original_point);
-                        Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("search-failed".into()),
-                            Value::String(needle.into()),
-                        ])))
-                    }
-                }
-            }
-            "re-search-forward" => regexp::buffer_regex_search(interp, args, env, true, false),
-            "re-search-backward" => regexp::buffer_regex_search(interp, args, env, false, false),
+            "search-forward" | "search-backward" => search_named(interp, name, args, env),
+            "re-search-forward" => direct_re_search_forward(interp, args, env),
+            "re-search-backward" => direct_re_search_backward(interp, args, env),
             "posix-search-forward" => regexp::buffer_regex_search(interp, args, env, true, true),
             "posix-search-backward" => regexp::buffer_regex_search(interp, args, env, false, true),
             "forward-comment" => {
@@ -920,30 +679,7 @@ define_dispatch!(
                 ))
             }
             "buffer-substring" | "buffer-substring-no-properties" => {
-                need_args(name, args, 2)?;
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
-                let (start, end) = if from <= to { (from, to) } else { (to, from) };
-                match interp.buffer.buffer_substring(start, end) {
-                    Ok(s) => {
-                        if name == "buffer-substring" {
-                            Ok(string_like_value_with_extended_chars(
-                                s,
-                                interp.buffer.substring_property_spans(start, end),
-                                interp.buffer.is_multibyte(),
-                                interp.buffer.substring_extended_chars(start, end),
-                            ))
-                        } else {
-                            Ok(string_like_value_with_extended_chars(
-                                s,
-                                Vec::new(),
-                                interp.buffer.is_multibyte(),
-                                interp.buffer.substring_extended_chars(start, end),
-                            ))
-                        }
-                    }
-                    Err(e) => Err(LispError::Signal(e.to_string())),
-                }
+                buffer_substring_named(interp, name, args, env)
             }
             "invisible-p" => {
                 need_args(name, args, 1)?;
@@ -1072,53 +808,8 @@ define_dispatch!(
                 }
                 Ok(args[0].clone())
             }
-            "char-after" => {
-                let pos = match args.first() {
-                    None | Some(Value::Nil) => Some(interp.buffer.point()),
-                    Some(Value::Integer(position)) if *position >= 0 => {
-                        usize::try_from(*position).ok()
-                    }
-                    Some(Value::Integer(_)) => None,
-                    Some(Value::Marker(id)) => interp.marker_position(*id),
-                    Some(value) => {
-                        return Err(LispError::WrongTypeArgument(
-                            "integer-or-marker-p".into(),
-                            value.clone(),
-                        ));
-                    }
-                };
-                match pos.and_then(|position| public_buffer_char_code_at(interp, position)) {
-                    Some(code) => Ok(Value::Integer(code)),
-                    None => Ok(Value::Nil),
-                }
-            }
-            "char-before" => {
-                let pos = match args.first() {
-                    None | Some(Value::Nil) => Some(interp.buffer.point()),
-                    Some(Value::Integer(position)) if *position >= 0 => {
-                        usize::try_from(*position).ok()
-                    }
-                    Some(Value::Integer(_)) => None,
-                    Some(Value::Marker(id)) => interp.marker_position(*id),
-                    Some(value) => {
-                        return Err(LispError::WrongTypeArgument(
-                            "integer-or-marker-p".into(),
-                            value.clone(),
-                        ));
-                    }
-                };
-                let Some(pos) = pos else {
-                    return Ok(Value::Nil);
-                };
-                if pos <= interp.buffer.point_min() {
-                    Ok(Value::Nil)
-                } else {
-                    match public_buffer_char_code_at(interp, pos - 1) {
-                        Some(code) => Ok(Value::Integer(code)),
-                        None => Ok(Value::Nil),
-                    }
-                }
-            }
+            "char-after" => direct_char_after(interp, args, env),
+            "char-before" => direct_char_before(interp, args, env),
             "matching-paren" => {
                 need_args(name, args, 1)?;
                 let ch = args[0].as_integer()? as u32;
@@ -1183,34 +874,11 @@ define_dispatch!(
                     )
                 }
             }
-            "bobp" => Ok(if interp.buffer.bobp() {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "eobp" => Ok(if interp.buffer.eobp() {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "bolp" => Ok(if interp.buffer.bolp() {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "eolp" => Ok(if interp.buffer.eolp() {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "delete-region" => {
-                need_args(name, args, 2)?;
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
-                ensure_region_modifiable(interp, from, to, env)?;
-                delete_region_with_hooks(interp, from, to, env)?;
-                Ok(Value::Nil)
-            }
+            "bobp" => direct_bobp(interp, args, env),
+            "eobp" => direct_eobp(interp, args, env),
+            "bolp" => direct_bolp(interp, args, env),
+            "eolp" => direct_eolp(interp, args, env),
+            "delete-region" => direct_delete_region(interp, args, env),
             "delete-and-extract-region" => {
                 need_args(name, args, 2)?;
                 let from = position_from_value(interp, &args[0])?;
@@ -3174,4 +2842,575 @@ fn visual_vertical_motion(
     };
     interp.buffer.goto_char(target);
     Ok(moved)
+}
+
+/// The `goto-char' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_goto_char(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "goto-char";
+    need_args(name, args, 1)?;
+    let pos = position_from_value(interp, &args[0])?;
+    interp.buffer.goto_char(pos);
+    // GNU Fgoto_char returns its POSITION argument unchanged (a
+    // marker stays a marker), not the clamped integer point —
+    // erc-display-msg does (marker-position (goto-char MARKER)).
+    Ok(args[0].clone())
+}
+
+/// The `forward-char' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_forward_char(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let n = if args.is_empty() || args[0].is_nil() {
+        1
+    } else {
+        args[0].as_integer()?
+    };
+    match interp.buffer.forward_char(n as isize) {
+        Ok(_) => Ok(Value::Nil),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The `backward-char' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_backward_char(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let n = if args.is_empty() || args[0].is_nil() {
+        1
+    } else {
+        args[0].as_integer()?
+    };
+    match interp.buffer.forward_char(-(n as isize)) {
+        Ok(_) => Ok(Value::Nil),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The `skip-chars-forward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_skip_chars_forward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "skip-chars-forward";
+    if args.is_empty() || args.len() > 2 {
+        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+    }
+    regexp::skip_chars_forward_impl(interp, &args[0], args.get(1))
+}
+
+/// The `skip-chars-backward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_skip_chars_backward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "skip-chars-backward";
+    if args.is_empty() || args.len() > 2 {
+        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+    }
+    regexp::skip_chars_backward_impl(interp, &args[0], args.get(1))
+}
+
+/// The `skip-syntax-forward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_skip_syntax_forward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "skip-syntax-forward";
+    if args.is_empty() || args.len() > 2 {
+        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+    }
+    syntax::skip_syntax_impl(interp, &args[0], args.get(1), true, env)
+}
+
+/// The `skip-syntax-backward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_skip_syntax_backward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "skip-syntax-backward";
+    if args.is_empty() || args.len() > 2 {
+        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+    }
+    syntax::skip_syntax_impl(interp, &args[0], args.get(1), false, env)
+}
+
+/// The `beginning-of-line' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_beginning_of_line(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    // GNU constrains bol motion to the current field (fields are
+    // rare; skip the work when the buffer has none).
+    let old_pos = interp.buffer.point();
+    let n = args
+        .first()
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(1);
+    if n != 1 {
+        interp.buffer.forward_line((n - 1) as isize);
+    }
+    // After crossing an unterminated final line, GNU's
+    // line-beginning-position leaves point at ZV.  Calling the
+    // ordinary current-line BOL operation there would incorrectly
+    // rewind to that same final line and can make region walkers
+    // loop forever.
+    let crossed_to_unterminated_eob = n > 1
+        && interp.buffer.point() == interp.buffer.point_max()
+        && interp.buffer.char_before().is_some_and(|ch| ch != '\n');
+    if !crossed_to_unterminated_eob {
+        interp.buffer.beginning_of_line();
+    }
+    if buffer_has_field_property(interp) {
+        let new_pos = interp.buffer.point();
+        let constrained = super::call(
+            interp,
+            "constrain-to-field",
+            &[
+                Value::Integer(new_pos as i64),
+                Value::Integer(old_pos as i64),
+            ],
+            env,
+        )?
+        .as_integer()? as usize;
+        interp.buffer.goto_char(constrained);
+    }
+    Ok(Value::Nil)
+}
+
+/// The `end-of-line' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_end_of_line(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    // (end-of-line N): end of the Nth line counting from the
+    // current one (0 = previous line's end).
+    let n = args
+        .first()
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(1);
+    if n != 1 {
+        interp.buffer.forward_line((n - 1) as isize);
+    }
+    interp.buffer.end_of_line();
+    Ok(Value::Nil)
+}
+
+/// The `forward-line' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_forward_line(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let n = if args.is_empty() || args[0].is_nil() {
+        BigInt::from(1u8)
+    } else {
+        integer_like_bigint(interp, &args[0])?
+    };
+    Ok(normalize_bigint_value(forward_line_bigint(
+        &mut interp.buffer,
+        n,
+    )))
+}
+
+/// The `char-after' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_char_after(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let pos = match args.first() {
+        None | Some(Value::Nil) => Some(interp.buffer.point()),
+        Some(Value::Integer(position)) if *position >= 0 => usize::try_from(*position).ok(),
+        Some(Value::Integer(_)) => None,
+        Some(Value::Marker(id)) => interp.marker_position(*id),
+        Some(value) => {
+            return Err(LispError::WrongTypeArgument(
+                "integer-or-marker-p".into(),
+                value.clone(),
+            ));
+        }
+    };
+    match pos.and_then(|position| public_buffer_char_code_at(interp, position)) {
+        Some(code) => Ok(Value::Integer(code)),
+        None => Ok(Value::Nil),
+    }
+}
+
+/// The `char-before' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_char_before(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let pos = match args.first() {
+        None | Some(Value::Nil) => Some(interp.buffer.point()),
+        Some(Value::Integer(position)) if *position >= 0 => usize::try_from(*position).ok(),
+        Some(Value::Integer(_)) => None,
+        Some(Value::Marker(id)) => interp.marker_position(*id),
+        Some(value) => {
+            return Err(LispError::WrongTypeArgument(
+                "integer-or-marker-p".into(),
+                value.clone(),
+            ));
+        }
+    };
+    let Some(pos) = pos else {
+        return Ok(Value::Nil);
+    };
+    if pos <= interp.buffer.point_min() {
+        Ok(Value::Nil)
+    } else {
+        match public_buffer_char_code_at(interp, pos - 1) {
+            Some(code) => Ok(Value::Integer(code)),
+            None => Ok(Value::Nil),
+        }
+    }
+}
+
+/// The `delete-region' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_delete_region(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "delete-region";
+    need_args(name, args, 2)?;
+    let from = position_from_value(interp, &args[0])?;
+    let to = position_from_value(interp, &args[1])?;
+    ensure_region_modifiable(interp, from, to, env)?;
+    delete_region_with_hooks(interp, from, to, env)?;
+    Ok(Value::Nil)
+}
+
+/// The `search-forward' family under NAME: one body, each name a subr's
+/// function pointer below.
+fn search_named(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+    }
+    let needle = string_text(&args[0])?;
+    // GNU folds case whenever `case-fold-search' is non-nil; fold
+    // per character so char counts stay aligned with the buffer.
+    let case_fold = interp
+        .lookup_var("case-fold-search", env)
+        .is_some_and(|value| value.is_truthy());
+    let fold = |text: &str| -> String {
+        text.chars()
+            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+            .collect()
+    };
+    let needle_key = if case_fold {
+        fold(&needle)
+    } else {
+        needle.clone()
+    };
+    let noerror = args.get(2).is_some_and(Value::is_truthy);
+    let move_on_failure = search_noerror_moves(args.get(2));
+    let original_point = interp.buffer.point();
+    // GNU repeats the search COUNT times; a negative COUNT searches
+    // in the opposite direction (viper's `F' calls search-forward
+    // with -1).
+    let count = match args.get(3) {
+        Some(value) if !value.is_nil() => value.as_integer()?,
+        _ => 1,
+    };
+    let forward = (name == "search-forward") == (count >= 0);
+    let limit = match args.get(1) {
+        // GNU clamps a BOUND outside the accessible region
+        // (loaddefs-gen searches backward with (- (point-max) 1000)).
+        Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
+            interp.buffer.point_min()
+        }
+        Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+        _ if forward => interp.buffer.point_max(),
+        _ => interp.buffer.point_min(),
+    };
+    // search.c's simple search scans the buffer text from point
+    // and stops at the first match; folding and copying the
+    // whole rest of the buffer first made a search that matches
+    // at once cost the buffer's length (330 us for 80 KB).  The
+    // text is read in windows of `SEARCH_WINDOW_CHARS' that
+    // overlap by a needle's length less one, so no match is
+    // split between two windows; each window is folded as the
+    // whole text was.
+    const SEARCH_WINDOW_CHARS: usize = 4096;
+    let needle_chars = needle.chars().count();
+    let window_chars = SEARCH_WINDOW_CHARS.max(2 * needle_chars);
+    let overlap = needle_chars.saturating_sub(1);
+    let mut result = None;
+    for _ in 0..count.unsigned_abs().max(1) {
+        let point = interp.buffer.point();
+        result = if forward {
+            let limit = limit.min(interp.buffer.point_max());
+            if limit < point {
+                None
+            } else {
+                let mut from = point;
+                loop {
+                    let to = limit.min(from + window_chars);
+                    let window = interp
+                        .buffer
+                        .buffer_substring(from, to)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    let window = if case_fold { fold(&window) } else { window };
+                    if let Some(found) = window.find(&needle_key) {
+                        let start = from + window[..found].chars().count();
+                        break Some((start, start + needle_chars));
+                    }
+                    if to >= limit {
+                        break None;
+                    }
+                    from = to - overlap.min(to - from);
+                }
+            }
+        } else {
+            let limit = limit.max(interp.buffer.point_min());
+            if limit > point {
+                None
+            } else {
+                let mut to = point;
+                loop {
+                    let from = limit.max(to.saturating_sub(window_chars));
+                    let window = interp
+                        .buffer
+                        .buffer_substring(from, to)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    let window = if case_fold { fold(&window) } else { window };
+                    if let Some(found) = window.rfind(&needle_key) {
+                        let start = from + window[..found].chars().count();
+                        break Some((start, start + needle_chars));
+                    }
+                    if from <= limit {
+                        break None;
+                    }
+                    to = from + overlap.min(to - from);
+                }
+            }
+        };
+        match result {
+            Some((start, end)) => {
+                interp.buffer.goto_char(if forward { end } else { start });
+            }
+            None => break,
+        }
+    }
+    match result {
+        Some((start, end)) => {
+            interp.last_match_data = Some(vec![Some((start, end))]);
+            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+            let point = if forward { end } else { start };
+            interp.buffer.goto_char(point);
+            Ok(Value::Integer(point as i64))
+        }
+        None if noerror => {
+            interp.buffer.goto_char(if move_on_failure {
+                limit
+            } else {
+                original_point
+            });
+            Ok(Value::Nil)
+        }
+        None => {
+            interp.buffer.goto_char(original_point);
+            Err(LispError::SignalValue(Value::list([
+                Value::Symbol("search-failed".into()),
+                Value::String(needle.into()),
+            ])))
+        }
+    }
+}
+
+/// The `search-forward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_search_forward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    search_named(interp, "search-forward", args, env)
+}
+
+/// The `search-backward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_search_backward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    search_named(interp, "search-backward", args, env)
+}
+
+/// The `buffer-substring' family under NAME: one body, each name a subr's
+/// function pointer below.
+fn buffer_substring_named(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    need_args(name, args, 2)?;
+    let from = position_from_value(interp, &args[0])?;
+    let to = position_from_value(interp, &args[1])?;
+    let (start, end) = if from <= to { (from, to) } else { (to, from) };
+    match interp.buffer.buffer_substring(start, end) {
+        Ok(s) => {
+            if name == "buffer-substring" {
+                Ok(string_like_value_with_extended_chars(
+                    s,
+                    interp.buffer.substring_property_spans(start, end),
+                    interp.buffer.is_multibyte(),
+                    interp.buffer.substring_extended_chars(start, end),
+                ))
+            } else {
+                Ok(string_like_value_with_extended_chars(
+                    s,
+                    Vec::new(),
+                    interp.buffer.is_multibyte(),
+                    interp.buffer.substring_extended_chars(start, end),
+                ))
+            }
+        }
+        Err(e) => Err(LispError::Signal(e.to_string())),
+    }
+}
+
+/// The `buffer-substring' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_buffer_substring(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    buffer_substring_named(interp, "buffer-substring", args, env)
+}
+
+/// The `buffer-substring-no-properties' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_buffer_substring_no_properties(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    buffer_substring_named(interp, "buffer-substring-no-properties", args, env)
+}
+
+/// The `point' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_point(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    Ok(Value::Integer(interp.buffer.point() as i64))
+}
+
+/// The `point-min' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_point_min(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    Ok(Value::Integer(interp.buffer.point_min() as i64))
+}
+
+/// The `point-max' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_point_max(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    Ok(Value::Integer(interp.buffer.point_max() as i64))
+}
+
+/// The `re-search-forward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_re_search_forward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    regexp::buffer_regex_search(interp, args, env, true, false)
+}
+
+/// The `re-search-backward' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_re_search_backward(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    regexp::buffer_regex_search(interp, args, env, false, false)
+}
+
+/// The `insert' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_insert(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    insert_impl(interp, args, env, false, false)
+}
+
+/// The `bolp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_bolp(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    Ok(if interp.buffer.bolp() {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+/// The `eolp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_eolp(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    Ok(if interp.buffer.eolp() {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+/// The `bobp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_bobp(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    Ok(if interp.buffer.bobp() {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+/// The `eobp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_eobp(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    Ok(if interp.buffer.eobp() {
+        Value::T
+    } else {
+        Value::Nil
+    })
 }

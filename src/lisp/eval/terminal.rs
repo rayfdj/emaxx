@@ -727,6 +727,33 @@ impl Interpreter {
 impl Interpreter {
     // eval.c:specbind remembers the KBOARD on which the let was made.
     // Unwinding after a frame switch must restore that same keyboard.
+    /// Whether SYMBOL is one of the keyboard's per-terminal variables
+    /// (`keyboard_binding_terminal' below names them), by id: every read
+    /// of a special variable asks before probing the terminal's table.
+    pub(crate) fn is_keyboard_variable(symbol: &crate::lisp::types::SymbolName) -> bool {
+        thread_local! {
+            static KEYBOARD_VARIABLE_IDS: [u32; 14] = [
+                "overriding-terminal-local-map",
+                "last-command",
+                "real-last-command",
+                "keyboard-translate-table",
+                "last-repeatable-command",
+                "prefix-arg",
+                "last-prefix-arg",
+                "defining-kbd-macro",
+                "last-kbd-macro",
+                "system-key-alist",
+                "window-system",
+                "default-minibuffer-frame",
+                "input-decode-map",
+                "local-function-key-map",
+            ]
+            .map(|name| crate::lisp::types::SymbolName::intern_str(name).id());
+        }
+        let id = symbol.id();
+        KEYBOARD_VARIABLE_IDS.with(|ids| ids.contains(&id))
+    }
+
     pub(crate) fn keyboard_binding_terminal(&self, name: &str) -> Option<u64> {
         matches!(
             name,

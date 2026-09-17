@@ -137,6 +137,21 @@ impl Interpreter {
             .cloned()
     }
 
+    /// `buffer_local_value' of a symbol held through `cached_symbol!'.
+    pub(crate) fn buffer_local_value_key(
+        &self,
+        buffer_id: u64,
+        key: &'static std::thread::LocalKey<SymbolName>,
+    ) -> Option<Value> {
+        key.with(|symbol| {
+            self.buffer_locals
+                .get(&buffer_id)
+                .and_then(|locals| locals.binding(symbol))
+                .flatten()
+                .cloned()
+        })
+    }
+
     /// `assq_no_quit (symbol, BVAR (buffer, local_var_alist))': `Some(None)'
     /// is a binding whose value is void.
     pub(crate) fn buffer_local_binding(&self, buffer_id: u64, name: &str) -> Option<Option<Value>> {
@@ -1426,8 +1441,12 @@ impl Interpreter {
     }
 
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
-        self.terminal_keyboard_value(name.as_str())
-            .or_else(|| self.globals.value(name).cloned())
+        if Self::is_keyboard_variable(name)
+            && let Some(value) = self.terminal_keyboard_value(name.as_str())
+        {
+            return Some(value);
+        }
+        self.globals.value(name).cloned()
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
@@ -1554,6 +1573,37 @@ impl Interpreter {
         for restore in self.active_special_restores.iter().rev().filter(|restore| {
             !restore.local_binding_killed
                 && restore.name == name
+                && matches!(restore.scope, SpecialBindingScope::Global)
+        }) {
+            found = true;
+            if restore
+                .binding_buffer_id
+                .is_some_and(|buffer_id| buffer_id != current_buffer_id)
+            {
+                value = restore.previous.clone();
+            } else {
+                break;
+            }
+        }
+        found.then_some(value)
+    }
+
+    /// `active_global_special_value' for a symbol in hand: the flag and
+    /// the records by id.
+    pub(super) fn active_global_special_value_symbol(
+        &self,
+        symbol: &SymbolName,
+    ) -> Option<Option<Value>> {
+        if !self.globals.has_flag(symbol, ALWAYS_LOCAL) {
+            return None;
+        }
+        let mut value = self.global_binding_value_symbol(symbol);
+        let current_buffer_id = self.current_buffer_id();
+        let mut found = false;
+        let id = symbol.id();
+        for restore in self.active_special_restores.iter().rev().filter(|restore| {
+            !restore.local_binding_killed
+                && restore.name.id() == id
                 && matches!(restore.scope, SpecialBindingScope::Global)
         }) {
             found = true;
@@ -2049,7 +2099,11 @@ impl Interpreter {
             self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 binding_id,
-                keyboard_terminal_id: self.keyboard_binding_terminal(name),
+                keyboard_terminal_id: if Self::is_keyboard_variable(&resolved) {
+                    self.keyboard_binding_terminal(name)
+                } else {
+                    None
+                },
                 name: resolved,
                 scope: SpecialBindingScope::Global,
                 binding_buffer_id,
@@ -2332,12 +2386,28 @@ impl Interpreter {
     ) -> R {
         let depth = self.backtrace_frames.len();
         self.push_plain_backtrace_frame(function, args, true);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(self)));
-        self.truncate_backtrace_frames(depth);
-        match result {
-            Ok(value) => value,
-            Err(payload) => std::panic::resume_unwind(payload),
+        // The frame is popped on every exit, a Rust unwind included, by a
+        // guard's drop rather than a catch_unwind around the body (the
+        // catch cost a call of its own on every Lisp call).
+        struct FramePop {
+            interpreter: *mut Interpreter,
+            depth: usize,
         }
+        impl Drop for FramePop {
+            fn drop(&mut self) {
+                // SAFETY: the guard lives inside this method's borrow of
+                // `self' and is dropped before the borrow ends; the body's
+                // reborrow has ended by then (normally or by unwinding).
+                unsafe { &mut *self.interpreter }.truncate_backtrace_frames(self.depth);
+            }
+        }
+        let guard = FramePop {
+            interpreter: std::ptr::from_mut(self),
+            depth,
+        };
+        let result = body(self);
+        drop(guard);
+        result
     }
 
     /// The four-word frame record_in_backtrace writes.
@@ -2464,7 +2534,14 @@ impl Interpreter {
     /// been dispatched.
     pub fn truncate_backtrace_frames(&mut self, len: usize) {
         while self.backtrace_frames.len() > len {
-            self.pop_backtrace_frame();
+            // The common frame -- an immediate function object (a byte-code
+            // record) with no detail -- owns nothing to drop.
+            if let Some(frame) = self.backtrace_frames.pop()
+                && frame.function.is_immediate()
+                && frame.detail.is_none()
+            {
+                std::mem::forget(frame);
+            }
         }
     }
 

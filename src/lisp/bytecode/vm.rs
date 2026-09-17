@@ -661,7 +661,9 @@ fn run(
     // the handlers have run by now, so unwind it like GNU's specpdl does.
     interp.truncate_backtrace_frames(frames_at_entry);
     let mut stack = stack.into_inner();
-    stack.clear();
+    for value in stack.drain(..) {
+        value.discard();
+    }
     if interp.vm_stack_pool.len() < 256 {
         interp.vm_stack_pool.push(stack);
     }
@@ -1464,9 +1466,8 @@ fn run_with_stack(
                     // even if entry processing itself invokes Lisp/GC.
                     let func = stack.borrow()[args_start - 1].clone();
                     let trace_call = trace_errors.then(|| func.to_string());
-                    let value = match interp.call_function_value(
-                        func,
-                        None,
+                    let value = match interp.funcall_from_bytecode(
+                        &func,
                         &stack.borrow()[args_start..],
                         env,
                     ) {

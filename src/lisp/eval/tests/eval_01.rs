@@ -3864,6 +3864,162 @@ fn byte_code_hot_loop_falls_through_to_the_full_ops() {
 }
 
 #[test]
+fn skip_syntax_reads_the_property_interval_like_a_scan() {
+    // syntax.c's skip_syntaxes sets up the syntax table once and reads
+    // the `syntax-table' property per interval; the character `(' made
+    // a word constituent by the property is skipped only under
+    // `parse-sexp-lookup-properties'.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(with-temp-buffer
+           (insert \"abc(def ghi\")
+           (put-text-property 4 5 'syntax-table '(2))
+           (goto-char 1)
+           (let ((plain (list (skip-syntax-forward \"w\") (point))))
+             (setq-local parse-sexp-lookup-properties t)
+             (goto-char 1)
+             (let ((armed (list (skip-syntax-forward \"w\") (point))))
+               (goto-char 8)
+               (let ((back (list (skip-syntax-backward \"w\") (point))))
+                 (goto-char 8)
+                 (list plain armed back (list (skip-syntax-backward \"^w\") (point)))))))",
+        "((3 4) (7 8) (-7 1) (0 8))",
+    );
+}
+
+#[test]
+fn looking_at_matches_at_point_only() {
+    // search.c's looking_at_1 runs re_match_2 AT point: a pattern that
+    // occurs later in the buffer does not match, the match data of a
+    // match at point is its own (groups, an empty pattern, `\\=', word
+    // boundaries with their left context), and a search still finds the
+    // later occurrence.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(with-temp-buffer
+           (insert \"xx int yy int\")
+           (goto-char 1)
+           (list (looking-at \"int\")
+                 (progn (goto-char 4) (looking-at \"int\"))
+                 (match-data t)
+                 (looking-at \"\\\\<int\\\\>\")
+                 (progn (goto-char 5) (looking-at \"\\\\<nt\\\\>\"))
+                 (looking-at \"nt\\\\>\")
+                 (progn (goto-char 4) (looking-at \"\\\\(i\\\\)\\\\(n\\\\)\\\\(x\\\\)?\"))
+                 (match-data t)
+                 (looking-at \"\\\\=int\")
+                 (progn (goto-char 1) (re-search-forward \"int\" nil t))
+                 (match-beginning 0)
+                 (progn (goto-char 1) (looking-at \"\"))
+                 (match-data t)))",
+        "(nil t (4 7 #<buffer  *temp*>) t nil t t (4 6 4 5 5 6 #<buffer  *temp*>) t 7 4 t (1 1 #<buffer  *temp*>))",
+    );
+}
+
+#[test]
+fn a_variable_holding_a_lambda_never_shadows_the_function_cell() {
+    // eval.c's Ffuncall reads the function cell of the symbol in
+    // function position whatever a `let' bound the variable of that
+    // name to; only cl-flet's function-namespace binding (which expands
+    // to a `funcall' of a variable) changes what the name calls, and an
+    // alias of the name reads the cell too.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(progn
+           (require 'cl-lib)
+           (defun emaxx-shadow-test-f (x) (+ x 1))
+           (defalias 'emaxx-shadow-test-g 'emaxx-shadow-test-f)
+           (list (let ((emaxx-shadow-test-f (lambda (x) (* x 10)))) (emaxx-shadow-test-f 3))
+                 (let ((emaxx-shadow-test-f (lambda (x) (* x 10)))) (emaxx-shadow-test-g 3))
+                 (let ((emaxx-shadow-test-f (lambda (x) (* x 10)))) (funcall 'emaxx-shadow-test-f 3))
+                 (cl-flet ((emaxx-shadow-test-f (x) (* x 100))) (emaxx-shadow-test-f 3))
+                 (cl-flet ((emaxx-shadow-test-f (x) (* x 100))) (emaxx-shadow-test-g 3))
+                 (let ((car (lambda (x) 99))) (car '(1 2)))))",
+        "(4 4 4 300 4 1)",
+    );
+}
+
+#[test]
+fn newline_scans_cross_the_rope_chunks() {
+    // find_newline over a buffer longer than one rope chunk, with
+    // multibyte text so byte and character offsets differ inside a
+    // chunk: line starts, ends, `forward-line' both ways, and
+    // `skip-chars' over a line.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(with-temp-buffer
+           (dotimes (i 300) (insert (format \"línea %d — texto\\n\" i)))
+           (goto-char 3000)
+           (let ((middle (list (line-beginning-position) (line-end-position)
+                               (forward-line 2) (point) (forward-line -3) (point))))
+             (goto-char (point-max))
+             (let ((at-max (list (line-beginning-position) (line-end-position)
+                                 (forward-line 1) (point))))
+               (goto-char 2500)
+               (list middle at-max
+                     (list (skip-chars-forward \"^\\n\") (point)
+                           (skip-chars-backward \"^\\n\") (point))))))",
+        "((2987 3004 0 3023 0 2969) (5291 5291 1 5291) (0 2500 -17 2483))",
+    );
+}
+
+#[test]
+fn region_modification_checks_without_intervals_still_see_the_buffer_flag() {
+    // A read-only buffer signals on a deletion with no text properties
+    // (the interval walk is skipped only when the buffer flag is off);
+    // a `read-only' property signals `text-read-only' where it lies and
+    // not elsewhere.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(with-temp-buffer
+           (insert \"hello\")
+           (setq buffer-read-only t)
+           (let ((flag (condition-case err (delete-region 1 3) (error (car err)))))
+             (setq buffer-read-only nil)
+             (put-text-property 2 3 'read-only t)
+             (list flag
+                   (condition-case err (delete-region 1 3) (error err))
+                   (progn (delete-region 4 5) (buffer-substring-no-properties 1 (point-max))))))",
+        "(buffer-read-only (text-read-only) \"helo\")",
+    );
+}
+
+#[test]
 fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
     // search.c keeps the most recently used compiled patterns in front of
     // its cache; the front here is checked by exactly the fields the table

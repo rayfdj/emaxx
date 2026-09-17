@@ -131,6 +131,12 @@ pub(crate) enum KnownSymbolSource<'a> {
 
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
+        // data.c:find_symbol_value works on the symbol: a name that is an
+        // interned symbol's is resolved to it once (an address-keyed
+        // cache) and read by id from there.
+        if let Some(symbol) = SymbolName::interned_cached(name) {
+            return self.lookup_var_symbol(&symbol, env);
+        }
         // Cow avoids a per-lookup String allocation for the overwhelmingly
         // common non-aliased name.
         let resolved: std::borrow::Cow<str> = if self.direct_variable_alias(name).is_none() {
@@ -141,6 +147,33 @@ impl Interpreter {
                 .into()
         };
         self.lookup_var_with_resolved_name(name, resolved.as_ref(), env, None)
+            .ok()
+            .flatten()
+    }
+
+    /// `lookup_var' for a symbol in hand: the alias chain, the flags, the
+    /// buffer-local cell and the global cell by id.
+    /// `find_symbol_value' of a symbol the caller holds through
+    /// `cached_symbol!': no name to resolve.
+    pub(crate) fn lookup_var_key(
+        &self,
+        key: &'static std::thread::LocalKey<SymbolName>,
+        env: &Env,
+    ) -> Option<Value> {
+        key.with(|symbol| self.lookup_var_symbol(symbol, env))
+    }
+
+    pub(crate) fn lookup_var_symbol(&self, symbol: &SymbolName, env: &Env) -> Option<Value> {
+        let resolved_owned;
+        let resolved = if self.globals.alias(symbol).is_none() {
+            symbol
+        } else {
+            resolved_owned = self
+                .resolve_variable_symbol(symbol)
+                .unwrap_or_else(|_| symbol.clone());
+            &resolved_owned
+        };
+        self.lookup_var_with_resolved_name(symbol.as_str(), resolved.as_str(), env, Some(resolved))
             .ok()
             .flatten()
     }
@@ -169,7 +202,17 @@ impl Interpreter {
             // lexical one.
             if index < self.special_scan_floor
                 && *special.get_or_insert_with(|| {
-                    self.is_dynamic_binding_name(name) || self.local_special_active(name, env)
+                    // The flag by id when the symbol is in hand: by name
+                    // it hashed the id registry once per read a primitive
+                    // made under a lexical frame.
+                    let dynamic = match resolved_symbol {
+                        Some(symbol) if resolved.len() == name.len() && resolved == name => {
+                            self.dlet_active_names.contains_key(name)
+                                || self.is_special_variable_symbol(symbol)
+                        }
+                        _ => self.is_dynamic_binding_name(name),
+                    };
+                    dynamic || self.local_special_active(name, env)
                 })
             {
                 break;
@@ -183,10 +226,19 @@ impl Interpreter {
                 // frame's typed snapshot must never become a stale fallback.
                 continue;
             }
-            let shared_updates = Self::frame_identity(frame)
-                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
             for (position, (k, v)) in frame.iter().enumerate().rev() {
-                if k == name {
+                // The binding's symbol by id when the caller has the symbol
+                // (one id per text), else by text; the shared-cell table is
+                // probed only for the binding found.
+                let bound = match resolved_symbol {
+                    Some(symbol) if resolved.len() == name.len() && resolved == name => {
+                        k.id() == symbol.id()
+                    }
+                    _ => k == name,
+                };
+                if bound {
+                    let shared_updates = Self::frame_identity(frame)
+                        .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
                     return Ok(Some(
                         frame
                             .canonical_lisp_binding_value(position, name)
@@ -233,7 +285,11 @@ impl Interpreter {
             Some(None) => return Ok(None),
             None => {}
         }
-        if let Some(value) = self.active_global_special_value(resolved) {
+        let active = match resolved_symbol {
+            Some(symbol) => self.active_global_special_value_symbol(symbol),
+            None => self.active_global_special_value(resolved),
+        };
+        if let Some(value) = active {
             return Ok(value.or_else(|| self.builtin_var_value(resolved)));
         }
         let global = if let Some(symbol) = resolved_symbol {
@@ -249,6 +305,9 @@ impl Interpreter {
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
+        if let Some(symbol) = SymbolName::interned_cached(name) {
+            return self.symbol_value_cell_symbol(&symbol);
+        }
         // data.c:find_symbol_value follows a variable alias only when the
         // symbol is actually redirected.  Keep the overwhelmingly common
         // plain-value path borrowed; allocating a fresh String for every
@@ -283,15 +342,26 @@ impl Interpreter {
     }
 
     pub(crate) fn symbol_value_cell_symbol(&self, name: &SymbolName) -> Result<Value, LispError> {
-        if self.globals.alias(name).is_some()
-            || self.globals.has_flag(name, LOCALIZED)
-            || name.as_str() == "buffer-undo-list"
-        {
-            return self.symbol_value_cell(name.as_str());
+        let resolved_owned;
+        let resolved = if self.globals.alias(name).is_none() {
+            name
+        } else {
+            resolved_owned = self.resolve_variable_symbol(name)?;
+            &resolved_owned
+        };
+        if resolved.as_str() != "buffer-undo-list" && !self.globals.has_flag(resolved, LOCALIZED) {
+            return self
+                .global_binding_value_symbol(resolved)
+                .or_else(|| self.builtin_var_value(resolved.as_str()))
+                .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()));
         }
-        self.global_binding_value_symbol(name)
-            .or_else(|| self.builtin_var_value(name.as_str()))
-            .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
+        self.lookup_var_with_resolved_name(
+            resolved.as_str(),
+            resolved.as_str(),
+            &Env::new(),
+            Some(resolved),
+        )?
+        .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
     }
 
     /// C readers keep using the C slot even after `makunbound' disconnects
@@ -774,21 +844,30 @@ impl Interpreter {
         self.functions_index.contains_key(name)
     }
 
-    /// Whether local state can change symbol-function resolution.
-    ///
-    /// cl-flet/cl-labels frames are explicit, but this interpreter also
-    /// represents some generated local functions as callable values in an
-    /// ordinary lexical frame.  Symbol aliases can reach either kind, so a
-    /// global resolution cache is safe only when neither is present.
+    /// Whether local state can change symbol-function resolution: only a
+    /// function-namespace frame (cl-flet/cl-labels) can.  The lexical
+    /// environment is a value namespace (eval.c's Ffuncall reads the
+    /// function cell of the symbol whatever `let' bound it to): a
+    /// variable holding a lambda shadowed the function cell of its name
+    /// here before, against the oracle, and every call made under such a
+    /// `let' resolved by name.
     pub(crate) fn env_may_affect_function_resolution(env: &Env) -> bool {
+        env.iter()
+            .any(|frame| frame.lisp_environment().is_none() && frame.has_function_bindings())
+    }
+
+    /// Whether a function-namespace frame of ENV binds NAME itself to a
+    /// callable: apart from an alias in NAME's function cell (whose
+    /// target a frame could bind), the only way ENV changes NAME's
+    /// resolution.
+    pub(crate) fn frame_binds_callable(name: &SymbolName, env: &Env) -> bool {
         env.iter().any(|frame| {
-            if frame.lisp_environment().is_some() {
-                return false;
-            }
-            frame.has_function_bindings()
-                || frame
-                    .iter()
-                    .any(|(_, value)| matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_)))
+            frame.lisp_environment().is_none()
+                && frame.has_function_bindings()
+                && frame.iter().any(|(bound, value)| {
+                    bound.id() == name.id()
+                        && matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_))
+                })
         })
     }
 
@@ -799,15 +878,11 @@ impl Interpreter {
         }
         let name_is_builtin = facts.builtin || facts.special_form;
         for frame in env.iter().rev() {
-            // GNU's interpreted lexical environment is a value namespace;
-            // callable values stored there never shadow a function cell.
-            if frame.lisp_environment().is_some() {
-                continue;
-            }
-            // A builtin's function position can only be shadowed by a real
-            // function frame (cl-flet/cl-labels); a plain `let' binding a
-            // VARIABLE named `car' to a lambda must not hijack `(car x)'.
-            if name_is_builtin && !frame.has_function_bindings() {
+            // The lexical environment is a value namespace: only a
+            // function-namespace frame (cl-flet/cl-labels) shadows a
+            // function cell; a `let' binding a VARIABLE to a lambda never
+            // does, whether the name is `car' or a defun's.
+            if frame.lisp_environment().is_some() || !frame.has_function_bindings() {
                 continue;
             }
             for (k, v) in frame.iter().rev() {

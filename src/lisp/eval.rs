@@ -3260,7 +3260,11 @@ struct LispReachability<'mark, 'heap> {
     native: Option<&'mark mut crate::lisp::native_comp::NativeMark<'heap>>,
     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
     /// graph before the weak-table fixed point or either heap can be swept.
-    pending: smallvec::SmallVec<[Value; 16]>,
+    /// Objects reached but not yet traced, as bit copies of the values
+    /// that reached them (no reference count taken: nothing is freed while
+    /// the graph is being marked, and the copy is never dropped).  Taking
+    /// the count was a third of every collection.
+    pending: smallvec::SmallVec<[std::mem::ManuallyDrop<Value>; 16]>,
     /// This collection's number: a cons, string, vector or symbol is
     /// marked by carrying it (alloc.c's mark bit, on the object); the
     /// other kinds are marked by address or id below.
@@ -3302,6 +3306,23 @@ impl Default for LispReachability<'_, '_> {
             reader_forms: MarkedAddresses::default(),
         }
     }
+}
+
+/// A hint that the cache line at ADDRESS is about to be written.
+#[inline]
+fn prefetch_for_write(address: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a prefetch is a hint that faults on no address.
+    unsafe {
+        std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(address as *const i8)
+    };
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: as above; the instruction reads nothing and writes nothing.
+    unsafe {
+        std::arch::asm!("prfm pstl1keep, [{0}]", in(reg) address, options(nostack, preserves_flags, readonly))
+    };
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = address;
 }
 
 pub(crate) struct WeakHashReachability {
@@ -3351,41 +3372,99 @@ impl LispReachability<'_, '_> {
     }
 
     fn mark_env(&mut self, interp: &Interpreter, env: &Env) -> bool {
-        let changed = self.enqueue_env(env);
-        self.trace_pending(interp);
-        changed
+        self.enqueue_env(env);
+        self.trace_pending(interp)
     }
 
-    fn enqueue_env(&mut self, env: &Env) -> bool {
-        let mut changed = false;
+    fn enqueue_env(&mut self, env: &Env) {
         for frame in env {
             for (symbol, value) in frame {
                 // alloc.c marks both halves of GNU's (SYMBOL . VALUE)
                 // lexical binding, even before a closure captures it.
-                changed |= self.enqueue(&Value::Symbol(symbol.clone()));
-                changed |= self.enqueue(value);
+                self.enqueue(&Value::Symbol(symbol.clone()));
+                self.enqueue(value);
             }
             if let Some(environment) = frame.lisp_environment() {
-                changed |= self.enqueue(environment);
+                self.enqueue(environment);
+            }
+        }
+    }
+
+    /// Mark VALUE's graph; true when something not yet marked was reached.
+    fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
+        self.enqueue(value);
+        self.trace_pending(interp)
+    }
+
+    /// Trace everything queued.  The mark is written when an object is
+    /// taken off the queue, a window of objects after its mark word was
+    /// prefetched on the way in (Cher, Hosking and Vitek's software
+    /// prefetching for mark-sweep): that write, a cache miss per object
+    /// over the scattered heap, was two thirds of the mark phase when
+    /// each object was marked as it was reached.  A reference to an
+    /// object already marked costs one push and one rejected pop.
+    fn trace_pending(&mut self, interp: &Interpreter) -> bool {
+        const WINDOW: usize = 8;
+        let mut window: [Option<std::mem::ManuallyDrop<Value>>; WINDOW] =
+            std::array::from_fn(|_| None);
+        let mut slot = 0;
+        let mut queued_in_window = 0usize;
+        let mut changed = false;
+        loop {
+            let next = self.pending.pop();
+            if let Some(value) = &next {
+                Self::prefetch_mark(value);
+                queued_in_window += 1;
+            }
+            let oldest = std::mem::replace(&mut window[slot], next);
+            slot = (slot + 1) % WINDOW;
+            if let Some(value) = oldest {
+                queued_in_window -= 1;
+                if self.mark_object(&value) {
+                    changed = true;
+                    self.trace_fields(interp, &value);
+                }
+            } else if queued_in_window == 0 && self.pending.is_empty() {
+                break;
             }
         }
         changed
     }
 
-    fn mark(&mut self, interp: &Interpreter, value: &Value) -> bool {
-        let changed = self.enqueue(value);
-        self.trace_pending(interp);
-        changed
+    /// The object VALUE names is about to be marked: its mark word into
+    /// the cache.
+    #[inline]
+    fn prefetch_mark(value: &Value) {
+        let mark: *const crate::lisp::types::MarkBit = match value {
+            Value::Cons(cell) => &cell.mark,
+            Value::Vector(vector) => &vector.mark,
+            Value::String(text) => text.mark_bit(),
+            Value::Symbol(symbol) => symbol.mark_bit(),
+            _ => return,
+        };
+        prefetch_for_write(mark as *const u8);
     }
 
-    fn trace_pending(&mut self, interp: &Interpreter) {
-        while let Some(value) = self.pending.pop() {
-            self.trace_fields(interp, &value);
+    /// Queue VALUE's object for marking (nothing for an immediate).
+    fn enqueue(&mut self, value: &Value) {
+        if matches!(
+            value,
+            Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound
+        ) {
+            return;
         }
+        // SAFETY: the copy is only ever read, through `ManuallyDrop', while
+        // the object it names is kept alive by whatever the tracer reached
+        // it through; the marking phase frees nothing.
+        self.pending.push(std::mem::ManuallyDrop::new(unsafe {
+            std::ptr::read(value)
+        }));
     }
 
-    fn enqueue(&mut self, value: &Value) -> bool {
-        let newly_marked = match value {
+    /// alloc.c's mark on the object: true when VALUE's object was not yet
+    /// marked in this collection.
+    fn mark_object(&mut self, value: &Value) -> bool {
+        match value {
             Value::Nil | Value::T | Value::Integer(_) | Value::BuiltinFunc(_) | Value::Unbound => {
                 false
             }
@@ -3406,12 +3485,7 @@ impl LispReachability<'_, '_> {
             Value::Record(id) => self.records.insert(*id),
             Value::Finalizer(id) => self.finalizers.insert(*id),
             Value::ReaderForm(value) => self.reader_forms.insert(Rc::as_ptr(value) as usize),
-        };
-        if !newly_marked {
-            return false;
         }
-        self.pending.push(value.clone());
-        true
     }
 
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
@@ -3434,7 +3508,7 @@ impl LispReachability<'_, '_> {
         match value {
             Value::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals.
-                self.enqueue(&symbol.lisp_name());
+                self.enqueue(symbol.lisp_name_ref());
             }
             Value::Finalizer(id) => {
                 // A reached Lisp_Finalizer is a pseudovector whose one Lisp
@@ -3446,34 +3520,23 @@ impl LispReachability<'_, '_> {
                 }
             }
             Value::StringObject(value) => {
-                let children = value
-                    .borrow()
-                    .props
-                    .iter()
-                    .flat_map(|span| span.props.iter().map(|(_, value)| value.clone()))
-                    .collect::<Vec<_>>();
-                for child in &children {
-                    self.enqueue(child);
+                let state = value.borrow();
+                for span in &state.props {
+                    for (_, child) in &span.props {
+                        self.enqueue(child);
+                    }
                 }
             }
             Value::Cons(cell) => {
                 // The two words, read in place.
-                let car = cell.car.borrow().clone();
-                self.enqueue(&car);
-                let cdr = cell.cdr.borrow().clone();
-                self.enqueue(&cdr);
+                self.enqueue(&cell.car.borrow());
+                self.enqueue(&cell.cdr.borrow());
             }
             Value::Vector(vector) => {
-                // Slot by slot: cloning the slot vector per reached vector
-                // allocated once per vector of the heap on every collection.
-                let mut index = 0;
-                loop {
-                    let child = match vector.slots().get(index) {
-                        Some(child) => child.clone(),
-                        None => break,
-                    };
-                    index += 1;
-                    self.enqueue(&child);
+                // Slot by slot, in place.
+                let slots = vector.slots();
+                for child in slots.iter() {
+                    self.enqueue(child);
                 }
             }
             Value::Lambda(lambda) => {
@@ -3512,28 +3575,22 @@ impl LispReachability<'_, '_> {
                 }
             }
             Value::CharTable(id) => {
+                // The slots in place (alloc.c's mark_char_table).
                 if let Some(table) = interp.find_char_table(*id) {
-                    let children = std::iter::once(table.default.clone())
-                        .chain(table.extra_slots.iter().cloned())
-                        .chain(table.entries.iter().map(|entry| entry.value.clone()))
-                        .collect::<Vec<_>>();
-                    for child in &children {
+                    self.enqueue(&table.default);
+                    for child in &table.extra_slots {
                         self.enqueue(child);
+                    }
+                    for entry in &table.entries {
+                        self.enqueue(&entry.value);
                     }
                 }
             }
             Value::Frame(id) => {
                 if let Some(frame) = interp.frame_states.iter().find(|frame| frame.id == *id) {
-                    let children = std::iter::once(frame.name.clone())
-                        .chain(
-                            frame
-                                .parameter_overrides
-                                .iter()
-                                .map(|(_, value)| value.clone()),
-                        )
-                        .collect::<Vec<_>>();
-                    for child in &children {
-                        self.enqueue(child);
+                    self.enqueue(&frame.name);
+                    for (_, value) in &frame.parameter_overrides {
+                        self.enqueue(value);
                     }
                 }
             }
@@ -3543,21 +3600,31 @@ impl LispReachability<'_, '_> {
                 };
                 let weak_hash = record.kind == RecordKind::HashTable
                     && record.slots.get(5).is_some_and(Value::is_truthy);
-                let mut children = Vec::with_capacity(record.slots.len() + 1);
-                children.push(record.type_tag.clone());
-                children.extend(
-                    record
-                        .slots
-                        .iter()
-                        .enumerate()
-                        .filter(|(index, _)| record.kind != RecordKind::HashTable || *index != 1)
-                        .map(|(_, value)| value.clone()),
-                );
-                if record.kind == RecordKind::HashTable
-                    && !weak_hash
-                    && let Some((_, entries)) = crate::lisp::json::hash_table_entries(interp, value)
-                {
-                    children.extend(entries.into_iter().flat_map(|(key, value)| [key, value]));
+                // alloc.c's mark_vectorlike reads the slots in place.  A
+                // vector of their copies per record, dropped after, was a
+                // quarter of a collection over the boot heap (every
+                // byte-code function is a record).
+                self.enqueue(&record.type_tag);
+                for (index, slot) in record.slots.iter().enumerate() {
+                    if record.kind == RecordKind::HashTable && index == 1 {
+                        continue;
+                    }
+                    self.enqueue(slot);
+                }
+                if record.kind == RecordKind::HashTable && !weak_hash {
+                    if let Some(entries) = interp.hash_table_runtime_entries(*id) {
+                        for (key, value) in entries {
+                            self.enqueue(key);
+                            self.enqueue(value);
+                        }
+                    } else if let Some((_, entries)) =
+                        crate::lisp::json::hash_table_entries(interp, value)
+                    {
+                        for (key, value) in &entries {
+                            self.enqueue(key);
+                            self.enqueue(value);
+                        }
+                    }
                 }
                 // A dead thread is no longer an independent GC root
                 // (thread.c:run_thread unlinks it). Its result and injected
@@ -3565,13 +3632,14 @@ impl LispReachability<'_, '_> {
                 if record.kind == RecordKind::Thread
                     && let Some(thread) = interp.find_thread_state(*id)
                 {
-                    children.extend(thread.entry.iter().cloned());
-                    children.push(thread.signal_condition.clone());
-                    children.push(thread.signal_data.clone());
-                    children.extend(thread.outcome.iter().cloned());
-                }
-                for child in &children {
-                    self.enqueue(child);
+                    for value in thread.entry.iter() {
+                        self.enqueue(value);
+                    }
+                    self.enqueue(&thread.signal_condition);
+                    self.enqueue(&thread.signal_data);
+                    for value in thread.outcome.iter() {
+                        self.enqueue(value);
+                    }
                 }
             }
             Value::ReaderForm(form) => {
@@ -5417,7 +5485,7 @@ pub struct InterpreterState {
     /// cl-flet/cl-labels frames, so repeat calls skip name-facts probes
     /// and function-cell lookup entirely (see call_function_value_inner).
     pub(crate) function_resolution_cache:
-        HashMap<u32, (u64, FunctionResolution), crate::lisp::types::IdentityBuildHasher>,
+        HashMap<u32, (u64, FunctionResolution, bool), crate::lisp::types::IdentityBuildHasher>,
     /// Names the macroexpansion probe determined are NOT macros, from
     /// GLOBAL state only (no cl-flet frame involved), stamped with the
     /// generation that verdict was computed at.  Skips the whole probe on

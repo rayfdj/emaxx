@@ -580,7 +580,7 @@ impl SyntaxScan {
         // syntax.c:253 (SETUP_SYNTAX_TABLE): the property machinery arms
         // only when `parse-sexp-lookup-properties' is non-nil.
         let use_properties = interp
-            .lookup_var("parse-sexp-lookup-properties", &Vec::new())
+            .lookup_var_key(cached_symbol!("parse-sexp-lookup-properties"), &Vec::new())
             .is_some_and(|value| value.is_truthy());
         SyntaxScan {
             table_id,
@@ -666,7 +666,7 @@ fn syntax_entry_at_buffer_position(
     // One-shot form for cold callers -- no scan state, no memo array;
     // hot loops hold a SyntaxScan instead.
     if !interp
-        .lookup_var("parse-sexp-lookup-properties", &Vec::new())
+        .lookup_var_key(cached_symbol!("parse-sexp-lookup-properties"), &Vec::new())
         .is_some_and(|value| value.is_truthy())
     {
         return syntax_entry_for_char(interp, table_id, ch);
@@ -2619,7 +2619,7 @@ pub(super) fn syntax_class_at_buffer_position_matches(
     };
     let table_id = interp.current_syntax_table_id();
     let entry = if interp
-        .lookup_var("parse-sexp-lookup-properties", env)
+        .lookup_var_key(cached_symbol!("parse-sexp-lookup-properties"), env)
         .is_some_and(|value| value.is_truthy())
     {
         syntax_entry_at_buffer_position(interp, table_id, ch, position)
@@ -2643,40 +2643,14 @@ pub(super) fn syntax_class_chars_with_scan(
     Some((table_class, effective_class))
 }
 
-fn syntax_classes_at_position_match(
-    interp: &Interpreter,
-    spec: &str,
-    ch: char,
-    position: usize,
-    lookup_properties: bool,
-) -> bool {
-    let (negated, classes) = spec
-        .strip_prefix('^')
-        .map(|rest| (true, rest))
-        .unwrap_or((false, spec));
-    let table_id = interp.current_syntax_table_id();
-    let entry = if lookup_properties {
-        syntax_entry_at_buffer_position(interp, table_id, ch, position)
-    } else {
-        syntax_entry_for_char(interp, table_id, ch)
-    };
-    let matched = classes
-        .chars()
-        .any(|class| syntax_entry_class_matches(entry, class));
-    if negated { !matched } else { matched }
-}
-
 pub(super) fn skip_syntax_impl(
     interp: &mut Interpreter,
     syntax_value: &Value,
     limit_value: Option<&Value>,
     forward: bool,
-    env: &Env,
+    _env: &Env,
 ) -> Result<Value, LispError> {
     let syntax = string_text(syntax_value)?;
-    let lookup_properties = interp
-        .lookup_var("parse-sexp-lookup-properties", env)
-        .is_some_and(|value| value.is_truthy());
     let limit = if let Some(limit_value) = limit_value {
         if limit_value.is_nil() {
             if forward {
@@ -2693,18 +2667,31 @@ pub(super) fn skip_syntax_impl(
         interp.buffer.point_min()
     };
     let start = interp.buffer.point();
+    // syntax.c:skip_syntaxes: one SETUP_SYNTAX_TABLE for the scan (the
+    // property machinery armed once from `parse-sexp-lookup-properties'),
+    // the syntax-table property refreshed as the scan crosses an
+    // interval, each character's class from the scan's memo.  Read per
+    // character before, each step resolved the variable by name and
+    // looked the property up afresh.
+    let (negated, classes) = syntax
+        .strip_prefix('^')
+        .map(|rest| (true, rest))
+        .unwrap_or((false, &*syntax));
+    let mut scan = SyntaxScan::new(interp, interp.current_syntax_table_id());
+    let mut matches = |interp: &Interpreter, ch: char, position: usize| {
+        let entry = scan.entry_at(interp, ch, position);
+        classes
+            .chars()
+            .any(|class| syntax_entry_class_matches(entry, class))
+            != negated
+    };
     if forward {
         while interp.buffer.point() < limit {
-            let Some(ch) = interp.buffer.char_at(interp.buffer.point()) else {
+            let position = interp.buffer.point();
+            let Some(ch) = interp.buffer.char_at(position) else {
                 break;
             };
-            if !syntax_classes_at_position_match(
-                interp,
-                &syntax,
-                ch,
-                interp.buffer.point(),
-                lookup_properties,
-            ) {
+            if !matches(interp, ch, position) {
                 break;
             }
             let _ = interp.buffer.forward_char(1);
@@ -2714,13 +2701,7 @@ pub(super) fn skip_syntax_impl(
             let Some(ch) = interp.buffer.char_before() else {
                 break;
             };
-            if !syntax_classes_at_position_match(
-                interp,
-                &syntax,
-                ch,
-                interp.buffer.point() - 1,
-                lookup_properties,
-            ) {
+            if !matches(interp, ch, interp.buffer.point() - 1) {
                 break;
             }
             let _ = interp.buffer.forward_char(-1);

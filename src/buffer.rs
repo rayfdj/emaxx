@@ -666,14 +666,29 @@ impl Buffer {
         limit: usize,
         mut predicate: impl FnMut(char) -> bool,
     ) -> usize {
+        // The rope's chunks in place (syntax.c's skip_chars reads the
+        // buffer text directly): a rope slice per call counted the
+        // lines of its end chunks first, most of a short skip.
         let start = self.pt;
         let end = limit.clamp(start, self.zv);
-        let count = self
-            .text
-            .slice(start - 1..end - 1)
-            .chars()
-            .take_while(|ch| predicate(*ch))
-            .count();
+        let mut remaining = end - start;
+        let mut index = start - 1;
+        let mut count = 0;
+        'chunks: while remaining > 0 && index < self.text.len_chars() {
+            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
+            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
+            if byte >= chunk.len() {
+                break;
+            }
+            for ch in chunk[byte..].chars() {
+                if remaining == 0 || !predicate(ch) {
+                    break 'chunks;
+                }
+                count += 1;
+                remaining -= 1;
+                index += 1;
+            }
+        }
         self.pt += count;
         count
     }
@@ -686,14 +701,86 @@ impl Buffer {
     ) -> usize {
         let start = self.pt;
         let end = limit.clamp(self.begv, start);
-        let slice = self.text.slice(end - 1..start - 1);
-        let count = slice
-            .chars_at(slice.len_chars())
-            .reversed()
-            .take_while(|ch| predicate(*ch))
-            .count();
+        let mut remaining = start - end;
+        let mut index = start - 1;
+        let mut count = 0;
+        'chunks: while remaining > 0 && index > 0 {
+            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index - 1);
+            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
+            for ch in chunk[..byte].chars().rev() {
+                if remaining == 0 || !predicate(ch) {
+                    break 'chunks;
+                }
+                count += 1;
+                remaining -= 1;
+                index -= 1;
+            }
+        }
         self.pt -= count;
         count
+    }
+
+    /// The text of 0-based character range [FROM, TO), copied chunk by
+    /// chunk: a rope slice counts the lines of its end chunks before
+    /// anything is read, most of a short deletion's record.
+    fn text_range_string(&self, from: usize, to: usize) -> String {
+        let to = to.min(self.text.len_chars());
+        let mut out = String::new();
+        let mut index = from;
+        while index < to {
+            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
+            let start = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
+            let chunk_chars = ropey::str_utils::byte_to_char_idx(chunk, chunk.len());
+            let chunk_end = chunk_start + chunk_chars;
+            let end = if to >= chunk_end {
+                chunk.len()
+            } else {
+                ropey::str_utils::char_to_byte_idx(chunk, to - chunk_start)
+            };
+            if start >= end {
+                break;
+            }
+            out.push_str(&chunk[start..end]);
+            index = chunk_end;
+        }
+        out
+    }
+
+    /// search.c's find_newline forward: the 0-based index of the first
+    /// newline at or after char index FROM, scanned a chunk at a time
+    /// with memchr.
+    fn newline_at_or_after(&self, from: usize) -> Option<usize> {
+        let mut index = from;
+        while index < self.text.len_chars() {
+            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
+            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
+            if let Some(offset) = memchr::memchr(b'\n', &chunk.as_bytes()[byte..]) {
+                return Some(
+                    chunk_start + ropey::str_utils::byte_to_char_idx(chunk, byte + offset),
+                );
+            }
+            let chunk_chars = ropey::str_utils::byte_to_char_idx(chunk, chunk.len());
+            if chunk_chars == 0 {
+                break;
+            }
+            index = chunk_start + chunk_chars;
+        }
+        None
+    }
+
+    /// search.c's find_newline backward: the 0-based index of the last
+    /// newline before char index BEFORE.
+    fn newline_before(&self, before: usize) -> Option<usize> {
+        let mut index = before.min(self.text.len_chars());
+        while index > 0 {
+            let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index - 1);
+            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
+            if let Some(offset) = memchr::memrchr(b'\n', &chunk.as_bytes()[..byte]) {
+                return Some(chunk_start + ropey::str_utils::byte_to_char_idx(chunk, offset));
+            }
+            index = chunk_start;
+        }
+        None
     }
 
     /// Move to the beginning of the current line. Returns new point.
@@ -707,12 +794,8 @@ impl Buffer {
         let pt = pos.clamp(self.begv, self.zv);
         let char_index = pt.saturating_sub(1).min(self.text.len_chars());
         let line_start = self
-            .text
-            .slice(..char_index)
-            .chars_at(char_index)
-            .reversed()
-            .position(|ch| ch == '\n')
-            .map_or(1, |distance| char_index - distance + 1);
+            .newline_before(char_index)
+            .map_or(1, |newline| newline + 2);
         line_start.max(self.begv)
     }
 
@@ -722,16 +805,11 @@ impl Buffer {
             return self.pt;
         }
         let idx0 = self.pt - 1; // 0-based
-        // Search forward for newline
-        for (i, ch) in self.text.chars_at(idx0).enumerate() {
-            if ch == '\n' {
-                let result = idx0 + i + 1; // 1-based position of the newline char
-                self.pt = result.min(self.zv);
-                return self.pt;
-            }
-        }
-        // No newline, go to end
-        self.pt = self.zv;
+        self.pt = match self.newline_at_or_after(idx0) {
+            // The 1-based position of the newline character.
+            Some(newline) => (newline + 1).min(self.zv),
+            None => self.zv,
+        };
         self.pt
     }
 
@@ -749,21 +827,17 @@ impl Buffer {
                 if self.pt >= self.zv {
                     return remaining as isize;
                 }
-                // Find next newline from current point
+                // Find next newline from current point, inside the
+                // accessible region.
                 let idx0 = self.pt - 1;
-                let mut found = false;
-                for (i, ch) in self.text.chars_at(idx0).enumerate() {
-                    if idx0 + i + 1 > self.zv - 1 {
-                        // hit end of accessible region
-                        break;
+                let found = match self.newline_at_or_after(idx0) {
+                    Some(newline) if newline + 1 < self.zv => {
+                        // The position after the newline, 1-based.
+                        self.pt = (newline + 2).min(self.zv);
+                        true
                     }
-                    if ch == '\n' {
-                        self.pt = idx0 + i + 1 + 1; // position after the newline, 1-based
-                        self.pt = self.pt.min(self.zv);
-                        found = true;
-                        break;
-                    }
-                }
+                    _ => false,
+                };
                 if !found {
                     // GNU counts the unterminated final line as a line that
                     // can be crossed: moving from anywhere on it to ZV
@@ -1088,6 +1162,11 @@ impl Buffer {
         self.text_properties.len()
     }
 
+    /// Whether any text property is set (intervals exist, in GNU's terms).
+    pub fn has_text_properties(&self) -> bool {
+        !self.text_properties.is_empty()
+    }
+
     pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {
         self.text_properties_at_ref(pos)
             .iter()
@@ -1328,7 +1407,7 @@ impl Buffer {
         let to0 = to - 1;
         if !self.undo_disabled && !noundo {
             self.record_point_for_undo(from);
-            let old: String = self.text.slice(from0..to0).to_string();
+            let old: String = self.text_range_string(from0, to0);
             let props = self.substring_property_spans(from, to);
             let extended_chars = self.substring_extended_chars(from, to);
             self.push_undo_entry(UndoEntry::Delete {
@@ -1376,7 +1455,7 @@ impl Buffer {
         let to0 = to - 1;
 
         // Grab text for undo before deleting
-        let deleted: String = self.text.slice(from0..to0).to_string();
+        let deleted: String = self.text_range_string(from0, to0);
         let deleted_props = self.substring_property_spans(from, to);
         let deleted_extended_chars = self.substring_extended_chars(from, to);
         let nchars = to - from;

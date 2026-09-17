@@ -3052,21 +3052,8 @@ define_dispatch!(
             }
 
             // ── More buffer ops ──
-            "following-char" => match public_buffer_char_code_at(interp, interp.buffer.point()) {
-                Some(code) => Ok(Value::Integer(code)),
-                None => Ok(Value::Integer(0)),
-            },
-            "preceding-char" => {
-                let pt = interp.buffer.point();
-                if pt <= interp.buffer.point_min() {
-                    Ok(Value::Integer(0))
-                } else {
-                    match public_buffer_char_code_at(interp, pt - 1) {
-                        Some(code) => Ok(Value::Integer(code)),
-                        None => Ok(Value::Integer(0)),
-                    }
-                }
-            }
+            "following-char" => direct_following_char(interp, args, env),
+            "preceding-char" => direct_preceding_char(interp, args, env),
             "buffer-last-name" => Ok(Value::String(
                 interp
                     .buffer
@@ -5982,6 +5969,36 @@ fn human_readable_size(size: usize) -> String {
         }
     }
     format!("{}T", (quotient / 1000.0).round() as usize)
+}
+
+/// The `preceding-char' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_preceding_char(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let pt = interp.buffer.point();
+    if pt <= interp.buffer.point_min() {
+        Ok(Value::Integer(0))
+    } else {
+        match public_buffer_char_code_at(interp, pt - 1) {
+            Some(code) => Ok(Value::Integer(code)),
+            None => Ok(Value::Integer(0)),
+        }
+    }
+}
+
+/// The `following-char' primitive, callable directly (a subr's function
+/// pointer).
+pub(super) fn direct_following_char(
+    interp: &mut Interpreter,
+    _args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    match public_buffer_char_code_at(interp, interp.buffer.point()) {
+        Some(code) => Ok(Value::Integer(code)),
+        None => Ok(Value::Integer(0)),
+    }
 }
 
 #[cfg(test)]

@@ -1686,14 +1686,22 @@ pub(crate) fn maybe_lock_current_buffer_on_change(
     // GNU's prepare_to_modify_buffer locks only ordinary first changes to a
     // real file-visiting buffer.  Silent/internal edits bind this variable
     // and must not leave a lock behind.
+    //
+    // The buffer's own slots first (BVAR (current_buffer, filename)): a
+    // buffer visiting no file locks nothing, whatever the variables say
+    // (the lock itself reads the slots), and the slot read is a field
+    // where the variable reads walked the bindings.
+    if current_buffer_file(interp).is_none() {
+        return Ok(());
+    }
     if interp
-        .lookup_var("inhibit-modification-hooks", env)
+        .lookup_var_key(cached_symbol!("inhibit-modification-hooks"), env)
         .is_some_and(|value| value.is_truthy())
         || !interp
-            .lookup_var("buffer-file-name", env)
+            .lookup_var_key(cached_symbol!("buffer-file-name"), env)
             .is_some_and(|value| value.is_truthy())
         || !interp
-            .lookup_var("buffer-file-truename", env)
+            .lookup_var_key(cached_symbol!("buffer-file-truename"), env)
             .is_some_and(|value| value.is_truthy())
     {
         return Ok(());
@@ -1853,15 +1861,16 @@ pub(crate) fn ensure_no_supersession_threat(
     // GNU's check is gated on the `buffer-file-name' Lisp value, so a
     // let-binding of it to nil suppresses the conflict prompt entirely
     // (auto-revert-tail-handler relies on this while appending).
+    // The buffer's slot first (a field read), then the variable's binding.
+    let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
+        return Ok(());
+    };
     if interp
-        .lookup_var("buffer-file-name", env)
+        .lookup_var_key(cached_symbol!("buffer-file-name"), env)
         .is_some_and(|value| value.is_nil())
     {
         return Ok(());
     }
-    let Some(logical_path) = current_buffer_file(interp).map(str::to_string) else {
-        return Ok(());
-    };
     // filelock.c's supersession block lives in the native half of
     // `lock-file', AFTER the file-name-handler dispatch: a handled file
     // never reaches it, and its handler's own `lock-file' (Tramp routes

@@ -11122,3 +11122,160 @@ native_comp_identity 1, native_thread_continuations 1,
 package_lifecycle 5), every one 0 failed; `cargo fmt --check' and
 strict clippy exit 0 before and after.
 
+## 2026-09-17 Checkpoint 19y: the search, edit and collection paths of the slowest files
+
+*What prompted it.*  19x left the per-file floor at 3.5 times GNU and
+the frozen run's largest single excesses untouched: semantic-utest-C
+14.0 s against 0.8, undo-test4 8.6 against 1.0, fns-tests-sort 7.0 to
+7.4 against 1.2, bindat-test--sint 4.3 against 0.7,
+track-changes-tests--random 4.1 against 0.75.  Profiled on the release
+build (perf, dwarf call graphs): semantic is `looking-at' -- 46 percent
+of the run inside the search primitives, of which the engine 23 --
+plus `skip-syntax-forward'; undo-test4 is the insert path (a third of
+it name-keyed variable reads, `SymbolName::id_of' hashing the registry
+per read); fns-tests-sort is the collector (65 percent, one collection
+28 ms against GNU's 6); bindat and track-changes are the VM and the
+call path, with every call made under a `let' holding a closure
+resolved by name.
+
+*Done.*  (1) The search primitives read the pattern in place (the
+string-like copy and the search-spaces copy per call are gone), read
+`search-spaces-regexp', `parse-sexp-lookup-properties',
+`char-property-alias-alist' and `category-table' through symbols held
+per thread (`cached_symbol!', for the variables GNU reads as C
+globals), compute a pattern's facts once per search and key them by
+the text's address (the sampled hash of the pattern was 5 percent of a
+`looking-at'), refill the match data's storage instead of allocating
+it, keep in the syntax-encoding entry's forbidden set only characters
+in the sentinels' range (an ASCII haystack contributes none; a set of
+every character of the buffer was built per unseen buffer state), and
+convert byte and character offsets by identity when the buffer is
+ASCII.  (2) `looking-at' matches AT point: a pattern in the regex
+crate's syntax (no lookaround, no backreference -- the decision
+regex-syntax makes, the same one fancy-regex makes when it delegates a
+pattern whole) is built on regex-automata's meta engine and searched
+with `Input::anchored', where the delegate's interface searched from
+the position and the first match found anywhere ahead was compared
+against it afterwards; a pattern with lookaround keeps fancy-regex's
+scan (recorded below).  (3) `skip-syntax-forward'/`backward' run over
+one SyntaxScan (syntax.c's SETUP_SYNTAX_TABLE once, the property per
+interval) instead of reading the variable by name and the property
+afresh per character.  (4) The buffer's line scans (`line_start_at',
+`end_of_line', `forward_line') and the character skips read the rope's
+chunks in place with memchr (search.c's find_newline); a rope slice
+per call counted the lines of its end chunks first, most of a
+`beginning-of-line'.  (5) The edit path: the change hooks, read-only
+checks, lock and supersession checks read their variables by symbol,
+the read-only walk over the region is skipped when the buffer has no
+intervals and its own flag is off, the buffer's file slots are read
+before the variables, `undo-auto--undoable-change' is called without
+re-interning its name, and the specialness test on the lexical-frame
+walk is by id when the symbol is in hand (the registry hash per read
+from a primitive under a lexical frame was 13 percent of an insert).
+(6) The collector traces records, char tables and frames in place (a
+vector of every slot's copy per record, dropped after, was a quarter
+of a collection over the boot heap), skips the native handle lookup
+when no handle is held, and marks an object when it is taken off the
+queue, eight objects after its mark word was prefetched on the way in
+(Cher, Hosking and Vitek): the write to each object's header was two
+thirds of the mark phase.  (7) Thirty-three buffer and search
+primitives (`point', `goto-char', `char-after', `looking-at',
+`re-search-forward', `skip-chars-forward', `insert', `delete-region',
+...) are called through the subr's function pointer, their arms moved
+out of the module's name match unchanged.  (8) The function namespace:
+a variable holding a lambda no longer shadows the function cell of its
+name -- `(let ((f (lambda ...))) (f 3))' called the lambda here and the
+defun in GNU -- and only a cl-flet frame can; the function-resolution
+cache is used under such frames unless the frame binds the name or
+the cell is an alias.  (9) A deletion's undo record copies the text
+chunk by chunk (the rope slice counted lines first), and
+`unicode-property-table-internal' walks `char-code-property-alist' in
+place through the held symbol (a copy of each entry per step was a
+fifth of `get-char-code-property'; mule-tests' ucs-names cases 14.6 s
+against 2.5 before it, measured after the gate below).
+
+*Measured.*  Release builds of the delivered 19x
+(b0397fec) and of this tree, images beside them, interleaved on an
+idle box, five rounds, minimum and median (the probe: a 2 KB buffer
+of C text, point mid-buffer, `case-fold-search' nil, byte-compiled
+loops under lexical binding; the collector's probe: ten collections
+after the boot with the named objects live):
+
+| | old min / median | new min / median | GNU |
+|---|---|---|---|
+| `looking-at' of a literal at point, ns | 845 / 869 | 361 / 366 | 92 |
+| `looking-at' that fails at point, ns | 695 / 766 | 316 / 320 | 70 |
+| `looking-at' of `\\sw+', ns | 1185 / 1262 | 505 / 507 | 118 |
+| `looking-at' of `\\<int\\>' (lookaround: the VM), ns | 1345 / 1429 | 767 / 769 | 122 |
+| `looking-at' under `parse-sexp-lookup-properties', ns | 850 / 859 | 367 / 371 | 122 |
+| `re-search-forward' on the line and `beginning-of-line', ns | 1353 / 1449 | 575 / 577 | 366 |
+| `search-forward' of a literal and `beginning-of-line', ns | 1583 / 1646 | 1063 / 1084 | 361 |
+| `skip-syntax-forward' over three characters and back, ns | 1227 / 1297 | 712 / 739 | 220 |
+| the same under `parse-sexp-lookup-properties', ns | 1782 / 1833 | 761 / 769 | 336 |
+| `skip-chars-forward' over three characters and back, ns | 990 / 1010 | 367 / 371 | 198 |
+| `match-beginning' after a `looking-at', ns | 916 / 928 | 424 / 432 | 93 |
+| `insert' of three characters and their `delete-region', ns | 8114 / 8136 | 3940 / 3957 | 487 |
+| one collection over the boot heap, ms | 27.3 | 17.9 | 6.3 |
+| the same with 200k live conses, ms | 33.8 | 25.2 | 9.1 |
+| with 200k live floats, ms | 45.2 | 35.2 | 10.3 |
+| with 200k live records, ms | 95.8 | 76.3 | 45.9 |
+| `ert-select-tests' t t, ms | 31.2 / 35.7 | 35.7 / 36.6 | 9.9 |
+
+The files, one run each on the same box (GNU the same hour):
+semantic-utest-C 14.67 to 7.37 s (GNU 0.75), undo-test4 8.50 to 5.29
+(1.04), fns-tests-sort 6.54 to 5.18 (1.31), track-changes-tests--random
+4.04 to 3.74 (0.71), bindat-test--sint 4.29 to 4.27 (0.75).  The
+per-file floor (`ert-select-tests') did not move: nothing here is on
+it.
+
+*What did not move, and what was learned.*  A pattern with lookaround (a word or symbol
+boundary renders as one, `\\<' as `(?<!W)(?=W)') runs on fancy-regex's
+backtracking VM, whose program always begins with a non-greedy scan of
+the text; it cannot be told to match at one position, so `looking-at'
+with such a pattern still searches ahead and compares the start (its
+delegate automata find each candidate, the VM verifies each): the
+remaining engine share of semantic-utest-C.  An exact rendering
+without lookaround needs a first-and-last-class analysis of the
+pattern (a trailing `\\>' is not the same as a check after the longest
+match: `[a-z]+-?\\>' on "ab-" matches "ab" in GNU); recorded, not
+done.  The collector's cost per object is the write of the mark word
+into each object, scattered over the heap, where alloc.c's mark bits
+for a block of conses and pdumper's for the dump are dense bitmaps;
+the prefetch window hides part of the latency, the layout is the
+representation.  A `let' of a special still costs 145 ns and a
+byte-code call 152 (19x's floor), the insert path 3,940 ns against
+GNU's 490 (the change hooks, the undo record, the rope edit and the
+call framework each a share, none dominant), bindat is the VM and the
+consing (a cons is one allocation and one release here), track-changes
+converts every time value through bignums (`exact_time_from_value';
+7 percent of its run), and an interning per call is attributed to the
+VM's dispatch loop by the profiler without a source found yet.
+
+*Verified.*  Controls with the oracle's values:
+`looking_at_matches_at_point_only' (a later occurrence does not match
+at point; groups, an empty pattern, `\\=', boundaries with their left
+context; a search still finds the occurrence),
+`skip_syntax_reads_the_property_interval_like_a_scan' (the
+`syntax-table' property honored under `parse-sexp-lookup-properties'
+and ignored without it, both directions),
+`newline_scans_cross_the_rope_chunks' (line starts, ends, `forward-line'
+both ways and `skip-chars' over a 5,000-character multibyte buffer),
+`region_modification_checks_without_intervals_still_see_the_buffer_flag'
+(the buffer's flag signals with no properties; a `read-only' property
+signals where it lies and not elsewhere), and
+`a_variable_holding_a_lambda_never_shadows_the_function_cell' (the
+defun through the name, its alias and `funcall'; cl-flet's binding
+shadows; `car' unshadowed).  The 295 tests matching looking-at, skip-syntax,
+regexp, search, skip-chars, line, insert, delete-region, change hooks,
+read-only, the collector, bytecode, plain stores, function resolution
+and match data pass under the gate's environment (the `text-read-only'
+signal of a read-only property, datum-less as textprop.c's
+text_read_only unless the property is a string, replaced a plain
+`error' on the way; the anti-cheat inventory of the thread visitor's
+fields follows the in-place trace; and the first gate's one failure
+was `source_call_cache_never_shadows_a_callable_in_a_plain_lexical_frame',
+a control asserting the shadowing the oracle contradicts, now
+`a_plain_lexical_frame_never_shadows_the_function_cell' with the
+oracle's value); fmt and strict clippy exit 0.
+
+*Gate.*  «GATE»

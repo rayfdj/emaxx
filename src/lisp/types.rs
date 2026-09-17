@@ -952,6 +952,40 @@ impl SymbolName {
         registered_symbol_id(text)
     }
 
+    /// The interned symbol named TEXT, through a cache keyed by the text's
+    /// address and length and verified by the text itself: a primitive
+    /// reading a variable by its literal name presents the same address on
+    /// every call, so the name is hashed once, not on each read.  A text
+    /// that is not an interned symbol's is not cached (None: the caller
+    /// keeps its by-name path, which may still know the name).
+    pub(crate) fn interned_cached(text: &str) -> Option<Self> {
+        thread_local! {
+            static BY_ADDRESS: RefCell<
+                HashMap<(usize, usize), SymbolName, crate::lisp::primitives::FnvBuildHasher>,
+            > = RefCell::new(HashMap::default());
+        }
+        let key = (text.as_ptr() as usize, text.len());
+        if let Some(symbol) = BY_ADDRESS.with_borrow(|cache| cache.get(&key).cloned())
+            && symbol.as_str() == text
+        {
+            return Some(symbol);
+        }
+        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
+            return Self::live_uninterned(text);
+        }
+        let symbol = INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).cloned())?;
+        BY_ADDRESS.with_borrow_mut(|cache| {
+            // A bounded cache: a runtime-built name whose storage is freed
+            // and reused would otherwise pin a stale entry (the text check
+            // above keeps such an entry from ever answering wrongly).
+            if cache.len() >= 8192 {
+                cache.clear();
+            }
+            cache.insert(key, symbol.clone());
+        });
+        Some(symbol)
+    }
+
     fn live_uninterned(text: &str) -> Option<Self> {
         UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.get(text).and_then(Weak::upgrade).map(Self))
     }
@@ -1010,6 +1044,11 @@ impl SymbolName {
 
     pub(crate) fn lisp_name(&self) -> Value {
         self.0.lisp_name.clone()
+    }
+
+    /// The name object in place, for a tracer.
+    pub(crate) fn lisp_name_ref(&self) -> &Value {
+        &self.0.lisp_name
     }
 }
 
@@ -2293,12 +2332,13 @@ impl EnvFrame {
     /// deduplicated by the caller via `identity_ptr'.
     pub(crate) fn deep_copy_with(&self, copy: &mut impl FnMut(&Value) -> Value) -> Self {
         let data = &self.0;
+        let bindings: Vec<(SymbolName, Value)> = data
+            .bindings
+            .iter()
+            .map(|(name, value)| (name.clone(), copy(value)))
+            .collect();
         Self(Rc::new(EnvFrameData {
-            bindings: data
-                .bindings
-                .iter()
-                .map(|(name, value)| (name.clone(), copy(value)))
-                .collect(),
+            bindings,
             identity: data.identity,
             function_bindings: data.function_bindings,
             local_special_declarations: data.local_special_declarations.clone(),

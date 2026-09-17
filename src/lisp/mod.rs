@@ -3,6 +3,20 @@
 /// Dispatch routing and implementation must share one inventory: otherwise a
 /// newly implemented primitive can remain unreachable merely because a second
 /// `handles` list was not updated.
+/// A symbol a call site interns once per thread, for a variable GNU reads
+/// through a C global (`Vparse_sexp_lookup_properties',
+/// `Vsearch_spaces_regexp') rather than by name: the expansion is a
+/// `&'static LocalKey<SymbolName>' for `lookup_var_key' and friends.
+macro_rules! cached_symbol {
+    ($name:literal) => {{
+        thread_local! {
+            static SYMBOL: $crate::lisp::types::SymbolName =
+                $crate::lisp::types::SymbolName::intern_str($name);
+        }
+        &SYMBOL
+    }};
+}
+
 macro_rules! dispatch_handles {
     ($name:ident;) => {
         false

@@ -713,6 +713,70 @@ impl Interpreter {
         result
     }
 
+    /// exec_byte_code's Bcall: Ffuncall's depth and quit checks, then the
+    /// callee's own entry without the general dispatch between them -- a
+    /// byte-code object, or a symbol whose function cell holds one, goes to
+    /// funcall_lambda's byte-code branch; a symbol naming a subr to its
+    /// dispatch.  Anything else is the general call.
+    pub(crate) fn funcall_from_bytecode(
+        &mut self,
+        func: &Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if profile_path().is_some() {
+            return self.call_function_value(func.clone(), None, args, env);
+        }
+        match func {
+            Value::Record(id) if self.has_cached_bytecode_program(*id) => {
+                let id = *id;
+                self.begin_funcall(env)?;
+                let result = if let Some(termination) = self.pending_termination().cloned() {
+                    Err(LispError::Terminate(termination))
+                } else {
+                    self.execute_bytecode_record_named(id, None, args, env)
+                };
+                self.end_funcall();
+                result
+            }
+            Value::Symbol(name) => {
+                self.begin_funcall(env)?;
+                let result = if let Some(termination) = self.pending_termination().cloned() {
+                    Err(LispError::Terminate(termination))
+                } else {
+                    match self.resolve_symbol_call(name, env) {
+                        Ok(FunctionResolution::DirectBuiltin(facts)) => self
+                            .dispatch_named_builtin(
+                                name,
+                                facts,
+                                Some(CallName::Symbol(name)),
+                                args,
+                                env,
+                                true,
+                            ),
+                        Ok(FunctionResolution::Resolved(Value::Record(id)))
+                            if self.has_cached_bytecode_program(id) =>
+                        {
+                            self.execute_bytecode_record_named(
+                                id,
+                                Some(CallName::Symbol(name)),
+                                args,
+                                env,
+                            )
+                        }
+                        // A lambda, an autoload, a local function binding or
+                        // a void function: the general path, which resolves
+                        // again from the cache.
+                        _ => self.call_function_value_inner(func.clone(), None, args, env, true),
+                    }
+                };
+                self.end_funcall();
+                result
+            }
+            _ => self.call_function_value(func.clone(), None, args, env),
+        }
+    }
+
     /// eval.c:call_debugger.  The C path specbinds the debugger control
     /// variables around apply1(Vdebugger, arg); keep those bindings in the
     /// same dynamic scope for native Ffuncall exits.
@@ -907,30 +971,48 @@ impl Interpreter {
         local_context: bool,
     ) -> Result<FunctionResolution, LispError> {
         // Keyed by the symbol's id, as GNU reads the function cell off the
-        // Lisp_Symbol: no hash of the name per call.
-        if !local_context
-            && let Some((generation, resolution)) = self.function_resolution_cache.get(&name.id())
+        // Lisp_Symbol: no hash of the name per call.  Under a frame that
+        // holds a callable, the cached global resolution still stands
+        // unless a frame binds this very name, or the cell is an alias
+        // (whose target a frame could bind): a test body holding one
+        // closure in a `let' resolved every call under it by name.
+        if let Some((generation, resolution, through_alias)) =
+            self.function_resolution_cache.get(&name.id())
             && *generation == self.function_binding_generation
+            && (!local_context || (!*through_alias && !Self::frame_binds_callable(name, env)))
         {
             return Ok(resolution.clone());
         }
 
         let facts = crate::lisp::primitives::name_facts(name);
+        let global = !local_context || !Self::frame_binds_callable(name, env);
         let resolution = if name != "selected-window"
             && (facts.prefer_override
                 || (facts.builtin && !facts.special_form && !self.function_index_has(name)))
-            && !local_context
+            && global
         {
             FunctionResolution::DirectBuiltin(facts)
         } else {
             FunctionResolution::Resolved(self.lookup_function(name, env)?)
         };
-        if !local_context {
+        if global {
             let state = &mut **self;
-            state.function_resolution_cache.insert(
-                name.id(),
-                (state.function_binding_generation, resolution.clone()),
+            let through_alias = matches!(
+                state.functions_index.get(name.as_str()),
+                Some(Value::Symbol(_))
             );
+            // Resolved through an alias under a callable-holding frame:
+            // the chain may have passed through a frame binding.
+            if !local_context || !through_alias {
+                state.function_resolution_cache.insert(
+                    name.id(),
+                    (
+                        state.function_binding_generation,
+                        resolution.clone(),
+                        through_alias,
+                    ),
+                );
+            }
         }
         Ok(resolution)
     }

@@ -1033,7 +1033,7 @@ impl Interpreter {
     }
 
     pub(crate) fn initialized_current_category_table_id(&self) -> Option<u64> {
-        self.buffer_local_value(self.current_buffer_id(), "category-table")
+        self.buffer_local_value_key(self.current_buffer_id(), cached_symbol!("category-table"))
             .and_then(|value| match value {
                 Value::CharTable(id) => Some(id),
                 _ => None,

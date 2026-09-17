@@ -4002,6 +4002,14 @@ impl NativeMark<'_> {
     /// allocating an object or making an encoded shadow value during GC.
     /// The boolean says that native car/cdr words supplied this cons's edges.
     pub(crate) fn trace_lisp_value(&mut self, value: &Value) -> (bool, Vec<Value>) {
+        // No handle is held for any object: nothing to mark for a
+        // non-cons value (the identity lookup below would miss), and only
+        // an attached cons has native words to follow.
+        if self.heap.handle_by_value.is_empty()
+            && !matches!(value, Value::Cons(cell) if cell.attached_native_address().is_some())
+        {
+            return (false, Vec::new());
+        }
         if let Value::Cons(cell) = value {
             if let Some(address) = cell.attached_native_address()
                 && let Some(mirror) = self.heap.cons_values.get(&address)

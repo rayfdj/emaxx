@@ -7340,7 +7340,11 @@ fn source_call_cache_never_shadows_a_local_function_frame() {
 }
 
 #[test]
-fn source_call_cache_never_shadows_a_callable_in_a_plain_lexical_frame() {
+fn a_plain_lexical_frame_never_shadows_the_function_cell() {
+    // eval.c's Ffuncall reads the function cell of the symbol in function
+    // position: a lexical (value-namespace) frame binding the name to a
+    // lambda changes nothing (the oracle calls the defun), inside the
+    // scope and after it, cached resolution or not.
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let definition =
@@ -7372,8 +7376,8 @@ fn source_call_cache_never_shadows_a_callable_in_a_plain_lexical_frame() {
     assert_eq!(
         interp
             .eval(&call, &mut env)
-            .expect("plain lexical shadow should evaluate"),
-        Value::Integer(21)
+            .expect("call under the plain lexical binding should evaluate"),
+        Value::Integer(2)
     );
     env.pop();
 
