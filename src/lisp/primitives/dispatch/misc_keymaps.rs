@@ -496,47 +496,8 @@ define_dispatch!(
                 call_args.extend_from_slice(&args[2..]);
                 interp.call_function_value(function, args[1].as_symbol().ok(), &call_args, env)
             }
-            "symbol-function" => {
-                need_args(name, args, 1)?;
-                // GNU 30.2 data.c:Fsymbol_function uses
-                // CHECK_SYMBOL/XSYMBOL, sharing the positioned-symbol
-                // contract with `fboundp'.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                Ok(match interp.logical_function_binding(&symbol, env) {
-                    Some(value) => value,
-                    None if is_special_form_name(&symbol) => {
-                        Value::BuiltinFunc(symbol.clone().into())
-                    }
-                    // GNU returns nil for an unbound function cell (nadvice's
-                    // pending-advice path reads it).
-                    None => Value::Nil,
-                })
-            }
-            "symbol-name" => {
-                need_args(name, args, 1)?;
-                // GNU 30.2 data.c:Fsymbol_name uses CHECK_SYMBOL/XSYMBOL.
-                let symbol_name = match &args[0] {
-                    Value::Nil => {
-                        return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
-                    }
-                    Value::T => return Ok(crate::lisp::types::SymbolName::from("t").lisp_name()),
-                    Value::Symbol(symbol) => symbol.clone(),
-                    _ if symbols_with_pos_enabled(interp, env) => {
-                        match symbol_with_pos_parts(interp, &args[0]) {
-                            Some((Value::Nil, _)) => {
-                                return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
-                            }
-                            Some((Value::T, _)) => {
-                                return Ok(crate::lisp::types::SymbolName::from("t").lisp_name());
-                            }
-                            Some((Value::Symbol(symbol), _)) => symbol,
-                            _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
-                        }
-                    }
-                    _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
-                };
-                Ok(symbol_name.lisp_name())
-            }
+            "symbol-function" => direct_symbol_function(interp, args, env),
+            "symbol-name" => direct_symbol_name(interp, args, env),
             "user-login-name" => {
                 if args.len() > 1 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -2004,4 +1965,57 @@ fn keymap_arguments_current(interp: &mut Interpreter, args: &[Value]) -> Result<
         crate::lisp::primitives::values::ensure_runtime_keymap_current(interp, arg)?;
     }
     Ok(())
+}
+
+/// The `symbol-function' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_symbol_function(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "symbol-function";
+    need_args(name, args, 1)?;
+    // GNU 30.2 data.c:Fsymbol_function uses
+    // CHECK_SYMBOL/XSYMBOL, sharing the positioned-symbol
+    // contract with `fboundp'.
+    let symbol = checked_symbol_name(interp, &args[0], env)?;
+    Ok(match interp.logical_function_binding(&symbol, env) {
+        Some(value) => value,
+        None if is_special_form_name(&symbol) => Value::BuiltinFunc(symbol.clone().into()),
+        // GNU returns nil for an unbound function cell (nadvice's
+        // pending-advice path reads it).
+        None => Value::Nil,
+    })
+}
+
+/// The `symbol-name' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_symbol_name(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "symbol-name";
+    need_args(name, args, 1)?;
+    // GNU 30.2 data.c:Fsymbol_name uses CHECK_SYMBOL/XSYMBOL.
+    let symbol_name = match &args[0] {
+        Value::Nil => {
+            return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
+        }
+        Value::T => return Ok(crate::lisp::types::SymbolName::from("t").lisp_name()),
+        Value::Symbol(symbol) => symbol.clone(),
+        _ if symbols_with_pos_enabled(interp, env) => {
+            match symbol_with_pos_parts(interp, &args[0]) {
+                Some((Value::Nil, _)) => {
+                    return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
+                }
+                Some((Value::T, _)) => {
+                    return Ok(crate::lisp::types::SymbolName::from("t").lisp_name());
+                }
+                Some((Value::Symbol(symbol), _)) => symbol,
+                _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
+            }
+        }
+        _ => return Err(wrong_type_argument("symbolp", args[0].clone())),
+    };
+    Ok(symbol_name.lisp_name())
 }

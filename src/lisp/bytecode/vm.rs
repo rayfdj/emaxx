@@ -255,6 +255,280 @@ fn prim(
     })
 }
 
+/// Why the hot loop left: the next instruction needs the interpreter (or
+/// signals), the function returned, or 256 backward jumps have passed
+/// (exec_byte_code's `quitcounter': maybe_gc and maybe_quit are due).
+enum FastExit {
+    Slow,
+    Return(Value),
+    QuitCheck,
+}
+
+/// exec_byte_code's dispatch loop for the ops that need nothing but the
+/// operand stack and the program: stack shuffles, constants, jumps,
+/// car/cdr, cons, eq, fixnum arithmetic and comparison, vector aref/aset.
+/// The stack is held directly for the whole run (bytecode.c's `top'
+/// pointer), so an op costs its work and one predicted jump, not a
+/// `RefCell' round trip and a pass through the fallible dispatch.  An op
+/// that cannot complete here (a call, a variable, a signal, an operand of
+/// another kind) is left untouched at PC for the full dispatch.
+#[inline(never)]
+fn run_fast(
+    object: &CachedProgram,
+    ops: &mut Vec<Value>,
+    pc: &mut usize,
+    quitcounter: &mut u8,
+) -> FastExit {
+    let instrs = &object.instrs;
+    let mut at = *pc;
+    macro_rules! slow {
+        () => {{
+            *pc = at - 1;
+            return FastExit::Slow;
+        }};
+    }
+    macro_rules! jump {
+        ($target:expr) => {{
+            let destination = object.instr_at($target as usize);
+            if destination < at {
+                *quitcounter = quitcounter.wrapping_add(1);
+                if *quitcounter == 0 {
+                    *quitcounter = 1;
+                    *pc = destination;
+                    return FastExit::QuitCheck;
+                }
+            }
+            at = destination;
+        }};
+    }
+    macro_rules! pop {
+        () => {
+            ops.pop().expect("validated bytecode never underflows")
+        };
+    }
+    loop {
+        let Some(instr) = instrs.get(at) else {
+            *pc = at;
+            return FastExit::Slow;
+        };
+        let op = instr.op;
+        at += 1;
+        match op {
+            Op::StackRef(n) => {
+                let index = ops.len() - 1 - n as usize;
+                let value = ops[index].clone();
+                ops.push(value);
+            }
+            Op::StackSet(n) => {
+                let value = pop!();
+                // stack-set N stores relative to the pre-pop top.
+                let slot = ops.len() - 1 - (n as usize - 1);
+                std::mem::replace(&mut ops[slot], value).discard();
+            }
+            Op::Dup => {
+                let top = ops.last().expect("validated bytecode").clone();
+                ops.push(top);
+            }
+            Op::Discard => {
+                pop!().discard();
+            }
+            Op::DiscardN {
+                count,
+                preserve_tos,
+            } => {
+                if preserve_tos {
+                    let top = pop!();
+                    for _ in 0..count {
+                        pop!().discard();
+                    }
+                    ops.push(top);
+                } else {
+                    for _ in 0..count {
+                        pop!().discard();
+                    }
+                }
+            }
+            Op::Constant(index) | Op::Constant2(index) => {
+                ops.push(object.constant(index));
+            }
+            Op::Goto { target } => {
+                jump!(target);
+            }
+            Op::GotoIfNil { target } => {
+                let value = pop!();
+                let is_nil = value.is_nil();
+                value.discard();
+                if is_nil {
+                    jump!(target);
+                }
+            }
+            Op::GotoIfNonNil { target } => {
+                let value = pop!();
+                let is_nil = value.is_nil();
+                value.discard();
+                if !is_nil {
+                    jump!(target);
+                }
+            }
+            Op::GotoIfNilElsePop { target } => {
+                if ops.last().expect("validated bytecode").is_nil() {
+                    jump!(target);
+                } else {
+                    pop!().discard();
+                }
+            }
+            Op::GotoIfNonNilElsePop { target } => {
+                if !ops.last().expect("validated bytecode").is_nil() {
+                    jump!(target);
+                } else {
+                    pop!().discard();
+                }
+            }
+            Op::Return => {
+                return FastExit::Return(pop!());
+            }
+            Op::Not => {
+                let value = pop!();
+                let is_nil = value.is_nil();
+                value.discard();
+                ops.push(if is_nil { Value::T } else { Value::Nil });
+            }
+            Op::Cons => {
+                let b = pop!();
+                let a = pop!();
+                ops.push(Value::cons(a, b));
+            }
+            Op::Eq => {
+                let len = ops.len();
+                if matches!(ops[len - 1], Value::Record(_))
+                    || matches!(ops[len - 2], Value::Record(_))
+                {
+                    slow!();
+                }
+                let equal = crate::lisp::primitives::values_eq_plain(&ops[len - 2], &ops[len - 1]);
+                pop!().discard();
+                pop!().discard();
+                ops.push(if equal { Value::T } else { Value::Nil });
+            }
+            Op::Consp => {
+                let is_cons = match ops.last().expect("validated bytecode") {
+                    Value::Cons(_) => true,
+                    // A keymap record reads as a cons; the full arm asks.
+                    Value::Record(_) => slow!(),
+                    _ => false,
+                };
+                pop!().discard();
+                ops.push(if is_cons { Value::T } else { Value::Nil });
+            }
+            Op::Plus | Op::Diff | Op::Mult | Op::Quo | Op::Rem => {
+                let len = ops.len();
+                let (Value::Integer(x), Value::Integer(y)) = (&ops[len - 2], &ops[len - 1]) else {
+                    slow!();
+                };
+                // checked_div/checked_rem refuse y == 0 and the MIN/-1
+                // overflow, which fall through to the full arithmetic
+                // (and its arith-error); overflow falls through to bignums.
+                let fast = match op {
+                    Op::Plus => x.checked_add(*y),
+                    Op::Diff => x.checked_sub(*y),
+                    Op::Mult => x.checked_mul(*y),
+                    Op::Quo => x.checked_div(*y),
+                    _ => x.checked_rem(*y),
+                };
+                let Some(n) = fast else { slow!() };
+                ops.truncate(len - 2);
+                ops.push(Value::Integer(n));
+            }
+            Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
+                let len = ops.len();
+                let (Value::Integer(x), Value::Integer(y)) = (&ops[len - 2], &ops[len - 1]) else {
+                    slow!();
+                };
+                let holds = match op {
+                    Op::Eqlsign => x == y,
+                    Op::Gtr => x > y,
+                    Op::Lss => x < y,
+                    Op::Leq => x <= y,
+                    _ => x >= y,
+                };
+                ops.truncate(len - 2);
+                ops.push(if holds { Value::T } else { Value::Nil });
+            }
+            Op::Add1 | Op::Sub1 | Op::Negate => {
+                let Value::Integer(x) = ops.last().expect("validated bytecode") else {
+                    slow!();
+                };
+                let fast = match op {
+                    Op::Add1 => x.checked_add(1),
+                    Op::Sub1 => x.checked_sub(1),
+                    _ => x.checked_neg(),
+                };
+                let Some(n) = fast else { slow!() };
+                *ops.last_mut().expect("validated bytecode") = Value::Integer(n);
+            }
+            Op::Aref => {
+                let len = ops.len();
+                let Value::Integer(index) = ops[len - 1] else {
+                    slow!()
+                };
+                if index < 0 {
+                    slow!();
+                }
+                let Some(value) =
+                    crate::lisp::primitives::vector_aref_fast(&ops[len - 2], index as usize)
+                else {
+                    slow!();
+                };
+                pop!().discard();
+                pop!().discard();
+                ops.push(value);
+            }
+            Op::Aset => {
+                // Stack: [.. vector index value]; aset returns the value.
+                let len = ops.len();
+                let Value::Integer(index) = ops[len - 2] else {
+                    slow!()
+                };
+                if index < 0
+                    || crate::lisp::primitives::vector_aset_fast(
+                        &ops[len - 3],
+                        index as usize,
+                        &ops[len - 1],
+                    )
+                    .is_none()
+                {
+                    slow!();
+                }
+                let value = pop!();
+                pop!().discard();
+                pop!().discard();
+                ops.push(value);
+            }
+            Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
+                // bytecode.c reads the car or cdr of the object on the stack
+                // top and stores it there: the operand is read in place,
+                // never copied first.
+                let replacement = match ops.last().expect("validated bytecode") {
+                    Value::Cons(cell) => {
+                        if matches!(op, Op::Car | Op::CarSafe) {
+                            cell.car.borrow().clone()
+                        } else {
+                            cell.cdr.borrow().clone()
+                        }
+                    }
+                    Value::Nil => continue,
+                    _ if matches!(op, Op::CarSafe | Op::CdrSafe) => Value::Nil,
+                    // The full arm signals wrong-type-argument.
+                    _ => slow!(),
+                };
+                let top = ops.last_mut().expect("validated bytecode");
+                std::mem::replace(top, replacement).discard();
+            }
+            _ => slow!(),
+        }
+    }
+}
+
 /// A byte-code function decoded and validated once:
 /// instructions, an O(1) byte-offset -> instruction-index table for
 /// jumps, and live constants.  Cached per record so repeated calls skip
@@ -548,6 +822,20 @@ fn run_with_stack(
 
     let result = 'run: loop {
         let step: Result<Value, LispError> = (|| loop {
+            // The hot loop first; it leaves PC at the instruction it could
+            // not run, which the full dispatch below runs once.  The stack
+            // borrow ends with the statement, before anything that traces
+            // roots or runs Lisp.
+            let exit = run_fast(object, &mut stack.borrow_mut(), &mut pc, &mut quitcounter);
+            match exit {
+                FastExit::Return(value) => return Ok(value),
+                FastExit::QuitCheck => {
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    interp.maybe_quit(env)?;
+                    continue;
+                }
+                FastExit::Slow => {}
+            }
             let Some(instr) = object.instrs.get(pc) else {
                 return Err(LispError::Signal(
                     "byte code ran off the end of its program".into(),
@@ -570,7 +858,7 @@ fn run_with_stack(
                 Op::StackSet(n) => {
                     let value = pop!();
                     let slot = stack.borrow().len() - 1 - (n as usize - 1);
-                    stack.borrow_mut()[slot] = value;
+                    std::mem::replace(&mut stack.borrow_mut()[slot], value).discard();
                     continue;
                 }
                 Op::Dup => {
@@ -579,7 +867,7 @@ fn run_with_stack(
                     continue;
                 }
                 Op::Discard => {
-                    pop!();
+                    pop!().discard();
                     continue;
                 }
                 Op::Constant(index) | Op::Constant2(index) => {
@@ -591,13 +879,19 @@ fn run_with_stack(
                     continue;
                 }
                 Op::GotoIfNil { target } => {
-                    if pop!().is_nil() {
+                    let value = pop!();
+                    let is_nil = value.is_nil();
+                    value.discard();
+                    if is_nil {
                         branch!(target);
                     }
                     continue;
                 }
                 Op::GotoIfNonNil { target } => {
-                    if !pop!().is_nil() {
+                    let value = pop!();
+                    let is_nil = value.is_nil();
+                    value.discard();
+                    if !is_nil {
                         branch!(target);
                     }
                     continue;
@@ -765,24 +1059,42 @@ fn run_with_stack(
                     }
                 }
                 Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
-                    let top = stack.borrow().last().cloned();
-                    match top {
-                        Some(Value::Cons(cell)) => {
-                            let value = if matches!(op, Op::Car | Op::CarSafe) {
-                                cell.car.borrow().clone()
-                            } else {
-                                cell.cdr.borrow().clone()
-                            };
-                            *stack.borrow_mut().last_mut().expect("validated bytecode") = value;
+                    // bytecode.c reads the car or cdr of the object on the
+                    // stack top and stores it there: the operand is read in
+                    // place, never copied first (a copy cost the cell two
+                    // reference-count round trips and a drop per op).
+                    enum Step {
+                        Replace(Value),
+                        Keep,
+                        Signal,
+                    }
+                    let step = {
+                        let operands = stack.borrow();
+                        match operands.last().expect("validated bytecode") {
+                            Value::Cons(cell) => {
+                                Step::Replace(if matches!(op, Op::Car | Op::CarSafe) {
+                                    cell.car.borrow().clone()
+                                } else {
+                                    cell.cdr.borrow().clone()
+                                })
+                            }
+                            Value::Nil => Step::Keep,
+                            _ if matches!(op, Op::CarSafe | Op::CdrSafe) => {
+                                Step::Replace(Value::Nil)
+                            }
+                            _ => Step::Signal,
+                        }
+                    };
+                    match step {
+                        Step::Replace(value) => {
+                            let mut operands = stack.borrow_mut();
+                            let top = operands.last_mut().expect("validated bytecode");
+                            std::mem::replace(top, value).discard();
                             continue;
                         }
-                        Some(Value::Nil) => continue,
-                        Some(_) if matches!(op, Op::CarSafe | Op::CdrSafe) => {
-                            *stack.borrow_mut().last_mut().expect("validated bytecode") =
-                                Value::Nil;
-                            continue;
-                        }
-                        _ => {}
+                        Step::Keep => continue,
+                        // The full arm signals wrong-type-argument.
+                        Step::Signal => {}
                     }
                 }
                 _ => {}

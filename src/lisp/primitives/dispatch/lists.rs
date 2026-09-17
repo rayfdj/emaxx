@@ -1232,24 +1232,8 @@ define_dispatch!(
                         .map_err(|_| wrong_type_argument("listp", args[0].clone()))
                 }
             }
-            "car-safe" => {
-                need_args(name, args, 1)?;
-                Ok(match &args[0] {
-                    Value::Cons(cell) => cell.car.borrow().clone(),
-                    value => runtime_keymap_public_view(interp, value)
-                        .and_then(|view| view.car().ok())
-                        .unwrap_or(Value::Nil),
-                })
-            }
-            "cdr-safe" => {
-                need_args(name, args, 1)?;
-                Ok(match &args[0] {
-                    Value::Cons(cell) => cell.cdr.borrow().clone(),
-                    value => runtime_keymap_public_view(interp, value)
-                        .and_then(|view| view.cdr().ok())
-                        .unwrap_or(Value::Nil),
-                })
-            }
+            "car-safe" => direct_car_safe(interp, args, env),
+            "cdr-safe" => direct_cdr_safe(interp, args, env),
             "identity" => {
                 need_args(name, args, 1)?;
                 Ok(args[0].clone())
@@ -1316,48 +1300,10 @@ define_dispatch!(
                 }
                 Ok(Value::list(items))
             }
-            "nth" => {
-                need_args(name, args, 2)?;
-                if let Some(items) = keymap_record_list_items(interp, &args[1])? {
-                    nth_list_element(&Value::list(items), &args[0])
-                } else {
-                    nth_list_element(&args[1], &args[0])
-                }
-            }
-            "elt" => {
-                need_args(name, args, 2)?;
-                if matches!(args[0], Value::Cons(_))
-                    && matches!(
-                        args[0].to_vec().ok().and_then(|items| items.first().cloned()),
-                        Some(Value::Symbol(symbol)) if symbol == "vector-literal"
-                    )
-                {
-                    super::call(interp, "aref", args, env)
-                } else if matches!(args[0], Value::Nil | Value::Cons(_)) {
-                    nth_list_element(&args[0], &args[1])
-                } else {
-                    super::call(interp, "aref", args, env)
-                }
-            }
-            "nthcdr" => {
-                need_args(name, args, 2)?;
-                if let Some(items) = keymap_record_list_items(interp, &args[1])? {
-                    if matches!(&args[0], Value::Integer(count) if *count <= 0)
-                        || matches!(&args[0], Value::BigInteger(count) if **count <= BigInt::from(0))
-                    {
-                        // Runtime keymaps project to GNU's cons-list surface,
-                        // but nthcdr with a nonpositive count returns the
-                        // original object, including its identity.
-                        return Ok(args[1].clone());
-                    }
-                    return nthcdr_value(&args[0], &Value::list(items));
-                }
-                nthcdr_value(&args[0], &args[1])
-            }
-            "length" => {
-                need_args(name, args, 1)?;
-                Ok(Value::Integer(sequence_length_value(interp, &args[0])?))
-            }
+            "nth" => direct_nth(interp, args, env),
+            "elt" => direct_elt(interp, args, env),
+            "nthcdr" => direct_nthcdr(interp, args, env),
+            "length" => direct_length(interp, args, env),
             "safe-length" => {
                 need_args(name, args, 1)?;
                 Ok(Value::Integer(
@@ -1385,145 +1331,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 copy_alist_value(&args[0])
             }
-            "memq" | "memql" | "member" => {
-                need_args(name, args, 2)?;
-                #[derive(Clone, Copy)]
-                enum MemTest {
-                    Equal,
-                    Eql,
-                    Eq,
-                }
-                let test = match name {
-                    "member" => MemTest::Equal,
-                    "memql" => MemTest::Eql,
-                    _ => MemTest::Eq,
-                };
-                let mut current = args[1].clone();
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                loop {
-                    let next = match &current {
-                        Value::Cons(cons_cell) => {
-                            let car = &cons_cell.car;
-                            let cdr = &cons_cell.cdr;
-                            if seen.step(crate::lisp::types::ConsCell::identity(cons_cell)) {
-                                return Err(LispError::SignalValue(Value::list([
-                                    Value::Symbol("circular-list".into()),
-                                    Value::String("Circular list".into()),
-                                ])));
-                            }
-                            let matches = {
-                                let item = car.borrow();
-                                match test {
-                                    MemTest::Equal => {
-                                        values_equal_in_env(interp, &item, &args[0], env)
-                                    }
-                                    MemTest::Eql => values_eql(&item, &args[0]),
-                                    MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
-                                }
-                            };
-                            if matches {
-                                return Ok(current.clone());
-                            }
-                            cdr.borrow().clone()
-                        }
-                        Value::Nil => return Ok(Value::Nil),
-                        other => {
-                            let matches = match name {
-                                "member" => values_equal_in_env(interp, other, &args[0], env),
-                                "memql" => values_eql(other, &args[0]),
-                                _ => values_eq_in_env(interp, other, &args[0], env),
-                            };
-                            if matches {
-                                return Ok(other.clone());
-                            }
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("wrong-type-argument".into()),
-                                Value::Symbol("listp".into()),
-                                other.clone(),
-                            ])));
-                        }
-                    };
-                    current = next;
-                }
-            }
-            "assq" | "rassq" => {
-                need_args(name, args, 2)?;
-                let want_car = name == "assq";
-                let key = &args[0];
-                let projected;
-                let alist = if let Some(items) = keymap_list_items(interp, &args[1])? {
-                    projected = Value::list(items);
-                    &projected
-                } else {
-                    &args[1]
-                };
-                let mut seen = crate::lisp::types::CycleGuard::new();
-                // Walk by cons cells rather than by cloned Values: one Rc
-                // bump per step and no whole-Value churn.
-                let mut cell = match alist {
-                    Value::Nil => return Ok(Value::Nil),
-                    Value::Cons(cell) => Rc::clone(cell),
-                    other => {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("wrong-type-argument".into()),
-                            Value::Symbol("listp".into()),
-                            other.clone(),
-                        ])));
-                    }
-                };
-                loop {
-                    if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("circular-list".into()),
-                            Value::String("Circular list".into()),
-                        ])));
-                    }
-                    let matched = {
-                        let item = cell.car.borrow();
-                        match &*item {
-                            Value::Cons(cons_cell) => {
-                                let item_car = &cons_cell.car;
-                                let item_cdr = &cons_cell.cdr;
-                                let slot = if want_car { item_car } else { item_cdr };
-                                let entry_key = slot.borrow();
-                                match (&*entry_key, key) {
-                                    (Value::Integer(a), Value::Integer(b)) => a == b,
-                                    (Value::Symbol(a), Value::Symbol(b)) => a == b,
-                                    (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
-                                    (Value::Nil | Value::T, _)
-                                    | (_, Value::Nil | Value::T)
-                                    | (Value::Integer(_), Value::Symbol(_))
-                                    | (Value::Symbol(_), Value::Integer(_)) => false,
-                                    // GNU 30.2 fns.c implements assq/rassq
-                                    // with EQ, whose lisp.h contract unwraps
-                                    // symbol-with-position objects while the
-                                    // dynamic mode is enabled.  Keep ordinary
-                                    // scalar keys on the fast path above.
-                                    (a, b) => values_eq_in_env(interp, a, b, env),
-                                }
-                            }
-                            _ => false,
-                        }
-                    };
-                    if matched {
-                        return Ok(cell.car.borrow().clone());
-                    }
-                    let tail = cell.cdr.borrow();
-                    let next = match &*tail {
-                        Value::Nil => return Ok(Value::Nil),
-                        Value::Cons(next) => Rc::clone(next),
-                        other => {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::Symbol("wrong-type-argument".into()),
-                                Value::Symbol("listp".into()),
-                                other.clone(),
-                            ])));
-                        }
-                    };
-                    drop(tail);
-                    cell = next;
-                }
-            }
+            "memq" | "memql" | "member" => direct_member_family(interp, args, env, name),
+            "assq" | "rassq" => direct_assq_family(interp, args, env, name),
             "rassoc" => {
                 need_args(name, args, 2)?;
                 let mut current = args[1].clone();
@@ -2504,3 +2313,296 @@ define_dispatch!(
         }
     }
 );
+
+/// The `car-safe' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_car_safe(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "car-safe";
+    need_args(name, args, 1)?;
+    Ok(match &args[0] {
+        Value::Cons(cell) => cell.car.borrow().clone(),
+        value => runtime_keymap_public_view(interp, value)
+            .and_then(|view| view.car().ok())
+            .unwrap_or(Value::Nil),
+    })
+}
+
+/// The `cdr-safe' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_cdr_safe(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "cdr-safe";
+    need_args(name, args, 1)?;
+    Ok(match &args[0] {
+        Value::Cons(cell) => cell.cdr.borrow().clone(),
+        value => runtime_keymap_public_view(interp, value)
+            .and_then(|view| view.cdr().ok())
+            .unwrap_or(Value::Nil),
+    })
+}
+
+/// The `nth' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_nth(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "nth";
+    need_args(name, args, 2)?;
+    if let Some(items) = keymap_record_list_items(interp, &args[1])? {
+        nth_list_element(&Value::list(items), &args[0])
+    } else {
+        nth_list_element(&args[1], &args[0])
+    }
+}
+
+/// The `nthcdr' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_nthcdr(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "nthcdr";
+    need_args(name, args, 2)?;
+    if let Some(items) = keymap_record_list_items(interp, &args[1])? {
+        if matches!(&args[0], Value::Integer(count) if *count <= 0)
+            || matches!(&args[0], Value::BigInteger(count) if **count <= BigInt::from(0))
+        {
+            // Runtime keymaps project to GNU's cons-list surface,
+            // but nthcdr with a nonpositive count returns the
+            // original object, including its identity.
+            return Ok(args[1].clone());
+        }
+        return nthcdr_value(&args[0], &Value::list(items));
+    }
+    nthcdr_value(&args[0], &args[1])
+}
+
+/// The `elt' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_elt(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "elt";
+    need_args(name, args, 2)?;
+    if matches!(args[0], Value::Cons(_))
+        && matches!(
+            args[0].to_vec().ok().and_then(|items| items.first().cloned()),
+            Some(Value::Symbol(symbol)) if symbol == "vector-literal"
+        )
+    {
+        super::call(interp, "aref", args, env)
+    } else if matches!(args[0], Value::Nil | Value::Cons(_)) {
+        nth_list_element(&args[0], &args[1])
+    } else {
+        super::call(interp, "aref", args, env)
+    }
+}
+
+/// The `length' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_length(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "length";
+    need_args(name, args, 1)?;
+    Ok(Value::Integer(sequence_length_value(interp, &args[0])?))
+}
+
+/// `memq', `memql' and `member' by NAME (fns.c's three walks share this body).
+pub(super) fn direct_member_family(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+    name: &str,
+) -> Result<Value, LispError> {
+    need_args(name, args, 2)?;
+    #[derive(Clone, Copy)]
+    enum MemTest {
+        Equal,
+        Eql,
+        Eq,
+    }
+    let test = match name {
+        "member" => MemTest::Equal,
+        "memql" => MemTest::Eql,
+        _ => MemTest::Eq,
+    };
+    let mut current = args[1].clone();
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    loop {
+        let next = match &current {
+            Value::Cons(cons_cell) => {
+                let car = &cons_cell.car;
+                let cdr = &cons_cell.cdr;
+                if seen.step(crate::lisp::types::ConsCell::identity(cons_cell)) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                let matches = {
+                    let item = car.borrow();
+                    match test {
+                        MemTest::Equal => values_equal_in_env(interp, &item, &args[0], env),
+                        MemTest::Eql => values_eql(&item, &args[0]),
+                        MemTest::Eq => values_eq_in_env(interp, &item, &args[0], env),
+                    }
+                };
+                if matches {
+                    return Ok(current.clone());
+                }
+                cdr.borrow().clone()
+            }
+            Value::Nil => return Ok(Value::Nil),
+            other => {
+                let matches = match name {
+                    "member" => values_equal_in_env(interp, other, &args[0], env),
+                    "memql" => values_eql(other, &args[0]),
+                    _ => values_eq_in_env(interp, other, &args[0], env),
+                };
+                if matches {
+                    return Ok(other.clone());
+                }
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("wrong-type-argument".into()),
+                    Value::Symbol("listp".into()),
+                    other.clone(),
+                ])));
+            }
+        };
+        current = next;
+    }
+}
+
+pub(super) fn direct_memq(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    direct_member_family(interp, args, env, "memq")
+}
+
+pub(super) fn direct_memql(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    direct_member_family(interp, args, env, "memql")
+}
+
+pub(super) fn direct_member(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    direct_member_family(interp, args, env, "member")
+}
+
+/// `assq' and `rassq' by NAME.
+pub(super) fn direct_assq_family(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+    name: &str,
+) -> Result<Value, LispError> {
+    need_args(name, args, 2)?;
+    let want_car = name == "assq";
+    let key = &args[0];
+    let projected;
+    let alist = if let Some(items) = keymap_list_items(interp, &args[1])? {
+        projected = Value::list(items);
+        &projected
+    } else {
+        &args[1]
+    };
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    // Walk by cons cells rather than by cloned Values: one Rc
+    // bump per step and no whole-Value churn.
+    let mut cell = match alist {
+        Value::Nil => return Ok(Value::Nil),
+        Value::Cons(cell) => Rc::clone(cell),
+        other => {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("wrong-type-argument".into()),
+                Value::Symbol("listp".into()),
+                other.clone(),
+            ])));
+        }
+    };
+    loop {
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("circular-list".into()),
+                Value::String("Circular list".into()),
+            ])));
+        }
+        let matched = {
+            let item = cell.car.borrow();
+            match &*item {
+                Value::Cons(cons_cell) => {
+                    let item_car = &cons_cell.car;
+                    let item_cdr = &cons_cell.cdr;
+                    let slot = if want_car { item_car } else { item_cdr };
+                    let entry_key = slot.borrow();
+                    match (&*entry_key, key) {
+                        (Value::Integer(a), Value::Integer(b)) => a == b,
+                        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+                        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+                        (Value::Nil | Value::T, _)
+                        | (_, Value::Nil | Value::T)
+                        | (Value::Integer(_), Value::Symbol(_))
+                        | (Value::Symbol(_), Value::Integer(_)) => false,
+                        // GNU 30.2 fns.c implements assq/rassq
+                        // with EQ, whose lisp.h contract unwraps
+                        // symbol-with-position objects while the
+                        // dynamic mode is enabled.  Keep ordinary
+                        // scalar keys on the fast path above.
+                        (a, b) => values_eq_in_env(interp, a, b, env),
+                    }
+                }
+                _ => false,
+            }
+        };
+        if matched {
+            return Ok(cell.car.borrow().clone());
+        }
+        let tail = cell.cdr.borrow();
+        let next = match &*tail {
+            Value::Nil => return Ok(Value::Nil),
+            Value::Cons(next) => Rc::clone(next),
+            other => {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("wrong-type-argument".into()),
+                    Value::Symbol("listp".into()),
+                    other.clone(),
+                ])));
+            }
+        };
+        drop(tail);
+        cell = next;
+    }
+}
+
+pub(super) fn direct_assq(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    direct_assq_family(interp, args, env, "assq")
+}
+
+pub(super) fn direct_rassq(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    direct_assq_family(interp, args, env, "rassq")
+}

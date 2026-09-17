@@ -11028,3 +11028,97 @@ native_comp_identity 1, native_thread_continuations 1,
 package_lifecycle 5, every one 0 failed).  `cargo fmt --check' and
 strict clippy exit 0 before and after.
 
+## 2026-09-17 Checkpoint 19x: the VM and the variable stores, second cut of the floor
+
+*What prompted it.*  19w took 11 to 15 percent off the per-file floor and
+left the rest to "the call path".  Measured per op on the release build
+against GNU (byte-compiled loops under lexical binding; the 19w probes
+had no lexical-binding cookie, so their "loop floor" was a dynamic
+binding per iteration, not dispatch): a `setq' of a special variable
+133 ns against 8; `let' of a special 355 against 24; the `get' byte op
+195 against 13 (with the `setq' that keeps its value); `memq' 131
+against 9; a byte-code call 150 against 20; a subr call from byte code
+160 against 7; the lexical loop itself 34 ns an iteration against 9.
+
+*Done.*  (1) The operand stack is walked by a hot loop of its own
+(bytecode.c's `top' pointer within one dispatch): stack shuffles,
+constants, jumps, car/cdr, cons, eq, fixnum arithmetic and comparison,
+vector aref/aset run there with the stack held directly; an op that
+needs the interpreter, or whose operands are of another kind, is left
+at PC for the full dispatch (a control shows a positioned symbol in
+`eq' and `memq', fixnum overflow, division by zero, a wrong type and an
+out-of-range `aref' all reach it with the oracle's results).  Immediate
+values (nil, t, fixnums, the id-addressed objects) copy and discard
+without the reference-count round trip; `car' and `cdr' read the cell
+in place instead of copying the operand first.  (2) data.c's
+SYMBOL_PLAINVAL with an untrapped write, as a bit on the symbol cell:
+no alias, none of the localizing or forwarding flags, no watcher, not
+a name with a dedicated store (the constants, keywords, the buffer's
+own fields, the forwarded eval cells, the keyboard's per-terminal
+variables, the frame parameters with a normalizing store).  Learned
+after the first full assignment, cleared by an alias, a flag or a
+watcher; `set_internal', `specbind' and the unbind then store into the
+cell alone, and the unbind pops its own record (the specpdl's order)
+instead of scanning for it.  A control adds a watcher, an alias, a
+buffer-local binding and an auto-local declaration after the bit is
+learned and shows the next store honoring each, the oracle's values.
+(3) The subr's function pointer: the list, plist, symbol and predicate
+primitives compiled Lisp calls most (`get', `memq', `assq', `nth',
+`length', `symbol-name', `equal', `string-match', twenty-six in all)
+are called through a pointer in the name's facts, their bodies moved
+out of the module's name match unchanged.  (4) `mapatoms' tells nil and
+t apart by symbol id, and the regexp compile reads `case-fold-search'
+by symbol (the name lookup was 12 percent of the floor's loop).
+
+*Measured.*  Release builds of main (19w) and of this tree, images
+beside them, interleaved on an idle box, five rounds, minimum and
+median:
+
+| | old min / median | new min / median | GNU |
+|---|---|---|---|
+| `setq' of a special, ns | 119 / 123 | 29 / 30 | 8 |
+| `let' of a special with a `setq' inside, ns | 322 / 325 | 145 / 145 | 24 |
+| `get' byte op with its `setq', ns | 187 / 190 | 84 / 84 | 13 |
+| `memq' byte op with its `setq', ns | 120 / 123 | 36 / 37 | 9 |
+| byte-code call of a one-argument noop, ns | 152 / 154 | 152 / 153 | 26 |
+| lexical `dolist' over 20k symbols, ms | 1.2 / 1.2 | 1.0 / 1.0 | 0.5 |
+| `mapatoms' with a byte-code noop, ms | 2.9 / 3.0 | 2.6 / 2.7 | 1.1 |
+| `apropos-internal' "" `ignore', ms | 37.6 / 39.6 | 27.7 / 31.9 | 9.2 |
+| `ert-select-tests' t t, ms | 40.0 / 47.4 | 31.7 / 35.2 | 9.9 |
+| `emaxx-compat-run', one trivial test, ms | 50.5 / 55.7 | 41.9 / 49.0 | 14.4 |
+
+With 19w's cut, `ert-select-tests' went from 75 to 35 ms median over
+the two checkpoints; the floor now stands at 3.5 times GNU, from 7.5.
+
+*What did not move, and what was learned.*  The byte-code call itself
+(152 ns) is unchanged: the frame record with its `catch_unwind', the
+edebug flag read, `maybe_gc', the activation's root registration and
+the pooled operand stack each cost a few percent, and none was touched.
+The hot loop did not make the lexical loop faster by much (34 to 29 ns
+an iteration): the old pre-dispatch arms were already close; its value
+is the discard of immediates and the in-place `car'.  A store of a
+string into a special variable allocates a string object and registers
+it for the census (`stored_value'), 60 to 90 ns plus the collection it
+feeds, where GNU copies a word; that is the representation of strings
+with properties and is recorded, not changed.  Tried on the way: the
+symbol-name hash by id (rejected in 19w) was not retried; the diagnosis
+of the "loop floor" was wrong for a day because the probe files were
+dynamic-binding files, and the per-op numbers above are the corrected
+ones.
+
+*Verified.*  Controls `plain_stores_still_see_watchers_aliases_and_locals_added_later'
+and `byte_code_hot_loop_falls_through_to_the_full_ops' with the
+oracle's values; the 305 tests matching variable, watcher, alias,
+specbind, let, dynamic, memq, assq, plist, symbol-name, mapatoms,
+string-match and bytecode pass under the gate's environment; fmt and
+strict clippy exit 0.
+
+*Gate.*  Grouped gate run-1789622006394230254-12165 on the tree as
+committed: the ten library groups (batch 50, compat_runtime 84,
+eval_01 365, eval_02 284, eval_03 321, eval_04 254, eval_05 351,
+lightweight 445, primitives 497, tty 56), the bins stage (57) and the
+six integration binaries (cli 23, cli_parity 6, ert_runner 3,
+native_comp_identity 1, native_thread_continuations 1,
+package_lifecycle 5), every one 0 failed; `cargo fmt --check' and
+strict clippy exit 0 before and after.
+

@@ -963,6 +963,10 @@ impl Interpreter {
             self.variable_watchers
                 .push((resolved.clone(), vec![watcher.clone()]));
         }
+        // data.c:Fadd_variable_watcher sets SYMBOL_TRAPPED_WRITE: the
+        // symbol's stores notify from now on.
+        self.globals
+            .set_plain_store(&SymbolName::intern_str(&resolved), false);
         Ok(watcher)
     }
 
@@ -1839,6 +1843,126 @@ impl Interpreter {
         self.bind_special_symbol(&SymbolName::intern_str(name), value, env)
     }
 
+    /// `case-fold-search' as search.c reads it: the DEFVAR_PER_BUFFER slot
+    /// of the current buffer when it has one, else the default, by the
+    /// symbol interned once per thread (a name lookup per search hashed
+    /// the name and walked the alias, flag and buffer-local tables by it).
+    pub(crate) fn case_fold_search_active(&self, env: &Env) -> bool {
+        thread_local! {
+            static CASE_FOLD_SEARCH: SymbolName = SymbolName::intern_str("case-fold-search");
+        }
+        CASE_FOLD_SEARCH.with(|symbol| {
+            if self.globals.alias(symbol).is_some() {
+                return self
+                    .lookup_var("case-fold-search", env)
+                    .is_some_and(|value| value.is_truthy());
+            }
+            match self.buffer_local_binding_symbol(self.current_buffer_id(), symbol) {
+                Some(Some(local)) => local.is_truthy(),
+                // A void local cell reads as void: not a true value.
+                Some(None) => false,
+                None => match self.globals.value(symbol) {
+                    Some(value) => value.is_truthy(),
+                    None => self
+                        .builtin_var_value("case-fold-search")
+                        .is_some_and(|value| value.is_truthy()),
+                },
+            }
+        })
+    }
+
+    /// A name whose store is not the symbol's value cell alone: the
+    /// constants, keywords, the buffer's own fields, the forwarded eval
+    /// cells, the keyboard's per-terminal variables and the frame
+    /// parameters with a normalizing store (every name the assignment
+    /// paths below match on).
+    fn dedicated_store_name(name: &str) -> bool {
+        name.starts_with(':')
+            || matches!(
+                name,
+                "nil"
+                    | "t"
+                    | "most-positive-fixnum"
+                    | "most-negative-fixnum"
+                    | "buffer-file-name"
+                    | "buffer-file-truename"
+                    | "mark-active"
+                    | "buffer-undo-list"
+                    | "features"
+                    | "ascii-case-table"
+                    | "initial-window-system"
+                    | "quit-flag"
+                    | "inhibit-quit"
+                    | "throw-on-input"
+                    | "overriding-plist-environment"
+                    | "load-path"
+                    | "max-lisp-eval-depth"
+                    | "debug-on-next-call"
+                    | "symbols-with-pos-enabled"
+                    | "display-hourglass"
+                    | "scroll-up-aggressively"
+                    | "vertical-scroll-bar"
+                    | "overwrite-mode"
+                    | "overriding-terminal-local-map"
+                    | "last-command"
+                    | "real-last-command"
+                    | "keyboard-translate-table"
+                    | "last-repeatable-command"
+                    | "prefix-arg"
+                    | "last-prefix-arg"
+                    | "defining-kbd-macro"
+                    | "last-kbd-macro"
+                    | "system-key-alist"
+                    | "window-system"
+                    | "default-minibuffer-frame"
+                    | "input-decode-map"
+                    | "local-function-key-map"
+            )
+    }
+
+    /// Learn whether SYMBOL's assignments are a plain store (data.c's
+    /// SYMBOL_PLAINVAL, untrapped): no alias, none of the localizing or
+    /// forwarding flags, no watcher, not a name with a dedicated store.
+    /// Recorded on the cell after a full assignment has run once, read by
+    /// the fast paths of `set_internal_symbol', `bind_special_symbol' and
+    /// `restore_special_binding'.
+    pub(crate) fn learn_plain_store(&mut self, symbol: &SymbolName) {
+        let name = symbol.as_str();
+        let plain = self.globals.alias(symbol).is_none()
+            && !self.globals.has_flag(
+                symbol,
+                LOCALIZED
+                    | LOCAL_IF_SET
+                    | PER_BUFFER
+                    | ALWAYS_LOCAL
+                    | FORWARDED
+                    | FWD_BOOL
+                    | FWD_INT,
+            )
+            && self.variable_watcher_index(name).is_none()
+            && !self.detached_forwarded_variables.contains_key(name)
+            && !Self::dedicated_store_name(name);
+        self.globals.set_plain_store(symbol, plain);
+    }
+
+    /// data.c:set_internal's SYMBOL_PLAINVAL store for a symbol known to be
+    /// plain: the value into the cell, nothing else read or notified.
+    /// False when the symbol is not known plain or is void (the full path
+    /// creates the binding and learns).
+    #[inline]
+    pub(crate) fn assign_plain_global(&mut self, symbol: &SymbolName, value: Value) -> bool {
+        if !self.globals.plain_store(symbol) {
+            return false;
+        }
+        match self.globals.value_mut(symbol) {
+            Some(existing) => {
+                *existing = Self::stored_value(value);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// eval.c:specbind for the symbol in hand: the alias chain, the
     /// forwarding flags, the buffer-local cell and the global cell are
     /// read and written by id; the restore record keeps the symbol.
@@ -1848,7 +1972,33 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<SpecialBindingRestore, LispError> {
+        // SPECPDL_LET on a plain symbol: save the cell, store the value.
+        if self.globals.plain_store(symbol) {
+            let binding_id = self.next_special_binding_id;
+            self.next_special_binding_id += 1;
+            let previous = self.globals.value(symbol).cloned();
+            let value = Self::stored_value(value);
+            match self.globals.value_mut(symbol) {
+                Some(existing) => *existing = value,
+                None => {
+                    self.globals.insert(symbol, value);
+                }
+            }
+            let restore = SpecialBindingRestore {
+                binding_id,
+                name: symbol.clone(),
+                scope: SpecialBindingScope::Global,
+                binding_buffer_id: None,
+                keyboard_terminal_id: None,
+                previous,
+                previous_undo_state: None,
+                local_binding_killed: false,
+            };
+            self.active_special_restores.push(restore.clone());
+            return Ok(restore);
+        }
         let resolved = self.resolve_variable_symbol(symbol)?;
+        let unaliased = resolved.id() == symbol.id();
         let value = self.prepare_variable_assignment_symbol(&resolved, value)?;
         let name = resolved.as_str();
         let buffer_id = self.current_buffer_id();
@@ -1909,6 +2059,9 @@ impl Interpreter {
             }
         };
         self.active_special_restores.push(restore.clone());
+        if unaliased {
+            self.learn_plain_store(symbol);
+        }
         Ok(restore)
     }
 
@@ -2051,7 +2204,15 @@ impl Interpreter {
         restore: SpecialBindingRestore,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        let restore = if let Some(index) = self
+        // Bindings unwind in order: the record is the last one nearly
+        // always (eval.c's specpdl pops), the scan is for the rest.
+        let restore = if self
+            .active_special_restores
+            .last()
+            .is_some_and(|active| active.binding_id == restore.binding_id)
+        {
+            self.active_special_restores.pop().expect("checked last")
+        } else if let Some(index) = self
             .active_special_restores
             .iter()
             .rposition(|active| active.binding_id == restore.binding_id)
@@ -2060,6 +2221,27 @@ impl Interpreter {
         } else {
             restore
         };
+        // The unbind of a plain symbol's SPECPDL_LET: the saved value back
+        // into the cell (a watcher added since cleared the bit).
+        if restore.scope == SpecialBindingScope::Global
+            && restore.previous_undo_state.is_none()
+            && restore.keyboard_terminal_id.is_none()
+            && self.globals.plain_store(&restore.name)
+        {
+            match restore.previous {
+                Some(value) => {
+                    let value = Self::stored_value(value);
+                    match self.globals.value_mut(&restore.name) {
+                        Some(existing) => *existing = value,
+                        None => {
+                            self.globals.insert(&restore.name, value);
+                        }
+                    }
+                }
+                None => self.remove_global_binding_symbol(&restore.name),
+            }
+            return Ok(());
+        }
         if restore.local_binding_killed
             && matches!(restore.scope, SpecialBindingScope::BufferLocal(buffer_id)
                 if self.buffer_local_value(buffer_id, &restore.name).is_none())

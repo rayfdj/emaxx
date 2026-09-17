@@ -3503,9 +3503,7 @@ pub(super) fn compile_elisp_regex_text(
     point_assertion: &str,
     at_absolute_start: bool,
 ) -> Result<Rc<CompiledElispRegex>, LispError> {
-    let case_fold = interp
-        .lookup_var("case-fold-search", env)
-        .is_some_and(|value| value.is_truthy());
+    let case_fold = interp.case_fold_search_active(env);
     compile_elisp_regex_text_with_case_fold(
         interp,
         pattern,
@@ -3526,9 +3524,7 @@ fn compile_elisp_regex_with_syntax_properties(
     encoding: Option<&SyntaxPropertyEncoding>,
     category_scope: RegexpCategoryScope,
 ) -> Result<Rc<CompiledElispRegex>, LispError> {
-    let case_fold = interp
-        .lookup_var("case-fold-search", env)
-        .is_some_and(|value| value.is_truthy());
+    let case_fold = interp.case_fold_search_active(env);
     compile_elisp_regex_with_case_fold(
         interp,
         pattern,

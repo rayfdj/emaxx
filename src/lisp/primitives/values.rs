@@ -562,7 +562,13 @@ pub(crate) fn values_eq_in_env(
     {
         return equal;
     }
+    values_eq_plain(left, right)
+}
 
+/// data.c:Feq on two objects neither of which is a symbol with position:
+/// word identity, with the object kinds Emaxx addresses by id compared by
+/// id.
+pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
         (Value::Integer(a), Value::Integer(b)) => a == b,

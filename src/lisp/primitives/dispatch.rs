@@ -52,6 +52,46 @@ mod treesit;
 /// function of the name (giant static `matches!` lists), but they are
 /// consulted on every form evaluation — the linear string matching was
 /// a top profile entry under erc's message-processing load.
+/// A primitive's body as a function pointer: what a Lisp_Subr's `function'
+/// field is.  A name with one is called through it, not through its
+/// module's name match.
+pub(crate) type DirectPrimitive =
+    fn(&mut Interpreter, &[Value], &mut crate::lisp::types::Env) -> Result<Value, LispError>;
+
+/// The primitives with a function pointer: the list, plist, symbol and
+/// predicate primitives the byte code and compiled Lisp call most.
+fn direct_primitive(name: &str) -> Option<DirectPrimitive> {
+    Some(match name {
+        "null" => predicates::direct_null,
+        "integerp" => predicates::direct_integerp,
+        "numberp" => predicates::direct_numberp,
+        "stringp" => predicates::direct_stringp,
+        "symbolp" => predicates::direct_symbolp,
+        "listp" => predicates::direct_listp,
+        "car-safe" => lists::direct_car_safe,
+        "cdr-safe" => lists::direct_cdr_safe,
+        "nth" => lists::direct_nth,
+        "nthcdr" => lists::direct_nthcdr,
+        "elt" => lists::direct_elt,
+        "length" => lists::direct_length,
+        "memq" => lists::direct_memq,
+        "memql" => lists::direct_memql,
+        "member" => lists::direct_member,
+        "assq" => lists::direct_assq,
+        "rassq" => lists::direct_rassq,
+        "setcar" => collections::direct_setcar,
+        "setcdr" => collections::direct_setcdr,
+        "get" => misc::direct_get,
+        "symbol-value" => misc::direct_symbol_value,
+        "symbol-function" => misc_keymaps::direct_symbol_function,
+        "symbol-name" => misc_keymaps::direct_symbol_name,
+        "equal" => numeric::direct_equal,
+        "string-match" => strings::direct_string_match,
+        "string-match-p" => strings::direct_string_match_p,
+        _ => return None,
+    })
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct NameFacts {
     pub(crate) builtin: bool,
@@ -59,6 +99,8 @@ pub(crate) struct NameFacts {
     pub(crate) prefer_override: bool,
     file_name_handler: Option<FileNameHandlerOperation>,
     module: DispatchModule,
+    /// The body as a function pointer, for the names that have one.
+    direct: Option<DirectPrimitive>,
     /// The GNU subr's declared maximum argument count; None for MANY,
     /// UNEVALLED, and names outside the generated C manifest.
     max_args: Option<u16>,
@@ -172,6 +214,14 @@ fn compute_name_facts(name: &str) -> NameFacts {
         prefer_override: native_owner && module.prefer_builtin(name),
         file_name_handler: file_name_handler_operation(name),
         module,
+        // Only a builtin the module owns is called through its pointer;
+        // an overriding Lisp definition or a non-native owner keeps the
+        // module's own routing.
+        direct: if module != DispatchModule::None && native_owner {
+            direct_primitive(name)
+        } else {
+            None
+        },
         // The source-tree arity table is regenerated from the pinned Darwin
         // oracle for its audit.  Dispatch ownership is host-specific, so use
         // the selected host C contract for the runtime maximum as well; this
@@ -267,6 +317,10 @@ pub(crate) fn call_with_facts(
         && args.len() > usize::from(maximum)
     {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+    }
+    // The subr's function pointer, past the arity check.
+    if let Some(direct) = facts.direct {
+        return direct(interp, args, env);
     }
     if let Some(specification) = facts.file_name_handler {
         match dispatch_file_name_handler(interp, env, name, specification, args)? {

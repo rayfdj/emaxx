@@ -56,6 +56,12 @@ struct SymbolCell {
     /// (stamp 0 = none).  Every value, alias or flag write clears it, so the
     /// word is only ever the current plain value's.
     native: Cell<(u64, usize)>,
+    /// data.c's SYMBOL_PLAINVAL with `trapped_write == SYMBOL_UNTRAPPED_WRITE'
+    /// and no dedicated store behind the name: an assignment or a dynamic
+    /// binding is a store into `value' and nothing else.  Learned by the
+    /// first full assignment; cleared by whatever could change the answer
+    /// (an alias, a flag, a watcher).
+    plain_store: bool,
 }
 
 /// A cell's value, alias target and flags, copied out for the image writer.
@@ -279,9 +285,23 @@ impl SymbolCells {
         self.cell(id).and_then(|cell| cell.alias.as_ref())
     }
 
+    // --- the plain-store bit -------------------------------------------------
+
+    #[inline]
+    pub(crate) fn plain_store(&self, symbol: &SymbolName) -> bool {
+        self.cell(symbol.id()).is_some_and(|cell| cell.plain_store)
+    }
+
+    pub(crate) fn set_plain_store(&mut self, symbol: &SymbolName, plain: bool) {
+        if let Some(cell) = self.existing_cell_mut(symbol.id()) {
+            cell.plain_store = plain;
+        }
+    }
+
     pub(crate) fn set_alias(&mut self, symbol: &SymbolName, target: SymbolName) {
         let cell = self.cell_mut(symbol);
         cell.native.set((0, 0));
+        cell.plain_store = false;
         if cell.alias.replace(target).is_none() {
             self.aliases += 1;
         }
@@ -365,6 +385,7 @@ impl SymbolCells {
     pub(crate) fn set_flag_by_name(&mut self, name: &str, flag: u8) -> bool {
         let cell = self.cell_mut(&SymbolName::intern_str(name));
         cell.native.set((0, 0));
+        cell.plain_store = false;
         let was_clear = cell.flags & flag == 0;
         cell.flags |= flag;
         was_clear

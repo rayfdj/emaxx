@@ -597,16 +597,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-            "equal" => {
-                need_args(name, args, 2)?;
-                let equal = match symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env) {
-                    Some(equal) => equal,
-                    None => super::super::values::values_equal_signaling(
-                        interp, &args[0], &args[1], env,
-                    )?,
-                };
-                Ok(if equal { Value::T } else { Value::Nil })
-            }
+            "equal" => direct_equal(interp, args, env),
             "equal-including-properties" => {
                 need_args(name, args, 2)?;
                 Ok(
@@ -812,3 +803,18 @@ define_dispatch!(
         }
     }
 );
+
+/// The `equal' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_equal(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "equal";
+    need_args(name, args, 2)?;
+    let equal = match symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env) {
+        Some(equal) => equal,
+        None => super::super::values::values_equal_signaling(interp, &args[0], &args[1], env)?,
+    };
+    Ok(if equal { Value::T } else { Value::Nil })
+}

@@ -373,6 +373,10 @@ pub(crate) fn set_internal_symbol(
     value: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    // data.c:set_internal's SYMBOL_PLAINVAL, untrapped: the store alone.
+    if interp.assign_plain_global(symbol, value.clone()) {
+        return Ok(());
+    }
     let resolved = interp.resolve_variable_symbol(symbol)?;
     // data.c:set_internal notifies with NEWVAL before the forwarded C slot
     // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
@@ -381,6 +385,9 @@ pub(crate) fn set_internal_symbol(
     let buffer_id = interp.assignment_buffer_id_symbol(&resolved);
     interp.notify_variable_watchers(resolved.as_str(), value, "set", buffer_id, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
+    if resolved.id() == symbol.id() {
+        interp.learn_plain_store(symbol);
+    }
     Ok(())
 }
 
@@ -907,22 +914,7 @@ define_dispatch!(
                 interp.set_global_binding(&symbol, value.clone());
                 Ok(args[1].clone())
             }
-            "symbol-value" => {
-                need_args(name, args, 1)?;
-                // GNU 30.2 data.c:Fsymbol_value reaches
-                // find_symbol_value's CHECK_SYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                match interp.symbol_value_cell(&symbol) {
-                    // Fsymbol_value signals with its original argument,
-                    // even after find_symbol_value follows an alias or
-                    // XSYMBOL unwraps a symbol-with-position.
-                    Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
-                        Value::symbol("void-variable"),
-                        args[0].clone(),
-                    ]))),
-                    result => result,
-                }
-            }
+            "symbol-value" => direct_symbol_value(interp, args, env),
             "default-value" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fdefault_value delegates to
@@ -1075,42 +1067,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 internal_subr_documentation(interp, &args[0], env)
             }
-            "get" => {
-                need_args(name, args, 2)?;
-                // fns.c:Fget on two bare symbols with no overriding plist
-                // environment: plist_get on the symbol's plist, nothing
-                // else read (the general path below resolves positioned
-                // symbols and the overriding alist first).
-                if let (Value::Symbol(symbol), Value::Symbol(property)) = (&args[0], &args[1])
-                    && interp.overriding_plist_environment_is_nil()
-                {
-                    return Ok(interp
-                        .get_symbol_property_of(symbol, property)
-                        .unwrap_or(Value::Nil));
-                }
-                // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
-                // XSYMBOL to the same underlying bare symbol.
-                let symbol = checked_symbol_identity(interp, &args[0], env)?;
-                let property = bare_symbol_identity(interp, env, &args[1]);
-                // GNU fns.c:Fget consults `overriding-plist-environment'
-                // (populated by bytecomp's compile-time handler for top-level
-                // `function-put'/`define-symbol-prop') before the symbol's
-                // own plist, returning the first non-nil hit.
-                if let Some(property) = &property {
-                    if let Some(overriding) =
-                        overriding_plist_property(interp, env, symbol.as_str(), property.as_str())
-                    {
-                        return Ok(overriding);
-                    }
-                    return Ok(interp
-                        .get_symbol_property_of(&symbol, property)
-                        .unwrap_or(Value::Nil));
-                }
-                Ok(
-                    symbol_property_by_eq(interp, env, symbol.as_str(), &args[1])
-                        .unwrap_or(Value::Nil),
-                )
-            }
+            "get" => direct_get(interp, args, env),
             "makunbound" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fmakunbound uses CHECK_SYMBOL/XSYMBOL and
@@ -1602,11 +1559,25 @@ define_dispatch!(
                     && interp.is_standard_obarray_id(*id)
                 {
                     let symbols = interp.known_symbols_shared();
+                    // nil and t are told apart by symbol id (one per name
+                    // text), not by reading each name's text: the text is
+                    // two pointers away from the enumeration, and a walk
+                    // touched both for every symbol.
+                    thread_local! {
+                        static NIL_AND_T: (u32, u32) = (
+                            crate::lisp::types::SymbolName::intern_str("nil").id(),
+                            crate::lisp::types::SymbolName::intern_str("t").id(),
+                        );
+                    }
+                    let (nil_id, t_id) = NIL_AND_T.with(|ids| *ids);
                     for symbol in symbols.iter() {
-                        let symbol = match symbol.as_str() {
-                            "nil" => Value::Nil,
-                            "t" => Value::T,
-                            _ => Value::Symbol(symbol.clone()),
+                        let id = symbol.id();
+                        let symbol = if id == nil_id {
+                            Value::Nil
+                        } else if id == t_id {
+                            Value::T
+                        } else {
+                            Value::Symbol(symbol.clone())
                         };
                         call_function_value(interp, &args[0], &[symbol], env)?;
                     }
@@ -2296,4 +2267,67 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
         map.entry(name).or_insert(doc);
     }
     map
+}
+
+/// The `get' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_get(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "get";
+    need_args(name, args, 2)?;
+    // fns.c:Fget on two bare symbols with no overriding plist
+    // environment: plist_get on the symbol's plist, nothing
+    // else read (the general path below resolves positioned
+    // symbols and the overriding alist first).
+    if let (Value::Symbol(symbol), Value::Symbol(property)) = (&args[0], &args[1])
+        && interp.overriding_plist_environment_is_nil()
+    {
+        return Ok(interp
+            .get_symbol_property_of(symbol, property)
+            .unwrap_or(Value::Nil));
+    }
+    // GNU 30.2 fns.c:Fget applies CHECK_SYMBOL to SYMBOL and
+    // XSYMBOL to the same underlying bare symbol.
+    let symbol = checked_symbol_identity(interp, &args[0], env)?;
+    let property = bare_symbol_identity(interp, env, &args[1]);
+    // GNU fns.c:Fget consults `overriding-plist-environment'
+    // (populated by bytecomp's compile-time handler for top-level
+    // `function-put'/`define-symbol-prop') before the symbol's
+    // own plist, returning the first non-nil hit.
+    if let Some(property) = &property {
+        if let Some(overriding) =
+            overriding_plist_property(interp, env, symbol.as_str(), property.as_str())
+        {
+            return Ok(overriding);
+        }
+        return Ok(interp
+            .get_symbol_property_of(&symbol, property)
+            .unwrap_or(Value::Nil));
+    }
+    Ok(symbol_property_by_eq(interp, env, symbol.as_str(), &args[1]).unwrap_or(Value::Nil))
+}
+
+/// The `symbol-value' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_symbol_value(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "symbol-value";
+    need_args(name, args, 1)?;
+    // GNU 30.2 data.c:Fsymbol_value reaches
+    // find_symbol_value's CHECK_SYMBOL.
+    let symbol = checked_symbol_name(interp, &args[0], env)?;
+    match interp.symbol_value_cell(&symbol) {
+        // Fsymbol_value signals with its original argument,
+        // even after find_symbol_value follows an alias or
+        // XSYMBOL unwraps a symbol-with-position.
+        Err(LispError::Void(_)) => Err(LispError::SignalValue(Value::list([
+            Value::symbol("void-variable"),
+            args[0].clone(),
+        ]))),
+        result => result,
+    }
 }

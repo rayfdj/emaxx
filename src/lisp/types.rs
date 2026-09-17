@@ -1588,6 +1588,7 @@ impl ConsValueCell {
         }
     }
 
+    #[inline]
     pub(crate) fn borrow(&self) -> Ref<'_, Value> {
         self.synchronize_native_write();
         self.value.borrow()
@@ -2108,7 +2109,7 @@ pub enum ReaderForm {
 }
 
 /// A Lisp value. This covers the subset we need for ERT tests.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Value {
     Nil,
     T,
@@ -2149,6 +2150,84 @@ pub enum Value {
     ReaderForm(Rc<ReaderForm>),
     /// Internal marker for EIEIO slots that have not been bound.
     Unbound,
+}
+
+impl Value {
+    /// A value that owns no heap object: a Lisp immediate (nil, t, a
+    /// fixnum) or an id-addressed object.  Copying or discarding one
+    /// touches nothing else.
+    #[inline(always)]
+    pub(crate) fn is_immediate(&self) -> bool {
+        matches!(
+            self,
+            Value::Nil
+                | Value::T
+                | Value::Integer(_)
+                | Value::Marker(_)
+                | Value::Overlay(_)
+                | Value::CharTable(_)
+                | Value::Frame(_)
+                | Value::Terminal(_)
+                | Value::Record(_)
+                | Value::Finalizer(_)
+                | Value::Unbound
+        )
+    }
+
+    /// Drop a value the VM is done with: nothing at all for an immediate
+    /// (the derived drop glue is an out-of-line call and a jump table),
+    /// the reference count for the rest.
+    #[inline(always)]
+    pub(crate) fn discard(self) {
+        if self.is_immediate() {
+            std::mem::forget(self);
+        } else {
+            drop(self);
+        }
+    }
+
+    #[inline(never)]
+    fn clone_shared(&self) -> Value {
+        match self {
+            Value::Nil => Value::Nil,
+            Value::T => Value::T,
+            Value::Integer(value) => Value::Integer(*value),
+            Value::BigInteger(value) => Value::BigInteger(value.clone()),
+            Value::Float(value) => Value::Float(value.clone()),
+            Value::String(value) => Value::String(value.clone()),
+            Value::StringObject(value) => Value::StringObject(value.clone()),
+            Value::Symbol(value) => Value::Symbol(value.clone()),
+            Value::Cons(value) => Value::Cons(value.clone()),
+            Value::Vector(value) => Value::Vector(value.clone()),
+            Value::BuiltinFunc(value) => Value::BuiltinFunc(value.clone()),
+            Value::Lambda(value) => Value::Lambda(value.clone()),
+            Value::Buffer(value) => Value::Buffer(value.clone()),
+            Value::Marker(value) => Value::Marker(*value),
+            Value::Overlay(value) => Value::Overlay(*value),
+            Value::CharTable(value) => Value::CharTable(*value),
+            Value::Frame(value) => Value::Frame(*value),
+            Value::Terminal(value) => Value::Terminal(*value),
+            Value::Record(value) => Value::Record(*value),
+            Value::Finalizer(value) => Value::Finalizer(*value),
+            Value::ReaderForm(value) => Value::ReaderForm(value.clone()),
+            Value::Unbound => Value::Unbound,
+        }
+    }
+}
+
+impl Clone for Value {
+    /// An immediate is copied in place (lisp.h copies a word); only a
+    /// value that shares a heap object takes the reference count.
+    #[inline(always)]
+    fn clone(&self) -> Value {
+        if self.is_immediate() {
+            // SAFETY: an immediate owns nothing, so a bitwise copy is the
+            // same value with nothing to account for.
+            unsafe { std::ptr::read(self) }
+        } else {
+            self.clone_shared()
+        }
+    }
 }
 
 thread_local! {

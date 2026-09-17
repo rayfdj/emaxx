@@ -786,6 +786,12 @@ compiled patterns before the regexp cache (search.c's searchbufs),
 enumeration: 11 to 15 percent off `ert-select-tests`; the call path
 (1.4 us a byte-code call, 0.6 us a builtin, 1.0 us a special `setq`)
 is the floor and stays open.
+Checkpoint 19x (2026-09-17, for main): the VM's hot loop over the
+operand stack, immediates without refcount traffic, the plain-value
+store bit for `set_internal` and `specbind` (4x and 2.2x), subr
+function pointers for the hot primitives, `mapatoms` and
+`case-fold-search` by symbol: `ert-select-tests` 47 to 35 ms median
+(with 19w: 75 to 35), the byte-code call (152 ns vs 26) still open.
 The Linux records are in `docs/honesty-audit-2026-08-18.md`.
 
 ## Resume here — main merged as `6166a12`, sort_args and harness symmetry (2026-09-07)

@@ -3762,6 +3762,108 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
 }
 
 #[test]
+fn plain_stores_still_see_watchers_aliases_and_locals_added_later() {
+    // data.c:set_internal and eval.c:specbind on a symbol whose cell is
+    // SYMBOL_PLAINVAL and untrapped store into the cell alone; the bit
+    // that says so is cleared by whatever changes the answer, so a watcher,
+    // an alias or a buffer-local binding added after the first store is
+    // honored by the next one.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(progn (defvar zz-ps 1) (setq zz-ps 2)
+           (let ((log nil))
+             (add-variable-watcher 'zz-ps (lambda (sym new op where) (push (list sym new op where) log)))
+             (setq zz-ps 3)
+             (let ((zz-ps 4)) (setq zz-ps 5))
+             (list zz-ps (nreverse log))))",
+        "(3 ((zz-ps 3 set nil) (zz-ps 4 let nil) (zz-ps 5 set nil) (zz-ps 3 unlet nil)))",
+    );
+    step(
+        "(progn (defvar zz-pa 1) (setq zz-pa 2) (defvar zz-pb 10)
+           (defvaralias 'zz-pa 'zz-pb) (setq zz-pa 3) (list zz-pa zz-pb))",
+        "(3 3)",
+    );
+    step(
+        "(progn (defvar zz-pl 1) (setq zz-pl 2)
+           (with-temp-buffer (make-local-variable 'zz-pl) (setq zz-pl 3)
+             (list zz-pl (default-value 'zz-pl))))",
+        "(3 2)",
+    );
+    step(
+        "(progn (defvar zz-pm 1) (setq zz-pm 2) (make-variable-buffer-local 'zz-pm)
+           (with-temp-buffer (setq zz-pm 3)
+             (list zz-pm (default-value 'zz-pm) (with-temp-buffer zz-pm))))",
+        "(3 2 2)",
+    );
+    step(
+        "(progn (defvar zz-pv)
+           (list (let ((zz-pv 1)) zz-pv) (boundp 'zz-pv)
+                 (progn (setq zz-pv 9) (let ((zz-pv 1)) (setq zz-pv 2)) zz-pv)))",
+        "(1 nil 9)",
+    );
+    step(
+        "(progn (defvar zz-pn 0) (setq zz-pn 7)
+           (list (let ((zz-pn 1)) (let ((zz-pn 2)) (setq zz-pn 3)) zz-pn) zz-pn))",
+        "(1 7)",
+    );
+    step(
+        "(progn (defvar zz-pstr nil)
+           (let ((s (copy-sequence \"abc\"))) (setq zz-pstr s) (aset zz-pstr 0 ?z)
+             (list s zz-pstr (eq s zz-pstr))))",
+        "(\"zbc\" \"zbc\" t)",
+    );
+}
+
+#[test]
+fn byte_code_hot_loop_falls_through_to_the_full_ops() {
+    // The hot dispatch loop handles an op only when its operands let it
+    // finish without the interpreter: a positioned symbol in `eq' or
+    // `memq', fixnum overflow, division by zero, a wrong type, and an
+    // out-of-range `aref' all reach the full arms.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut step = |form: &str, expected: &str| {
+        assert_eq!(
+            eval_str_with(&mut interp, form).to_string(),
+            expected,
+            "{form}"
+        );
+    };
+    step(
+        "(let ((symbols-with-pos-enabled t))
+           (let ((sym (car (read-positioning-symbols \"(foo)\"))))
+             (list (funcall (byte-compile (lambda (a b) (eq a b))) sym 'foo)
+                   (funcall (byte-compile (lambda (a b) (memq a b))) sym '(bar foo)))))",
+        "(t (foo))",
+    );
+    step(
+        "(list (funcall (byte-compile (lambda (a) (1+ a))) most-positive-fixnum)
+               (funcall (byte-compile (lambda (a b) (+ a b))) most-positive-fixnum 1)
+               (funcall (byte-compile (lambda (a b) (* a b))) most-positive-fixnum 2))",
+        "(2305843009213693952 2305843009213693952 4611686018427387902)",
+    );
+    step(
+        "(list (condition-case e (funcall (byte-compile (lambda (a b) (/ a b))) 7 0) (error e))
+               (condition-case e (funcall (byte-compile (lambda (a) (car a))) 5) (error e))
+               (condition-case e (funcall (byte-compile (lambda (a b) (< a b))) 1 'x) (error e))
+               (funcall (byte-compile (lambda (a b) (+ a b))) 1.5 2))",
+        "((arith-error) (wrong-type-argument listp 5) (wrong-type-argument number-or-marker-p x) 3.5)",
+    );
+    step(
+        "(list (funcall (byte-compile (lambda (v i) (aref v i))) [1 2 3] 1)
+               (condition-case e (funcall (byte-compile (lambda (v i) (aref v i))) [1 2 3] 5) (error e))
+               (funcall (byte-compile (lambda (v i) (aref v i))) \"abc\" 1))",
+        "(2 (args-out-of-range [1 2 3] 5) 98)",
+    );
+}
+
+#[test]
 fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
     // search.c keeps the most recently used compiled patterns in front of
     // its cache; the front here is checked by exactly the fields the table

@@ -9,32 +9,9 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             // ── Type predicates ──
-            "null" => {
-                need_args(name, args, 1)?;
-                Ok(if args[0].is_nil() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "integerp" => {
-                need_args(name, args, 1)?;
-                Ok(if args[0].is_integer() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
-            "numberp" => {
-                need_args(name, args, 1)?;
-                Ok(
-                    if args[0].is_integer() || matches!(args[0], Value::Float(_)) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
+            "null" => direct_null(interp, args, env),
+            "integerp" => direct_integerp(interp, args, env),
+            "numberp" => direct_numberp(interp, args, env),
             "number-or-marker-p" => {
                 need_args(name, args, 1)?;
                 Ok(
@@ -149,14 +126,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-            "stringp" => {
-                need_args(name, args, 1)?;
-                Ok(if args[0].is_string() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
+            "stringp" => direct_stringp(interp, args, env),
             "documentation-stringp" => {
                 need_args(name, args, 1)?;
                 let valid = matches!(&args[0], Value::Integer(_))
@@ -166,19 +136,7 @@ define_dispatch!(
                     });
                 Ok(if valid { Value::T } else { Value::Nil })
             }
-            "symbolp" => {
-                need_args(name, args, 1)?;
-                Ok(
-                    if args[0].is_symbol()
-                        || (symbols_with_pos_enabled(interp, env)
-                            && symbol_with_pos_parts(interp, &args[0]).is_some())
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            }
+            "symbolp" => direct_symbolp(interp, args, env),
             "keywordp" => {
                 need_args(name, args, 1)?;
                 let positioned_keyword = symbols_with_pos_enabled(interp, env)
@@ -632,14 +590,7 @@ define_dispatch!(
                     Value::Nil
                 })
             }
-            "listp" => {
-                need_args(name, args, 1)?;
-                Ok(if args[0].is_nil() || is_cons_value(interp, &args[0]) {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
-            }
+            "listp" => direct_listp(interp, args, env),
             "proper-list-p" => {
                 need_args(name, args, 1)?;
                 Ok(match keymap_list_items(interp, &args[0])? {
@@ -838,3 +789,100 @@ define_dispatch!(
         }
     }
 );
+
+/// The `null' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_null(
+    _interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "null";
+    need_args(name, args, 1)?;
+    Ok(if args[0].is_nil() {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+/// The `integerp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_integerp(
+    _interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "integerp";
+    need_args(name, args, 1)?;
+    Ok(if args[0].is_integer() {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+/// The `numberp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_numberp(
+    _interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "numberp";
+    need_args(name, args, 1)?;
+    Ok(
+        if args[0].is_integer() || matches!(args[0], Value::Float(_)) {
+            Value::T
+        } else {
+            Value::Nil
+        },
+    )
+}
+
+/// The `stringp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_stringp(
+    _interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "stringp";
+    need_args(name, args, 1)?;
+    Ok(if args[0].is_string() {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+/// The `symbolp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_symbolp(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "symbolp";
+    need_args(name, args, 1)?;
+    Ok(
+        if args[0].is_symbol()
+            || (symbols_with_pos_enabled(interp, env)
+                && symbol_with_pos_parts(interp, &args[0]).is_some())
+        {
+            Value::T
+        } else {
+            Value::Nil
+        },
+    )
+}
+
+/// The `listp' primitive, callable directly (a subr's function pointer).
+pub(super) fn direct_listp(
+    interp: &mut Interpreter,
+    args: &[Value],
+    _env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let name = "listp";
+    need_args(name, args, 1)?;
+    Ok(if args[0].is_nil() || is_cons_value(interp, &args[0]) {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}

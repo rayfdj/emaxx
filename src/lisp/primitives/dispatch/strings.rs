@@ -1204,3 +1204,21 @@ fn encode_unicode_property_value(
         _ => Ok(value.clone()),
     }
 }
+
+/// `string-match', callable directly.
+pub(super) fn direct_string_match(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    regexp::string_match_impl(interp, args, env, true)
+}
+
+/// `string-match-p', callable directly.
+pub(super) fn direct_string_match_p(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    regexp::string_match_impl(interp, args, env, false)
+}
