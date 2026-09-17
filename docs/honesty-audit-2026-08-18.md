@@ -11278,4 +11278,14 @@ a control asserting the shadowing the oracle contradicts, now
 `a_plain_lexical_frame_never_shadows_the_function_cell' with the
 oracle's value); fmt and strict clippy exit 0.
 
-*Gate.*  «GATE»
+*Gate.*  Grouped gate run-1789636567811205734-15319 on the
+tree as committed (37269a21; the working tree differed by the oracle
+lock alone): the ten library groups (batch 50, compat_runtime 84,
+eval_01 370, eval_02 284, eval_03 321, eval_04 254, eval_05 351,
+lightweight 445, primitives 497, tty 56 with its 2 ignored), the bins
+stage (57, 2 and 1 in 234 s) and the six integration binaries (23, 6,
+3, 1, 1 and 5 in 528 s), 2,714 scheduled and observed; fmt and strict
+clippy exit 0 before and after.  The first run of the gate on the
+checkpoint (run-1789635885827841610-10928) stopped at eval_03's one
+failure recorded above; the amended commit carries the corrected
+control and the two items of (9).
