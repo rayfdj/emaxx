@@ -11582,4 +11582,12 @@ macro, frame, watcher, buffer-local, byte-code, closure and search
 controls, the two new controls by name) passed on the committed
 sources, in the main tree; strict clippy and fmt exit 0.
 
-*Gate.*  «GATE»
+*Gate.*  Grouped gate run-1789655698798291152-32334 on the tree as
+committed (d2f0ec33; the working tree differed by the oracle lock
+alone): the ten library groups (batch 50, compat_runtime 84, eval_01
+373, eval_02 284, eval_03 321, eval_04 254, eval_05 351, lightweight
+446 -- the pooled argument buffer's test went with the buffer --,
+primitives 497, tty 56 with its 2 ignored), the bins stage (57, 2, 0
+and 1 in 233 s) and the six integration binaries (23, 6, 3, 1, 1 and
+5 in 524 s), 2,718 scheduled and observed; fmt and strict clippy exit
+0 before and after.
